@@ -28,10 +28,8 @@ public:
         int cardId = hand[handIndex];
         const CardDefinition* cardDef = CardRegistry::getInstance().getCard(cardId);
 
-        if (cardDef && elixir >= cardDef->cost) {
+        if (cardDef && elixir >= cardDef->cost && !deckQueue.empty()) {
             elixir -= cardDef->cost;
-
-            if (deckQueue.empty()) return -1;
 
             int nextCard = deckQueue.front();
             deckQueue.pop_front();

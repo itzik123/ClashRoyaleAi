@@ -37,6 +37,13 @@ public:
 
     virtual float getCollisionRadius() const { return 0.0f; }
 
+    // Re-applies board bounds/river constraints to this entity's position.
+    // Default no-op: only Troop (the only thing that ever moves) overrides
+    // it. Public and Board-aware so it can be called again, uniformly,
+    // after collision resolution -- which itself doesn't respect those
+    // constraints -- without the caller needing to know the concrete type.
+    virtual void clampPosition(Board& board) { (void)board; }
+
     void applyFreeze(int ticks, float slowFactor) {
         // Duration and strength are judged independently so a new freeze can
         // never leave the target better off than it already was: a shorter
