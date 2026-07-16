@@ -57,6 +57,9 @@ class MicroRoyaleNet(nn.Module):
         # ב. ראש המיקום במרחב (התפלגות גאוסיאנית / תחימה)
         # אנו מוציאים 2 ערכים, ונעביר אותם דרך פונקציית Sigmoid כדי לתחום אותם בין [0, 1]
         self.placement_head = nn.Linear(256, 2)
+        # סטיית התקן של ההתפלגות הגאוסיאנית - פרמטר נלמד (state-independent), נדרש כדי
+        # שיהיה ניתן לחשב log_prob ולתת gradient אמיתי לראש המיקום
+        self.placement_log_std = nn.Parameter(torch.ones(2) * -2.0)
         
         # ==========================================
         # 5. ראש הערכת המצב - Critic Head
@@ -90,6 +93,7 @@ class MicroRoyaleNet(nn.Module):
         # חישוב הפלטים
         card_logits = self.card_head(hx)
         placement_normalized = torch.sigmoid(self.placement_head(hx))
+        placement_log_std = torch.clamp(self.placement_log_std, -4.0, 0.0).expand_as(placement_normalized)
         state_value = self.value_head(hx)
-        
-        return card_logits, placement_normalized, state_value, (hx, cx)
+
+        return card_logits, placement_normalized, placement_log_std, state_value, (hx, cx)

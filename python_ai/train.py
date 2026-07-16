@@ -117,34 +117,39 @@ def train_ppo():
         for step in range(update_timestep):
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
             
-            card_logits, placement_norm, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
-            
+            card_logits, placement_mean, placement_log_std, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
+
             card_dist = Categorical(logits=card_logits)
             card_idx = card_dist.sample()
-            
-            noise_x = torch.randn(num_envs).to(device) * 0.05
-            noise_y = torch.randn(num_envs).to(device) * 0.05
-            
-            target_x = torch.clamp((placement_norm[:, 0] + noise_x) * MAX_X, 0.0, MAX_X)
-            target_y = torch.clamp((placement_norm[:, 1] + noise_y) * MAX_Y_AI, 0.0, MAX_Y_AI)
-            
+
+            placement_dist = Normal(placement_mean, placement_log_std.exp())
+            placement_sample = placement_dist.sample()
+            placement_clamped = torch.clamp(placement_sample, 0.0, 1.0)
+
+            target_x = placement_clamped[:, 0] * MAX_X
+            target_y = placement_clamped[:, 1] * MAX_Y_AI
+
             action = {
                 "card_index": card_idx.detach().cpu().numpy(),
                 "target_x": target_x.detach().cpu().numpy().reshape(num_envs, 1),
                 "target_y": target_y.detach().cpu().numpy().reshape(num_envs, 1)
             }
-            
+
             next_obs, step_rewards, terminateds, truncateds, _ = envs.step(action)
             dones = terminateds | truncateds
-            
+
             shaped_rewards = compute_dense_reward(next_obs, prev_obs, step_rewards)
             ep_rewards += shaped_rewards
-            
-            logprobs_buffer.append(card_dist.log_prob(card_idx))
+
+            placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
+            total_logprob = card_dist.log_prob(card_idx) + placement_logprob
+            total_entropy = card_dist.entropy() + placement_dist.entropy().sum(dim=-1)
+
+            logprobs_buffer.append(total_logprob)
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(torch.tensor(1.0 - dones, dtype=torch.float32).to(device))
-            entropies_buffer.append(card_dist.entropy())
+            entropies_buffer.append(total_entropy)
             
             # Out-of-place mask to reset hidden states for completed environments
             mask_tensor = torch.tensor(1.0 - dones, dtype=torch.float32).unsqueeze(1).to(device)
@@ -221,7 +226,7 @@ def train_ppo():
             t_done = False
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                t_logits, t_norm, _, _, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
                 t_action = {
                     "card_index": np.array([t_idx.item()]),

@@ -51,17 +51,10 @@ private:
             if (x < 0 || x >= BOARD_WIDTH || y < 0 || y >= BOARD_HEIGHT) continue;
 
             bool isBuilding = (dynamic_cast<Building*>(entity.get()) != nullptr);
-            int channel;
-            float normalizedHp;
+            float maxHp = isBuilding ? MAX_BUILDING_HP : MAX_TROOP_HP;
+            float normalizedHp = std::min(static_cast<float>(entity->hp) / maxHp, 1.0f);
+            int channel = (entity->team == 0) ? (isBuilding ? 2 : 0) : (isBuilding ? 3 : 1);
 
-            if (entity->team == 0) {
-                channel = isBuilding ? 2 : 0;
-                float maxHp = isBuilding ? MAX_BUILDING_HP : MAX_TROOP_HP;
-                normalizedHp = std::min(static_cast<float>(entity->hp) / maxHp, 1.0f);
-            } else {
-                channel = isBuilding ? 3 : 1;
-                normalizedHp = 1.0f;
-            }
             obs[getIndex(channel, y, x)] = normalizedHp;
         }
 
