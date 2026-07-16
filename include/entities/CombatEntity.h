@@ -67,7 +67,7 @@ public:
             }
         }
         
-        clampPosition();
+        clampPosition(board);
     }
 
 protected:
@@ -100,9 +100,5 @@ protected:
 
     virtual void moveTowards(Board& board, const Vector2D& dest) {
         // Default: stationary entities don't move
-    }
-
-    virtual void clampPosition() {
-        // Default: no-op
     }
 };

@@ -205,25 +205,13 @@ public:
             }
         }
 
+        // Re-clamp after collision resolution, which can push a troop back
+        // into the river or off the board edge. Delegates to each entity's
+        // own clampPosition() (a no-op for anything that isn't a Troop) so
+        // this respects riverIgnores instead of re-deriving the rule here.
         for (auto& entity : board.getEntities()) {
-            if (entity->isAlive() && entity->isTargetable() && entity->getCollisionRadius() <= 0.0f) {
-                entity->position.x = std::max(0.0f, std::min(entity->position.x, BOARD_MAX_X));
-                entity->position.y = std::max(0.0f, std::min(entity->position.y, BOARD_MAX_Y));
-                
-                // Hard river boundary clamp after collisions
-                if (entity->symbol != 'm' && entity->symbol != 'y' && entity->symbol != 'q' && entity->symbol != 'Q' && entity->symbol != 't') { // Check if flying (ignores river)
-                    if (entity->position.y > 15.0f && entity->position.y < 17.0f) {
-                        bool onLeftBridge = (entity->position.x >= 3.0f && entity->position.x <= 5.0f);
-                        bool onRightBridge = (entity->position.x >= 13.0f && entity->position.x <= 15.0f);
-                        if (!onLeftBridge && !onRightBridge) {
-                            if (entity->position.y < 16.0f) {
-                                entity->position.y = 15.0f;
-                            } else {
-                                entity->position.y = 17.0f;
-                            }
-                        }
-                    }
-                }
+            if (entity->isAlive()) {
+                entity->clampPosition(board);
             }
         }
 

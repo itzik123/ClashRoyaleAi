@@ -1,0 +1,187 @@
+#include <catch_amalgamated.hpp>
+#include "test_helpers.h"
+#include "Board.h"
+#include "Building.h"
+
+// ---------------- clampToBoard ----------------
+// Single source of truth used by both Troop::clampPosition() (right after a
+// move) and GameManager::step()'s post-collision re-clamp.
+
+TEST_CASE("clampToBoard clamps out-of-bounds positions to the board edges", "[board][clamp]") {
+    Board board;
+    REQUIRE(board.clampToBoard(Vector2D{ -5.0f, 10.0f }, false).x == Catch::Approx(0.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 25.0f, 10.0f }, false).x == Catch::Approx(17.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, -5.0f }, false).y == Catch::Approx(0.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 40.0f }, false).y == Catch::Approx(31.0f));
+}
+
+TEST_CASE("clampToBoard pushes non-bridge river-band positions to the nearest bank", "[board][clamp]") {
+    Board board;
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 15.5f }, false).y == Catch::Approx(15.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 16.0f }, false).y == Catch::Approx(17.0f));
+}
+
+TEST_CASE("clampToBoard does not snap positions sitting on a bridge column", "[board][clamp]") {
+    Board board;
+    REQUIRE(board.clampToBoard(Vector2D{ 4.0f, 16.0f }, false).y == Catch::Approx(16.0f));  // left bridge
+    REQUIRE(board.clampToBoard(Vector2D{ 14.0f, 16.0f }, false).y == Catch::Approx(16.0f)); // right bridge
+}
+
+TEST_CASE("clampToBoard skips the river snap entirely when ignoresRiver is true", "[board][clamp]") {
+    Board board;
+    Vector2D result = board.clampToBoard(Vector2D{ 10.0f, 16.0f }, true); // off-bridge, mid-river
+    REQUIRE(result.y == Catch::Approx(16.0f)); // left untouched
+}
+
+TEST_CASE("Board::allocateId returns increasing, unique ids", "[board][id]") {
+    Board board;
+    int a = board.allocateId();
+    int b = board.allocateId();
+    int c = board.allocateId();
+    REQUIRE(b == a + 1);
+    REQUIRE(c == b + 1);
+}
+
+TEST_CASE("Board::addEntity is invisible until commitPendingEntities", "[board][lifecycle]") {
+    Board board;
+    auto e = std::make_shared<DummyEntity>(1, 0.0f, 0.0f, 100, 0);
+    board.addEntity(e);
+    REQUIRE(board.getEntities().empty());
+
+    board.commitPendingEntities();
+    REQUIRE(board.getEntities().size() == 1);
+}
+
+TEST_CASE("Board::commitPendingEntities with nothing pending is a no-op", "[board][lifecycle]") {
+    Board board;
+    board.commitPendingEntities();
+    REQUIRE(board.getEntities().empty());
+}
+
+TEST_CASE("Board::cleanDeadEntities removes only the dead", "[board][lifecycle]") {
+    Board board;
+    auto alive = std::make_shared<DummyEntity>(1, 0.0f, 0.0f, 100, 0);
+    auto dead = std::make_shared<DummyEntity>(2, 0.0f, 0.0f, 100, 0);
+    dead->takeDamage(100);
+    spawn(board, alive);
+    spawn(board, dead);
+
+    board.cleanDeadEntities();
+
+    REQUIRE(board.getEntities().size() == 1);
+    REQUIRE(board.getEntities()[0]->id == 1);
+}
+
+// ---------------- resolvePositionAgainstBuildings ----------------
+
+TEST_CASE("resolvePositionAgainstBuildings leaves a position untouched when far from any building", "[board][collision]") {
+    Board board;
+    auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, building);
+
+    Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 0.0f, 0.0f }, 999);
+    REQUIRE(resolved.x == Catch::Approx(0.0f));
+    REQUIRE(resolved.y == Catch::Approx(0.0f));
+}
+
+TEST_CASE("resolvePositionAgainstBuildings pushes a position out of a building's radius", "[board][collision]") {
+    Board board;
+    // radius 1.0, minDist = 1.0 + 0.4 = 1.4. Input at dist 0.5 straight above the
+    // building's center: push = 1.4 - 0.5 = 0.9, plus the 0.05 perpendicular slide term.
+    auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, building);
+
+    Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.5f }, 999);
+    REQUIRE(resolved.x == Catch::Approx(10.05f));
+    REQUIRE(resolved.y == Catch::Approx(11.4f));
+}
+
+TEST_CASE("resolvePositionAgainstBuildings ignores dead buildings", "[board][collision]") {
+    Board board;
+    auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 100, 1, 'C', 5.0f, 10, 10);
+    building->takeDamage(100); // dead
+    spawn(board, building);
+
+    Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.5f }, 999);
+    REQUIRE(resolved.x == Catch::Approx(10.0f));
+    REQUIRE(resolved.y == Catch::Approx(10.5f));
+}
+
+TEST_CASE("resolvePositionAgainstBuildings excludes the entity's own id", "[board][collision]") {
+    Board board;
+    auto building = std::make_shared<Building>(42, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, building);
+
+    // Ask it to resolve a position against itself: must not push against its own radius.
+    Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.5f }, 42);
+    REQUIRE(resolved.x == Catch::Approx(10.0f));
+    REQUIRE(resolved.y == Catch::Approx(10.5f));
+}
+
+TEST_CASE("resolvePositionAgainstBuildings ignores non-building entities (radius 0)", "[board][collision]") {
+    Board board;
+    auto troop = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 100, 1); // radius 0.0 by default
+    spawn(board, troop);
+
+    Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.1f }, 999);
+    REQUIRE(resolved.x == Catch::Approx(10.0f));
+    REQUIRE(resolved.y == Catch::Approx(10.1f));
+}
+
+// ---------------- getNextWaypoint ----------------
+
+TEST_CASE("getNextWaypoint returns the target directly when both points are below the river", "[board][waypoint]") {
+    Board board;
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 5.0f, 5.0f }, Vector2D{ 5.0f, 10.0f });
+    REQUIRE(wp.x == Catch::Approx(5.0f));
+    REQUIRE(wp.y == Catch::Approx(10.0f));
+}
+
+TEST_CASE("getNextWaypoint returns the target directly when both points are above the river", "[board][waypoint]") {
+    Board board;
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 5.0f, 20.0f }, Vector2D{ 5.0f, 25.0f });
+    REQUIRE(wp.x == Catch::Approx(5.0f));
+    REQUIRE(wp.y == Catch::Approx(25.0f));
+}
+
+TEST_CASE("getNextWaypoint returns the target directly when both points are inside the river band", "[board][waypoint]") {
+    Board board;
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 15.5f }, Vector2D{ 14.0f, 16.5f });
+    REQUIRE(wp.x == Catch::Approx(14.0f));
+    REQUIRE(wp.y == Catch::Approx(16.5f));
+}
+
+TEST_CASE("getNextWaypoint routes below-to-above via the nearest bridge's start edge", "[board][waypoint]") {
+    Board board;
+    // Closer to the right bridge (x=14) than the left (x=4).
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 5.0f }, Vector2D{ 10.0f, 25.0f });
+    REQUIRE(wp.x == Catch::Approx(14.0f));
+    REQUIRE(wp.y == Catch::Approx(15.0f)); // riverY_start
+}
+
+TEST_CASE("getNextWaypoint routes above-to-below via the nearest bridge's end edge", "[board][waypoint]") {
+    Board board;
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 25.0f }, Vector2D{ 10.0f, 5.0f });
+    REQUIRE(wp.x == Catch::Approx(14.0f));
+    REQUIRE(wp.y == Catch::Approx(17.0f)); // riverY_end
+}
+
+TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][waypoint]") {
+    Board board;
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 2.0f, 5.0f }, Vector2D{ 2.0f, 25.0f });
+    REQUIRE(wp.x == Catch::Approx(4.0f)); // leftBridge.x
+}
+
+TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge toward the target's side", "[board][waypoint]") {
+    Board board;
+
+    SECTION("target is above -> heads to the river end edge") {
+        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.0f }, Vector2D{ 4.0f, 25.0f });
+        REQUIRE(wp.y == Catch::Approx(17.0f));
+    }
+
+    SECTION("target is below -> heads to the river start edge") {
+        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.0f }, Vector2D{ 4.0f, 5.0f });
+        REQUIRE(wp.y == Catch::Approx(15.0f));
+    }
+}

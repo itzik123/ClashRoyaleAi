@@ -35,24 +35,7 @@ protected:
         }
     }
 
-    void clampPosition() override {
-        if (position.x < 0.0f) position.x = 0.0f;
-        if (position.x > 17.0f) position.x = 17.0f;
-        if (position.y < 0.0f) position.y = 0.0f;
-        if (position.y > 31.0f) position.y = 31.0f;
-
-        if (!riverIgnores) {
-            if (position.y > 15.0f && position.y < 17.0f) {
-                bool onLeftBridge = (position.x >= 3.0f && position.x <= 5.0f);
-                bool onRightBridge = (position.x >= 13.0f && position.x <= 15.0f);
-                if (!onLeftBridge && !onRightBridge) {
-                    if (position.y < 16.0f) {
-                        position.y = 15.0f;
-                    } else {
-                        position.y = 17.0f;
-                    }
-                }
-            }
-        }
+    void clampPosition(Board& board) override {
+        position = board.clampToBoard(position, riverIgnores);
     }
 };

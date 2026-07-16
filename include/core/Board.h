@@ -71,6 +71,24 @@ public:
         return resolved;
     }
 
+    // Single source of truth for "keep a position on the board and out of the
+    // river unless explicitly allowed in it" -- used both right after a troop
+    // moves and again after collision resolution potentially nudges it.
+    Vector2D clampToBoard(Vector2D pos, bool ignoresRiver) const {
+        pos.x = std::max(0.0f, std::min(pos.x, static_cast<float>(width - 1)));
+        pos.y = std::max(0.0f, std::min(pos.y, static_cast<float>(height - 1)));
+
+        if (!ignoresRiver && pos.y > riverY_start && pos.y < riverY_end) {
+            bool onLeftBridge = (pos.x >= leftBridge.x - 1.0f && pos.x <= leftBridge.x + 1.0f);
+            bool onRightBridge = (pos.x >= rightBridge.x - 1.0f && pos.x <= rightBridge.x + 1.0f);
+            if (!onLeftBridge && !onRightBridge) {
+                float riverMid = (riverY_start + riverY_end) / 2.0f;
+                pos.y = (pos.y < riverMid) ? riverY_start : riverY_end;
+            }
+        }
+        return pos;
+    }
+
     Vector2D getNextWaypoint(const Vector2D& currentPos, const Vector2D& targetPos) const {
         bool isCurrentBelow = currentPos.y <= riverY_start;
         bool isTargetBelow = targetPos.y <= riverY_start;
