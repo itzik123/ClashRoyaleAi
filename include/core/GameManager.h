@@ -5,6 +5,7 @@
 #include "MatchRules.h"
 #include <algorithm>
 #include <vector>
+#include <string>
 
 class GameManager {
 private:
@@ -21,6 +22,13 @@ private:
 
     std::vector<int> aiDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
     std::vector<int> oppDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
+
+    void addTower(float x, float y, int hp, int team, float attackRange, int damage, int attackCooldown,
+        char symbol, const std::string& towerName) {
+        auto tower = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, attackRange, damage, attackCooldown, symbol);
+        tower->name = towerName;
+        board.addEntity(tower);
+    }
 
 public:
     PlayerState playerAI;
@@ -116,13 +124,13 @@ public:
         playerAI.initializeDeck(aiDeckConfig);
         playerOpponent.initializeDeck(oppDeckConfig);
 
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 9.0f, 2.0f, 4008, 0, 7.0f, 90, 10, 'R'));
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 9.0f, 30.0f, 4008, 1, 7.0f, 90, 10, 'R'));
+        addTower(9.0f, 2.0f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
+        addTower(9.0f, 30.0f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 3.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P'));
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 14.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P'));
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P'));
-        board.addEntity(std::make_shared<Tower>(board.allocateId(), 14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P'));
+        addTower(3.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(14.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
 
         board.commitPendingEntities();
     }

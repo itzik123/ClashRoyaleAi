@@ -11,6 +11,37 @@
 #include <vector>
 #include <tuple>
 
+TEST_CASE("Spawned entities carry the card's display name", "[card_registry][name]") {
+    Board board;
+
+    SECTION("single-unit card (Knight)") {
+        CardRegistry::getInstance().getCard(0)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->name == "Knight");
+    }
+
+    SECTION("squad card: every unit gets the same name (Goblins)") {
+        CardRegistry::getInstance().getCard(4)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().size() == 3);
+        for (const auto& e : board.getEntities()) {
+            REQUIRE(e->name == "Goblins");
+        }
+    }
+
+    SECTION("spell card (Fireball)") {
+        CardRegistry::getInstance().getCard(7)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->name == "Fireball");
+    }
+
+    SECTION("defensive building (Cannon)") {
+        CardRegistry::getInstance().getCard(25)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->name == "Cannon");
+    }
+}
+
 TEST_CASE("Every currently-defined card resolves with the exact original stats", "[card_registry][data]") {
     // id, name, cost, isSpell -- transcribed from the pre-refactor CardRegistry.
     // Card ids 16, 37 and 38 were never defined before this refactor and stay

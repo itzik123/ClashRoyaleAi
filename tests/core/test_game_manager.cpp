@@ -14,16 +14,19 @@ TEST_CASE("GameManager construction sets up exactly the 6 expected towers", "[ga
     REQUIRE(entities[0]->symbol == 'R');
     REQUIRE(entities[0]->team == 0);
     REQUIRE(entities[0]->hp == 4008);
+    REQUIRE(entities[0]->name == "King Tower");
     REQUIRE(entities[0]->position.x == Catch::Approx(9.0f));
     REQUIRE(entities[0]->position.y == Catch::Approx(2.0f));
 
     REQUIRE(entities[1]->symbol == 'R');
     REQUIRE(entities[1]->team == 1);
+    REQUIRE(entities[1]->name == "King Tower");
     REQUIRE(entities[1]->position.y == Catch::Approx(30.0f));
 
     REQUIRE(entities[2]->symbol == 'P');
     REQUIRE(entities[2]->team == 0);
     REQUIRE(entities[2]->hp == 2534);
+    REQUIRE(entities[2]->name == "Princess Tower");
     REQUIRE(entities[3]->symbol == 'P');
     REQUIRE(entities[3]->team == 0);
 

@@ -1,8 +1,8 @@
 #pragma once
-#include "Entity.h"
+#include "CardEntity.h"
 #include "Board.h"
 
-class AreaSpell : public Entity {
+class AreaSpell : public CardEntity {
 private:
     float radius;
     int damage;
@@ -10,7 +10,7 @@ private:
 
 public:
     AreaSpell(int id, float x, float y, int team, float radius, int damage, int delayTicks, char symbol = '*')
-        : Entity(id, x, y, 1, team, symbol), radius(radius), damage(damage), delayTicks(delayTicks) {}
+        : CardEntity(id, x, y, 1, team, symbol), radius(radius), damage(damage), delayTicks(delayTicks) {}
 
     bool isTargetable() const override { return false; }
 

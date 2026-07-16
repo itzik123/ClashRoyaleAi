@@ -1,12 +1,12 @@
 #pragma once
-#include "Entity.h"
+#include "CardEntity.h"
 #include "Board.h"
 #include "OnHitEffect.h"
 #include <memory>
 #include <limits>
 #include <vector>
 
-class CombatEntity : public Entity {
+class CombatEntity : public CardEntity {
 protected:
     float attackRange;
     int damage;
@@ -17,7 +17,7 @@ protected:
 public:
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
-        : Entity(id, x, y, hp, team, symbol),
+        : CardEntity(id, x, y, hp, team, symbol),
         attackRange(attackRange), damage(damage),
         attackCooldown(attackCooldown), currentCooldown(0.0f) {}
 

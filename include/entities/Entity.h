@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 struct Vector2D {
     float x, y;
@@ -19,6 +20,11 @@ public:
     int hp;
     int team;
     char symbol;
+    // Human-readable display name (e.g. "Knight", "King Tower"). Empty by
+    // default -- set by whoever actually knows it at construction time
+    // (CardFactories, GameManager's tower setup), rather than threaded
+    // through every derived class's constructor.
+    std::string name;
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
