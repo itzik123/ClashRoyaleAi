@@ -23,5 +23,6 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("observation_size", &ClashEnv::observationSize)
         .def("inject_enemy", &ClashEnv::injectEnemy, py::arg("card_id"), py::arg("x"), py::arg("y"))
         .def("set_opponent_deck", &ClashEnv::setOpponentDeck, py::arg("deck"))
+        .def("set_opponent_elixir_multiplier", &ClashEnv::setOpponentElixirMultiplier, py::arg("multiplier"))
         .def("save_log", &ClashEnv::saveLog, py::arg("filepath"));
 }

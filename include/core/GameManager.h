@@ -13,6 +13,9 @@ private:
     bool gameOver;
     int loserTeam;
     const float ELIXIR_REGEN_RATE = 0.035f;
+    // Curriculum hook: scales the opponent's elixir regen relative to the base rate.
+    // 1.0 = normal opponent, >1.0 = faster-elixir opponent for later training stages.
+    float oppElixirMultiplier = 1.0f;
     const float BOARD_MAX_X = 17.0f;
     const float BOARD_MAX_Y = 31.0f;
 
@@ -32,6 +35,10 @@ public:
 
     void setOpponentDeck(const std::vector<int>& deck) {
         oppDeckConfig = deck;
+    }
+
+    void setOpponentElixirMultiplier(float multiplier) {
+        oppElixirMultiplier = std::max(0.0f, multiplier);
     }
 
     Board& getBoard() { return board; }
@@ -126,7 +133,7 @@ public:
         currentTick++;
 
         playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE, 10.0f);
-        playerOpponent.elixir = std::min(playerOpponent.elixir + ELIXIR_REGEN_RATE, 10.0f);
+        playerOpponent.elixir = std::min(playerOpponent.elixir + ELIXIR_REGEN_RATE * oppElixirMultiplier, 10.0f);
 
         board.commitPendingEntities();
 

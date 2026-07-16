@@ -16,8 +16,11 @@ class MicroRoyaleEnv(gym.Env):
         ai_deck = env_config.get("ai_deck", [15, 6, 0, 25, 7, 24, 34, 29])
         opp_deck = env_config.get("opp_deck", [8, 2, 38, 13, 37, 32, 29, 12])
         max_ticks = env_config.get("max_ticks", 3600)
-        
+        # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
+        opp_elixir_multiplier = env_config.get("opp_elixir_multiplier", 1.0)
+
         self.game = clash_royale_env.ClashRoyaleEnv(ai_deck, opp_deck, max_ticks)
+        self.game.set_opponent_elixir_multiplier(opp_elixir_multiplier)
         
         self.action_space = spaces.Dict({
             "card_index": spaces.Discrete(4),
@@ -66,3 +69,6 @@ class MicroRoyaleEnv(gym.Env):
 
     def set_opponent_deck(self, deck):
         self.game.set_opponent_deck(deck)
+
+    def set_opponent_elixir_multiplier(self, multiplier):
+        self.game.set_opponent_elixir_multiplier(multiplier)

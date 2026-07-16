@@ -175,6 +175,10 @@ public:
         game.setOpponentDeck(deck);
     }
 
+    void setOpponentElixirMultiplier(float multiplier) {
+        game.setOpponentElixirMultiplier(multiplier);
+    }
+
     void saveLog(const std::string& filepath) {
         logger.save(filepath);
     }
