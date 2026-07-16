@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clash Royale Env — Game Replay Viewer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-primary: #0f1117;
+    --bg-secondary: #1a1d27;
+    --bg-card: #222533;
+    --bg-hover: #2a2e3f;
+    --border: #2e3347;
+    --text-primary: #e8eaed;
+    --text-secondary: #9aa0b2;
+    --text-muted: #5f6577;
+    --blue-team: #4a9eff;
+    --blue-team-dim: #2a5a99;
+    --red-team: #ff5252;
+    --red-team-dim: #992a2a;
+    --elixir-purple: #c471ed;
+    --accent-green: #4ade80;
+    --accent-yellow: #facc15;
+    --river-blue: #1e3a5f;
+    --bridge-brown: #8b6914;
+    --grass-dark: #1a2e1a;
+    --grass-light: #223322;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    height: 52px;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--blue-team), var(--elixir-purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+
+  /* Main layout */
+  .main-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* Canvas area */
+  .arena-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    min-width: 0;
+    min-height: 0;
+  }
+  .canvas-wrapper {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 0 0 1px var(--border);
+    max-height: 100%;
+    max-width: 100%;
+    display: flex;
+  }
+  canvas {
+    display: block;
+    cursor: crosshair;
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+  }
+
+  /* Controls bar */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .controls button {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    transition: background 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .controls button:hover { background: var(--bg-hover); }
+  .controls button.active {
+    background: var(--blue-team);
+    border-color: var(--blue-team);
+    color: #fff;
+  }
+  .scrubber-container { flex: 1; display: flex; align-items: center; gap: 8px; }
+  .scrubber {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-card);
+    outline: none;
+  }
+  .scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--blue-team);
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(74, 158, 255, 0.4);
+  }
+  .tick-display {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    min-width: 100px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .speed-label {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .speed-select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 300px;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .panel {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+  }
+
+  /* Elixir bars */
+  .elixir-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .elixir-label {
+    font-size: 12px;
+    font-weight: 500;
+    width: 55px;
+    flex-shrink: 0;
+  }
+  .elixir-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .elixir-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #9b59b6, var(--elixir-purple));
+    transition: width 0.1s;
+  }
+  .elixir-value {
+    font-size: 12px;
+    font-weight: 600;
+    width: 35px;
+    text-align: right;
+    color: var(--elixir-purple);
+    font-variant-numeric: tabular-nums;
+  }
+
+
+  /* Hand panels */
+  .hand-cards {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .hand-card {
+    flex: 1;
+    min-width: 55px;
+    background: var(--bg-primary);
+    border-radius: 5px;
+    padding: 5px 6px;
+    border: 1px solid var(--border);
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.3;
+  }
+  .hand-card-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hand-label {
+    font-size: 11px;
+    font-weight: 500;
+    margin-bottom: 4px;
+    margin-top: 6px;
+  }
+
+  /* Tower HP */
+  .tower-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .tower-card {
+    background: var(--bg-primary);
+    border-radius: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+  }
+  .tower-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .tower-name {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .tower-hp-num {
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .tower-hp-bar {
+    height: 4px;
+    background: var(--bg-card);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .tower-hp-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.1s;
+  }
+
+  /* Entity inspector */
+  .inspector-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .inspector-detail {
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .inspector-detail span {
+    color: var(--text-secondary);
+  }
+  .inspector-detail strong {
+    color: var(--text-primary);
+  }
+
+  /* Event log */
+  .event-log {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 100px;
+  }
+  .event-log-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .event {
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    line-height: 1.4;
+  }
+  .event-spawn { border-left: 2px solid var(--accent-green); }
+  .event-death { border-left: 2px solid var(--red-team); }
+  .event-tick {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    margin-right: 4px;
+  }
+
+  /* Drop zone overlay */
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 17, 23, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .drop-overlay.hidden { display: none; }
+  .drop-box {
+    border: 2px dashed var(--border);
+    border-radius: 16px;
+    padding: 60px 80px;
+    text-align: center;
+    transition: border-color 0.2s;
+  }
+  .drop-box.drag-over { border-color: var(--blue-team); }
+  .drop-icon { font-size: 48px; margin-bottom: 16px; }
+  .drop-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .drop-subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 20px; }
+  .file-input-btn {
+    background: linear-gradient(135deg, var(--blue-team), var(--elixir-purple));
+    border: none;
+    color: #fff;
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .file-input-btn:hover { opacity: 0.9; }
+  #fileInput { display: none; }
+
+  /* Tooltip */
+  .tooltip {
+    position: absolute;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 50;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    display: none;
+  }
+  .tooltip-name {
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .tooltip-stat {
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Drop zone (shown when no file loaded) -->
+<div class="drop-overlay" id="dropOverlay">
+  <div class="drop-box" id="dropBox">
+    <div class="drop-icon">🏰</div>
+    <div class="drop-title">Clash Royale Replay Viewer</div>
+    <div class="drop-subtitle">Drop a game log JSON file here, or click to browse</div>
+    <button class="file-input-btn" onclick="document.getElementById('fileInput').click()">Choose File</button>
+    <input type="file" id="fileInput" accept=".json">
+  </div>
+</div>
+
+<!-- Main UI (shown after file loaded) -->
+<div class="header">
+  <div class="header-left">
+    <h1>🏰 Clash Royale Env — Replay Viewer</h1>
+    <span class="badge" id="fileNameBadge">No file</span>
+  </div>
+  <button class="file-input-btn" style="font-size:12px; padding:5px 14px;" onclick="document.getElementById('fileInput').click()">Load New</button>
+</div>
+
+<div class="main-layout">
+  <div class="arena-panel">
+    <div class="canvas-wrapper">
+      <canvas id="gameCanvas"></canvas>
+      <div class="tooltip" id="tooltip">
+        <div class="tooltip-name" id="tooltipName"></div>
+        <div class="tooltip-stat" id="tooltipStat"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <!-- Elixir -->
+    <div class="panel">
+      <div class="panel-title">Elixir</div>
+      <div class="elixir-row">
+        <div class="elixir-label" style="color:var(--blue-team)">Blue</div>
+        <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarAI"></div></div>
+        <div class="elixir-value" id="elixirValAI">5.0</div>
+      </div>
+      <div class="elixir-row">
+        <div class="elixir-label" style="color:var(--red-team)">Red</div>
+        <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarOpp"></div></div>
+        <div class="elixir-value" id="elixirValOpp">5.0</div>
+      </div>
+    </div>
+
+    <!-- Player Hands -->
+    <div class="panel">
+      <div class="panel-title">Player Hands</div>
+      <div class="hand-label" style="color:var(--blue-team)">Blue Hand</div>
+      <div class="hand-cards" id="handCardsAI"></div>
+      <div class="hand-label" style="color:var(--red-team)">Red Hand</div>
+      <div class="hand-cards" id="handCardsOpp"></div>
+    </div>
+
+    <!-- Tower HP -->
+    <div class="panel">
+      <div class="panel-title">Tower Health</div>
+      <div class="tower-grid" id="towerGrid"></div>
+    </div>
+
+    <!-- Entity Inspector -->
+    <div class="panel">
+      <div class="panel-title">Entity Inspector</div>
+      <div id="inspectorContent"><div class="inspector-empty">Click an entity on the arena</div></div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="panel event-log">
+      <div class="panel-title">Event Log</div>
+      <div class="event-log-inner" id="eventLog"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Playback controls -->
+<div class="controls">
+  <button id="btnStepBack" title="Step Back">⏮</button>
+  <button id="btnPlayPause" title="Play/Pause">▶</button>
+  <button id="btnStepFwd" title="Step Forward">⏭</button>
+  <div class="scrubber-container">
+    <input type="range" class="scrubber" id="scrubber" min="0" max="0" value="0">
+  </div>
+  <div class="tick-display" id="tickDisplay">Tick 0 / 0</div>
+  <span class="speed-label">Speed:</span>
+  <select class="speed-select" id="speedSelect">
+    <option value="4">0.25x</option>
+    <option value="2">0.5x</option>
+    <option value="1" selected>1x</option>
+    <option value="0.5">2x</option>
+    <option value="0.25">4x</option>
+    <option value="0.125">8x</option>
+  </select>
+</div>
+
+<script>
+const SYMBOL_NAMES = {
+  'P': 'Princess Tower', 'R': 'King Tower',
+  'K': 'Knight', 'A': 'Archer', 'G': 'Giant', 'g': 'Goblin', 'M': 'Mini PEKKA', 'U': 'Musketeer',
+  'B': 'Barbarian', 'b': 'Bomber', 'V': 'Valkyrie', 'W': 'Wizard', 's': 'Skeleton',
+  'E': 'P.E.K.K.A.', 'p': 'Prince', 'H': 'Hog Rider', 'm': 'Mega Minion', 'e': 'Elite Barb',
+  'Y': 'Royal Giant', 'L': 'Golem', 'd': 'Dart Goblin', 'l': 'Lumberjack', 'w': 'Bowler',
+  'S': 'Spear Goblin', 'k': 'Skeleton', 'C': 'Cannon', 'T': 'Tesla', 'D': 'Bomb Tower',
+  'I': 'Inferno Tower', 'i': 'Ice Wizard', 'z': 'Electro Wizard', 'x': 'Executioner',
+  'y': 'Baby Dragon', 'h': 'Witch', 'J': 'Giant Skeleton', 'c': 'Ice Golem',
+  'q': 'Minion', 'Q': 'Minion (Horde)', 't': 'Bat',
+  '-': 'Projectile', '*': 'Arrows', 'O': 'Fireball', 'Z': 'Zap', 'r': 'Rocket',
+  'j': 'Lightning', 'n': 'Poison', 'o': 'The Log'
+};
+
+const SPELL_SYMBOLS = new Set(['-', '*', 'O', 'Z', 'r', 'j', 'n', 'o']);
+
+const SYMBOL_RADIUS = {
+  'P': 14, 'R': 16, 'G': 12, 'A': 8, 'K': 10, 'g': 7, 'M': 11, 'U': 9,
+  'B': 9, 'b': 8, 'V': 10, 'W': 9, 's': 5, 'E': 13, 'p': 11, 'H': 11,
+  'm': 9, 'e': 10, 'Y': 12, 'L': 14, 'd': 7, 'l': 10, 'w': 11, 'S': 6,
+  'k': 5, 'C': 12, 'T': 12, 'D': 13, 'I': 13, 'i': 9, 'z': 9, 'x': 10,
+  'y': 10, 'h': 9, 'J': 13, 'c': 10, 'q': 7, 'Q': 7, 't': 5,
+  '-': 3, '*': 6, 'O': 7, 'Z': 5, 'r': 6, 'j': 7, 'n': 7, 'o': 6
+};
+
+const MAX_HP = {
+  'P': 2534, 'R': 4008, 'G': 3344, 'A': 254, 'K': 1399, 'g': 169, 'M': 1056, 'U': 598,
+  'B': 636, 'b': 311, 'V': 1548, 'W': 598, 's': 67, 'E': 3458, 'p': 1463, 'H': 1408,
+  'm': 695, 'e': 970, 'Y': 2544, 'L': 4256, 'd': 216, 'l': 990, 'w': 1596, 'S': 110,
+  'k': 67, 'C': 742, 'T': 954, 'D': 1672, 'I': 1408, 'i': 665, 'z': 590, 'x': 1010,
+  'y': 1064, 'h': 696, 'J': 2660, 'c': 1047, 'q': 190, 'Q': 190, 't': 67
+};
+
+const BUILDING_SYMBOLS = new Set(['P', 'R', 'C', 'T', 'D', 'I']);
+
+const CELL_SIZE = 22;
+const PADDING = 12;
+
+let gameData = null;
+let currentTick = 0;
+let playing = false;
+let playInterval = null;
+let selectedEntityId = null;
+let prevEntities = new Map();
+
+// DOM elements
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scrubber = document.getElementById('scrubber');
+const tickDisplay = document.getElementById('tickDisplay');
+const btnPlayPause = document.getElementById('btnPlayPause');
+const btnStepBack = document.getElementById('btnStepBack');
+const btnStepFwd = document.getElementById('btnStepFwd');
+const speedSelect = document.getElementById('speedSelect');
+const dropOverlay = document.getElementById('dropOverlay');
+const dropBox = document.getElementById('dropBox');
+const fileInput = document.getElementById('fileInput');
+const tooltip = document.getElementById('tooltip');
+const tooltipName = document.getElementById('tooltipName');
+const tooltipStat = document.getElementById('tooltipStat');
+
+// File loading
+fileInput.addEventListener('change', (e) => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+dropBox.addEventListener('dragover', (e) => { e.preventDefault(); dropBox.classList.add('drag-over'); });
+dropBox.addEventListener('dragleave', () => dropBox.classList.remove('drag-over'));
+dropBox.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropBox.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      gameData = JSON.parse(e.target.result);
+      initViewer();
+      dropOverlay.classList.add('hidden');
+      document.getElementById('fileNameBadge').textContent = file.name;
+    } catch (err) {
+      alert('Failed to parse JSON: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function initViewer() {
+  const w = gameData.boardWidth * CELL_SIZE + PADDING * 2;
+  const h = gameData.boardHeight * CELL_SIZE + PADDING * 2;
+  canvas.width = w;
+  canvas.height = h;
+  currentTick = 0;
+  selectedEntityId = null;
+  prevEntities = new Map();
+  scrubber.max = gameData.ticks.length - 1;
+  scrubber.value = 0;
+
+  detectAllEvents();
+  renderTick();
+  updateUI();
+}
+
+// Coordinate conversion
+function gameToCanvas(gx, gy) {
+  return {
+    x: PADDING + gx * CELL_SIZE + CELL_SIZE / 2,
+    y: PADDING + (gameData.boardHeight - 1 - gy) * CELL_SIZE + CELL_SIZE / 2
+  };
+}
+
+function canvasToGame(cx, cy) {
+  return {
+    gx: (cx - PADDING) / CELL_SIZE,
+    gy: gameData.boardHeight - 1 - (cy - PADDING) / CELL_SIZE
+  };
+}
+
+// Event detection
+let allEvents = [];
+function detectAllEvents() {
+  allEvents = [];
+  let prev = new Map();
+
+  for (let i = 0; i < gameData.ticks.length; i++) {
+    const tick = gameData.ticks[i];
+    const curr = new Map();
+
+    for (const ent of tick.entities) {
+      if (SPELL_SYMBOLS.has(ent.symbol)) continue;
+      curr.set(ent.id, ent);
+      if (!prev.has(ent.id)) {
+        allEvents.push({
+          tick: tick.tick,
+          tickIndex: i,
+          type: 'spawn',
+          name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
+          team: ent.team,
+          id: ent.id,
+          hp: ent.hp
+        });
+      }
+    }
+
+    for (const [id, ent] of prev) {
+      if (!curr.has(id)) {
+        allEvents.push({
+          tick: tick.tick,
+          tickIndex: i,
+          type: 'death',
+          name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
+          team: ent.team,
+          id: id
+        });
+      }
+    }
+    prev = curr;
+  }
+}
+
+// Rendering
+function renderTick() {
+  if (!gameData) return;
+  const tickData = gameData.ticks[currentTick];
+  if (!tickData) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#1a0a0a');
+  grad.addColorStop(0.45, '#1a1a10');
+  grad.addColorStop(0.55, '#1a1a10');
+  grad.addColorStop(1, '#0a0a1a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= gameData.boardWidth; x++) {
+    const px = PADDING + x * CELL_SIZE;
+    ctx.beginPath(); ctx.moveTo(px, PADDING); ctx.lineTo(px, h - PADDING); ctx.stroke();
+  }
+  for (let y = 0; y <= gameData.boardHeight; y++) {
+    const py = PADDING + y * CELL_SIZE;
+    ctx.beginPath(); ctx.moveTo(PADDING, py); ctx.lineTo(w - PADDING, py); ctx.stroke();
+  }
+
+  // River (y = 15 to 17)
+  const riverTop = PADDING + (gameData.boardHeight - 17) * CELL_SIZE;
+  const riverBottom = PADDING + (gameData.boardHeight - 15) * CELL_SIZE;
+  const riverGrad = ctx.createLinearGradient(0, riverTop, 0, riverBottom);
+  riverGrad.addColorStop(0, 'rgba(30, 80, 140, 0.4)');
+  riverGrad.addColorStop(0.5, 'rgba(40, 100, 170, 0.5)');
+  riverGrad.addColorStop(1, 'rgba(30, 80, 140, 0.4)');
+  ctx.fillStyle = riverGrad;
+  ctx.fillRect(PADDING, riverTop, w - PADDING * 2, riverBottom - riverTop);
+
+  // River wave pattern
+  ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
+  ctx.lineWidth = 1;
+  const riverMid = (riverTop + riverBottom) / 2;
+  const time = currentTick * 0.1;
+  ctx.beginPath();
+  for (let px = PADDING; px < w - PADDING; px += 2) {
+    const wy = riverMid + Math.sin(px * 0.05 + time) * 3;
+    if (px === PADDING) ctx.moveTo(px, wy); else ctx.lineTo(px, wy);
+  }
+  ctx.stroke();
+
+  // Bridges (2 tiles wide each)
+  const bridgePositions = [[3, 4], [13, 14]];
+  for (const [bx1, bx2] of bridgePositions) {
+    const bleft = PADDING + bx1 * CELL_SIZE;
+    const bright = PADDING + (bx2 + 1) * CELL_SIZE;
+    ctx.fillStyle = 'rgba(139, 105, 20, 0.5)';
+    ctx.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
+    ctx.strokeStyle = 'rgba(180, 140, 40, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
+  }
+
+  // Territory divider labels
+  ctx.font = '10px Inter, sans-serif';
+  ctx.fillStyle = 'rgba(74, 158, 255, 0.3)';
+  ctx.textAlign = 'center';
+  ctx.fillText('BLUE TERRITORY', w / 2, h - PADDING + 9);
+  ctx.fillStyle = 'rgba(255, 82, 82, 0.3)';
+  ctx.fillText('RED TERRITORY', w / 2, PADDING - 4);
+
+  // Entities
+  const entities = tickData.entities;
+
+  for (const ent of entities) {
+    if (SPELL_SYMBOLS.has(ent.symbol)) {
+      drawEntity(ent, false);
+    }
+  }
+
+  for (const ent of entities) {
+    if (!SPELL_SYMBOLS.has(ent.symbol)) {
+      drawEntity(ent, ent.id === selectedEntityId);
+    }
+  }
+}
+
+function drawEntity(ent, isSelected) {
+  const pos = gameToCanvas(ent.x, ent.y);
+  const radius = SYMBOL_RADIUS[ent.symbol] || 8;
+  const isBlue = ent.team === 0;
+  const mainColor = isBlue ? '#4a9eff' : '#ff5252';
+  const dimColor = isBlue ? '#1a3a66' : '#661a1a';
+
+  if (SPELL_SYMBOLS.has(ent.symbol) && ent.symbol !== '-') {
+    const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
+    const pixelRadius = spellRadius * CELL_SIZE;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, pixelRadius, 0, Math.PI * 2);
+    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.08)' : 'rgba(255, 82, 82, 0.08)';
+    ctx.fill();
+    ctx.strokeStyle = isBlue ? 'rgba(74, 158, 255, 0.25)' : 'rgba(255, 82, 82, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Projectiles: small dot with trail
+  if (ent.symbol === '-') {
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = mainColor;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.2)' : 'rgba(255, 82, 82, 0.2)';
+    ctx.fill();
+    return;
+  }
+
+  // Selection ring
+  if (isSelected) {
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Shadow
+  ctx.beginPath();
+  ctx.arc(pos.x + 1, pos.y + 2, radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fill();
+
+  if (BUILDING_SYMBOLS.has(ent.symbol)) {
+    const sizeInTiles = ent.symbol === 'R' ? 4 : (ent.symbol === 'P' ? 3 : 2);
+    const sz = sizeInTiles * CELL_SIZE;
+    ctx.fillStyle = dimColor;
+    ctx.fillRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+
+    // Inner tile grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 1;
+    for(let i = 1; i < sizeInTiles; i++) {
+       ctx.beginPath();
+       ctx.moveTo(pos.x - sz/2 + i*CELL_SIZE, pos.y - sz/2);
+       ctx.lineTo(pos.x - sz/2 + i*CELL_SIZE, pos.y + sz/2);
+       ctx.stroke();
+       ctx.beginPath();
+       ctx.moveTo(pos.x - sz/2, pos.y - sz/2 + i*CELL_SIZE);
+       ctx.lineTo(pos.x + sz/2, pos.y - sz/2 + i*CELL_SIZE);
+       ctx.stroke();
+    }
+
+    // Inner icon
+    ctx.fillStyle = mainColor;
+    ctx.font = `bold ${radius}px Inter, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ent.symbol, pos.x, pos.y + 1);
+  }
+  // Troops: circle
+  else if (!SPELL_SYMBOLS.has(ent.symbol)) {
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius + 2, 0, Math.PI * 2);
+    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.15)' : 'rgba(255, 82, 82, 0.15)';
+    ctx.fill();
+
+    // Main circle
+    const bodyGrad = ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
+    bodyGrad.addColorStop(0, mainColor);
+    bodyGrad.addColorStop(1, dimColor);
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = bodyGrad;
+    ctx.fill();
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Symbol text
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.max(9, radius - 1)}px Inter, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ent.symbol, pos.x, pos.y + 1);
+  }
+  // Spells: pulsing circle
+  else {
+    const pulse = 1 + Math.sin(currentTick * 0.3) * 0.15;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius * pulse, 0, Math.PI * 2);
+    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.6)' : 'rgba(255, 82, 82, 0.6)';
+    ctx.fill();
+  }
+
+  if (!SPELL_SYMBOLS.has(ent.symbol)) {
+    const maxHp = MAX_HP[ent.symbol] || ent.hp;
+    const hpRatio = Math.min(1, ent.hp / maxHp);
+    const barWidth = radius * 2.2;
+    const barHeight = 3;
+    const barX = pos.x - barWidth / 2;
+    const barY = pos.y - radius - 8;
+
+    // HP bar background
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+
+    // HP bar fill
+    let hpColor;
+    if (hpRatio > 0.5) hpColor = '#4ade80';
+    else if (hpRatio > 0.25) hpColor = '#facc15';
+    else hpColor = '#ff5252';
+
+    ctx.fillStyle = hpColor;
+    ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+  }
+}
+
+// UI updates
+function updateUI() {
+  if (!gameData) return;
+  const tickData = gameData.ticks[currentTick];
+  if (!tickData) return;
+
+  // Tick display
+  tickDisplay.textContent = `Tick ${tickData.tick} / ${gameData.ticks[gameData.ticks.length - 1].tick}`;
+  scrubber.value = currentTick;
+
+  // Elixir
+  document.getElementById('elixirBarAI').style.width = (tickData.elixirAI / 10 * 100) + '%';
+  document.getElementById('elixirValAI').textContent = tickData.elixirAI.toFixed(1);
+  document.getElementById('elixirBarOpp').style.width = (tickData.elixirOpp / 10 * 100) + '%';
+  document.getElementById('elixirValOpp').textContent = tickData.elixirOpp.toFixed(1);
+
+  updateHandPanel(tickData);
+  updateTowerPanel(tickData);
+  updateInspector(tickData);
+  updateEventLog();
+}
+
+function updateTowerPanel(tickData) {
+  const towerDefs = [
+    { id: 100, name: 'Blue Left P', team: 0, maxHp: 2534 },
+    { id: 110, name: 'Red Left P', team: 1, maxHp: 2534 },
+    { id: 101, name: 'Blue Right P', team: 0, maxHp: 2534 },
+    { id: 111, name: 'Red Right P', team: 1, maxHp: 2534 },
+    { id: 102, name: 'Blue King', team: 0, maxHp: 4008 },
+    { id: 112, name: 'Red King', team: 1, maxHp: 4008 },
+  ];
+
+  const grid = document.getElementById('towerGrid');
+  grid.innerHTML = '';
+
+  for (const td of towerDefs) {
+    const ent = tickData.entities.find(e => e.id === td.id);
+    const hp = ent ? ent.hp : 0;
+    const ratio = hp / td.maxHp;
+    const teamColor = td.team === 0 ? 'var(--blue-team)' : 'var(--red-team)';
+
+    const card = document.createElement('div');
+    card.className = 'tower-card';
+    card.innerHTML = `
+      <div class="tower-card-header">
+        <span class="tower-name">${td.name}</span>
+        <span class="tower-hp-num" style="color:${teamColor}">${hp}</span>
+      </div>
+      <div class="tower-hp-bar">
+        <div class="tower-hp-fill" style="width:${ratio*100}%; background:${teamColor}"></div>
+      </div>`;
+    grid.appendChild(card);
+  }
+}
+
+function updateInspector(tickData) {
+  const el = document.getElementById('inspectorContent');
+  if (selectedEntityId === null) {
+    el.innerHTML = '<div class="inspector-empty">Click an entity on the arena</div>';
+    return;
+  }
+  const ent = tickData.entities.find(e => e.id === selectedEntityId);
+  if (!ent) {
+    el.innerHTML = '<div class="inspector-empty">Entity no longer alive</div>';
+    return;
+  }
+  const name = SYMBOL_NAMES[ent.symbol] || ent.symbol;
+  const teamStr = ent.team === 0 ? '<span style="color:var(--blue-team)">Blue</span>' : '<span style="color:var(--red-team)">Red</span>';
+  const maxHp = MAX_HP[ent.symbol] || '?';
+
+  el.innerHTML = `
+    <div class="inspector-detail"><span>Name:</span> <strong>${name}</strong></div>
+    <div class="inspector-detail"><span>ID:</span> <strong>${ent.id}</strong></div>
+    <div class="inspector-detail"><span>Team:</span> ${teamStr}</div>
+    <div class="inspector-detail"><span>HP:</span> <strong>${ent.hp}</strong> / ${maxHp}</div>
+    <div class="inspector-detail"><span>Position:</span> <strong>(${ent.x.toFixed(1)}, ${ent.y.toFixed(1)})</strong></div>
+    <div class="inspector-detail"><span>Symbol:</span> <strong>${ent.symbol}</strong></div>`;
+}
+
+function updateEventLog() {
+  const el = document.getElementById('eventLog');
+  const tickNum = gameData.ticks[currentTick].tick;
+  const relevantEvents = allEvents.filter(e => e.tick <= tickNum).slice(-40);
+
+  el.innerHTML = '';
+  for (const ev of relevantEvents.reverse()) {
+    const div = document.createElement('div');
+    div.className = 'event ' + (ev.type === 'spawn' ? 'event-spawn' : 'event-death');
+    const teamColor = ev.team === 0 ? 'var(--blue-team)' : 'var(--red-team)';
+    const icon = ev.type === 'spawn' ? '➕' : '💀';
+    div.innerHTML = `<span class="event-tick">[${ev.tick}]</span> ${icon} <span style="color:${teamColor}">${ev.name}</span> <span style="color:var(--text-muted)">#${ev.id}</span>`;
+    el.appendChild(div);
+  }
+}
+
+function updateHandPanel(tickData) {
+  const cardNames = gameData.cardNames || {};
+  const aiHandEl = document.getElementById('handCardsAI');
+  const oppHandEl = document.getElementById('handCardsOpp');
+
+  function renderHand(container, handIds) {
+    container.innerHTML = '';
+    if (!handIds || handIds.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-muted);font-size:11px">No data</span>';
+      return;
+    }
+    for (const id of handIds) {
+      const name = cardNames[id] || `Card #${id}`;
+      const card = document.createElement('div');
+      card.className = 'hand-card';
+      card.innerHTML = `<div class="hand-card-name">${name}</div>`;
+      container.appendChild(card);
+    }
+  }
+
+  renderHand(aiHandEl, tickData.aiHand);
+  renderHand(oppHandEl, tickData.oppHand);
+}
+
+// Playback controls
+function setPlaying(val) {
+  playing = val;
+  btnPlayPause.textContent = playing ? '⏸' : '▶';
+  btnPlayPause.classList.toggle('active', playing);
+  if (playing) startPlayback();
+  else stopPlayback();
+}
+
+function startPlayback() {
+  stopPlayback();
+  const delay = parseFloat(speedSelect.value);
+  const ms = Math.max(16, delay * 50);
+  playInterval = setInterval(() => {
+    if (currentTick < gameData.ticks.length - 1) {
+      currentTick++;
+      renderTick();
+      updateUI();
+    } else {
+      setPlaying(false);
+    }
+  }, ms);
+}
+
+function stopPlayback() {
+  if (playInterval) { clearInterval(playInterval); playInterval = null; }
+}
+
+btnPlayPause.addEventListener('click', () => setPlaying(!playing));
+btnStepBack.addEventListener('click', () => {
+  if (!gameData) return;
+  setPlaying(false);
+  if (currentTick > 0) { currentTick--; renderTick(); updateUI(); }
+});
+btnStepFwd.addEventListener('click', () => {
+  if (!gameData) return;
+  setPlaying(false);
+  if (currentTick < gameData.ticks.length - 1) { currentTick++; renderTick(); updateUI(); }
+});
+scrubber.addEventListener('input', () => {
+  if (!gameData) return;
+  setPlaying(false);
+  currentTick = parseInt(scrubber.value);
+  renderTick();
+  updateUI();
+});
+speedSelect.addEventListener('change', () => {
+  if (playing) { stopPlayback(); startPlayback(); }
+});
+
+// Canvas interaction
+canvas.addEventListener('click', (e) => {
+  if (!gameData) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (e.clientX - rect.left) * scaleX;
+  const cy = (e.clientY - rect.top) * scaleY;
+  const tickData = gameData.ticks[currentTick];
+
+  let closest = null;
+  let closestDist = Infinity;
+
+  for (const ent of tickData.entities) {
+    if (ent.symbol === '-') continue;
+    const pos = gameToCanvas(ent.x, ent.y);
+    const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
+    const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
+    
+    // For buildings, use a larger hit area based on their tile size
+    let checkRadius = hitRadius;
+    if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
+    if (ent.symbol === 'R') checkRadius = (4 * CELL_SIZE) / 2;
+
+    if (dist < checkRadius && dist < closestDist) {
+      closest = ent;
+      closestDist = dist;
+    }
+  }
+
+  selectedEntityId = closest ? closest.id : null;
+  renderTick();
+  updateUI();
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!gameData) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (e.clientX - rect.left) * scaleX;
+  const cy = (e.clientY - rect.top) * scaleY;
+  const tickData = gameData.ticks[currentTick];
+
+  let hovered = null;
+  for (const ent of tickData.entities) {
+    if (ent.symbol === '-') continue;
+    const pos = gameToCanvas(ent.x, ent.y);
+    const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
+    const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
+    
+    // For buildings, use a larger hit area based on their tile size
+    let checkRadius = hitRadius;
+    if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
+    if (ent.symbol === 'R') checkRadius = (4 * CELL_SIZE) / 2;
+
+    if (dist < checkRadius) { hovered = ent; break; }
+  }
+
+  if (hovered) {
+    const name = SYMBOL_NAMES[hovered.symbol] || hovered.symbol;
+    const teamStr = hovered.team === 0 ? 'Blue' : 'Red';
+    tooltipName.textContent = `${name} (${teamStr})`;
+    tooltipStat.textContent = `HP: ${hovered.hp} | Pos: (${hovered.x.toFixed(1)}, ${hovered.y.toFixed(1)})`;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (cx + 15) + 'px';
+    tooltip.style.top = (cy - 10) + 'px';
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (!gameData) return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); btnStepFwd.click(); }
+  if (e.code === 'ArrowLeft') { e.preventDefault(); btnStepBack.click(); }
+});
+</script>
+</body>
+</html>
