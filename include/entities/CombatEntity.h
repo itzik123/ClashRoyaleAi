@@ -1,8 +1,10 @@
 #pragma once
 #include "Entity.h"
 #include "Board.h"
+#include "OnHitEffect.h"
 #include <memory>
 #include <limits>
+#include <vector>
 
 class CombatEntity : public Entity {
 protected:
@@ -10,6 +12,7 @@ protected:
     int damage;
     int attackCooldown;
     float currentCooldown;
+    std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
 
 public:
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
@@ -17,6 +20,12 @@ public:
         : Entity(id, x, y, hp, team, symbol),
         attackRange(attackRange), damage(damage),
         attackCooldown(attackCooldown), currentCooldown(0.0f) {}
+
+    // Composes extra behavior (e.g. freeze) onto every successful attack,
+    // without needing a bespoke Entity subclass per effect combination.
+    void addOnHitEffect(std::shared_ptr<IOnHitEffect> effect) {
+        onHitEffects.push_back(std::move(effect));
+    }
 
     void update(Board& board) override {
         if (freezeTicks > 0) {
@@ -46,6 +55,10 @@ public:
 
             if (dist <= effectiveAttackRange) {
                 if (currentCooldown == 0.0f) {
+                    // Effects are applied by performAttack itself, not here,
+                    // because *when* they should fire depends on *when* the
+                    // damage actually lands: instantly for a direct hit, but
+                    // only on arrival for an attack that spawns a projectile.
                     performAttack(board, target);
                     currentCooldown = static_cast<float>(attackCooldown);
                 }
@@ -75,6 +88,15 @@ protected:
     }
 
     virtual void performAttack(Board& board, std::shared_ptr<Entity> target) = 0;
+
+    // Called by a direct-damage performAttack override at the exact moment
+    // its damage lands. Ranged attacks don't call this -- they hand
+    // onHitEffects to the Projectile instead, so effects land with the hit.
+    void applyOnHitEffects(const std::shared_ptr<Entity>& target) const {
+        for (const auto& effect : onHitEffects) {
+            effect->apply(target);
+        }
+    }
 
     virtual void moveTowards(Board& board, const Vector2D& dest) {
         // Default: stationary entities don't move

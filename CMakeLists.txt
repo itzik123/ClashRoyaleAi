@@ -34,3 +34,24 @@ add_custom_command(TARGET clash_royale_env POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:clash_royale_env> ${CMAKE_SOURCE_DIR}/python_ai/clash_royale_env.pyd
     COMMENT "Copying compiled bindings to python_ai/clash_royale_env.pyd..."
 )
+
+# Unit tests (Catch2), same FetchContent pattern as pybind11 above.
+option(BUILD_TESTING_CLASHROYALE "Build the ClashRoyaleEnv unit test suite" ON)
+if (BUILD_TESTING_CLASHROYALE)
+    FetchContent_Declare(
+        catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.7.1
+    )
+    FetchContent_MakeAvailable(catch2)
+
+    file(GLOB CLASHROYALE_TEST_SOURCES CONFIGURE_DEPENDS tests/entities/*.cpp tests/core/*.cpp)
+    add_executable(ClashRoyaleTests ${CLASHROYALE_TEST_SOURCES})
+    target_include_directories(ClashRoyaleTests PRIVATE include/core include/entities include/rendering tests/entities)
+    target_link_libraries(ClashRoyaleTests PRIVATE Catch2::Catch2WithMain)
+
+    list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(ClashRoyaleTests)
+endif()

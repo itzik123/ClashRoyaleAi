@@ -20,7 +20,9 @@ public:
         if (lifetimeTicks > 0) {
             ticksAlive++;
             if (ticksAlive % 10 == 0) { // Decay every 1 second (10 ticks)
-                int decayAmount = maxHp / (lifetimeTicks / 10);
+                int decayIntervals = lifetimeTicks / 10;
+                if (decayIntervals <= 0) decayIntervals = 1; // avoid div-by-zero for lifetimes under 10 ticks
+                int decayAmount = maxHp / decayIntervals;
                 if (decayAmount <= 0) decayAmount = 1;
                 takeDamage(decayAmount);
             }
@@ -30,5 +32,6 @@ public:
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         target->takeDamage(damage);
+        applyOnHitEffects(target);
     }
 };

@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <algorithm>
 
 struct Vector2D {
     float x, y;
@@ -37,9 +38,11 @@ public:
     virtual float getCollisionRadius() const { return 0.0f; }
 
     void applyFreeze(int ticks, float slowFactor) {
-        if (ticks > freezeTicks) {
-            freezeTicks = ticks;
-            freezeSlow = slowFactor;
-        }
+        // Duration and strength are judged independently so a new freeze can
+        // never leave the target better off than it already was: a shorter
+        // but stronger slow no longer gets silently dropped just because a
+        // longer, weaker one is already active.
+        freezeTicks = std::max(freezeTicks, ticks);
+        freezeSlow = std::min(freezeSlow, slowFactor);
     }
 };

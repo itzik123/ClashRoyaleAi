@@ -1,17 +1,22 @@
 #pragma once
 #include "Entity.h"
 #include "Board.h"
+#include "OnHitEffect.h"
 #include <memory>
+#include <vector>
 
 class Projectile : public Entity {
 private:
     std::weak_ptr<Entity> target;
     float speed;
     int damage;
+    std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
 
 public:
-    Projectile(int id, float x, float y, int team, std::weak_ptr<Entity> target, float speed, int damage)
-        : Entity(id, x, y, 1, team, '-'), target(target), speed(speed), damage(damage) {}
+    Projectile(int id, float x, float y, int team, std::weak_ptr<Entity> target, float speed, int damage,
+        std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects = {})
+        : Entity(id, x, y, 1, team, '-'), target(target), speed(speed), damage(damage),
+        onHitEffects(std::move(onHitEffects)) {}
 
     bool isTargetable() const override { return false; }
 
@@ -24,7 +29,14 @@ public:
 
             float dist = position.distanceTo(t->position);
             if (dist <= speed) {
+                position = t->position; // snap to the impact point before dying
                 t->takeDamage(damage);
+                // On-hit effects (e.g. Ice Wizard's freeze) fire on arrival,
+                // not when the shot was fired -- they ride along with the
+                // projectile instead of applying instantly at the shooter.
+                for (const auto& effect : onHitEffects) {
+                    effect->apply(t);
+                }
                 hp = 0;
             } else {
                 float dx = t->position.x - position.x;
