@@ -1,5 +1,6 @@
 #pragma once
 #include "Entity.h"
+#include "CombatEntity.h"
 #include "Board.h"
 #include "OnHitEffect.h"
 #include <memory>
@@ -7,6 +8,10 @@
 
 class Projectile : public Entity {
 private:
+    // Entity-typed, matching CombatEntity::findTarget's own result type
+    // (performAttack passes that same target straight through) -- keeps
+    // Projectile decoupled from the CombatEntity-only on-hit-effect
+    // machinery below, which does its own narrowing where it's needed.
     std::weak_ptr<Entity> target;
     float speed;
     int damage;
@@ -34,8 +39,14 @@ public:
                 // On-hit effects (e.g. Ice Wizard's freeze) fire on arrival,
                 // not when the shot was fired -- they ride along with the
                 // projectile instead of applying instantly at the shooter.
-                for (const auto& effect : onHitEffects) {
-                    effect->apply(t);
+                // Only meaningful against a CombatEntity (freeze etc.), so
+                // the cast happens right here, the one place it's needed.
+                if (!onHitEffects.empty()) {
+                    if (auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(t)) {
+                        for (const auto& effect : onHitEffects) {
+                            effect->apply(combatTarget);
+                        }
+                    }
                 }
                 hp = 0;
             } else {

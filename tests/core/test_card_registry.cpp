@@ -185,7 +185,7 @@ TEST_CASE("Spell archetype (Fireball)", "[card_registry][archetype]") {
 
 TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when it's fired", "[card_registry][on_hit]") {
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 1000, 1); // distance 1.0 from (5,5)
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // distance 1.0 from (5,5)
     spawn(board, enemy);
 
     const CardDefinition* iceWizard = CardRegistry::getInstance().getCard(34);
@@ -225,7 +225,7 @@ TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_reg
 
 TEST_CASE("Ordinary melee troops are unaffected by the on-hit decorator (Knight)", "[card_registry][on_hit]") {
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 1000, 1);
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10);
     spawn(board, enemy);
 
     const CardDefinition* knight = CardRegistry::getInstance().getCard(0);

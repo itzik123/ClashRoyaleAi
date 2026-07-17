@@ -7,7 +7,7 @@
 #include "Board.h"
 #include "CardStats.h"
 #include "CardFactories.h"
-#include "OnHitEffect.h"
+#include "FreezeOnHit.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as

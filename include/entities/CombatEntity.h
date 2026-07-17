@@ -5,6 +5,7 @@
 #include <memory>
 #include <limits>
 #include <vector>
+#include <algorithm>
 
 class CombatEntity : public CardEntity {
 protected:
@@ -15,11 +16,27 @@ protected:
     std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
 
 public:
+    // Freeze only ever means anything to something that attacks or moves
+    // (cooldown/speed slowdown below), so it lives here rather than on
+    // Entity -- AreaSpell and Projectile can never be frozen, since neither
+    // is ever a valid findTarget() result (both are isTargetable() == false).
+    int freezeTicks = 0;
+    float freezeSlow = 1.0f;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
         attackRange(attackRange), damage(damage),
         attackCooldown(attackCooldown), currentCooldown(0.0f) {}
+
+    void applyFreeze(int ticks, float slowFactor) {
+        // Duration and strength are judged independently so a new freeze can
+        // never leave the target better off than it already was: a shorter
+        // but stronger slow no longer gets silently dropped just because a
+        // longer, weaker one is already active.
+        freezeTicks = std::max(freezeTicks, ticks);
+        freezeSlow = std::min(freezeSlow, slowFactor);
+    }
 
     // Composes extra behavior (e.g. freeze) onto every successful attack,
     // without needing a bespoke Entity subclass per effect combination.
@@ -38,19 +55,19 @@ public:
                 currentCooldown -= 1.0f;
             }
         }
-        
+
         if (currentCooldown < 0.0f) currentCooldown = 0.0f;
 
         auto target = findTarget(board);
         if (target) {
             float dist = position.distanceTo(target->position);
-            
+
             float targetRadius = target->getCollisionRadius();
             if (targetRadius <= 0.0f) targetRadius = 0.4f; // Implicit radius for troops
-            
+
             float myRadius = this->getCollisionRadius();
             if (myRadius <= 0.0f) myRadius = 0.4f; // Implicit radius for troops
-            
+
             float effectiveAttackRange = attackRange + myRadius + targetRadius;
 
             if (dist <= effectiveAttackRange) {
@@ -66,11 +83,17 @@ public:
                 moveTowards(board, target->position);
             }
         }
-        
+
         clampPosition(board);
     }
 
 protected:
+    // Entity, not CombatEntity: targeting itself doesn't care about freeze
+    // or on-hit effects, and every other consumer of findTarget's result
+    // (range math, movement) only ever needs Entity's own surface. Keeping
+    // this Entity-typed means the only place that needs to know "is this
+    // actually a CombatEntity" is applyOnHitEffects below, where it's
+    // genuinely required -- not the whole targeting system.
     virtual std::shared_ptr<Entity> findTarget(Board& board) const {
         std::shared_ptr<Entity> closestTarget = nullptr;
         float minDistance = std::numeric_limits<float>::max();
@@ -92,9 +115,16 @@ protected:
     // Called by a direct-damage performAttack override at the exact moment
     // its damage lands. Ranged attacks don't call this -- they hand
     // onHitEffects to the Projectile instead, so effects land with the hit.
+    // On-hit effects (freeze, etc.) only ever mean something against a
+    // CombatEntity, so the cast happens here, once, rather than forcing
+    // every target-typed signature in the codebase to narrow to
+    // CombatEntity just to serve this one specific need.
     void applyOnHitEffects(const std::shared_ptr<Entity>& target) const {
+        if (onHitEffects.empty()) return;
+        auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(target);
+        if (!combatTarget) return; // not something on-hit effects can apply to
         for (const auto& effect : onHitEffects) {
-            effect->apply(target);
+            effect->apply(combatTarget);
         }
     }
 

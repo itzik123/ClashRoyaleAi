@@ -17,7 +17,10 @@ inline void spawn(Board& board, std::shared_ptr<Entity> entity) {
 }
 
 // Bare Entity with a no-op update(), for testing Entity's own state machine
-// (hp/isAlive/freeze) without any combat or movement behavior attached.
+// (hp/isAlive/name) without any combat or movement behavior attached. Valid
+// as a findTarget()/performAttack() target (both stay Entity-typed) -- use
+// StationaryCombatant below only where a test specifically needs freeze or
+// on-hit effects, which really are CombatEntity-only concepts.
 class DummyEntity : public Entity {
 public:
     bool targetable = true;

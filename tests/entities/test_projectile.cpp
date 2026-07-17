@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "Projectile.h"
+#include "FreezeOnHit.h"
 
 TEST_CASE("Projectile is never itself a valid combat target", "[projectile]") {
     Board board;
@@ -81,4 +82,31 @@ TEST_CASE("Projectile dies without crashing if its target object no longer exist
     Projectile p(2, 0.0f, 0.0f, 0, weakTarget, 5.0f, 50);
     REQUIRE_NOTHROW(p.update(board));
     REQUIRE_FALSE(p.isAlive());
+}
+
+TEST_CASE("Projectile applies on-hit effects on arrival, only when the target is a CombatEntity", "[projectile][arrival][on_hit]") {
+    Board board;
+
+    SECTION("CombatEntity target: effect fires") {
+        auto target = std::make_shared<StationaryCombatant>(1, 0.0f, 2.0f, 1000, 1, 5.0f, 10, 10);
+        spawn(board, target);
+
+        Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 50,
+            std::vector<std::shared_ptr<IOnHitEffect>>{ std::make_shared<FreezeOnHit>(30, 0.65f) });
+        p.update(board);
+
+        REQUIRE(target->freezeTicks == 30);
+        REQUIRE(target->freezeSlow == Catch::Approx(0.65f));
+    }
+
+    SECTION("plain Entity target: effect is silently skipped, damage still lands") {
+        auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1);
+        spawn(board, target);
+
+        Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 50,
+            std::vector<std::shared_ptr<IOnHitEffect>>{ std::make_shared<FreezeOnHit>(30, 0.65f) });
+        REQUIRE_NOTHROW(p.update(board));
+
+        REQUIRE(target->hp == 950); // damage doesn't depend on the effect resolving
+    }
 }

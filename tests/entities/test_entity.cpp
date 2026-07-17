@@ -18,8 +18,7 @@ TEST_CASE("Entity constructor initializes all fields", "[entity]") {
     REQUIRE(e.hp == 100);
     REQUIRE(e.team == 1);
     REQUIRE(e.symbol == 'X');
-    REQUIRE(e.freezeTicks == 0);
-    REQUIRE(e.freezeSlow == Catch::Approx(1.0f));
+    REQUIRE(e.name.empty());
 }
 
 TEST_CASE("Entity::isAlive reflects hp", "[entity]") {
@@ -48,40 +47,6 @@ TEST_CASE("Entity default isTargetable/getCollisionRadius", "[entity]") {
     DummyEntity e(1, 0, 0, 10, 0);
     REQUIRE(e.isTargetable());
     REQUIRE(e.getCollisionRadius() == Catch::Approx(0.0f));
-}
-
-TEST_CASE("Entity::applyFreeze", "[entity][freeze]") {
-    DummyEntity e(1, 0, 0, 10, 0);
-
-    SECTION("first application sets ticks and slow factor") {
-        e.applyFreeze(30, 0.65f);
-        REQUIRE(e.freezeTicks == 30);
-        REQUIRE(e.freezeSlow == Catch::Approx(0.65f));
-    }
-
-    SECTION("a strictly longer duration overrides the current freeze") {
-        e.applyFreeze(20, 0.8f);
-        e.applyFreeze(30, 0.5f);
-        REQUIRE(e.freezeTicks == 30);
-        REQUIRE(e.freezeSlow == Catch::Approx(0.5f));
-    }
-
-    SECTION("a shorter but stronger freeze keeps the longer duration and adopts the stronger slow") {
-        // Duration and strength are tracked independently: the target keeps
-        // whichever duration is longer, but a stronger (lower) slow factor
-        // always takes effect even if it came from the shorter application.
-        e.applyFreeze(30, 0.65f);
-        e.applyFreeze(10, 0.1f);
-        REQUIRE(e.freezeTicks == 30);
-        REQUIRE(e.freezeSlow == Catch::Approx(0.1f));
-    }
-
-    SECTION("a weaker reapplication never makes the slow effect weaker") {
-        e.applyFreeze(30, 0.1f);
-        e.applyFreeze(30, 0.65f);
-        REQUIRE(e.freezeTicks == 30);
-        REQUIRE(e.freezeSlow == Catch::Approx(0.1f));
-    }
 }
 
 TEST_CASE("Entity::isTargetable can be overridden false by subclasses", "[entity]") {

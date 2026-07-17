@@ -1,10 +1,10 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
-#include "OnHitEffect.h"
+#include "FreezeOnHit.h"
 
 TEST_CASE("FreezeOnHit applies the configured freeze to its target", "[on_hit_effect]") {
     Board board;
-    auto target = std::make_shared<DummyEntity>(1, 0.0f, 0.0f, 100, 1);
+    auto target = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 1, 5.0f, 10, 10);
 
     FreezeOnHit freeze(30, 0.65f);
     freeze.apply(target);
@@ -15,7 +15,7 @@ TEST_CASE("FreezeOnHit applies the configured freeze to its target", "[on_hit_ef
 
 TEST_CASE("CombatEntity fires its on-hit effects exactly once per successful attack", "[on_hit_effect][combat_entity]") {
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
+    auto enemy = std::make_shared<StationaryCombatant>(1, 0.0f, 1.0f, 1000, 1, 5.0f, 10, 10);
     spawn(board, enemy);
 
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
@@ -35,7 +35,7 @@ TEST_CASE("CombatEntity fires its on-hit effects exactly once per successful att
 
 TEST_CASE("CombatEntity with no on-hit effects behaves exactly as before", "[on_hit_effect][combat_entity]") {
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
+    auto enemy = std::make_shared<StationaryCombatant>(1, 0.0f, 1.0f, 1000, 1, 5.0f, 10, 10);
     spawn(board, enemy);
 
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
@@ -47,7 +47,7 @@ TEST_CASE("CombatEntity with no on-hit effects behaves exactly as before", "[on_
 
 TEST_CASE("Multiple on-hit effects all fire on the same attack", "[on_hit_effect][combat_entity]") {
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
+    auto enemy = std::make_shared<StationaryCombatant>(1, 0.0f, 1.0f, 1000, 1, 5.0f, 10, 10);
     spawn(board, enemy);
 
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
@@ -56,7 +56,25 @@ TEST_CASE("Multiple on-hit effects all fire on the same attack", "[on_hit_effect
 
     attacker->update(board);
 
-    // Both fired; Entity::applyFreeze's own max/min merge logic decides the result.
+    // Both fired; CombatEntity::applyFreeze's own max/min merge logic decides the result.
     REQUIRE(enemy->freezeTicks == 30);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
+}
+
+TEST_CASE("applyOnHitEffects silently skips a target that isn't a CombatEntity", "[on_hit_effect][combat_entity]") {
+    // findTarget()/performAttack() stay Entity-typed (see CombatEntity.h), so
+    // in principle a direct-damage attacker could be pointed at a plain
+    // Entity. On-hit effects only make sense against a CombatEntity, so this
+    // must degrade gracefully -- damage still lands, the effect just doesn't.
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
+    attacker->addOnHitEffect(std::make_shared<FreezeOnHit>(30, 0.65f));
+
+    REQUIRE_NOTHROW(attacker->update(board));
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(enemy->hp == 990); // damage still applied
 }

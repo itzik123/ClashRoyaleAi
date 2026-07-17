@@ -1,6 +1,5 @@
 #pragma once
 #include <cmath>
-#include <algorithm>
 #include <string>
 
 struct Vector2D {
@@ -25,8 +24,6 @@ public:
     // (CardFactories, GameManager's tower setup), rather than threaded
     // through every derived class's constructor.
     std::string name;
-    int freezeTicks = 0;
-    float freezeSlow = 1.0f;
 
     Entity(int id, float x, float y, int hp, int team, char symbol = '?')
         : id(id), position{ x, y }, hp(hp), team(team), symbol(symbol) {}
@@ -49,13 +46,4 @@ public:
     // after collision resolution -- which itself doesn't respect those
     // constraints -- without the caller needing to know the concrete type.
     virtual void clampPosition(Board& board) { (void)board; }
-
-    void applyFreeze(int ticks, float slowFactor) {
-        // Duration and strength are judged independently so a new freeze can
-        // never leave the target better off than it already was: a shorter
-        // but stronger slow no longer gets silently dropped just because a
-        // longer, weaker one is already active.
-        freezeTicks = std::max(freezeTicks, ticks);
-        freezeSlow = std::min(freezeSlow, slowFactor);
-    }
 };
