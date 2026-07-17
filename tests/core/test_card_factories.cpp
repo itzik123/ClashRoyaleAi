@@ -117,6 +117,14 @@ TEST_CASE("Troop-shaped factories derive ignoresRiver from isFlying, even when i
     }
 }
 
+TEST_CASE("CardFactories::placementRadius matches each archetype's real spawned footprint", "[card_factories][placement]") {
+    REQUIRE(CardFactories::placementRadius(Archetype::MeleeSquad) == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(CardFactories::placementRadius(Archetype::RangedSquad) == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(CardFactories::placementRadius(Archetype::MeleeBuildingTargeter) == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(CardFactories::placementRadius(Archetype::RangedBuildingTargeter) == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(CardFactories::placementRadius(Archetype::DefensiveBuilding) == Catch::Approx(Building::COLLISION_RADIUS));
+}
+
 TEST_CASE("A non-flying card leaves riverIgnores false unless set explicitly", "[card_factories][river]") {
     Board board;
     CardStats stats = makeTroopStats();

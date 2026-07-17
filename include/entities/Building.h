@@ -8,12 +8,17 @@ protected:
     int ticksAlive = 0;
 
 public:
+    // Every Building, regardless of card, occupies the same fixed footprint.
+    // Named so GameManager::isValidPlacement can require this same distance
+    // at placement time instead of re-guessing it as a separate constant.
+    static constexpr float COLLISION_RADIUS = 1.0f;
+
     Building(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown, int lifetime = 300)
-        : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown), 
+        : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown),
         maxHp(hp), lifetimeTicks(lifetime) {}
 
-    float getCollisionRadius() const override { return 1.0f; }
+    float getCollisionRadius() const override { return COLLISION_RADIUS; }
 
     void update(Board& board) override {
         CombatEntity::update(board);

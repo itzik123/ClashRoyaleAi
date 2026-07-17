@@ -66,20 +66,23 @@ public:
         return (team == 0) ? playerAI.elixir : playerOpponent.elixir;
     }
 
-    bool isValidPlacement(int team, float x, float y, bool isSpell) const {
+    bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius) const {
         if (x < 0.0f || x > BOARD_MAX_X || y < 0.0f || y > BOARD_MAX_Y) return false;
 
         if (!isSpell) {
             if (team == 0 && y > 14.5f) return false;
             if (team == 1 && y < 17.5f) return false;
-            
-            // Prevent overlapping buildings
+
+            // Prevent placing on top of an existing building -- Clash Royale
+            // forbids this outright regardless of what's being placed, so the
+            // required gap is the building's own radius plus whatever
+            // footprint the new card will actually spawn with.
             for (const auto& entity : board.getEntities()) {
                 float r = entity->getCollisionRadius();
                 if (entity->isAlive() && r > 0.0f) {
                     float dx = x - entity->position.x;
                     float dy = y - entity->position.y;
-                    float requiredDist = 1.0f + r; // 1.0f is default building placement radius
+                    float requiredDist = placedRadius + r;
                     if (dx*dx + dy*dy < requiredDist*requiredDist) return false;
                 }
             }
@@ -105,7 +108,7 @@ public:
         const CardDefinition* cardDef = CardRegistry::getInstance().getCard(targetCardId);
         if (!cardDef) return false;
 
-        if (!isValidPlacement(team, x, y, cardDef->isSpell)) return false;
+        if (!isValidPlacement(team, x, y, cardDef->isSpell, cardDef->placementRadius)) return false;
 
         int cardId = player.playCard(handIndex);
         if (cardId != -1) {

@@ -84,6 +84,21 @@ TEST_CASE("Card ids that were never defined stay undefined", "[card_registry][da
     REQUIRE(registry.getCard(9999) == nullptr);
 }
 
+TEST_CASE("CardDefinition::placementRadius matches what the archetype actually spawns with", "[card_registry][placement]") {
+    const auto& registry = CardRegistry::getInstance();
+
+    SECTION("troop-shaped archetypes get the implicit troop radius") {
+        REQUIRE(registry.getCard(0)->placementRadius == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));  // Knight, MeleeSquad
+        REQUIRE(registry.getCard(6)->placementRadius == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));  // Musketeer, RangedSquad
+        REQUIRE(registry.getCard(2)->placementRadius == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS));  // Giant, MeleeBuildingTargeter
+        REQUIRE(registry.getCard(18)->placementRadius == Catch::Approx(Entity::IMPLICIT_TROOP_RADIUS)); // Royal Giant, RangedBuildingTargeter
+    }
+
+    SECTION("DefensiveBuilding archetype gets Building's own collision radius") {
+        REQUIRE(registry.getCard(25)->placementRadius == Catch::Approx(Building::COLLISION_RADIUS)); // Cannon
+    }
+}
+
 TEST_CASE("MeleeSquad archetype: single unit (Knight)", "[card_registry][archetype]") {
     Board board;
     const CardDefinition* knight = CardRegistry::getInstance().getCard(0);

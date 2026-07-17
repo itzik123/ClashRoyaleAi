@@ -19,6 +19,9 @@ struct CardDefinition {
     std::string name;
     float cost;
     bool isSpell;
+    // The footprint GameManager::isValidPlacement keeps clear of an existing
+    // building -- see CardFactories::placementRadius. Unused for spells.
+    float placementRadius;
     std::function<void(float x, float y, int team, Board& board)> spawnEntity;
 };
 
@@ -69,6 +72,7 @@ private:
         def.name = stats.name;
         def.cost = stats.cost;
         def.isSpell = (stats.archetype == Archetype::Spell);
+        def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.spawnEntity = [stats](float x, float y, int team, Board& board) {
             CardFactories::spawn(stats, x, y, team, board);
         };

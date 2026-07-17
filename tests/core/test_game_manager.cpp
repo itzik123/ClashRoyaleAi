@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "GameManager.h"
 #include "BuildingTargeter.h"
+#include "Building.h"
 #include <vector>
 
 // ---------------- construction / reset ----------------
@@ -49,32 +50,50 @@ TEST_CASE("GameManager construction gives both players starting elixir and a 4-c
 
 TEST_CASE("isValidPlacement rejects out-of-bounds coordinates regardless of spell", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
-    REQUIRE_FALSE(game.isValidPlacement(0, -1.0f, 5.0f, false));
-    REQUIRE_FALSE(game.isValidPlacement(0, 20.0f, 5.0f, false));
-    REQUIRE_FALSE(game.isValidPlacement(0, 5.0f, -1.0f, true));
-    REQUIRE_FALSE(game.isValidPlacement(0, 5.0f, 40.0f, true));
+    // placedRadius is irrelevant here -- the bounds check short-circuits first.
+    REQUIRE_FALSE(game.isValidPlacement(0, -1.0f, 5.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(0, 20.0f, 5.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(0, 5.0f, -1.0f, true, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(0, 5.0f, 40.0f, true, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 TEST_CASE("isValidPlacement restricts troop/building placement to the caller's own half", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
 
-    REQUIRE(game.isValidPlacement(0, 9.0f, 14.0f, false));
-    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 15.0f, false));
+    REQUIRE(game.isValidPlacement(0, 9.0f, 14.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 15.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 
-    REQUIRE(game.isValidPlacement(1, 9.0f, 18.0f, false));
-    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 17.0f, false));
+    REQUIRE(game.isValidPlacement(1, 9.0f, 18.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 17.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 TEST_CASE("isValidPlacement lets spells ignore the half restriction", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
-    REQUIRE(game.isValidPlacement(0, 9.0f, 25.0f, true)); // deep in the opponent's half
+    REQUIRE(game.isValidPlacement(0, 9.0f, 25.0f, true, Entity::IMPLICIT_TROOP_RADIUS)); // deep in the opponent's half
 }
 
 TEST_CASE("isValidPlacement rejects placement overlapping an existing building", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
-    // AI king tower sits at (9, 2) with a 2.0 collision radius -- requiredDist = 1.0 + 2.0 = 3.0
-    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.0f, false)); // dist 2.0 < 3.0
-    REQUIRE(game.isValidPlacement(0, 9.0f, 9.0f, false));       // dist 7.0, clear
+    // AI king tower sits at (9, 2) with a 2.0 collision radius.
+
+    SECTION("placing a building-shaped card: requiredDist = Building::COLLISION_RADIUS (1.0) + 2.0 = 3.0") {
+        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.0f, false, Building::COLLISION_RADIUS)); // dist 2.0 < 3.0
+        REQUIRE(game.isValidPlacement(0, 9.0f, 9.0f, false, Building::COLLISION_RADIUS));       // dist 7.0, clear
+    }
+
+    SECTION("placing a troop-shaped card: requiredDist = Entity::IMPLICIT_TROOP_RADIUS (0.4) + 2.0 = 2.4") {
+        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.0f, false, Entity::IMPLICIT_TROOP_RADIUS)); // dist 2.0 < 2.4
+        REQUIRE(game.isValidPlacement(0, 9.0f, 9.0f, false, Entity::IMPLICIT_TROOP_RADIUS));       // dist 7.0, clear
+    }
+}
+
+TEST_CASE("isValidPlacement's required gap tracks the placed card's own footprint, not a flat guess", "[game_manager][placement]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    // dist 2.7 from the AI king tower: inside the old one-size-fits-all bound
+    // (1.0 + 2.0 = 3.0) but outside the troop-shaped bound (0.4 + 2.0 = 2.4)
+    // -- a legal troop placement a flat radius would have wrongly rejected.
+    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.7f, false, Building::COLLISION_RADIUS));
+    REQUIRE(game.isValidPlacement(0, 9.0f, 4.7f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 // ---------------- playCard ----------------

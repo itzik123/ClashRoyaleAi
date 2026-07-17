@@ -38,6 +38,19 @@ inline bool shouldIgnoreRiver(const CardStats& stats) {
     return stats.ignoresRiver || stats.isFlying;
 }
 
+// The footprint GameManager::isValidPlacement should keep clear of an
+// existing building, matched to what the archetype will actually spawn
+// with: a DefensiveBuilding gets Building's own fixed collision radius,
+// every troop-shaped archetype gets the same implicit radius Board uses
+// once it's on the field (resolvePositionAgainstBuildings). Real Clash
+// Royale forbids placing anything on top of a building outright; this is
+// this engine's continuous-space approximation of that rule.
+inline float placementRadius(Archetype archetype) {
+    return archetype == Archetype::DefensiveBuilding
+        ? Building::COLLISION_RADIUS
+        : Entity::IMPLICIT_TROOP_RADIUS;
+}
+
 inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, Board& board) {
     for (const auto& offset : stats.spawnOffsets) {
         auto troop = std::make_shared<MeleeTroop>(
