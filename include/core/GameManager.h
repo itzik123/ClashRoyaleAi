@@ -171,7 +171,7 @@ public:
                     float dx = e1->position.x - e2->position.x;
                     float dy = e1->position.y - e2->position.y;
                     float dist = std::sqrt(dx * dx + dy * dy);
-                    float minRadius = 0.8f;
+                    float minRadius = 2.0f * Entity::IMPLICIT_TROOP_RADIUS;
 
                     if (dist < minRadius) {
                         if (dist < 0.001f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
@@ -192,30 +192,10 @@ public:
                 }
 
                 if (isTroop1 && isBuilding2) {
-                    float dx = e1->position.x - e2->position.x;
-                    float dy = e1->position.y - e2->position.y;
-                    float dist = std::sqrt(dx * dx + dy * dy);
-                    float minDist = r2 + 0.4f;
-
-                    if (dist < minDist) {
-                        if (dist < 0.001f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
-                        float push = minDist - dist;
-                        e1->position.x += (dx / dist) * push + (dy / dist) * 0.05f;
-                        e1->position.y += (dy / dist) * push - (dx / dist) * 0.05f;
-                    }
+                    e1->position = Board::pushAwayFrom(e1->position, e2->position, r2 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
                 if (isTroop2 && isBuilding1) {
-                    float dx = e2->position.x - e1->position.x;
-                    float dy = e2->position.y - e1->position.y;
-                    float dist = std::sqrt(dx * dx + dy * dy);
-                    float minDist = r1 + 0.4f;
-
-                    if (dist < minDist) {
-                        if (dist < 0.001f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
-                        float push = minDist - dist;
-                        e2->position.x += (dx / dist) * push + (dy / dist) * 0.05f;
-                        e2->position.y += (dy / dist) * push - (dx / dist) * 0.05f;
-                    }
+                    e2->position = Board::pushAwayFrom(e2->position, e1->position, r1 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
             }
         }

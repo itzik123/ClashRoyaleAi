@@ -63,10 +63,10 @@ public:
             float dist = position.distanceTo(target->position);
 
             float targetRadius = target->getCollisionRadius();
-            if (targetRadius <= 0.0f) targetRadius = 0.4f; // Implicit radius for troops
+            if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
 
             float myRadius = this->getCollisionRadius();
-            if (myRadius <= 0.0f) myRadius = 0.4f; // Implicit radius for troops
+            if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
 
             float effectiveAttackRange = attackRange + myRadius + targetRadius;
 

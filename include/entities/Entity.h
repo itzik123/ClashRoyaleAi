@@ -14,6 +14,13 @@ class Board;
 
 class Entity {
 public:
+    // Fallback collision radius used everywhere a troop (getCollisionRadius()
+    // <= 0, i.e. not a Building/Tower) needs to be treated as occupying some
+    // physical space -- attack-range math, and push-apart physics in Board.
+    // Named so it's asserted once instead of retyped as a bare 0.4f (or a
+    // derived 0.8f for two troops) in each place that needs it.
+    static constexpr float IMPLICIT_TROOP_RADIUS = 0.4f;
+
     int id;
     Vector2D position;
     int hp;

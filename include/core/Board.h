@@ -47,26 +47,35 @@ public:
         );
     }
 
+    // Single source of truth for "push a point out of a circular obstacle,
+    // with a small perpendicular slide so it can travel around it instead of
+    // sticking". Used for normal movement (resolvePositionAgainstBuildings
+    // below) and, identically, by GameManager's post-move collision pass --
+    // previously copy-pasted between the two call sites (and a third time,
+    // as a near-duplicate, for the mirrored troop2-vs-building1 case).
+    static Vector2D pushAwayFrom(Vector2D pos, const Vector2D& obstacleCenter, float minDist) {
+        float dx = pos.x - obstacleCenter.x;
+        float dy = pos.y - obstacleCenter.y;
+        float dist = std::sqrt(dx * dx + dy * dy);
+
+        if (dist < minDist) {
+            if (dist < 0.001f) {
+                dx = 1.0f; dy = 0.0f; dist = 1.0f;
+            }
+            float push = minDist - dist;
+            pos.x += (dx / dist) * push + (dy / dist) * 0.05f;
+            pos.y += (dy / dist) * push - (dx / dist) * 0.05f;
+        }
+        return pos;
+    }
+
     Vector2D resolvePositionAgainstBuildings(const Vector2D& pos, int entityId) const {
         Vector2D resolved = pos;
         for (const auto& entity : activeEntities) {
             float radius = entity->getCollisionRadius();
             if (radius <= 0.0f || entity->id == entityId || !entity->isAlive()) continue;
 
-            float dx = resolved.x - entity->position.x;
-            float dy = resolved.y - entity->position.y;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            float minDist = radius + 0.4f;
-
-            if (dist < minDist) {
-                if (dist < 0.001f) {
-                    dx = 1.0f; dy = 0.0f; dist = 1.0f;
-                }
-                float push = minDist - dist;
-                // Add a small perpendicular force to allow sliding around the building
-                resolved.x += (dx / dist) * push + (dy / dist) * 0.05f;
-                resolved.y += (dy / dist) * push - (dx / dist) * 0.05f;
-            }
+            resolved = pushAwayFrom(resolved, entity->position, radius + Entity::IMPLICIT_TROOP_RADIUS);
         }
         return resolved;
     }

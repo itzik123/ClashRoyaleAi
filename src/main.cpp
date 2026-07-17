@@ -5,51 +5,6 @@
 #include <map>
 #include <string>
 
-std::string getEntityName(char symbol) {
-    switch (symbol) {
-        case 'P': return "Princess Tower";
-        case 'R': return "King Tower";
-        case 'K': return "Knight";
-        case 'A': return "Archer";
-        case 'G': return "Giant";
-        case 'g': return "Goblin";
-        case 'M': return "Mini PEKKA";
-        case 'U': return "Musketeer";
-        case 'B': return "Barbarian";
-        case 'b': return "Bomber";
-        case 'V': return "Valkyrie";
-        case 'W': return "Wizard";
-        case 's': return "Skeleton";
-        case 'E': return "P.E.K.K.A.";
-        case 'p': return "Prince";
-        case 'H': return "Hog Rider";
-        case 'm': return "Mega Minion";
-        case 'e': return "Elite Barb";
-        case 'Y': return "Royal Giant";
-        case 'L': return "Golem";
-        case 'd': return "Dart Goblin";
-        case 'l': return "Lumberjack";
-        case 'w': return "Bowler";
-        case 'S': return "Spear Goblin";
-        case 'k': return "Skeleton";
-        case 'C': return "Cannon";
-        case 'T': return "Tesla";
-        case 'D': return "Bomb Tower";
-        case 'I': return "Inferno Tower";
-        case 'i': return "Ice Wizard";
-        case 'z': return "Electro Wizard";
-        case 'x': return "Executioner";
-        case 'y': return "Baby Dragon";
-        case 'h': return "Witch";
-        case 'J': return "Giant Skeleton";
-        case 'c': return "Ice Golem";
-        case 'q': return "Minion";
-        case 'Q': return "Minion (Horde)";
-        case 't': return "Bat";
-        default: return "Unknown";
-    }
-}
-
 void printHand(const std::string& label, const std::vector<int>& hand) {
     std::cout << label << ": ";
     for (size_t i = 0; i < hand.size(); ++i) {
@@ -157,7 +112,8 @@ int main() {
             if (entity->symbol != '-' && entity->symbol != '*' && entity->symbol != 'O'
                 && entity->symbol != 'Z' && entity->symbol != 'r' && entity->symbol != 'j'
                 && entity->symbol != 'n' && entity->symbol != 'o') {
-                std::string entityDesc = getEntityName(entity->symbol) + " (Team " + std::to_string(entity->team) + ")";
+                std::string displayName = entity->name.empty() ? "Unknown" : entity->name;
+                std::string entityDesc = displayName + " (Team " + std::to_string(entity->team) + ")";
                 currentEntities[entity->id] = entityDesc;
 
                 if (aliveEntities.find(entity->id) == aliveEntities.end()) {
