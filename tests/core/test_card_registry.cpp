@@ -23,7 +23,7 @@ TEST_CASE("Spawned entities carry the card's display name", "[card_registry][nam
     SECTION("squad card: every unit gets the same name (Goblins)") {
         CardRegistry::getInstance().getCard(4)->spawnEntity(5.0f, 5.0f, 0, board);
         board.commitPendingEntities();
-        REQUIRE(board.getEntities().size() == 3);
+        REQUIRE(board.getEntities().size() == 4);
         for (const auto& e : board.getEntities()) {
             REQUIRE(e->name == "Goblins");
         }
@@ -42,24 +42,27 @@ TEST_CASE("Spawned entities carry the card's display name", "[card_registry][nam
     }
 }
 
-TEST_CASE("Every currently-defined card resolves with the exact original stats", "[card_registry][data]") {
-    // id, name, cost, isSpell -- transcribed from the pre-refactor CardRegistry.
-    // Card ids 16, 37 and 38 were never defined before this refactor and stay
-    // that way here on purpose (not something this refactor should silently add).
+TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[card_registry][data]") {
+    // id, name, cost, isSpell. Cost reflects the same real-game data sync as
+    // the rest of CardRegistry's stats (see the constructor's header comment).
+    // Card ids 16, 37 and 38 were never defined and stay that way here on
+    // purpose (not something a data sync should silently fill in).
     const std::vector<std::tuple<int, std::string, float, bool>> expected = {
         {0, "Knight", 3.0f, false}, {1, "Archers", 3.0f, false}, {2, "Giant", 5.0f, false},
         {3, "Arrows", 3.0f, true}, {4, "Goblins", 2.0f, false}, {5, "Mini PEKKA", 4.0f, false},
         {6, "Musketeer", 4.0f, false}, {7, "Fireball", 4.0f, true}, {8, "Barbarians", 5.0f, false},
-        {9, "Bomber", 3.0f, false}, {10, "Valkyrie", 4.0f, false}, {11, "Wizard", 5.0f, false},
+        {9, "Bomber", 2.0f, false}, {10, "Valkyrie", 4.0f, false}, {11, "Wizard", 5.0f, false},
         {12, "Skeleton Army", 3.0f, false}, {13, "P.E.K.K.A.", 7.0f, false}, {14, "Prince", 5.0f, false},
         {15, "Hog Rider", 4.0f, false}, {17, "Elite Barbarians", 6.0f, false}, {18, "Royal Giant", 6.0f, false},
         {19, "Golem", 8.0f, false}, {20, "Dart Goblin", 3.0f, false}, {21, "Lumberjack", 4.0f, false},
         {22, "Bowler", 5.0f, false}, {23, "Spear Goblins", 2.0f, false}, {24, "Skeletons", 1.0f, false},
-        {25, "Cannon", 3.0f, false}, {26, "Tesla", 4.0f, false}, {27, "Bomb Tower", 5.0f, false},
+        {25, "Cannon", 3.0f, false}, {26, "Tesla", 4.0f, false}, {27, "Bomb Tower", 4.0f, false},
         {28, "Inferno Tower", 5.0f, false}, {29, "Zap", 2.0f, true}, {30, "Rocket", 6.0f, true},
         {31, "Lightning", 6.0f, true}, {32, "Poison", 4.0f, true}, {33, "The Log", 2.0f, true},
         {34, "Ice Wizard", 3.0f, false}, {35, "Electro Wizard", 4.0f, false}, {36, "Executioner", 5.0f, false},
         {39, "Giant Skeleton", 6.0f, false}, {40, "Ice Golem", 2.0f, false},
+        {41, "Minions", 3.0f, false}, {42, "Minion Horde", 5.0f, false}, {43, "Mega Minion", 3.0f, false},
+        {44, "Baby Dragon", 4.0f, false}, {45, "Balloon", 5.0f, false},
     };
 
     const auto& registry = CardRegistry::getInstance();
@@ -124,12 +127,16 @@ TEST_CASE("MeleeSquad archetype: multiple units at their offsets (Goblins)", "[c
     goblins->spawnEntity(10.0f, 10.0f, 1, board);
     board.commitPendingEntities();
 
-    REQUIRE(board.getEntities().size() == 3);
-    REQUIRE(board.getEntities()[0]->position.x == Catch::Approx(10.0f));
-    REQUIRE(board.getEntities()[1]->position.x == Catch::Approx(11.0f));
-    REQUIRE(board.getEntities()[2]->position.x == Catch::Approx(9.0f));
+    REQUIRE(board.getEntities().size() == 4);
+    REQUIRE(board.getEntities()[0]->position.x == Catch::Approx(9.5f));
+    REQUIRE(board.getEntities()[0]->position.y == Catch::Approx(9.5f));
+    REQUIRE(board.getEntities()[1]->position.x == Catch::Approx(10.5f));
+    REQUIRE(board.getEntities()[1]->position.y == Catch::Approx(9.5f));
+    REQUIRE(board.getEntities()[2]->position.x == Catch::Approx(9.5f));
+    REQUIRE(board.getEntities()[2]->position.y == Catch::Approx(10.5f));
+    REQUIRE(board.getEntities()[3]->position.x == Catch::Approx(10.5f));
+    REQUIRE(board.getEntities()[3]->position.y == Catch::Approx(10.5f));
     for (const auto& e : board.getEntities()) {
-        REQUIRE(e->position.y == Catch::Approx(10.0f));
         REQUIRE(e->team == 1);
         REQUIRE(std::dynamic_pointer_cast<MeleeTroop>(e) != nullptr);
     }
@@ -221,6 +228,69 @@ TEST_CASE("DefensiveBuilding archetype: targetsAir matches real-game data per ca
         REQUIRE(building != nullptr);
         REQUIRE_FALSE(building->targetsAir);
     }
+}
+
+// ---------------- flying cards ----------------
+
+TEST_CASE("Minions and Minion Horde spawn as flying, air-targeting melee squads", "[card_registry][flying]") {
+    Board board;
+
+    SECTION("Minions: 3 units") {
+        CardRegistry::getInstance().getCard(41)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().size() == 3);
+        for (const auto& e : board.getEntities()) {
+            auto troop = std::dynamic_pointer_cast<MeleeTroop>(e);
+            REQUIRE(troop != nullptr);
+            REQUIRE(troop->isFlying);
+            REQUIRE(troop->targetsAir);
+        }
+    }
+
+    SECTION("Minion Horde: 6 units") {
+        CardRegistry::getInstance().getCard(42)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().size() == 6);
+        for (const auto& e : board.getEntities()) {
+            auto troop = std::dynamic_pointer_cast<MeleeTroop>(e);
+            REQUIRE(troop != nullptr);
+            REQUIRE(troop->isFlying);
+            REQUIRE(troop->targetsAir);
+        }
+    }
+}
+
+TEST_CASE("Mega Minion spawns as a flying, air-targeting melee unit", "[card_registry][flying]") {
+    Board board;
+    CardRegistry::getInstance().getCard(43)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto troop = std::dynamic_pointer_cast<MeleeTroop>(board.getEntities()[0]);
+    REQUIRE(troop != nullptr);
+    REQUIRE(troop->isFlying);
+    REQUIRE(troop->targetsAir);
+}
+
+TEST_CASE("Baby Dragon spawns as a flying, air-targeting ranged unit", "[card_registry][flying]") {
+    Board board;
+    CardRegistry::getInstance().getCard(44)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto troop = std::dynamic_pointer_cast<RangedTroop>(board.getEntities()[0]);
+    REQUIRE(troop != nullptr);
+    REQUIRE(troop->isFlying);
+    REQUIRE(troop->targetsAir);
+}
+
+TEST_CASE("Balloon spawns flying but never sets targetsAir (buildings-only, matches the real card)", "[card_registry][flying]") {
+    Board board;
+    CardRegistry::getInstance().getCard(45)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto targeter = std::dynamic_pointer_cast<BuildingTargeter>(board.getEntities()[0]);
+    REQUIRE(targeter != nullptr);
+    REQUIRE(targeter->isFlying);
+    REQUIRE_FALSE(targeter->targetsAir);
 }
 
 TEST_CASE("Spell archetype (Fireball)", "[card_registry][archetype]") {
