@@ -3,6 +3,7 @@
 #include "MeleeTroop.h"
 #include "RangedTroop.h"
 #include "Projectile.h"
+#include "Building.h"
 
 // Troop is abstract (inherits CombatEntity's pure virtual performAttack), so
 // MeleeTroop stands in for testing Troop's own movement/clamp behavior --
@@ -126,6 +127,26 @@ TEST_CASE("ignoresRiver also suppresses the river-band clamp", "[troop][clamp][r
     troop->setIgnoresRiver(true);
     troop->update(board);
     REQUIRE(troop->position.y == Catch::Approx(16.0f)); // not snapped, despite being off-bridge
+}
+
+TEST_CASE("A flying troop ignores building collision and flies straight through", "[troop][movement][flying]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 10.0f, 100, 1);
+    spawn(board, enemy);
+
+    // Sits directly on the straight-line path from the troop to the enemy;
+    // a grounded troop would be pushed off course by resolvePositionAgainstBuildings.
+    auto obstacle = std::make_shared<Building>(3, 5.0f, 5.5f, 1000, 0, 'C', 5.0f, 10, 10);
+    spawn(board, obstacle);
+
+    auto troop = std::make_shared<MeleeTroop>(2, 5.0f, 5.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    troop->isFlying = true;
+    troop->update(board);
+
+    // Straight line toward the enemy (5,10): x unchanged, y advances by `speed` (1.0),
+    // completely unaffected by the building sitting right in its path.
+    REQUIRE(troop->position.x == Catch::Approx(5.0f));
+    REQUIRE(troop->position.y == Catch::Approx(6.0f));
 }
 
 TEST_CASE("MeleeTroop::performAttack deals direct damage with no projectile spawned", "[melee_troop][attack]") {

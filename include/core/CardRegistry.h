@@ -148,9 +148,9 @@ private:
 
         // === Defensive Structures ===
         add(building(25, "Cannon", 3.0f, 742, 'C', 5.5f, 127, 8));
-        add(building(26, "Tesla", 4.0f, 954, 'T', 5.5f, 135, 8));
+        add(building(26, "Tesla", 4.0f, 954, 'T', 5.5f, 135, 8).withTargetsAir());
         add(building(27, "Bomb Tower", 5.0f, 1672, 'D', 6.0f, 176, 16));
-        add(building(28, "Inferno Tower", 5.0f, 1408, 'I', 6.0f, 200, 4));
+        add(building(28, "Inferno Tower", 5.0f, 1408, 'I', 6.0f, 200, 4).withTargetsAir());
 
         // === Spells ===
         add(spell(3, "Arrows", 3.0f, 4.0f, 243, 10, '*'));

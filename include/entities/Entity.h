@@ -32,6 +32,13 @@ public:
     // through every derived class's constructor.
     std::string name;
 
+    // Plain field, not a virtual/CombatEntity member: both
+    // CombatEntity::findTarget() and Board::resolveCollisions() need to read
+    // this on arbitrary Entity candidates in tight per-tick loops, and a
+    // field read needs no cast or virtual dispatch. Buildings/AreaSpell/
+    // Projectile simply never set it true.
+    bool isFlying = false;
+
     Entity(int id, float x, float y, int hp, int team, char symbol = '?')
         : id(id), position{ x, y }, hp(hp), team(team), symbol(symbol) {}
 

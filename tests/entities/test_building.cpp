@@ -109,6 +109,14 @@ TEST_CASE("Tower::performAttack spawns a projectile instead of dealing direct da
     REQUIRE(projectile != nullptr);
 }
 
+TEST_CASE("Tower defaults to targetsAir true, since every tower defends against air", "[tower][flying]") {
+    Tower king(1, 9.0f, 2.0f, 4008, 0, 7.0f, 90, 10, 'R');
+    Tower princess(2, 3.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P');
+
+    REQUIRE(king.targetsAir);
+    REQUIRE(princess.targetsAir);
+}
+
 // ---------------- BuildingTargeter ----------------
 
 TEST_CASE("BuildingTargeter ignores enemy troops and walks past them toward a building", "[building_targeter][targeting]") {

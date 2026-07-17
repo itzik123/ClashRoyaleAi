@@ -101,7 +101,9 @@ public:
                 bool isTroop1 = !isBuilding1 && e1->isTargetable();
                 bool isTroop2 = !isBuilding2 && e2->isTargetable();
 
-                if (isTroop1 && isTroop2) {
+                // Flying units pass through everything -- ground and other
+                // fliers alike -- so only entities sharing a plane collide.
+                if (isTroop1 && isTroop2 && e1->isFlying == e2->isFlying) {
                     float dx = e1->position.x - e2->position.x;
                     float dy = e1->position.y - e2->position.y;
                     float dist = std::sqrt(dx * dx + dy * dy);
@@ -125,10 +127,10 @@ public:
                     }
                 }
 
-                if (isTroop1 && isBuilding2) {
+                if (isTroop1 && isBuilding2 && !e1->isFlying) {
                     e1->position = pushAwayFrom(e1->position, e2->position, r2 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
-                if (isTroop2 && isBuilding1) {
+                if (isTroop2 && isBuilding1 && !e2->isFlying) {
                     e2->position = pushAwayFrom(e2->position, e1->position, r1 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
             }

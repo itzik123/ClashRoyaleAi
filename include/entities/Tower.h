@@ -6,7 +6,9 @@ class Tower : public Building {
 public:
     Tower(int id, float x, float y, int hp, int team,
         float attackRange, int damage, int attackCooldown, char symbol)
-        : Building(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown, -1) {}
+        : Building(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown, -1) {
+        targetsAir = true; // every tower in Clash Royale defends against air
+    }
 
     float getCollisionRadius() const override {
         return (symbol == 'R') ? 2.0f : 1.5f;

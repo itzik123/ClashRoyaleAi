@@ -19,6 +19,7 @@ TEST_CASE("Entity constructor initializes all fields", "[entity]") {
     REQUIRE(e.team == 1);
     REQUIRE(e.symbol == 'X');
     REQUIRE(e.name.empty());
+    REQUIRE_FALSE(e.isFlying);
 }
 
 TEST_CASE("Entity::isAlive reflects hp", "[entity]") {

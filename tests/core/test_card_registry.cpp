@@ -172,6 +172,42 @@ TEST_CASE("DefensiveBuilding archetype (Cannon)", "[card_registry][archetype]") 
     REQUIRE(building->getCollisionRadius() == Catch::Approx(1.0f));
 }
 
+TEST_CASE("DefensiveBuilding archetype: targetsAir matches real-game data per card", "[card_registry][archetype][flying]") {
+    Board board;
+
+    SECTION("Tesla hits air") {
+        CardRegistry::getInstance().getCard(26)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto building = std::dynamic_pointer_cast<Building>(board.getEntities().back());
+        REQUIRE(building != nullptr);
+        REQUIRE(building->targetsAir);
+    }
+
+    SECTION("Inferno Tower hits air") {
+        CardRegistry::getInstance().getCard(28)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto building = std::dynamic_pointer_cast<Building>(board.getEntities().back());
+        REQUIRE(building != nullptr);
+        REQUIRE(building->targetsAir);
+    }
+
+    SECTION("Cannon does not hit air") {
+        CardRegistry::getInstance().getCard(25)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto building = std::dynamic_pointer_cast<Building>(board.getEntities().back());
+        REQUIRE(building != nullptr);
+        REQUIRE_FALSE(building->targetsAir);
+    }
+
+    SECTION("Bomb Tower does not hit air") {
+        CardRegistry::getInstance().getCard(27)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto building = std::dynamic_pointer_cast<Building>(board.getEntities().back());
+        REQUIRE(building != nullptr);
+        REQUIRE_FALSE(building->targetsAir);
+    }
+}
+
 TEST_CASE("Spell archetype (Fireball)", "[card_registry][archetype]") {
     Board board;
     const CardDefinition* fireball = CardRegistry::getInstance().getCard(7);

@@ -30,8 +30,9 @@ protected:
             newPos.x = position.x + (dx / distToWaypoint) * currentSpeed;
             newPos.y = position.y + (dy / distToWaypoint) * currentSpeed;
 
-            Vector2D resolved = board.resolvePositionAgainstBuildings(newPos, id);
-            position = resolved;
+            // Flying troops fly over building footprints instead of routing
+            // around them.
+            position = isFlying ? newPos : board.resolvePositionAgainstBuildings(newPos, id);
         }
     }
 

@@ -23,6 +23,13 @@ public:
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
+    // Whether this attacker's findTarget() may pick a flying candidate.
+    // Lives here (not Entity) because only things that attack care --
+    // Troop and Building alike (Inferno Tower/Tesla hit air, Cannon/Bomb
+    // Tower don't) -- and it's only ever read on `this`, never cast off a
+    // generic candidate the way isFlying is (see Entity.h).
+    bool targetsAir = false;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
@@ -99,7 +106,8 @@ protected:
         float minDistance = std::numeric_limits<float>::max();
 
         for (const auto& entity : board.getEntities()) {
-            if (entity->team != this->team && entity->isAlive() && entity->isTargetable() && entity->id != this->id) {
+            if (entity->team != this->team && entity->isAlive() && entity->isTargetable() && entity->id != this->id
+                && (!entity->isFlying || targetsAir)) {
                 float dist = position.distanceTo(entity->position);
                 if (dist < minDistance) {
                     minDistance = dist;

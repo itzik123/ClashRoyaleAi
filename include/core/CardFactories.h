@@ -21,11 +21,21 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
 }
 
 // Every entity a card produces carries that card's display name (e.g. all
-// three Barbarians are each named "Barbarians"), plus whatever on-hit
-// effect the card carries.
+// three Barbarians are each named "Barbarians"), whatever on-hit effect the
+// card carries, and its ground/air properties.
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
+    entity->isFlying = stats.isFlying;
+    entity->targetsAir = stats.targetsAir;
     applyOnHit(entity, stats);
+}
+
+// A flying card ignores the river as a consequence of being airborne, even
+// if its data entry never explicitly set ignoresRiver -- the two flags stay
+// independently settable (Hog Rider ignores the river via a move ability,
+// not by flying) but flying always implies it.
+inline bool shouldIgnoreRiver(const CardStats& stats) {
+    return stats.ignoresRiver || stats.isFlying;
 }
 
 inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, Board& board) {
@@ -33,6 +43,7 @@ inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, 
         auto troop = std::make_shared<MeleeTroop>(
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
             stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
+        if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
         applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
@@ -43,6 +54,7 @@ inline void spawnRangedSquad(const CardStats& stats, float x, float y, int team,
         auto troop = std::make_shared<RangedTroop>(
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
             stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
+        if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
         applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
@@ -52,7 +64,7 @@ inline void spawnMeleeBuildingTargeter(const CardStats& stats, float x, float y,
     auto troop = std::make_shared<BuildingTargeter>(
         board.allocateId(), x, y, stats.hp, team,
         stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-    if (stats.ignoresRiver) troop->setIgnoresRiver(true);
+    if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
     applyCardMetadata(troop, stats);
     board.addEntity(troop);
 }
@@ -61,7 +73,7 @@ inline void spawnRangedBuildingTargeter(const CardStats& stats, float x, float y
     auto troop = std::make_shared<RangedBuildingTargeter>(
         board.allocateId(), x, y, stats.hp, team,
         stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-    if (stats.ignoresRiver) troop->setIgnoresRiver(true);
+    if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
     applyCardMetadata(troop, stats);
     board.addEntity(troop);
 }

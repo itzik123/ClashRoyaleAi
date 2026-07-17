@@ -158,3 +158,57 @@ TEST_CASE("Stationary combatant never moves, even when a target exists out of ra
     REQUIRE(attacker->position.x == Catch::Approx(3.0f));
     REQUIRE(attacker->position.y == Catch::Approx(3.0f));
 }
+
+// ---------------- ground / air ----------------
+
+TEST_CASE("A ground-only attacker (targetsAir false) ignores a flying enemy", "[combat_entity][flying]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100, 1);
+    enemy->isFlying = true;
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 0);
+}
+
+TEST_CASE("An attacker with targetsAir hits a flying enemy", "[combat_entity][flying]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100, 1);
+    enemy->isFlying = true;
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->targetsAir = true;
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+}
+
+TEST_CASE("An attacker with targetsAir still attacks grounded enemies", "[combat_entity][flying]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100, 1); // isFlying stays false
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->targetsAir = true;
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+}
+
+TEST_CASE("findTarget skips a closer flying enemy entirely rather than deprioritizing it", "[combat_entity][flying]") {
+    Board board;
+    auto flyingCloser = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100, 1, 'F');
+    flyingCloser->isFlying = true;
+    auto groundFarther = std::make_shared<DummyEntity>(2, 0.0f, 3.0f, 100, 1, 'G');
+    spawn(board, flyingCloser);
+    spawn(board, groundFarther);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 10.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == groundFarther->id);
+}

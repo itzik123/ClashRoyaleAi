@@ -201,6 +201,55 @@ TEST_CASE("resolveCollisions re-clamps entities to the board bounds afterward", 
     REQUIRE(troop->position.x == Catch::Approx(17.0f));
 }
 
+// ---------------- flying ----------------
+// Flying units pass through everything physically -- ground and other
+// fliers alike -- so collision only applies between entities sharing a plane.
+
+TEST_CASE("resolveCollisions does not push a flying troop out of an overlapping building", "[board][collision][flying]") {
+    Board board;
+    auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10); // radius 1.0
+    auto troop = std::make_shared<DummyEntity>(2, 10.0f, 10.3f, 100, 0); // dist 0.3, would be inside minDist 1.4
+    troop->isFlying = true;
+    spawn(board, building);
+    spawn(board, troop);
+
+    board.resolveCollisions();
+
+    REQUIRE(troop->position.x == Catch::Approx(10.0f));
+    REQUIRE(troop->position.y == Catch::Approx(10.3f));
+}
+
+TEST_CASE("resolveCollisions does not push a flying troop away from an overlapping grounded troop", "[board][collision][flying]") {
+    Board board;
+    auto flying = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 100, 0);
+    flying->isFlying = true;
+    auto grounded = std::make_shared<DummyEntity>(2, 10.0f, 10.3f, 100, 1); // dist 0.3, would be inside minRadius 0.8
+    spawn(board, flying);
+    spawn(board, grounded);
+
+    board.resolveCollisions();
+
+    REQUIRE(flying->position.x == Catch::Approx(10.0f));
+    REQUIRE(flying->position.y == Catch::Approx(10.0f));
+    REQUIRE(grounded->position.x == Catch::Approx(10.0f));
+    REQUIRE(grounded->position.y == Catch::Approx(10.3f));
+}
+
+TEST_CASE("resolveCollisions still pushes two overlapping flying troops apart from each other", "[board][collision][flying]") {
+    Board board;
+    auto troop1 = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 100, 0);
+    auto troop2 = std::make_shared<DummyEntity>(2, 10.0f, 10.3f, 100, 1); // dist 0.3, inside minRadius 0.8
+    troop1->isFlying = true;
+    troop2->isFlying = true;
+    spawn(board, troop1);
+    spawn(board, troop2);
+
+    board.resolveCollisions();
+
+    float dist = troop1->position.distanceTo(troop2->position);
+    REQUIRE(dist > 0.79f);
+}
+
 // ---------------- getNextWaypoint ----------------
 
 TEST_CASE("getNextWaypoint returns the target directly when both points are below the river", "[board][waypoint]") {

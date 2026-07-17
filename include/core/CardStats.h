@@ -32,6 +32,8 @@ struct CardStats {
     int attackCooldown = 0;
     char symbol = '?';
     bool ignoresRiver = false;
+    bool isFlying = false;
+    bool targetsAir = false;
 
     // Relative spawn positions for each unit in the card. A single-unit
     // card is just one offset of {0, 0} -- "squad of one".
@@ -53,6 +55,14 @@ struct CardStats {
     }
     CardStats& withIgnoresRiver(bool value = true) {
         ignoresRiver = value;
+        return *this;
+    }
+    CardStats& withFlying(bool value = true) {
+        isFlying = value;
+        return *this;
+    }
+    CardStats& withTargetsAir(bool value = true) {
+        targetsAir = value;
         return *this;
     }
     CardStats& withOnHit(std::shared_ptr<IOnHitEffect> effect) {
