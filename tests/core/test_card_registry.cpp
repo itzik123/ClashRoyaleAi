@@ -34,14 +34,14 @@ TEST_CASE("Every currently-defined card resolves with the exact original stats",
     const auto& registry = CardRegistry::getInstance();
     REQUIRE(registry.getAllCards().size() == expected.size());
 
-    for (const auto& [id, name, cost, isSpell] : expected) {
+    for (const auto& [id, name, cost, expectedIsSpell] : expected) {
         const CardDefinition* def = registry.getCard(id);
         INFO("card id " << id << " (" << name << ")");
         REQUIRE(def != nullptr);
         REQUIRE(def->id == id);
         REQUIRE(def->name == name);
         REQUIRE(def->cost == Catch::Approx(cost));
-        REQUIRE(def->isSpell == isSpell);
+        REQUIRE(def->isSpell == expectedIsSpell);
     }
 }
 

@@ -3,15 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MicroRoyaleNet(nn.Module):
-    def __init__(self, channels=5, board_width=18, board_height=32):
+    # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
+    def __init__(self, channels=9, board_width=18, board_height=32, hand_size=4, num_card_ids=41):
         super(MicroRoyaleNet, self).__init__()
-        
+
         self.channels = channels
         self.board_width = board_width
         self.board_height = board_height
-        
+
         # גודל המטריצה השטוחה המגיעה מ-ClashEnv
         self.spatial_size = channels * board_height * board_width
+        # החלק הסקלרי: אליקסיר + 4 עלויות + 4 one-hot של זהות קלף (41 ערכים כל אחד)
+        self.scalar_size = 1 + hand_size + hand_size * num_card_ids
         
         # ==========================================
         # 1. חילוץ תכונות מרחבי (CNN)
@@ -34,17 +37,17 @@ class MicroRoyaleNet(nn.Module):
         
         # ==========================================
         # 2. חילוץ תכונות סקלרי (MLP)
-        # קלט: 5 ערכים (1 אליקסיר + 4 עלויות קלפים ביד)
+        # קלט: אליקסיר + עלויות + זהות הקלפים ביד (one-hot לכל משבצת)
         # ==========================================
         self.scalar_mlp = nn.Sequential(
-            nn.Linear(5, 32),
+            nn.Linear(self.scalar_size, 64),
             nn.ReLU()
         )
-        
+
         # ==========================================
         # 3. שכבת זיכרון (LSTM)
         # ==========================================
-        self.lstm_input_dim = self.cnn_out_dim + 32
+        self.lstm_input_dim = self.cnn_out_dim + 64
         # אנו משתמשים ב-LSTMCell כדי שנוכל לשלוט על הפעימות (Ticks) ידנית בלולאת הסביבה
         self.lstm = nn.LSTMCell(self.lstm_input_dim, 256)
         
@@ -52,7 +55,9 @@ class MicroRoyaleNet(nn.Module):
         # 4. ראשי הפעולה - Actor Heads
         # ==========================================
         # א. ראש בחירת הקלף (התפלגות קטגוריאלית)
-        self.card_head = nn.Linear(256, 4)
+        # 5 פעולות: 4 משבצות היד + פעולה 4 = no-op (המתנה/אגירת אליקסיר).
+        # המנוע מתעלם מ-cardIndex מחוץ ל-[0,4) כך שאין צורך בשינוי C++.
+        self.card_head = nn.Linear(256, 5)
         
         # ב. ראש המיקום במרחב (התפלגות גאוסיאנית / תחימה)
         # אנו מוציאים 2 ערכים, ונעביר אותם דרך פונקציית Sigmoid כדי לתחום אותם בין [0, 1]
@@ -66,34 +71,40 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         self.value_head = nn.Linear(256, 1)
 
-    def forward(self, obs, hidden_state):
+    def extract_features(self, obs):
         """
-        מעביר תצפית בודדת דרך הרשת.
-        obs: טנזור בגודל (Batch, 2885)
-        hidden_state: הסטייט הקודם של ה-LSTM -> (hx, cx)
+        חילוץ מאפיינים (CNN + MLP סקלרי) - החלק הלא-רקורנטי של הרשת.
+        obs: (Batch, 2885) -> (Batch, lstm_input_dim)
+        אפשר לקרוא לזה על באצ' ענק ומשוטח (T*N) כדי להריץ את ה-CNN פעם אחת
+        במקום פעם לכל טיק - זהו הזירוז המרכזי של עדכון ה-PPO.
         """
         # פיצול הווקטור השטוח לחלק המרחבי ולחלק הסקלרי בהתאם לפונקציית observationSize() ב-C++
-        spatial_obs = obs[:, :self.spatial_size]
+        spatial_obs = obs[:, :self.spatial_size].view(-1, self.channels, self.board_height, self.board_width)
         scalar_obs = obs[:, self.spatial_size:]
-        
-        # עיצוב מחדש (Reshape) של הווקטור המרחבי למטריצה תלת-ממדית עבור ה-CNN
-        # בסדר: Batch, Channels, Height, Width
-        spatial_obs = spatial_obs.view(-1, self.channels, self.board_height, self.board_width)
-        
-        # חילוץ מאפיינים
+
         cnn_features = self.cnn(spatial_obs)
         scalar_features = self.scalar_mlp(scalar_obs)
-        
-        # שרשור (Concatenation) של כלל המאפיינים
-        combined_features = torch.cat((cnn_features, scalar_features), dim=1)
-        
-        # העברה דרך הזיכרון
-        hx, cx = self.lstm(combined_features, hidden_state)
-        
-        # חישוב הפלטים
+
+        return torch.cat((cnn_features, scalar_features), dim=1)
+
+    def forward_from_features(self, features, hidden_state):
+        """
+        הצעד הרקורנטי (LSTM) + ראשי הפעולה, בהינתן מאפיינים שכבר חולצו.
+        features: (Batch, lstm_input_dim)
+        """
+        hx, cx = self.lstm(features, hidden_state)
+
         card_logits = self.card_head(hx)
         placement_normalized = torch.sigmoid(self.placement_head(hx))
         placement_log_std = torch.clamp(self.placement_log_std, -4.0, 0.0).expand_as(placement_normalized)
         state_value = self.value_head(hx)
 
         return card_logits, placement_normalized, placement_log_std, state_value, (hx, cx)
+
+    def forward(self, obs, hidden_state):
+        """
+        מעביר תצפית בודדת דרך הרשת (חילוץ מאפיינים ואז צעד רקורנטי).
+        obs: טנזור בגודל (Batch, 2885)
+        hidden_state: הסטייט הקודם של ה-LSTM -> (hx, cx)
+        """
+        return self.forward_from_features(self.extract_features(obs), hidden_state)

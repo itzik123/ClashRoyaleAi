@@ -11,6 +11,9 @@ endif()
 
 project ("ClashRoyaleEnv")
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # Include sub-projects.
 # add_subdirectory ("ClashRoyaleEnv")
 
@@ -45,10 +48,12 @@ if (BUILD_TESTING_CLASHROYALE)
     )
     FetchContent_MakeAvailable(catch2)
 
+    # Test files use the Catch2 amalgamated single-header/single-source distribution
+    # (#include "catch_amalgamated.hpp"), not the modular Catch2::Catch2WithMain target,
+    # so we compile extras/catch_amalgamated.cpp directly instead of linking the library.
     file(GLOB CLASHROYALE_TEST_SOURCES CONFIGURE_DEPENDS tests/entities/*.cpp tests/core/*.cpp)
-    add_executable(ClashRoyaleTests ${CLASHROYALE_TEST_SOURCES})
-    target_include_directories(ClashRoyaleTests PRIVATE include/core include/entities include/rendering tests/entities)
-    target_link_libraries(ClashRoyaleTests PRIVATE Catch2::Catch2WithMain)
+    add_executable(ClashRoyaleTests ${CLASHROYALE_TEST_SOURCES} ${catch2_SOURCE_DIR}/extras/catch_amalgamated.cpp)
+    target_include_directories(ClashRoyaleTests PRIVATE include/core include/entities include/rendering tests/entities ${catch2_SOURCE_DIR}/extras)
 
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
     include(CTest)

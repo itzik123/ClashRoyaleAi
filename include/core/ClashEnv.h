@@ -1,6 +1,8 @@
 #pragma once
 #include "GameManager.h"
 #include "Building.h"
+#include "BuildingTargeter.h"
+#include "RangedTroop.h"
 #include "GameLogger.h"
 #include <vector>
 #include <random>
@@ -22,7 +24,16 @@ private:
 
     static constexpr int BOARD_WIDTH = 18;
     static constexpr int BOARD_HEIGHT = 32;
-    static constexpr int NUM_CHANNELS = 5;
+    // Spatial channels, per team: melee troops / ranged troops / building-targeters
+    // (win-conditions like Hog, Giant, Golem) / buildings (towers + defensive).
+    // Unit-TYPE visibility is what lets the net answer "what is attacking me and
+    // with what should I respond" -- with HP-only channels a wounded PEKKA and a
+    // Skeleton looked identical.
+    // 0-3: ally melee, ranged, tank, buildings | 4-7: enemy same | 8: river/bridges
+    static constexpr int NUM_CHANNELS = 9;
+    static constexpr int HAND_SIZE = 4;
+    // One-hot size for card identity in hand. Card ids run 0..40 in CardRegistry.
+    static constexpr int NUM_CARD_IDS = 41;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
@@ -36,24 +47,34 @@ private:
 
         for (int x = 0; x < BOARD_WIDTH; ++x) {
             if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
-                obs[getIndex(4, 16, x)] = 1.0f;
+                obs[getIndex(8, 16, x)] = 1.0f;
             } else {
-                obs[getIndex(4, 16, x)] = -1.0f;
+                obs[getIndex(8, 16, x)] = -1.0f;
             }
         }
 
         for (const auto& entity : game.getBoard().getEntities()) {
             if (!entity->isAlive()) continue;
+            // Projectiles and pending spells are not board presence
+            if (!entity->isTargetable()) continue;
 
             int x = static_cast<int>(entity->position.x);
             int y = static_cast<int>(entity->position.y);
 
             if (x < 0 || x >= BOARD_WIDTH || y < 0 || y >= BOARD_HEIGHT) continue;
 
+            // Type category: building / building-targeter (tank) / ranged / melee.
+            // BuildingTargeter* also matches RangedBuildingTargeter (inheritance).
+            int typeOffset;
             bool isBuilding = (dynamic_cast<Building*>(entity.get()) != nullptr);
+            if (isBuilding) typeOffset = 3;
+            else if (dynamic_cast<BuildingTargeter*>(entity.get()) != nullptr) typeOffset = 2;
+            else if (dynamic_cast<RangedTroop*>(entity.get()) != nullptr) typeOffset = 1;
+            else typeOffset = 0;
+
             float maxHp = isBuilding ? MAX_BUILDING_HP : MAX_TROOP_HP;
             float normalizedHp = std::min(static_cast<float>(entity->hp) / maxHp, 1.0f);
-            int channel = (entity->team == 0) ? (isBuilding ? 2 : 0) : (isBuilding ? 3 : 1);
+            int channel = (entity->team == 0 ? 0 : 4) + typeOffset;
 
             obs[getIndex(channel, y, x)] = normalizedHp;
         }
@@ -63,6 +84,15 @@ private:
         for (int cardId : game.getHand(0)) {
             const auto* card = CardRegistry::getInstance().getCard(cardId);
             obs.push_back(card ? card->cost / 10.0f : 0.0f);
+        }
+
+        // Card IDENTITY per hand slot (one-hot). Costs alone made a Hog Rider and a
+        // Musketeer indistinguishable (both 0.4), so no card-specific strategy could
+        // ever be learned.
+        for (int cardId : game.getHand(0)) {
+            for (int k = 0; k < NUM_CARD_IDS; ++k) {
+                obs.push_back(k == cardId ? 1.0f : 0.0f);
+            }
         }
 
         return obs;
@@ -112,7 +142,10 @@ public:
           rng(std::random_device{}()) {}
 
     int observationSize() const {
-        return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS + 1 + 4;
+        return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP channels
+             + 1                                            // elixir
+             + HAND_SIZE                                    // card costs
+             + HAND_SIZE * NUM_CARD_IDS;                    // card identity one-hots
     }
 
     std::vector<float> reset() {
