@@ -20,12 +20,20 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
     }
 }
 
+// Every entity a card produces carries that card's display name (e.g. all
+// three Barbarians are each named "Barbarians"), plus whatever on-hit
+// effect the card carries.
+inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
+    entity->name = stats.name;
+    applyOnHit(entity, stats);
+}
+
 inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, Board& board) {
     for (const auto& offset : stats.spawnOffsets) {
         auto troop = std::make_shared<MeleeTroop>(
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
             stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-        applyOnHit(troop, stats);
+        applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
 }
@@ -35,7 +43,7 @@ inline void spawnRangedSquad(const CardStats& stats, float x, float y, int team,
         auto troop = std::make_shared<RangedTroop>(
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
             stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-        applyOnHit(troop, stats);
+        applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
 }
@@ -45,7 +53,7 @@ inline void spawnMeleeBuildingTargeter(const CardStats& stats, float x, float y,
         board.allocateId(), x, y, stats.hp, team,
         stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
     if (stats.ignoresRiver) troop->setIgnoresRiver(true);
-    applyOnHit(troop, stats);
+    applyCardMetadata(troop, stats);
     board.addEntity(troop);
 }
 
@@ -54,7 +62,7 @@ inline void spawnRangedBuildingTargeter(const CardStats& stats, float x, float y
         board.allocateId(), x, y, stats.hp, team,
         stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
     if (stats.ignoresRiver) troop->setIgnoresRiver(true);
-    applyOnHit(troop, stats);
+    applyCardMetadata(troop, stats);
     board.addEntity(troop);
 }
 
@@ -62,13 +70,15 @@ inline void spawnDefensiveBuilding(const CardStats& stats, float x, float y, int
     auto building = std::make_shared<Building>(
         board.allocateId(), x, y, stats.hp, team, stats.symbol,
         stats.attackRange, stats.damage, stats.attackCooldown);
-    applyOnHit(building, stats);
+    applyCardMetadata(building, stats);
     board.addEntity(building);
 }
 
 inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board& board) {
-    board.addEntity(std::make_shared<AreaSpell>(
-        board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol));
+    auto spell = std::make_shared<AreaSpell>(
+        board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol);
+    spell->name = stats.name;
+    board.addEntity(spell);
 }
 
 inline void spawn(const CardStats& stats, float x, float y, int team, Board& board) {
