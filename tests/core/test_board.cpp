@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "Board.h"
 #include "Building.h"
+#include "MeleeTroop.h"
 
 // ---------------- clampToBoard ----------------
 // Single source of truth used by both Troop::clampPosition() (right after a
@@ -126,6 +127,78 @@ TEST_CASE("resolvePositionAgainstBuildings ignores non-building entities (radius
     Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.1f }, 999);
     REQUIRE(resolved.x == Catch::Approx(10.0f));
     REQUIRE(resolved.y == Catch::Approx(10.1f));
+}
+
+// ---------------- resolveCollisions ----------------
+// Moved here from GameManager::step() -- this is how entities on the board
+// physically interact, which is a Board concern, not a match-rules one.
+
+TEST_CASE("resolveCollisions pushes two overlapping troops apart symmetrically", "[board][collision]") {
+    Board board;
+    auto troop1 = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 100, 0);
+    auto troop2 = std::make_shared<DummyEntity>(2, 10.0f, 10.3f, 100, 1); // dist 0.3, inside minRadius 0.8
+    spawn(board, troop1);
+    spawn(board, troop2);
+
+    board.resolveCollisions();
+
+    float dist = troop1->position.distanceTo(troop2->position);
+    REQUIRE(dist > 0.79f);
+}
+
+TEST_CASE("resolveCollisions pushes a troop out of an overlapping building without moving the building", "[board][collision]") {
+    Board board;
+    auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10); // radius 1.0
+    auto troop = std::make_shared<DummyEntity>(2, 10.0f, 10.3f, 100, 0); // dist 0.3, inside minDist 1.4
+    spawn(board, building);
+    spawn(board, troop);
+
+    board.resolveCollisions();
+
+    REQUIRE(building->position.x == Catch::Approx(10.0f));
+    REQUIRE(building->position.y == Catch::Approx(10.0f));
+    float dist = troop->position.distanceTo(building->position);
+    REQUIRE(dist > 1.39f);
+}
+
+TEST_CASE("resolveCollisions leaves entities untouched when far apart", "[board][collision]") {
+    Board board;
+    auto troop1 = std::make_shared<DummyEntity>(1, 0.0f, 0.0f, 100, 0);
+    auto troop2 = std::make_shared<DummyEntity>(2, 20.0f, 20.0f, 100, 1);
+    spawn(board, troop1);
+    spawn(board, troop2);
+
+    board.resolveCollisions();
+
+    REQUIRE(troop1->position.x == Catch::Approx(0.0f));
+    REQUIRE(troop1->position.y == Catch::Approx(0.0f));
+    REQUIRE(troop2->position.x == Catch::Approx(20.0f));
+    REQUIRE(troop2->position.y == Catch::Approx(20.0f));
+}
+
+TEST_CASE("resolveCollisions ignores dead entities without crashing", "[board][collision]") {
+    Board board;
+    auto troop1 = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 100, 0);
+    auto troop2 = std::make_shared<DummyEntity>(2, 10.0f, 10.1f, 100, 1);
+    troop2->takeDamage(100); // dead
+    spawn(board, troop1);
+    spawn(board, troop2);
+
+    REQUIRE_NOTHROW(board.resolveCollisions());
+    REQUIRE(troop1->position.x == Catch::Approx(10.0f));
+    REQUIRE(troop1->position.y == Catch::Approx(10.0f));
+}
+
+TEST_CASE("resolveCollisions re-clamps entities to the board bounds afterward", "[board][collision]") {
+    Board board;
+    // DummyEntity doesn't override clampPosition (only Troop does), so this
+    // specifically needs a real Troop to prove resolveCollisions re-clamps.
+    auto troop = std::make_shared<MeleeTroop>(1, 25.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    spawn(board, troop);
+
+    board.resolveCollisions();
+
+    REQUIRE(troop->position.x == Catch::Approx(17.0f));
 }
 
 // ---------------- getNextWaypoint ----------------

@@ -150,65 +150,7 @@ public:
         }
 
         board.commitPendingEntities();
-
-        const auto& ents = board.getEntities();
-        for (size_t i = 0; i < ents.size(); ++i) {
-            for (size_t j = i + 1; j < ents.size(); ++j) {
-                auto& e1 = ents[i];
-                auto& e2 = ents[j];
-
-                if (!e1->isAlive() || !e2->isAlive()) continue;
-
-                float r1 = e1->getCollisionRadius();
-                float r2 = e2->getCollisionRadius();
-
-                bool isBuilding1 = r1 > 0.0f;
-                bool isBuilding2 = r2 > 0.0f;
-                bool isTroop1 = !isBuilding1 && e1->isTargetable();
-                bool isTroop2 = !isBuilding2 && e2->isTargetable();
-
-                if (isTroop1 && isTroop2) {
-                    float dx = e1->position.x - e2->position.x;
-                    float dy = e1->position.y - e2->position.y;
-                    float dist = std::sqrt(dx * dx + dy * dy);
-                    float minRadius = 2.0f * Entity::IMPLICIT_TROOP_RADIUS;
-
-                    if (dist < minRadius) {
-                        if (dist < 0.001f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
-                        float overlap = minRadius - dist;
-                        float pushX = (dx / dist) * overlap * 0.5f;
-                        float pushY = (dy / dist) * overlap * 0.5f;
-                        
-                        // Add tiny orthogonal noise to prevent jitter locking
-                        float noise = 0.01f;
-                        pushX += (dy / dist) * noise;
-                        pushY -= (dx / dist) * noise;
-
-                        e1->position.x += pushX;
-                        e1->position.y += pushY;
-                        e2->position.x -= pushX;
-                        e2->position.y -= pushY;
-                    }
-                }
-
-                if (isTroop1 && isBuilding2) {
-                    e1->position = Board::pushAwayFrom(e1->position, e2->position, r2 + Entity::IMPLICIT_TROOP_RADIUS);
-                }
-                if (isTroop2 && isBuilding1) {
-                    e2->position = Board::pushAwayFrom(e2->position, e1->position, r1 + Entity::IMPLICIT_TROOP_RADIUS);
-                }
-            }
-        }
-
-        // Re-clamp after collision resolution, which can push a troop back
-        // into the river or off the board edge. Delegates to each entity's
-        // own clampPosition() (a no-op for anything that isn't a Troop) so
-        // this respects riverIgnores instead of re-deriving the rule here.
-        for (auto& entity : board.getEntities()) {
-            if (entity->isAlive()) {
-                entity->clampPosition(board);
-            }
-        }
+        board.resolveCollisions();
 
         int deadKing = MatchRules::getDeadKingTeam(board);
         if (deadKing != -1) {
