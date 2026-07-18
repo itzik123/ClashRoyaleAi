@@ -215,4 +215,11 @@ public:
     void saveLog(const std::string& filepath) {
         logger.save(filepath);
     }
+
+    // Thin pass-throughs to GameManager::getStatistics() -- plain ints (not
+    // the JSON string) since these are read every training step across
+    // several vectorized envs; avoiding a JSON round-trip on that hot path.
+    // See MatchStatistics.h for what these actually measure.
+    int getTroopDamageDealt(int team) const { return game.getStatistics().troopDamageDealt(team); }
+    int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
 };

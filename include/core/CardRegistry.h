@@ -20,6 +20,13 @@ struct CardDefinition {
     std::string name;
     float cost;
     bool isSpell;
+    // True only for Archetype::DefensiveBuilding cards (Cannon/Tesla/Bomb
+    // Tower/Inferno Tower) -- Towers aren't in this registry at all (built
+    // directly by GameManager with a negative sentinel cardId), so stats
+    // code classifying a DamageDealtEvent's targetCardId treats "not found
+    // in the registry" as a Tower, itself also a building. See
+    // stats/StatsCollectors.h's DamageByTargetTypeCollector.
+    bool isBuilding;
     // The footprint GameManager::isValidPlacement keeps clear of an existing
     // building -- see CardFactories::placementRadius. Unused for spells.
     float placementRadius;
@@ -80,6 +87,7 @@ private:
         def.name = stats.name;
         def.cost = stats.cost;
         def.isSpell = (stats.archetype == Archetype::Spell);
+        def.isBuilding = (stats.archetype == Archetype::DefensiveBuilding);
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.spawnEntity = [stats](float x, float y, int team, Board& board) {
             CardFactories::spawn(stats, x, y, team, board);

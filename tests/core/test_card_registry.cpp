@@ -87,6 +87,25 @@ TEST_CASE("Card ids that were never defined stay undefined", "[card_registry][da
     REQUIRE(registry.getCard(9999) == nullptr);
 }
 
+TEST_CASE("CardDefinition::isBuilding is true only for DefensiveBuilding archetype cards", "[card_registry][isBuilding]") {
+    const auto& registry = CardRegistry::getInstance();
+
+    SECTION("the four defensive buildings") {
+        REQUIRE(registry.getCard(25)->isBuilding); // Cannon
+        REQUIRE(registry.getCard(26)->isBuilding); // Tesla
+        REQUIRE(registry.getCard(27)->isBuilding); // Bomb Tower
+        REQUIRE(registry.getCard(28)->isBuilding); // Inferno Tower
+    }
+
+    SECTION("troops, building-targeters and spells are all false") {
+        REQUIRE_FALSE(registry.getCard(0)->isBuilding);  // Knight (MeleeSquad)
+        REQUIRE_FALSE(registry.getCard(6)->isBuilding);  // Musketeer (RangedSquad)
+        REQUIRE_FALSE(registry.getCard(2)->isBuilding);  // Giant (MeleeBuildingTargeter)
+        REQUIRE_FALSE(registry.getCard(18)->isBuilding); // Royal Giant (RangedBuildingTargeter)
+        REQUIRE_FALSE(registry.getCard(7)->isBuilding);  // Fireball (Spell)
+    }
+}
+
 TEST_CASE("CardDefinition::placementRadius matches what the archetype actually spawns with", "[card_registry][placement]") {
     const auto& registry = CardRegistry::getInstance();
 
