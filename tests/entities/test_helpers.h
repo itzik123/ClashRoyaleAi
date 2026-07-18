@@ -49,7 +49,24 @@ protected:
     void performAttack(Board&, std::shared_ptr<Entity> target) override {
         attackCount++;
         lastTargetId = target->id;
-        target->takeDamage(damage);
+        target->takeDamage(getCurrentDamage()); // respects ramp/split, like every production leaf class
         applyOnHitEffects(target); // direct-damage style: effects land immediately, like MeleeTroop
+    }
+};
+
+// Records its last apply() call instead of doing anything real, so tests can
+// assert *that* and *with what* a death effect fired without needing a real
+// spawn (SpawnOnDeath) behind it. apply() is const on the interface, hence
+// mutable here -- recording is the entire point of this double.
+class RecordingDeathEffect : public IDeathEffect {
+public:
+    mutable bool applied = false;
+    mutable Vector2D lastPosition{};
+    mutable int lastTeam = -1;
+
+    void apply(Board&, const Vector2D& position, int team) const override {
+        applied = true;
+        lastPosition = position;
+        lastTeam = team;
     }
 };

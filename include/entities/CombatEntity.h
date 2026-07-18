@@ -2,6 +2,7 @@
 #include "CardEntity.h"
 #include "Board.h"
 #include "OnHitEffect.h"
+#include "DeathEffect.h"
 #include <memory>
 #include <limits>
 #include <vector>
@@ -14,6 +15,18 @@ protected:
     int attackCooldown;
     float currentCooldown;
     std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
+
+    // Ramp bookkeeping: which target this attacker has been locked onto, and
+    // for how many consecutive ticks. Tracked unconditionally (cheap, two
+    // ints) even for the vast majority of entities that never ramp, so the
+    // logic lives in exactly one place instead of being opt-in duplicated.
+    int currentTargetId = -1;
+    int ticksOnTarget = 0;
+
+    // How many targets the attack actually landed on this time (1 normally,
+    // up to maxSplitTargets otherwise) -- set right before performAttack()
+    // is invoked, purely so getCurrentDamage() can divide by it.
+    int currentHitCount = 1;
 
 public:
     // Freeze only ever means anything to something that attacks or moves
@@ -29,6 +42,30 @@ public:
     // Tower don't) -- and it's only ever read on `this`, never cast off a
     // generic candidate the way isFlying is (see Entity.h).
     bool targetsAir = false;
+
+    // Fired once by onDeath() below (e.g. Golem spawning two Golemites).
+    // Lives here, not Entity, for the same reason as onHitEffects: only
+    // something that's a real combatant ever has one.
+    std::shared_ptr<IDeathEffect> deathEffect;
+
+    // Ramping damage (Inferno Tower): `damage` scales up the longer this
+    // attacker stays locked onto the *same* target, reaching rampStartFraction
+    // until rampMidTick, rampMidFraction until rampFullTick, and full damage
+    // after -- reset by a target switch, losing the target, or being frozen
+    // (matches the real "stun resets the charge" rule). rampFullTick == 0
+    // (the default) disables ramping entirely: getCurrentDamage() is just
+    // `damage`, unchanged, for every card that doesn't opt in.
+    int rampMidTick = 0;
+    int rampFullTick = 0;
+    float rampStartFraction = 1.0f;
+    float rampMidFraction = 1.0f;
+
+    // Split-target attacks (Electro Wizard): instead of hitting only the
+    // closest enemy, hits up to this many of the closest enemies at once,
+    // each for damage / (however many were actually found this attack) --
+    // full damage if only one target is in range, matching the real card.
+    // 1 (the default) is the normal single-target case every other card uses.
+    int maxSplitTargets = 1;
 
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
@@ -52,6 +89,12 @@ public:
     }
 
     void update(Board& board) override {
+        // Captured before the decrement below so a freeze that's about to
+        // expire this very tick still counts as "was frozen" for the ramp
+        // reset -- matches the real "a stun resets the charge" rule for
+        // every tick actually spent frozen, not all-but-the-last one.
+        bool wasFrozen = freezeTicks > 0;
+
         if (freezeTicks > 0) {
             freezeTicks--;
             if (currentCooldown > 0.0f) {
@@ -67,6 +110,13 @@ public:
 
         auto target = findTarget(board);
         if (target) {
+            if (wasFrozen || target->id != currentTargetId) {
+                currentTargetId = target->id;
+                ticksOnTarget = 0;
+            } else {
+                ticksOnTarget++;
+            }
+
             float dist = position.distanceTo(target->position);
 
             float targetRadius = target->getCollisionRadius();
@@ -83,15 +133,31 @@ public:
                     // because *when* they should fire depends on *when* the
                     // damage actually lands: instantly for a direct hit, but
                     // only on arrival for an attack that spawns a projectile.
-                    performAttack(board, target);
+                    if (maxSplitTargets <= 1) {
+                        currentHitCount = 1;
+                        performAttack(board, target);
+                    } else {
+                        auto targets = findSplitTargets(board, maxSplitTargets);
+                        currentHitCount = static_cast<int>(targets.size());
+                        for (const auto& t : targets) {
+                            performAttack(board, t);
+                        }
+                    }
                     currentCooldown = static_cast<float>(attackCooldown);
                 }
             } else {
                 moveTowards(board, target->position);
             }
+        } else {
+            currentTargetId = -1;
+            ticksOnTarget = 0;
         }
 
         clampPosition(board);
+    }
+
+    void onDeath(Board& board) override {
+        if (deathEffect) deathEffect->apply(board, position, team);
     }
 
 protected:
@@ -116,6 +182,40 @@ protected:
             }
         }
         return closestTarget;
+    }
+
+    // Only called when maxSplitTargets > 1 (Electro Wizard). Reuses
+    // findTarget's own eligibility filter, just keeping the N closest
+    // instead of only the closest one.
+    std::vector<std::shared_ptr<Entity>> findSplitTargets(Board& board, int maxCount) const {
+        std::vector<std::shared_ptr<Entity>> candidates;
+        for (const auto& entity : board.getEntities()) {
+            if (entity->team != this->team && entity->isAlive() && entity->isTargetable() && entity->id != this->id
+                && (!entity->isFlying || targetsAir)) {
+                candidates.push_back(entity);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+            [this](const std::shared_ptr<Entity>& a, const std::shared_ptr<Entity>& b) {
+                return position.distanceTo(a->position) < position.distanceTo(b->position);
+            });
+        if (static_cast<int>(candidates.size()) > maxCount) candidates.resize(maxCount);
+        return candidates;
+    }
+
+    // Ramped, then split across however many targets this attack actually
+    // landed on. Both default to no-ops (rampFullTick == 0, currentHitCount
+    // == 1), so this returns `damage` unchanged for every card that doesn't
+    // opt into either mechanic.
+    int getCurrentDamage() const {
+        int base = damage;
+        if (rampFullTick > 0) {
+            float fraction = (ticksOnTarget >= rampFullTick) ? 1.0f
+                : (ticksOnTarget >= rampMidTick) ? rampMidFraction
+                : rampStartFraction;
+            base = static_cast<int>(damage * fraction);
+        }
+        return currentHitCount > 1 ? base / currentHitCount : base;
     }
 
     virtual void performAttack(Board& board, std::shared_ptr<Entity> target) = 0;

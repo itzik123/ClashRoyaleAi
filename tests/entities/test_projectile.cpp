@@ -110,3 +110,71 @@ TEST_CASE("Projectile applies on-hit effects on arrival, only when the target is
         REQUIRE(target->hp == 950); // damage doesn't depend on the effect resolving
     }
 }
+
+// ---------------- boomerang (Executioner) ----------------
+
+TEST_CASE("Boomerang projectile hits its target twice: once on arrival, once after the return delay", "[projectile][boomerang]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1);
+    spawn(board, target);
+
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 100, {}, true, 3); // returnsToSender, 3-tick return delay
+    p.update(board); // outbound hit lands (dist(2.0) == speed(2.0))
+    REQUIRE(target->hp == 900);
+    REQUIRE(p.isAlive()); // stays alive, waiting out the return trip
+
+    p.update(board); // returnDelayTicks 3 -> 2
+    p.update(board); // 2 -> 1
+    p.update(board); // 1 -> 0
+    REQUIRE(target->hp == 900); // still no second hit
+    REQUIRE(p.isAlive());
+
+    p.update(board); // returnDelayTicks == 0: return hit lands
+    REQUIRE(target->hp == 800);
+    REQUIRE_FALSE(p.isAlive());
+}
+
+TEST_CASE("A normal (non-boomerang) projectile still dies after a single hit", "[projectile][boomerang]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1);
+    spawn(board, target);
+
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 100); // returnsToSender defaults false
+    p.update(board);
+
+    REQUIRE(target->hp == 900);
+    REQUIRE_FALSE(p.isAlive());
+}
+
+TEST_CASE("Boomerang projectile skips the return hit if the target dies during the return delay", "[projectile][boomerang]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 150, 1);
+    spawn(board, target);
+
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 100, {}, true, 3);
+    p.update(board); // outbound hit: 150 -> 50
+    REQUIRE(target->hp == 50);
+
+    target->takeDamage(100); // dies from something else while the axe is on its way back
+    REQUIRE_FALSE(target->isAlive());
+
+    for (int i = 0; i < 5; ++i) p.update(board); // well past the return delay
+    REQUIRE_FALSE(p.isAlive());
+    REQUIRE(target->hp == -50); // not driven further negative by a return hit that never lands
+}
+
+TEST_CASE("Boomerang projectile applies its on-hit effect on both the outbound and return hits", "[projectile][boomerang][on_hit]") {
+    Board board;
+    auto target = std::make_shared<StationaryCombatant>(1, 0.0f, 2.0f, 1000, 1, 5.0f, 10, 10);
+    spawn(board, target);
+
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 50,
+        std::vector<std::shared_ptr<IOnHitEffect>>{ std::make_shared<FreezeOnHit>(5, 0.5f) }, true, 0);
+    p.update(board); // outbound hit lands, applies freeze
+    REQUIRE(target->freezeTicks == 5);
+
+    target->freezeTicks = 1; // simulate some freeze already having ticked down
+    p.update(board); // return trip (0-tick delay): second hit re-applies the freeze
+    REQUIRE(target->freezeTicks == 5);
+    REQUIRE_FALSE(p.isAlive());
+}

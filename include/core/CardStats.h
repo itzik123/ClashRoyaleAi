@@ -1,6 +1,7 @@
 #pragma once
 #include "Entity.h"
 #include "OnHitEffect.h"
+#include "DeathEffect.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,9 +44,47 @@ struct CardStats {
     // every unit this card spawns (e.g. Ice Wizard/Ice Golem's freeze).
     std::shared_ptr<IOnHitEffect> onHit;
 
-    // Spell archetype only.
+    // Spell archetype only. groundOnly defaults false (hits Air & Ground,
+    // matching most spells -- Fireball, Zap, Poison, Rocket, Lightning);
+    // The Log/Barbarian Barrel-style ground-control spells opt in.
     float spellRadius = 0.0f;
     int spellDelayTicks = 0;
+    bool spellGroundOnly = false;
+    // Multi-tick spells (Poison, Arrows) -- see AreaSpell::remainingHits.
+    // 1 (the default) is every other spell's normal single-shot case.
+    int spellRemainingHits = 1;
+    int spellTickInterval = 0;
+
+    // One-time area burst applied the instant a troop-shaped card deploys,
+    // independent of its regular attacks (e.g. Electro Wizard's spawn zap).
+    // Radius 0 (the default) means no spawn effect.
+    float spawnEffectRadius = 0.0f;
+    int spawnEffectDamage = 0;
+    std::shared_ptr<IOnHitEffect> spawnEffectOnHit;
+
+    // Fired once when a unit this card spawns dies (e.g. Golem's two
+    // Golemites). Concrete effects live in core/ (e.g. SpawnOnDeath) since
+    // they need CardFactories to know how to spawn anything.
+    std::shared_ptr<IDeathEffect> deathEffect;
+
+    // Ramping damage (Inferno Tower) -- see CombatEntity::getCurrentDamage
+    // for the exact fraction schedule. rampFullTick == 0 (the default)
+    // means no ramping.
+    int rampMidTick = 0;
+    int rampFullTick = 0;
+    float rampStartFraction = 1.0f;
+    float rampMidFraction = 1.0f;
+
+    // Split-target attacks (Electro Wizard) -- see
+    // CombatEntity::findSplitTargets/getCurrentDamage. 1 (the default)
+    // means the normal single-target case.
+    int maxSplitTargets = 1;
+
+    // Boomerang projectiles (Executioner) -- RangedSquad archetype only. See
+    // Projectile's returnsToSender. false (the default) is a normal
+    // single-hit projectile.
+    bool boomerang = false;
+    int boomerangReturnDelayTicks = 0;
 
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
@@ -67,6 +106,41 @@ struct CardStats {
     }
     CardStats& withOnHit(std::shared_ptr<IOnHitEffect> effect) {
         onHit = std::move(effect);
+        return *this;
+    }
+    CardStats& withSpawnEffect(float radius, int damage, std::shared_ptr<IOnHitEffect> effect = nullptr) {
+        spawnEffectRadius = radius;
+        spawnEffectDamage = damage;
+        spawnEffectOnHit = std::move(effect);
+        return *this;
+    }
+    CardStats& withDeathEffect(std::shared_ptr<IDeathEffect> effect) {
+        deathEffect = std::move(effect);
+        return *this;
+    }
+    CardStats& withGroundOnly(bool value = true) {
+        spellGroundOnly = value;
+        return *this;
+    }
+    CardStats& withDamageRamp(int midTick, int fullTick, float startFraction, float midFraction) {
+        rampMidTick = midTick;
+        rampFullTick = fullTick;
+        rampStartFraction = startFraction;
+        rampMidFraction = midFraction;
+        return *this;
+    }
+    CardStats& withSplitTargets(int maxTargets) {
+        maxSplitTargets = maxTargets;
+        return *this;
+    }
+    CardStats& withBoomerang(int returnDelayTicks) {
+        boomerang = true;
+        boomerangReturnDelayTicks = returnDelayTicks;
+        return *this;
+    }
+    CardStats& withRepeats(int count, int intervalTicks) {
+        spellRemainingHits = count;
+        spellTickInterval = intervalTicks;
         return *this;
     }
 };

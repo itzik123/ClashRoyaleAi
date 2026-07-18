@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "AreaSpell.h"
+#include "FreezeOnHit.h"
 
 TEST_CASE("AreaSpell is never itself a valid combat target", "[area_spell]") {
     AreaSpell spell(1, 5.0f, 5.0f, 0, 3.0f, 100, 5);
@@ -71,4 +72,99 @@ TEST_CASE("AreaSpell damages only alive, targetable, opposing-team entities with
     REQUIRE(ally->hp == 1000);             // same team: excluded
     REQUIRE(nonTargetableEnemy->hp == 1000); // not targetable: excluded
     REQUIRE(deadEnemy->hp == 0);            // already dead: left untouched, not further reduced
+}
+
+TEST_CASE("AreaSpell applies its on-hit effect to CombatEntity targets within radius", "[area_spell][on_hit]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 10.0f, 11.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0, '*', std::make_shared<FreezeOnHit>(5, 0.0f));
+    spell.update(board);
+
+    REQUIRE(enemy->hp == 900);
+    REQUIRE(enemy->freezeTicks == 5);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
+}
+
+TEST_CASE("AreaSpell with no on-hit effect (default) leaves targets unfrozen", "[area_spell][on_hit]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 10.0f, 11.0f, 1000, 1, 5.0f, 10, 10);
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0); // no onHit passed -- defaults to nullptr
+    spell.update(board);
+
+    REQUIRE(enemy->hp == 900);
+    REQUIRE(enemy->freezeTicks == 0);
+}
+
+TEST_CASE("AreaSpell hits flying targets by default (groundOnly false, matching most spells)", "[area_spell][flying]") {
+    Board board;
+    auto flyingEnemy = std::make_shared<DummyEntity>(1, 10.0f, 11.0f, 1000, 1);
+    flyingEnemy->isFlying = true;
+    spawn(board, flyingEnemy);
+
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 500, 0); // groundOnly defaults false
+    spell.update(board);
+
+    REQUIRE(flyingEnemy->hp == 500);
+}
+
+TEST_CASE("AreaSpell with groundOnly skips flying targets but still hits grounded ones", "[area_spell][flying]") {
+    Board board;
+    auto flyingEnemy = std::make_shared<DummyEntity>(1, 10.0f, 11.0f, 1000, 1);
+    flyingEnemy->isFlying = true;
+    auto groundedEnemy = std::make_shared<DummyEntity>(2, 10.0f, 12.0f, 1000, 1); // isFlying stays false
+    spawn(board, flyingEnemy);
+    spawn(board, groundedEnemy);
+
+    AreaSpell spell(3, 10.0f, 10.0f, 0, 3.0f, 500, 0, '*', nullptr, true); // groundOnly = true
+    spell.update(board);
+
+    REQUIRE(flyingEnemy->hp == 1000);  // untouched: flying, and this spell is ground-only
+    REQUIRE(groundedEnemy->hp == 500); // still hit: not flying
+}
+
+// ---------------- multi-tick spells (Poison, Arrows) ----------------
+
+TEST_CASE("AreaSpell with remainingHits > 1 applies damage repeatedly, waiting tickInterval between hits", "[area_spell][repeat]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 1000, 1);
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0, '*', nullptr, false, 3, 2); // 3 hits, 2-tick gap
+
+    spell.update(board); // 1st application lands immediately (delayTicks starts at 0)
+    REQUIRE(enemy->hp == 900);
+    REQUIRE(spell.isAlive()); // 2 more hits left
+
+    spell.update(board); // gap tick (delayTicks 2 -> 1)
+    spell.update(board); // gap tick (1 -> 0)
+    REQUIRE(enemy->hp == 900); // still no 2nd hit
+
+    spell.update(board); // 2nd application
+    REQUIRE(enemy->hp == 800);
+    REQUIRE(spell.isAlive());
+
+    spell.update(board); // gap
+    spell.update(board); // gap
+    spell.update(board); // 3rd (final) application
+    REQUIRE(enemy->hp == 700);
+    REQUIRE_FALSE(spell.isAlive()); // remainingHits exhausted
+}
+
+TEST_CASE("AreaSpell with remainingHits > 1 re-evaluates who's in radius on each application", "[area_spell][repeat]") {
+    Board board;
+    auto entity = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 1000, 1);
+    spawn(board, entity);
+
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0, '*', nullptr, false, 3, 1);
+    spell.update(board); // hit 1: still in radius
+    REQUIRE(entity->hp == 900);
+
+    entity->position = { 10.0f, 20.0f }; // walks well outside the radius before the next application
+    spell.update(board); // gap tick (delayTicks 1 -> 0)
+    spell.update(board); // 2nd application would land here, but the entity has left
+    REQUIRE(entity->hp == 900); // untouched: no longer in radius, just like the real spell
 }

@@ -152,6 +152,33 @@ TEST_CASE("RangedSquad archetype (Musketeer)", "[card_registry][archetype]") {
     REQUIRE(std::dynamic_pointer_cast<RangedTroop>(board.getEntities()[0]) != nullptr);
 }
 
+TEST_CASE("Executioner's axe hits its target twice: on arrival, then again on the return trip", "[card_registry][flying]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(36)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto executioner = std::dynamic_pointer_cast<RangedTroop>(board.getEntities().back());
+    REQUIRE(executioner != nullptr);
+
+    executioner->update(board); // fires: spawns the boomerang projectile
+    board.commitPendingEntities();
+    auto axe = std::dynamic_pointer_cast<Projectile>(board.getEntities().back());
+    REQUIRE(axe != nullptr);
+
+    axe->update(board); // projectile speed >= distance 1.0: outbound hit lands this tick
+    REQUIRE(enemy->hp == 832); // 1000 - 168
+    REQUIRE(axe->isAlive()); // still out on its return trip, not dead after one hit
+
+    // Matches the real GameManager::step() contract (only ever calls
+    // update() on entities still isAlive()) -- Projectile, like AreaSpell,
+    // has no internal guard against being updated again after it dies.
+    while (axe->isAlive()) axe->update(board);
+    REQUIRE(enemy->hp == 664); // 1000 - 168*2
+}
+
 TEST_CASE("MeleeBuildingTargeter archetype (Giant)", "[card_registry][archetype]") {
     Board board;
     const CardDefinition* giant = CardRegistry::getInstance().getCard(2);
@@ -172,6 +199,27 @@ TEST_CASE("MeleeBuildingTargeter archetype wires ignoresRiver for Hog Rider only
     auto targeter = std::dynamic_pointer_cast<BuildingTargeter>(board.getEntities()[0]);
     REQUIRE(targeter != nullptr);
     REQUIRE(targeter->riverIgnores);
+}
+
+TEST_CASE("Golem splits into two Golemites on death", "[card_registry][death]") {
+    Board board;
+    const CardDefinition* golem = CardRegistry::getInstance().getCard(19);
+    golem->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto golemEntity = board.getEntities()[0];
+    golemEntity->takeDamage(golemEntity->hp); // dies
+    board.cleanDeadEntities(); // fires the death effect, removes the Golem
+    board.commitPendingEntities(); // the two Golemites become visible
+
+    REQUIRE(board.getEntities().size() == 2);
+    for (const auto& e : board.getEntities()) {
+        auto golemite = std::dynamic_pointer_cast<BuildingTargeter>(e);
+        REQUIRE(golemite != nullptr);
+        REQUIRE(golemite->name == "Golemite");
+        REQUIRE(golemite->team == 0);
+        REQUIRE(golemite->position.y == Catch::Approx(5.0f));
+    }
 }
 
 TEST_CASE("RangedBuildingTargeter archetype (Royal Giant)", "[card_registry][archetype]") {
@@ -230,7 +278,39 @@ TEST_CASE("DefensiveBuilding archetype: targetsAir matches real-game data per ca
     }
 }
 
+TEST_CASE("Inferno Tower's damage ramps up the longer it stays locked onto the same target", "[card_registry][ramp]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(28)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto tower = std::dynamic_pointer_cast<Building>(board.getEntities().back());
+    REQUIRE(tower != nullptr);
+
+    tower->update(board); // ticksOnTarget == 0 on first lock: stage 1 (5% of 847)
+    REQUIRE(enemy->hp == 1000000 - 42);
+
+    for (int i = 0; i < 39; ++i) tower->update(board); // advance to just before ticksOnTarget == 40
+    int hpBefore = enemy->hp;
+    tower->update(board); // ticksOnTarget == 40 (an attack tick, cooldown 4 divides evenly): full damage
+    REQUIRE(hpBefore - enemy->hp == 847);
+}
+
 // ---------------- flying cards ----------------
+
+TEST_CASE("Archers can hit flying enemies (real-game Target: Air & Ground)", "[card_registry][flying]") {
+    Board board;
+    CardRegistry::getInstance().getCard(1)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    for (const auto& e : board.getEntities()) {
+        auto troop = std::dynamic_pointer_cast<RangedTroop>(e);
+        REQUIRE(troop != nullptr);
+        REQUIRE(troop->targetsAir);
+        REQUIRE_FALSE(troop->isFlying); // ground troop, just capable of hitting air
+    }
+}
 
 TEST_CASE("Minions and Minion Horde spawn as flying, air-targeting melee squads", "[card_registry][flying]") {
     Board board;
@@ -304,6 +384,86 @@ TEST_CASE("Spell archetype (Fireball)", "[card_registry][archetype]") {
     REQUIRE_FALSE(spell->isTargetable());
 }
 
+TEST_CASE("Poison deals damage every second for 8 seconds, not a lump sum", "[card_registry][repeat]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(32)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    spell->update(board); // first tick lands immediately (no initial delay)
+    REQUIRE(enemy->hp == 100000 - 92);
+    REQUIRE(spell->isAlive()); // 7 more ticks left over the following ~7 seconds
+
+    while (spell->isAlive()) spell->update(board);
+    REQUIRE(enemy->hp == 100000 - 92 * 8); // all 8 ticks landed in total
+}
+
+TEST_CASE("Poison stops damaging a unit that walks out of the cloud mid-duration", "[card_registry][repeat]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(32)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    spell->update(board); // 1st tick lands
+    REQUIRE(enemy->hp == 100000 - 92);
+
+    enemy->position = { 50.0f, 50.0f }; // walks far outside the 3.5 radius
+    while (spell->isAlive()) spell->update(board);
+    REQUIRE(enemy->hp == 100000 - 92); // no further ticks landed after it left
+}
+
+TEST_CASE("Arrows deals damage in 3 rapid volleys, not one lump sum", "[card_registry][repeat]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(3)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+    REQUIRE(enemy->hp == 100000 - 122 * 3); // all 3 volleys landed
+}
+
+TEST_CASE("The Log is ground-only and does not hit flying enemies, unlike Fireball", "[card_registry][flying]") {
+    SECTION("The Log") {
+        Board board;
+        auto flyingEnemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 1000, 1); // dist 1.0
+        flyingEnemy->isFlying = true;
+        spawn(board, flyingEnemy);
+
+        CardRegistry::getInstance().getCard(33)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto spell = board.getEntities().back();
+        while (spell->isAlive()) spell->update(board); // wait out its delay until it detonates
+
+        REQUIRE(flyingEnemy->hp == 1000); // untouched
+    }
+
+    SECTION("Fireball") {
+        Board board;
+        auto flyingEnemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 1000, 1); // dist 1.0
+        flyingEnemy->isFlying = true;
+        spawn(board, flyingEnemy);
+
+        CardRegistry::getInstance().getCard(7)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto spell = board.getEntities().back();
+        while (spell->isAlive()) spell->update(board);
+
+        REQUIRE(flyingEnemy->hp < 1000); // hit, same as any ground enemy
+    }
+}
+
 TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when it's fired", "[card_registry][on_hit]") {
     Board board;
     auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // distance 1.0 from (5,5)
@@ -342,6 +502,83 @@ TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_reg
 
     REQUIRE(enemy->freezeTicks == 30);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
+}
+
+TEST_CASE("Electro Wizard stuns on hit via the on-hit decorator (freeze with slowFactor 0)", "[card_registry][on_hit]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // distance 1.0 from (5,5)
+    spawn(board, enemy);
+
+    const CardDefinition* electroWizard = CardRegistry::getInstance().getCard(35);
+    electroWizard->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    // Electro Wizard also spawns a deploy-zap AreaSpell alongside itself now,
+    // so the troop isn't necessarily board.getEntities().back() anymore.
+    std::shared_ptr<MeleeTroop> electroWizardEntity;
+    for (const auto& e : board.getEntities()) {
+        auto troop = std::dynamic_pointer_cast<MeleeTroop>(e);
+        if (troop) electroWizardEntity = troop;
+    }
+    REQUIRE(electroWizardEntity != nullptr);
+
+    // Direct-damage attack (no projectile -- the real card is an instant
+    // zap): damage and stun both land the same tick. Only one enemy in
+    // range, so it takes the full 230, not the split half.
+    electroWizardEntity->update(board);
+
+    REQUIRE(enemy->hp == 770); // 1000 - 230
+    REQUIRE(enemy->freezeTicks == 5);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
+}
+
+TEST_CASE("Electro Wizard splits its attack across the 2 closest enemies at half damage each", "[card_registry][flying]") {
+    Board board;
+    auto near = std::make_shared<StationaryCombatant>(1, 5.0f, 5.5f, 1000, 1, 5.0f, 10, 10);  // dist 0.5
+    auto far = std::make_shared<StationaryCombatant>(2, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10);    // dist 1.0
+    spawn(board, near);
+    spawn(board, far);
+
+    const CardDefinition* electroWizard = CardRegistry::getInstance().getCard(35);
+    electroWizard->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    std::shared_ptr<MeleeTroop> electroWizardEntity;
+    for (const auto& e : board.getEntities()) {
+        auto troop = std::dynamic_pointer_cast<MeleeTroop>(e);
+        if (troop) electroWizardEntity = troop;
+    }
+    REQUIRE(electroWizardEntity != nullptr);
+
+    electroWizardEntity->update(board);
+
+    REQUIRE(near->hp == 885);  // 1000 - 230/2
+    REQUIRE(far->hp == 885);
+    REQUIRE(near->freezeTicks == 5); // both stunned
+    REQUIRE(far->freezeTicks == 5);
+}
+
+TEST_CASE("Electro Wizard's deploy zap damages and stuns enemies in radius the instant it's played", "[card_registry][on_hit][spawn_effect]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 6.0f, 5.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    const CardDefinition* electroWizard = CardRegistry::getInstance().getCard(35);
+    electroWizard->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    std::shared_ptr<AreaSpell> deployZap;
+    for (const auto& e : board.getEntities()) {
+        auto spell = std::dynamic_pointer_cast<AreaSpell>(e);
+        if (spell) deployZap = spell;
+    }
+    REQUIRE(deployZap != nullptr);
+
+    deployZap->update(board); // zero delay: detonates immediately
+
+    REQUIRE(enemy->hp == 808); // 1000 - 192
+    REQUIRE(enemy->freezeTicks == 5);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
 }
 
 TEST_CASE("Ordinary melee troops are unaffected by the on-hit decorator (Knight)", "[card_registry][on_hit]") {

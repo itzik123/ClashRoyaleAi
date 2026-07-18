@@ -17,8 +17,10 @@ private:
     // Curriculum hook: scales the opponent's elixir regen relative to the base rate.
     // 1.0 = normal opponent, >1.0 = faster-elixir opponent for later training stages.
     float oppElixirMultiplier = 1.0f;
-    const float BOARD_MAX_X = 17.0f;
-    const float BOARD_MAX_Y = 31.0f;
+    // How far short of the river a non-spell placement must stay on the
+    // caller's own side (Board itself only enforces the river during
+    // movement/clamping, not placement).
+    static constexpr float OWN_HALF_RIVER_BUFFER = 0.5f;
 
     std::vector<int> aiDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
     std::vector<int> oppDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -67,11 +69,13 @@ public:
     }
 
     bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius) const {
-        if (x < 0.0f || x > BOARD_MAX_X || y < 0.0f || y > BOARD_MAX_Y) return false;
+        float maxX = static_cast<float>(board.getWidth() - 1);
+        float maxY = static_cast<float>(board.getHeight() - 1);
+        if (x < 0.0f || x > maxX || y < 0.0f || y > maxY) return false;
 
         if (!isSpell) {
-            if (team == 0 && y > 14.5f) return false;
-            if (team == 1 && y < 17.5f) return false;
+            if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;
+            if (team == 1 && y < board.getRiverEnd() + OWN_HALF_RIVER_BUFFER) return false;
 
             // Prevent placing on top of an existing building -- Clash Royale
             // forbids this outright regardless of what's being placed, so the
@@ -155,10 +159,10 @@ public:
         board.commitPendingEntities();
         board.resolveCollisions();
 
-        int deadKing = MatchRules::getDeadKingTeam(board);
-        if (deadKing != -1) {
+        MatchRules::Outcome outcome = MatchRules::evaluate(board);
+        if (outcome.over) {
             gameOver = true;
-            loserTeam = deadKing;
+            loserTeam = outcome.loserTeam;
         }
 
         board.cleanDeadEntities();

@@ -73,6 +73,35 @@ TEST_CASE("Board::cleanDeadEntities removes only the dead", "[board][lifecycle]"
     REQUIRE(board.getEntities()[0]->id == 1);
 }
 
+TEST_CASE("Board::cleanDeadEntities fires a dying entity's death effect before removing it", "[board][lifecycle][death]") {
+    Board board;
+    auto dying = std::make_shared<StationaryCombatant>(1, 3.0f, 4.0f, 100, 1, 5.0f, 10, 10);
+    auto effect = std::make_shared<RecordingDeathEffect>();
+    dying->deathEffect = effect;
+    dying->takeDamage(100);
+    spawn(board, dying);
+
+    board.cleanDeadEntities();
+
+    REQUIRE(effect->applied);
+    REQUIRE(effect->lastPosition.x == Catch::Approx(3.0f));
+    REQUIRE(effect->lastTeam == 1);
+    REQUIRE(board.getEntities().empty()); // still removed as normal
+}
+
+TEST_CASE("Board::cleanDeadEntities does not fire a death effect for entities that are still alive", "[board][lifecycle][death]") {
+    Board board;
+    auto alive = std::make_shared<StationaryCombatant>(1, 3.0f, 4.0f, 100, 1, 5.0f, 10, 10);
+    auto effect = std::make_shared<RecordingDeathEffect>();
+    alive->deathEffect = effect;
+    spawn(board, alive);
+
+    board.cleanDeadEntities();
+
+    REQUIRE_FALSE(effect->applied);
+    REQUIRE(board.getEntities().size() == 1);
+}
+
 // ---------------- resolvePositionAgainstBuildings ----------------
 
 TEST_CASE("resolvePositionAgainstBuildings leaves a position untouched when far from any building", "[board][collision]") {

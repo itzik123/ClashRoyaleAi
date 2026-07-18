@@ -21,12 +21,19 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
 }
 
 // Every entity a card produces carries that card's display name (e.g. all
-// three Barbarians are each named "Barbarians"), whatever on-hit effect the
-// card carries, and its ground/air properties.
+// three Barbarians are each named "Barbarians"), whatever on-hit/death
+// effect the card carries, its ground/air properties, and its damage-ramp /
+// target-split configuration (both no-ops unless a card opts in).
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
     entity->isFlying = stats.isFlying;
     entity->targetsAir = stats.targetsAir;
+    entity->deathEffect = stats.deathEffect;
+    entity->rampMidTick = stats.rampMidTick;
+    entity->rampFullTick = stats.rampFullTick;
+    entity->rampStartFraction = stats.rampStartFraction;
+    entity->rampMidFraction = stats.rampMidFraction;
+    entity->maxSplitTargets = stats.maxSplitTargets;
     applyOnHit(entity, stats);
 }
 
@@ -51,6 +58,19 @@ inline float placementRadius(Archetype archetype) {
         : Entity::IMPLICIT_TROOP_RADIUS;
 }
 
+// Fires a card's one-time deploy burst (e.g. Electro Wizard's spawn zap) at
+// the card's placement point -- once per card played, not once per squad
+// member, so squads call this after their spawn loop rather than inside it.
+// A no-op for the overwhelming majority of cards, which never set it.
+inline void spawnDeployEffect(const CardStats& stats, float x, float y, int team, Board& board) {
+    if (stats.spawnEffectRadius <= 0.0f) return;
+    auto effect = std::make_shared<AreaSpell>(
+        board.allocateId(), x, y, team, stats.spawnEffectRadius, stats.spawnEffectDamage,
+        0, stats.symbol, stats.spawnEffectOnHit);
+    effect->name = stats.name;
+    board.addEntity(effect);
+}
+
 inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, Board& board) {
     for (const auto& offset : stats.spawnOffsets) {
         auto troop = std::make_shared<MeleeTroop>(
@@ -60,6 +80,7 @@ inline void spawnMeleeSquad(const CardStats& stats, float x, float y, int team, 
         applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
+    spawnDeployEffect(stats, x, y, team, board);
 }
 
 inline void spawnRangedSquad(const CardStats& stats, float x, float y, int team, Board& board) {
@@ -68,27 +89,40 @@ inline void spawnRangedSquad(const CardStats& stats, float x, float y, int team,
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
             stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
         if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
+        troop->boomerang = stats.boomerang;
+        troop->boomerangReturnDelayTicks = stats.boomerangReturnDelayTicks;
         applyCardMetadata(troop, stats);
         board.addEntity(troop);
     }
+    spawnDeployEffect(stats, x, y, team, board);
 }
 
 inline void spawnMeleeBuildingTargeter(const CardStats& stats, float x, float y, int team, Board& board) {
-    auto troop = std::make_shared<BuildingTargeter>(
-        board.allocateId(), x, y, stats.hp, team,
-        stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-    if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
-    applyCardMetadata(troop, stats);
-    board.addEntity(troop);
+    // Loops over spawnOffsets like the squad factories, even though every
+    // currently-registered card here is a single unit (the default offset
+    // is just {0,0}) -- needed for Golemites, which come in twos, without
+    // this archetype needing its own bespoke multi-unit variant.
+    for (const auto& offset : stats.spawnOffsets) {
+        auto troop = std::make_shared<BuildingTargeter>(
+            board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
+            stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
+        if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
+        applyCardMetadata(troop, stats);
+        board.addEntity(troop);
+    }
+    spawnDeployEffect(stats, x, y, team, board);
 }
 
 inline void spawnRangedBuildingTargeter(const CardStats& stats, float x, float y, int team, Board& board) {
-    auto troop = std::make_shared<RangedBuildingTargeter>(
-        board.allocateId(), x, y, stats.hp, team,
-        stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
-    if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
-    applyCardMetadata(troop, stats);
-    board.addEntity(troop);
+    for (const auto& offset : stats.spawnOffsets) {
+        auto troop = std::make_shared<RangedBuildingTargeter>(
+            board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
+            stats.speed, stats.attackRange, stats.damage, stats.attackCooldown, stats.symbol);
+        if (shouldIgnoreRiver(stats)) troop->setIgnoresRiver(true);
+        applyCardMetadata(troop, stats);
+        board.addEntity(troop);
+    }
+    spawnDeployEffect(stats, x, y, team, board);
 }
 
 inline void spawnDefensiveBuilding(const CardStats& stats, float x, float y, int team, Board& board) {
@@ -101,7 +135,8 @@ inline void spawnDefensiveBuilding(const CardStats& stats, float x, float y, int
 
 inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board& board) {
     auto spell = std::make_shared<AreaSpell>(
-        board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol);
+        board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol,
+        nullptr, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval);
     spell->name = stats.name;
     board.addEntity(spell);
 }

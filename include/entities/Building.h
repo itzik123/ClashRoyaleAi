@@ -36,7 +36,7 @@ public:
 
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
-        target->takeDamage(damage);
+        target->takeDamage(getCurrentDamage());
         applyOnHitEffects(target);
     }
 };

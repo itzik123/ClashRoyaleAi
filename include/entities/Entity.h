@@ -60,4 +60,12 @@ public:
     // after collision resolution -- which itself doesn't respect those
     // constraints -- without the caller needing to know the concrete type.
     virtual void clampPosition(Board& board) { (void)board; }
+
+    // Called once, by Board::cleanDeadEntities(), the instant this entity is
+    // found dead and about to be removed (e.g. Golem spawning two Golemites).
+    // Default no-op, same shape as clampPosition: lets Board trigger this
+    // generically on every Entity without needing to know which concrete
+    // type -- or even whether it's a CombatEntity, the only thing that ever
+    // actually has a death effect to fire -- it's looking at.
+    virtual void onDeath(Board& board) { (void)board; }
 };

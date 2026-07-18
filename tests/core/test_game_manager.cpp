@@ -177,6 +177,21 @@ TEST_CASE("step() ends the game when a King tower dies, with the correct loser",
     REQUIRE(game.getLoserTeam() == 0);
 }
 
+TEST_CASE("step() ends the game as a draw when both King towers die the same tick", "[game_manager][step]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    auto aiKing = game.getBoard().getEntities()[0];
+    auto oppKing = game.getBoard().getEntities()[1];
+    REQUIRE(aiKing->team == 0);
+    REQUIRE(oppKing->team == 1);
+
+    aiKing->takeDamage(aiKing->hp);
+    oppKing->takeDamage(oppKing->hp);
+    game.step();
+
+    REQUIRE(game.isGameOver());
+    REQUIRE(game.getLoserTeam() == -1); // draw, not an arbitrary team-0 loss
+}
+
 TEST_CASE("step() is a no-op once the game is over", "[game_manager][step]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     auto aiKing = game.getBoard().getEntities()[0];

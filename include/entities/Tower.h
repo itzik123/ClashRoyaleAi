@@ -17,7 +17,7 @@ public:
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         auto arrow = std::make_shared<Projectile>(
-            board.allocateId(), position.x, position.y, team, target, 2.0f, damage, onHitEffects);
+            board.allocateId(), position.x, position.y, team, target, 2.0f, getCurrentDamage(), onHitEffects);
         board.addEntity(arrow);
     }
 };

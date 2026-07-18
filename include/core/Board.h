@@ -24,6 +24,12 @@ public:
     int getWidth() const { return width; }
     int getHeight() const { return height; }
 
+    // Exposed so callers that need to reason about the river band (e.g.
+    // GameManager's own-half placement check) derive it from here instead
+    // of re-guessing the same two numbers as a second, driftable copy.
+    float getRiverStart() const { return riverY_start; }
+    float getRiverEnd() const { return riverY_end; }
+
     void addEntity(std::shared_ptr<Entity> entity) {
         pendingEntities.push_back(entity);
     }
@@ -40,6 +46,14 @@ public:
     }
 
     void cleanDeadEntities() {
+        // Fire death effects (e.g. Golem spawning two Golemites) before the
+        // erase below, purely via Entity's own virtual onDeath() -- Board
+        // never needs to know which entities are CombatEntity-shaped enough
+        // to actually have one, same as clampPosition().
+        for (const auto& e : activeEntities) {
+            if (!e->isAlive()) e->onDeath(*this);
+        }
+
         activeEntities.erase(
             std::remove_if(activeEntities.begin(), activeEntities.end(),
                 [](const std::shared_ptr<Entity>& e) { return !e->isAlive(); }),
