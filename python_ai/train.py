@@ -20,6 +20,13 @@ from model import MicroRoyaleNet
 W_BLDG = 0.5     # weight on building (tower) HP swings
 W_TROOPS = 0.1   # weight on troop HP swings
 
+# One-time penalty applied at episode end when the game times out without a
+# decisive winner (raw engine reward ~0 at a done step). Draws don't teach the
+# agent to close games, so nudge it away from stalling into the timeout on top
+# of the existing +1/-1 win/loss signal. Applied once at the terminal step (not
+# accumulated per-step), so it stays comparable in scale to +/-1 like W_BLDG/W_TROOPS.
+DRAW_PENALTY = 0.2
+
 # Spatial layout of the observation (must match ClashEnv.h):
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
 # channels 4-6 enemy troops, 7 enemy buildings, 8 river mask.
@@ -47,8 +54,19 @@ def compute_shaping(obs, prev_obs, w_bldg=W_BLDG, w_troops=W_TROOPS):
     d_ally_bldg = obs_spatial[:, 3].sum(axis=(1, 2)) - prev_spatial[:, 3].sum(axis=(1, 2))
     d_enemy_bldg = obs_spatial[:, 7].sum(axis=(1, 2)) - prev_spatial[:, 7].sum(axis=(1, 2))
 
-    shaping = (w_bldg * (d_ally_bldg - d_enemy_bldg)
-               + w_troops * (d_ally_troops - d_enemy_troops))
+    # Only HP LOSSES count as damage -- HP GAINS are new placements (spending
+    # elixir), not combat outcomes. Without this clip, playing ANY card gives a free
+    # positive shaping spike (new full-HP entity appearing) regardless of placement
+    # quality, and the OPPONENT playing a card gives us a free negative spike we have
+    # zero control over. Both dominate and corrupt the "did damage actually happen"
+    # signal this function exists to produce.
+    enemy_troops_damage = np.maximum(0.0, -d_enemy_troops)
+    ally_troops_damage = np.maximum(0.0, -d_ally_troops)
+    enemy_bldg_damage = np.maximum(0.0, -d_enemy_bldg)
+    ally_bldg_damage = np.maximum(0.0, -d_ally_bldg)
+
+    shaping = (w_bldg * (enemy_bldg_damage - ally_bldg_damage)
+               + w_troops * (enemy_troops_damage - ally_troops_damage))
 
     return shaping.astype(np.float32)
 
@@ -65,36 +83,34 @@ def make_env():
 
 def train_ppo():
     os.makedirs("replays", exist_ok=True)
+    weight_path = "model_weights.pth"
+    resuming = os.path.exists(weight_path)
     log_dir = "runs/clash_royale_experiment"
-    if os.path.exists(log_dir):
-        import shutil
-        shutil.rmtree(log_dir)
-        
-    writer = SummaryWriter(log_dir=log_dir)
-    
-    num_envs = 4 # Based on user request (max 3-4 cores)
+
+    # 8 workers + 1 CPU-bound main process (no CUDA here, so the update step itself
+    # needs real cores too) comfortably fits 12 logical processors with headroom.
+    # Doubling from 4 halves the variance of the per-rollout advantage normalization
+    # and the critic's return targets -- the flat/noisy Loss/Critic and the rising
+    # (not falling) Loss/Entropy both pointed at that noise as the likely culprit.
+    num_envs = 8
     print(f"Initializing {num_envs} Async Vectorized Environments...")
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = MicroRoyaleNet().to(device)
     optimizer = optim.Adam(net.parameters(), lr=3e-4)
 
-    weight_path = "model_weights.pth"
-    if os.path.exists(weight_path):
-        try:
-            net.load_state_dict(torch.load(weight_path, map_location=device))
-            print(f"Loaded existing weights from {weight_path}")
-        except RuntimeError:
-            # Architecture changed since these weights were saved (e.g. the card head
-            # grew from 4 to 5 actions). Keep them as a backup and start fresh.
-            backup = weight_path + ".bak"
-            os.replace(weight_path, backup)
-            print(f"Saved weights are incompatible with the current architecture; moved to {backup}, starting fresh.")
-    
     # PPO Hyperparameters
     gamma = 0.99
-    gae_lambda = 0.95      # GAE(lambda) smoothing for advantage estimation
+    # Lowered from 0.95: every prior fix (num_envs, value clipping, entropy decay,
+    # reward-shaping) left Loss/Critic on the same noisy, non-decreasing plateau
+    # (confirmed across ~2650 real episodes post-shaping-fix). High lambda leans GAE
+    # on multi-step Monte-Carlo-style returns instead of the value bootstrap; with a
+    # critic that isn't converging, that keeps the ADVANTAGE TARGET itself noisy no
+    # matter how the critic's own update is regularized -- which is why clipping the
+    # critic's movement alone didn't help. Leaning more on the (imperfect but at
+    # least consistent) bootstrap should break that loop.
+    gae_lambda = 0.9
     eps_clip = 0.2
     update_timestep = 500  # Number of steps PER CORE before update
     ppo_epochs = 2         # How many times to reuse each rollout
@@ -106,8 +122,23 @@ def train_ppo():
     max_grad_norm = 0.5    # Gradient clipping (stabilizes the long-horizon BPTT)
 
     initial_entropy_coef = 0.1
-    min_entropy_coef = 0.001
-    entropy_decay_rate = 0.9995
+    # Raised from 0.001: stage 2 (opp 1.2x) sat with entropy pinned at the old floor
+    # for 6000+ episodes (confirmed in the log) while oscillating in a stable
+    # 0.50-0.68 win-rate band that stopped trending toward the 0.80 gate -- i.e. zero
+    # exploration pressure for a very long stretch while stuck. A small persistent
+    # floor keeps a little exploration alive instead of fully exploiting a plateaued
+    # policy forever.
+    min_entropy_coef = 0.01
+    # 0.9995 decays over EPISODES (not updates), and at that rate reaching the floor
+    # takes ~9200 episodes (0.1 * 0.9995^9200 ~= 0.001) -- far beyond any training
+    # budget actually run so far. Confirmed by measurement: at episode 458 the coef
+    # was still ~0.0795 (80% of initial), matching Loss/Entropy climbing instead of
+    # falling and Loss/Critic never converging -- the loss was still explicitly
+    # rewarding maximum entropy this whole time, so the policy never had room to
+    # settle into a confident, predictable strategy for the critic to track. 0.995
+    # reaches the floor by ~episode 1000 and is already down to ~2% of initial by
+    # episode 300, matching realistic training budgets instead of a 9000-episode one.
+    entropy_decay_rate = 0.995
     
     # BOARD_MAX_X in the engine is 17.0 -- placements with x>17 are silently
     # rejected (isValidPlacement), so scaling by 18 wasted part of the action range.
@@ -117,19 +148,74 @@ def train_ppo():
     # --- Curriculum: once the agent's win-rate against the current opponent
     # settles above a threshold, escalate the opponent's elixir multiplier.
     # 1.0 = today's fully-random opponent; higher values make it play cards
-    # faster/near-continuously. Extend this list to add more stages later.
+    # faster/near-continuously.
+    # Gradual 0.1 steps up to 1.5x, not the old 1.0 -> 1.75 -> 3.0 jump: at 1.75x the
+    # agent went 0-for-2000+ episodes with zero improvement (confirmed by measurement,
+    # not assumption) -- the opponent's elixir advantage was simply overwhelming at
+    # that multiplier, no amount of extra training time was fixing it.
     CURRICULUM_STAGES = [
-        {"opp_elixir_multiplier": 1.0, "win_rate_threshold": 0.75},
-        {"opp_elixir_multiplier": 1.75, "win_rate_threshold": 0.75},
-        {"opp_elixir_multiplier": 3.0, "win_rate_threshold": None},  # final stage, no further auto-advance
+        {"opp_elixir_multiplier": 1.0, "win_rate_threshold": 0.80},
+        {"opp_elixir_multiplier": 1.1, "win_rate_threshold": 0.80},
+        {"opp_elixir_multiplier": 1.2, "win_rate_threshold": 0.80},
+        {"opp_elixir_multiplier": 1.3, "win_rate_threshold": 0.80},
+        {"opp_elixir_multiplier": 1.4, "win_rate_threshold": 0.80},
+        {"opp_elixir_multiplier": 1.5, "win_rate_threshold": None},  # final stage, no further auto-advance
     ]
+
+    # Defaults for a fresh run; overwritten below if resuming from a checkpoint.
     curriculum_stage = 0
     stage_start_episode = 0   # Entropy decays relative to the current stage's start (improvement #5)
+    episodes_completed = 0
     # Per-episode outcome: +1 win, -1 loss, 0 draw (timeout). The curriculum gate uses
     # the DECISIVE win rate W/(W+L): draws say "didn't close the game", not "can't beat
     # the opponent", so they shouldn't block stage advancement.
     outcome_history = deque(maxlen=100)
-    MIN_DECIDED_FOR_ADVANCE = 30   # don't advance the curriculum off a handful of decided games
+    # Same outcomes, wider window -- purely for a smoother TensorBoard trend line.
+    # A 100-episode decisive win rate has a sampling-noise band of roughly +/-0.1
+    # around the true rate, which can look like "learning then forgetting" when it's
+    # just noise; 500 episodes narrows that band enough to see real trend changes.
+    outcome_history_long = deque(maxlen=500)
+
+    # True only when a full training-state checkpoint was actually restored (so
+    # episodes_completed continues from a real prior value). Gates the TensorBoard
+    # log wipe below: file-exists-but-incompatible or legacy-weights-only both still
+    # restart episodes_completed at 0, so they need a clean log dir just like a
+    # from-scratch run -- otherwise the new run's scalars overlap/interleave with the
+    # old run's at the same episode numbers and the graphs become unreadable.
+    full_resume = False
+
+    if resuming:
+        checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
+        try:
+            if isinstance(checkpoint, dict) and "model" in checkpoint and "optimizer" in checkpoint:
+                net.load_state_dict(checkpoint["model"])
+                optimizer.load_state_dict(checkpoint["optimizer"])
+                curriculum_stage = checkpoint["curriculum_stage"]
+                stage_start_episode = checkpoint["stage_start_episode"]
+                episodes_completed = checkpoint["episodes_completed"]
+                outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
+                full_resume = True
+                if curriculum_stage > 0:
+                    mult = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
+                    envs.call("set_opponent_elixir_multiplier", mult)
+                print(f"Resumed from {weight_path}: episode {episodes_completed}, "
+                      f"curriculum stage {curriculum_stage}")
+            else:
+                # Legacy checkpoint: bare model state_dict, no training state to restore.
+                net.load_state_dict(checkpoint)
+                print(f"Loaded legacy weights-only checkpoint from {weight_path} "
+                      f"(training state starts fresh).")
+        except RuntimeError:
+            # Architecture changed since these weights were saved (e.g. the card head
+            # grew from 4 to 5 actions). Keep them as a backup and start fresh.
+            backup = weight_path + ".bak"
+            os.replace(weight_path, backup)
+            print(f"Saved weights are incompatible with the current architecture; moved to {backup}, starting fresh.")
+
+    if not full_resume and os.path.exists(log_dir):
+        import shutil
+        shutil.rmtree(log_dir)
+    writer = SummaryWriter(log_dir=log_dir)
 
     obs_buffer = []
     card_actions_buffer = []
@@ -138,6 +224,7 @@ def train_ppo():
     values_buffer = []
     rewards_buffer = []
     masks_buffer = []
+    valid_buffer = []   # 0 on phantom auto-reset steps (see below), 1 on real transitions
 
     reward_history = deque(maxlen=50)
     shaping_history = deque(maxlen=50)   # Per-episode shaping sum, to watch it vs the +/-1 terminal (improvement #6)
@@ -153,16 +240,18 @@ def train_ppo():
     hx = torch.zeros(num_envs, 256).to(device)
     cx = torch.zeros(num_envs, 256).to(device)
 
-    episodes_completed = 0
-    last_save_ep = 0
-    last_replay_ep = 0
+    last_save_ep = episodes_completed
+    last_replay_ep = episodes_completed
     ep_rewards = np.zeros(num_envs)
     ep_shaping = np.zeros(num_envs)
     ep_steps = np.zeros(num_envs, dtype=np.int64)
     
     print(f"Training started on {num_envs} CPU cores simultaneously!")
     
-    while episodes_completed < 50000:
+    # Raised from 50000: that cap was hit mid-session while training was still
+    # working well (cleared the entire curriculum, stages 0-5, right around the old
+    # cap) -- extending it so remaining time isn't wasted on an arbitrary limit.
+    while episodes_completed < 1000000:
         # Entropy decays within each curriculum stage, not over all time: advancing a
         # stage resets the clock (stage_start_episode) so exploration is boosted again
         # for the new, harder opponent instead of staying collapsed (improvement #5).
@@ -204,18 +293,37 @@ def train_ppo():
             next_obs, step_rewards, terminateds, truncateds, _ = envs.step(action)
             dones = terminateds | truncateds
 
+            # Draw = episode ended (done) with a near-zero raw reward (same +1/-1/~0
+            # convention used for outcome_history below). gym_wrapper never sets
+            # truncated=True, so this is the only way to tell "timed out" apart from
+            # "mid-episode" from here.
+            is_draw = dones & (np.abs(step_rewards) < 0.5)
+            draw_penalty = DRAW_PENALTY * is_draw.astype(np.float32)
+
             # Dense shaping term. On the step right after an episode ended, the vector env
             # has auto-reset that env, so prev_obs belongs to the finished episode and the
             # HP delta would be a huge spurious spike (fresh full-HP board vs destroyed
             # board). Zero the shaping there so only the real +/-0 reset reward remains.
             shaping = compute_shaping(next_obs, prev_obs)
             shaping = shaping * (1.0 - prev_dones)
-            shaped_rewards = step_rewards + shaping
+            shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards
             ep_shaping += shaping
             ep_steps += 1
 
-            mask = torch.tensor(1.0 - dones, dtype=torch.float32).to(device)
+            # prev_dones marks envs whose PREVIOUS step ended the episode. Under
+            # gymnasium's NEXT_STEP autoreset (AsyncVectorEnv's default), such envs
+            # don't execute the sampled action this step at all -- the worker just
+            # calls reset() and returns (fresh obs, reward=0, terminated=False,
+            # truncated=False), silently discarding whatever card/placement the
+            # policy sampled from the OLD episode's final board (which is what `obs`
+            # still held this step). So this step is not a real transition: mark it
+            # invalid (excluded from the PPO loss below) and also treat it as a
+            # trajectory break (mask=0) so GAE doesn't bootstrap through it and the
+            # LSTM state carried into the new episode's real first step starts clean
+            # instead of being contaminated by the dead board.
+            valid = torch.tensor(1.0 - prev_dones, dtype=torch.float32).to(device)
+            mask = torch.tensor(1.0 - dones, dtype=torch.float32).to(device) * valid
 
             # Store the transition (everything detached) for the PPO update
             obs_buffer.append(obs_tensor)
@@ -225,6 +333,7 @@ def train_ppo():
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(mask)
+            valid_buffer.append(valid)
 
             # Reset hidden states for environments whose episode just ended
             mask_tensor = mask.unsqueeze(1)
@@ -250,11 +359,13 @@ def train_ppo():
 
                     # step_rewards carries the raw (unshaped) engine reward: +1 win, -1 loss, 0 timeout/draw
                     if step_rewards[i] > 0.5:
-                        outcome_history.append(1)
+                        outcome_value = 1
                     elif step_rewards[i] < -0.5:
-                        outcome_history.append(-1)
+                        outcome_value = -1
                     else:
-                        outcome_history.append(0)
+                        outcome_value = 0
+                    outcome_history.append(outcome_value)
+                    outcome_history_long.append(outcome_value)
 
                     if episodes_completed % 10 == 0:
                         outcomes = np.array(outcome_history)
@@ -262,7 +373,8 @@ def train_ppo():
                         losses = int((outcomes == -1).sum())
                         draws = int((outcomes == 0).sum())
                         n = len(outcomes)
-                        decisive_wr = wins / (wins + losses) if (wins + losses) > 0 else 0.0
+                        decided = wins + losses
+                        decisive_wr = wins / decided if decided > 0 else 0.0
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | Stage: {curriculum_stage} | Entropy: {current_entropy_coef:.4f}")
@@ -276,6 +388,19 @@ def train_ppo():
                         # The headline progress metric and the curriculum gate:
                         # of the games that got decided, how many did we win?
                         writer.add_scalar("Rates/Decisive_Win_100", decisive_wr, episodes_completed)
+                        # How many of the last 100 games actually got decided -- low
+                        # values explain why the curriculum gate (needs >=30 decided)
+                        # hasn't advanced yet.
+                        writer.add_scalar("Training/Decided_Count_100", decided, episodes_completed)
+                        # Same decisive win rate over a 500-episode window: noisier-but-
+                        # real short-term swings average out, so a genuine trend (as
+                        # opposed to sampling noise around a plateau) is visible here.
+                        outcomes_long = np.array(outcome_history_long)
+                        wins_long = int((outcomes_long == 1).sum())
+                        losses_long = int((outcomes_long == -1).sum())
+                        decided_long = wins_long + losses_long
+                        if decided_long > 0:
+                            writer.add_scalar("Rates/Decisive_Win_500", wins_long / decided_long, episodes_completed)
                         # Learning to close games shows up as shorter episodes and less
                         # enemy building HP left standing at the end.
                         writer.add_scalar("Progress/Episode_Length_50", np.mean(ep_len_history), episodes_completed)
@@ -285,16 +410,19 @@ def train_ppo():
                         writer.add_scalar("Training/Entropy_Coef", current_entropy_coef, episodes_completed)
 
                     # --- Curriculum advancement: escalate the opponent once the agent
-                    # consistently wins the games that get DECIDED (draws excluded) ---
+                    # actually WINS most games -- raw win rate (wins / all 100 games in
+                    # the window), not decisive rate (wins / decided). Decisive rate lets
+                    # a high draw rate hide a mediocre bot (e.g. 40% win / 13% loss / 47%
+                    # draw reads as 75% decisive while only actually winning 40% of games)
+                    # ---
                     stage_threshold = CURRICULUM_STAGES[curriculum_stage]["win_rate_threshold"]
                     if (stage_threshold is not None
                             and len(outcome_history) == outcome_history.maxlen
                             and curriculum_stage + 1 < len(CURRICULUM_STAGES)):
                         outcomes = np.array(outcome_history)
                         wins = int((outcomes == 1).sum())
-                        losses = int((outcomes == -1).sum())
-                        decided = wins + losses
-                        if decided >= MIN_DECIDED_FOR_ADVANCE and wins / decided >= stage_threshold:
+                        win_rate = wins / len(outcomes)
+                        if win_rate >= stage_threshold:
                             curriculum_stage += 1
                             new_multiplier = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
                             envs.call("set_opponent_elixir_multiplier", new_multiplier)
@@ -315,11 +443,14 @@ def train_ppo():
         values_seq = torch.stack(values_buffer)                        # (T, N)  (old critic values)
         rewards_seq = torch.stack(rewards_buffer)                      # (T, N)
         masks_seq = torch.stack(masks_buffer)                          # (T, N)
+        valid_seq = torch.stack(valid_buffer)                          # (T, N) -- 0 on phantom auto-reset steps
 
-        # Watch how often the agent chooses to wait (action 4 = no-op). Near-1.0 means
-        # it collapsed into total passivity (draw > loss); near-0.0 means it still
-        # can't hold elixir. Healthy play should settle somewhere in between.
-        writer.add_scalar("Policy/Noop_Fraction", (card_actions_seq == 4).float().mean().item(), episodes_completed)
+        # Watch how often the agent chooses to wait (action 4 = no-op), among real
+        # steps only. Near-1.0 means it collapsed into total passivity (draw > loss);
+        # near-0.0 means it still can't hold elixir. Healthy play should settle
+        # somewhere in between.
+        noop_frac = ((card_actions_seq == 4).float() * valid_seq).sum() / valid_seq.sum().clamp(min=1.0)
+        writer.add_scalar("Policy/Noop_Fraction", noop_frac.item(), episodes_completed)
 
         # Bootstrap value for the state right after the last stored step
         with torch.no_grad():
@@ -342,6 +473,12 @@ def train_ppo():
 
         env_indices = np.arange(num_envs)
         mb_size = max(1, num_envs // num_minibatches)
+
+        # Per-minibatch loss diagnostics, averaged and logged once per update below --
+        # direct visibility into whether the network is still learning (shrinking
+        # critic loss, non-collapsing clip fraction) instead of inferring it indirectly
+        # from noisy episode-outcome stats.
+        actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
 
         for epoch in range(ppo_epochs):
             np.random.shuffle(env_indices)
@@ -387,20 +524,63 @@ def train_ppo():
                 mb_adv = adv_norm_seq[:, mb_env_t]
                 mb_ret = returns_seq[:, mb_env_t]
                 mb_old_logprobs = old_logprobs_seq[:, mb_env_t]
+                mb_old_values = values_seq[:, mb_env_t]
+                mb_valid = valid_seq[:, mb_env_t]
+                n_valid = mb_valid.sum().clamp(min=1.0)
 
                 ratios = torch.exp(new_logprobs - mb_old_logprobs)
                 surr1 = ratios * mb_adv
                 surr2 = torch.clamp(ratios, 1 - eps_clip, 1 + eps_clip) * mb_adv
 
-                actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.mse_loss(new_values, mb_ret)
-                entropy_bonus = new_entropies.mean()
+                # Value clipping (PPO2-style): cap how far the critic's prediction can
+                # move from its rollout-time value in a single update, same idea as the
+                # policy ratio clip above. Take the worse (larger) of the clipped/
+                # unclipped loss so the critic can't dodge the penalty by jumping back
+                # and forth outside the trust region -- this is what actually stabilizes
+                # a noisy critic instead of just producing a smoother-looking loss curve.
+                value_clipped = mb_old_values + torch.clamp(new_values - mb_old_values, -eps_clip, eps_clip)
+                critic_loss_unclipped = F.mse_loss(new_values, mb_ret, reduction="none")
+                critic_loss_clipped = F.mse_loss(value_clipped, mb_ret, reduction="none")
+                critic_loss_per_elem = torch.max(critic_loss_unclipped, critic_loss_clipped)
+
+                # Phantom auto-reset steps (mb_valid=0) carry an action that was never
+                # actually executed in the env -- excluded from every loss term instead
+                # of being averaged in as if it were a real transition.
+                actor_loss = -(torch.min(surr1, surr2) * mb_valid).sum() / n_valid
+                critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
+                entropy_bonus = (new_entropies * mb_valid).sum() / n_valid
                 loss = actor_loss + 0.5 * critic_loss - (current_entropy_coef * entropy_bonus)
 
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(net.parameters(), max_grad_norm)
                 optimizer.step()
+
+                actor_losses.append(actor_loss.item())
+                critic_losses.append(critic_loss.item())
+                entropy_bonuses.append(entropy_bonus.item())
+                total_losses.append(loss.item())
+                # Fraction of (real) samples where the PPO ratio hit the clip range --
+                # near 0 means the policy barely moved this update (possible plateau/too
+                # low LR), consistently high means updates may be too aggressive.
+                clipped = ((ratios - 1.0).abs() > eps_clip).float()
+                clip_fracs.append(((clipped * mb_valid).sum() / n_valid).item())
+
+        mean_actor_loss = np.mean(actor_losses)
+        mean_critic_loss = np.mean(critic_losses)
+        mean_entropy = np.mean(entropy_bonuses)
+        mean_total_loss = np.mean(total_losses)
+        mean_clip_frac = np.mean(clip_fracs)
+        writer.add_scalar("Loss/Actor", mean_actor_loss, episodes_completed)
+        writer.add_scalar("Loss/Critic", mean_critic_loss, episodes_completed)
+        writer.add_scalar("Loss/Entropy", mean_entropy, episodes_completed)
+        writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
+        writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
+        # Printed (not just logged to TensorBoard) so progress can be monitored from
+        # the console/log file alone, without needing the TensorBoard UI open.
+        print(f"  >> Update @ ep {episodes_completed} | Actor: {mean_actor_loss:.5f} | "
+              f"Critic: {mean_critic_loss:.5f} | Entropy: {mean_entropy:.4f} | "
+              f"ClipFrac: {mean_clip_frac:.4f}")
 
         obs_buffer.clear()
         card_actions_buffer.clear()
@@ -409,13 +589,21 @@ def train_ppo():
         values_buffer.clear()
         rewards_buffer.clear()
         masks_buffer.clear()
+        valid_buffer.clear()
 
         hx, cx = hx.detach(), cx.detach()
-        
+
         # Saves
         if episodes_completed - last_save_ep >= 500:
-            torch.save(net.state_dict(), weight_path)
-            print(f">>> Weights saved successfully to {weight_path}")
+            torch.save({
+                "model": net.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "episodes_completed": episodes_completed,
+                "curriculum_stage": curriculum_stage,
+                "stage_start_episode": stage_start_episode,
+                "outcome_history": list(outcome_history),
+            }, weight_path)
+            print(f">>> Checkpoint saved to {weight_path} (episode {episodes_completed}, stage {curriculum_stage})")
             last_save_ep = episodes_completed
 
         # Generate Replay (Standalone test env to avoid corrupting async processes)
