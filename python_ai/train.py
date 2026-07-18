@@ -610,6 +610,10 @@ def train_ppo():
         if episodes_completed - last_replay_ep >= 1000:
             print(f"Generating replay video for episode {episodes_completed}...")
             test_env = gym_wrapper.MicroRoyaleEnv()
+            # Match the standalone replay env to the actual curriculum stage in
+            # progress -- otherwise it silently records against the default 1.0x
+            # opponent regardless of how far training has actually advanced.
+            test_env.set_opponent_elixir_multiplier(CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"])
             t_obs, _ = test_env.reset()
             t_hx = torch.zeros(1, 256).to(device)
             t_cx = torch.zeros(1, 256).to(device)
