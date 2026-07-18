@@ -29,6 +29,10 @@
     --bridge-brown: #8b6914;
     --grass-dark: #1a2e1a;
     --grass-light: #223322;
+    --badge-ground: #b98b4e;
+    --badge-air: #38bdf8;
+    --badge-building: #94a3b8;
+    --badge-spell: #c471ed;
   }
 
   body {
@@ -68,6 +72,18 @@
     color: var(--text-secondary);
     border: 1px solid var(--border);
   }
+  .header .result-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: none;
+  }
+  .header .result-badge.show { display: inline-block; }
+  .header .result-badge.win-blue { color: var(--blue-team); border-color: var(--blue-team-dim); background: rgba(74,158,255,0.1); }
+  .header .result-badge.win-red { color: var(--red-team); border-color: var(--red-team-dim); background: rgba(255,82,82,0.1); }
+  .header .result-badge.draw { color: var(--accent-yellow); background: rgba(250,204,21,0.08); }
 
   /* Main layout */
   .main-layout {
@@ -303,6 +319,53 @@
     border-radius: 2px;
     transition: width 0.1s;
   }
+  .tower-card.destroyed { opacity: 0.45; }
+
+  /* Agent Brain panel */
+  .brain-value-row, .brain-action-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .brain-label { color: var(--text-secondary); }
+  .brain-value-num {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .brain-gauge-bg {
+    position: relative;
+    height: 10px;
+    background: var(--bg-primary);
+    border-radius: 5px;
+    overflow: hidden;
+    margin: 6px 0 12px;
+    border: 1px solid var(--border);
+  }
+  .brain-gauge-fill {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    transition: left 0.12s, width 0.12s, background 0.12s;
+  }
+  .brain-gauge-center {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255,255,255,0.35);
+  }
+  .brain-action-value {
+    font-weight: 600;
+    color: var(--text-primary);
+    text-align: right;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* Entity inspector */
   .inspector-empty {
@@ -406,6 +469,35 @@
     color: var(--text-secondary);
     font-size: 11px;
   }
+
+  /* Winner overlay */
+  .winner-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 11, 16, 0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s;
+    z-index: 40;
+  }
+  .winner-overlay.show { opacity: 1; }
+  .winner-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 48px;
+    text-align: center;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .winner-icon { font-size: 40px; margin-bottom: 8px; }
+  .winner-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .winner-title.win-blue { color: var(--blue-team); }
+  .winner-title.win-red { color: var(--red-team); }
+  .winner-title.draw { color: var(--accent-yellow); }
+  .winner-subtitle { font-size: 13px; color: var(--text-secondary); }
 </style>
 </head>
 <body>
@@ -426,6 +518,7 @@
   <div class="header-left">
     <h1>🏰 Clash Royale Env — Replay Viewer</h1>
     <span class="badge" id="fileNameBadge">No file</span>
+    <span class="result-badge" id="resultBadge"></span>
   </div>
   <button class="file-input-btn" style="font-size:12px; padding:5px 14px;" onclick="document.getElementById('fileInput').click()">Load New</button>
 </div>
@@ -437,6 +530,13 @@
       <div class="tooltip" id="tooltip">
         <div class="tooltip-name" id="tooltipName"></div>
         <div class="tooltip-stat" id="tooltipStat"></div>
+      </div>
+      <div class="winner-overlay" id="winnerOverlay">
+        <div class="winner-card">
+          <div class="winner-icon" id="winnerIcon">🏆</div>
+          <div class="winner-title" id="winnerTitle">--</div>
+          <div class="winner-subtitle" id="winnerSubtitle">--</div>
+        </div>
       </div>
     </div>
   </div>
@@ -454,6 +554,23 @@
         <div class="elixir-label" style="color:var(--red-team)">Red</div>
         <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarOpp"></div></div>
         <div class="elixir-value" id="elixirValOpp">5.0</div>
+      </div>
+    </div>
+
+    <!-- Agent Brain -->
+    <div class="panel">
+      <div class="panel-title">Agent Brain (Blue)</div>
+      <div class="brain-value-row">
+        <span class="brain-label">State Value</span>
+        <span class="brain-value-num" id="brainValueNum">--</span>
+      </div>
+      <div class="brain-gauge-bg">
+        <div class="brain-gauge-fill" id="brainGaugeFill"></div>
+        <div class="brain-gauge-center"></div>
+      </div>
+      <div class="brain-action-row">
+        <span class="brain-label">Action</span>
+        <span class="brain-action-value" id="brainActionValue">--</span>
       </div>
     </div>
 
@@ -507,16 +624,20 @@
 </div>
 
 <script>
+// Card data below is kept in sync with include/core/CardRegistry.h -- symbol,
+// name and max-HP must match the C++ registry exactly or the HP bars/labels
+// silently drift out of sync with the engine (as they had, before this pass).
 const SYMBOL_NAMES = {
-  'P': 'Princess Tower', 'R': 'King Tower',
-  'K': 'Knight', 'A': 'Archer', 'G': 'Giant', 'g': 'Goblin', 'M': 'Mini PEKKA', 'U': 'Musketeer',
-  'B': 'Barbarian', 'b': 'Bomber', 'V': 'Valkyrie', 'W': 'Wizard', 's': 'Skeleton',
-  'E': 'P.E.K.K.A.', 'p': 'Prince', 'H': 'Hog Rider', 'm': 'Mega Minion', 'e': 'Elite Barb',
-  'Y': 'Royal Giant', 'L': 'Golem', 'd': 'Dart Goblin', 'l': 'Lumberjack', 'w': 'Bowler',
-  'S': 'Spear Goblin', 'k': 'Skeleton', 'C': 'Cannon', 'T': 'Tesla', 'D': 'Bomb Tower',
-  'I': 'Inferno Tower', 'i': 'Ice Wizard', 'z': 'Electro Wizard', 'x': 'Executioner',
-  'y': 'Baby Dragon', 'h': 'Witch', 'J': 'Giant Skeleton', 'c': 'Ice Golem',
-  'q': 'Minion', 'Q': 'Minion (Horde)', 't': 'Bat',
+  'R': 'King Tower', 'P': 'Princess Tower',
+  'K': 'Knight', 'g': 'Goblins', 'M': 'Mini PEKKA', 'B': 'Barbarians', 'V': 'Valkyrie',
+  's': 'Skeleton Army', 'E': 'P.E.K.K.A.', 'p': 'Prince', 'e': 'Elite Barbarians',
+  'l': 'Lumberjack', 'k': 'Skeletons', 'J': 'Giant Skeleton', 'z': 'Electro Wizard',
+  'm': 'Minions', 'h': 'Minion Horde', 'F': 'Mega Minion',
+  'A': 'Archers', 'U': 'Musketeer', 'b': 'Bomber', 'W': 'Wizard', 'd': 'Dart Goblin',
+  'w': 'Bowler', 'S': 'Spear Goblins', 'i': 'Ice Wizard', 'x': 'Executioner', 'y': 'Baby Dragon',
+  'G': 'Giant', 'H': 'Hog Rider', 'L': 'Golem', 'c': 'Ice Golem', 'a': 'Balloon',
+  'Y': 'Royal Giant', 'q': 'Golemite',
+  'C': 'Cannon', 'T': 'Tesla', 'D': 'Bomb Tower', 'I': 'Inferno Tower',
   '-': 'Projectile', '*': 'Arrows', 'O': 'Fireball', 'Z': 'Zap', 'r': 'Rocket',
   'j': 'Lightning', 'n': 'Poison', 'o': 'The Log'
 };
@@ -526,21 +647,51 @@ const SPELL_SYMBOLS = new Set(['-', '*', 'O', 'Z', 'r', 'j', 'n', 'o']);
 const SYMBOL_RADIUS = {
   'P': 14, 'R': 16, 'G': 12, 'A': 8, 'K': 10, 'g': 7, 'M': 11, 'U': 9,
   'B': 9, 'b': 8, 'V': 10, 'W': 9, 's': 5, 'E': 13, 'p': 11, 'H': 11,
-  'm': 9, 'e': 10, 'Y': 12, 'L': 14, 'd': 7, 'l': 10, 'w': 11, 'S': 6,
+  'm': 9, 'F': 10, 'e': 10, 'Y': 12, 'L': 14, 'd': 7, 'l': 10, 'w': 11, 'S': 6,
   'k': 5, 'C': 12, 'T': 12, 'D': 13, 'I': 13, 'i': 9, 'z': 9, 'x': 10,
-  'y': 10, 'h': 9, 'J': 13, 'c': 10, 'q': 7, 'Q': 7, 't': 5,
+  'y': 10, 'h': 9, 'a': 11, 'J': 13, 'c': 10, 'q': 7,
   '-': 3, '*': 6, 'O': 7, 'Z': 5, 'r': 6, 'j': 7, 'n': 7, 'o': 6
 };
 
+// Max HP per symbol, synced to CardRegistry.h's current level-11 stats.
 const MAX_HP = {
-  'P': 2534, 'R': 4008, 'G': 3344, 'A': 254, 'K': 1399, 'g': 169, 'M': 1056, 'U': 598,
-  'B': 636, 'b': 311, 'V': 1548, 'W': 598, 's': 67, 'E': 3458, 'p': 1463, 'H': 1408,
-  'm': 695, 'e': 970, 'Y': 2544, 'L': 4256, 'd': 216, 'l': 990, 'w': 1596, 'S': 110,
-  'k': 67, 'C': 742, 'T': 954, 'D': 1672, 'I': 1408, 'i': 665, 'z': 590, 'x': 1010,
-  'y': 1064, 'h': 696, 'J': 2660, 'c': 1047, 'q': 190, 'Q': 190, 't': 67
+  'P': 2534, 'R': 4008,
+  'K': 1766, 'g': 202, 'M': 1390, 'B': 670, 'V': 1907, 's': 81, 'E': 3760, 'p': 1920,
+  'e': 1341, 'l': 1282, 'k': 81, 'J': 3361, 'z': 714,
+  'm': 230, 'h': 230, 'F': 837,
+  'A': 304, 'U': 721, 'b': 304, 'W': 755, 'd': 261, 'w': 2081, 'S': 133, 'i': 688, 'x': 1280, 'y': 1152,
+  'G': 4090, 'H': 1697, 'L': 5120, 'c': 1315, 'a': 1679, 'Y': 3164, 'q': 1039,
+  'C': 824, 'T': 1152, 'D': 1356, 'I': 1748
 };
 
 const BUILDING_SYMBOLS = new Set(['P', 'R', 'C', 'T', 'D', 'I']);
+
+// Fallback for replay files saved before the isFlying field was added to the
+// log -- ent.isFlying (from the engine) is always preferred when present.
+const FLYING_SYMBOLS_FALLBACK = new Set(['m', 'h', 'F', 'y', 'a']);
+
+// Icon shapes rather than letters -- a letter badge risked colliding with the
+// entity's own symbol letter (e.g. Giant's symbol is 'G', same letter the
+// "ground" badge would have used), which read as a confusing double-label.
+const TYPE_BADGE = {
+  ground: { color: '#b98b4e' },
+  air: { color: '#38bdf8' },
+  building: { color: '#94a3b8' },
+  spell: { color: '#c471ed' }
+};
+
+// Actual tower IDs assigned by Board::allocateId() (idCounter starts at 1000,
+// then GameManager::reset() creates King/Princess towers in this exact
+// order every episode). The tower panel previously looked for IDs
+// 100/101/102/110/111/112, which never existed, so HP never showed.
+const TOWER_DEFS = [
+  { id: 1000, name: 'Blue King', team: 0, maxHp: 4008 },
+  { id: 1001, name: 'Red King', team: 1, maxHp: 4008 },
+  { id: 1002, name: 'Blue Left P', team: 0, maxHp: 2534 },
+  { id: 1003, name: 'Blue Right P', team: 0, maxHp: 2534 },
+  { id: 1004, name: 'Red Left P', team: 1, maxHp: 2534 },
+  { id: 1005, name: 'Red Right P', team: 1, maxHp: 2534 },
+];
 
 const CELL_SIZE = 22;
 const PADDING = 12;
@@ -550,7 +701,7 @@ let currentTick = 0;
 let playing = false;
 let playInterval = null;
 let selectedEntityId = null;
-let prevEntities = new Map();
+let matchResult = null;
 
 // DOM elements
 const canvas = document.getElementById('gameCanvas');
@@ -567,6 +718,7 @@ const fileInput = document.getElementById('fileInput');
 const tooltip = document.getElementById('tooltip');
 const tooltipName = document.getElementById('tooltipName');
 const tooltipStat = document.getElementById('tooltipStat');
+const winnerOverlay = document.getElementById('winnerOverlay');
 
 // File loading
 fileInput.addEventListener('change', (e) => {
@@ -603,13 +755,72 @@ function initViewer() {
   canvas.height = h;
   currentTick = 0;
   selectedEntityId = null;
-  prevEntities = new Map();
   scrubber.max = gameData.ticks.length - 1;
   scrubber.value = 0;
 
   detectAllEvents();
+  matchResult = computeMatchResult();
+  updateResultBadge();
   renderTick();
   updateUI();
+}
+
+// Winner detection -- mirrors MatchRules::evaluate exactly: the match ends
+// the instant a King Tower (symbol 'R') dies; if the replay ran to maxTicks
+// with both Kings still alive, that's a timeout draw.
+function computeMatchResult() {
+  if (!gameData || !gameData.ticks.length) return null;
+  const finalTick = gameData.ticks[gameData.ticks.length - 1];
+  const blueKingAlive = finalTick.entities.some(e => e.symbol === 'R' && e.team === 0);
+  const redKingAlive = finalTick.entities.some(e => e.symbol === 'R' && e.team === 1);
+  if (blueKingAlive && redKingAlive) return { winner: 'draw', reason: 'Timeout — both King Towers still standing' };
+  if (!blueKingAlive && !redKingAlive) return { winner: 'draw', reason: 'Both King Towers fell the same tick' };
+  return {
+    winner: blueKingAlive ? 'blue' : 'red',
+    reason: blueKingAlive ? "Red's King Tower destroyed" : "Blue's King Tower destroyed"
+  };
+}
+
+function updateResultBadge() {
+  const el = document.getElementById('resultBadge');
+  if (!matchResult) { el.classList.remove('show'); return; }
+  el.classList.add('show');
+  if (matchResult.winner === 'draw') {
+    el.textContent = '🤝 Draw';
+    el.className = 'result-badge show draw';
+  } else if (matchResult.winner === 'blue') {
+    el.textContent = '🔵 Blue Wins';
+    el.className = 'result-badge show win-blue';
+  } else {
+    el.textContent = '🔴 Red Wins';
+    el.className = 'result-badge show win-red';
+  }
+}
+
+function updateWinnerOverlay() {
+  const isFinalTick = currentTick === gameData.ticks.length - 1;
+  if (!isFinalTick || !matchResult) {
+    winnerOverlay.classList.remove('show');
+    return;
+  }
+  const icon = document.getElementById('winnerIcon');
+  const title = document.getElementById('winnerTitle');
+  const subtitle = document.getElementById('winnerSubtitle');
+  if (matchResult.winner === 'draw') {
+    icon.textContent = '🤝';
+    title.textContent = 'Draw';
+    title.className = 'winner-title draw';
+  } else if (matchResult.winner === 'blue') {
+    icon.textContent = '🏆';
+    title.textContent = 'Blue Wins';
+    title.className = 'winner-title win-blue';
+  } else {
+    icon.textContent = '🏆';
+    title.textContent = 'Red Wins';
+    title.className = 'winner-title win-red';
+  }
+  subtitle.textContent = matchResult.reason;
+  winnerOverlay.classList.add('show');
 }
 
 // Coordinate conversion
@@ -625,6 +836,16 @@ function canvasToGame(cx, cy) {
     gx: (cx - PADDING) / CELL_SIZE,
     gy: gameData.boardHeight - 1 - (cy - PADDING) / CELL_SIZE
   };
+}
+
+// Entity type classification -- ground/air/building/spell -- used to draw a
+// small consistent badge on every entity so ground and air troops (which
+// look identical otherwise now that flying units exist) are never confused.
+function getEntityType(ent) {
+  if (SPELL_SYMBOLS.has(ent.symbol)) return 'spell';
+  if (BUILDING_SYMBOLS.has(ent.symbol)) return 'building';
+  const flying = ent.isFlying !== undefined ? ent.isFlying : FLYING_SYMBOLS_FALLBACK.has(ent.symbol);
+  return flying ? 'air' : 'ground';
 }
 
 // Event detection
@@ -680,17 +901,15 @@ function renderTick() {
 
   ctx.clearRect(0, 0, w, h);
 
-  // Background gradient
+  // Background -- a calmer two-tone split instead of a busy 4-stop gradient.
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#1a0a0a');
-  grad.addColorStop(0.45, '#1a1a10');
-  grad.addColorStop(0.55, '#1a1a10');
-  grad.addColorStop(1, '#0a0a1a');
+  grad.addColorStop(0, '#1c1210');
+  grad.addColorStop(1, '#10121c');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 
-  // Grid lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  // Grid lines (kept faint -- useful for judging placement, not meant to draw the eye)
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
   ctx.lineWidth = 1;
   for (let x = 0; x <= gameData.boardWidth; x++) {
     const px = PADDING + x * CELL_SIZE;
@@ -704,24 +923,8 @@ function renderTick() {
   // River (y = 15 to 17)
   const riverTop = PADDING + (gameData.boardHeight - 17) * CELL_SIZE;
   const riverBottom = PADDING + (gameData.boardHeight - 15) * CELL_SIZE;
-  const riverGrad = ctx.createLinearGradient(0, riverTop, 0, riverBottom);
-  riverGrad.addColorStop(0, 'rgba(30, 80, 140, 0.4)');
-  riverGrad.addColorStop(0.5, 'rgba(40, 100, 170, 0.5)');
-  riverGrad.addColorStop(1, 'rgba(30, 80, 140, 0.4)');
-  ctx.fillStyle = riverGrad;
+  ctx.fillStyle = 'rgba(35, 90, 150, 0.45)';
   ctx.fillRect(PADDING, riverTop, w - PADDING * 2, riverBottom - riverTop);
-
-  // River wave pattern
-  ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
-  ctx.lineWidth = 1;
-  const riverMid = (riverTop + riverBottom) / 2;
-  const time = currentTick * 0.1;
-  ctx.beginPath();
-  for (let px = PADDING; px < w - PADDING; px += 2) {
-    const wy = riverMid + Math.sin(px * 0.05 + time) * 3;
-    if (px === PADDING) ctx.moveTo(px, wy); else ctx.lineTo(px, wy);
-  }
-  ctx.stroke();
 
   // Bridges (2 tiles wide each)
   const bridgePositions = [[3, 4], [13, 14]];
@@ -730,9 +933,6 @@ function renderTick() {
     const bright = PADDING + (bx2 + 1) * CELL_SIZE;
     ctx.fillStyle = 'rgba(139, 105, 20, 0.5)';
     ctx.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
-    ctx.strokeStyle = 'rgba(180, 140, 40, 0.5)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
   }
 
   // Territory divider labels
@@ -756,6 +956,48 @@ function renderTick() {
     if (!SPELL_SYMBOLS.has(ent.symbol)) {
       drawEntity(ent, ent.id === selectedEntityId);
     }
+  }
+}
+
+function drawTypeBadge(ent, pos, radius) {
+  if (ent.symbol === '-') return; // raw projectile is too small for a badge to read
+  const type = getEntityType(ent);
+  const badge = TYPE_BADGE[type];
+  const bx = pos.x + radius * 0.62;
+  const by = pos.y - radius * 0.62;
+
+  ctx.beginPath();
+  ctx.arc(bx, by, 6, 0, Math.PI * 2);
+  ctx.fillStyle = badge.color;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Shape glyph, not a letter -- ground: dot, air: chevron, building: square, spell: diamond
+  ctx.fillStyle = '#0b0d13';
+  ctx.strokeStyle = '#0b0d13';
+  ctx.lineWidth = 1.4;
+  if (type === 'ground') {
+    ctx.beginPath();
+    ctx.arc(bx, by, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (type === 'air') {
+    ctx.beginPath();
+    ctx.moveTo(bx - 3, by + 1.5);
+    ctx.lineTo(bx, by - 2.5);
+    ctx.lineTo(bx + 3, by + 1.5);
+    ctx.stroke();
+  } else if (type === 'building') {
+    ctx.strokeRect(bx - 2.5, by - 2.5, 5, 5);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 3);
+    ctx.lineTo(bx + 3, by);
+    ctx.lineTo(bx, by + 3);
+    ctx.lineTo(bx - 3, by);
+    ctx.closePath();
+    ctx.fill();
   }
 }
 
@@ -784,10 +1026,6 @@ function drawEntity(ent, isSelected) {
     ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = mainColor;
     ctx.fill();
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 5, 0, Math.PI * 2);
-    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.2)' : 'rgba(255, 82, 82, 0.2)';
-    ctx.fill();
     return;
   }
 
@@ -800,10 +1038,10 @@ function drawEntity(ent, isSelected) {
     ctx.stroke();
   }
 
-  // Shadow
+  // Shadow (single, subtle -- previously stacked with an extra glow ring)
   ctx.beginPath();
   ctx.arc(pos.x + 1, pos.y + 2, radius, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.fill();
 
   if (BUILDING_SYMBOLS.has(ent.symbol)) {
@@ -815,20 +1053,6 @@ function drawEntity(ent, isSelected) {
     ctx.lineWidth = 2;
     ctx.strokeRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
 
-    // Inner tile grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-    ctx.lineWidth = 1;
-    for(let i = 1; i < sizeInTiles; i++) {
-       ctx.beginPath();
-       ctx.moveTo(pos.x - sz/2 + i*CELL_SIZE, pos.y - sz/2);
-       ctx.lineTo(pos.x - sz/2 + i*CELL_SIZE, pos.y + sz/2);
-       ctx.stroke();
-       ctx.beginPath();
-       ctx.moveTo(pos.x - sz/2, pos.y - sz/2 + i*CELL_SIZE);
-       ctx.lineTo(pos.x + sz/2, pos.y - sz/2 + i*CELL_SIZE);
-       ctx.stroke();
-    }
-
     // Inner icon
     ctx.fillStyle = mainColor;
     ctx.font = `bold ${radius}px Inter, sans-serif`;
@@ -836,15 +1060,10 @@ function drawEntity(ent, isSelected) {
     ctx.textBaseline = 'middle';
     ctx.fillText(ent.symbol, pos.x, pos.y + 1);
   }
-  // Troops: circle
+  // Troops: flat-ish circle (dropped the extra outer glow ring -- with many
+  // units on screen the overlapping halos were the main source of visual
+  // clutter)
   else if (!SPELL_SYMBOLS.has(ent.symbol)) {
-    // Outer glow
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, radius + 2, 0, Math.PI * 2);
-    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.15)' : 'rgba(255, 82, 82, 0.15)';
-    ctx.fill();
-
-    // Main circle
     const bodyGrad = ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
     bodyGrad.addColorStop(0, mainColor);
     bodyGrad.addColorStop(1, dimColor);
@@ -871,6 +1090,8 @@ function drawEntity(ent, isSelected) {
     ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.6)' : 'rgba(255, 82, 82, 0.6)';
     ctx.fill();
   }
+
+  drawTypeBadge(ent, pos, radius);
 
   if (!SPELL_SYMBOLS.has(ent.symbol)) {
     const maxHp = MAX_HP[ent.symbol] || ent.hp;
@@ -913,31 +1134,24 @@ function updateUI() {
 
   updateHandPanel(tickData);
   updateTowerPanel(tickData);
+  updateAgentBrainPanel(tickData);
   updateInspector(tickData);
   updateEventLog();
+  updateWinnerOverlay();
 }
 
 function updateTowerPanel(tickData) {
-  const towerDefs = [
-    { id: 100, name: 'Blue Left P', team: 0, maxHp: 2534 },
-    { id: 110, name: 'Red Left P', team: 1, maxHp: 2534 },
-    { id: 101, name: 'Blue Right P', team: 0, maxHp: 2534 },
-    { id: 111, name: 'Red Right P', team: 1, maxHp: 2534 },
-    { id: 102, name: 'Blue King', team: 0, maxHp: 4008 },
-    { id: 112, name: 'Red King', team: 1, maxHp: 4008 },
-  ];
-
   const grid = document.getElementById('towerGrid');
   grid.innerHTML = '';
 
-  for (const td of towerDefs) {
+  for (const td of TOWER_DEFS) {
     const ent = tickData.entities.find(e => e.id === td.id);
     const hp = ent ? ent.hp : 0;
     const ratio = hp / td.maxHp;
     const teamColor = td.team === 0 ? 'var(--blue-team)' : 'var(--red-team)';
 
     const card = document.createElement('div');
-    card.className = 'tower-card';
+    card.className = 'tower-card' + (hp <= 0 ? ' destroyed' : '');
     card.innerHTML = `
       <div class="tower-card-header">
         <span class="tower-name">${td.name}</span>
@@ -947,6 +1161,49 @@ function updateTowerPanel(tickData) {
         <div class="tower-hp-fill" style="width:${ratio*100}%; background:${teamColor}"></div>
       </div>`;
     grid.appendChild(card);
+  }
+}
+
+// Shows what the network is "thinking" right now: the critic's state-value
+// estimate (how good it currently believes this position is, roughly
+// bounded around [-1, 1] since the terminal reward is +1/-1) and the action
+// it actually sampled at the decision governing this tick.
+function updateAgentBrainPanel(tickData) {
+  const numEl = document.getElementById('brainValueNum');
+  const fillEl = document.getElementById('brainGaugeFill');
+  const actionEl = document.getElementById('brainActionValue');
+
+  if (tickData.stateValue === undefined) {
+    numEl.textContent = 'N/A';
+    numEl.style.color = 'var(--text-muted)';
+    fillEl.style.width = '0%';
+    actionEl.textContent = 'No data (older replay file)';
+    return;
+  }
+
+  const v = tickData.stateValue;
+  numEl.textContent = v.toFixed(3);
+  numEl.style.color = v >= 0 ? 'var(--accent-green)' : 'var(--red-team)';
+
+  const clamped = Math.max(-1.5, Math.min(1.5, v));
+  const pct = (clamped / 1.5) * 50; // -50..+50
+  if (pct >= 0) {
+    fillEl.style.left = '50%';
+    fillEl.style.width = pct + '%';
+    fillEl.style.background = 'var(--accent-green)';
+  } else {
+    fillEl.style.left = (50 + pct) + '%';
+    fillEl.style.width = (-pct) + '%';
+    fillEl.style.background = 'var(--red-team)';
+  }
+
+  if (tickData.actionCardId === undefined) {
+    actionEl.textContent = 'N/A';
+  } else if (tickData.actionCardId === -1 || tickData.actionCardId === null) {
+    actionEl.textContent = 'No-op (holding elixir)';
+  } else {
+    const name = tickData.actionCardName || `Card #${tickData.actionCardId}`;
+    actionEl.textContent = `${name} → (${tickData.actionX.toFixed(1)}, ${tickData.actionY.toFixed(1)})`;
   }
 }
 
@@ -964,11 +1221,14 @@ function updateInspector(tickData) {
   const name = SYMBOL_NAMES[ent.symbol] || ent.symbol;
   const teamStr = ent.team === 0 ? '<span style="color:var(--blue-team)">Blue</span>' : '<span style="color:var(--red-team)">Red</span>';
   const maxHp = MAX_HP[ent.symbol] || '?';
+  const type = getEntityType(ent);
+  const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[type];
 
   el.innerHTML = `
     <div class="inspector-detail"><span>Name:</span> <strong>${name}</strong></div>
     <div class="inspector-detail"><span>ID:</span> <strong>${ent.id}</strong></div>
     <div class="inspector-detail"><span>Team:</span> ${teamStr}</div>
+    <div class="inspector-detail"><span>Type:</span> <strong>${typeLabel}</strong></div>
     <div class="inspector-detail"><span>HP:</span> <strong>${ent.hp}</strong> / ${maxHp}</div>
     <div class="inspector-detail"><span>Position:</span> <strong>(${ent.x.toFixed(1)}, ${ent.y.toFixed(1)})</strong></div>
     <div class="inspector-detail"><span>Symbol:</span> <strong>${ent.symbol}</strong></div>`;
@@ -1082,7 +1342,7 @@ canvas.addEventListener('click', (e) => {
     const pos = gameToCanvas(ent.x, ent.y);
     const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
     const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
-    
+
     // For buildings, use a larger hit area based on their tile size
     let checkRadius = hitRadius;
     if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
@@ -1114,7 +1374,7 @@ canvas.addEventListener('mousemove', (e) => {
     const pos = gameToCanvas(ent.x, ent.y);
     const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
     const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
-    
+
     // For buildings, use a larger hit area based on their tile size
     let checkRadius = hitRadius;
     if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
@@ -1126,8 +1386,9 @@ canvas.addEventListener('mousemove', (e) => {
   if (hovered) {
     const name = SYMBOL_NAMES[hovered.symbol] || hovered.symbol;
     const teamStr = hovered.team === 0 ? 'Blue' : 'Red';
+    const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[getEntityType(hovered)];
     tooltipName.textContent = `${name} (${teamStr})`;
-    tooltipStat.textContent = `HP: ${hovered.hp} | Pos: (${hovered.x.toFixed(1)}, ${hovered.y.toFixed(1)})`;
+    tooltipStat.textContent = `${typeLabel} | HP: ${hovered.hp} | Pos: (${hovered.x.toFixed(1)}, ${hovered.y.toFixed(1)})`;
     tooltip.style.display = 'block';
     tooltip.style.left = (cx + 15) + 'px';
     tooltip.style.top = (cy - 10) + 'px';

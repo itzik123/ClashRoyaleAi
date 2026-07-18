@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import torch
 import torch.nn as nn
@@ -80,6 +81,26 @@ def make_env():
     def _init():
         return gym_wrapper.MicroRoyaleEnv()
     return _init
+
+def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
+    """Merge per-decision agent internals (critic's state value, chosen action) into
+    an already-saved replay JSON, one skip_frames-wide tick window per decision, so
+    the viewer can show what the network was "thinking" at any scrubbed tick without
+    needing its own copy of the model."""
+    with open(filepath, "r") as f:
+        data = json.load(f)
+
+    card_names = data.get("cardNames", {})
+    for i, tick in enumerate(data["ticks"]):
+        decision = decisions[min(i // skip_frames, len(decisions) - 1)]
+        tick["stateValue"] = decision["stateValue"]
+        tick["actionCardId"] = decision["actionCardId"]
+        tick["actionCardName"] = card_names.get(str(decision["actionCardId"]), "No-op")
+        tick["actionX"] = decision["actionX"]
+        tick["actionY"] = decision["actionY"]
+
+    with open(filepath, "w") as f:
+        json.dump(data, f)
 
 def train_ppo():
     os.makedirs("replays", exist_ok=True)
@@ -618,18 +639,31 @@ def train_ppo():
             t_hx = torch.zeros(1, 256).to(device)
             t_cx = torch.zeros(1, 256).to(device)
             t_done = False
+            t_decisions = []
+            REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, _, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                t_logits, t_norm, _, t_value, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
+                t_card_idx = t_idx.item()
+                t_hand = test_env.game.get_hand()
+                t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
                 t_action = {
-                    "card_index": np.array([t_idx.item()]),
+                    "card_index": np.array([t_card_idx]),
                     "target_x": np.array([torch.clamp(t_norm[0,0]*MAX_X, 0.0, MAX_X).item()]),
                     "target_y": np.array([torch.clamp(t_norm[0,1]*MAX_Y_AI, 0.0, MAX_Y_AI).item()])
                 }
-                t_obs, _, t_terminated, t_truncated, _ = test_env.step(t_action)
+                t_decisions.append({
+                    "stateValue": t_value.item(),
+                    "actionCardId": t_card_id,
+                    "actionX": float(t_action["target_x"][0]),
+                    "actionY": float(t_action["target_y"][0]),
+                })
+                t_obs, _, t_terminated, t_truncated, _ = test_env.step(t_action, skip_frames=REPLAY_SKIP_FRAMES)
                 t_done = t_terminated or t_truncated
-            test_env.game.save_log(f"replays/replay_ep{episodes_completed}.json")
+            replay_path = f"replays/replay_ep{episodes_completed}.json"
+            test_env.game.save_log(replay_path)
+            annotate_replay_with_agent_info(replay_path, t_decisions, REPLAY_SKIP_FRAMES)
             last_replay_ep = episodes_completed
 
     writer.close()

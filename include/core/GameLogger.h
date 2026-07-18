@@ -12,6 +12,7 @@ struct EntitySnapshot {
     int hp;
     int team;
     char symbol;
+    bool isFlying;
 };
 
 struct TickSnapshot {
@@ -62,6 +63,7 @@ public:
             es.hp = entity->hp;
             es.team = entity->team;
             es.symbol = entity->symbol;
+            es.isFlying = entity->isFlying;
             snap.entities.push_back(es);
         }
 
@@ -144,7 +146,8 @@ public:
                      << ",\"y\":" << ey.str()
                      << ",\"hp\":" << ent.hp
                      << ",\"team\":" << ent.team
-                     << ",\"symbol\":\"" << escapeChar(ent.symbol) << "\"}";
+                     << ",\"symbol\":\"" << escapeChar(ent.symbol) << "\""
+                     << ",\"isFlying\":" << (ent.isFlying ? "true" : "false") << "}";
 
                 if (e + 1 < snap.entities.size()) file << ",";
                 file << "\n";
