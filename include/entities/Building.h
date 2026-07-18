@@ -1,5 +1,6 @@
 #pragma once
 #include "CombatEntity.h"
+#include "StatsEvents.h"
 
 class Building : public CombatEntity {
 protected:
@@ -30,13 +31,25 @@ public:
                 int decayAmount = maxHp / decayIntervals;
                 if (decayAmount <= 0) decayAmount = 1;
                 takeDamage(decayAmount);
+                // Not a DamageDealtEvent -- decay has no attacker, it's not a
+                // combat event. But it DOES mean any earlier combat hit this
+                // building took is no longer what's actually killing it, so
+                // tell KillStatsCollector to drop that stale attribution
+                // (every decay tick, not just the lethal one, since staying
+                // silent on the non-lethal ticks would leave a stale entry
+                // to wrongly resurface if this building dies on a later
+                // decay tick without having been re-hit in between).
+                board.statsEvents.notifyAttributionCleared({ id });
             }
         }
     }
 
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
-        target->takeDamage(getCurrentDamage());
+        int dealt = getCurrentDamage();
+        target->takeDamage(dealt);
+        board.statsEvents.notifyDamageDealt(
+            { id, team, cardId, target->id, target->cardId, target->team, dealt, board.currentTick });
         applyOnHitEffects(target);
     }
 };

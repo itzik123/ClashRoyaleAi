@@ -3,6 +3,7 @@
 #include "CombatEntity.h"
 #include "OnHitEffect.h"
 #include "Board.h"
+#include "StatsEvents.h"
 #include <memory>
 
 class AreaSpell : public CardEntity {
@@ -49,6 +50,12 @@ public:
                 float dist = position.distanceTo(entity->position);
                 if (dist <= radius) {
                     entity->takeDamage(damage);
+                    // The spell entity itself is the "attacker" -- it never
+                    // has a separate caster once cast (the troop/tower that
+                    // played the card is already gone by the time this
+                    // fires, for spawn-effect zaps like Electro Wizard's).
+                    board.statsEvents.notifyDamageDealt(
+                        { id, team, cardId, entity->id, entity->cardId, entity->team, damage, board.currentTick });
                     // Same surgical cast as CombatEntity::applyOnHitEffects and
                     // Projectile's arrival handler -- on-hit effects only ever
                     // mean something against a CombatEntity, so this is the one

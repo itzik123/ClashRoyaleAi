@@ -1,5 +1,6 @@
 #pragma once
 #include "Troop.h"
+#include "StatsEvents.h"
 
 class MeleeTroop : public Troop {
 public:
@@ -9,7 +10,10 @@ public:
 
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
-        target->takeDamage(getCurrentDamage());
+        int dealt = getCurrentDamage();
+        target->takeDamage(dealt);
+        board.statsEvents.notifyDamageDealt(
+            { id, team, cardId, target->id, target->cardId, target->team, dealt, board.currentTick });
         applyOnHitEffects(target);
     }
 };

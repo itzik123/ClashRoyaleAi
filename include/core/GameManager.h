@@ -1,15 +1,25 @@
 #pragma once
 #include "Board.h"
-#include "PlayerState.h" 
+#include "PlayerState.h"
 #include "Tower.h"
 #include "MatchRules.h"
+#include "MatchStatistics.h"
 #include <algorithm>
 #include <vector>
 #include <string>
 
 class GameManager {
+public:
+    // Reserved cardId sentinels for Towers -- they're built directly here,
+    // never through CardRegistry, so they need a stable, non-clashing id of
+    // their own for stats collectors to key on instead of string-matching
+    // `name`. Negative so they can never collide with a real CardRegistry id.
+    static constexpr int TOWER_KING_ID = -2;
+    static constexpr int TOWER_PRINCESS_ID = -3;
+
 private:
     Board board;
+    MatchStatistics stats;
     int currentTick;
     bool gameOver;
     int loserTeam;
@@ -29,6 +39,7 @@ private:
         char symbol, const std::string& towerName) {
         auto tower = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, attackRange, damage, attackCooldown, symbol);
         tower->name = towerName;
+        tower->cardId = (symbol == 'R') ? TOWER_KING_ID : TOWER_PRINCESS_ID;
         board.addEntity(tower);
     }
 
@@ -53,6 +64,7 @@ public:
 
     Board& getBoard() { return board; }
     const Board& getBoard() const { return board; }
+    const MatchStatistics& getStatistics() const { return stats; }
 
     float getElixirAI() const { return playerAI.elixir; }
     float getElixirOpp() const { return playerOpponent.elixir; }
@@ -117,6 +129,7 @@ public:
         int cardId = player.playCard(handIndex);
         if (cardId != -1) {
             cardDef->spawnEntity(x, y, team, board);
+            board.statsEvents.notifyCardPlayed({ team, cardId, cardDef->cost, x, y, currentTick });
             return true;
         }
         return false;
@@ -124,6 +137,12 @@ public:
 
     void reset() {
         board = Board();
+        // First line after replacing board -- board = Board() destroys the
+        // old Board's statsEvents subscriber list along with it, so stats
+        // needs fresh collectors subscribed to the *new* bus before
+        // anything below (the addTower() spawns, the final
+        // commitPendingEntities()) fires a single event.
+        stats.attach(board);
         currentTick = 0;
         gameOver = false;
         loserTeam = -1;
@@ -139,32 +158,34 @@ public:
         addTower(3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
         addTower(14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
 
-        board.commitPendingEntities();
+        board.commitPendingEntities(currentTick);
     }
 
     void step() {
         if (gameOver) return;
 
         currentTick++;
+        board.currentTick = currentTick;
 
         playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE, 10.0f);
         playerOpponent.elixir = std::min(playerOpponent.elixir + ELIXIR_REGEN_RATE * oppElixirMultiplier, 10.0f);
 
-        board.commitPendingEntities();
+        board.commitPendingEntities(currentTick);
 
         for (auto& entity : board.getEntities()) {
             if (entity->isAlive()) entity->update(board);
         }
 
-        board.commitPendingEntities();
+        board.commitPendingEntities(currentTick);
         board.resolveCollisions();
 
         MatchRules::Outcome outcome = MatchRules::evaluate(board);
         if (outcome.over) {
             gameOver = true;
             loserTeam = outcome.loserTeam;
+            board.statsEvents.notifyMatchEnded({ loserTeam, currentTick });
         }
 
-        board.cleanDeadEntities();
+        board.cleanDeadEntities(currentTick);
     }
 };

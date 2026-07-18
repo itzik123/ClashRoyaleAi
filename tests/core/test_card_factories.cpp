@@ -81,6 +81,71 @@ TEST_CASE("applyCardMetadata copies isFlying/targetsAir onto the spawned entity"
     }
 }
 
+TEST_CASE("applyCardMetadata copies cardId (stats.id) onto the spawned entity", "[card_factories][cardId]") {
+    Board board;
+    CardStats stats = makeTroopStats();
+    stats.id = 42;
+
+    SECTION("spawnMeleeSquad") {
+        CardFactories::spawnMeleeSquad(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 42);
+    }
+
+    SECTION("spawnRangedSquad") {
+        CardFactories::spawnRangedSquad(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 42);
+    }
+
+    SECTION("spawnMeleeBuildingTargeter") {
+        CardFactories::spawnMeleeBuildingTargeter(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 42);
+    }
+
+    SECTION("spawnRangedBuildingTargeter") {
+        CardFactories::spawnRangedBuildingTargeter(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 42);
+    }
+
+    SECTION("spawnDefensiveBuilding") {
+        CardFactories::spawnDefensiveBuilding(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 42);
+    }
+}
+
+TEST_CASE("spawnSpell and spawnDeployEffect also set cardId, even though they bypass applyCardMetadata", "[card_factories][cardId]") {
+    Board board;
+
+    SECTION("spawnSpell") {
+        CardStats stats;
+        stats.id = 7;
+        stats.name = "TestSpell";
+        stats.archetype = Archetype::Spell;
+        stats.spellRadius = 3.0f;
+        stats.damage = 100;
+        stats.spellDelayTicks = 0;
+        stats.symbol = '*';
+
+        CardFactories::spawnSpell(stats, 5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 7);
+    }
+
+    SECTION("spawnDeployEffect (via spawnMeleeSquad's trailing call)") {
+        CardStats stats = makeTroopStats();
+        stats.id = 35;
+        stats.withSpawnEffect(3.0f, 50);
+
+        CardFactories::spawnMeleeSquad(stats, 5.0f, 5.0f, 0, board); // troop + deploy-effect AreaSpell
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->cardId == 35); // the deploy-effect entity, spawned last
+    }
+}
+
 TEST_CASE("Troop-shaped factories derive ignoresRiver from isFlying, even when ignoresRiver itself is false", "[card_factories][flying][river]") {
     Board board;
     CardStats stats = makeTroopStats();

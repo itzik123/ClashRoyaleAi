@@ -3,6 +3,7 @@
 #include <memory>
 #include <algorithm>
 #include "Entity.h"
+#include "StatsEventBus.h"
 
 class Board {
 private:
@@ -17,6 +18,25 @@ private:
     Vector2D rightBridge{ 14.0f, 16.0f };
 
 public:
+    // Public, not a getter-wrapped private member: every fire site
+    // (entities, GameManager) already holds a Board& and just calls
+    // board.statsEvents.notifyX(...) directly, the same way they already
+    // read board.getEntities()/call board.addEntity(...).
+    StatsEventBus statsEvents;
+
+    // Set once per tick by GameManager::step() (board.currentTick =
+    // currentTick;), read by combat code deep in the update()/performAttack()
+    // call chain (Projectile::applyHit, AreaSpell::update, Building/
+    // MeleeTroop/BuildingTargeter::performAttack) to stamp DamageDealtEvent.
+    // Unlike commitPendingEntities()/cleanDeadEntities() below -- which take
+    // an explicit tick parameter because GameManager calls them directly --
+    // there's no parameter-passing route all the way down through every
+    // update() override without threading a tick argument through the whole
+    // entity hierarchy, which would be a far bigger, more invasive change
+    // than this one field. Board doesn't act on this value itself, purely a
+    // read-only convenience for whoever's stamping an event.
+    int currentTick = 0;
+
     Board(int w = 18, int h = 32) : width(w), height(h) {}
 
     int allocateId() { return idCounter++; }
@@ -34,8 +54,17 @@ public:
         pendingEntities.push_back(entity);
     }
 
-    void commitPendingEntities() {
+    // tick defaults to 0 (rather than Board storing its own tick mirror,
+    // which would be a second, driftable copy of GameManager's currentTick
+    // -- exactly the kind of duplication this codebase avoids elsewhere,
+    // e.g. getRiverStart()/getWidth() existing so GameManager doesn't
+    // re-guess them). GameManager::step() passes the real tick; the several
+    // existing tickless test call sites keep compiling unchanged.
+    void commitPendingEntities(int tick = 0) {
         if (!pendingEntities.empty()) {
+            for (const auto& e : pendingEntities) {
+                statsEvents.notifyEntitySpawned({ e->id, e->cardId, e->team, tick });
+            }
             activeEntities.insert(activeEntities.end(), pendingEntities.begin(), pendingEntities.end());
             pendingEntities.clear();
         }
@@ -45,13 +74,16 @@ public:
         return activeEntities;
     }
 
-    void cleanDeadEntities() {
+    void cleanDeadEntities(int tick = 0) {
         // Fire death effects (e.g. Golem spawning two Golemites) before the
         // erase below, purely via Entity's own virtual onDeath() -- Board
         // never needs to know which entities are CombatEntity-shaped enough
         // to actually have one, same as clampPosition().
         for (const auto& e : activeEntities) {
-            if (!e->isAlive()) e->onDeath(*this);
+            if (!e->isAlive()) {
+                e->onDeath(*this);
+                statsEvents.notifyEntityDied({ e->id, e->cardId, e->team, tick });
+            }
         }
 
         activeEntities.erase(

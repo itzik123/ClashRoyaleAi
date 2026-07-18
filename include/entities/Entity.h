@@ -32,6 +32,14 @@ public:
     // through every derived class's constructor.
     std::string name;
 
+    // Which CardRegistry card produced this entity (CardStats::id), or a
+    // reserved negative sentinel for entities that aren't in CardRegistry at
+    // all (Towers -- see GameManager::TOWER_KING_ID/TOWER_PRINCESS_ID). -1
+    // (the default) means "never assigned", which nothing should treat as a
+    // valid card. Exists so stats collectors can key by a reliable int
+    // instead of the coincidental, unenforced `name` string.
+    int cardId = -1;
+
     // Plain field, not a virtual/CombatEntity member: both
     // CombatEntity::findTarget() and Board::resolveCollisions() need to read
     // this on arbitrary Entity candidates in tight per-tick loops, and a

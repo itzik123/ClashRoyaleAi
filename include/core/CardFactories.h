@@ -26,6 +26,7 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
 // target-split configuration (both no-ops unless a card opts in).
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
+    entity->cardId = stats.id;
     entity->isFlying = stats.isFlying;
     entity->targetsAir = stats.targetsAir;
     entity->deathEffect = stats.deathEffect;
@@ -68,6 +69,7 @@ inline void spawnDeployEffect(const CardStats& stats, float x, float y, int team
         board.allocateId(), x, y, team, stats.spawnEffectRadius, stats.spawnEffectDamage,
         0, stats.symbol, stats.spawnEffectOnHit);
     effect->name = stats.name;
+    effect->cardId = stats.id;
     board.addEntity(effect);
 }
 
@@ -138,6 +140,7 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
         board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol,
         nullptr, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval);
     spell->name = stats.name;
+    spell->cardId = stats.id;
     board.addEntity(spell);
 }
 

@@ -238,6 +238,65 @@ TEST_CASE("step()'s post-collision re-clamp respects riverIgnores (regression te
     REQUIRE(hog->position.y < 17.0f);
 }
 
+// ---------------- statistics ----------------
+
+TEST_CASE("A full scripted mini-match produces sane getStatistics() output", "[game_manager][statistics]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    Board& board = game.getBoard();
+
+    bool played = game.playCard(0, 0, 9.0f, 10.0f); // Knight, cost 3.0
+    REQUIRE(played);
+
+    // Right next to the Knight's placement, well within its effective
+    // attack range -- combat should start on the very first step().
+    auto enemy = std::make_shared<DummyEntity>(board.allocateId(), 9.0f, 10.5f, 1000, 1);
+    spawn(board, enemy);
+
+    for (int i = 0; i < 5; ++i) game.step();
+
+    const auto& stats = game.getStatistics();
+    REQUIRE(stats.elixirSpent(0) == Catch::Approx(3.0f));
+    REQUIRE(stats.cardsPlayed(0).size() == 1);
+    REQUIRE(stats.cardsPlayed(0)[0].cardId == 0);
+    REQUIRE(stats.totalDamageDealt(0) > 0); // the Knight landed at least one hit
+    REQUIRE(stats.damageDealtByCard(0, 0) > 0);
+    REQUIRE(stats.loserTeam() == -1); // match still ongoing
+    REQUIRE(stats.matchDurationTicks() == 0); // MatchEndedEvent hasn't fired yet
+}
+
+TEST_CASE("GameManager::reset() gives a fresh MatchStatistics, not stale numbers from the previous match", "[game_manager][statistics]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    bool played = game.playCard(0, 0, 9.0f, 10.0f); // Knight, cost 3.0
+    REQUIRE(played);
+    game.step();
+
+    REQUIRE(game.getStatistics().elixirSpent(0) == Catch::Approx(3.0f));
+    REQUIRE(game.getStatistics().cardsPlayed(0).size() == 1);
+
+    game.reset();
+
+    REQUIRE(game.getStatistics().elixirSpent(0) == Catch::Approx(0.0f));
+    REQUIRE(game.getStatistics().cardsPlayed(0).empty());
+
+    // The fresh stats object must actually be listening to the NEW board,
+    // not silently detached -- play another card post-reset and confirm
+    // it's picked up.
+    bool playedAgain = game.playCard(0, 0, 9.0f, 10.0f);
+    REQUIRE(playedAgain);
+    REQUIRE(game.getStatistics().elixirSpent(0) == Catch::Approx(3.0f));
+}
+
+TEST_CASE("getStatistics() reports the match outcome once the game ends", "[game_manager][statistics]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    auto aiKing = game.getBoard().getEntities()[0];
+    aiKing->takeDamage(aiKing->hp);
+
+    game.step();
+
+    REQUIRE(game.getStatistics().loserTeam() == 0);
+    REQUIRE(game.getStatistics().matchDurationTicks() == 1);
+}
+
 // ---------------- fixed: PlayerState::playCard on an empty deckQueue ----------------
 
 TEST_CASE("PlayerState::playCard does not spend elixir when the deck queue is empty", "[player_state]") {

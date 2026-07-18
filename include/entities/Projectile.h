@@ -3,6 +3,7 @@
 #include "CombatEntity.h"
 #include "Board.h"
 #include "OnHitEffect.h"
+#include "StatsEvents.h"
 #include <memory>
 #include <vector>
 
@@ -16,6 +17,13 @@ private:
     float speed;
     int damage;
     std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
+
+    // Who fired this -- needed only to stamp DamageDealtEvent on arrival
+    // (the shooter itself is long done with its own performAttack() call by
+    // the time this lands, so the projectile has to carry the identity
+    // forward itself).
+    int attackerId;
+    int attackerCardId;
 
     // Boomerang support (Executioner): after the outbound hit lands, instead
     // of dying immediately, wait returnDelayTicks and hit the same target
@@ -31,10 +39,11 @@ private:
 public:
     Projectile(int id, float x, float y, int team, std::weak_ptr<Entity> target, float speed, int damage,
         std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects = {},
-        bool returnsToSender = false, int returnDelayTicks = 0)
+        bool returnsToSender = false, int returnDelayTicks = 0,
+        int attackerId = -1, int attackerCardId = -1)
         : Entity(id, x, y, 1, team, '-'), target(target), speed(speed), damage(damage),
-        onHitEffects(std::move(onHitEffects)), returnsToSender(returnsToSender),
-        returnDelayTicks(returnDelayTicks) {}
+        onHitEffects(std::move(onHitEffects)), attackerId(attackerId), attackerCardId(attackerCardId),
+        returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
 
     bool isTargetable() const override { return false; }
 
@@ -49,7 +58,7 @@ public:
             float dist = position.distanceTo(t->position);
             if (dist <= speed) {
                 position = t->position; // snap to the impact point before dying
-                applyHit(t);
+                applyHit(board, t);
                 outboundHitLanded = true;
                 if (!returnsToSender) hp = 0; // normal projectile: done after one hit
                 // else: stay alive, waiting out the return trip below
@@ -62,14 +71,16 @@ public:
         } else if (returnDelayTicks > 0) {
             returnDelayTicks--;
         } else {
-            applyHit(t); // return trip complete: second hit, same target
+            applyHit(board, t); // return trip complete: second hit, same target
             hp = 0;
         }
     }
 
 private:
-    void applyHit(const std::shared_ptr<Entity>& t) {
+    void applyHit(Board& board, const std::shared_ptr<Entity>& t) {
         t->takeDamage(damage);
+        board.statsEvents.notifyDamageDealt(
+            { attackerId, team, attackerCardId, t->id, t->cardId, t->team, damage, board.currentTick });
         // On-hit effects (e.g. Ice Wizard's freeze) fire on arrival, not
         // when the shot was fired -- they ride along with the projectile
         // instead of applying instantly at the shooter. Only meaningful

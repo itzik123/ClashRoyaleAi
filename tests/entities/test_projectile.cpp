@@ -2,6 +2,15 @@
 #include "test_helpers.h"
 #include "Projectile.h"
 #include "FreezeOnHit.h"
+#include "StatsEventBus.h"
+
+namespace {
+    class DamageRecorder : public IStatsObserver {
+    public:
+        std::vector<DamageDealtEvent> hits;
+        void onDamageDealt(const DamageDealtEvent& e) override { hits.push_back(e); }
+    };
+}
 
 TEST_CASE("Projectile is never itself a valid combat target", "[projectile]") {
     Board board;
@@ -177,4 +186,48 @@ TEST_CASE("Boomerang projectile applies its on-hit effect on both the outbound a
     p.update(board); // return trip (0-tick delay): second hit re-applies the freeze
     REQUIRE(target->freezeTicks == 5);
     REQUIRE_FALSE(p.isAlive());
+}
+
+// ---------------- attacker identity (DamageDealtEvent) ----------------
+
+TEST_CASE("Projectile stamps DamageDealtEvent with the attacker identity it was constructed with", "[projectile][stats]") {
+    Board board;
+    auto recorder = std::make_shared<DamageRecorder>();
+    board.statsEvents.subscribe(recorder);
+
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1);
+    target->cardId = 99;
+    spawn(board, target);
+
+    // attackerId=7, team=0, attackerCardId=3
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 50, {}, false, 0, 7, 3);
+    p.update(board);
+
+    REQUIRE(recorder->hits.size() == 1);
+    REQUIRE(recorder->hits[0].attackerId == 7);
+    REQUIRE(recorder->hits[0].attackerTeam == 0);
+    REQUIRE(recorder->hits[0].attackerCardId == 3);
+    REQUIRE(recorder->hits[0].targetId == 1);
+    REQUIRE(recorder->hits[0].targetCardId == 99);
+    REQUIRE(recorder->hits[0].targetTeam == 1);
+    REQUIRE(recorder->hits[0].amount == 50);
+}
+
+TEST_CASE("Boomerang projectile stamps the same attacker identity on both the outbound and return hits", "[projectile][stats][boomerang]") {
+    Board board;
+    auto recorder = std::make_shared<DamageRecorder>();
+    board.statsEvents.subscribe(recorder);
+
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1);
+    spawn(board, target);
+
+    Projectile p(2, 0.0f, 0.0f, 0, target, 2.0f, 100, {}, true, 0, 7, 3); // 0-tick return delay
+    p.update(board); // outbound hit
+    p.update(board); // return hit (immediate, 0-tick delay)
+
+    REQUIRE(recorder->hits.size() == 2);
+    for (const auto& hit : recorder->hits) {
+        REQUIRE(hit.attackerId == 7);
+        REQUIRE(hit.attackerCardId == 3);
+    }
 }
