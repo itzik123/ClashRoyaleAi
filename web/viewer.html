@@ -104,6 +104,41 @@
     min-width: 0;
     min-height: 0;
   }
+  .arena-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .gauge-panel {
+    width: 200px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .gauge-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+  }
+  .gauge-value {
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    margin-top: -10px;
+  }
+  .gauge-action {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.4;
+  }
+  .gauge-action strong { color: var(--text-primary); }
   .canvas-wrapper {
     position: relative;
     border-radius: 12px;
@@ -321,52 +356,6 @@
   }
   .tower-card.destroyed { opacity: 0.45; }
 
-  /* Agent Brain panel */
-  .brain-value-row, .brain-action-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    font-size: 12px;
-    margin-bottom: 4px;
-  }
-  .brain-label { color: var(--text-secondary); }
-  .brain-value-num {
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .brain-gauge-bg {
-    position: relative;
-    height: 10px;
-    background: var(--bg-primary);
-    border-radius: 5px;
-    overflow: hidden;
-    margin: 6px 0 12px;
-    border: 1px solid var(--border);
-  }
-  .brain-gauge-fill {
-    position: absolute;
-    top: 0;
-    height: 100%;
-    transition: left 0.12s, width 0.12s, background 0.12s;
-  }
-  .brain-gauge-center {
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background: rgba(255,255,255,0.35);
-  }
-  .brain-action-value {
-    font-weight: 600;
-    color: var(--text-primary);
-    text-align: right;
-    max-width: 170px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* Entity inspector */
   .inspector-empty {
     font-size: 12px;
@@ -525,17 +514,25 @@
 
 <div class="main-layout">
   <div class="arena-panel">
-    <div class="canvas-wrapper">
-      <canvas id="gameCanvas"></canvas>
-      <div class="tooltip" id="tooltip">
-        <div class="tooltip-name" id="tooltipName"></div>
-        <div class="tooltip-stat" id="tooltipStat"></div>
+    <div class="arena-row">
+      <div class="gauge-panel">
+        <div class="gauge-title">Agent Brain (Blue)</div>
+        <canvas id="gaugeCanvas" width="200" height="140"></canvas>
+        <div class="gauge-value" id="gaugeValueText">--</div>
+        <div class="gauge-action" id="gaugeActionText">--</div>
       </div>
-      <div class="winner-overlay" id="winnerOverlay">
-        <div class="winner-card">
-          <div class="winner-icon" id="winnerIcon">🏆</div>
-          <div class="winner-title" id="winnerTitle">--</div>
-          <div class="winner-subtitle" id="winnerSubtitle">--</div>
+      <div class="canvas-wrapper">
+        <canvas id="gameCanvas"></canvas>
+        <div class="tooltip" id="tooltip">
+          <div class="tooltip-name" id="tooltipName"></div>
+          <div class="tooltip-stat" id="tooltipStat"></div>
+        </div>
+        <div class="winner-overlay" id="winnerOverlay">
+          <div class="winner-card">
+            <div class="winner-icon" id="winnerIcon">🏆</div>
+            <div class="winner-title" id="winnerTitle">--</div>
+            <div class="winner-subtitle" id="winnerSubtitle">--</div>
+          </div>
         </div>
       </div>
     </div>
@@ -554,23 +551,6 @@
         <div class="elixir-label" style="color:var(--red-team)">Red</div>
         <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarOpp"></div></div>
         <div class="elixir-value" id="elixirValOpp">5.0</div>
-      </div>
-    </div>
-
-    <!-- Agent Brain -->
-    <div class="panel">
-      <div class="panel-title">Agent Brain (Blue)</div>
-      <div class="brain-value-row">
-        <span class="brain-label">State Value</span>
-        <span class="brain-value-num" id="brainValueNum">--</span>
-      </div>
-      <div class="brain-gauge-bg">
-        <div class="brain-gauge-fill" id="brainGaugeFill"></div>
-        <div class="brain-gauge-center"></div>
-      </div>
-      <div class="brain-action-row">
-        <span class="brain-label">Action</span>
-        <span class="brain-action-value" id="brainActionValue">--</span>
       </div>
     </div>
 
@@ -1134,7 +1114,7 @@ function updateUI() {
 
   updateHandPanel(tickData);
   updateTowerPanel(tickData);
-  updateAgentBrainPanel(tickData);
+  updateAgentBrain(tickData);
   updateInspector(tickData);
   updateEventLog();
   updateWinnerOverlay();
@@ -1165,37 +1145,92 @@ function updateTowerPanel(tickData) {
 }
 
 // Shows what the network is "thinking" right now: the critic's state-value
-// estimate (how good it currently believes this position is, roughly
-// bounded around [-1, 1] since the terminal reward is +1/-1) and the action
-// it actually sampled at the decision governing this tick.
-function updateAgentBrainPanel(tickData) {
-  const numEl = document.getElementById('brainValueNum');
-  const fillEl = document.getElementById('brainGaugeFill');
-  const actionEl = document.getElementById('brainActionValue');
+// estimate (how good it currently believes this position is) as a
+// speedometer-style dial, plus the action it actually sampled at the
+// decision governing this tick. Gauge range is +/-2 -- observed values
+// during real training stay within that band (e.g. a decisive winning
+// position reads ~+1.2, a losing one ~-1.3), so +/-2 gives headroom
+// without wasting most of the dial on extremes that don't really happen.
+const GAUGE_RANGE = 2.0;
+const gaugeCanvas = document.getElementById('gaugeCanvas');
+const gaugeCtx = gaugeCanvas.getContext('2d');
+
+function drawGauge(stateValue) {
+  const w = gaugeCanvas.width, h = gaugeCanvas.height;
+  gaugeCtx.clearRect(0, 0, w, h);
+
+  const cx = w / 2, cy = h - 18, r = 68;
+  const hasData = stateValue !== undefined;
+  const clamped = Math.max(-GAUGE_RANGE, Math.min(GAUGE_RANGE, hasData ? stateValue : 0));
+  const t = (clamped + GAUGE_RANGE) / (2 * GAUGE_RANGE); // 0..1 across the dial
+
+  // Background arc: red (negative) left half, green (positive) right half --
+  // canvas angle Math.PI = pointing left, 1.5*Math.PI = up, 2*Math.PI = right.
+  gaugeCtx.lineWidth = 10;
+  gaugeCtx.lineCap = 'round';
+  gaugeCtx.strokeStyle = 'rgba(255, 82, 82, 0.35)';
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, r, Math.PI, 1.5 * Math.PI);
+  gaugeCtx.stroke();
+  gaugeCtx.strokeStyle = 'rgba(74, 222, 128, 0.35)';
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, r, 1.5 * Math.PI, 2 * Math.PI);
+  gaugeCtx.stroke();
+
+  // Ticks + labels at -2, -1, 0, +1, +2
+  gaugeCtx.font = '10px Inter, sans-serif';
+  gaugeCtx.textAlign = 'center';
+  gaugeCtx.textBaseline = 'middle';
+  for (let tv = -GAUGE_RANGE; tv <= GAUGE_RANGE; tv += 1) {
+    const tt = (tv + GAUGE_RANGE) / (2 * GAUGE_RANGE);
+    const angle = Math.PI + tt * Math.PI;
+    const x1 = cx + (r - 8) * Math.cos(angle), y1 = cy + (r - 8) * Math.sin(angle);
+    const x2 = cx + (r + 4) * Math.cos(angle), y2 = cy + (r + 4) * Math.sin(angle);
+    gaugeCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+    gaugeCtx.lineWidth = 2;
+    gaugeCtx.beginPath();
+    gaugeCtx.moveTo(x1, y1);
+    gaugeCtx.lineTo(x2, y2);
+    gaugeCtx.stroke();
+
+    const lx = cx + (r + 16) * Math.cos(angle), ly = cy + (r + 16) * Math.sin(angle);
+    gaugeCtx.fillStyle = '#9aa0b2';
+    gaugeCtx.fillText(tv > 0 ? '+' + tv : String(tv), lx, ly);
+  }
+
+  // Needle
+  const needleAngle = Math.PI + t * Math.PI;
+  const nx = cx + (r - 14) * Math.cos(needleAngle), ny = cy + (r - 14) * Math.sin(needleAngle);
+  gaugeCtx.strokeStyle = !hasData ? '#5f6577' : (clamped >= 0 ? '#4ade80' : '#ff5252');
+  gaugeCtx.lineWidth = 3;
+  gaugeCtx.lineCap = 'round';
+  gaugeCtx.beginPath();
+  gaugeCtx.moveTo(cx, cy);
+  gaugeCtx.lineTo(nx, ny);
+  gaugeCtx.stroke();
+
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, 5, 0, Math.PI * 2);
+  gaugeCtx.fillStyle = '#e8eaed';
+  gaugeCtx.fill();
+}
+
+function updateAgentBrain(tickData) {
+  drawGauge(tickData.stateValue);
+
+  const valueEl = document.getElementById('gaugeValueText');
+  const actionEl = document.getElementById('gaugeActionText');
 
   if (tickData.stateValue === undefined) {
-    numEl.textContent = 'N/A';
-    numEl.style.color = 'var(--text-muted)';
-    fillEl.style.width = '0%';
+    valueEl.textContent = 'N/A';
+    valueEl.style.color = '#5f6577';
     actionEl.textContent = 'No data (older replay file)';
     return;
   }
 
   const v = tickData.stateValue;
-  numEl.textContent = v.toFixed(3);
-  numEl.style.color = v >= 0 ? 'var(--accent-green)' : 'var(--red-team)';
-
-  const clamped = Math.max(-1.5, Math.min(1.5, v));
-  const pct = (clamped / 1.5) * 50; // -50..+50
-  if (pct >= 0) {
-    fillEl.style.left = '50%';
-    fillEl.style.width = pct + '%';
-    fillEl.style.background = 'var(--accent-green)';
-  } else {
-    fillEl.style.left = (50 + pct) + '%';
-    fillEl.style.width = (-pct) + '%';
-    fillEl.style.background = 'var(--red-team)';
-  }
+  valueEl.textContent = (v >= 0 ? '+' : '') + v.toFixed(3);
+  valueEl.style.color = v >= 0 ? '#4ade80' : '#ff5252';
 
   if (tickData.actionCardId === undefined) {
     actionEl.textContent = 'N/A';
@@ -1203,7 +1238,7 @@ function updateAgentBrainPanel(tickData) {
     actionEl.textContent = 'No-op (holding elixir)';
   } else {
     const name = tickData.actionCardName || `Card #${tickData.actionCardId}`;
-    actionEl.textContent = `${name} → (${tickData.actionX.toFixed(1)}, ${tickData.actionY.toFixed(1)})`;
+    actionEl.innerHTML = `<strong>${name}</strong> → (${tickData.actionX.toFixed(1)}, ${tickData.actionY.toFixed(1)})`;
   }
 }
 

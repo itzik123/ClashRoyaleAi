@@ -81,9 +81,18 @@ class MicroRoyaleEnv(gym.Env):
         
         info = {
             "elixir": self.game.get_elixir(),
-            "hand": self.game.get_hand()
+            "hand": self.game.get_hand(),
+            # Cumulative (this match, since reset) damage dealt BY each team,
+            # split troop/building -- straight from the engine's MatchStatistics,
+            # not inferred by diffing HP channels in the observation. train.py's
+            # compute_shaping() diffs these itself to get a per-step delta, the
+            # same way it used to diff raw HP.
+            "team0_troop_damage": self.game.get_troop_damage_dealt(0),
+            "team1_troop_damage": self.game.get_troop_damage_dealt(1),
+            "team0_building_damage": self.game.get_building_damage_dealt(0),
+            "team1_building_damage": self.game.get_building_damage_dealt(1),
         }
-        
+
         return obs, reward, terminated, truncated, info
 
     def set_opponent_deck(self, deck):

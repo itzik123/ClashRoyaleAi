@@ -150,13 +150,24 @@ public:
         playerAI.initializeDeck(aiDeckConfig);
         playerOpponent.initializeDeck(oppDeckConfig);
 
-        addTower(9.0f, 2.0f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
-        addTower(9.0f, 30.0f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
+        // King Tower is rendered as a 4x4-tile footprint (see web/viewer.html's
+        // sizeInTiles), which only sits flush on whole tile boundaries when
+        // centered on a half-integer coordinate (a 4-wide span covering tiles
+        // i..i+3 runs from i-0.5 to i+3.5, so its center is always X.5) --
+        // these were previously on whole-integer coordinates, straddling
+        // tile boundaries. Corrected per-team by the actual visual offset
+        // needed (the two sides weren't symmetric to begin with), not a
+        // shared mirror formula. Princess Tower positions are unaffected by
+        // the alignment fix (3-wide footprint, already correctly aligned);
+        // the Red-side princesses moved slightly only to match the King's
+        // corrected position, preserving the two teams' visual symmetry.
+        addTower(8.5f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
+        addTower(8.5f, 28.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
         addTower(3.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
         addTower(14.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(3.0f, 26.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(14.0f, 26.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
 
         board.commitPendingEntities(currentTick);
     }

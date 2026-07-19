@@ -1,9 +1,10 @@
 #pragma once
 #include "../StatsEventBus.h"
+#include "../CardRegistry.h"
 #include <unordered_map>
 #include <vector>
 
-// Five small, single-responsibility observers, each subscribing to just the
+// Six small, single-responsibility observers, each subscribing to just the
 // event callback(s) it needs (the rest stay the IStatsObserver default
 // no-op). Composed together by MatchStatistics -- a new stat category is a
 // new collector class here, zero changes to the combat/economy code that
@@ -29,6 +30,38 @@ public:
     }
     const std::unordered_map<int, int>& byCardMap(int team) const {
         return byCardByTeam[(team == 0) ? 0 : 1];
+    }
+};
+
+// Damage dealt to the OPPONENT's troops vs buildings, split by the
+// attacking team -- exactly the breakdown python_ai/train.py's reward
+// shaping needs (previously inferred by diffing noisy per-tick HP-channel
+// sums in the observation; this reads the authoritative combat events
+// instead). Only cross-team hits count (targetTeam != attackerTeam guard),
+// so this stays correct even if some future card ever produced same-team
+// splash. A targetCardId not found in CardRegistry is a Tower (Towers are
+// built directly by GameManager with a negative sentinel id, never
+// registered) -- Towers are buildings, so that's the "not found" branch
+// below.
+class DamageByTargetTypeCollector : public IStatsObserver {
+    int troopDamageByTeam[2] = { 0, 0 };
+    int buildingDamageByTeam[2] = { 0, 0 };
+
+public:
+    void onDamageDealt(const DamageDealtEvent& e) override {
+        if (e.targetTeam == e.attackerTeam) return;
+        int t = (e.attackerTeam == 0) ? 0 : 1;
+        if (isBuildingCardId(e.targetCardId)) buildingDamageByTeam[t] += e.amount;
+        else troopDamageByTeam[t] += e.amount;
+    }
+
+    int troopDamageDealt(int team) const { return troopDamageByTeam[(team == 0) ? 0 : 1]; }
+    int buildingDamageDealt(int team) const { return buildingDamageByTeam[(team == 0) ? 0 : 1]; }
+
+private:
+    static bool isBuildingCardId(int cardId) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        return (def == nullptr) ? true : def->isBuilding;
     }
 };
 

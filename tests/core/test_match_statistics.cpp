@@ -28,6 +28,50 @@ TEST_CASE("MatchStatistics accumulates damage totals per team and per attacker c
     REQUIRE(stats.damageDealtByCard(999, 0) == 0); // never-dealt card: reports 0, not a crash
 }
 
+TEST_CASE("MatchStatistics splits damage dealt into troop vs building, per attacking team", "[match_statistics][damage_by_target_type]") {
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+
+    // team0/card5 (Knight, id 0 -- a troop) hits team1's Knight (targetCardId 0)
+    board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 1, 100, 1 });
+    // team0/card5 hits team1's Cannon (targetCardId 25 -- a building)
+    board.statsEvents.notifyDamageDealt({ 1, 0, 5, 11, 25, 1, 60, 2 });
+    // team1/card6 hits team0's King Tower (targetCardId -2, GameManager::TOWER_KING_ID --
+    // not in CardRegistry at all, must still be classified as a building)
+    board.statsEvents.notifyDamageDealt({ 2, 1, 6, 12, -2, 0, 40, 3 });
+
+    REQUIRE(stats.troopDamageDealt(0) == 100);
+    REQUIRE(stats.buildingDamageDealt(0) == 60);
+    REQUIRE(stats.troopDamageDealt(1) == 0);
+    REQUIRE(stats.buildingDamageDealt(1) == 40);
+}
+
+TEST_CASE("MatchStatistics ignores same-team damage when splitting troop vs building", "[match_statistics][damage_by_target_type]") {
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+
+    // attackerTeam == targetTeam: e.g. some future splash hitting your own troop.
+    board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 0, 999, 1 });
+
+    REQUIRE(stats.troopDamageDealt(0) == 0);
+    REQUIRE(stats.buildingDamageDealt(0) == 0);
+}
+
+TEST_CASE("MatchStatistics::toJson includes the troop/building damage breakdown", "[match_statistics][damage_by_target_type][json]") {
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+
+    board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 1, 100, 1 });  // troop damage
+    board.statsEvents.notifyDamageDealt({ 1, 0, 5, 11, 25, 1, 60, 2 }); // building damage
+
+    std::string json = stats.toJson();
+    REQUIRE(json.find("\"troopDamageDealt\":{\"team0\":100,\"team1\":0}") != std::string::npos);
+    REQUIRE(json.find("\"buildingDamageDealt\":{\"team0\":60,\"team1\":0}") != std::string::npos);
+}
+
 TEST_CASE("MatchStatistics credits kills to the last attacker's team and card", "[match_statistics]") {
     Board board;
     MatchStatistics stats;

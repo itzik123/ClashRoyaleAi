@@ -35,36 +35,42 @@ N_CHANNELS = 9
 BOARD_H, BOARD_W = 32, 18
 SPATIAL_SIZE = N_CHANNELS * BOARD_H * BOARD_W
 
-def compute_shaping(obs, prev_obs, w_bldg=W_BLDG, w_troops=W_TROOPS):
+# Same blanket HP normalizers ClashEnv::extractObservation() divides by when
+# building the observation (MAX_TROOP_HP/MAX_BUILDING_HP in ClashEnv.h) --
+# reused here purely to keep the shaping magnitude identical to the old
+# HP-channel-diffing version below, now that the raw damage numbers come from
+# the engine's MatchStatistics (via gym_wrapper's info dict) instead.
+MAX_TROOP_HP = 4256.0
+MAX_BUILDING_HP = 4008.0
+
+def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS):
     """
-    Vectorized dense-reward shaping term based on per-step HP deltas.
+    Vectorized dense-reward shaping term based on per-step damage-dealt deltas,
+    read from the engine's authoritative MatchStatistics (via gym_wrapper's info
+    dict) instead of inferred by diffing HP channels in the observation.
     Rewards damage dealt to the enemy and penalizes damage taken.
     Returns the shaping term ONLY (num_envs,), excluding the sparse win/loss reward.
-    obs / prev_obs: (num_envs, obs_size)
+    stats / prev_stats: dict of (num_envs,) arrays, keys 'team0_troop_damage',
+    'team1_troop_damage', 'team0_building_damage', 'team1_building_damage' --
+    cumulative totals this match, team0 = ally/AI, team1 = enemy/opponent.
     """
-    if prev_obs is None:
-        return np.zeros(obs.shape[0], dtype=np.float32)
+    if prev_stats is None:
+        return np.zeros(stats["team0_troop_damage"].shape[0], dtype=np.float32)
 
-    num_envs = obs.shape[0]
+    # These counters only ever increase within a live episode, so a negative
+    # delta means the underlying env auto-reset between steps (a "phantom"
+    # transition -- see valid_buffer/prev_dones at the call site), which
+    # restarts them at 0 for the new episode. Clamping to >=0 makes that step
+    # contribute zero shaping instead of a large bogus negative spike -- the
+    # same role the old HP-diffing version's max(0, -delta) clamp played for
+    # the equivalent case (HP jumping back up to full at reset).
+    def delta(key):
+        return np.maximum(0, stats[key] - prev_stats[key])
 
-    obs_spatial = obs[:, :SPATIAL_SIZE].reshape(num_envs, N_CHANNELS, BOARD_H, BOARD_W)
-    prev_spatial = prev_obs[:, :SPATIAL_SIZE].reshape(num_envs, N_CHANNELS, BOARD_H, BOARD_W)
-
-    d_ally_troops = obs_spatial[:, 0:3].sum(axis=(1, 2, 3)) - prev_spatial[:, 0:3].sum(axis=(1, 2, 3))
-    d_enemy_troops = obs_spatial[:, 4:7].sum(axis=(1, 2, 3)) - prev_spatial[:, 4:7].sum(axis=(1, 2, 3))
-    d_ally_bldg = obs_spatial[:, 3].sum(axis=(1, 2)) - prev_spatial[:, 3].sum(axis=(1, 2))
-    d_enemy_bldg = obs_spatial[:, 7].sum(axis=(1, 2)) - prev_spatial[:, 7].sum(axis=(1, 2))
-
-    # Only HP LOSSES count as damage -- HP GAINS are new placements (spending
-    # elixir), not combat outcomes. Without this clip, playing ANY card gives a free
-    # positive shaping spike (new full-HP entity appearing) regardless of placement
-    # quality, and the OPPONENT playing a card gives us a free negative spike we have
-    # zero control over. Both dominate and corrupt the "did damage actually happen"
-    # signal this function exists to produce.
-    enemy_troops_damage = np.maximum(0.0, -d_enemy_troops)
-    ally_troops_damage = np.maximum(0.0, -d_ally_troops)
-    enemy_bldg_damage = np.maximum(0.0, -d_enemy_bldg)
-    ally_bldg_damage = np.maximum(0.0, -d_ally_bldg)
+    enemy_troops_damage = delta("team0_troop_damage") / MAX_TROOP_HP
+    ally_troops_damage = delta("team1_troop_damage") / MAX_TROOP_HP
+    enemy_bldg_damage = delta("team0_building_damage") / MAX_BUILDING_HP
+    ally_bldg_damage = delta("team1_building_damage") / MAX_BUILDING_HP
 
     shaping = (w_bldg * (enemy_bldg_damage - ally_bldg_damage)
                + w_troops * (enemy_troops_damage - ally_troops_damage))
@@ -256,7 +262,7 @@ def train_ppo():
     enemy_bldg_end_history = deque(maxlen=50)
 
     obs, _ = envs.reset()
-    prev_obs = None
+    prev_stats = None
     prev_dones = np.zeros(num_envs, dtype=bool)   # Whether each env was reset on the previous step
     hx = torch.zeros(num_envs, 256).to(device)
     cx = torch.zeros(num_envs, 256).to(device)
@@ -311,7 +317,7 @@ def train_ppo():
                 "target_y": target_y.cpu().numpy().reshape(num_envs, 1)
             }
 
-            next_obs, step_rewards, terminateds, truncateds, _ = envs.step(action)
+            next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
             dones = terminateds | truncateds
 
             # Draw = episode ended (done) with a near-zero raw reward (same +1/-1/~0
@@ -321,11 +327,30 @@ def train_ppo():
             is_draw = dones & (np.abs(step_rewards) < 0.5)
             draw_penalty = DRAW_PENALTY * is_draw.astype(np.float32)
 
+            # gymnasium's info-batching only creates a key at all if at least one env
+            # actually reported it this step (see AsyncVectorEnv._add_info) --
+            # gym_wrapper's reset() returns {} for info, so on the (rare, but
+            # real: e.g. several envs timing out at the same tick early in
+            # training) step where EVERY env happens to auto-reset at once, the
+            # whole key is simply absent rather than present with defaults.
+            # Falling back to zeros here is safe: the same "cumulative counter
+            # can't be smaller than last step" clamp in compute_shaping() below
+            # already turns that into a delta of exactly 0, identical to how a
+            # single reset env's own (zero-filled) slot is already handled.
+            zeros = np.zeros(num_envs, dtype=np.int64)
+            stats = {
+                "team0_troop_damage": infos.get("team0_troop_damage", zeros),
+                "team1_troop_damage": infos.get("team1_troop_damage", zeros),
+                "team0_building_damage": infos.get("team0_building_damage", zeros),
+                "team1_building_damage": infos.get("team1_building_damage", zeros),
+            }
+
             # Dense shaping term. On the step right after an episode ended, the vector env
-            # has auto-reset that env, so prev_obs belongs to the finished episode and the
-            # HP delta would be a huge spurious spike (fresh full-HP board vs destroyed
-            # board). Zero the shaping there so only the real +/-0 reset reward remains.
-            shaping = compute_shaping(next_obs, prev_obs)
+            # has auto-reset that env, so prev_stats belongs to the finished episode and the
+            # damage-dealt delta would be a huge spurious negative spike (fresh all-zero
+            # counters vs the finished episode's accumulated totals). Zero the shaping
+            # there so only the real +/-0 reset reward remains.
+            shaping = compute_shaping(stats, prev_stats)
             shaping = shaping * (1.0 - prev_dones)
             shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards
@@ -453,7 +478,7 @@ def train_ppo():
                             writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
             
             obs = next_obs
-            prev_obs = obs
+            prev_stats = stats
             prev_dones = dones
 
         # --- PPO Update: GAE advantages + multiple epochs over env-minibatches ---

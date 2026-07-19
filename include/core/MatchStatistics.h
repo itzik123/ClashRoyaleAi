@@ -17,6 +17,7 @@
 // there's a concrete need for it; not part of this pass.
 class MatchStatistics {
     std::shared_ptr<DamageStatsCollector> damage;
+    std::shared_ptr<DamageByTargetTypeCollector> damageByTargetType;
     std::shared_ptr<KillStatsCollector> kill;
     std::shared_ptr<ElixirStatsCollector> elixir;
     std::shared_ptr<CardPlayStatsCollector> cardPlay;
@@ -43,12 +44,14 @@ public:
     // lifetime entirely.
     void attach(Board& board) {
         damage = std::make_shared<DamageStatsCollector>();
+        damageByTargetType = std::make_shared<DamageByTargetTypeCollector>();
         kill = std::make_shared<KillStatsCollector>();
         elixir = std::make_shared<ElixirStatsCollector>();
         cardPlay = std::make_shared<CardPlayStatsCollector>();
         outcome = std::make_shared<MatchOutcomeCollector>();
 
         board.statsEvents.subscribe(damage);
+        board.statsEvents.subscribe(damageByTargetType);
         board.statsEvents.subscribe(kill);
         board.statsEvents.subscribe(elixir);
         board.statsEvents.subscribe(cardPlay);
@@ -57,6 +60,12 @@ public:
 
     int totalDamageDealt(int team) const { return damage ? damage->total(team) : 0; }
     int damageDealtByCard(int cardId, int team) const { return damage ? damage->byCard(cardId, team) : 0; }
+
+    // Cross-team damage dealt BY `team`, split by whether the target was a
+    // troop or a building -- see DamageByTargetTypeCollector. This is the
+    // breakdown python_ai/train.py's reward shaping actually consumes.
+    int troopDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->troopDamageDealt(team) : 0; }
+    int buildingDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->buildingDamageDealt(team) : 0; }
 
     int kills(int team) const { return kill ? kill->kills(team) : 0; }
     int killsByCard(int cardId, int team) const { return kill ? kill->killsByCard(cardId, team) : 0; }
@@ -86,6 +95,10 @@ public:
 
         out << "\"totalDamageDealt\":{\"team0\":" << totalDamageDealt(0)
             << ",\"team1\":" << totalDamageDealt(1) << "},";
+        out << "\"troopDamageDealt\":{\"team0\":" << troopDamageDealt(0)
+            << ",\"team1\":" << troopDamageDealt(1) << "},";
+        out << "\"buildingDamageDealt\":{\"team0\":" << buildingDamageDealt(0)
+            << ",\"team1\":" << buildingDamageDealt(1) << "},";
         out << "\"kills\":{\"team0\":" << kills(0) << ",\"team1\":" << kills(1) << "},";
         out << "\"elixirSpent\":{\"team0\":" << floatStr(elixirSpent(0))
             << ",\"team1\":" << floatStr(elixirSpent(1)) << "},";

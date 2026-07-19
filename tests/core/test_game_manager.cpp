@@ -16,13 +16,17 @@ TEST_CASE("GameManager construction sets up exactly the 6 expected towers", "[ga
     REQUIRE(entities[0]->team == 0);
     REQUIRE(entities[0]->hp == 4008);
     REQUIRE(entities[0]->name == "King Tower");
-    REQUIRE(entities[0]->position.x == Catch::Approx(9.0f));
-    REQUIRE(entities[0]->position.y == Catch::Approx(2.0f));
+    // Centered on a half-integer coordinate so its 4x4-tile footprint (see
+    // web/viewer.html) sits flush on whole tile boundaries instead of
+    // straddling them -- see the addTower() calls in GameManager::reset().
+    REQUIRE(entities[0]->position.x == Catch::Approx(8.5f));
+    REQUIRE(entities[0]->position.y == Catch::Approx(2.5f));
 
     REQUIRE(entities[1]->symbol == 'R');
     REQUIRE(entities[1]->team == 1);
     REQUIRE(entities[1]->name == "King Tower");
-    REQUIRE(entities[1]->position.y == Catch::Approx(30.0f));
+    REQUIRE(entities[1]->position.x == Catch::Approx(8.5f));
+    REQUIRE(entities[1]->position.y == Catch::Approx(28.5f));
 
     REQUIRE(entities[2]->symbol == 'P');
     REQUIRE(entities[2]->team == 0);
@@ -74,26 +78,27 @@ TEST_CASE("isValidPlacement lets spells ignore the half restriction", "[game_man
 
 TEST_CASE("isValidPlacement rejects placement overlapping an existing building", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
-    // AI king tower sits at (9, 2) with a 2.0 collision radius.
+    // AI king tower sits at (8.5, 2.5) with a 2.0 collision radius.
 
     SECTION("placing a building-shaped card: requiredDist = Building::COLLISION_RADIUS (1.0) + 2.0 = 3.0") {
-        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.0f, false, Building::COLLISION_RADIUS)); // dist 2.0 < 3.0
-        REQUIRE(game.isValidPlacement(0, 9.0f, 9.0f, false, Building::COLLISION_RADIUS));       // dist 7.0, clear
+        REQUIRE_FALSE(game.isValidPlacement(0, 8.5f, 4.5f, false, Building::COLLISION_RADIUS)); // dist 2.0 < 3.0
+        REQUIRE(game.isValidPlacement(0, 8.5f, 9.5f, false, Building::COLLISION_RADIUS));        // dist 7.0, clear
     }
 
     SECTION("placing a troop-shaped card: requiredDist = Entity::IMPLICIT_TROOP_RADIUS (0.4) + 2.0 = 2.4") {
-        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.0f, false, Entity::IMPLICIT_TROOP_RADIUS)); // dist 2.0 < 2.4
-        REQUIRE(game.isValidPlacement(0, 9.0f, 9.0f, false, Entity::IMPLICIT_TROOP_RADIUS));       // dist 7.0, clear
+        REQUIRE_FALSE(game.isValidPlacement(0, 8.5f, 4.5f, false, Entity::IMPLICIT_TROOP_RADIUS)); // dist 2.0 < 2.4
+        REQUIRE(game.isValidPlacement(0, 8.5f, 9.5f, false, Entity::IMPLICIT_TROOP_RADIUS));        // dist 7.0, clear
     }
 }
 
 TEST_CASE("isValidPlacement's required gap tracks the placed card's own footprint, not a flat guess", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
-    // dist 2.7 from the AI king tower: inside the old one-size-fits-all bound
-    // (1.0 + 2.0 = 3.0) but outside the troop-shaped bound (0.4 + 2.0 = 2.4)
-    // -- a legal troop placement a flat radius would have wrongly rejected.
-    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 4.7f, false, Building::COLLISION_RADIUS));
-    REQUIRE(game.isValidPlacement(0, 9.0f, 4.7f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    // dist 2.7 from the AI king tower (8.5, 2.5): inside the old
+    // one-size-fits-all bound (1.0 + 2.0 = 3.0) but outside the troop-shaped
+    // bound (0.4 + 2.0 = 2.4) -- a legal troop placement a flat radius would
+    // have wrongly rejected.
+    REQUIRE_FALSE(game.isValidPlacement(0, 8.5f, 5.2f, false, Building::COLLISION_RADIUS));
+    REQUIRE(game.isValidPlacement(0, 8.5f, 5.2f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 // ---------------- playCard ----------------

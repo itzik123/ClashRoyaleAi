@@ -24,5 +24,7 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("inject_enemy", &ClashEnv::injectEnemy, py::arg("card_id"), py::arg("x"), py::arg("y"))
         .def("set_opponent_deck", &ClashEnv::setOpponentDeck, py::arg("deck"))
         .def("set_opponent_elixir_multiplier", &ClashEnv::setOpponentElixirMultiplier, py::arg("multiplier"))
-        .def("save_log", &ClashEnv::saveLog, py::arg("filepath"));
+        .def("save_log", &ClashEnv::saveLog, py::arg("filepath"))
+        .def("get_troop_damage_dealt", &ClashEnv::getTroopDamageDealt, py::arg("team"))
+        .def("get_building_damage_dealt", &ClashEnv::getBuildingDamageDealt, py::arg("team"));
 }
