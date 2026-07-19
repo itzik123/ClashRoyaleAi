@@ -463,3 +463,79 @@ TEST_CASE("A card without split targets configured (maxSplitTargets 1, the defau
     REQUIRE(near->hp == 0);   // full damage, the normal single-target case
     REQUIRE(far->hp == 1000); // never targeted at all
 }
+
+// ---------------- splash damage ----------------
+// See CombatEntity::applySplashDamage. Distinct from split-target above:
+// splash hits everyone within a fixed radius of the primary target's
+// position (an area), not "the N closest enemies to the attacker" (a count).
+
+TEST_CASE("Splash attacker damages a nearby second enemy in addition to its primary target", "[combat_entity][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1, 'P');
+    auto nearby = std::make_shared<DummyEntity>(2, 0.5f, 1.0f, 1000, 1, 'N'); // 0.5 from primary
+    spawn(board, primary);
+    spawn(board, nearby);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 10.0f, 1000, 10);
+    attacker->splashRadius = 1.5f;
+    attacker->update(board); // locks onto and hits the closer `primary`
+
+    REQUIRE(primary->hp == 0);
+    REQUIRE(nearby->hp == 0); // caught in the splash too, same full damage
+}
+
+TEST_CASE("Splash damage doesn't reach an enemy outside the splash radius", "[combat_entity][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1, 'P');
+    auto faraway = std::make_shared<DummyEntity>(2, 0.0f, 10.0f, 1000, 1, 'F');
+    spawn(board, primary);
+    spawn(board, faraway);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 10.0f, 1000, 10);
+    attacker->splashRadius = 1.5f;
+    attacker->update(board);
+
+    REQUIRE(primary->hp == 0);
+    REQUIRE(faraway->hp == 1000); // outside the 1.5 radius: untouched
+}
+
+TEST_CASE("Splash damage never lands on the attacker's own team", "[combat_entity][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1, 'P');
+    auto ally = std::make_shared<DummyEntity>(2, 0.3f, 1.0f, 1000, 0, 'X'); // same team as the attacker, well within radius
+    spawn(board, primary);
+    spawn(board, ally);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 10.0f, 1000, 10);
+    attacker->splashRadius = 1.5f;
+    attacker->update(board);
+
+    REQUIRE(primary->hp == 0);
+    REQUIRE(ally->hp == 1000); // friendly fire is not a thing here
+}
+
+TEST_CASE("Splash damage doesn't double-hit the primary target", "[combat_entity][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1, 'P');
+    spawn(board, primary);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 10.0f, 300, 10);
+    attacker->splashRadius = 1.5f; // primary is at distance 0 from itself -- must not be hit twice
+    attacker->update(board);
+
+    REQUIRE(primary->hp == 700); // 1000 - 300, not 1000 - 600
+}
+
+TEST_CASE("A card without splash configured (splashRadius 0, the default) only ever damages its single target", "[combat_entity][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1, 'P');
+    auto nearby = std::make_shared<DummyEntity>(2, 0.5f, 1.0f, 1000, 1, 'N');
+    spawn(board, primary);
+    spawn(board, nearby);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 10.0f, 1000, 10);
+    attacker->update(board); // splashRadius left at its default (0.0f)
+
+    REQUIRE(primary->hp == 0);
+    REQUIRE(nearby->hp == 1000); // no splash: never touched
+}

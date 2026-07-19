@@ -25,6 +25,13 @@ private:
     int attackerId;
     int attackerCardId;
 
+    // Splash damage (see CombatEntity::applySplashDamage) -- the shooter's
+    // own splashRadius, carried forward the same way attackerId/
+    // attackerCardId are, since the shooter is done with its own
+    // performAttack() by the time this arrives. 0.0f (the default) is
+    // every non-splash card's normal single-target hit.
+    float splashRadius;
+
     // Boomerang support (Executioner): after the outbound hit lands, instead
     // of dying immediately, wait returnDelayTicks and hit the same target
     // again (if it's still alive) before dying. The real axe pierces every
@@ -40,10 +47,10 @@ public:
     Projectile(int id, float x, float y, int team, std::weak_ptr<Entity> target, float speed, int damage,
         std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects = {},
         bool returnsToSender = false, int returnDelayTicks = 0,
-        int attackerId = -1, int attackerCardId = -1)
+        int attackerId = -1, int attackerCardId = -1, float splashRadius = 0.0f)
         : Entity(id, x, y, 1, team, '-'), target(target), speed(speed), damage(damage),
         onHitEffects(std::move(onHitEffects)), attackerId(attackerId), attackerCardId(attackerCardId),
-        returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
+        splashRadius(splashRadius), returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
 
     bool isTargetable() const override { return false; }
 
@@ -86,11 +93,13 @@ private:
         // instead of applying instantly at the shooter. Only meaningful
         // against a CombatEntity (freeze etc.), so the cast happens right
         // here, the one place it's needed.
-        if (onHitEffects.empty()) return;
-        if (auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(t)) {
-            for (const auto& effect : onHitEffects) {
-                effect->apply(combatTarget);
+        if (!onHitEffects.empty()) {
+            if (auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(t)) {
+                for (const auto& effect : onHitEffects) {
+                    effect->apply(combatTarget);
+                }
             }
         }
+        applySplashDamage(board, t->position, splashRadius, t->id, attackerId, team, attackerCardId, damage);
     }
 };

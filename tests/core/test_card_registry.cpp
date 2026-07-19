@@ -735,3 +735,21 @@ TEST_CASE("Elixir Collector and the other spawner buildings deal no damage (spaw
         REQUIRE(enemy->hp == 1000);
     }
 }
+
+TEST_CASE("Valkyrie's splash hits a second enemy standing near her primary target", "[card_registry][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 6.0f, 5.0f, 1000, 1, 'P'); // dist 1.0 from (5,5)
+    auto nearby = std::make_shared<DummyEntity>(2, 6.0f, 5.5f, 1000, 1, 'N');  // 0.5 from primary, within her 1.5 splash
+    spawn(board, primary);
+    spawn(board, nearby);
+
+    const CardDefinition* valkyrie = CardRegistry::getInstance().getCard(10);
+    REQUIRE(valkyrie != nullptr);
+    valkyrie->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    board.getEntities().back()->update(board);
+
+    REQUIRE(primary->hp == 734);  // 1000 - 266
+    REQUIRE(nearby->hp == 734);   // caught in the splash, same damage
+}

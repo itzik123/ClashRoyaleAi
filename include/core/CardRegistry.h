@@ -140,7 +140,8 @@ private:
         add(troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
             .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }));
 
-        add(troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V'));
+        add(troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+            .withSplash(1.5f)); // 360-degree swing
 
         add(troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
             .withOffsets(skeletonArmyOffsets()));
@@ -206,10 +207,12 @@ private:
 
         add(troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U'));
         add(troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, 0.5f, 4.5f, 225, 18, 'b'));
-        add(troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W'));
+        add(troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+            .withSplash(1.5f));
         add(troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
             .withTargetsAir());
-        add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, 0.4f, 4.0f, 289, 25, 'w'));
+        add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, 0.4f, 4.0f, 289, 25, 'w')
+            .withSplash(1.5f)); // pierce-through-a-line-with-knockback not modeled, plain radius splash instead
 
         add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
             .withOffsets({ {0.0f, 0.0f}, {0.7f, 0.0f}, {-0.7f, 0.0f} }));
@@ -231,11 +234,9 @@ private:
             .withTargetsAir()
             .withBoomerang(15));
 
-        // Baby Dragon: real splash isn't modeled (no area-of-effect on troop
-        // attacks in this engine, same simplification as Wizard/Bowler
-        // above) -- the per-hit damage figure is used as-is.
         add(troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
-            .withFlying().withTargetsAir());
+            .withFlying().withTargetsAir()
+            .withSplash(1.5f));
 
         // === Building Targeters ===
         add(troop(2, "Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G'));
@@ -323,7 +324,8 @@ private:
         // === New Melee Troops ===
         add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, 0.5f, 1.2f, 266, 14, 'N')); // shield + charge bonus not modeled
         add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')); // invisibility-until-attack not modeled
-        add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')); // splash, deploy slam, periodic dash not modeled
+        add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
+            .withSplash(1.5f)); // deploy slam + periodic dash not modeled
         add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, 0.5f, 1.2f, 148, 15, 'f')); // heal aura not modeled
         add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, 0.8f, 1.0f, 194, 10, 'u')); // dash + brief invuln not modeled
         add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, 0.7f, 1.0f, 102, 6, 'v')); // enrage-as-damaged not modeled
@@ -359,18 +361,25 @@ private:
             .withFlying().withTargetsAir());
 
         // === New Ranged Troops ===
-        add(troop(60, "Sparky", 6.0f, Archetype::RangedSquad, 1451, 0.3f, 5.0f, 1331, 40, '8')); // splash + charge-up-that-resets-on-stun not modeled
+        add(troop(60, "Sparky", 6.0f, Archetype::RangedSquad, 1451, 0.3f, 5.0f, 1331, 40, '8')
+            .withSplash(1.5f)); // charge-up-that-resets-on-stun not modeled
         add(troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
-            .withTargetsAir()); // splash not modeled
+            .withTargetsAir()
+            .withSplash(1.5f));
         add(troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
-            .withTargetsAir()); // shotgun falloff-with-range + splash not modeled
+            .withTargetsAir()
+            .withSplash(1.5f)); // shotgun falloff-with-range not modeled, plain radius splash instead
         add(troop(63, "Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
-            .withTargetsAir()); // line-piercing shot not modeled
+            .withTargetsAir()
+            .withSplash(1.5f)); // real hit is a piercing line, not a radius -- approximated as splash
         add(troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
-            .withTargetsAir()); // kiting recoil + splash not modeled
+            .withTargetsAir()
+            .withSplash(1.5f)); // recoil-kiting not modeled
         add(troop(65, "Skeleton Dragons", 4.0f, Archetype::RangedSquad, 560, 0.7f, 3.5f, 151, 20, '%')
-            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }).withFlying().withTargetsAir()); // splash not modeled
-        add(troop(66, "Goblin Demolisher", 4.0f, Archetype::RangedSquad, 1300, 0.5f, 5.0f, 186, 11, '&')); // below-50%-HP melee-bomber transform not modeled
+            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }).withFlying().withTargetsAir()
+            .withSplash(1.5f));
+        add(troop(66, "Goblin Demolisher", 4.0f, Archetype::RangedSquad, 1300, 0.5f, 5.0f, 186, 11, '&')
+            .withSplash(1.5f)); // below-50%-HP melee-bomber transform not modeled
         add(troop(67, "Flying Machine", 4.0f, Archetype::RangedSquad, 614, 0.7f, 6.0f, 171, 11, '+')
             .withFlying().withTargetsAir());
         add(troop(68, "Mother Witch", 4.0f, Archetype::RangedSquad, 529, 0.5f, 5.5f, 133, 10, ',')
@@ -422,8 +431,10 @@ private:
         add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
             .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} }));
         add(troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
-            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })); // splash + kamikaze one-shot not modeled
-        add(troop(84, "Electro Giant", 7.0f, Archetype::MeleeBuildingTargeter, 3952, 0.3f, 1.0f, 163, 18, '|')); // splash + periodic shock aura not modeled
+            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
+            .withSplash(1.5f)); // kamikaze one-shot (dies after its single hit) not modeled
+        add(troop(84, "Electro Giant", 7.0f, Archetype::MeleeBuildingTargeter, 3952, 0.3f, 1.0f, 163, 18, '|')
+            .withSplash(1.5f)); // periodic shock aura not modeled
         add(troop(85, "Suspicious Bush", 2.0f, Archetype::MeleeBuildingTargeter, 81, 0.5f, 0.25f, 256, 14, '}')); // disguise/invisibility + on-death Bush Goblins not modeled (no sourced stats for the split)
         add(troop(86, "Rune Giant", 4.0f, Archetype::MeleeBuildingTargeter, 2662, 0.5f, 1.2f, 153, 15, '~')); // ally-buff-on-attack aura not modeled
         add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, 0.5f, 1.0f, 250, 17, '"')); // rider's independent crossbow + charge not modeled

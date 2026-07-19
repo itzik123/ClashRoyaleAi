@@ -91,6 +91,15 @@ struct CardStats {
     bool boomerang = false;
     int boomerangReturnDelayTicks = 0;
 
+    // Splash damage on every regular attack (Wizard, Bowler, Valkyrie, ...)
+    // -- see CombatEntity::applySplashDamage. 0.0f (the default) is every
+    // card that doesn't opt in. Unlike hp/damage/cost, splash radius isn't
+    // part of the sourced stats data (it's an engine-internal geometry
+    // choice, same category as movement speed above) -- splash-flagged
+    // cards use a single reasonable constant rather than per-card figures
+    // that were never actually sourced.
+    float splashRadius = 0.0f;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -141,6 +150,10 @@ struct CardStats {
     CardStats& withBoomerang(int returnDelayTicks) {
         boomerang = true;
         boomerangReturnDelayTicks = returnDelayTicks;
+        return *this;
+    }
+    CardStats& withSplash(float radius) {
+        splashRadius = radius;
         return *this;
     }
     CardStats& withRepeats(int count, int intervalTicks) {

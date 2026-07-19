@@ -67,6 +67,17 @@ public:
     // 1 (the default) is the normal single-target case every other card uses.
     int maxSplitTargets = 1;
 
+    // Splash damage (Wizard, Bowler, Valkyrie, ...): every regular attack
+    // also hits every other enemy within this radius of the primary
+    // target's position, for the same amount as the primary hit -- ground
+    // and air alike, regardless of whether this attacker's own targetsAir
+    // could normally reach flying units (an explosion doesn't care what
+    // the thrower could aim at; matches AreaSpell's own non-ground-only
+    // default). 0.0f (the default) is every card that doesn't opt in.
+    // See applySplashDamage below -- a free function, not a method, since
+    // Projectile needs it too and isn't a CombatEntity.
+    float splashRadius = 0.0f;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
@@ -278,3 +289,24 @@ protected:
         // Default: stationary entities don't move
     }
 };
+
+// Splash damage: applies `dealt` to every other valid enemy within `radius`
+// of `origin`, on `attackerTeam`'s behalf, each getting its own
+// DamageDealtEvent. A free function rather than a CombatEntity method,
+// since direct-damage attackers (MeleeTroop/BuildingTargeter/Building) and
+// Projectile (ranged attacks, arriving after the shooter's own
+// performAttack() already returned) both need it, and Projectile isn't a
+// CombatEntity. No-op when radius <= 0 -- every card that doesn't opt into
+// splash, the default.
+inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
+        int attackerId, int attackerTeam, int attackerCardId, int dealt) {
+    if (radius <= 0.0f) return;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->id == excludeId) continue; // already damaged as the primary target
+        if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        entity->takeDamage(dealt);
+        board.statsEvents.notifyDamageDealt(
+            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+    }
+}

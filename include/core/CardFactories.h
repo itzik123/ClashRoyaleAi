@@ -35,6 +35,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->rampStartFraction = stats.rampStartFraction;
     entity->rampMidFraction = stats.rampMidFraction;
     entity->maxSplitTargets = stats.maxSplitTargets;
+    entity->splashRadius = stats.splashRadius;
     applyOnHit(entity, stats);
 }
 
