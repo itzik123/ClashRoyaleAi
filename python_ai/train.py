@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,6 +21,14 @@ from model import MicroRoyaleNet
 # the win-rate in TensorBoard: if the shaping sum dwarfs +/-1, lower these.
 W_BLDG = 0.5     # weight on building (tower) HP swings
 W_TROOPS = 0.1   # weight on troop HP swings
+# Positive elixir trade: reward forcing the enemy to spend more elixir than we
+# spend ourselves over the same window -- the classic CR "won the trade"
+# concept (e.g. a 2-elixir Skeletons stopping a 5-elixir Giant), independent of
+# and additive to the damage terms above, which already separately reward/
+# punish the damage itself but can't distinguish an efficient answer from a
+# wasteful one. Kept small and additive, same philosophy as W_BLDG/W_TROOPS --
+# watch Reward/Episode_Shaping_Sum, lower this if it dominates the terminal +/-1.
+W_ELIXIR_TRADE = 0.15
 
 # One-time penalty applied at episode end when the game times out without a
 # decisive winner (raw engine reward ~0 at a done step). Draws don't teach the
@@ -27,6 +36,20 @@ W_TROOPS = 0.1   # weight on troop HP swings
 # of the existing +1/-1 win/loss signal. Applied once at the terminal step (not
 # accumulated per-step), so it stays comparable in scale to +/-1 like W_BLDG/W_TROOPS.
 DRAW_PENALTY = 0.2
+
+# Historical self-play (pipeline #2, train_selfplay.py) needs a library of past
+# versions of this same policy to play against, weakest to strongest -- these
+# are saved here as bare weights-only snapshots (never resumed-from for further
+# gradient training, so no optimizer/training-state needed) periodically
+# throughout THIS training run, not just at the end, so the library already
+# spans a useful weak->strong range by the time pipeline #2 starts. Filenames
+# are timestamp-prefixed rather than keyed by this run's own episode count --
+# train_selfplay.py sorts the shared folder by save order (mtime) to build a
+# single weakest-to-strongest queue, since it saves its own new (and by then
+# much stronger) snapshots into the same folder as pipeline #2 progresses, and
+# those two runs' episode counters aren't on the same scale.
+HISTORICAL_CHECKPOINT_DIR = "historical_checkpoints"
+HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
 
 # Spatial layout of the observation (must match ClashEnv.h):
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
@@ -42,17 +65,23 @@ SPATIAL_SIZE = N_CHANNELS * BOARD_H * BOARD_W
 # the engine's MatchStatistics (via gym_wrapper's info dict) instead.
 MAX_TROOP_HP = 4256.0
 MAX_BUILDING_HP = 4008.0
+# A full elixir bar -- a generous upper bound for what either side can spend in
+# a single skip_frames-wide step (at most one or two card plays), keeping this
+# term's per-step magnitude comparable to the HP-normalized damage terms above.
+MAX_ELIXIR_PER_STEP = 10.0
 
-def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS):
+def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixir=W_ELIXIR_TRADE):
     """
-    Vectorized dense-reward shaping term based on per-step damage-dealt deltas,
-    read from the engine's authoritative MatchStatistics (via gym_wrapper's info
-    dict) instead of inferred by diffing HP channels in the observation.
-    Rewards damage dealt to the enemy and penalizes damage taken.
+    Vectorized dense-reward shaping term based on per-step damage-dealt and
+    elixir-spent deltas, read from the engine's authoritative MatchStatistics
+    (via gym_wrapper's info dict) instead of inferred by diffing HP channels in
+    the observation. Rewards damage dealt to the enemy and elixir forced out of
+    them, penalizes damage taken and elixir we spend ourselves.
     Returns the shaping term ONLY (num_envs,), excluding the sparse win/loss reward.
     stats / prev_stats: dict of (num_envs,) arrays, keys 'team0_troop_damage',
-    'team1_troop_damage', 'team0_building_damage', 'team1_building_damage' --
-    cumulative totals this match, team0 = ally/AI, team1 = enemy/opponent.
+    'team1_troop_damage', 'team0_building_damage', 'team1_building_damage',
+    'team0_elixir_spent', 'team1_elixir_spent' -- cumulative totals this match,
+    team0 = ally/AI, team1 = enemy/opponent.
     """
     if prev_stats is None:
         return np.zeros(stats["team0_troop_damage"].shape[0], dtype=np.float32)
@@ -71,9 +100,12 @@ def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS):
     ally_troops_damage = delta("team1_troop_damage") / MAX_TROOP_HP
     enemy_bldg_damage = delta("team0_building_damage") / MAX_BUILDING_HP
     ally_bldg_damage = delta("team1_building_damage") / MAX_BUILDING_HP
+    enemy_elixir_spent = delta("team1_elixir_spent") / MAX_ELIXIR_PER_STEP
+    ally_elixir_spent = delta("team0_elixir_spent") / MAX_ELIXIR_PER_STEP
 
     shaping = (w_bldg * (enemy_bldg_damage - ally_bldg_damage)
-               + w_troops * (enemy_troops_damage - ally_troops_damage))
+               + w_troops * (enemy_troops_damage - ally_troops_damage)
+               + w_elixir * (enemy_elixir_spent - ally_elixir_spent))
 
     return shaping.astype(np.float32)
 
@@ -110,6 +142,7 @@ def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
 
 def train_ppo():
     os.makedirs("replays", exist_ok=True)
+    os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
     weight_path = "model_weights.pth"
     resuming = os.path.exists(weight_path)
     log_dir = "runs/clash_royale_experiment"
@@ -189,10 +222,58 @@ def train_ppo():
         {"opp_elixir_multiplier": 1.5, "win_rate_threshold": None},  # final stage, no further auto-advance
     ]
 
+    # --- Phase 2: once the agent is consistently strong against the mirror-
+    # deck opponent at the final curriculum stage, switch to randomized
+    # opponent decks -- pipeline #1 (this file) is "beat a random-but-fixed-
+    # deck opponent"; the eventual goal is a bot that beats a real player, and
+    # this phase is what actually exposes it to card interactions it's never
+    # seen (it only ever played its own 8 cards against themselves up to this
+    # point), and doubles as an overfitting check: if mirror-deck performance
+    # doesn't transfer at all, that's a sign the policy memorized this one
+    # matchup rather than learning transferable play.
+    # Raw win rate (not decisive), matching the CURRICULUM_STAGES gate above.
+    # Also doubles as "deck mastered" gate at the per-deck curriculum's final
+    # stage, below.
+    PHASE2_WIN_RATE_GATE = 0.90
+    # Phase 2 replays the SAME CURRICULUM_STAGES gated progression (win rate
+    # threshold -> escalate elixir multiplier) against each random deck, from
+    # stage 0 (1.0x, normal speed), instead of a flat elixir speed for a flat
+    # episode count. This makes rotation performance-gated rather than
+    # timer-gated: a deck the agent already handles well clears every stage
+    # (each needs just one 100-episode window at/above threshold) and rotates
+    # out quickly; a deck it has no answer for stalls at whatever stage it's
+    # failing, and keeps accumulating real training time there for as long as
+    # it takes -- training effort lands on whatever the agent still can't
+    # handle, instead of being capped by an arbitrary count regardless of
+    # difficulty. Confirmed via generalization.log that a flat count (the
+    # previous design) wasn't giving the agent a real chance to adapt per deck
+    # at all (see the entropy-floor finding from that analysis).
+    #
+    # MAX_EPISODES_PER_RANDOM_DECK is a safety valve, not the intended
+    # rotation trigger: some random 8-card draws may be pathological (no real
+    # win condition, or a genuinely overwhelming one) and could otherwise
+    # stall forever. Deliberately generous -- "a few thousand" episodes is
+    # explicitly fine for a deck that's hard-but-learnable; this only cuts in
+    # for the rare deck that isn't converging at all.
+    MAX_EPISODES_PER_RANDOM_DECK = 5000
+    # 0..45 minus 16/37/38 (never defined in CardRegistry.h -- see
+    # test_card_registry.cpp's "Card ids that were never defined" test).
+    RANDOM_DECK_POOL = [i for i in range(46) if i not in (16, 37, 38)]
+
+    def sample_random_deck():
+        return random.sample(RANDOM_DECK_POOL, 8)
+
     # Defaults for a fresh run; overwritten below if resuming from a checkpoint.
     curriculum_stage = 0
     stage_start_episode = 0   # Entropy decays relative to the current stage's start (improvement #5)
     episodes_completed = 0
+    # Pipeline #1's two phases: "mirror" (opponent plays the same 8-card deck)
+    # then "random_opponent" (opponent plays a rotating random deck) once the
+    # PHASE2_WIN_RATE_GATE is cleared at the final curriculum stage.
+    phase = "mirror"
+    phase_deck_episode_start = 0   # episodes_completed value when the CURRENT random deck started (phase=="random_opponent" only)
+    current_random_deck = None     # the random deck currently in play (phase=="random_opponent" only), kept for logging/resume
+    deck_curriculum_stage = 0      # this deck's own progress through CURRICULUM_STAGES (phase=="random_opponent" only)
     # Per-episode outcome: +1 win, -1 loss, 0 draw (timeout). The curriculum gate uses
     # the DECISIVE win rate W/(W+L): draws say "didn't close the game", not "can't beat
     # the opponent", so they shouldn't block stage advancement.
@@ -221,12 +302,27 @@ def train_ppo():
                 stage_start_episode = checkpoint["stage_start_episode"]
                 episodes_completed = checkpoint["episodes_completed"]
                 outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
+                # .get() with the "mirror" default: checkpoints saved before this
+                # phase mechanism existed simply resume into phase 1, same as a
+                # fresh run would start.
+                phase = checkpoint.get("phase", "mirror")
+                phase_deck_episode_start = checkpoint.get("phase_deck_episode_start", 0)
+                current_random_deck = checkpoint.get("current_random_deck", None)
+                deck_curriculum_stage = checkpoint.get("deck_curriculum_stage", 0)
                 full_resume = True
-                if curriculum_stage > 0:
+                # Phase 2 runs its OWN CURRICULUM_STAGES progression (deck_curriculum_stage)
+                # per random deck, independent of phase 1's curriculum_stage -- overrides
+                # the stage-based branch below, which would otherwise still apply phase 1's
+                # final (1.5x) multiplier regardless of where this deck's own progress is.
+                if phase == "random_opponent":
+                    envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"])
+                elif curriculum_stage > 0:
                     mult = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
                     envs.call("set_opponent_elixir_multiplier", mult)
+                if phase == "random_opponent" and current_random_deck is not None:
+                    envs.call("set_opponent_deck", current_random_deck)
                 print(f"Resumed from {weight_path}: episode {episodes_completed}, "
-                      f"curriculum stage {curriculum_stage}")
+                      f"curriculum stage {curriculum_stage}, phase {phase}")
             else:
                 # Legacy checkpoint: bare model state_dict, no training state to restore.
                 net.load_state_dict(checkpoint)
@@ -269,6 +365,11 @@ def train_ppo():
 
     last_save_ep = episodes_completed
     last_replay_ep = episodes_completed
+    # Not resume-tracked (unlike last_save_ep/last_replay_ep) -- these are
+    # best-effort snapshots for pipeline #2's opponent library, not correctness-
+    # critical, so losing track across a resume (saving one a bit early/late
+    # near the boundary) is harmless.
+    last_historical_save_ep = episodes_completed
     ep_rewards = np.zeros(num_envs)
     ep_shaping = np.zeros(num_envs)
     ep_steps = np.zeros(num_envs, dtype=np.int64)
@@ -338,11 +439,14 @@ def train_ppo():
             # already turns that into a delta of exactly 0, identical to how a
             # single reset env's own (zero-filled) slot is already handled.
             zeros = np.zeros(num_envs, dtype=np.int64)
+            zeros_f = np.zeros(num_envs, dtype=np.float32)  # elixir_spent is a float (card costs), not an int count
             stats = {
                 "team0_troop_damage": infos.get("team0_troop_damage", zeros),
                 "team1_troop_damage": infos.get("team1_troop_damage", zeros),
                 "team0_building_damage": infos.get("team0_building_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
+                "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
+                "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),
             }
 
             # Dense shaping term. On the step right after an episode ended, the vector env
@@ -423,10 +527,12 @@ def train_ppo():
                         decisive_wr = wins / decided if decided > 0 else 0.0
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
-                        print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | Stage: {curriculum_stage} | Entropy: {current_entropy_coef:.4f}")
+                        deck_stage_str = f"/{deck_curriculum_stage}" if phase == "random_opponent" else ""
+                        print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | Stage: {curriculum_stage}{deck_stage_str} | Phase: {phase} | Entropy: {current_entropy_coef:.4f}")
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
+                        writer.add_scalar("Training/Phase", 0 if phase == "mirror" else 1, episodes_completed)
                         # Full outcome split: a rising win share should come out of the
                         # LOSS share (getting stronger) or the DRAW share (closing games).
                         writer.add_scalar("Rates/Loss_100", losses / n, episodes_completed)
@@ -476,7 +582,67 @@ def train_ppo():
                             stage_start_episode = episodes_completed   # Reset entropy decay clock -> re-boost exploration (improvement #5)
                             print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier}) - entropy re-boosted")
                             writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
-            
+
+                    # --- Phase transition: once the final curriculum stage's win rate
+                    # is consistently strong against the mirror-deck opponent, move to
+                    # phase 2 (random opponent decks) -- see PHASE2_WIN_RATE_GATE's
+                    # comment above for why. Raw win rate, matching the curriculum gate.
+                    if (phase == "mirror"
+                            and curriculum_stage == len(CURRICULUM_STAGES) - 1
+                            and len(outcome_history) == outcome_history.maxlen):
+                        outcomes = np.array(outcome_history)
+                        wins = int((outcomes == 1).sum())
+                        win_rate = wins / len(outcomes)
+                        if win_rate >= PHASE2_WIN_RATE_GATE:
+                            phase = "random_opponent"
+                            current_random_deck = sample_random_deck()
+                            envs.call("set_opponent_deck", current_random_deck)
+                            deck_curriculum_stage = 0
+                            envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[0]["opp_elixir_multiplier"])
+                            outcome_history.clear()
+                            phase_deck_episode_start = episodes_completed
+                            stage_start_episode = episodes_completed  # re-boost exploration for the new opponent variety
+                            print(f">>> Phase advanced to random_opponent (deck={current_random_deck}) "
+                                  f"- mirror win rate {win_rate:.2f} reached the {PHASE2_WIN_RATE_GATE} gate")
+                            writer.add_scalar("Training/Phase", 1, episodes_completed)
+
+                    # --- Phase 2 per-deck curriculum: the SAME gated stage progression
+                    # as phase 1 (win-rate threshold -> escalate elixir multiplier),
+                    # replayed fresh against each random deck -- see MAX_EPISODES_PER_
+                    # RANDOM_DECK's comment above for why rotation is performance-gated
+                    # (deck mastered, or the safety-valve timeout) instead of a flat count.
+                    elif phase == "random_opponent":
+                        win_rate = None
+                        if len(outcome_history) == outcome_history.maxlen:
+                            win_rate = int((np.array(outcome_history) == 1).sum()) / len(outcome_history)
+
+                        at_final_stage = deck_curriculum_stage == len(CURRICULUM_STAGES) - 1
+                        mastered = at_final_stage and win_rate is not None and win_rate >= PHASE2_WIN_RATE_GATE
+                        timed_out = episodes_completed - phase_deck_episode_start >= MAX_EPISODES_PER_RANDOM_DECK
+                        deck_stage_threshold = CURRICULUM_STAGES[deck_curriculum_stage]["win_rate_threshold"]
+                        can_advance = (not at_final_stage and deck_stage_threshold is not None
+                                       and win_rate is not None and win_rate >= deck_stage_threshold)
+
+                        if mastered or timed_out:
+                            current_random_deck = sample_random_deck()
+                            envs.call("set_opponent_deck", current_random_deck)
+                            deck_curriculum_stage = 0
+                            envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[0]["opp_elixir_multiplier"])
+                            outcome_history.clear()
+                            phase_deck_episode_start = episodes_completed
+                            stage_start_episode = episodes_completed   # re-boost exploration for the new opponent variety
+                            reason = (f"mastered it (>={PHASE2_WIN_RATE_GATE:.0%} at the final stage)" if mastered
+                                      else f"hit the {MAX_EPISODES_PER_RANDOM_DECK}-episode safety cap without mastering it")
+                            print(f">>> New random opponent deck: {current_random_deck} (previous deck {reason})")
+                        elif can_advance:
+                            deck_curriculum_stage += 1
+                            new_multiplier = CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"]
+                            envs.call("set_opponent_elixir_multiplier", new_multiplier)
+                            outcome_history.clear()
+                            stage_start_episode = episodes_completed   # re-boost exploration for the harder version of the SAME deck
+                            print(f">>> Deck curriculum advanced to stage {deck_curriculum_stage} "
+                                  f"(opp_elixir_multiplier={new_multiplier}) against current random deck")
+
             obs = next_obs
             prev_stats = stats
             prev_dones = dones
@@ -648,9 +814,23 @@ def train_ppo():
                 "curriculum_stage": curriculum_stage,
                 "stage_start_episode": stage_start_episode,
                 "outcome_history": list(outcome_history),
+                "phase": phase,
+                "phase_deck_episode_start": phase_deck_episode_start,
+                "current_random_deck": current_random_deck,
+                "deck_curriculum_stage": deck_curriculum_stage,
             }, weight_path)
             print(f">>> Checkpoint saved to {weight_path} (episode {episodes_completed}, stage {curriculum_stage})")
             last_save_ep = episodes_completed
+
+        # Historical snapshot for pipeline #2 (train_selfplay.py) -- bare
+        # weights only, see HISTORICAL_CHECKPOINT_DIR's comment above.
+        if episodes_completed - last_historical_save_ep >= HISTORICAL_CHECKPOINT_INTERVAL_EPISODES:
+            hist_path = os.path.join(
+                HISTORICAL_CHECKPOINT_DIR,
+                f"{int(time.time() * 1000)}_pipeline1_ep{episodes_completed:08d}.pth")
+            torch.save({"model": net.state_dict()}, hist_path)
+            print(f">>> Historical snapshot saved to {hist_path}")
+            last_historical_save_ep = episodes_completed
 
         # Generate Replay (Standalone test env to avoid corrupting async processes)
         if episodes_completed - last_replay_ep >= 1000:
@@ -660,6 +840,12 @@ def train_ppo():
             # progress -- otherwise it silently records against the default 1.0x
             # opponent regardless of how far training has actually advanced.
             test_env.set_opponent_elixir_multiplier(CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"])
+            # Same for phase 2 -- otherwise this would silently keep recording
+            # mirror-deck replays even once training has moved on to random
+            # opponent decks, and at the wrong (phase 1) elixir multiplier.
+            if phase == "random_opponent" and current_random_deck is not None:
+                test_env.set_opponent_deck(current_random_deck)
+                test_env.set_opponent_elixir_multiplier(CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"])
             t_obs, _ = test_env.reset()
             t_hx = torch.zeros(1, 256).to(device)
             t_cx = torch.zeros(1, 256).to(device)

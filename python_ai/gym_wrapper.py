@@ -4,6 +4,27 @@ import numpy as np
 
 import clash_royale_env
 
+# Giant Beatdown (tank + support), not the old Hog cycle deck: measured in
+# practice that the cycle deck (Hog Rider + Skeletons + Zap) got training stuck
+# around 40-50% win rate for 2800+ episodes with no improving trend -- its good-
+# play window (precise cycle timing, counters) was too narrow for random
+# exploration to ever stumble into. Tank+support gives a coarse heuristic
+# ("push the tank forward, support behind it") that already yields reasonable
+# reward even with imperfect execution, so it's significantly easier to
+# bootstrap. 2=Giant, 5=Mini PEKKA, 35=Electro Wizard, 7=Fireball, 33=The Log,
+# 24=Skeletons, 40=Ice Golem, 25=Cannon.
+# Replaces an earlier draft of this same archetype that used Wizard(11)/
+# Musketeer(6) for anti-air and Zap(29) as the light spell -- both were quietly
+# broken for the role: Musketeer/Wizard never got .withTargetsAir() in
+# CardRegistry.h (ground-only here despite hitting air in the real game), and
+# Zap here is damage-only with no stun (its actual niche in the real game).
+# Electro Wizard/The Log are the two cards in this roster whose real-game
+# signature mechanic (air-targeting+split+stun; ground-only roll) is actually
+# modeled. Exposed at module level so other scripts (e.g. train_selfplay.py,
+# which builds its ClashRoyaleEnv directly instead of through this wrapper)
+# can import the same deck instead of duplicating/drifting from this literal.
+DEFAULT_DECK = [2, 5, 35, 7, 33, 24, 40, 25]
+
 class MicroRoyaleEnv(gym.Env):
     def __init__(self, env_config=None):
         super().__init__()
@@ -13,15 +34,7 @@ class MicroRoyaleEnv(gym.Env):
             env_config = {}
             
         # משיכת ההגדרות עם ערכי ברירת מחדל הגיוניים, ללא Hard-coding מחייב
-        # חפיסת Giant beatdown (טנק + תמיכה), לא חפיסת Hog cycle כמו קודם: נמדד
-        # בפועל שעם חפיסת cycle (Hog Rider + Skeletons + Zap) האימון נתקע סביב
-        # 40-50% win rate במשך 2800+ אפיזודות בלי מגמת שיפור - חלון המשחק הטוב
-        # שם צר מדי (טיימינג cycle מדויק, קונטרות) כדי שחקירה אקראית תיתקל בו.
-        # ענק+תמיכה נותן היוריסטיקה גסה ("טנק קדימה, תמיכה מאחוריו, דחוף") שכבר
-        # מניבה תגמול סביר גם עם ביצוע לא-מושלם, ולכן קלה משמעותית ל-bootstrap.
-        # 2=Giant, 11=Wizard, 6=Musketeer, 5=Mini PEKKA, 7=Fireball, 29=Zap,
-        # 25=Cannon, 24=Skeletons.
-        ai_deck = env_config.get("ai_deck", [2, 11, 6, 5, 7, 29, 25, 24])
+        ai_deck = env_config.get("ai_deck", list(DEFAULT_DECK))
         # ברירת מחדל: היריב משחק עם אותה חפיסה בדיוק (mirror match). נמדד אמפירית
         # שחפיסה רנדומלית מהמאגר חזקה בעשרות אחוזי win-rate מהחפיסה הקבועה (במנוע
         # הזה יחידות-ענק דורסות חפיסת cycle), כך שאימון מול חפיסות רנדומליות מציב
@@ -51,7 +64,12 @@ class MicroRoyaleEnv(gym.Env):
         super().reset(seed=seed)
         if self.randomize_opp_deck:
             import random
-            AVAILABLE_CARDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40]
+            # 0..45 minus 16/37/38 (never defined in CardRegistry -- see
+            # test_card_registry.cpp's "Card ids that were never defined" test).
+            # Previously stopped at 40, silently excluding the 5 flying cards
+            # (41-45: Minions, Minion Horde, Mega Minion, Baby Dragon, Balloon)
+            # from ever showing up in a randomized opponent deck.
+            AVAILABLE_CARDS = [i for i in range(46) if i not in (16, 37, 38)]
             self.game.set_opponent_deck(random.sample(AVAILABLE_CARDS, 8))
         else:
             self.game.set_opponent_deck(self.opp_deck)
@@ -91,12 +109,22 @@ class MicroRoyaleEnv(gym.Env):
             "team1_troop_damage": self.game.get_troop_damage_dealt(1),
             "team0_building_damage": self.game.get_building_damage_dealt(0),
             "team1_building_damage": self.game.get_building_damage_dealt(1),
+            # Cumulative elixir spent this match (sum of played cards' cost) --
+            # feeds train.py's elixir-trade shaping term (reward for making the
+            # enemy spend more than we do, independent of the damage itself).
+            "team0_elixir_spent": self.game.get_elixir_spent(0),
+            "team1_elixir_spent": self.game.get_elixir_spent(1),
         }
 
         return obs, reward, terminated, truncated, info
 
     def set_opponent_deck(self, deck):
-        self.game.set_opponent_deck(deck)
+        # Also updates self.opp_deck (not just the live game instance) --
+        # otherwise the very next auto-reset (reset() always re-applies
+        # self.opp_deck when randomize_opp_deck is False) would silently
+        # revert this to whatever deck the env was constructed with.
+        self.opp_deck = list(deck)
+        self.game.set_opponent_deck(self.opp_deck)
 
     def set_opponent_elixir_multiplier(self, multiplier):
         self.game.set_opponent_elixir_multiplier(multiplier)

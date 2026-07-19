@@ -14,6 +14,20 @@ struct StepResult {
     bool done;
 };
 
+// Historical/true self-play: both sides act each step instead of team 1 being
+// driven by the built-in random opponentTurn(). observation1 is already from
+// team 1's OWN point of view (see extractObservationForTeam) so the exact
+// same network that plays team 0 elsewhere can also drive team 1 here.
+// reward0 is from team 0's perspective (+1/-1/0, same convention as
+// StepResult::reward); this is a zero-sum win/loss, so team 1's reward is
+// just -reward0 -- not worth a redundant field.
+struct SelfPlayStepResult {
+    std::vector<float> observation0;
+    std::vector<float> observation1;
+    float reward0;
+    bool done;
+};
+
 class ClashEnv {
 private:
     GameManager game;
@@ -37,7 +51,12 @@ private:
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
-    std::vector<float> extractObservation() {
+    // Generalized over which team the observation is FOR, so the same
+    // network -- always trained believing it's "team 0" (self near low y,
+    // enemy near high y, self always channels 0-3) -- can also drive team 1
+    // in self-play by getting an observation from team 1's own point of view.
+    // team==0 reproduces the exact previous behavior byte-for-byte.
+    std::vector<float> extractObservationForTeam(int team) {
         int spatialSize = BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS;
         std::vector<float> obs(spatialSize, 0.0f);
 
@@ -45,11 +64,15 @@ private:
             return channel * (BOARD_HEIGHT * BOARD_WIDTH) + y * BOARD_WIDTH + x;
         };
 
+        // River/bridge marker row -- x is already left/right symmetric (both
+        // teams' towers and the bridge gaps sit at the same x coordinates),
+        // so only the row itself needs mirroring for team 1.
+        int riverRow = (team == 0) ? 16 : (BOARD_HEIGHT - 1 - 16);
         for (int x = 0; x < BOARD_WIDTH; ++x) {
             if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
-                obs[getIndex(8, 16, x)] = 1.0f;
+                obs[getIndex(8, riverRow, x)] = 1.0f;
             } else {
-                obs[getIndex(8, 16, x)] = -1.0f;
+                obs[getIndex(8, riverRow, x)] = -1.0f;
             }
         }
 
@@ -59,7 +82,11 @@ private:
             if (!entity->isTargetable()) continue;
 
             int x = static_cast<int>(entity->position.x);
-            int y = static_cast<int>(entity->position.y);
+            int rawY = static_cast<int>(entity->position.y);
+            // Mirrored for team 1: physically team 1 sits near high y, but its
+            // own network needs to see itself near low y (same layout it was
+            // trained on as "team 0"), so flip before placing into the grid.
+            int y = (team == 0) ? rawY : (BOARD_HEIGHT - 1 - rawY);
 
             if (x < 0 || x >= BOARD_WIDTH || y < 0 || y >= BOARD_HEIGHT) continue;
 
@@ -74,14 +101,17 @@ private:
 
             float maxHp = isBuilding ? MAX_BUILDING_HP : MAX_TROOP_HP;
             float normalizedHp = std::min(static_cast<float>(entity->hp) / maxHp, 1.0f);
-            int channel = (entity->team == 0 ? 0 : 4) + typeOffset;
+            // "Ally" = whichever team this observation is FOR, always channels
+            // 0-3 -- not hardcoded to raw team 0 anymore.
+            bool isAlly = (entity->team == team);
+            int channel = (isAlly ? 0 : 4) + typeOffset;
 
             obs[getIndex(channel, y, x)] = normalizedHp;
         }
 
-        obs.push_back(game.getElixir(0) / 10.0f);
+        obs.push_back(game.getElixir(team) / 10.0f);
 
-        for (int cardId : game.getHand(0)) {
+        for (int cardId : game.getHand(team)) {
             const auto* card = CardRegistry::getInstance().getCard(cardId);
             obs.push_back(card ? card->cost / 10.0f : 0.0f);
         }
@@ -89,7 +119,7 @@ private:
         // Card IDENTITY per hand slot (one-hot). Costs alone made a Hog Rider and a
         // Musketeer indistinguishable (both 0.4), so no card-specific strategy could
         // ever be learned.
-        for (int cardId : game.getHand(0)) {
+        for (int cardId : game.getHand(team)) {
             for (int k = 0; k < NUM_CARD_IDS; ++k) {
                 obs.push_back(k == cardId ? 1.0f : 0.0f);
             }
@@ -97,6 +127,8 @@ private:
 
         return obs;
     }
+
+    std::vector<float> extractObservation() { return extractObservationForTeam(0); }
 
     float calculateReward() {
         if (!game.isGameOver()) return 0.0f;
@@ -197,6 +229,59 @@ public:
         return { extractObservation(), totalReward, isDone };
     }
 
+    // team 1's own point of view (mirrored) -- see extractObservationForTeam.
+    // Used by self-play: after reset()/step(), the trainer also needs an
+    // observation to feed whatever policy (frozen historical snapshot, or a
+    // second live network) is driving team 1 this step.
+    std::vector<float> getObservationForTeam(int team) {
+        return extractObservationForTeam(team);
+    }
+
+    // Self-play stepping: BOTH sides' actions are supplied externally instead
+    // of team 1 being driven by the built-in random opponentTurn() (which
+    // this does NOT call at all). targetY1 arrives in team 1's own local
+    // frame -- the same mirrored frame its observation came in -- and is
+    // converted back to real board Y before actually placing anything;
+    // mirroring twice is the identity, so the same formula that produced the
+    // observation also inverts it here.
+    SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
+                                     int cardIndex1, float targetX1, float targetY1,
+                                     int skipFrames = 10) {
+        float totalReward = 0.0f;
+        bool isDone = false;
+
+        float realY1 = static_cast<float>(BOARD_HEIGHT - 1) - targetY1;
+
+        for (int i = 0; i < skipFrames; ++i) {
+            if (i == 0) {
+                if (cardIndex0 >= 0 && cardIndex0 < 4) {
+                    const auto& hand0 = game.getHand(0);
+                    if (cardIndex0 < static_cast<int>(hand0.size())) {
+                        game.playCard(0, hand0[cardIndex0], targetX0, targetY0);
+                    }
+                }
+                if (cardIndex1 >= 0 && cardIndex1 < 4) {
+                    const auto& hand1 = game.getHand(1);
+                    if (cardIndex1 < static_cast<int>(hand1.size())) {
+                        game.playCard(1, hand1[cardIndex1], targetX1, realY1);
+                    }
+                }
+            }
+
+            game.step();
+            currentTick++;
+
+            isDone = (currentTick >= maxTicks) || game.isGameOver();
+            totalReward += calculateReward();
+
+            logger.logTick(currentTick, game);
+
+            if (isDone) break;
+        }
+
+        return { extractObservationForTeam(0), extractObservationForTeam(1), totalReward, isDone };
+    }
+
     void injectEnemy(int cardId, float x, float y) {
         const auto* card = CardRegistry::getInstance().getCard(cardId);
         if (card) {
@@ -222,4 +307,5 @@ public:
     // See MatchStatistics.h for what these actually measure.
     int getTroopDamageDealt(int team) const { return game.getStatistics().troopDamageDealt(team); }
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
+    float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
