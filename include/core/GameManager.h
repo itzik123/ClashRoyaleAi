@@ -80,14 +80,19 @@ public:
         return (team == 0) ? playerAI.elixir : playerOpponent.elixir;
     }
 
-    bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius) const {
+    bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius, bool deployAnywhere = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);
         if (x < 0.0f || x > maxX || y < 0.0f || y > maxY) return false;
 
         if (!isSpell) {
-            if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;
-            if (team == 1 && y < board.getRiverEnd() + OWN_HALF_RIVER_BUFFER) return false;
+            // Miner/Goblin Drill skip the own-half restriction (they can
+            // deploy anywhere on the board) but still can't overlap an
+            // existing building -- that check runs unconditionally below.
+            if (!deployAnywhere) {
+                if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;
+                if (team == 1 && y < board.getRiverEnd() + OWN_HALF_RIVER_BUFFER) return false;
+            }
 
             // Prevent placing on top of an existing building -- Clash Royale
             // forbids this outright regardless of what's being placed, so the
@@ -124,7 +129,7 @@ public:
         const CardDefinition* cardDef = CardRegistry::getInstance().getCard(targetCardId);
         if (!cardDef) return false;
 
-        if (!isValidPlacement(team, x, y, cardDef->isSpell, cardDef->placementRadius)) return false;
+        if (!isValidPlacement(team, x, y, cardDef->isSpell, cardDef->placementRadius, cardDef->deployAnywhere)) return false;
 
         int cardId = player.playCard(handIndex);
         if (cardId != -1) {
@@ -186,6 +191,14 @@ public:
         for (auto& entity : board.getEntities()) {
             if (entity->isAlive()) entity->update(board);
         }
+
+        // Elixir Collector: drain whatever ElixirGrantEffect accumulated
+        // this tick into the real PlayerState, then reset -- same cap as
+        // normal regen above.
+        playerAI.elixir = std::min(playerAI.elixir + board.pendingElixirGrant[0], 10.0f);
+        playerOpponent.elixir = std::min(playerOpponent.elixir + board.pendingElixirGrant[1], 10.0f);
+        board.pendingElixirGrant[0] = 0.0f;
+        board.pendingElixirGrant[1] = 0.0f;
 
         board.commitPendingEntities(currentTick);
         board.resolveCollisions();

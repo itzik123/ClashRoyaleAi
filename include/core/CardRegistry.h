@@ -9,6 +9,13 @@
 #include "CardFactories.h"
 #include "FreezeOnHit.h"
 #include "SpawnOnDeath.h"
+#include "AreaDamageOnDeath.h"
+#include "CompositeDeathEffect.h"
+#include "PeriodicSpawnEffect.h"
+#include "CurseOnHit.h"
+#include "AreaBuffOnDeath.h"
+#include "AreaStunEffect.h"
+#include "ElixirGrantEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -30,6 +37,10 @@ struct CardDefinition {
     // The footprint GameManager::isValidPlacement keeps clear of an existing
     // building -- see CardFactories::placementRadius. Unused for spells.
     float placementRadius;
+    // Miner, Goblin Drill: can be placed anywhere on the board, not just
+    // this player's own half -- see GameManager::isValidPlacement. false
+    // (the default) is every other troop/building.
+    bool deployAnywhere;
     std::function<void(float x, float y, int team, Board& board)> spawnEntity;
 };
 
@@ -102,6 +113,80 @@ private:
             .withFlying().withTargetsAir();
     }
 
+    // Periodic-spawn child units below (Witch/Night Witch/Furnace/
+    // Barbarian Hut/Goblin Hut/Goblin Drill) follow the exact same
+    // reuse-sourced-stats-where-possible reasoning as the death-spawn
+    // helpers above; Goblin Hut's per-spawn count and every interval
+    // below aren't sourced either (see each card's own comment).
+    static CardStats witchSkeletonStats() {
+        return troop(-13, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+            .withOffsets({ {-0.4f, -0.4f}, {0.4f, -0.4f}, {-0.4f, 0.4f}, {0.4f, 0.4f} });
+    }
+    static CardStats nightWitchPeriodicBatStats() {
+        return troop(-14, "Bats", 0.0f, Archetype::MeleeSquad, 81, 0.85f, 0.5f, 81, 12, 't')
+            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
+            .withFlying().withTargetsAir();
+    }
+    static CardStats furnaceFireSpiritStats() {
+        return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 207, 10, '<')
+            .withTargetsAir();
+    }
+    static CardStats barbarianHutBarbarianStats() {
+        return troop(-16, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+            .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f} });
+    }
+    static CardStats goblinHutSpearGoblinStats() {
+        return troop(-17, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S');
+    }
+    static CardStats goblinDrillGoblinStats() {
+        return troop(-18, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g');
+    }
+    // Phoenix's one-time revive: a second Phoenix with no deathEffect of
+    // its own, so it only ever comes back once, not indefinitely. The
+    // real card leaves a vulnerable egg for ~4s before hatching back to
+    // full -- this spawns the reviving Phoenix immediately at full hp
+    // instead, dropping that vulnerability window (a minor simplification,
+    // no delayed/interruptible spawn primitive exists).
+    static CardStats phoenixReviveStats() {
+        return troop(-19, "Phoenix", 0.0f, Archetype::MeleeSquad, 1052, 0.5f, 1.0f, 217, 10, '7')
+            .withFlying().withTargetsAir();
+    }
+    // Spell-spawn child units (Goblin Barrel, Royal Delivery, Graveyard) --
+    // same reuse-sourced-stats reasoning as the death/periodic-spawn
+    // helpers above.
+    static CardStats goblinBarrelGoblinStats() {
+        return troop(-20, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f}, {0.0f, 0.4f} });
+    }
+    static CardStats graveyardSkeletonStats() {
+        return troop(-21, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k');
+    }
+    static CardStats royalDeliveryRecruitStats() {
+        return troop(-22, "Royal Recruits", 0.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+            .withShield(52);
+    }
+    static CardStats barbarianBarrelBarbarianStats() {
+        return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B');
+    }
+    // Compound-card secondary units (Goblin Machine's rocket turret, Ram
+    // Rider's crossbow, Goblin Giant's carried Spear Goblins, Goblin
+    // Gang's ranged half, Rascals' ranged half) -- spawned via
+    // CardStats::secondaryUnit, riding along at the same deploy point as
+    // the primary unit but targeting entirely independently. Stats reused
+    // from their standalone registered cards where possible.
+    static CardStats goblinMachineTurretStats() {
+        return troop(-24, "Goblin Machine", 0.0f, Archetype::RangedSquad, 2150, 0.5f, 5.0f, 106, 12, '3')
+            .withSplash(1.5f).withTargetsAir(); // half `damage` as a rough turret-vs-body split, not sourced
+    }
+    static CardStats ramRiderCrossbowStats() {
+        return troop(-25, "Ram Rider", 0.0f, Archetype::RangedSquad, 1766, 0.5f, 5.0f, 125, 17, '"')
+            .withTargetsAir(); // half `damage` as a rough mount-vs-rider split, not sourced
+    }
+    static CardStats goblinGiantSpearGoblinsStats() {
+        return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 0.5f, 5.0f, 81, 17, 'S')
+            .withOffsets({ {-0.4f, 0.3f}, {0.4f, 0.3f} }).withTargetsAir();
+    }
+
     void add(const CardStats& stats) {
         CardDefinition def;
         def.id = stats.id;
@@ -110,6 +195,7 @@ private:
         def.isSpell = (stats.archetype == Archetype::Spell);
         def.isBuilding = (stats.archetype == Archetype::DefensiveBuilding);
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
+        def.deployAnywhere = stats.deployAnywhere;
         def.spawnEntity = [stats](float x, float y, int team, Board& board) {
             CardFactories::spawn(stats, x, y, team, board);
         };
@@ -124,8 +210,9 @@ private:
         // Executioner's boomerang return, and Poison/Arrows' multi-tick
         // damage are all modeled where they occur below (see each card's own
         // comment) -- not collapsed to a flat number. On-death burst damage
-        // (Giant Skeleton, Lumberjack, Golem, Ice Golem, Balloon) isn't
-        // modeled since there's no death-trigger system in this engine yet.
+        // (Giant Skeleton, Golem, Ice Golem, Balloon) is modeled via
+        // AreaDamageOnDeath below; Lumberjack's death effect is a Rage buff,
+        // not damage -- see the buff/aura cards further down.
         // Electro Wizard's spawn zap is the one on-spawn effect that *is*
         // modeled, via CardStats::withSpawnEffect (see below).
 
@@ -148,17 +235,29 @@ private:
 
         add(troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E'));
 
-        add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, 0.6f, 1.6f, 391, 14, 'p'));
+        // Charge threshold/multiplier below aren't part of the sourced
+        // stats data -- reasonable engine-internal constants, same caveat
+        // as splashRadius/shieldHp.
+        add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, 0.6f, 1.6f, 391, 14, 'p')
+            .withCharge(3.0f, 2.0f));
 
         add(troop(17, "Elite Barbarians", 6.0f, Archetype::MeleeSquad, 1341, 0.7f, 1.2f, 384, 14, 'e')
             .withOffsets({ {-0.5f, 0.0f}, {0.5f, 0.0f} }));
 
-        add(troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l'));
+        // Lumberjack's death-potion radius/multiplier/duration below aren't
+        // part of the sourced stats data -- reasonable engine-internal
+        // constants, same caveat as splashRadius.
+        add(troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+            .withDeathEffect(std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55)));
 
         add(troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} }));
 
-        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3361, 0.4f, 0.8f, 276, 13, 'J'));
+        // Death-bomb radius/damage below aren't part of the sourced stats
+        // data -- reasonable engine-internal constants, same caveat as
+        // splashRadius/shieldHp.
+        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3361, 0.4f, 0.8f, 276, 13, 'J')
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 300)));
 
         // Electro Wizard: real attack is an instant zap with no projectile
         // travel time, so this is MeleeSquad-shaped (direct damage) despite
@@ -244,24 +343,36 @@ private:
         add(troop(15, "Hog Rider", 4.0f, Archetype::MeleeBuildingTargeter, 1697, 0.8f, 0.8f, 317, 16, 'H')
             .withIgnoresRiver());
 
-        // Golem splits into two Golemites on death (its separate death-damage
-        // splash isn't modeled, same as every other card's on-death damage).
+        // Golem splits into two Golemites on death AND deals its own
+        // death-explosion damage -- two death effects composed via
+        // CompositeDeathEffect, since deathEffect is a single slot.
         add(troop(19, "Golem", 8.0f, Archetype::MeleeBuildingTargeter, 5120, 0.2f, 0.75f, 312, 25, 'L')
-            .withDeathEffect(std::make_shared<SpawnOnDeath>(golemiteStats())));
+            .withDeathEffect(std::make_shared<CompositeDeathEffect>(
+                std::vector<std::shared_ptr<IDeathEffect>>{
+                    std::make_shared<SpawnOnDeath>(golemiteStats()),
+                    std::make_shared<AreaDamageOnDeath>(2.5f, 200) })));
 
         // Ice Golem: same story as Ice Wizard -- BuildingTargeter's own
         // performAttack is already direct damage, so this is behavior-exact.
+        // Explodes on death dealing area damage; the real explosion also
+        // slows everyone it hits, but AreaDamageOnDeath is damage-only
+        // (no onHit-style hook, unlike AreaSpell's spellOnHit) -- not
+        // modeled.
         add(troop(40, "Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, 0.4f, 0.75f, 84, 25, 'c')
-            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f)));
+            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)));
 
         // Balloon: flying, buildings-only, real point-blank 0.1 attack range
         // (BuildingTargeter's own findTarget already never considers
         // isFlying/targetsAir, since Buildings never fly -- so no
         // .withTargetsAir() needed here, matching that Balloon can't hit air
-        // in the real game either). Its on-death area damage isn't modeled
-        // (no death-triggered effects exist in this engine yet).
+        // in the real game either). Real death-explosion damage is
+        // conditional (only if shot down before dropping its bomb) --
+        // that condition isn't modeled, it always deals the death-explosion
+        // here regardless of cause of death, a minor over-approximation.
         add(troop(45, "Balloon", 5.0f, Archetype::MeleeBuildingTargeter, 1676, 0.5f, 0.1f, 640, 20, 'a')
-            .withFlying());
+            .withFlying()
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(1.5f, 240)));
 
         // === Ranged Building Targeter ===
         add(troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y'));
@@ -283,9 +394,11 @@ private:
         // === Spells ===
         // Arrows: 3 rapid volleys of 123 each (369 total), not one 369 lump.
         add(spell(3, "Arrows", 3.0f, 3.5f, 123, 10, '*').withRepeats(3, 2));
-        add(spell(7, "Fireball", 4.0f, 2.5f, 689, 10, 'O'));
+        add(spell(7, "Fireball", 4.0f, 2.5f, 689, 10, 'O')
+            .withKnockback(1.0f));
         add(spell(29, "Zap", 2.0f, 2.5f, 192, 3, 'Z'));
-        add(spell(30, "Rocket", 6.0f, 2.0f, 1485, 15, 'r'));
+        add(spell(30, "Rocket", 6.0f, 2.0f, 1485, 15, 'r')
+            .withKnockback(1.0f));
         add(spell(31, "Lightning", 6.0f, 3.5f, 1057, 5, 'j'));
         // Poison: a real damage-over-time cloud -- 92 damage once per second
         // (10 ticks) for 8 seconds, not 736 dumped in one lump. Whoever's
@@ -322,17 +435,28 @@ private:
         // a harmless display-only overlap, not a data collision.
 
         // === New Melee Troops ===
-        add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, 0.5f, 1.2f, 266, 14, 'N')); // shield + charge bonus not modeled
-        add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')); // invisibility-until-attack not modeled
+        add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, 0.5f, 1.2f, 266, 14, 'N')
+            .withShield(200)); // charge bonus damage not modeled
+        add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+            .withInvisibility(5)); // brief reveal window after attacking
         add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
             .withSplash(1.5f)); // deploy slam + periodic dash not modeled
-        add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, 0.5f, 1.2f, 148, 15, 'f')); // heal aura not modeled
-        add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, 0.8f, 1.0f, 194, 10, 'u')); // dash + brief invuln not modeled
-        add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, 0.7f, 1.0f, 102, 6, 'v')); // enrage-as-damaged not modeled
-        add(troop(52, "Miner", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.0f, 194, 13, '0')); // deploy-anywhere (burrow) not modeled
-        add(troop(53, "Fisherman", 3.0f, Archetype::MeleeSquad, 870, 0.5f, 1.0f, 194, 13, '1')); // hook-pull not modeled
-        add(troop(54, "Ronin", 5.0f, Archetype::MeleeSquad, 1779, 0.7f, 1.2f, 371, 14, '2')); // periodic melee parry not modeled
-        add(troop(55, "Goblin Machine", 5.0f, Archetype::MeleeSquad, 2150, 0.5f, 1.2f, 212, 12, '3')); // independent rocket launcher sub-unit not modeled
+        add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, 0.5f, 1.2f, 148, 15, 'f')
+            .withHealAura(3.0f, 60)); // heal amount not part of the sourced data
+        add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, 0.8f, 1.0f, 194, 10, 'u')
+            .withCharge(3.0f, 2.0f)); // brief invulnerability during the dash not modeled
+        // enrageHealPerHit below isn't part of the sourced stats data --
+        // reasonable engine-internal constant, same caveat as splashRadius.
+        add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, 0.7f, 1.0f, 102, 6, 'v')
+            .withEnrage(15));
+        add(troop(52, "Miner", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.0f, 194, 13, '0')
+            .withDeployAnywhere());
+        add(troop(53, "Fisherman", 3.0f, Archetype::MeleeSquad, 870, 0.5f, 1.0f, 194, 13, '1')
+            .withHook(6.5f));
+        add(troop(54, "Ronin", 5.0f, Archetype::MeleeSquad, 1779, 0.7f, 1.2f, 371, 14, '2')
+            .withParry(35)); // reflect damage + ground-melee-only restriction not modeled (see CombatEntity::parryIntervalTicks)
+        add(troop(55, "Goblin Machine", 5.0f, Archetype::MeleeSquad, 2150, 0.5f, 1.2f, 212, 12, '3')
+            .withSecondaryUnit(goblinMachineTurretStats())); // independently-targeting rocket turret
 
         // Inferno Dragon / Electro Dragon: same "instant zap, no projectile
         // travel time" shaping as Electro Wizard above -- MeleeSquad despite
@@ -354,11 +478,12 @@ private:
         // same SpawnOnDeath mechanism as Golem/Battle Ram, with the newly-
         // registered Bats card's own stats (see nightWitchBatStats above).
         add(troop(58, "Night Witch", 4.0f, Archetype::MeleeSquad, 906, 0.5f, 1.0f, 314, 13, '6')
-            .withDeathEffect(std::make_shared<SpawnOnDeath>(nightWitchBatStats())));
-        // Phoenix: one-time revive-from-egg on death isn't modeled (no
-        // multi-life system exists).
+            .withDeathEffect(std::make_shared<SpawnOnDeath>(nightWitchBatStats()))
+            .withPeriodicEffect(50, std::make_shared<PeriodicSpawnEffect>(nightWitchPeriodicBatStats())));
+        // Phoenix: one-time revive on death -- see phoenixReviveStats above.
         add(troop(59, "Phoenix", 4.0f, Archetype::MeleeSquad, 1052, 0.5f, 1.0f, 217, 10, '7')
-            .withFlying().withTargetsAir());
+            .withFlying().withTargetsAir()
+            .withDeathEffect(std::make_shared<SpawnOnDeath>(phoenixReviveStats())));
 
         // === New Ranged Troops ===
         add(troop(60, "Sparky", 6.0f, Archetype::RangedSquad, 1451, 0.3f, 5.0f, 1331, 40, '8')
@@ -383,34 +508,48 @@ private:
         add(troop(67, "Flying Machine", 4.0f, Archetype::RangedSquad, 614, 0.7f, 6.0f, 171, 11, '+')
             .withFlying().withTargetsAir());
         add(troop(68, "Mother Witch", 4.0f, Archetype::RangedSquad, 529, 0.5f, 5.5f, 133, 10, ',')
-            .withTargetsAir()); // curse-on-hit + cursed-death-spawns-goblin not modeled
-        add(troop(69, "Cannon Cart", 5.0f, Archetype::RangedSquad, 1809, 0.5f, 5.5f, 212, 9, '?')); // mobile shield + post-shield transform-to-building not modeled
+            .withTargetsAir()
+            .withOnHit(std::make_shared<CurseOnHit>(1.3f, 60))); // cursed-death-spawns-goblin not modeled
+        add(troop(69, "Cannon Cart", 5.0f, Archetype::RangedSquad, 1809, 0.5f, 5.5f, 212, 9, '?')
+            .withShield(500)); // post-shield transform-to-stationary-building not modeled
         add(troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
-            .withTargetsAir()); // reworked 2026 from Building to mobile Troop; periodic Fire Spirit spawn not modeled
+            .withTargetsAir() // reworked 2026 from Building to mobile Troop
+            .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())));
         add(troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
-            .withTargetsAir()); // periodic Skeleton spawn not modeled
+            .withTargetsAir()
+            .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats())));
 
-        // "Spirit" troops: real game has them detonate once on arrival then
-        // vanish; this engine has no kamikaze/one-shot-then-die primitive,
-        // so they're modeled as small, cheap, ordinary ranged units instead
-        // (they'll survive and keep re-attacking rather than vanishing).
+        // "Spirit" troops: detonate once on arrival then vanish -- see
+        // CombatEntity::dieAfterFirstHit (fires the instant the shot is
+        // launched for these ranged troops, not on the projectile's later
+        // arrival, a minor timing simplification -- see its own comment).
         add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
             .withTargetsAir()
-            .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f)));
+            .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
+            .withDieAfterFirstHit());
         add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 207, 10, '<')
-            .withTargetsAir()); // splash not modeled
+            .withTargetsAir()
+            .withDieAfterFirstHit()); // splash not modeled
         add(troop(74, "Heal Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, '=')
-            .withTargetsAir()); // ally heal-on-hit not modeled
+            .withTargetsAir()
+            .withHealAura(2.5f, 110) // heal amount not part of the sourced data
+            .withDieAfterFirstHit());
         add(troop(75, "Electro Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 99, 10, '>')
             .withTargetsAir()
             .withSplitTargets(2)
-            .withOnHit(std::make_shared<FreezeOnHit>(8, 0.0f)));
+            .withOnHit(std::make_shared<FreezeOnHit>(8, 0.0f))
+            .withDieAfterFirstHit());
 
         // === New Swarms ===
+        // Shield HP figures below (Guards/Royal Recruits/Dark Prince/Cannon
+        // Cart) aren't part of the sourced stats data -- reasonable
+        // engine-internal constants, same caveat as splashRadius.
         add(troop(76, "Guards", 3.0f, Archetype::MeleeSquad, 81, 0.7f, 1.0f, 117, 10, '?')
-            .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })); // personal shields not modeled
+            .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
+            .withShield(65));
         add(troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
-            .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })); // personal shields not modeled
+            .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
+            .withShield(52));
         add(troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, 0.85f, 1.0f, 81, 12, 't')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
             .withFlying().withTargetsAir());
@@ -427,18 +566,27 @@ private:
         // Battle Ram: releases 2 Barbarians on death (reuses the already-
         // sourced Barbarians card's own stats, see battleRamBarbarianStats).
         add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
-            .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))); // charge bonus damage not modeled
+            .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
+            .withCharge(3.0f, 2.0f));
         add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
-            .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} }));
+            .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
+            .withCharge(3.0f, 2.0f));
         add(troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
-            .withSplash(1.5f)); // kamikaze one-shot (dies after its single hit) not modeled
+            .withSplash(1.5f)
+            .withDieAfterFirstHit());
         add(troop(84, "Electro Giant", 7.0f, Archetype::MeleeBuildingTargeter, 3952, 0.3f, 1.0f, 163, 18, '|')
-            .withSplash(1.5f)); // periodic shock aura not modeled
-        add(troop(85, "Suspicious Bush", 2.0f, Archetype::MeleeBuildingTargeter, 81, 0.5f, 0.25f, 256, 14, '}')); // disguise/invisibility + on-death Bush Goblins not modeled (no sourced stats for the split)
-        add(troop(86, "Rune Giant", 4.0f, Archetype::MeleeBuildingTargeter, 2662, 0.5f, 1.2f, 153, 15, '~')); // ally-buff-on-attack aura not modeled
-        add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, 0.5f, 1.0f, 250, 17, '"')); // rider's independent crossbow + charge not modeled
-        add(troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')); // carried Spear Goblins sub-unit not modeled
+            .withSplash(1.5f)
+            .withPeriodicEffect(50, std::make_shared<AreaStunEffect>(2.5f, 5)));
+        add(troop(85, "Suspicious Bush", 2.0f, Archetype::MeleeBuildingTargeter, 81, 0.5f, 0.25f, 256, 14, '}')
+            .withInvisibility(5)); // on-death Bush Goblins not modeled (no sourced stats for the split)
+        add(troop(86, "Rune Giant", 4.0f, Archetype::MeleeBuildingTargeter, 2662, 0.5f, 1.2f, 153, 15, '~')
+            .withAllyBuffAura(3.0f, 3, 1.5f, 50, 2));
+        add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, 0.5f, 1.0f, 250, 17, '"')
+            .withCharge(3.0f, 2.0f)
+            .withSecondaryUnit(ramRiderCrossbowStats())); // rider's independently-targeting crossbow
+        add(troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+            .withSecondaryUnit(goblinGiantSpearGoblinsStats())); // carried Spear Goblins, independently-targeting
         // Skeleton Barrel: releases 2 Skeletons on death (reuses the
         // already-sourced Skeletons card's own stats).
         add(troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, 0.85f, 1.0f, 81, 10, ',')
@@ -456,30 +604,41 @@ private:
 
         // Spawner buildings: none of these attack in the real game (see
         // ClashStrategic's own data flagging their damage fields as
-        // vestigial) -- modeled as inert 0-damage structures. Their entire
-        // real function (periodic troop spawning, or a release-on-death
-        // burst) isn't modeled since no periodic-spawn-while-alive hook
-        // exists and none of these have sourced stats for their spawned
-        // child units.
-        add(building(94, "Barbarian Hut", 6.0f, 1164, '2', 0.0f, 0, 100));
-        add(building(95, "Goblin Hut", 4.0f, 1180, '3', 0.0f, 0, 100));
-        add(building(96, "Tombstone", 3.0f, 529, '5', 0.0f, 0, 100));
+        // vestigial) -- modeled as inert 0-damage structures that
+        // periodically spawn troops via PeriodicSpawnEffect (see the
+        // periodic-spawn child-stats helpers above). Goblin Cage has no
+        // periodic spawn in the real game either (its whole function is a
+        // release-on-death burst) -- stays unmodeled, no sourced stats for
+        // Goblin Brawler.
+        add(building(94, "Barbarian Hut", 6.0f, 1164, '2', 0.0f, 0, 100)
+            .withPeriodicEffect(140, std::make_shared<PeriodicSpawnEffect>(barbarianHutBarbarianStats())));
+        add(building(95, "Goblin Hut", 4.0f, 1180, '3', 0.0f, 0, 100)
+            .withPeriodicEffect(80, std::make_shared<PeriodicSpawnEffect>(goblinHutSpearGoblinStats()))); // interval + per-spawn count not sourced
+        add(building(96, "Tombstone", 3.0f, 529, '5', 0.0f, 0, 100)
+            .withPeriodicEffect(35, std::make_shared<PeriodicSpawnEffect>(skeletonBarrelSkeletonStats())));
         add(building(97, "Goblin Cage", 4.0f, 780, '6', 0.0f, 0, 100));
-        add(building(98, "Goblin Drill", 4.0f, 1313, '7', 0.0f, 0, 100)); // burrow-to-target + emergence burst + periodic Goblin spawn not modeled
-        // Elixir Collector: no attack, and passive elixir generation isn't
-        // modeled (no per-entity-drives-player-elixir hook exists) -- this
-        // engine's version is just inert HP for the opponent to decide
-        // whether to punish, same "not modeled" simplification as above.
-        add(building(99, "Elixir Collector", 6.0f, 1070, '9', 0.0f, 0, 100));
+        // Goblin Drill: one-time emergence burst on arrival still isn't
+        // modeled -- deploy-anywhere and periodic Goblin spawn are.
+        add(building(98, "Goblin Drill", 4.0f, 1313, '7', 0.0f, 0, 100)
+            .withPeriodicEffect(30, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats()))
+            .withDeployAnywhere());
+        // Elixir Collector: no attack, but does passively generate elixir
+        // via ElixirGrantEffect (a periodic effect that credits
+        // Board::pendingElixirGrant instead of spawning a troop). Interval/
+        // amount aren't part of the sourced stats data.
+        add(building(99, "Elixir Collector", 6.0f, 1070, '9', 0.0f, 0, 100)
+            .withPeriodicEffect(80, std::make_shared<ElixirGrantEffect>(1.0f)));
 
         // === New Spells ===
         add(spell(100, "Giant Snowball", 2.0f, 2.5f, 179, 8, '!')
-            .withSpellOnHit(std::make_shared<FreezeOnHit>(15, 0.5f))); // pushback not modeled; slow approximated via the new spellOnHit hook
-        // Barbarian Barrel: the rolling damage is modeled; spawning a
-        // Barbarian at the landing point isn't (no sourced stats gap here --
-        // it's the same "spell spawns a troop" mechanism Goblin Barrel/
-        // Graveyard/Royal Delivery need and this engine doesn't have).
-        add(spell(101, "Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#').withGroundOnly());
+            .withSpellOnHit(std::make_shared<FreezeOnHit>(15, 0.5f))
+            .withKnockback(1.0f));
+        // Barbarian Barrel: rolling damage plus a single Barbarian spawned
+        // at the landing point via the same spell-spawn mechanism as
+        // Goblin Barrel below.
+        add(spell(101, "Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
+            .withGroundOnly()
+            .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(barbarianBarrelBarbarianStats())));
         // Goblin Curse: damage-over-time portion modeled via withRepeats;
         // the damage-taken-amplification debuff and cursed-death-spawns-a-
         // Goblin bonus aren't (no debuff-modifier or on-cursed-death hook).
@@ -497,7 +656,8 @@ private:
         // each tick like every other multi-tick spell (root/pull/highest-HP
         // targeting not modeled).
         add(spell(105, "Vines", 3.0f, 2.5f, 135, 8, '+').withRepeats(3, 7));
-        add(spell(106, "Tornado", 3.0f, 5.5f, 154, 8, '_')); // pull-to-center not modeled
+        add(spell(106, "Tornado", 3.0f, 5.5f, 154, 8, '_')
+            .withKnockback(-1.5f)); // negative: pulls toward center instead of pushing away
         // Freeze: the source data's "damage" field for this card is treated
         // as vestigial (same judgment call ClashStrategic's own data made
         // for the non-attacking spawner buildings above) -- the real card's
@@ -505,6 +665,55 @@ private:
         // (slowFactor 0.0) 4s freeze via the new spellOnHit hook.
         add(spell(107, "Freeze", 4.0f, 3.0f, 0, 8, '~')
             .withSpellOnHit(std::make_shared<FreezeOnHit>(40, 0.0f)));
+        // Rage: now that AreaSpell supports a buffsAllies mode (see the
+        // buff/aura cards above), this no longer needs to stay excluded --
+        // buffs allied damage in radius instead of damaging enemies.
+        // Duration/multiplier aren't part of the sourced data.
+        add(spell(108, "Rage", 2.0f, 3.0f, 0, 8, '(')
+            .withSpellBuff(1.35f, 45));
+        // Goblin Barrel: drops 3 Goblins directly at the target via
+        // AreaSpell::spawnOnDetonate (reusing PeriodicSpawnEffect), no
+        // longer excluded now that spell-spawns-troops exists. Real card
+        // deals no separate area damage of its own -- damage 0 here, the
+        // Goblins' own combat stats are what actually hits.
+        add(spell(109, "Goblin Barrel", 3.0f, 0.5f, 0, 8, '[')
+            .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(goblinBarrelGoblinStats())));
+        // Graveyard: rains Skeletons over 9s -- one small spawn per tick
+        // via withRepeats, same cadence mechanism as Poison's DoT.
+        add(spell(110, "Graveyard", 5.0f, 4.0f, 0, 8, ']')
+            .withRepeats(9, 10)
+            .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(graveyardSkeletonStats())));
+        // Royal Delivery: drops a single shielded Royal-Recruit-shaped
+        // defender at the target; also deals its own landing-impact damage.
+        add(spell(111, "Royal Delivery", 3.0f, 2.0f, 438, 8, '^')
+            .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(royalDeliveryRecruitStats())));
+
+        // === New Compound Troops (two equal-weight sub-units) ===
+        // Goblin Gang / Rascals: now that secondaryUnit exists (see the
+        // Goblin Machine/Ram Rider/Goblin Giant cards above), these no
+        // longer need one sub-unit to dominate -- both halves are simply
+        // spawned via primary + secondaryUnit.
+        add(troop(112, "Goblin Gang", 3.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+            .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f} })
+            .withSecondaryUnit(
+                troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
+                    .withOffsets({ {-0.5f, 0.5f}, {0.5f, 0.5f}, {0.0f, -0.5f} })));
+        // Rascals: only the "Boy" half's stats are separately sourced; the
+        // two "Girls" reuse Spear Goblins' own sourced ranged stats as a
+        // reasonable stand-in rather than an invented split of the card's
+        // one combined figure.
+        add(troop(113, "Rascals", 5.0f, Archetype::MeleeSquad, 1832, 0.5f, 1.2f, 217, 15, 'X')
+            .withSecondaryUnit(
+                troop(-28, "Rascals", 0.0f, Archetype::RangedSquad, 133, 0.5f, 5.0f, 81, 17, 'r')
+                    .withOffsets({ {-0.5f, 0.0f}, {0.5f, 0.0f} })));
+
+        // Clone: now that Entity::clone() exists (see MeleeTroop/
+        // RangedTroop/BuildingTargeter/RangedBuildingTargeter's own
+        // overrides), this no longer needs to stay excluded -- duplicates
+        // every allied troop in radius, each clone getting a fresh id and
+        // 1 hp but every other configured combat field of the original.
+        add(spell(114, "Clone", 3.0f, 3.0f, 0, 8, ')')
+            .withSpellClone());
 
         // === Excluded from this sync (no supporting mechanism in this engine) ===
         // Champions (Golden Knight, Skeleton King, Archer Queen, Monk,
@@ -513,15 +722,15 @@ private:
         // Chef) were out of scope per the sync request and never researched.
         // Also excluded, for lack of any matching mechanism even
         // approximately:
-        //   - Clone, Mirror, Rage: buff/duplicate/replay-last-card spells --
-        //     no buff-zone, troop-duplication, or play-history hook exists.
-        //   - Goblin Barrel, Graveyard, Royal Delivery: "spell spawns
-        //     troops" is a different mechanism from every other spell here
-        //     (which all apply direct area damage) and doesn't exist.
+        //   - Mirror: replays the last card played, at +1 elixir cost and
+        //     +1 level -- needs "what was the last card played, by whom"
+        //     state that lives in GameManager/PlayerState, a layer entirely
+        //     above CardFactories/AreaSpell (which only ever see a single
+        //     spawn point, not match history). No other card in this pass
+        //     needed cross-layer state like this.
         //   - Spirit Empress: stateful dual-form (ground vs. flying)
         //     auto-switching has no equivalent and the exact switching rule
         //     couldn't be confirmed from sourced data.
-        //   - Goblin Gang, Rascals: genuinely compound cards (two equal-
         //     weight sub-unit types with independent HP pools, unlike e.g.
         //     Goblin Giant/Ram Rider/Goblin Machine above which have one
         //     clear primary body) -- no single-unit approximation fits

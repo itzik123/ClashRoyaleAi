@@ -72,3 +72,19 @@ public:
         lastTeam = team;
     }
 };
+
+// Same idea as RecordingDeathEffect, but counts every call instead of just
+// the last one -- a periodic effect is expected to fire repeatedly over an
+// entity's lifetime, not just once.
+class RecordingPeriodicEffect : public IPeriodicEffect {
+public:
+    mutable int applyCount = 0;
+    mutable Vector2D lastPosition{};
+    mutable int lastTeam = -1;
+
+    void apply(Board&, const Vector2D& position, int team) const override {
+        applyCount++;
+        lastPosition = position;
+        lastTeam = team;
+    }
+};

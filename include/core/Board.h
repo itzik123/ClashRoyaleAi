@@ -37,6 +37,15 @@ public:
     // read-only convenience for whoever's stamping an event.
     int currentTick = 0;
 
+    // Elixir Collector: accumulated here by ElixirGrantEffect (a periodic
+    // effect, like Board::currentTick above there's no clean route from
+    // deep inside CombatEntity::update() to PlayerState's elixir, which
+    // Board doesn't even know exists -- so this is a small drop-box
+    // instead. GameManager::step() drains both entries into
+    // playerAI/playerOpponent.elixir once per tick and resets them to 0;
+    // Board doesn't act on this value itself.
+    float pendingElixirGrant[2] = { 0.0f, 0.0f };
+
     Board(int w = 18, int h = 32) : width(w), height(h) {}
 
     int allocateId() { return idCounter++; }

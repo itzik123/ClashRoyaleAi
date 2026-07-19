@@ -85,7 +85,9 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {97, "Goblin Cage", 4.0f, false}, {98, "Goblin Drill", 4.0f, false}, {99, "Elixir Collector", 6.0f, false},
         {100, "Giant Snowball", 2.0f, true}, {101, "Barbarian Barrel", 2.0f, true}, {102, "Goblin Curse", 2.0f, true},
         {103, "Earthquake", 3.0f, true}, {104, "Void", 3.0f, true}, {105, "Vines", 3.0f, true},
-        {106, "Tornado", 3.0f, true}, {107, "Freeze", 4.0f, true},
+        {106, "Tornado", 3.0f, true}, {107, "Freeze", 4.0f, true}, {108, "Rage", 2.0f, true},
+        {109, "Goblin Barrel", 3.0f, true}, {110, "Graveyard", 5.0f, true}, {111, "Royal Delivery", 3.0f, true},
+        {112, "Goblin Gang", 3.0f, false}, {113, "Rascals", 5.0f, false}, {114, "Clone", 3.0f, true},
     };
 
     const auto& registry = CardRegistry::getInstance();
@@ -261,6 +263,66 @@ TEST_CASE("Golem splits into two Golemites on death", "[card_registry][death]") 
         REQUIRE(golemite->name == "Golemite");
         REQUIRE(golemite->team == 0);
         REQUIRE(golemite->position.y == Catch::Approx(5.0f));
+    }
+}
+
+TEST_CASE("Golem also deals death-explosion damage alongside spawning Golemites (CompositeDeathEffect)", "[card_registry][death]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    const CardDefinition* golem = CardRegistry::getInstance().getCard(19);
+    golem->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto golemEntity = board.getEntities().back();
+    golemEntity->takeDamage(golemEntity->hp);
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    REQUIRE(enemy->hp == 100000 - 200); // the explosion half of the composite effect
+    int golemiteCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Golemite") golemiteCount++;
+    }
+    REQUIRE(golemiteCount == 2); // the spawn half still fires too
+}
+
+TEST_CASE("Giant Skeleton, Ice Golem and Balloon deal death-explosion damage", "[card_registry][death]") {
+    SECTION("Giant Skeleton") {
+        Board board;
+        auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1);
+        spawn(board, enemy);
+        CardRegistry::getInstance().getCard(39)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto entity = board.getEntities().back();
+        entity->takeDamage(entity->hp);
+        board.cleanDeadEntities();
+        REQUIRE(enemy->hp == 100000 - 300);
+    }
+
+    SECTION("Ice Golem") {
+        Board board;
+        auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1);
+        spawn(board, enemy);
+        CardRegistry::getInstance().getCard(40)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto entity = board.getEntities().back();
+        entity->takeDamage(entity->hp);
+        board.cleanDeadEntities();
+        REQUIRE(enemy->hp == 100000 - 84);
+    }
+
+    SECTION("Balloon") {
+        Board board;
+        auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1);
+        spawn(board, enemy);
+        CardRegistry::getInstance().getCard(45)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto entity = board.getEntities().back();
+        entity->takeDamage(entity->hp);
+        board.cleanDeadEntities();
+        REQUIRE(enemy->hp == 100000 - 240);
     }
 }
 
@@ -752,4 +814,153 @@ TEST_CASE("Valkyrie's splash hits a second enemy standing near her primary targe
 
     REQUIRE(primary->hp == 734);  // 1000 - 266
     REQUIRE(nearby->hp == 734);   // caught in the splash, same damage
+}
+
+TEST_CASE("Tombstone periodically spawns Skeletons while alive, not just on death", "[card_registry][periodic]") {
+    Board board;
+    const CardDefinition* tombstone = CardRegistry::getInstance().getCard(96);
+    REQUIRE(tombstone != nullptr);
+    tombstone->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto building = board.getEntities().back();
+    REQUIRE(board.getEntities().size() == 1); // just the Tombstone itself so far
+
+    for (int i = 0; i < 35; ++i) building->update(board); // its periodic interval
+    board.commitPendingEntities(); // the spawned Skeletons become visible
+
+    int skeletonCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Skeletons") skeletonCount++;
+    }
+    REQUIRE(skeletonCount == 2);
+}
+
+TEST_CASE("Rage buffs an ally's damage in radius instead of damaging enemies", "[card_registry][spell][buff]") {
+    Board board;
+    auto ally = std::make_shared<StationaryCombatant>(1, 6.0f, 5.0f, 1000, 0, 1.0f, 10, 10); // dist 1.0, same team
+    auto enemy = std::make_shared<StationaryCombatant>(2, 5.0f, 6.0f, 1000, 1, 1.0f, 10, 10); // dist 1.0, other team
+    spawn(board, ally);
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(108)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+
+    REQUIRE(ally->buffTicksRemaining == 45);
+    REQUIRE(ally->hp == 1000);   // buffed, not damaged
+    REQUIRE(enemy->hp == 1000);  // Rage never touches enemies at all
+}
+
+TEST_CASE("Phoenix revives exactly once on death, then stays dead the second time", "[card_registry][death]") {
+    Board board;
+    const CardDefinition* phoenix = CardRegistry::getInstance().getCard(59);
+    REQUIRE(phoenix != nullptr);
+    phoenix->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() == 1);
+    auto firstLife = board.getEntities()[0];
+    firstLife->takeDamage(firstLife->hp); // first death
+    board.cleanDeadEntities();
+    board.commitPendingEntities(); // the revived Phoenix becomes visible
+
+    REQUIRE(board.getEntities().size() == 1);
+    auto secondLife = board.getEntities()[0];
+    REQUIRE(secondLife->name == "Phoenix");
+    REQUIRE(secondLife->id != firstLife->id); // a genuinely new entity, not the same one
+    REQUIRE(secondLife->hp == 1052); // full hp, not a fraction
+
+    secondLife->takeDamage(secondLife->hp); // second death
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().empty()); // no third life -- revive only ever fires once
+}
+
+TEST_CASE("Goblin Barrel drops 3 Goblins directly at the target, dealing no separate area damage", "[card_registry][spell][spawn]") {
+    Board board;
+    CardRegistry::getInstance().getCard(109)->spawnEntity(9.0f, 9.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+    board.commitPendingEntities();
+
+    int goblinCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Goblins") goblinCount++;
+    }
+    REQUIRE(goblinCount == 3);
+}
+
+TEST_CASE("Graveyard rains Skeletons over its duration, one small batch per tick", "[card_registry][spell][spawn]") {
+    Board board;
+    CardRegistry::getInstance().getCard(110)->spawnEntity(9.0f, 9.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+    board.commitPendingEntities();
+
+    int skeletonCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Skeletons") skeletonCount++;
+    }
+    REQUIRE(skeletonCount == 9); // 9 applications, one Skeleton each
+}
+
+TEST_CASE("Royal Delivery deals landing damage and drops a single shielded defender", "[card_registry][spell][spawn]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 10.0f, 9.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0 from (9,9)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(111)->spawnEntity(9.0f, 9.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+    board.commitPendingEntities();
+
+    REQUIRE(enemy->hp == 562); // 1000 - 438 landing damage
+
+    std::shared_ptr<Entity> defender;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Royal Recruits") defender = e;
+    }
+    REQUIRE(defender != nullptr);
+}
+
+TEST_CASE("Compound cards spawn a primary and a secondary unit that target independently", "[card_registry][compound]") {
+    Board board;
+
+    SECTION("Goblin Machine: melee body + ranged turret") {
+        CardRegistry::getInstance().getCard(55)->spawnEntity(9.0f, 9.0f, 0, board);
+        board.commitPendingEntities();
+
+        REQUIRE(board.getEntities().size() == 2);
+        auto body = std::dynamic_pointer_cast<MeleeTroop>(board.getEntities()[0]);
+        auto turret = std::dynamic_pointer_cast<RangedTroop>(board.getEntities()[1]);
+        REQUIRE(body != nullptr);
+        REQUIRE(turret != nullptr);
+    }
+
+    SECTION("Goblin Gang: 3 melee Goblins + 3 ranged Spear Goblins") {
+        CardRegistry::getInstance().getCard(112)->spawnEntity(9.0f, 9.0f, 0, board);
+        board.commitPendingEntities();
+
+        int meleeCount = 0, rangedCount = 0;
+        for (const auto& e : board.getEntities()) {
+            if (std::dynamic_pointer_cast<MeleeTroop>(e)) meleeCount++;
+            if (std::dynamic_pointer_cast<RangedTroop>(e)) rangedCount++;
+        }
+        REQUIRE(meleeCount == 3);
+        REQUIRE(rangedCount == 3);
+    }
 }

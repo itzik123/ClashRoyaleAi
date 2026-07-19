@@ -3,10 +3,23 @@
 #include "Board.h"
 #include "OnHitEffect.h"
 #include "DeathEffect.h"
+#include "PeriodicEffect.h"
 #include <memory>
 #include <limits>
 #include <vector>
 #include <algorithm>
+
+class CombatEntity;
+
+// Forward-declared here, defined after the class (below) -- CombatEntity's
+// own update() calls applyAreaBuff/applyAreaHeal directly (unlike
+// applySplashDamage, which only ever gets called from leaf classes that
+// include this whole header first), so the class body needs to see these
+// signatures before they're fully defined.
+inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
+    int team, float multiplier, int durationTicks, int maxTargets);
+inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
+    int team, int amount);
 
 class CombatEntity : public CardEntity {
 protected:
@@ -78,11 +91,150 @@ public:
     // Projectile needs it too and isn't a CombatEntity.
     float splashRadius = 0.0f;
 
+    // Shield (Guards, Royal Recruits, Dark Prince, Cannon Cart): a second
+    // HP pool that absorbs damage first, from any source (direct hit,
+    // splash, spell) since it's implemented in takeDamage() itself, not
+    // per-attacker. Doesn't regenerate. 0 (the default) is every card
+    // without one.
+    int shieldHp = 0;
+
+    // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
+    // Bandit): once this attacker has moved at least chargeThreshold tiles
+    // continuously without landing a hit, its next attack deals
+    // chargeMultiplier x damage -- then chargeProgress resets to 0,
+    // charged or not, same as the real game's "have to run it up again"
+    // rule. chargeThreshold == 0.0f (the default) disables the mechanic
+    // for every card that doesn't opt in.
+    float chargeThreshold = 0.0f;
+    float chargeMultiplier = 1.0f;
+    float chargeProgress = 0.0f;
+
+    // Enrage (Berserker): attack cooldown shortens (up to 2x speed at 0 hp)
+    // and a small self-heal lands with every hit, scaling with how much of
+    // enrageMaxHp is already gone. enrageMaxHp == 0 (the default) disables
+    // the mechanic; set to the card's own starting hp to enable it (see
+    // CardStats::withEnrage).
+    int enrageMaxHp = 0;
+    int enrageHealPerHit = 0;
+
+    // Parry (Ronin): every parryIntervalTicks ticks, the next incoming hit
+    // is fully negated instead of applying normally, then the timer
+    // resets. The real card also reflects bonus damage back at the
+    // attacker and only parries ground-melee hits (ranged/air/spells
+    // bypass it) -- neither is modeled (takeDamage carries no attacker
+    // identity to reflect at, and no melee-vs-ranged distinction exists
+    // anywhere in this engine), so this is a simpler "occasionally shrugs
+    // off an incoming hit entirely" approximation. parryIntervalTicks == 0
+    // (the default) disables the mechanic; parryTicksUntilReady <= 0 means
+    // ready to parry the next hit, right away at spawn.
+    int parryIntervalTicks = 0;
+    int parryTicksUntilReady = 0;
+
+    // Hook (Fisherman): when the current target is beyond attackRange but
+    // still within hookRange, instantly pulls it to just inside melee
+    // range instead of walking toward it -- consumes this tick's attack
+    // cooldown, so the actual damage lands on a later, normal-range hit.
+    // hookRange == 0.0f (the default) disables the mechanic.
+    float hookRange = 0.0f;
+
+    // Invisibility (Royal Ghost, Suspicious Bush): untargetable except for
+    // a brief window right after this attacker lands a hit, which reveals
+    // it -- see isTargetable() and revealTicksAfterAttack below.
+    // startsInvisible == false (the default) is every card without it.
+    bool startsInvisible = false;
+    int revealTicksAfterAttack = 0;
+    int visibleTicksRemaining = 0;
+
+    // Periodic spawning/effects while alive (Witch, Night Witch, Furnace,
+    // Barbarian Hut, Goblin Hut, Tombstone, Goblin Drill): every
+    // periodicIntervalTicks ticks, fires periodicEffect at this entity's
+    // own position/team -- unrelated to deathEffect, which fires once, on
+    // death, instead. periodicIntervalTicks == 0 (the default) disables
+    // the mechanic; no timer runs and periodicEffect is never read.
+    std::shared_ptr<IPeriodicEffect> periodicEffect;
+    int periodicIntervalTicks = 0;
+    int periodicTicksUntilNext = 0;
+
+    // Temporary damage buff (Rage spell/potion, Rune Giant's ally
+    // enchant): while buffTicksRemaining > 0, getCurrentDamage() is
+    // multiplied by buffDamageMultiplier. Real Rage also boosts movement/
+    // attack speed; only the damage part is modeled (speed lives on
+    // Troop, a layer above CombatEntity -- not worth duplicating this
+    // multiplier system there for one card's secondary effect).
+    // buffTicksRemaining == 0 (the default) is every card unaffected.
+    float buffDamageMultiplier = 1.0f;
+    int buffTicksRemaining = 0;
+
+    // Temporary damage-taken debuff (Mother Witch's curse): while
+    // curseTicksRemaining > 0, incoming damage in takeDamage() is
+    // multiplied by curseDamageTakenMultiplier before shield/parry see it.
+    // curseTicksRemaining == 0 (the default) is every card unaffected.
+    float curseDamageTakenMultiplier = 1.0f;
+    int curseTicksRemaining = 0;
+
+    // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
+    // Battle Healer's heal): fires the configured effect(s) at nearby
+    // allies right after this attacker's own hit lands. auraEveryNAttacks
+    // == 0 (the default) disables the buff aura; healAllyAmount == 0
+    // disables the heal aura -- each opts in independently.
+    float auraRadius = 0.0f;
+    int auraMaxTargets = 1000000; // effectively "everyone in radius" unless a card sets a real cap
+    int auraEveryNAttacks = 0;
+    int attacksSinceAura = 0;
+    float auraBuffMultiplier = 1.0f;
+    int auraBuffDurationTicks = 0;
+    int healAllyAmount = 0;
+
+    // Kamikaze (Wall Breakers, the "Spirit" troops): dies immediately
+    // after landing its one hit instead of surviving to attack
+    // repeatedly. For ranged troops this fires the instant the shot is
+    // launched (performAttack spawning the Projectile), not on the
+    // projectile's later arrival -- the shooter vanishing slightly before
+    // the real card's on-arrival timing, a minor simplification. false
+    // (the default) is every other card here.
+    bool dieAfterFirstHit = false;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
         attackRange(attackRange), damage(damage),
         attackCooldown(attackCooldown), currentCooldown(0.0f) {}
+
+    bool isTargetable() const override {
+        return !startsInvisible || visibleTicksRemaining > 0;
+    }
+
+    void applyBuff(float multiplier, int ticks) {
+        buffDamageMultiplier = multiplier;
+        buffTicksRemaining = ticks;
+    }
+
+    void applyCurse(float damageTakenMultiplier, int ticks) {
+        curseDamageTakenMultiplier = damageTakenMultiplier;
+        curseTicksRemaining = ticks;
+    }
+
+    // Parry checked before shield: a parried hit is negated outright, not
+    // absorbed by (and wasting) shield capacity. Shield absorbs first,
+    // dollar-for-dollar, before any of this spills onto real hp -- matches
+    // the real game's "shield breaks silently, no damage carries over"
+    // rule (a hit bigger than the remaining shield only costs the excess,
+    // not double-counted).
+    void takeDamage(int amount) override {
+        if (curseTicksRemaining > 0) {
+            amount = static_cast<int>(amount * curseDamageTakenMultiplier);
+        }
+        if (parryIntervalTicks > 0 && parryTicksUntilReady <= 0) {
+            parryTicksUntilReady = parryIntervalTicks;
+            return; // fully negated
+        }
+        if (shieldHp > 0) {
+            int absorbed = (shieldHp < amount) ? shieldHp : amount;
+            shieldHp -= absorbed;
+            amount -= absorbed;
+        }
+        if (amount > 0) Entity::takeDamage(amount);
+    }
 
     void applyFreeze(int ticks, float slowFactor) {
         // Duration and strength are judged independently so a new freeze can
@@ -118,6 +270,19 @@ public:
         }
 
         if (currentCooldown < 0.0f) currentCooldown = 0.0f;
+
+        if (parryIntervalTicks > 0 && parryTicksUntilReady > 0) parryTicksUntilReady--;
+        if (startsInvisible && visibleTicksRemaining > 0) visibleTicksRemaining--;
+        if (buffTicksRemaining > 0) buffTicksRemaining--;
+        if (curseTicksRemaining > 0) curseTicksRemaining--;
+
+        if (periodicIntervalTicks > 0) {
+            periodicTicksUntilNext--;
+            if (periodicTicksUntilNext <= 0) {
+                if (periodicEffect) periodicEffect->apply(board, position, team);
+                periodicTicksUntilNext = periodicIntervalTicks;
+            }
+        }
 
         // Target-lock: once committed to a target, stay on it -- attacking
         // or chasing -- instead of re-picking "whoever's closest" every
@@ -165,9 +330,43 @@ public:
                         }
                     }
                     currentCooldown = static_cast<float>(attackCooldown);
+                    if (chargeThreshold > 0.0f) chargeProgress = 0.0f;
+                    if (startsInvisible) visibleTicksRemaining = revealTicksAfterAttack;
+                    if (enrageMaxHp > 0) {
+                        float hpFraction = static_cast<float>(hp) / static_cast<float>(enrageMaxHp);
+                        currentCooldown *= (0.5f + 0.5f * hpFraction); // up to 2x attack speed at 0 hp
+                        if (enrageHealPerHit > 0 && hp < enrageMaxHp) {
+                            hp = (hp + enrageHealPerHit < enrageMaxHp) ? hp + enrageHealPerHit : enrageMaxHp;
+                        }
+                    }
+                    // Ally aura on landed attacks (Rune Giant's every-Nth
+                    // buff, Battle Healer's heal) -- see CombatEntity's own
+                    // aura* fields above.
+                    if (healAllyAmount > 0) {
+                        applyAreaHeal(board, position, auraRadius, id, team, healAllyAmount);
+                    }
+                    if (auraEveryNAttacks > 0) {
+                        attacksSinceAura++;
+                        if (attacksSinceAura >= auraEveryNAttacks) {
+                            attacksSinceAura = 0;
+                            applyAreaBuff(board, position, auraRadius, id, team,
+                                auraBuffMultiplier, auraBuffDurationTicks, auraMaxTargets);
+                        }
+                    }
+                    if (dieAfterFirstHit) hp = 0;
                 }
+            } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
+                // Hook: instantly pull the target to just inside melee
+                // range instead of walking toward it. No damage lands this
+                // tick -- the real hit happens on a later, normal-range
+                // attack once it arrives, consistent with the real card
+                // (hook first, melee second).
+                pullToward(*target, position, dist - effectiveAttackRange + 0.1f);
+                currentCooldown = static_cast<float>(attackCooldown);
             } else {
+                Vector2D beforeMove = position;
                 moveTowards(board, target->position);
+                if (chargeThreshold > 0.0f) chargeProgress += beforeMove.distanceTo(position);
             }
         } else {
             currentTargetId = -1;
@@ -252,10 +451,11 @@ protected:
         return candidates;
     }
 
-    // Ramped, then split across however many targets this attack actually
-    // landed on. Both default to no-ops (rampFullTick == 0, currentHitCount
-    // == 1), so this returns `damage` unchanged for every card that doesn't
-    // opt into either mechanic.
+    // Ramped, charge-boosted, then split across however many targets this
+    // attack actually landed on. All three default to no-ops
+    // (rampFullTick == 0, chargeThreshold == 0.0f, currentHitCount == 1),
+    // so this returns `damage` unchanged for every card that doesn't opt
+    // into any of them.
     int getCurrentDamage() const {
         int base = damage;
         if (rampFullTick > 0) {
@@ -263,6 +463,12 @@ protected:
                 : (ticksOnTarget >= rampMidTick) ? rampMidFraction
                 : rampStartFraction;
             base = static_cast<int>(damage * fraction);
+        }
+        if (chargeThreshold > 0.0f && chargeProgress >= chargeThreshold) {
+            base = static_cast<int>(base * chargeMultiplier);
+        }
+        if (buffTicksRemaining > 0) {
+            base = static_cast<int>(base * buffDamageMultiplier);
         }
         return currentHitCount > 1 ? base / currentHitCount : base;
     }
@@ -308,5 +514,46 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
             { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+    }
+}
+
+// Ally buff: applies a temporary damage buff to up to maxTargets of the
+// closest same-team CombatEntity within radius of origin (Rune Giant's
+// per-3rd-attack enchant, Lumberjack's death-potion, Rage). excludeId
+// skips the source itself (a buffing unit doesn't buff itself). No-op
+// when radius <= 0 or maxTargets <= 0.
+inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
+        int team, float multiplier, int durationTicks, int maxTargets) {
+    if (radius <= 0.0f || maxTargets <= 0) return;
+    std::vector<std::shared_ptr<CombatEntity>> candidates;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->id == excludeId) continue;
+        if (entity->team != team || !entity->isAlive()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        if (auto combatEntity = std::dynamic_pointer_cast<CombatEntity>(entity)) {
+            candidates.push_back(combatEntity);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+        [&origin](const std::shared_ptr<CombatEntity>& a, const std::shared_ptr<CombatEntity>& b) {
+            return origin.distanceTo(a->position) < origin.distanceTo(b->position);
+        });
+    if (static_cast<int>(candidates.size()) > maxTargets) candidates.resize(maxTargets);
+    for (const auto& c : candidates) c->applyBuff(multiplier, durationTicks);
+}
+
+// Ally heal (Battle Healer): heals every same-team Entity within radius of
+// origin by `amount`. excludeId skips the source itself. Entity has no
+// generic "max hp" concept to cap against (only Building tracks one, for
+// decay), so this can overheal past an ally's original spawn hp -- not
+// modeled, a minor simplification. No-op when radius <= 0 or amount <= 0.
+inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
+        int team, int amount) {
+    if (radius <= 0.0f || amount <= 0) return;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->id == excludeId) continue;
+        if (entity->team != team || !entity->isAlive()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        entity->hp += amount;
     }
 }

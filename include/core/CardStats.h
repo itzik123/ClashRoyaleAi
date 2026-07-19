@@ -2,6 +2,7 @@
 #include "Entity.h"
 #include "OnHitEffect.h"
 #include "DeathEffect.h"
+#include "PeriodicEffect.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,6 +61,28 @@ struct CardStats {
     // default) is every other spell's normal damage-only case.
     std::shared_ptr<IOnHitEffect> spellOnHit;
 
+    // Rage: buffs allies in radius instead of damaging enemies -- see
+    // AreaSpell's buffsAllies mode. false (the default) is every other
+    // spell here.
+    bool spellBuffsAllies = false;
+    float spellBuffMultiplier = 1.0f;
+    int spellBuffDurationTicks = 0;
+
+    // Knockback/pull (Fireball, Rocket, Giant Snowball push; Tornado
+    // pulls) -- see AreaSpell's knockback field. Positive pushes away,
+    // negative pulls toward center. 0.0f (the default) is every other
+    // spell here.
+    float spellKnockback = 0.0f;
+
+    // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard) --
+    // see AreaSpell::spawnOnDetonate. nullptr (the default) is every
+    // spell that doesn't spawn anything.
+    std::shared_ptr<IPeriodicEffect> spellSpawnEffect;
+
+    // Clone -- see AreaSpell::clonesAllies. false (the default) is every
+    // other spell here.
+    bool spellClonesAllies = false;
+
     // One-time area burst applied the instant a troop-shaped card deploys,
     // independent of its regular attacks (e.g. Electro Wizard's spawn zap).
     // Radius 0 (the default) means no spawn effect.
@@ -91,6 +114,16 @@ struct CardStats {
     bool boomerang = false;
     int boomerangReturnDelayTicks = 0;
 
+    // Kamikaze (Wall Breakers, the "Spirit" troops) -- see
+    // CombatEntity::dieAfterFirstHit. false (the default) is every other
+    // card here.
+    bool dieAfterFirstHit = false;
+
+    // Deploy anywhere on the board (Miner, Goblin Drill) -- see
+    // GameManager::isValidPlacement. false (the default) is every other
+    // troop/building, which must stay on this player's own half.
+    bool deployAnywhere = false;
+
     // Splash damage on every regular attack (Wizard, Bowler, Valkyrie, ...)
     // -- see CombatEntity::applySplashDamage. 0.0f (the default) is every
     // card that doesn't opt in. Unlike hp/damage/cost, splash radius isn't
@@ -100,6 +133,69 @@ struct CardStats {
     // that were never actually sourced.
     float splashRadius = 0.0f;
 
+    // Shield HP (Guards, Royal Recruits, Dark Prince, Cannon Cart) -- see
+    // CombatEntity::takeDamage. 0 (the default) is every card without one.
+    // Same "not part of the sourced data" caveat as splashRadius above.
+    int shieldHp = 0;
+
+    // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
+    // Bandit) -- see CombatEntity::chargeThreshold/chargeMultiplier.
+    // 0.0f threshold (the default) is every card without a charge. Same
+    // "not part of the sourced data" caveat as splashRadius above.
+    float chargeThreshold = 0.0f;
+    float chargeMultiplier = 1.0f;
+
+    // Enrage (Berserker) -- see CombatEntity::enrageMaxHp/enrageHealPerHit.
+    // 0 (the default) is every card without it. Set via withEnrage below,
+    // which reads back the `hp` field already set by troop(...).
+    int enrageMaxHp = 0;
+    int enrageHealPerHit = 0;
+
+    // Parry (Ronin) -- see CombatEntity::parryIntervalTicks. 0 (the
+    // default) is every card without one.
+    int parryIntervalTicks = 0;
+
+    // Hook (Fisherman) -- see CombatEntity::hookRange. 0.0f (the default)
+    // is every card without one.
+    float hookRange = 0.0f;
+
+    // Invisibility (Royal Ghost, Suspicious Bush) -- see
+    // CombatEntity::startsInvisible/isTargetable. Also makes the card
+    // immune to splash/spell area damage while invisible, not just
+    // individual targeting (applySplashDamage/AreaSpell both gate on
+    // isTargetable() too) -- broader than the real game's "can't be
+    // individually selected, but area effects still land" rule. false
+    // (the default) is every card without it.
+    bool startsInvisible = false;
+    int revealTicksAfterAttack = 0;
+
+    // Compound cards (Goblin Giant's carried Spear Goblins, Ram Rider's
+    // independent crossbow, Goblin Machine's rocket turret, Goblin Gang,
+    // Rascals): a second, independently-targeting unit spawned alongside
+    // the primary one, at the same deploy point -- see
+    // CardFactories::spawn, which spawns this recursively right after the
+    // primary archetype. nullptr (the default) is every single-unit card.
+    std::shared_ptr<CardStats> secondaryUnit;
+
+    // Periodic spawning while alive (Witch, Night Witch, Furnace,
+    // Barbarian Hut, Goblin Hut, Tombstone, Goblin Drill) -- see
+    // CombatEntity::periodicEffect/periodicIntervalTicks. Fires the first
+    // time after one full interval has passed, not immediately at deploy.
+    // periodicIntervalTicks == 0 (the default) is every card without one.
+    std::shared_ptr<IPeriodicEffect> periodicEffect;
+    int periodicIntervalTicks = 0;
+
+    // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
+    // Battle Healer's heal) -- see CombatEntity's own aura* fields.
+    // auraEveryNAttacks == 0 disables the buff aura; healAllyAmount == 0
+    // disables the heal aura -- independent opt-ins, both default off.
+    float auraRadius = 0.0f;
+    int auraMaxTargets = 1000000;
+    int auraEveryNAttacks = 0;
+    float auraBuffMultiplier = 1.0f;
+    int auraBuffDurationTicks = 0;
+    int healAllyAmount = 0;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -108,6 +204,14 @@ struct CardStats {
     }
     CardStats& withIgnoresRiver(bool value = true) {
         ignoresRiver = value;
+        return *this;
+    }
+    CardStats& withDeployAnywhere(bool value = true) {
+        deployAnywhere = value;
+        return *this;
+    }
+    CardStats& withDieAfterFirstHit(bool value = true) {
+        dieAfterFirstHit = value;
         return *this;
     }
     CardStats& withFlying(bool value = true) {
@@ -156,6 +260,52 @@ struct CardStats {
         splashRadius = radius;
         return *this;
     }
+    CardStats& withShield(int amount) {
+        shieldHp = amount;
+        return *this;
+    }
+    CardStats& withCharge(float threshold, float multiplier) {
+        chargeThreshold = threshold;
+        chargeMultiplier = multiplier;
+        return *this;
+    }
+    // Reads back `hp` (already set by troop(...) before this chains on).
+    CardStats& withEnrage(int healPerHit) {
+        enrageMaxHp = hp;
+        enrageHealPerHit = healPerHit;
+        return *this;
+    }
+    CardStats& withParry(int intervalTicks) {
+        parryIntervalTicks = intervalTicks;
+        return *this;
+    }
+    CardStats& withHook(float range) {
+        hookRange = range;
+        return *this;
+    }
+    CardStats& withInvisibility(int revealTicks) {
+        startsInvisible = true;
+        revealTicksAfterAttack = revealTicks;
+        return *this;
+    }
+    CardStats& withPeriodicEffect(int intervalTicks, std::shared_ptr<IPeriodicEffect> effect) {
+        periodicIntervalTicks = intervalTicks;
+        periodicEffect = std::move(effect);
+        return *this;
+    }
+    CardStats& withAllyBuffAura(float radius, int everyNAttacks, float multiplier, int durationTicks, int maxTargets) {
+        auraRadius = radius;
+        auraEveryNAttacks = everyNAttacks;
+        auraBuffMultiplier = multiplier;
+        auraBuffDurationTicks = durationTicks;
+        auraMaxTargets = maxTargets;
+        return *this;
+    }
+    CardStats& withHealAura(float radius, int amount) {
+        auraRadius = radius; // shared with the buff aura's radius; a card only ever uses one of the two auras
+        healAllyAmount = amount;
+        return *this;
+    }
     CardStats& withRepeats(int count, int intervalTicks) {
         spellRemainingHits = count;
         spellTickInterval = intervalTicks;
@@ -163,6 +313,28 @@ struct CardStats {
     }
     CardStats& withSpellOnHit(std::shared_ptr<IOnHitEffect> effect) {
         spellOnHit = std::move(effect);
+        return *this;
+    }
+    CardStats& withSpellBuff(float multiplier, int durationTicks) {
+        spellBuffsAllies = true;
+        spellBuffMultiplier = multiplier;
+        spellBuffDurationTicks = durationTicks;
+        return *this;
+    }
+    CardStats& withKnockback(float distance) {
+        spellKnockback = distance;
+        return *this;
+    }
+    CardStats& withSpellSpawn(std::shared_ptr<IPeriodicEffect> effect) {
+        spellSpawnEffect = std::move(effect);
+        return *this;
+    }
+    CardStats& withSecondaryUnit(CardStats unit) {
+        secondaryUnit = std::make_shared<CardStats>(std::move(unit));
+        return *this;
+    }
+    CardStats& withSpellClone() {
+        spellClonesAllies = true;
         return *this;
     }
 };
