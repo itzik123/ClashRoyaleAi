@@ -108,7 +108,22 @@ public:
 
         if (currentCooldown < 0.0f) currentCooldown = 0.0f;
 
-        auto target = findTarget(board);
+        // Target-lock: once committed to a target, stay on it -- attacking
+        // or chasing -- instead of re-picking "whoever's closest" every
+        // tick. Matches the real game: a unit mid-fight doesn't get
+        // distracted just because something else wandered closer. Only
+        // reacquires when there's no valid lock at all, or (stationary
+        // attackers only, see canMove()) the lock has walked out of range
+        // with no way to close the gap -- a mobile attacker never
+        // force-drops on range alone, it just keeps chasing.
+        auto target = resolveCurrentTarget(board);
+        if (target && !canMove() && position.distanceTo(target->position) > effectiveRangeTo(target)) {
+            target = nullptr; // out of reach, can't chase: drop the lock
+        }
+        if (!target) {
+            target = findTarget(board);
+        }
+
         if (target) {
             if (wasFrozen || target->id != currentTargetId) {
                 currentTargetId = target->id;
@@ -118,14 +133,7 @@ public:
             }
 
             float dist = position.distanceTo(target->position);
-
-            float targetRadius = target->getCollisionRadius();
-            if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
-
-            float myRadius = this->getCollisionRadius();
-            if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
-
-            float effectiveAttackRange = attackRange + myRadius + targetRadius;
+            float effectiveAttackRange = effectiveRangeTo(target);
 
             if (dist <= effectiveAttackRange) {
                 if (currentCooldown == 0.0f) {
@@ -161,19 +169,58 @@ public:
     }
 
 protected:
+    // Whether this attacker can make progress toward a target that's out of
+    // range this tick. True (the default) for every mobile troop; Building
+    // overrides this to false, since its moveTowards is a no-op -- a locked
+    // target that walks out of a stationary building's fixed range can
+    // never be reached by chasing, so the lock has to be dropped instead of
+    // held forever (matches the real game: a Cannon a troop walks past and
+    // out of range re-targets immediately, but a Musketeer chasing someone
+    // across the arena never gives up just because the gap grew).
+    virtual bool canMove() const { return true; }
+
     // Entity, not CombatEntity: targeting itself doesn't care about freeze
     // or on-hit effects, and every other consumer of findTarget's result
     // (range math, movement) only ever needs Entity's own surface. Keeping
     // this Entity-typed means the only place that needs to know "is this
     // actually a CombatEntity" is applyOnHitEffects below, where it's
     // genuinely required -- not the whole targeting system.
+    bool isValidTarget(const std::shared_ptr<Entity>& entity) const {
+        return entity && entity->team != this->team && entity->isAlive() && entity->isTargetable()
+            && entity->id != this->id && (!entity->isFlying || targetsAir);
+    }
+
+    float effectiveRangeTo(const std::shared_ptr<Entity>& target) const {
+        float targetRadius = target->getCollisionRadius();
+        if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
+        float myRadius = this->getCollisionRadius();
+        if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
+        return attackRange + myRadius + targetRadius;
+    }
+
+    // Re-validates the currently-locked target (by id) rather than running
+    // a full closest-enemy scan -- Board has no id index, so this is still
+    // a linear pass, but it's the one that lets a locked-on attacker keep
+    // its target instead of findTarget() picking a new "closest" every
+    // tick. Returns nullptr if there's no lock, or the locked entity no
+    // longer exists / is no longer a legal target (dead, no longer
+    // targetable, etc).
+    std::shared_ptr<Entity> resolveCurrentTarget(Board& board) const {
+        if (currentTargetId < 0) return nullptr;
+        for (const auto& entity : board.getEntities()) {
+            if (entity->id == currentTargetId) {
+                return isValidTarget(entity) ? entity : nullptr;
+            }
+        }
+        return nullptr;
+    }
+
     virtual std::shared_ptr<Entity> findTarget(Board& board) const {
         std::shared_ptr<Entity> closestTarget = nullptr;
         float minDistance = std::numeric_limits<float>::max();
 
         for (const auto& entity : board.getEntities()) {
-            if (entity->team != this->team && entity->isAlive() && entity->isTargetable() && entity->id != this->id
-                && (!entity->isFlying || targetsAir)) {
+            if (isValidTarget(entity)) {
                 float dist = position.distanceTo(entity->position);
                 if (dist < minDistance) {
                     minDistance = dist;
@@ -190,8 +237,7 @@ protected:
     std::vector<std::shared_ptr<Entity>> findSplitTargets(Board& board, int maxCount) const {
         std::vector<std::shared_ptr<Entity>> candidates;
         for (const auto& entity : board.getEntities()) {
-            if (entity->team != this->team && entity->isAlive() && entity->isTargetable() && entity->id != this->id
-                && (!entity->isFlying || targetsAir)) {
+            if (isValidTarget(entity)) {
                 candidates.push_back(entity);
             }
         }

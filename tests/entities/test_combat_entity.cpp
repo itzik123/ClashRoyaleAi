@@ -53,6 +53,75 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
     REQUIRE(attacker->lastTargetId == near->id);
 }
 
+// ---------------- target-lock ----------------
+// Once an attacker has picked a target, it stays committed to that fight
+// instead of re-running "who's closest" every tick -- matches the real
+// game, where a new enemy wandering closer mid-fight doesn't steal a
+// unit's attention. See CombatEntity::update()/resolveCurrentTarget().
+
+TEST_CASE("An attacker stays locked onto its target even when a closer enemy shows up mid-fight", "[combat_entity][targeting][lock]") {
+    Board board;
+    auto original = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'O');
+    spawn(board, original);
+
+    // attackCooldown 1: attacks every single update() call, so attackCount/
+    // lastTargetId reflect this tick's target choice, not stale data from
+    // a still-cooling-down previous hit (same reasoning as
+    // makeRampingAttacker's cooldown-1 choice below).
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 1);
+    attacker->update(board); // locks onto the only enemy around
+
+    REQUIRE(attacker->lastTargetId == original->id);
+
+    // A much closer enemy arrives (e.g. Skeletons walking right up next to
+    // the attacker) -- the real-game rule is that this does NOT steal the
+    // attacker away from the fight it's already committed to.
+    auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.1f, 1000, 1, 'C');
+    spawn(board, closer);
+
+    attacker->update(board);
+    REQUIRE(attacker->lastTargetId == original->id); // still locked on the original target
+    REQUIRE(closer->hp == 1000); // untouched
+}
+
+TEST_CASE("An attacker acquires a new target once its locked target dies", "[combat_entity][targeting][lock]") {
+    Board board;
+    auto original = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'O');
+    spawn(board, original);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 1);
+    attacker->update(board);
+    REQUIRE(attacker->lastTargetId == original->id);
+
+    original->takeDamage(1000); // dies
+    auto replacement = std::make_shared<DummyEntity>(3, 0.0f, 3.0f, 1000, 1, 'R');
+    spawn(board, replacement);
+
+    attacker->update(board);
+    REQUIRE(attacker->lastTargetId == replacement->id); // the only valid target left
+}
+
+TEST_CASE("A stationary attacker drops its lock and re-targets once the locked target leaves range", "[combat_entity][targeting][lock]") {
+    Board board;
+    // attackRange 1.0 -> effective range 1.8 (implicit radii on both sides);
+    // 1.5 stays comfortably inside it.
+    auto original = std::make_shared<DummyEntity>(1, 0.0f, 1.5f, 1000, 1, 'O');
+    spawn(board, original);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 50, 1);
+    attacker->update(board); // locks onto and attacks `original`
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == original->id);
+
+    original->position = { 0.0f, 50.0f }; // walks (or gets knocked) far out of range
+    auto inRange = std::make_shared<DummyEntity>(3, 0.0f, 1.5f, 1000, 1, 'N'); // within effective range
+    spawn(board, inRange);
+
+    attacker->update(board);
+    REQUIRE(attacker->lastTargetId == inRange->id); // dropped the unreachable lock, picked up the reachable one
+    REQUIRE(attacker->attackCount == 2);
+}
+
 TEST_CASE("CombatEntity attacks only within effective range (attackRange + implicit radii)", "[combat_entity][range]") {
     Board board;
 
@@ -292,9 +361,11 @@ TEST_CASE("Ramping damage resets to stage 1 when the attacker switches targets",
 
     for (int i = 0; i < 40; ++i) attacker->update(board); // fully ramped against enemyA
 
-    // Closer than enemyA, and enemyA's own next update() would otherwise
-    // keep winning -- spawning a second, nearer enemy makes findTarget()
-    // switch to it.
+    // enemyA dies -- the attacker's target-lock (see CombatEntity::update)
+    // only lets go once the locked target is no longer valid, so a switch
+    // has to be earned this way now; a still-alive enemyA would keep the
+    // attacker locked on even with a closer enemy nearby.
+    enemyA->takeDamage(enemyA->hp);
     auto enemyB = std::make_shared<DummyEntity>(3, 0.0f, 0.5f, 1000000, 1, 'B');
     spawn(board, enemyB);
 

@@ -46,6 +46,11 @@ public:
         : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown) {}
 
 protected:
+    // Matches its no-op moveTowards (inherited from CombatEntity, never
+    // overridden here): a locked target that walks out of range can't be
+    // chased down, same as the real Building this stands in for in tests.
+    bool canMove() const override { return false; }
+
     void performAttack(Board&, std::shared_ptr<Entity> target) override {
         attackCount++;
         lastTargetId = target->id;
