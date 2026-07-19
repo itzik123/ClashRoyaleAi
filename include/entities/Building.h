@@ -21,13 +21,6 @@ public:
 
     float getCollisionRadius() const override { return COLLISION_RADIUS; }
 
-protected:
-    // Stationary: moveTowards is the CombatEntity no-op default, so a
-    // locked target that walks out of range can never be chased down --
-    // see CombatEntity::canMove().
-    bool canMove() const override { return false; }
-
-public:
     void update(Board& board) override {
         CombatEntity::update(board);
         if (lifetimeTicks > 0) {

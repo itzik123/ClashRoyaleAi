@@ -57,7 +57,10 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
 // Once an attacker has picked a target, it stays committed to that fight
 // instead of re-running "who's closest" every tick -- matches the real
 // game, where a new enemy wandering closer mid-fight doesn't steal a
-// unit's attention. See CombatEntity::update()/resolveCurrentTarget().
+// unit's attention. The lock only breaks when the target dies or leaves
+// effective range (e.g. a future knockback/pull effect), for every
+// attacker alike -- mobile or stationary. See
+// CombatEntity::update()/resolveCurrentTarget().
 
 TEST_CASE("An attacker stays locked onto its target even when a closer enemy shows up mid-fight", "[combat_entity][targeting][lock]") {
     Board board;
@@ -101,7 +104,7 @@ TEST_CASE("An attacker acquires a new target once its locked target dies", "[com
     REQUIRE(attacker->lastTargetId == replacement->id); // the only valid target left
 }
 
-TEST_CASE("A stationary attacker drops its lock and re-targets once the locked target leaves range", "[combat_entity][targeting][lock]") {
+TEST_CASE("An attacker drops its lock and re-targets once the locked target leaves range", "[combat_entity][targeting][lock]") {
     Board board;
     // attackRange 1.0 -> effective range 1.8 (implicit radii on both sides);
     // 1.5 stays comfortably inside it.
@@ -113,7 +116,7 @@ TEST_CASE("A stationary attacker drops its lock and re-targets once the locked t
     REQUIRE(attacker->attackCount == 1);
     REQUIRE(attacker->lastTargetId == original->id);
 
-    original->position = { 0.0f, 50.0f }; // walks (or gets knocked) far out of range
+    original->position = { 0.0f, 50.0f }; // pulled/knocked far out of range (e.g. Tornado)
     auto inRange = std::make_shared<DummyEntity>(3, 0.0f, 1.5f, 1000, 1, 'N'); // within effective range
     spawn(board, inRange);
 

@@ -111,14 +111,16 @@ public:
         // Target-lock: once committed to a target, stay on it -- attacking
         // or chasing -- instead of re-picking "whoever's closest" every
         // tick. Matches the real game: a unit mid-fight doesn't get
-        // distracted just because something else wandered closer. Only
-        // reacquires when there's no valid lock at all, or (stationary
-        // attackers only, see canMove()) the lock has walked out of range
-        // with no way to close the gap -- a mobile attacker never
-        // force-drops on range alone, it just keeps chasing.
+        // distracted just because something else wandered closer. The lock
+        // only breaks when the target itself becomes invalid (dies, etc.)
+        // or leaves this attacker's effective range (e.g. pulled out by
+        // Tornado, or knocked back) -- at that point a fresh closest-enemy
+        // scan runs immediately, same tick, so nothing is left stuck
+        // chasing a target it can no longer reach while ignoring whoever's
+        // actually closest now.
         auto target = resolveCurrentTarget(board);
-        if (target && !canMove() && position.distanceTo(target->position) > effectiveRangeTo(target)) {
-            target = nullptr; // out of reach, can't chase: drop the lock
+        if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
+            target = nullptr;
         }
         if (!target) {
             target = findTarget(board);
@@ -169,16 +171,6 @@ public:
     }
 
 protected:
-    // Whether this attacker can make progress toward a target that's out of
-    // range this tick. True (the default) for every mobile troop; Building
-    // overrides this to false, since its moveTowards is a no-op -- a locked
-    // target that walks out of a stationary building's fixed range can
-    // never be reached by chasing, so the lock has to be dropped instead of
-    // held forever (matches the real game: a Cannon a troop walks past and
-    // out of range re-targets immediately, but a Musketeer chasing someone
-    // across the arena never gives up just because the gap grew).
-    virtual bool canMove() const { return true; }
-
     // Entity, not CombatEntity: targeting itself doesn't care about freeze
     // or on-hit effects, and every other consumer of findTarget's result
     // (range math, movement) only ever needs Entity's own surface. Keeping
