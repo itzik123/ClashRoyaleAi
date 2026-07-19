@@ -63,6 +63,29 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {39, "Giant Skeleton", 6.0f, false}, {40, "Ice Golem", 2.0f, false},
         {41, "Minions", 3.0f, false}, {42, "Minion Horde", 5.0f, false}, {43, "Mega Minion", 3.0f, false},
         {44, "Baby Dragon", 4.0f, false}, {45, "Balloon", 5.0f, false},
+        // 2026 roster expansion (ids 46-107) -- see CardRegistry.h's own
+        // constructor comment for the excluded-cards list this stops short of.
+        {46, "Dark Prince", 4.0f, false}, {47, "Royal Ghost", 3.0f, false}, {48, "Mega Knight", 7.0f, false},
+        {49, "Battle Healer", 4.0f, false}, {50, "Bandit", 3.0f, false}, {51, "Berserker", 2.0f, false},
+        {52, "Miner", 3.0f, false}, {53, "Fisherman", 3.0f, false}, {54, "Ronin", 5.0f, false},
+        {55, "Goblin Machine", 5.0f, false}, {56, "Inferno Dragon", 4.0f, false}, {57, "Electro Dragon", 5.0f, false},
+        {58, "Night Witch", 4.0f, false}, {59, "Phoenix", 4.0f, false}, {60, "Sparky", 6.0f, false},
+        {61, "Princess", 3.0f, false}, {62, "Hunter", 4.0f, false}, {63, "Magic Archer", 4.0f, false},
+        {64, "Firecracker", 3.0f, false}, {65, "Skeleton Dragons", 4.0f, false}, {66, "Goblin Demolisher", 4.0f, false},
+        {67, "Flying Machine", 4.0f, false}, {68, "Mother Witch", 4.0f, false}, {69, "Cannon Cart", 5.0f, false},
+        {70, "Furnace", 4.0f, false}, {71, "Witch", 5.0f, false}, {72, "Ice Spirit", 1.0f, false},
+        {73, "Fire Spirit", 1.0f, false}, {74, "Heal Spirit", 1.0f, false}, {75, "Electro Spirit", 1.0f, false},
+        {76, "Guards", 3.0f, false}, {77, "Royal Recruits", 7.0f, false}, {78, "Bats", 2.0f, false},
+        {79, "Zappies", 4.0f, false}, {80, "Three Musketeers", 9.0f, false}, {81, "Battle Ram", 4.0f, false},
+        {82, "Royal Hogs", 5.0f, false}, {83, "Wall Breakers", 2.0f, false}, {84, "Electro Giant", 7.0f, false},
+        {85, "Suspicious Bush", 2.0f, false}, {86, "Rune Giant", 4.0f, false}, {87, "Ram Rider", 5.0f, false},
+        {88, "Goblin Giant", 6.0f, false}, {89, "Skeleton Barrel", 3.0f, false}, {90, "Elixir Golem", 3.0f, false},
+        {91, "Lava Hound", 7.0f, false}, {92, "X-Bow", 6.0f, false}, {93, "Mortar", 4.0f, false},
+        {94, "Barbarian Hut", 6.0f, false}, {95, "Goblin Hut", 4.0f, false}, {96, "Tombstone", 3.0f, false},
+        {97, "Goblin Cage", 4.0f, false}, {98, "Goblin Drill", 4.0f, false}, {99, "Elixir Collector", 6.0f, false},
+        {100, "Giant Snowball", 2.0f, true}, {101, "Barbarian Barrel", 2.0f, true}, {102, "Goblin Curse", 2.0f, true},
+        {103, "Earthquake", 3.0f, true}, {104, "Void", 3.0f, true}, {105, "Vines", 3.0f, true},
+        {106, "Tornado", 3.0f, true}, {107, "Freeze", 4.0f, true},
     };
 
     const auto& registry = CardRegistry::getInstance();
@@ -169,14 +192,14 @@ TEST_CASE("Executioner's axe hits its target twice: on arrival, then again on th
     REQUIRE(axe != nullptr);
 
     axe->update(board); // projectile speed >= distance 1.0: outbound hit lands this tick
-    REQUIRE(enemy->hp == 832); // 1000 - 168
+    REQUIRE(enemy->hp == 821); // 1000 - 179
     REQUIRE(axe->isAlive()); // still out on its return trip, not dead after one hit
 
     // Matches the real GameManager::step() contract (only ever calls
     // update() on entities still isAlive()) -- Projectile, like AreaSpell,
     // has no internal guard against being updated again after it dies.
     while (axe->isAlive()) axe->update(board);
-    REQUIRE(enemy->hp == 664); // 1000 - 168*2
+    REQUIRE(enemy->hp == 642); // 1000 - 179*2
 }
 
 TEST_CASE("MeleeBuildingTargeter archetype (Giant)", "[card_registry][archetype]") {
@@ -431,7 +454,7 @@ TEST_CASE("Arrows deals damage in 3 rapid volleys, not one lump sum", "[card_reg
     REQUIRE(spell != nullptr);
 
     while (spell->isAlive()) spell->update(board);
-    REQUIRE(enemy->hp == 100000 - 122 * 3); // all 3 volleys landed
+    REQUIRE(enemy->hp == 100000 - 123 * 3); // all 3 volleys landed
 }
 
 TEST_CASE("The Log is ground-only and does not hit flying enemies, unlike Fireball", "[card_registry][flying]") {
@@ -527,7 +550,7 @@ TEST_CASE("Electro Wizard stuns on hit via the on-hit decorator (freeze with slo
     // range, so it takes the full 230, not the split half.
     electroWizardEntity->update(board);
 
-    REQUIRE(enemy->hp == 770); // 1000 - 230
+    REQUIRE(enemy->hp == 882); // 1000 - 118
     REQUIRE(enemy->freezeTicks == 5);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
 }
@@ -552,8 +575,8 @@ TEST_CASE("Electro Wizard splits its attack across the 2 closest enemies at half
 
     electroWizardEntity->update(board);
 
-    REQUIRE(near->hp == 885);  // 1000 - 230/2
-    REQUIRE(far->hp == 885);
+    REQUIRE(near->hp == 941);  // 1000 - 118/2
+    REQUIRE(far->hp == 941);
     REQUIRE(near->freezeTicks == 5); // both stunned
     REQUIRE(far->freezeTicks == 5);
 }
@@ -576,7 +599,7 @@ TEST_CASE("Electro Wizard's deploy zap damages and stuns enemies in radius the i
 
     deployZap->update(board); // zero delay: detonates immediately
 
-    REQUIRE(enemy->hp == 808); // 1000 - 192
+    REQUIRE(enemy->hp == 882); // 1000 - 118
     REQUIRE(enemy->freezeTicks == 5);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
 }
@@ -593,4 +616,103 @@ TEST_CASE("Ordinary melee troops are unaffected by the on-hit decorator (Knight)
     board.getEntities().back()->update(board);
 
     REQUIRE(enemy->freezeTicks == 0);
+}
+
+// ---------------- 2026 roster expansion ----------------
+
+TEST_CASE("Freeze deals no direct damage but fully stuns everyone in radius via the new spellOnHit hook", "[card_registry][spell_on_hit]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(107)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+
+    REQUIRE(enemy->hp == 1000); // no damage component
+    REQUIRE(enemy->freezeTicks == 40); // 4s full stun
+    REQUIRE(enemy->freezeSlow == Catch::Approx(0.0f));
+}
+
+TEST_CASE("Giant Snowball deals damage and applies a partial slow via spellOnHit", "[card_registry][spell_on_hit]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(100)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    while (spell->isAlive()) spell->update(board);
+
+    REQUIRE(enemy->hp == 821); // 1000 - 179
+    REQUIRE(enemy->freezeTicks == 15);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(0.5f));
+}
+
+TEST_CASE("Battle Ram releases 2 Barbarians on death, reusing the Barbarians card's own sourced stats", "[card_registry][death]") {
+    Board board;
+    const CardDefinition* battleRam = CardRegistry::getInstance().getCard(81);
+    REQUIRE(battleRam != nullptr);
+    battleRam->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto ram = board.getEntities()[0];
+    ram->takeDamage(ram->hp); // dies
+    board.cleanDeadEntities();
+    board.commitPendingEntities(); // the two released Barbarians become visible
+
+    REQUIRE(board.getEntities().size() == 2);
+    for (const auto& e : board.getEntities()) {
+        auto barbarian = std::dynamic_pointer_cast<MeleeTroop>(e);
+        REQUIRE(barbarian != nullptr);
+        REQUIRE(barbarian->name == "Barbarians");
+        REQUIRE(barbarian->hp == 691); // matches the standalone Barbarians card's own hp
+        REQUIRE(barbarian->team == 0);
+    }
+}
+
+TEST_CASE("Inferno Dragon's beam damage ramps up like Inferno Tower's, while flying and air-targeting", "[card_registry][ramp][flying]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, enemy);
+
+    const CardDefinition* infernoDragon = CardRegistry::getInstance().getCard(56);
+    infernoDragon->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto dragon = std::dynamic_pointer_cast<MeleeTroop>(board.getEntities().back());
+    REQUIRE(dragon != nullptr);
+    REQUIRE(dragon->isFlying);
+    REQUIRE(dragon->targetsAir);
+
+    dragon->update(board); // ticksOnTarget == 0 on first lock: stage 1 (~8.3% of 422)
+    REQUIRE(enemy->hp == 1000000 - 35);
+}
+
+TEST_CASE("Elixir Collector and the other spawner buildings deal no damage (spawn mechanics not modeled)", "[card_registry][data]") {
+    Board board;
+
+    SECTION("Elixir Collector") {
+        CardRegistry::getInstance().getCard(99)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        REQUIRE(board.getEntities().back()->hp == 1070);
+    }
+
+    SECTION("Tombstone") {
+        Board board2;
+        CardRegistry::getInstance().getCard(96)->spawnEntity(5.0f, 5.0f, 0, board2);
+        board2.commitPendingEntities();
+        auto building = std::dynamic_pointer_cast<Building>(board2.getEntities().back());
+        REQUIRE(building != nullptr);
+        // Never attacks: a nearby enemy takes no damage over several updates.
+        auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 5.0f, 10, 10);
+        spawn(board2, enemy);
+        for (int i = 0; i < 10; ++i) building->update(board2);
+        REQUIRE(enemy->hp == 1000);
+    }
 }

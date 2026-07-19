@@ -54,6 +54,11 @@ struct CardStats {
     // 1 (the default) is every other spell's normal single-shot case.
     int spellRemainingHits = 1;
     int spellTickInterval = 0;
+    // Optional on-hit effect the spell itself applies to whatever it
+    // touches, independent of its (possibly zero) direct damage -- e.g.
+    // Freeze's full stun with no damage component at all. nullptr (the
+    // default) is every other spell's normal damage-only case.
+    std::shared_ptr<IOnHitEffect> spellOnHit;
 
     // One-time area burst applied the instant a troop-shaped card deploys,
     // independent of its regular attacks (e.g. Electro Wizard's spawn zap).
@@ -141,6 +146,10 @@ struct CardStats {
     CardStats& withRepeats(int count, int intervalTicks) {
         spellRemainingHits = count;
         spellTickInterval = intervalTicks;
+        return *this;
+    }
+    CardStats& withSpellOnHit(std::shared_ptr<IOnHitEffect> effect) {
+        spellOnHit = std::move(effect);
         return *this;
     }
 };

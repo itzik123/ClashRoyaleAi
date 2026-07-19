@@ -138,7 +138,7 @@ inline void spawnDefensiveBuilding(const CardStats& stats, float x, float y, int
 inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board& board) {
     auto spell = std::make_shared<AreaSpell>(
         board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol,
-        nullptr, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval);
+        stats.spellOnHit, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval);
     spell->name = stats.name;
     spell->cardId = stats.id;
     board.addEntity(spell);
