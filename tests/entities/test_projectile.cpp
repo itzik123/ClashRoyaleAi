@@ -231,3 +231,33 @@ TEST_CASE("Boomerang projectile stamps the same attacker identity on both the ou
         REQUIRE(hit.attackerCardId == 3);
     }
 }
+
+// ---------------- splash (Wizard, Bowler, Baby Dragon, ...) ----------------
+
+TEST_CASE("A projectile with splashRadius damages a second enemy near its impact point", "[projectile][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'P');
+    auto nearby = std::make_shared<DummyEntity>(2, 0.5f, 2.0f, 1000, 1, 'N'); // 0.5 from the impact point
+    spawn(board, primary);
+    spawn(board, nearby);
+
+    Projectile p(3, 0.0f, 0.0f, 0, primary, 2.0f, 100, {}, false, 0, -1, -1, 1.5f); // splashRadius 1.5
+    p.update(board); // outbound hit lands (dist(2.0) == speed(2.0))
+
+    REQUIRE(primary->hp == 900);
+    REQUIRE(nearby->hp == 900); // caught in the splash, same damage
+}
+
+TEST_CASE("A projectile with no splashRadius (the default) never touches anyone but its target", "[projectile][splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'P');
+    auto nearby = std::make_shared<DummyEntity>(2, 0.5f, 2.0f, 1000, 1, 'N');
+    spawn(board, primary);
+    spawn(board, nearby);
+
+    Projectile p(3, 0.0f, 0.0f, 0, primary, 2.0f, 100, {}, false, 0, -1, -1); // splashRadius left at 0.0f
+    p.update(board);
+
+    REQUIRE(primary->hp == 900);
+    REQUIRE(nearby->hp == 1000); // untouched
+}

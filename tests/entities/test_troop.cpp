@@ -181,3 +181,26 @@ TEST_CASE("RangedTroop::performAttack spawns a projectile instead of dealing dir
     REQUIRE(projectile->team == 0);
     REQUIRE_FALSE(projectile->isTargetable());
 }
+
+// ---------------- clone (Clone spell) ----------------
+
+TEST_CASE("MeleeTroop::clone produces a fresh-id, 1-hp copy that keeps the original's combat stats", "[troop][clone]") {
+    auto original = std::make_shared<MeleeTroop>(5, 3.0f, 4.0f, 500, 1, 0.5f, 1.2f, 200, 12, 'K');
+    original->splashRadius = 1.5f; // any configured field should carry over
+
+    auto copy = original->clone(999);
+    auto meleeCopy = std::dynamic_pointer_cast<MeleeTroop>(copy);
+
+    REQUIRE(meleeCopy != nullptr);
+    REQUIRE(meleeCopy->id == 999);
+    REQUIRE(meleeCopy->hp == 1);
+    REQUIRE(meleeCopy->team == 1);
+    REQUIRE(meleeCopy->position.x == Catch::Approx(3.0f));
+    REQUIRE(meleeCopy->position.y == Catch::Approx(4.0f));
+    REQUIRE(meleeCopy->splashRadius == Catch::Approx(1.5f));
+}
+
+TEST_CASE("Building has no clone() override -- Clone was never valid against buildings in the real game either", "[troop][clone]") {
+    Building building(1, 0.0f, 0.0f, 500, 0, 'C', 5.0f, 100, 10);
+    REQUIRE(building.clone(999) == nullptr);
+}

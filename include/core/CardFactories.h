@@ -35,6 +35,26 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->rampStartFraction = stats.rampStartFraction;
     entity->rampMidFraction = stats.rampMidFraction;
     entity->maxSplitTargets = stats.maxSplitTargets;
+    entity->splashRadius = stats.splashRadius;
+    entity->shieldHp = stats.shieldHp;
+    entity->chargeThreshold = stats.chargeThreshold;
+    entity->chargeMultiplier = stats.chargeMultiplier;
+    entity->enrageMaxHp = stats.enrageMaxHp;
+    entity->enrageHealPerHit = stats.enrageHealPerHit;
+    entity->parryIntervalTicks = stats.parryIntervalTicks;
+    entity->hookRange = stats.hookRange;
+    entity->startsInvisible = stats.startsInvisible;
+    entity->revealTicksAfterAttack = stats.revealTicksAfterAttack;
+    entity->periodicEffect = stats.periodicEffect;
+    entity->periodicIntervalTicks = stats.periodicIntervalTicks;
+    entity->periodicTicksUntilNext = stats.periodicIntervalTicks; // first fire after one full interval, not immediately
+    entity->auraRadius = stats.auraRadius;
+    entity->auraMaxTargets = stats.auraMaxTargets;
+    entity->auraEveryNAttacks = stats.auraEveryNAttacks;
+    entity->auraBuffMultiplier = stats.auraBuffMultiplier;
+    entity->auraBuffDurationTicks = stats.auraBuffDurationTicks;
+    entity->healAllyAmount = stats.healAllyAmount;
+    entity->dieAfterFirstHit = stats.dieAfterFirstHit;
     applyOnHit(entity, stats);
 }
 
@@ -138,7 +158,9 @@ inline void spawnDefensiveBuilding(const CardStats& stats, float x, float y, int
 inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board& board) {
     auto spell = std::make_shared<AreaSpell>(
         board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol,
-        nullptr, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval);
+        stats.spellOnHit, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval,
+        stats.spellBuffsAllies, stats.spellBuffMultiplier, stats.spellBuffDurationTicks, stats.spellKnockback,
+        stats.spellSpawnEffect, stats.spellClonesAllies);
     spell->name = stats.name;
     spell->cardId = stats.id;
     board.addEntity(spell);
@@ -146,14 +168,20 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
 
 inline void spawn(const CardStats& stats, float x, float y, int team, Board& board) {
     switch (stats.archetype) {
-        case Archetype::MeleeSquad:             spawnMeleeSquad(stats, x, y, team, board); return;
-        case Archetype::RangedSquad:             spawnRangedSquad(stats, x, y, team, board); return;
-        case Archetype::MeleeBuildingTargeter:   spawnMeleeBuildingTargeter(stats, x, y, team, board); return;
-        case Archetype::RangedBuildingTargeter:  spawnRangedBuildingTargeter(stats, x, y, team, board); return;
-        case Archetype::DefensiveBuilding:       spawnDefensiveBuilding(stats, x, y, team, board); return;
-        case Archetype::Spell:                   spawnSpell(stats, x, y, team, board); return;
+        case Archetype::MeleeSquad:             spawnMeleeSquad(stats, x, y, team, board); break;
+        case Archetype::RangedSquad:             spawnRangedSquad(stats, x, y, team, board); break;
+        case Archetype::MeleeBuildingTargeter:   spawnMeleeBuildingTargeter(stats, x, y, team, board); break;
+        case Archetype::RangedBuildingTargeter:  spawnRangedBuildingTargeter(stats, x, y, team, board); break;
+        case Archetype::DefensiveBuilding:       spawnDefensiveBuilding(stats, x, y, team, board); break;
+        case Archetype::Spell:                   spawnSpell(stats, x, y, team, board); break;
+        default: throw std::logic_error("CardFactories::spawn: unhandled archetype");
     }
-    throw std::logic_error("CardFactories::spawn: unhandled archetype");
+    // Compound cards (Goblin Giant, Ram Rider, Goblin Machine, Goblin Gang,
+    // Rascals): spawn the second, independently-targeting unit right after
+    // the primary one, at the same deploy point.
+    if (stats.secondaryUnit) {
+        spawn(*stats.secondaryUnit, x, y, team, board);
+    }
 }
 
 } // namespace CardFactories

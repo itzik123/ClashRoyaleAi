@@ -11,11 +11,18 @@ public:
         float speed, float attackRange, int damage, int attackCooldown, char symbol)
         : BuildingTargeter(id, x, y, hp, team, speed, attackRange, damage, attackCooldown, symbol) {}
 
+    std::shared_ptr<Entity> clone(int newId) const override {
+        auto copy = std::make_shared<RangedBuildingTargeter>(*this);
+        copy->id = newId;
+        copy->hp = 1; // Clone: full damage, 1 hp
+        return copy;
+    }
+
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         auto proj = std::make_shared<Projectile>(
             board.allocateId(), position.x, position.y, team, target, 1.5f, getCurrentDamage(), onHitEffects,
-            false, 0, id, cardId);
+            false, 0, id, cardId, splashRadius);
         board.addEntity(proj);
     }
 };

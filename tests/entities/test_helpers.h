@@ -46,11 +46,13 @@ public:
         : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown) {}
 
 protected:
-    void performAttack(Board&, std::shared_ptr<Entity> target) override {
+    void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         attackCount++;
         lastTargetId = target->id;
-        target->takeDamage(getCurrentDamage()); // respects ramp/split, like every production leaf class
+        int dealt = getCurrentDamage(); // respects ramp/split, like every production leaf class
+        target->takeDamage(dealt);
         applyOnHitEffects(target); // direct-damage style: effects land immediately, like MeleeTroop
+        applySplashDamage(board, target->position, splashRadius, target->id, id, team, cardId, dealt);
     }
 };
 
@@ -66,6 +68,22 @@ public:
 
     void apply(Board&, const Vector2D& position, int team) const override {
         applied = true;
+        lastPosition = position;
+        lastTeam = team;
+    }
+};
+
+// Same idea as RecordingDeathEffect, but counts every call instead of just
+// the last one -- a periodic effect is expected to fire repeatedly over an
+// entity's lifetime, not just once.
+class RecordingPeriodicEffect : public IPeriodicEffect {
+public:
+    mutable int applyCount = 0;
+    mutable Vector2D lastPosition{};
+    mutable int lastTeam = -1;
+
+    void apply(Board&, const Vector2D& position, int team) const override {
+        applyCount++;
         lastPosition = position;
         lastTeam = team;
     }

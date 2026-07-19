@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "AreaSpell.h"
 #include "FreezeOnHit.h"
+#include "MeleeTroop.h"
 
 TEST_CASE("AreaSpell is never itself a valid combat target", "[area_spell]") {
     AreaSpell spell(1, 5.0f, 5.0f, 0, 3.0f, 100, 5);
@@ -167,4 +168,69 @@ TEST_CASE("AreaSpell with remainingHits > 1 re-evaluates who's in radius on each
     spell.update(board); // gap tick (delayTicks 1 -> 0)
     spell.update(board); // 2nd application would land here, but the entity has left
     REQUIRE(entity->hp == 900); // untouched: no longer in radius, just like the real spell
+}
+
+// ---------------- knockback / pull ----------------
+
+TEST_CASE("Positive knockback pushes a hit entity directly away from the spell's position", "[area_spell][knockback]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 6.0f, 5.0f, 1000, 1); // dist 1.0 from (5,5), along +x
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 5.0f, 5.0f, 0, 2.5f, 100, 0, '*', nullptr, false, 1, 0, false, 1.0f, 0, 1.0f); // knockback 1.0
+    spell.update(board);
+
+    REQUIRE(enemy->hp == 900);
+    REQUIRE(enemy->position.x == Catch::Approx(7.0f)); // pushed 1.0 further away from (5,5)
+    REQUIRE(enemy->position.y == Catch::Approx(5.0f));
+}
+
+TEST_CASE("Negative knockback pulls a hit entity toward the spell's position instead", "[area_spell][knockback]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 8.0f, 5.0f, 1000, 1); // dist 3.0 from (5,5), along +x
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 5.0f, 5.0f, 0, 5.5f, 100, 0, '*', nullptr, false, 1, 0, false, 1.0f, 0, -1.5f); // pulls 1.5
+    spell.update(board);
+
+    REQUIRE(enemy->hp == 900);
+    REQUIRE(enemy->position.x == Catch::Approx(6.5f)); // pulled 1.5 toward (5,5)
+    REQUIRE(enemy->position.y == Catch::Approx(5.0f));
+}
+
+TEST_CASE("A spell without knockback configured (0.0f, the default) never repositions anyone", "[area_spell][knockback]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 6.0f, 5.0f, 1000, 1);
+    spawn(board, enemy);
+
+    AreaSpell spell(2, 5.0f, 5.0f, 0, 2.5f, 100, 0, '*');
+    spell.update(board);
+
+    REQUIRE(enemy->position.x == Catch::Approx(6.0f)); // untouched
+    REQUIRE(enemy->position.y == Catch::Approx(5.0f));
+}
+
+// ---------------- clone ----------------
+
+TEST_CASE("A clonesAllies spell duplicates an allied troop in radius, not an enemy one", "[area_spell][clone]") {
+    Board board;
+    auto ally = std::make_shared<MeleeTroop>(1, 6.0f, 5.0f, 500, 0, 0.5f, 1.2f, 200, 12, 'K'); // dist 1.0, same team
+    auto enemy = std::make_shared<MeleeTroop>(2, 5.0f, 6.0f, 500, 1, 0.5f, 1.2f, 200, 12, 'K'); // dist 1.0, other team
+    spawn(board, ally);
+    spawn(board, enemy);
+
+    // buffsAllies=false, buffMultiplier/duration unused, knockback=0, spawnOnDetonate=nullptr, clonesAllies=true
+    AreaSpell spell(3, 5.0f, 5.0f, 0, 2.5f, 0, 0, '*', nullptr, false, 1, 0, false, 1.0f, 0, 0.0f, nullptr, true);
+    spell.update(board);
+    board.commitPendingEntities();
+
+    int allyCount = 0, enemyCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->id == ally->id || e->id == enemy->id) continue; // originals
+        if (e->team == 0) allyCount++;
+        if (e->team == 1) enemyCount++;
+    }
+    REQUIRE(allyCount == 1);  // the ally got cloned
+    REQUIRE(enemyCount == 0); // the enemy did not
+    REQUIRE(ally->hp == 500); // the original is untouched
 }

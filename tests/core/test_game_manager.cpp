@@ -76,6 +76,31 @@ TEST_CASE("isValidPlacement lets spells ignore the half restriction", "[game_man
     REQUIRE(game.isValidPlacement(0, 9.0f, 25.0f, true, Entity::IMPLICIT_TROOP_RADIUS)); // deep in the opponent's half
 }
 
+TEST_CASE("isValidPlacement lets deployAnywhere troops (Miner, Goblin Drill) ignore the half restriction too", "[game_manager][placement]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 25.0f, false, Entity::IMPLICIT_TROOP_RADIUS));       // ordinary troop: rejected
+    REQUIRE(game.isValidPlacement(0, 9.0f, 25.0f, false, Entity::IMPLICIT_TROOP_RADIUS, true));       // deployAnywhere: allowed
+}
+
+TEST_CASE("Miner can be played deep in the opponent's half via GameManager::playCard, unlike an ordinary troop", "[game_manager][placement]") {
+    GameManager game({ 52, 0, 1, 2, 3, 4, 5, 6 }, { 0,1,2,3,4,5,6,7 }); // Miner (52) first in the AI's deck
+    game.playerAI.elixir = 10.0f;
+
+    REQUIRE(game.playCard(0, 52, 9.0f, 25.0f)); // deep in the opponent's half: succeeds for Miner
+}
+
+TEST_CASE("Elixir Collector passively grants its owner extra elixir beyond normal regen", "[game_manager][elixir]") {
+    GameManager game({ 99, 0, 1, 2, 3, 4, 5, 6 }, { 0,1,2,3,4,5,6,7 }); // Elixir Collector (99) first in the AI's deck
+    game.playerAI.elixir = 10.0f; // enough to afford its cost (6)
+    REQUIRE(game.playCard(0, 99, 9.0f, 10.0f));
+
+    game.playerAI.elixir = 0.0f; // reset low so the cap doesn't mask the effect
+    for (int i = 0; i < 80; ++i) game.step(); // its periodic interval
+
+    float pureRegenOnly = 0.035f * 80; // ELIXIR_REGEN_RATE * ticks, no collector
+    REQUIRE(game.getElixirAI() > pureRegenOnly + 0.5f); // meaningfully more than regen alone
+}
+
 TEST_CASE("isValidPlacement rejects placement overlapping an existing building", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     // AI king tower sits at (8.5, 2.5) with a 2.0 collision radius.

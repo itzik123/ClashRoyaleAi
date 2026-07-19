@@ -76,4 +76,39 @@ public:
     // type -- or even whether it's a CombatEntity, the only thing that ever
     // actually has a death effect to fire -- it's looking at.
     virtual void onDeath(Board& board) { (void)board; }
+
+    // Clone spell: makes a full copy of this entity (every configured
+    // combat field -- splash, charge, on-hit effects, all of it -- via
+    // each concrete subclass's own implicit copy constructor) with a
+    // fresh id and 1 hp, matching the real card's "duplicates all troops
+    // in radius, clones have 1 hp but full damage" rule. Default returns
+    // nullptr -- most entities (buildings, spells, projectiles) were never
+    // valid Clone targets in the real game either.
+    virtual std::shared_ptr<Entity> clone(int newId) const { (void)newId; return nullptr; }
 };
+
+// Repositioning helpers shared by every pull/push mechanic (Fisherman's
+// hook, Tornado's pull, Bowler/Fireball/Rocket/Giant Snowball's knockback)
+// -- free functions since they're just geometry, needed from entity
+// classes and spell classes alike. Neither clamps to board bounds; callers
+// that need that already call clampPosition() separately afterward (same
+// as normal movement).
+
+// Moves `entity` up to `distance` tiles toward `point`, never overshooting
+// past it.
+inline void pullToward(Entity& entity, const Vector2D& point, float distance) {
+    float dist = entity.position.distanceTo(point);
+    if (dist <= 0.01f) return; // already there (or coincident): no direction to move in
+    float moveBy = (distance < dist) ? distance : dist;
+    entity.position.x += (point.x - entity.position.x) / dist * moveBy;
+    entity.position.y += (point.y - entity.position.y) / dist * moveBy;
+}
+
+// Moves `entity` exactly `distance` tiles directly away from `point`
+// (knockback) -- no "overshoot" concept the other direction, so no clamp.
+inline void pushAway(Entity& entity, const Vector2D& point, float distance) {
+    float dist = entity.position.distanceTo(point);
+    if (dist <= 0.01f) return; // coincident: no direction to push in
+    entity.position.x += (entity.position.x - point.x) / dist * distance;
+    entity.position.y += (entity.position.y - point.y) / dist * distance;
+}
