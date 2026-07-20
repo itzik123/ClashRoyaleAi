@@ -25,6 +25,18 @@ import clash_royale_env
 # can import the same deck instead of duplicating/drifting from this literal.
 DEFAULT_DECK = [2, 5, 35, 7, 33, 24, 40, 25]
 
+
+def get_all_card_ids():
+    """All ids CardRegistry currently has registered, derived live from the
+    engine instead of a hardcoded range+exclusion list. That kind of list goes
+    stale the moment a card is added to (or removed from) CardRegistry.h --
+    already happened once: a hardcoded range(46) pool silently stopped covering
+    new cards once the roster grew past 45, and a hand-maintained exclusion
+    list is just as easy to get wrong in the other direction (mistaking real
+    registered ids for gaps). See CardRegistry.h's getAllCardIds() free function."""
+    return clash_royale_env.get_all_card_ids()
+
+
 class MicroRoyaleEnv(gym.Env):
     def __init__(self, env_config=None):
         super().__init__()
@@ -64,13 +76,7 @@ class MicroRoyaleEnv(gym.Env):
         super().reset(seed=seed)
         if self.randomize_opp_deck:
             import random
-            # 0..45 minus 16/37/38 (never defined in CardRegistry -- see
-            # test_card_registry.cpp's "Card ids that were never defined" test).
-            # Previously stopped at 40, silently excluding the 5 flying cards
-            # (41-45: Minions, Minion Horde, Mega Minion, Baby Dragon, Balloon)
-            # from ever showing up in a randomized opponent deck.
-            AVAILABLE_CARDS = [i for i in range(46) if i not in (16, 37, 38)]
-            self.game.set_opponent_deck(random.sample(AVAILABLE_CARDS, 8))
+            self.game.set_opponent_deck(random.sample(get_all_card_ids(), 8))
         else:
             self.game.set_opponent_deck(self.opp_deck)
 

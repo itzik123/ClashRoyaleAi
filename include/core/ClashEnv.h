@@ -309,3 +309,25 @@ public:
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
+
+// Every id CardRegistry actually has registered right now (real, playable
+// cards only -- death/periodic/secondary child-unit stats like Golemite or
+// Ram Rider's crossbow use negative sentinel ids and are never add()-ed, so
+// they never appear here). A free function, not a ClashEnv method, since
+// CardRegistry is a singleton independent of any particular env instance.
+//
+// Exists so Python-side random-deck sampling (gym_wrapper.py, train.py) can
+// derive its card pool from whatever's actually registered instead of a
+// hardcoded id range + exclusion list that silently drifts out of sync the
+// next time a card is added to (or removed from) CardRegistry.h -- exactly
+// what happened here: a hardcoded range(46) pool went stale the moment the
+// roster grew to 114 registered cards, and a hand-maintained exclusion list
+// is exactly the kind of thing that's easy to get wrong in the other
+// direction too (mistaking real registered ids for gaps).
+inline std::vector<int> getAllCardIds() {
+    std::vector<int> ids;
+    for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
+        ids.push_back(id);
+    }
+    return ids;
+}

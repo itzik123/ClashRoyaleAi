@@ -35,6 +35,16 @@ from train import (
 
 # Raw win rate (not decisive), same convention as train.py's curriculum gates.
 SELFPLAY_WIN_RATE_GATE = 0.95
+# Safety valve, not the intended advancement trigger -- same role as pipeline
+# #1's MAX_EPISODES_PER_RANDOM_DECK. A near-mirror matchup (the current
+# trainee vs. a historical snapshot of itself from not very long ago) can
+# converge toward mutual passivity once both sides are closely matched and
+# entropy is floored -- games time out into draws instead of being decisively
+# won, and win_rate (draws count against it, same as losses) never clears
+# SELFPLAY_WIN_RATE_GATE. Confirmed happening in practice: stuck on the same
+# opponent for 10,000+ episodes with draw rate pinned at 82-94%. Without this,
+# such a stall blocks the entire opponent queue forever.
+MAX_EPISODES_PER_HISTORICAL_OPPONENT = 5000
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -52,6 +62,37 @@ def discover_historical_checkpoints():
     of the filename wouldn't give a meaningful weakest->strongest order."""
     paths = glob.glob(os.path.join(HISTORICAL_CHECKPOINT_DIR, "*.pth"))
     return sorted(paths, key=os.path.getmtime)
+
+
+def load_state_dict_flexible(net, state_dict, context_label):
+    """Loads state_dict into net. Returns True on a clean, fully-matching load.
+
+    On an architecture mismatch (e.g. a card-roster change resizing the hand
+    one-hot encoding, which is the only part of MicroRoyaleNet that depends on
+    NUM_CARD_IDS -- see model.py's scalar_size), falls back to loading only
+    the tensors whose shape still matches, leaving the rest at their fresh
+    initialization instead of crashing outright. The CNN/LSTM/action heads are
+    independent of NUM_CARD_IDS, so this warm-starts on everything except the
+    one incompatible layer rather than discarding a whole checkpoint (and,
+    upstream of this function, an entire opponent-history library) over it.
+
+    Returns False when this fallback path was taken -- the caller should NOT
+    then load a paired optimizer state dict, since Adam's per-parameter
+    buffers would be stale/mismatched for whatever just got reinitialized.
+    """
+    try:
+        net.load_state_dict(state_dict)
+        return True
+    except RuntimeError:
+        own_state = net.state_dict()
+        compatible = {k: v for k, v in state_dict.items()
+                      if k in own_state and v.shape == own_state[k].shape}
+        skipped = sorted(set(state_dict.keys()) - set(compatible.keys()))
+        own_state.update(compatible)
+        net.load_state_dict(own_state)
+        print(f"[{context_label}] Architecture mismatch -- warm-started "
+              f"{len(compatible)}/{len(state_dict)} tensor(s), re-initialized: {skipped}")
+        return False
 
 
 class MicroRoyaleSelfPlayEnv(gym.Env):
@@ -96,7 +137,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
     def set_historical_opponent(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
-        self.opponent_net.load_state_dict(state_dict)
+        load_state_dict_flexible(self.opponent_net, state_dict, f"historical opponent {checkpoint_path}")
         self.opponent_net.eval()
         self.opponent_checkpoint_path = checkpoint_path
 
@@ -145,7 +186,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # Same key names/shape as gym_wrapper.MicroRoyaleEnv.step()'s info dict
         # on purpose -- lets compute_shaping() from train.py be reused as-is.
         info = {
-            "elixir": self.game.get_elixir(0),
+            "elixir": self.game.get_elixir(),
             "hand": self.game.get_hand(),
             "team0_troop_damage": self.game.get_troop_damage_dealt(0),
             "team1_troop_damage": self.game.get_troop_damage_dealt(1),
@@ -205,6 +246,7 @@ def train_selfplay_ppo():
 
     historical_opponent_index = 0
     stage_start_episode = 0
+    opponent_episode_start = 0  # episodes_completed value when the CURRENT historical opponent started
     episodes_completed = 0
     outcome_history = deque(maxlen=100)
     outcome_history_long = deque(maxlen=500)
@@ -213,11 +255,20 @@ def train_selfplay_ppo():
     resuming = os.path.exists(WEIGHT_PATH)
     if resuming:
         checkpoint = torch.load(WEIGHT_PATH, map_location=device, weights_only=False)
-        net.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        clean_load = load_state_dict_flexible(net, checkpoint["model"], f"pipeline2 resume ({WEIGHT_PATH})")
+        if clean_load:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        else:
+            print("Optimizer state NOT restored (architecture mismatch above) -- "
+                  "starting the optimizer fresh; network weights were still warm-started where shapes matched.")
         episodes_completed = checkpoint["episodes_completed"]
         historical_opponent_index = checkpoint["historical_opponent_index"]
         stage_start_episode = checkpoint["stage_start_episode"]
+        # .get() with episodes_completed as the fallback: checkpoints saved
+        # before this safety valve existed just restart the per-opponent
+        # clock now, rather than retroactively counting already-elapsed
+        # episodes against the new limit.
+        opponent_episode_start = checkpoint.get("opponent_episode_start", episodes_completed)
         outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
         full_resume = True
         print(f"Resumed pipeline #2 from {WEIGHT_PATH}: episode {episodes_completed}, "
@@ -225,7 +276,7 @@ def train_selfplay_ppo():
     elif os.path.exists(BOOTSTRAP_FROM_PATH):
         bootstrap = torch.load(BOOTSTRAP_FROM_PATH, map_location=device, weights_only=False)
         state_dict = bootstrap["model"] if isinstance(bootstrap, dict) and "model" in bootstrap else bootstrap
-        net.load_state_dict(state_dict)
+        load_state_dict_flexible(net, state_dict, f"pipeline2 bootstrap from pipeline1 ({BOOTSTRAP_FROM_PATH})")
         print(f"Seeded pipeline #2's trainee from pipeline #1's {BOOTSTRAP_FROM_PATH} "
               "(bare weights only -- pipeline #2 keeps its own separate episode count from here).")
     else:
@@ -401,10 +452,20 @@ def train_selfplay_ppo():
                     # and if nothing new has appeared yet, just keep training
                     # against the current (strongest known) opponent rather
                     # than blocking.
-                    if len(outcome_history) == outcome_history.maxlen:
-                        outcomes = np.array(outcome_history)
-                        win_rate = int((outcomes == 1).sum()) / len(outcomes)
-                        if win_rate >= SELFPLAY_WIN_RATE_GATE:
+                    #
+                    # MAX_EPISODES_PER_HISTORICAL_OPPONENT is a safety valve,
+                    # not the intended trigger -- see its own comment above. A
+                    # near-mirror matchup can converge toward mutual passivity
+                    # (draws, not decisive wins) and never clear the win-rate
+                    # gate on its own; this makes sure that stalls the queue
+                    # for at most one timeout instead of forever.
+                    window_full = len(outcome_history) == outcome_history.maxlen
+                    timed_out = episodes_completed - opponent_episode_start >= MAX_EPISODES_PER_HISTORICAL_OPPONENT
+                    if window_full or timed_out:
+                        win_rate = int((np.array(outcome_history) == 1).sum()) / len(outcome_history) if window_full else 0.0
+                        mastered = window_full and win_rate >= SELFPLAY_WIN_RATE_GATE
+
+                        if mastered or timed_out:
                             refreshed_pool = discover_historical_checkpoints()
                             if len(refreshed_pool) > historical_opponent_index + 1:
                                 historical_pool = refreshed_pool
@@ -413,13 +474,29 @@ def train_selfplay_ppo():
                                 envs.call("set_historical_opponent", current_opponent_path)
                                 outcome_history.clear()
                                 stage_start_episode = episodes_completed
+                                opponent_episode_start = episodes_completed
+                                reason = (f"mastered it (win rate {win_rate:.2f})" if mastered
+                                          else f"hit the {MAX_EPISODES_PER_HISTORICAL_OPPONENT}-episode "
+                                               f"safety cap without mastering it (win rate {win_rate:.2f})")
                                 print(f">>> Beat opponent {historical_opponent_index}/{len(historical_pool)} "
-                                      f"(win rate {win_rate:.2f}) -- advancing to "
+                                      f"({reason}) -- advancing to "
                                       f"{historical_opponent_index + 1}/{len(historical_pool)}: {current_opponent_path}")
                                 writer.add_scalar("Training/Historical_Opponent_Index", historical_opponent_index, episodes_completed)
-                            # else: nothing stronger known yet -- keep training
-                            # against the current opponent, outcome_history
-                            # keeps sliding so this re-checks every episode.
+                            elif timed_out:
+                                # Timed out but nothing stronger is known yet -- re-boost
+                                # exploration and give it a fresh attempt window against
+                                # the SAME opponent instead of continuing indefinitely at
+                                # floored entropy with zero further exploration pressure.
+                                outcome_history.clear()
+                                stage_start_episode = episodes_completed
+                                opponent_episode_start = episodes_completed
+                                print(f">>> Opponent {historical_opponent_index + 1}/{len(historical_pool)} timed out "
+                                      f"(win rate {win_rate:.2f}) but no stronger snapshot exists yet -- "
+                                      "re-boosting exploration and retrying the same opponent.")
+                            # else: nothing stronger known yet and not timed out --
+                            # keep training against the current opponent,
+                            # outcome_history keeps sliding so this re-checks
+                            # every episode.
 
             obs = next_obs
             prev_stats = stats
@@ -554,6 +631,7 @@ def train_selfplay_ppo():
                 "episodes_completed": episodes_completed,
                 "historical_opponent_index": historical_opponent_index,
                 "stage_start_episode": stage_start_episode,
+                "opponent_episode_start": opponent_episode_start,
                 "outcome_history": list(outcome_history),
             }, WEIGHT_PATH)
             print(f">>> Checkpoint saved to {WEIGHT_PATH} (episode {episodes_completed}, "
