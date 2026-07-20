@@ -45,6 +45,21 @@ SELFPLAY_WIN_RATE_GATE = 0.95
 # opponent for 10,000+ episodes with draw rate pinned at 82-94%. Without this,
 # such a stall blocks the entire opponent queue forever.
 MAX_EPISODES_PER_HISTORICAL_OPPONENT = 5000
+# Escape hatch for the SAME mutual-passivity problem, triggered much earlier
+# than the timeout above: once draws cross this share of the current 100-
+# episode window, re-boost exploration right away instead of waiting the
+# whole MAX_EPISODES_PER_HISTORICAL_OPPONENT window out at floored entropy --
+# floored entropy is exactly what locks a passive equilibrium in place, since
+# neither side has any remaining chance to stumble into a different joint
+# strategy. Reward-shaping fixes (see train.py's W_ELIXIR_TRADE/DRAW_PENALTY/
+# W_ELIXIR_OVERFLOW comments) address WHY passivity looked attractive; this
+# addresses the fact that once both sides are already sitting in it, ordinary
+# gradient descent has no exploration left to climb back out.
+STALL_DRAW_RATE_THRESHOLD = 0.5
+# Cooldown so this doesn't re-fire every single episode once the window is
+# saturated with draws -- gives each boost a real window to actually take
+# effect before deciding whether another one is needed.
+STALL_REBOOST_COOLDOWN_EPISODES = 1000
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -247,6 +262,7 @@ def train_selfplay_ppo():
     historical_opponent_index = 0
     stage_start_episode = 0
     opponent_episode_start = 0  # episodes_completed value when the CURRENT historical opponent started
+    last_stall_reboost_episode = 0  # episodes_completed value at the last high-draw-rate entropy re-boost
     episodes_completed = 0
     outcome_history = deque(maxlen=100)
     outcome_history_long = deque(maxlen=500)
@@ -269,6 +285,7 @@ def train_selfplay_ppo():
         # clock now, rather than retroactively counting already-elapsed
         # episodes against the new limit.
         opponent_episode_start = checkpoint.get("opponent_episode_start", episodes_completed)
+        last_stall_reboost_episode = checkpoint.get("last_stall_reboost_episode", episodes_completed)
         outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
         full_resume = True
         print(f"Resumed pipeline #2 from {WEIGHT_PATH}: episode {episodes_completed}, "
@@ -364,6 +381,7 @@ def train_selfplay_ppo():
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
                 "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),
+                "team0_elixir_current": infos.get("elixir", zeros_f),
             }
 
             shaping = compute_shaping(stats, prev_stats)
@@ -462,7 +480,14 @@ def train_selfplay_ppo():
                     window_full = len(outcome_history) == outcome_history.maxlen
                     timed_out = episodes_completed - opponent_episode_start >= MAX_EPISODES_PER_HISTORICAL_OPPONENT
                     if window_full or timed_out:
-                        win_rate = int((np.array(outcome_history) == 1).sum()) / len(outcome_history) if window_full else 0.0
+                        n_outcomes = len(outcome_history)
+                        if n_outcomes > 0:
+                            outcomes_arr = np.array(outcome_history)
+                            win_rate = int((outcomes_arr == 1).sum()) / n_outcomes
+                            draw_rate = int((outcomes_arr == 0).sum()) / n_outcomes
+                        else:
+                            win_rate = 0.0
+                            draw_rate = 0.0
                         mastered = window_full and win_rate >= SELFPLAY_WIN_RATE_GATE
 
                         if mastered or timed_out:
@@ -497,6 +522,21 @@ def train_selfplay_ppo():
                             # keep training against the current opponent,
                             # outcome_history keeps sliding so this re-checks
                             # every episode.
+                        elif (window_full and draw_rate >= STALL_DRAW_RATE_THRESHOLD
+                                and episodes_completed - last_stall_reboost_episode >= STALL_REBOOST_COOLDOWN_EPISODES):
+                            # High draw rate well before either the win gate or the
+                            # timeout -- re-boost exploration NOW rather than let it
+                            # sit at floored entropy for the rest of the timeout
+                            # window, since floored entropy is exactly what locks a
+                            # passive equilibrium in place (see this constant's
+                            # comment above). Doesn't touch opponent_episode_start
+                            # or outcome_history -- still the same opponent, same
+                            # win-rate/timeout clock, just a fresh exploration push.
+                            stage_start_episode = episodes_completed
+                            last_stall_reboost_episode = episodes_completed
+                            print(f">>> High draw rate ({draw_rate:.2f}) against opponent "
+                                  f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
+                                  "re-boosting exploration to try to break out of a passive equilibrium.")
 
             obs = next_obs
             prev_stats = stats
@@ -632,6 +672,7 @@ def train_selfplay_ppo():
                 "historical_opponent_index": historical_opponent_index,
                 "stage_start_episode": stage_start_episode,
                 "opponent_episode_start": opponent_episode_start,
+                "last_stall_reboost_episode": last_stall_reboost_episode,
                 "outcome_history": list(outcome_history),
             }, WEIGHT_PATH)
             print(f">>> Checkpoint saved to {WEIGHT_PATH} (episode {episodes_completed}, "
