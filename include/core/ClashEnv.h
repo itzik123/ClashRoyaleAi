@@ -46,8 +46,10 @@ private:
     // 0-3: ally melee, ranged, tank, buildings | 4-7: enemy same | 8: river/bridges
     static constexpr int NUM_CHANNELS = 9;
     static constexpr int HAND_SIZE = 4;
-    // One-hot size for card identity in hand. Card ids run 0..40 in CardRegistry.
-    static constexpr int NUM_CARD_IDS = 41;
+    // One-hot size for card identity in hand. Card ids run 0..114 in CardRegistry
+    // (kept a few slots ahead of the current max so future card additions don't
+    // silently go blind again -- see CardRegistry.h for the actual registered range).
+    static constexpr int NUM_CARD_IDS = 120;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 

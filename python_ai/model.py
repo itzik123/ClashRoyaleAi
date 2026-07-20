@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
-    def __init__(self, channels=9, board_width=18, board_height=32, hand_size=4, num_card_ids=41):
+    def __init__(self, channels=9, board_width=18, board_height=32, hand_size=4, num_card_ids=120):
         super(MicroRoyaleNet, self).__init__()
 
         self.channels = channels
@@ -13,7 +13,7 @@ class MicroRoyaleNet(nn.Module):
 
         # גודל המטריצה השטוחה המגיעה מ-ClashEnv
         self.spatial_size = channels * board_height * board_width
-        # החלק הסקלרי: אליקסיר + 4 עלויות + 4 one-hot של זהות קלף (41 ערכים כל אחד)
+        # החלק הסקלרי: אליקסיר + 4 עלויות + 4 one-hot של זהות קלף (num_card_ids ערכים כל אחד)
         self.scalar_size = 1 + hand_size + hand_size * num_card_ids
         
         # ==========================================
