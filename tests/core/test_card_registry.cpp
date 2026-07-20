@@ -964,3 +964,140 @@ TEST_CASE("Compound cards spawn a primary and a secondary unit that target indep
         REQUIRE(rangedCount == 3);
     }
 }
+
+// ---------------- wiki-research pass: closing the "no sourced stats" gaps ----------------
+
+TEST_CASE("Lava Hound splits into 6 Lava Pups on death", "[card_registry][death]") {
+    Board board;
+    CardRegistry::getInstance().getCard(91)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hound = board.getEntities()[0];
+    hound->takeDamage(hound->hp);
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    int pupCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Lava Pups") pupCount++;
+    }
+    REQUIRE(pupCount == 6);
+}
+
+TEST_CASE("Elixir Golem's full split chain grants elixir at every tier", "[card_registry][death][elixir]") {
+    Board board;
+    CardRegistry::getInstance().getCard(90)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto golem = board.getEntities()[0];
+    golem->takeDamage(golem->hp);
+    board.cleanDeadEntities(); // Golem dies -> 2 Golemites + 1.0 elixir to team 1
+    board.commitPendingEntities();
+
+    REQUIRE(board.pendingElixirGrant[1] == Catch::Approx(1.0f));
+    int golemiteCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Elixir Golemite") golemiteCount++;
+    }
+    REQUIRE(golemiteCount == 2);
+
+    // Kill one Golemite -> 2 Blobs + another 0.5 elixir to team 1.
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Elixir Golemite") { e->takeDamage(e->hp); break; }
+    }
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    REQUIRE(board.pendingElixirGrant[1] == Catch::Approx(1.5f));
+    int blobCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Elixir Blob") blobCount++;
+    }
+    REQUIRE(blobCount == 2);
+}
+
+TEST_CASE("Mother Witch's curse arms a Cursed Hog that spawns for HER team when the cursed unit dies", "[card_registry][curse]") {
+    Board board;
+    auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000, 1, 1.0f, 10, 10); // dist 1.0
+
+    CardRegistry::getInstance().getCard(68)->spawnEntity(5.0f, 5.0f, 0, board); // Mother Witch, team 0
+    board.addEntity(enemy);
+    board.commitPendingEntities();
+
+    // Mother Witch is a RangedSquad card -- her onHit effect (CursedHogOnHit)
+    // only lands when her Projectile actually arrives, not the instant she
+    // fires. Drive the same update/commit loop GameManager::step() uses
+    // until the curse lands.
+    for (int i = 0; i < 20 && enemy->curseTicksRemaining == 0; ++i) {
+        for (const auto& e : board.getEntities()) {
+            if (e->isAlive()) e->update(board);
+        }
+        board.commitPendingEntities();
+    }
+
+    REQUIRE(enemy->curseTicksRemaining > 0);
+    REQUIRE(enemy->deathEffect != nullptr);
+
+    enemy->takeDamage(enemy->hp);
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    bool foundCursedHog = false;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Cursed Hog") {
+            REQUIRE(e->team == 0); // fights for Mother Witch's side, not the victim's
+            foundCursedHog = true;
+        }
+    }
+    REQUIRE(foundCursedHog);
+}
+
+TEST_CASE("Cannon Cart grounds itself once it drops to 50% hp", "[card_registry][transform]") {
+    Board board;
+    CardRegistry::getInstance().getCard(69)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto cart = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(cart != nullptr);
+    cart->takeDamage(cart->hp / 2 + 1); // just past half: at-or-below the 0.5 threshold
+
+    cart->update(board);
+
+    REQUIRE(cart->hasTransformed);
+    REQUIRE(cart->freezeSlow == Catch::Approx(0.0f)); // grounded
+}
+
+TEST_CASE("Goblin Hut only summons while an enemy is within its detection range", "[card_registry][periodic]") {
+    Board board;
+    CardRegistry::getInstance().getCard(95)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto hut = board.getEntities()[0];
+
+    for (int i = 0; i < 22; ++i) hut->update(board); // one full interval, no enemy anywhere
+    board.commitPendingEntities();
+    int countNoEnemy = static_cast<int>(board.getEntities().size());
+    REQUIRE(countNoEnemy == 1); // just the Hut itself -- no spawn
+
+    auto enemy = std::make_shared<DummyEntity>(50, 6.0f, 5.0f, 100, 1); // dist 1.0, inside 6.0 range
+    spawn(board, enemy);
+    for (int i = 0; i < 22; ++i) hut->update(board);
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() > countNoEnemy + 1); // Hut + enemy + at least one Spear Goblin
+}
+
+TEST_CASE("X-Bow can't fire until its slow initial deploy delay elapses", "[card_registry][deploy_delay]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // well within X-Bow's range
+    spawn(board, enemy);
+
+    CardRegistry::getInstance().getCard(92)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto xbow = board.getEntities().back();
+
+    for (int i = 0; i < 34; ++i) xbow->update(board); // 3.4s: still not ready (delay is 3.5s/35 ticks)
+    REQUIRE(enemy->hp == 100000);
+
+    xbow->update(board); // the 35th tick: ready to fire
+    REQUIRE(enemy->hp < 100000);
+}

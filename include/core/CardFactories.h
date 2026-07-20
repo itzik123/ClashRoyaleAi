@@ -35,6 +35,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->rampStartFraction = stats.rampStartFraction;
     entity->rampMidFraction = stats.rampMidFraction;
     entity->maxSplitTargets = stats.maxSplitTargets;
+    entity->splitTargetsFullDamage = stats.splitTargetsFullDamage;
     entity->splashRadius = stats.splashRadius;
     entity->shieldHp = stats.shieldHp;
     entity->chargeThreshold = stats.chargeThreshold;
@@ -55,7 +56,16 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->auraBuffDurationTicks = stats.auraBuffDurationTicks;
     entity->healAllyAmount = stats.healAllyAmount;
     entity->dieAfterFirstHit = stats.dieAfterFirstHit;
+    entity->chargeGrantsInvulnerability = stats.chargeGrantsInvulnerability;
+    entity->resetCooldownOnFreeze = stats.resetCooldownOnFreeze;
+    entity->recoilDistance = stats.recoilDistance;
+    entity->minAttackRange = stats.minAttackRange;
+    entity->transformAtHpFraction = stats.transformAtHpFraction;
+    entity->transformCheckMaxHp = stats.hp;
+    entity->transformLifetimeTicks = stats.transformLifetimeTicks;
+    entity->transformBecomesStationary = stats.transformBecomesStationary;
     applyOnHit(entity, stats);
+    if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
 }
 
 // A flying card ignores the river as a consequence of being airborne, even
@@ -160,7 +170,8 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
         board.allocateId(), x, y, team, stats.spellRadius, stats.damage, stats.spellDelayTicks, stats.symbol,
         stats.spellOnHit, stats.spellGroundOnly, stats.spellRemainingHits, stats.spellTickInterval,
         stats.spellBuffsAllies, stats.spellBuffMultiplier, stats.spellBuffDurationTicks, stats.spellKnockback,
-        stats.spellSpawnEffect, stats.spellClonesAllies);
+        stats.spellSpawnEffect, stats.spellClonesAllies, stats.spellTargetTopHpCount,
+        stats.spellTieredDamage, stats.spellTierSingleDamage, stats.spellTierFewDamage, stats.spellTierManyDamage);
     spell->name = stats.name;
     spell->cardId = stats.id;
     board.addEntity(spell);

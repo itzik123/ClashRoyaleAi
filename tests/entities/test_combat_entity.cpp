@@ -1051,3 +1051,197 @@ TEST_CASE("A card without dieAfterFirstHit configured (the default) survives to 
 
     REQUIRE(attacker->isAlive());
 }
+
+// ---------------- dash invulnerability (Bandit) ----------------
+
+TEST_CASE("chargeGrantsInvulnerability blocks damage once past half the charge threshold", "[combat_entity][invulnerability]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 10.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
+    attacker->chargeThreshold = 4.0f;
+    attacker->chargeMultiplier = 2.0f;
+    attacker->chargeGrantsInvulnerability = true;
+
+    attacker->update(board); // moves 1.0 toward target: chargeProgress 1.0, below half (2.0)
+    attacker->takeDamage(50);
+    REQUIRE(attacker->hp == 450); // not yet invulnerable
+
+    attacker->update(board); // moves another 1.0: chargeProgress 2.0, at half -- invulnerable now
+    attacker->takeDamage(50);
+    REQUIRE(attacker->hp == 450); // fully blocked
+}
+
+TEST_CASE("A charging attacker without chargeGrantsInvulnerability takes damage normally", "[combat_entity][invulnerability]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 10.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
+    attacker->chargeThreshold = 4.0f;
+    attacker->chargeMultiplier = 2.0f;
+    // chargeGrantsInvulnerability left false (the default)
+
+    attacker->update(board);
+    attacker->update(board);
+    attacker->takeDamage(50);
+    REQUIRE(attacker->hp == 450); // still vulnerable, even fully charged
+}
+
+// ---------------- stun resets cooldown (Sparky) ----------------
+
+TEST_CASE("resetCooldownOnFreeze fully restarts the attack cooldown instead of just slowing it", "[combat_entity][freeze]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->resetCooldownOnFreeze = true;
+
+    attacker->update(board); // lands the attack, currentCooldown -> 10
+    attacker->update(board); // decrements to 9 (unfrozen tick)
+
+    attacker->applyFreeze(5, 0.5f);
+    REQUIRE(attacker->attackCount == 1); // hasn't fired again yet
+
+    // Cooldown was reset to the full 10 (not left at the 9 it had already
+    // drained to) -- with 5 frozen ticks draining at freezeSlow (0.5/tick:
+    // 10 -> 7.5) followed by normal ticks (-1/tick) until it clears, the
+    // next attack needs 13 total update() calls after the freeze lands.
+    // Without the reset it would only need 12 (draining from 9 instead of
+    // 10) -- asserting exactly 13, not merely "eventually," is what
+    // actually distinguishes reset-on-freeze from plain freeze.
+    for (int i = 0; i < 12; ++i) attacker->update(board);
+    REQUIRE(attacker->attackCount == 1); // still not ready -- would already be ready without the reset
+    attacker->update(board);
+    REQUIRE(attacker->attackCount == 2); // ready on the 13th
+}
+
+// ---------------- recoil on attack (Firecracker) ----------------
+
+TEST_CASE("recoilDistance pushes the attacker away from its target after a landed hit", "[combat_entity][recoil]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->recoilDistance = 1.0f;
+
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->position.y == Catch::Approx(-1.0f)); // kicked 1.0 away from the target at (0,1)
+}
+
+// ---------------- minimum attack range (Mortar) ----------------
+
+TEST_CASE("minAttackRange rejects a target sitting inside the blind spot", "[combat_entity][min_range]") {
+    Board board;
+    auto tooClose = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 10000, 1); // dist 1.0
+    spawn(board, tooClose);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->minAttackRange = 3.0f;
+
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 0); // inside the blind spot: not a valid target at all
+}
+
+TEST_CASE("minAttackRange still allows a target beyond the blind spot but within range", "[combat_entity][min_range]") {
+    Board board;
+    auto farEnough = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 10000, 1); // dist 4.0
+    spawn(board, farEnough);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    attacker->minAttackRange = 3.0f;
+
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+}
+
+// ---------------- HP-threshold transform (Cannon Cart) ----------------
+
+TEST_CASE("A transform-capable attacker grounds itself once at or below the HP threshold", "[combat_entity][transform]") {
+    Board board;
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);
+    attacker->transformAtHpFraction = 0.5f;
+    attacker->transformCheckMaxHp = 1000;
+    attacker->transformLifetimeTicks = 20;
+    attacker->transformBecomesStationary = true;
+
+    attacker->takeDamage(600); // down to 400/1000 = 40%, at/below the 50% threshold
+    REQUIRE_FALSE(attacker->hasTransformed);
+
+    attacker->update(board); // no enemies on the board -- just exercises the transform check
+    REQUIRE(attacker->hasTransformed);
+    REQUIRE(attacker->freezeTicks > 0); // grounded via the freeze(0.0f) trick
+    REQUIRE(attacker->freezeSlow == Catch::Approx(0.0f));
+}
+
+TEST_CASE("A transformed attacker self-destructs once its post-transform lifetime runs out", "[combat_entity][transform]") {
+    Board board;
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);
+    attacker->transformAtHpFraction = 0.5f;
+    attacker->transformCheckMaxHp = 1000;
+    attacker->transformLifetimeTicks = 3;
+    attacker->transformBecomesStationary = true;
+
+    attacker->takeDamage(600);
+    // The triggering update() both starts the transform AND ticks the
+    // countdown once in the same call (transformTicksRemaining 3 -> 2),
+    // so exactly `transformLifetimeTicks` total update() calls (not one
+    // more) elapse before it self-destructs.
+    attacker->update(board); // remaining 3 -> 2
+    REQUIRE(attacker->isAlive());
+    attacker->update(board); // remaining 2 -> 1
+    REQUIRE(attacker->isAlive());
+    attacker->update(board); // remaining 1 -> 0: self-destructs
+    REQUIRE_FALSE(attacker->isAlive());
+}
+
+TEST_CASE("A card without transformAtHpFraction configured (the default) never transforms", "[combat_entity][transform]") {
+    Board board;
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);
+    attacker->takeDamage(999);
+    attacker->update(board);
+    REQUIRE_FALSE(attacker->hasTransformed);
+    REQUIRE(attacker->isAlive());
+}
+
+// ---------------- split-target full damage (Electro Dragon) ----------------
+
+TEST_CASE("splitTargetsFullDamage gives every split target the full damage instead of dividing it", "[combat_entity][split]") {
+    Board board;
+    auto enemyA = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 1000, 1);
+    auto enemyB = std::make_shared<DummyEntity>(2, -1.0f, 0.0f, 1000, 1);
+    spawn(board, enemyA);
+    spawn(board, enemyB);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 5.0f, 100, 10);
+    attacker->maxSplitTargets = 2;
+    attacker->splitTargetsFullDamage = true;
+
+    attacker->update(board);
+
+    REQUIRE(enemyA->hp == 900); // full 100, not divided by the 2 targets hit
+    REQUIRE(enemyB->hp == 900);
+}
+
+TEST_CASE("Without splitTargetsFullDamage, split-target damage is divided as before", "[combat_entity][split]") {
+    Board board;
+    auto enemyA = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 1000, 1);
+    auto enemyB = std::make_shared<DummyEntity>(2, -1.0f, 0.0f, 1000, 1);
+    spawn(board, enemyA);
+    spawn(board, enemyB);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 5.0f, 100, 10);
+    attacker->maxSplitTargets = 2;
+
+    attacker->update(board);
+
+    REQUIRE(enemyA->hp == 950); // 100 / 2 targets
+    REQUIRE(enemyB->hp == 950);
+}

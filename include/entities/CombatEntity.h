@@ -80,6 +80,13 @@ public:
     // 1 (the default) is the normal single-target case every other card uses.
     int maxSplitTargets = 1;
 
+    // Electro Dragon's chain: unlike Electro Wizard's split (which divides
+    // `damage` across however many targets it hit), each chained target
+    // takes the FULL damage value independently. false (the default)
+    // keeps every other split-target card's existing divide-by-hitcount
+    // behavior unchanged.
+    bool splitTargetsFullDamage = false;
+
     // Splash damage (Wizard, Bowler, Valkyrie, ...): every regular attack
     // also hits every other enemy within this radius of the primary
     // target's position, for the same amount as the primary hit -- ground
@@ -194,6 +201,60 @@ public:
     // (the default) is every other card here.
     bool dieAfterFirstHit = false;
 
+    // Dash invulnerability (Bandit): immune to all damage while charging
+    // in for a hit. The real card is only invulnerable during a short
+    // (~0.8s) dash burst once a target is in range; this engine has no
+    // separate "dash" state from ordinary charge-buildup movement, so
+    // it's approximated as invulnerable once past the halfway point of
+    // closing the charge distance (chargeProgress >= half of
+    // chargeThreshold) -- a longer window than the real 0.8s, but the
+    // same spirit ("hard to punish mid-charge"). false (the default) is
+    // every card without a charge, or with one but no invulnerability.
+    bool chargeGrantsInvulnerability = false;
+
+    // Reset (not just pause) the attack cooldown on being frozen/stunned
+    // (Sparky: a Zap mid-charge makes her start her whole 4s wind-up over
+    // instead of merely slowing it). false (the default) is every other
+    // card, which only gets the normal freezeSlow cooldown-drain-rate
+    // treatment in update() below.
+    bool resetCooldownOnFreeze = false;
+
+    // Recoil after landing an attack (Firecracker: kicks herself backward
+    // away from her own target). recoilDistance == 0.0f (the default)
+    // is every card without one. See Entity.h's pushAway.
+    float recoilDistance = 0.0f;
+
+    // Minimum attack range / "blind spot" (Mortar): can't hit anything
+    // closer than this, on top of the normal `attackRange` maximum --
+    // real game leaves the attacker just standing idle against a target
+    // that's ducked inside the blind spot instead of retargeting, but
+    // this engine's targeting has no notion of "valid target, but
+    // currently unreachable" separate from "not a valid target at all",
+    // so a candidate inside the blind spot is filtered out of
+    // findTarget() entirely, same as if it were on the wrong team --
+    // this attacker just finds the next-closest legal target instead of
+    // freezing up. 0.0f (the default) is every card without one.
+    float minAttackRange = 0.0f;
+
+    // HP-threshold transform (Cannon Cart: at <=50% hp, permanently
+    // grounds itself and gets a fixed lifespan before self-destructing).
+    // transformAtHpFraction == 0.0f (the default) disables the mechanic;
+    // transformCheckMaxHp is the hp this attacker spawned with (read back
+    // by CardStats::withHpTransform, same "reads back hp already set"
+    // idiom as withEnrage) -- the fraction is computed against that, not
+    // against whatever hp happens to be at any later moment. Modeled by
+    // reusing applyFreeze(ticks, 0.0f) to zero out movement for the
+    // transform's duration (see update() below) rather than adding a
+    // second, CombatEntity-level "speed" concept -- Troop already has its
+    // own speed field one layer up, and a full 0.0 freeze already means
+    // "can't move" exactly like the real transform's grounding.
+    float transformAtHpFraction = 0.0f;
+    int transformCheckMaxHp = 0;
+    int transformLifetimeTicks = 0;
+    bool transformBecomesStationary = false;
+    bool hasTransformed = false;
+    int transformTicksRemaining = 0;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
@@ -214,6 +275,16 @@ public:
         curseTicksRemaining = ticks;
     }
 
+    // Deploy delay (X-Bow: ~3.5s slow lock-on before its first shot,
+    // instead of every other card's immediately-ready-to-fire default).
+    // Called once, right after spawn, by whichever CardFactories function
+    // built this entity -- currentCooldown is otherwise protected, so
+    // this is the one seam that lets data-driven setup seed it without
+    // exposing the field itself.
+    void seedCooldown(int ticks) {
+        currentCooldown = static_cast<float>(ticks);
+    }
+
     // Parry checked before shield: a parried hit is negated outright, not
     // absorbed by (and wasting) shield capacity. Shield absorbs first,
     // dollar-for-dollar, before any of this spills onto real hp -- matches
@@ -221,6 +292,10 @@ public:
     // rule (a hit bigger than the remaining shield only costs the excess,
     // not double-counted).
     void takeDamage(int amount) override {
+        if (chargeGrantsInvulnerability && chargeThreshold > 0.0f
+            && chargeProgress >= chargeThreshold * 0.5f) {
+            return; // mid-dash: fully immune
+        }
         if (curseTicksRemaining > 0) {
             amount = static_cast<int>(amount * curseDamageTakenMultiplier);
         }
@@ -243,6 +318,9 @@ public:
         // longer, weaker one is already active.
         freezeTicks = std::max(freezeTicks, ticks);
         freezeSlow = std::min(freezeSlow, slowFactor);
+        if (resetCooldownOnFreeze && ticks > 0) {
+            currentCooldown = static_cast<float>(attackCooldown);
+        }
     }
 
     // Composes extra behavior (e.g. freeze) onto every successful attack,
@@ -257,6 +335,17 @@ public:
         // reset -- matches the real "a stun resets the charge" rule for
         // every tick actually spent frozen, not all-but-the-last one.
         bool wasFrozen = freezeTicks > 0;
+
+        if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
+            && static_cast<float>(hp) / static_cast<float>(transformCheckMaxHp) <= transformAtHpFraction) {
+            hasTransformed = true;
+            transformTicksRemaining = transformLifetimeTicks;
+            if (transformBecomesStationary) applyFreeze(transformLifetimeTicks, 0.0f);
+        }
+        if (hasTransformed && transformLifetimeTicks > 0) {
+            transformTicksRemaining--;
+            if (transformTicksRemaining <= 0) hp = 0;
+        }
 
         if (freezeTicks > 0) {
             freezeTicks--;
@@ -353,6 +442,7 @@ public:
                                 auraBuffMultiplier, auraBuffDurationTicks, auraMaxTargets);
                         }
                     }
+                    if (recoilDistance > 0.0f) pushAway(*this, target->position, recoilDistance);
                     if (dieAfterFirstHit) hp = 0;
                 }
             } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
@@ -389,7 +479,8 @@ protected:
     // genuinely required -- not the whole targeting system.
     bool isValidTarget(const std::shared_ptr<Entity>& entity) const {
         return entity && entity->team != this->team && entity->isAlive() && entity->isTargetable()
-            && entity->id != this->id && (!entity->isFlying || targetsAir);
+            && entity->id != this->id && (!entity->isFlying || targetsAir)
+            && (minAttackRange <= 0.0f || position.distanceTo(entity->position) >= minAttackRange);
     }
 
     float effectiveRangeTo(const std::shared_ptr<Entity>& target) const {
@@ -470,7 +561,7 @@ protected:
         if (buffTicksRemaining > 0) {
             base = static_cast<int>(base * buffDamageMultiplier);
         }
-        return currentHitCount > 1 ? base / currentHitCount : base;
+        return (currentHitCount > 1 && !splitTargetsFullDamage) ? base / currentHitCount : base;
     }
 
     virtual void performAttack(Board& board, std::shared_ptr<Entity> target) = 0;

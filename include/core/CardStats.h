@@ -107,6 +107,8 @@ struct CardStats {
     // CombatEntity::findSplitTargets/getCurrentDamage. 1 (the default)
     // means the normal single-target case.
     int maxSplitTargets = 1;
+    // Electro Dragon's chain -- see CombatEntity::splitTargetsFullDamage.
+    bool splitTargetsFullDamage = false;
 
     // Boomerang projectiles (Executioner) -- RangedSquad archetype only. See
     // Projectile's returnsToSender. false (the default) is a normal
@@ -196,6 +198,35 @@ struct CardStats {
     int auraBuffDurationTicks = 0;
     int healAllyAmount = 0;
 
+    // Dash invulnerability (Bandit) -- see CombatEntity::chargeGrantsInvulnerability.
+    bool chargeGrantsInvulnerability = false;
+    // Stun fully resets (not just slows) the attack cooldown (Sparky) --
+    // see CombatEntity::resetCooldownOnFreeze.
+    bool resetCooldownOnFreeze = false;
+    // Recoil after attacking (Firecracker) -- see CombatEntity::recoilDistance.
+    float recoilDistance = 0.0f;
+    // Minimum attack range / blind spot (Mortar) -- see CombatEntity::minAttackRange.
+    float minAttackRange = 0.0f;
+    // Deploy delay before the first attack is ready (X-Bow) -- see
+    // CombatEntity::seedCooldown. 0 (the default) is every other card,
+    // ready to fire as soon as a target's in range.
+    int initialCooldownTicks = 0;
+    // HP-threshold transform (Cannon Cart) -- see
+    // CombatEntity::transformAtHpFraction/transformCheckMaxHp.
+    float transformAtHpFraction = 0.0f;
+    int transformLifetimeTicks = 0;
+    bool transformBecomesStationary = false;
+
+    // AreaSpell-only: Vines' top-N-highest-HP targeting -- see
+    // AreaSpell::targetTopHpCount. 0 (the default) is every other spell.
+    int spellTargetTopHpCount = 0;
+    // AreaSpell-only: Void's 3-tier target-count-based damage -- see
+    // AreaSpell::tieredDamage. false (the default) is every other spell.
+    bool spellTieredDamage = false;
+    int spellTierSingleDamage = 0;
+    int spellTierFewDamage = 0;
+    int spellTierManyDamage = 0;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -249,6 +280,10 @@ struct CardStats {
     }
     CardStats& withSplitTargets(int maxTargets) {
         maxSplitTargets = maxTargets;
+        return *this;
+    }
+    CardStats& withSplitTargetsFullDamage() {
+        splitTargetsFullDamage = true;
         return *this;
     }
     CardStats& withBoomerang(int returnDelayTicks) {
@@ -335,6 +370,45 @@ struct CardStats {
     }
     CardStats& withSpellClone() {
         spellClonesAllies = true;
+        return *this;
+    }
+    CardStats& withChargeInvulnerability() {
+        chargeGrantsInvulnerability = true;
+        return *this;
+    }
+    CardStats& withStunResetsCooldown() {
+        resetCooldownOnFreeze = true;
+        return *this;
+    }
+    CardStats& withRecoil(float distance) {
+        recoilDistance = distance;
+        return *this;
+    }
+    CardStats& withMinRange(float range) {
+        minAttackRange = range;
+        return *this;
+    }
+    CardStats& withDeployDelay(int ticks) {
+        initialCooldownTicks = ticks;
+        return *this;
+    }
+    // Reads back `hp` (already set by troop(...)/building(...) before this
+    // chains on), same idiom as withEnrage.
+    CardStats& withHpTransform(float atFraction, int lifetimeTicks, bool becomesStationary) {
+        transformAtHpFraction = atFraction;
+        transformLifetimeTicks = lifetimeTicks;
+        transformBecomesStationary = becomesStationary;
+        return *this;
+    }
+    CardStats& withSpellTopHpTargets(int count) {
+        spellTargetTopHpCount = count;
+        return *this;
+    }
+    CardStats& withSpellTieredDamage(int single, int few, int many) {
+        spellTieredDamage = true;
+        spellTierSingleDamage = single;
+        spellTierFewDamage = few;
+        spellTierManyDamage = many;
         return *this;
     }
 };
