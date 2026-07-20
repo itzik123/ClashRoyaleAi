@@ -234,3 +234,86 @@ TEST_CASE("A clonesAllies spell duplicates an allied troop in radius, not an ene
     REQUIRE(enemyCount == 0); // the enemy did not
     REQUIRE(ally->hp == 500); // the original is untouched
 }
+
+// ---------------- top-N-highest-HP targeting (Vines) ----------------
+
+TEST_CASE("targetTopHpCount only affects the N highest-HP entities in radius", "[area_spell][vines]") {
+    Board board;
+    auto low = std::make_shared<DummyEntity>(1, 9.0f, 10.0f, 300, 1);
+    auto mid = std::make_shared<DummyEntity>(2, 10.0f, 9.0f, 600, 1);
+    auto high = std::make_shared<DummyEntity>(3, 11.0f, 10.0f, 900, 1);
+    spawn(board, low);
+    spawn(board, mid);
+    spawn(board, high);
+
+    // buffsAllies=false, remainingHits=1, tickInterval=0, knockback=0,
+    // spawnOnDetonate=nullptr, clonesAllies=false, targetTopHpCount=2
+    AreaSpell spell(4, 10.0f, 10.0f, 0, 5.0f, 100, 0, '*', nullptr, false, 1, 0,
+        false, 1.0f, 0, 0.0f, nullptr, false, 2);
+    spell.update(board);
+
+    REQUIRE(low->hp == 300);  // lowest HP of the three: left alone
+    REQUIRE(mid->hp == 500);  // one of the top 2: hit
+    REQUIRE(high->hp == 800); // the highest: hit
+}
+
+TEST_CASE("targetTopHpCount of 0 (the default) hits everyone in radius, same as before", "[area_spell][vines]") {
+    Board board;
+    auto a = std::make_shared<DummyEntity>(1, 9.0f, 10.0f, 300, 1);
+    auto b = std::make_shared<DummyEntity>(2, 11.0f, 10.0f, 300, 1);
+    spawn(board, a);
+    spawn(board, b);
+
+    AreaSpell spell(3, 10.0f, 10.0f, 0, 5.0f, 100, 0);
+    spell.update(board);
+
+    REQUIRE(a->hp == 200);
+    REQUIRE(b->hp == 200);
+}
+
+// ---------------- tiered target-count damage (Void) ----------------
+
+TEST_CASE("tieredDamage applies the single-target tier when only one entity is caught", "[area_spell][void]") {
+    Board board;
+    auto only = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 10000, 1);
+    spawn(board, only);
+
+    // tierSingleDamage=340, tierFewDamage=160, tierManyDamage=76
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 5.0f, 0, 0, '*', nullptr, false, 1, 0,
+        false, 1.0f, 0, 0.0f, nullptr, false, 0, true, 340, 160, 76);
+    spell.update(board);
+
+    REQUIRE(only->hp == 10000 - 340);
+}
+
+TEST_CASE("tieredDamage applies the few-targets tier for 2-4 entities caught", "[area_spell][void]") {
+    Board board;
+    for (int i = 0; i < 3; ++i) {
+        spawn(board, std::make_shared<DummyEntity>(i + 1, 10.0f + i * 0.1f, 10.0f, 10000, 1));
+    }
+
+    AreaSpell spell(10, 10.0f, 10.0f, 0, 5.0f, 0, 0, '*', nullptr, false, 1, 0,
+        false, 1.0f, 0, 0.0f, nullptr, false, 0, true, 340, 160, 76);
+    spell.update(board);
+
+    for (const auto& e : board.getEntities()) {
+        if (e->id == 10) continue; // the spell itself
+        REQUIRE(e->hp == 10000 - 160);
+    }
+}
+
+TEST_CASE("tieredDamage applies the many-targets tier for 5+ entities caught", "[area_spell][void]") {
+    Board board;
+    for (int i = 0; i < 5; ++i) {
+        spawn(board, std::make_shared<DummyEntity>(i + 1, 10.0f + i * 0.1f, 10.0f, 10000, 1));
+    }
+
+    AreaSpell spell(10, 10.0f, 10.0f, 0, 5.0f, 0, 0, '*', nullptr, false, 1, 0,
+        false, 1.0f, 0, 0.0f, nullptr, false, 0, true, 340, 160, 76);
+    spell.update(board);
+
+    for (const auto& e : board.getEntities()) {
+        if (e->id == 10) continue;
+        REQUIRE(e->hp == 10000 - 76);
+    }
+}

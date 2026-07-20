@@ -10,6 +10,10 @@
 #include "AreaSpell.h"
 #include "FreezeOnHit.h"
 #include "SpawnOnDeath.h"
+#include "EnemyElixirGrantOnDeath.h"
+#include "SpawnOnDeathForEnemyTeam.h"
+#include "ProximityGatedPeriodicSpawnEffect.h"
+#include "CursedHogOnHit.h"
 
 // These hand-build a CardStats and call the factory functions directly,
 // exercising the mechanism in isolation from any single registered card's
@@ -303,4 +307,109 @@ TEST_CASE("A non-flying card leaves riverIgnores false unless set explicitly", "
     auto troop = std::dynamic_pointer_cast<MeleeTroop>(board.getEntities().back());
     REQUIRE(troop != nullptr);
     REQUIRE_FALSE(troop->riverIgnores);
+}
+
+// ---------------- Elixir Golem split-chain effects ----------------
+
+TEST_CASE("EnemyElixirGrantOnDeath credits the OPPOSING team's pendingElixirGrant", "[card_factories][elixir]") {
+    Board board;
+    EnemyElixirGrantOnDeath effect(0.5f);
+
+    effect.apply(board, Vector2D{ 0.0f, 0.0f }, 0); // team 0 died
+
+    REQUIRE(board.pendingElixirGrant[1] == Catch::Approx(0.5f)); // team 1 (the opponent) benefits
+    REQUIRE(board.pendingElixirGrant[0] == Catch::Approx(0.0f)); // not its own team
+}
+
+TEST_CASE("SpawnOnDeathForEnemyTeam spawns its child for the OPPOSING team", "[card_factories][death]") {
+    Board board;
+    CardStats childStats = makeTroopStats();
+    childStats.name = "CursedHogChild";
+    SpawnOnDeathForEnemyTeam effect(childStats);
+
+    effect.apply(board, Vector2D{ 3.0f, 4.0f }, 0); // team 0 died
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() == 1);
+    auto child = board.getEntities()[0];
+    REQUIRE(child->team == 1); // spawned fighting for team 1, not team 0
+    REQUIRE(child->position.x == Catch::Approx(3.0f));
+}
+
+TEST_CASE("CursedHogOnHit applies the curse and arms a same-tick death spawn for the enemy team", "[card_factories][curse]") {
+    Board board;
+    auto target = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 1, 1.0f, 10, 10);
+
+    CardStats hogStats = makeTroopStats();
+    hogStats.name = "Cursed Hog";
+    CursedHogOnHit effect(1.5f, 60, hogStats);
+
+    effect.apply(target);
+
+    REQUIRE(target->curseDamageTakenMultiplier == Catch::Approx(1.5f));
+    REQUIRE(target->curseTicksRemaining == 60);
+    REQUIRE(target->deathEffect != nullptr);
+
+    // The armed deathEffect spawns for team 0 (opposite the cursed
+    // target's own team 1) when the target actually dies.
+    board.currentTick = 0;
+    target->deathEffect->apply(board, target->position, target->team);
+    board.commitPendingEntities();
+    REQUIRE(board.getEntities().size() == 1);
+    REQUIRE(board.getEntities()[0]->team == 0);
+}
+
+TEST_CASE("CursedHogOnHit composes with an existing deathEffect instead of overwriting it", "[card_factories][curse]") {
+    Board board;
+    auto target = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 1, 1.0f, 10, 10);
+    auto original = std::make_shared<RecordingDeathEffect>();
+    target->deathEffect = original;
+
+    CardStats hogStats = makeTroopStats();
+    CursedHogOnHit effect(1.5f, 60, hogStats);
+    effect.apply(target);
+
+    target->deathEffect->apply(board, target->position, target->team);
+    board.commitPendingEntities();
+
+    REQUIRE(original->applied); // the unit's own original death behavior still ran
+    REQUIRE(board.getEntities().size() == 1); // plus the Cursed Hog spawn
+}
+
+// ---------------- proximity-gated periodic spawn (Goblin Hut) ----------------
+
+TEST_CASE("ProximityGatedPeriodicSpawnEffect spawns when an enemy is within range", "[card_factories][periodic]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 100, 1); // dist 1.0
+    spawn(board, enemy);
+
+    ProximityGatedPeriodicSpawnEffect effect(makeTroopStats(), 6.0f);
+    effect.apply(board, Vector2D{ 0.0f, 0.0f }, 0);
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() == 2); // the enemy, plus the spawned child
+}
+
+TEST_CASE("ProximityGatedPeriodicSpawnEffect stays quiet with no enemy in range", "[card_factories][periodic]") {
+    Board board;
+    auto farEnemy = std::make_shared<DummyEntity>(1, 100.0f, 0.0f, 100, 1); // way outside 6.0
+    spawn(board, farEnemy);
+
+    ProximityGatedPeriodicSpawnEffect effect(makeTroopStats(), 6.0f);
+    effect.apply(board, Vector2D{ 0.0f, 0.0f }, 0);
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() == 1); // no spawn -- only the original enemy
+}
+
+TEST_CASE("ProximityGatedPeriodicSpawnEffect ignores allies when checking for a nearby enemy", "[card_factories][periodic]") {
+    Board board;
+    auto ally = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 100, 0); // same team, dist 1.0
+    spawn(board, ally);
+
+    ProximityGatedPeriodicSpawnEffect effect(makeTroopStats(), 6.0f);
+    effect.apply(board, Vector2D{ 0.0f, 0.0f }, 0);
+    board.commitPendingEntities();
+
+    REQUIRE(board.getEntities().size() == 1); // no spawn -- the nearby unit is an ally, not an enemy
 }

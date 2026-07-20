@@ -63,17 +63,35 @@ private:
     // other spell here.
     bool clonesAllies;
 
+    // Vines: real card only roots the highest-HP troops/buildings in
+    // radius, not everyone caught in it. 0 (the default) means "everyone
+    // in radius", every other spell here.
+    int targetTopHpCount;
+
+    // Void: real damage scales inversely with how many targets are caught
+    // -- fewer targets means more damage each. Modeled as 3 discrete tiers
+    // (1 / 2-4 / 5+ targets), matching Void's own sourced data rather than
+    // a continuous formula. `damage` above goes unused in this mode.
+    // tieredDamage == false (the default) is every other spell here.
+    bool tieredDamage;
+    int tierSingleDamage;
+    int tierFewDamage;
+    int tierManyDamage;
+
 public:
     AreaSpell(int id, float x, float y, int team, float radius, int damage, int delayTicks, char symbol = '*',
         std::shared_ptr<IOnHitEffect> onHit = nullptr, bool groundOnly = false,
         int remainingHits = 1, int tickInterval = 0,
         bool buffsAllies = false, float buffMultiplier = 1.0f, int buffDurationTicks = 0,
         float knockback = 0.0f, std::shared_ptr<IPeriodicEffect> spawnOnDetonate = nullptr,
-        bool clonesAllies = false)
+        bool clonesAllies = false, int targetTopHpCount = 0,
+        bool tieredDamage = false, int tierSingleDamage = 0, int tierFewDamage = 0, int tierManyDamage = 0)
         : CardEntity(id, x, y, 1, team, symbol), radius(radius), damage(damage), delayTicks(delayTicks),
         onHit(std::move(onHit)), groundOnly(groundOnly), remainingHits(remainingHits), tickInterval(tickInterval),
         buffsAllies(buffsAllies), buffMultiplier(buffMultiplier), buffDurationTicks(buffDurationTicks),
-        knockback(knockback), spawnOnDetonate(std::move(spawnOnDetonate)), clonesAllies(clonesAllies) {}
+        knockback(knockback), spawnOnDetonate(std::move(spawnOnDetonate)), clonesAllies(clonesAllies),
+        targetTopHpCount(targetTopHpCount), tieredDamage(tieredDamage), tierSingleDamage(tierSingleDamage),
+        tierFewDamage(tierFewDamage), tierManyDamage(tierManyDamage) {}
 
     bool isTargetable() const override { return false; }
 
@@ -88,43 +106,64 @@ public:
         // same vector mid-loop -- collect targets first, clone after.
         std::vector<std::shared_ptr<Entity>> toClone;
 
+        // Collected first (rather than acted on inline) because both
+        // targetTopHpCount (Vines: only the highest-HP few) and
+        // tieredDamage (Void: per-target damage depends on the total
+        // catch) need the full candidate set up front, before anything
+        // is actually hit.
+        std::vector<std::shared_ptr<Entity>> candidates;
         for (const auto& entity : board.getEntities()) {
             bool teamMatches = alliesOnly ? (entity->team == this->team) : (entity->team != this->team);
             if (entity->isAlive() && entity->isTargetable() && teamMatches && entity->id != this->id
-                && (!groundOnly || !entity->isFlying)) {
-                float dist = position.distanceTo(entity->position);
-                if (dist <= radius) {
-                    if (buffsAllies) {
-                        if (auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(entity)) {
-                            combatTarget->applyBuff(buffMultiplier, buffDurationTicks);
-                        }
-                        continue;
-                    }
-                    if (clonesAllies) {
-                        toClone.push_back(entity);
-                        continue;
-                    }
-                    entity->takeDamage(damage);
-                    if (knockback > 0.0f) {
-                        pushAway(*entity, position, knockback);
-                    } else if (knockback < 0.0f) {
-                        pullToward(*entity, position, -knockback);
-                    }
-                    // The spell entity itself is the "attacker" -- it never
-                    // has a separate caster once cast (the troop/tower that
-                    // played the card is already gone by the time this
-                    // fires, for spawn-effect zaps like Electro Wizard's).
-                    board.statsEvents.notifyDamageDealt(
-                        { id, team, cardId, entity->id, entity->cardId, entity->team, damage, board.currentTick });
-                    // Same surgical cast as CombatEntity::applyOnHitEffects and
-                    // Projectile's arrival handler -- on-hit effects only ever
-                    // mean something against a CombatEntity, so this is the one
-                    // place AreaSpell needs to know that, not its own type.
-                    if (onHit) {
-                        auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(entity);
-                        if (combatTarget) onHit->apply(combatTarget);
-                    }
+                && (!groundOnly || !entity->isFlying) && position.distanceTo(entity->position) <= radius) {
+                candidates.push_back(entity);
+            }
+        }
+
+        if (targetTopHpCount > 0 && static_cast<int>(candidates.size()) > targetTopHpCount) {
+            std::sort(candidates.begin(), candidates.end(),
+                [](const std::shared_ptr<Entity>& a, const std::shared_ptr<Entity>& b) {
+                    return a->hp > b->hp;
+                });
+            candidates.resize(targetTopHpCount);
+        }
+
+        int effectiveDamage = damage;
+        if (tieredDamage) {
+            int count = static_cast<int>(candidates.size());
+            effectiveDamage = (count <= 1) ? tierSingleDamage : (count <= 4) ? tierFewDamage : tierManyDamage;
+        }
+
+        for (const auto& entity : candidates) {
+            if (buffsAllies) {
+                if (auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(entity)) {
+                    combatTarget->applyBuff(buffMultiplier, buffDurationTicks);
                 }
+                continue;
+            }
+            if (clonesAllies) {
+                toClone.push_back(entity);
+                continue;
+            }
+            entity->takeDamage(effectiveDamage);
+            if (knockback > 0.0f) {
+                pushAway(*entity, position, knockback);
+            } else if (knockback < 0.0f) {
+                pullToward(*entity, position, -knockback);
+            }
+            // The spell entity itself is the "attacker" -- it never
+            // has a separate caster once cast (the troop/tower that
+            // played the card is already gone by the time this
+            // fires, for spawn-effect zaps like Electro Wizard's).
+            board.statsEvents.notifyDamageDealt(
+                { id, team, cardId, entity->id, entity->cardId, entity->team, effectiveDamage, board.currentTick });
+            // Same surgical cast as CombatEntity::applyOnHitEffects and
+            // Projectile's arrival handler -- on-hit effects only ever
+            // mean something against a CombatEntity, so this is the one
+            // place AreaSpell needs to know that, not its own type.
+            if (onHit) {
+                auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(entity);
+                if (combatTarget) onHit->apply(combatTarget);
             }
         }
 
