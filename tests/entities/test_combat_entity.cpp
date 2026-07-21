@@ -1465,3 +1465,143 @@ TEST_CASE("A card without an ability configured (the default) never fires anythi
     REQUIRE(champion->abilityElixirCost == Catch::Approx(0.0f));
     REQUIRE(champion->abilityCooldownTicks == 0);
 }
+
+// ---------------- soul collection (Skeleton King) ----------------
+
+TEST_CASE("onNearbyDeath collects a soul when a death happens within radius", "[combat_entity][soul]") {
+    Board board;
+    auto king = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    king->soulCollectionRadius = 5.0f;
+    king->maxSouls = 10;
+    spawn(board, king);
+
+    king->onNearbyDeath(board, Vector2D{ 3.0f, 0.0f }, 1); // dist 3.0, within radius
+
+    REQUIRE(king->soulCount == 1);
+}
+
+TEST_CASE("onNearbyDeath ignores a death outside the collection radius", "[combat_entity][soul]") {
+    Board board;
+    auto king = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    king->soulCollectionRadius = 5.0f;
+    king->maxSouls = 10;
+
+    king->onNearbyDeath(board, Vector2D{ 100.0f, 0.0f }, 1);
+
+    REQUIRE(king->soulCount == 0);
+}
+
+TEST_CASE("onNearbyDeath stops collecting once maxSouls is reached", "[combat_entity][soul]") {
+    Board board;
+    auto king = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    king->soulCollectionRadius = 5.0f;
+    king->maxSouls = 2;
+
+    king->onNearbyDeath(board, Vector2D{ 1.0f, 0.0f }, 1);
+    king->onNearbyDeath(board, Vector2D{ 1.0f, 0.0f }, 1);
+    king->onNearbyDeath(board, Vector2D{ 1.0f, 0.0f }, 1); // 3rd: capped
+
+    REQUIRE(king->soulCount == 2);
+}
+
+TEST_CASE("Board::cleanDeadEntities notifies every alive entity of a death nearby", "[combat_entity][soul]") {
+    Board board;
+    auto king = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    king->soulCollectionRadius = 5.0f;
+    king->maxSouls = 10;
+    auto victim = std::make_shared<DummyEntity>(2, 2.0f, 0.0f, 100, 1);
+    spawn(board, king);
+    spawn(board, victim);
+
+    victim->takeDamage(100);
+    board.cleanDeadEntities();
+
+    REQUIRE(king->soulCount == 1);
+}
+
+// ---------------- temporary invisibility + haste (Archer Queen, Boss Bandit) ----------------
+
+TEST_CASE("temporaryInvisibilityTicksRemaining makes the entity untargetable", "[combat_entity][cloak]") {
+    Board board;
+    auto queen = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    REQUIRE(queen->isTargetable());
+
+    queen->temporaryInvisibilityTicksRemaining = 35;
+    REQUIRE_FALSE(queen->isTargetable());
+}
+
+TEST_CASE("temporaryInvisibilityTicksRemaining counts down via update() and expires", "[combat_entity][cloak]") {
+    Board board;
+    auto queen = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    queen->temporaryInvisibilityTicksRemaining = 2;
+
+    queen->update(board);
+    REQUIRE_FALSE(queen->isTargetable());
+    queen->update(board);
+    REQUIRE(queen->isTargetable());
+}
+
+TEST_CASE("temporaryHitSpeedMultiplier speeds up the next cooldown while active", "[combat_entity][cloak]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 10000, 1);
+    spawn(board, target);
+
+    auto queen = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    queen->temporaryInvisibilityTicksRemaining = 35;
+    queen->temporaryHitSpeedMultiplier = 0.5f;
+
+    queen->update(board); // lands a hit; cooldown should be halved (10 * 0.5 = 5)
+    REQUIRE(queen->attackCount == 1);
+
+    for (int i = 0; i < 4; ++i) queen->update(board); // 5 unfrozen ticks would clear a cooldown of 5
+    REQUIRE(queen->attackCount == 1); // not yet (only 4 elapsed)
+    queen->update(board); // 5th
+    REQUIRE(queen->attackCount == 2);
+}
+
+// ---------------- hit-speed ramp (Little Prince) ----------------
+
+TEST_CASE("hitSpeedRamp shortens the cooldown the longer the same target stays locked", "[combat_entity][ramp]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
+    spawn(board, target);
+
+    auto prince = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 50, 3);
+    prince->hitSpeedRampMidTick = 5;
+    prince->hitSpeedRampFullTick = 10;
+    prince->hitSpeedRampMidFraction = 0.5f;
+    prince->hitSpeedRampFullFraction = 0.25f;
+
+    prince->update(board); // 1st hit: ticksOnTarget was 0 when checked -- full cooldown (3)
+    REQUIRE(prince->attackCount == 1);
+    for (int i = 0; i < 3; ++i) prince->update(board); // cooldown 3 -> 2 -> 1 -> 0: fires on the 3rd
+    REQUIRE(prince->attackCount == 2); // 2nd hit, still below hitSpeedRampMidTick (5)
+}
+
+// ---------------- limited-use abilities (Boss Bandit) ----------------
+
+TEST_CASE("abilityUsesRemaining exhausts after its configured number of activations", "[combat_entity][champion]") {
+    Board board;
+    auto bandit = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    bandit->abilityEffect = std::make_shared<RecordingAbilityEffect>();
+    bandit->abilityCooldownTicks = 1; // short, so cooldown isn't what blocks the 3rd attempt
+    bandit->abilityUsesRemaining = 2;
+
+    REQUIRE(bandit->activateAbility(board));
+    bandit->update(board); // clears the 1-tick cooldown
+    REQUIRE(bandit->activateAbility(board));
+    bandit->update(board);
+    REQUIRE_FALSE(bandit->activateAbility(board)); // exhausted, not a cooldown block
+}
+
+TEST_CASE("abilityUsesRemaining left at -1 (the default) never runs out", "[combat_entity][champion]") {
+    Board board;
+    auto champion = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    champion->abilityEffect = std::make_shared<RecordingAbilityEffect>();
+    champion->abilityCooldownTicks = 1;
+
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(champion->activateAbility(board));
+        champion->update(board);
+    }
+}

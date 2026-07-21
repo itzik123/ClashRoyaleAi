@@ -165,6 +165,7 @@ public:
         auto champion = findChampion(team);
         if (!champion || !champion->abilityEffect) return false;
         if (champion->abilityCooldownRemaining > 0) return false;
+        if (champion->abilityUsesRemaining == 0) return false;
         const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         return player.elixir >= champion->abilityElixirCost;
     }

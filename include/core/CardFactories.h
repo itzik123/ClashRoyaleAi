@@ -78,10 +78,18 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->abilityElixirCost = stats.abilityElixirCost;
     entity->abilityCooldownTicks = stats.abilityCooldownTicks;
     entity->abilityEffect = stats.abilityEffect;
-    // abilityCooldownRemaining is intentionally NOT copied from stats --
-    // it's pure runtime state (defaults to 0, ready immediately at
-    // deploy), same idiom as chargeProgress/ticksOnTarget never being
-    // sourced from CardStats either.
+    entity->abilityUsesRemaining = stats.abilityUsesLimit;
+    entity->soulCollectionRadius = stats.soulCollectionRadius;
+    entity->maxSouls = stats.maxSouls;
+    entity->hitSpeedRampMidTick = stats.hitSpeedRampMidTick;
+    entity->hitSpeedRampFullTick = stats.hitSpeedRampFullTick;
+    entity->hitSpeedRampMidFraction = stats.hitSpeedRampMidFraction;
+    entity->hitSpeedRampFullFraction = stats.hitSpeedRampFullFraction;
+    // abilityCooldownRemaining/soulCount/temporaryInvisibilityTicksRemaining/
+    // temporaryHitSpeedMultiplier are intentionally NOT copied from stats --
+    // pure runtime state (defaults to 0/1.0, ready/empty/inactive
+    // immediately at deploy), same idiom as chargeProgress/ticksOnTarget
+    // never being sourced from CardStats either.
     applyOnHit(entity, stats);
     if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
 }

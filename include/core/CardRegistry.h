@@ -21,6 +21,13 @@
 #include "ProximityGatedPeriodicSpawnEffect.h"
 #include "CursedHogOnHit.h"
 #include "MightyMinerEscapeEffect.h"
+#include "GoldenKnightDashEffect.h"
+#include "SkeletonKingSoulSummonEffect.h"
+#include "ArcherQueenCloakEffect.h"
+#include "MonkDeflectEffect.h"
+#include "SpawnOnAbility.h"
+#include "GoblinsteinLightningLinkEffect.h"
+#include "BossBanditGetawayGrenadeEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -271,6 +278,21 @@ private:
         return troop(-37, "Kamikaze Goblin Demolisher", 0.0f, Archetype::MeleeBuildingTargeter,
             1300, 1.0f, 0.5f, 404, 10, '&')
             .withSplash(2.5f).withDieAfterFirstHit();
+    }
+    // Skeleton King's Soul Summoning children -- count is dynamic (base +
+    // however many souls were collected), so unlike every other multi-unit
+    // helper above, this is spawned in a loop by
+    // SkeletonKingSoulSummonEffect itself rather than via static
+    // spawnOffsets; this stats object is always spawned one at a time.
+    static CardStats skeletonKingSummonedSkeletonStats() {
+        return troop(-38, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 0.7f, 0.5f, 81, 11, 'k');
+    }
+    // Little Prince's Royal Rescue: the summoned Guardienne. Real card's
+    // spawn-in dash+knockback isn't modeled (same "knockback on a spawn
+    // burst not modeled" simplification already noted for Goblin Drill).
+    static CardStats guardienneStats() {
+        return troop(-39, "Guardienne", 0.0f, Archetype::MeleeSquad, 1600, 0.5f, 1.2f, 217, 12, 'u')
+            .withCharge(3.0f, 2.0f);
     }
 
     void add(const CardStats& stats) {
@@ -957,12 +979,88 @@ private:
             .withDamageRamp(15, 30, 40.0f / 409.0f, 204.0f / 409.0f)
             .withChampionAbility(1.0f, 130, std::make_shared<MightyMinerEscapeEffect>(2.5f, 332, 10, 1.8f)));
 
+        // Golden Knight: "Dashing Dash" -- chain-dashes to the nearest
+        // enemy within 5.5 tiles, up to 10 times, stopping at a Crown
+        // Tower. See GoldenKnightDashEffect for the "resolved in one tick"
+        // timing simplification.
+        add(troop(116, "Golden Knight", 4.0f, Archetype::MeleeSquad, 1799, 0.5f, 1.2f, 161, 9, 'k')
+            .withChampionAbility(1.0f, 120, std::make_shared<GoldenKnightDashEffect>(335, 5.5f, 10)));
+
+        // Skeleton King: passively collects a "soul" (up to 10) whenever
+        // ANY unit dies within soulCollectionRadius (not part of the
+        // sourced data -- a reasonable engine-internal constant, same
+        // caveat as splashRadius elsewhere); "Soul Summoning" spawns 6 + 1
+        // per collected soul (6-16 total), consuming them.
+        add(troop(117, "Skeleton King", 4.0f, Archetype::MeleeSquad, 2298, 0.5f, 1.2f, 180, 16, 'K')
+            .withSplash(1.3f)
+            .withSoulCollection(5.0f, 10)
+            .withChampionAbility(2.0f, 200,
+                std::make_shared<SkeletonKingSoulSummonEffect>(skeletonKingSummonedSkeletonStats(), 6, 3.5f)));
+
+        // Archer Queen: "Cloaking Cape" -- untargetable + ~2.8x attack
+        // speed (180% increase) for 3.5s. Movement-speed drop not modeled
+        // -- see ArcherQueenCloakEffect's own comment.
+        add(troop(118, "Archer Queen", 5.0f, Archetype::RangedSquad, 1000, 0.5f, 5.0f, 225, 12, 'Q')
+            .withTargetsAir()
+            .withChampionAbility(1.0f, 170, std::make_shared<ArcherQueenCloakEffect>(35, 1.0f / 2.8f)));
+
+        // Monk: 3-hit-combo (normal hits + a bonus-damage/knockback 3rd
+        // hit) isn't modeled -- flat per-hit damage instead, a documented
+        // simplification given this is a base-attack nuance separate from
+        // his actual Champion ability. "Pensive Protection" (65% damage
+        // reduction for 4s) reuses applyCurse -- see MonkDeflectEffect's
+        // own comment for why, and for what else isn't modeled (projectile
+        // reflection, knockback immunity).
+        add(troop(119, "Monk", 4.0f, Archetype::MeleeSquad, 2214, 0.5f, 1.2f, 140, 8, 'M')
+            .withChampionAbility(1.0f, 170, std::make_shared<MonkDeflectEffect>(0.35f, 40)));
+
+        // Little Prince: hit-speed ramps 1.2s -> 0.8s -> 0.4s while
+        // locked onto the same target (3 attacks per stage, approximated
+        // via tick-equivalent thresholds -- see CombatEntity::
+        // hitSpeedRampMidTick's own comment for how this differs from the
+        // damage-ramp mechanism). "Royal Rescue" summons the Guardienne
+        // (see guardienneStats above).
+        add(troop(120, "Little Prince", 3.0f, Archetype::RangedSquad, 698, 0.5f, 5.5f, 104, 12, 'p')
+            .withTargetsAir()
+            .withHitSpeedRamp(36, 60, 8.0f / 12.0f, 4.0f / 12.0f)
+            .withChampionAbility(3.0f, 300, std::make_shared<SpawnOnAbility>(guardienneStats())));
+
+        // Goblinstein: compound card, Monster (front, building-only tank,
+        // carries the Champion ability) + Doctor (secondary, 3 tiles
+        // behind -- fixed offset regardless of team, same simplification
+        // already used for every other compound card's secondary unit
+        // offset in this file) with a brief full-stun on hit. "Lightning
+        // Link" anchors a repeating shock zone at the Monster's position
+        // -- see GoblinsteinLightningLinkEffect's own comment for why a
+        // fixed-position AreaSpell is actually the more accurate model
+        // here, not just a simplification.
+        add(troop(121, "Goblinstein", 5.0f, Archetype::MeleeBuildingTargeter, 2385, 0.5f, 1.2f, 128, 15, 'G')
+            .withChampionAbility(2.0f, 170, std::make_shared<GoblinsteinLightningLinkEffect>(2.0f, 107, 5, 40))
+            .withSecondaryUnit(
+                troop(-40, "Goblinstein", 0.0f, Archetype::RangedSquad, 721, 0.5f, 5.5f, 92, 18, 'D')
+                    .withOffsets({ {0.0f, 3.0f} })
+                    .withTargetsAir()
+                    .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f))));
+
+        // Boss Bandit: same charge mechanism as the regular Bandit (double
+        // damage, 3-6 tile trigger window) -- dash invulnerability
+        // inferred from the base Bandit's own confirmed mechanic, not
+        // independently sourced for this card. "Getaway Grenade": brief
+        // invisibility + an unconditional 6-tile teleport back toward her
+        // own side, limited to 2 total uses per deployment (not an
+        // infinitely-repeating cooldown like every other Champion here --
+        // see CombatEntity::abilityUsesRemaining).
+        add(troop(122, "Boss Bandit", 6.0f, Archetype::MeleeSquad, 2624, 0.7f, 0.8f, 245, 11, 'x')
+            .withCharge(3.0f, 2.0f)
+            .withChargeInvulnerability()
+            .withChampionAbility(1.0f, 30, std::make_shared<BossBanditGetawayGrenadeEffect>(10, 6.0f), 2));
+
         // === Excluded from this sync (no supporting mechanism in this engine) ===
-        // Champions (Golden Knight, Skeleton King, Archer Queen, Monk,
-        // Little Prince, Goblinstein, Boss Bandit -- Mighty Miner is now
-        // implemented above), Evolutions,
-        // and Tower Troops (Tower Princess, Cannoneer, Dagger Duchess, Royal
-        // Chef) were out of scope per the sync request and never researched.
+        // All 8 Champions are now implemented above (Mighty Miner, Golden
+        // Knight, Skeleton King, Archer Queen, Monk, Little Prince,
+        // Goblinstein, Boss Bandit). Evolutions and Tower Troops (Tower
+        // Princess, Cannoneer, Dagger Duchess, Royal Chef) remain out of
+        // scope per the original sync request and were never researched.
         // Also excluded, for lack of any matching mechanism even
         // approximately:
         //   - Mirror: replays the last card played, at +1 elixir cost and

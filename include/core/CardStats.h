@@ -262,6 +262,23 @@ struct CardStats {
     float abilityElixirCost = 0.0f;
     int abilityCooldownTicks = 0;
     std::shared_ptr<IAbilityEffect> abilityEffect;
+    // -1 (the default) is unlimited activations -- see
+    // CombatEntity::abilityUsesRemaining. Only Boss Bandit sets this.
+    int abilityUsesLimit = -1;
+
+    // Soul collection (Skeleton King) -- see CombatEntity::
+    // soulCollectionRadius/maxSouls. 0.0f/0 (the defaults) are every
+    // non-soul-collecting card.
+    float soulCollectionRadius = 0.0f;
+    int maxSouls = 0;
+
+    // Hit-speed ramp (Little Prince) -- see CombatEntity::
+    // hitSpeedRampMidTick's own comment for how this differs from the
+    // damage ramp above.
+    int hitSpeedRampMidTick = 0;
+    int hitSpeedRampFullTick = 0;
+    float hitSpeedRampMidFraction = 1.0f;
+    float hitSpeedRampFullFraction = 1.0f;
 
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
@@ -473,11 +490,25 @@ struct CardStats {
         rangeFalloffMinFraction = minFraction;
         return *this;
     }
-    CardStats& withChampionAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect) {
+    CardStats& withChampionAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect,
+            int usesLimit = -1) {
         isChampion = true;
         abilityElixirCost = elixirCost;
         abilityCooldownTicks = cooldownTicks;
         abilityEffect = std::move(effect);
+        abilityUsesLimit = usesLimit;
+        return *this;
+    }
+    CardStats& withSoulCollection(float radius, int maxSoulCount) {
+        soulCollectionRadius = radius;
+        maxSouls = maxSoulCount;
+        return *this;
+    }
+    CardStats& withHitSpeedRamp(int midTick, int fullTick, float midFraction, float fullFraction) {
+        hitSpeedRampMidTick = midTick;
+        hitSpeedRampFullTick = fullTick;
+        hitSpeedRampMidFraction = midFraction;
+        hitSpeedRampFullFraction = fullFraction;
         return *this;
     }
 };

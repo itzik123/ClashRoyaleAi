@@ -360,6 +360,43 @@ public:
     // one -- activateAbility() is always a no-op in that case, regardless
     // of cooldown.
     std::shared_ptr<IAbilityEffect> abilityEffect;
+    // -1 (the default) means unlimited activations, gated only by cooldown/
+    // elixir like every other Champion. 0 or positive is a hard cap on how
+    // many times activateAbility() can ever fire (Boss Bandit: 2 uses per
+    // deployment, no more once exhausted regardless of cooldown/elixir).
+    int abilityUsesRemaining = -1;
+
+    // Soul collection (Skeleton King's Soul Summoning): counts nearby
+    // deaths -- ally or enemy alike, matching the real card's "a troop
+    // dies in his presence" wording -- via onNearbyDeath below, up to
+    // maxSouls. soulCollectionRadius == 0.0f (the default) is every
+    // non-soul-collecting card; onNearbyDeath is simply never relevant for
+    // them (no filter needed there beyond the radius check itself).
+    float soulCollectionRadius = 0.0f;
+    int soulCount = 0;
+    int maxSouls = 0;
+
+    // Temporary invisibility + attack-speed buff (Archer Queen's Cloaking
+    // Cape, Boss Bandit's Getaway Grenade) -- a fixed-duration window,
+    // unlike startsInvisible/revealTicksAfterAttack above (which reveals
+    // on landing a hit, not after a timer). The real cards' accompanying
+    // movement-speed change isn't modeled -- speed lives on Troop, a layer
+    // above CombatEntity, same documented gap as Rage's own movement-speed
+    // component elsewhere in this codebase.
+    int temporaryInvisibilityTicksRemaining = 0;
+    float temporaryHitSpeedMultiplier = 1.0f;
+
+    // Hit-speed ramp while locked onto the same target (Little Prince):
+    // unlike rampMidTick/rampFullTick above (which ramp DAMAGE while
+    // attackCooldown stays fixed, for Inferno Dragon/Tower/Mighty Miner),
+    // this ramps the COOLDOWN itself down -- he fires faster, not harder,
+    // the longer he stays locked on. hitSpeedRampFullTick == 0 (the
+    // default) disables it for every other card, matching rampFullTick's
+    // own "0 disables" convention.
+    int hitSpeedRampMidTick = 0;
+    int hitSpeedRampFullTick = 0;
+    float hitSpeedRampMidFraction = 1.0f;
+    float hitSpeedRampFullFraction = 1.0f;
 
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
@@ -368,7 +405,17 @@ public:
         attackCooldown(attackCooldown), currentCooldown(0.0f) {}
 
     bool isTargetable() const override {
-        return !startsInvisible || visibleTicksRemaining > 0;
+        return (!startsInvisible || visibleTicksRemaining > 0) && temporaryInvisibilityTicksRemaining <= 0;
+    }
+
+    // Soul collection (Skeleton King) -- see soulCollectionRadius's own
+    // comment. Counts ANY death within radius, ally or enemy alike,
+    // matching the real card's wording.
+    void onNearbyDeath(Board&, const Vector2D& deathPosition, int) override {
+        if (soulCollectionRadius <= 0.0f || soulCount >= maxSouls) return;
+        if (position.distanceTo(deathPosition) <= soulCollectionRadius) {
+            soulCount++;
+        }
     }
 
     void applyBuff(float multiplier, int ticks) {
@@ -390,8 +437,10 @@ public:
     // cooldown/configuration. Returns whether it actually fired.
     bool activateAbility(Board& board) {
         if (!abilityEffect || abilityCooldownRemaining > 0) return false;
+        if (abilityUsesRemaining == 0) return false; // exhausted (Boss Bandit-style limited uses)
         abilityEffect->apply(board, *this);
         abilityCooldownRemaining = abilityCooldownTicks;
+        if (abilityUsesRemaining > 0) abilityUsesRemaining--;
         return true;
     }
 
@@ -495,6 +544,7 @@ public:
         if (buffTicksRemaining > 0) buffTicksRemaining--;
         if (curseTicksRemaining > 0) curseTicksRemaining--;
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
+        if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
 
         if (periodicIntervalTicks > 0) {
             periodicTicksUntilNext--;
@@ -560,6 +610,19 @@ public:
                             hp = (hp + enrageHealPerHit < enrageMaxHp) ? hp + enrageHealPerHit : enrageMaxHp;
                         }
                     }
+                    // Hit-speed ramp (Little Prince): fires faster, not
+                    // harder, the longer he's locked onto the same target --
+                    // ticksOnTarget already includes the hit that just
+                    // landed (incremented earlier this same update() call).
+                    if (hitSpeedRampFullTick > 0) {
+                        float cooldownFraction = (ticksOnTarget >= hitSpeedRampFullTick) ? hitSpeedRampFullFraction
+                            : (ticksOnTarget >= hitSpeedRampMidTick) ? hitSpeedRampMidFraction
+                            : 1.0f;
+                        currentCooldown *= cooldownFraction;
+                    }
+                    // Temporary haste (Archer Queen's Cloaking Cape, Boss
+                    // Bandit's Getaway Grenade).
+                    if (temporaryInvisibilityTicksRemaining > 0) currentCooldown *= temporaryHitSpeedMultiplier;
                     // Ally aura on landed attacks (Rune Giant's every-Nth
                     // buff, Battle Healer's heal) -- see CombatEntity's own
                     // aura* fields above.

@@ -77,6 +77,17 @@ public:
     // actually has a death effect to fire -- it's looking at.
     virtual void onDeath(Board& board) { (void)board; }
 
+    // Called on every OTHER still-alive entity, once per death, right
+    // alongside onDeath() above (see Board::cleanDeadEntities) -- lets a
+    // "collects something whenever anything dies nearby" mechanic (Skeleton
+    // King's souls) react without Board needing to know it's CombatEntity-
+    // shaped enough to have one. Default no-op, same idiom as onDeath/
+    // clampPosition. deathPosition/deadTeam describe whoever just died, not
+    // the entity this is called on.
+    virtual void onNearbyDeath(Board& board, const Vector2D& deathPosition, int deadTeam) {
+        (void)board; (void)deathPosition; (void)deadTeam;
+    }
+
     // Clone spell: makes a full copy of this entity (every configured
     // combat field -- splash, charge, on-hit effects, all of it -- via
     // each concrete subclass's own implicit copy constructor) with a

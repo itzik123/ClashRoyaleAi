@@ -88,7 +88,9 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {106, "Tornado", 3.0f, true}, {107, "Freeze", 4.0f, true}, {108, "Rage", 2.0f, true},
         {109, "Goblin Barrel", 3.0f, true}, {110, "Graveyard", 5.0f, true}, {111, "Royal Delivery", 3.0f, true},
         {112, "Goblin Gang", 3.0f, false}, {113, "Rascals", 5.0f, false}, {114, "Clone", 3.0f, true},
-        {115, "Mighty Miner", 4.0f, false},
+        {115, "Mighty Miner", 4.0f, false}, {116, "Golden Knight", 4.0f, false}, {117, "Skeleton King", 4.0f, false},
+        {118, "Archer Queen", 5.0f, false}, {119, "Monk", 4.0f, false}, {120, "Little Prince", 3.0f, false},
+        {121, "Goblinstein", 5.0f, false}, {122, "Boss Bandit", 6.0f, false},
     };
 
     const auto& registry = CardRegistry::getInstance();

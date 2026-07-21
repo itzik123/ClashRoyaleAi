@@ -117,6 +117,20 @@ public:
             }
         }
 
+        // Notify every still-alive entity of every death that just
+        // happened (Skeleton King's soul collection: "a troop dies in his
+        // presence") -- a second pass, not folded into the loop above,
+        // since a death effect firing (e.g. a spawn) could itself add
+        // pending entities, and this only needs to reach entities already
+        // on the board this tick, not anything a death effect just created.
+        for (const auto& dying : activeEntities) {
+            if (!dying->isAlive()) {
+                for (const auto& other : activeEntities) {
+                    if (other->isAlive()) other->onNearbyDeath(*this, dying->position, dying->team);
+                }
+            }
+        }
+
         activeEntities.erase(
             std::remove_if(activeEntities.begin(), activeEntities.end(),
                 [](const std::shared_ptr<Entity>& e) { return !e->isAlive(); }),
