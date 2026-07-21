@@ -28,7 +28,7 @@ protected:
         // instead of applying instantly at the moment of firing.
         auto arrow = std::make_shared<Projectile>(
             board.allocateId(), position.x, position.y, team, target, 1.5f, getCurrentDamage(), onHitEffects,
-            boomerang, boomerangReturnDelayTicks, id, cardId, splashRadius);
+            boomerang, boomerangReturnDelayTicks, id, cardId, splashRadius, lineSplash, lineSplashRange);
         board.addEntity(arrow);
     }
 };

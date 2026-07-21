@@ -256,6 +256,21 @@ private:
         return troop(-36, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
+    // Goblin Demolisher's transformed form: a short-range, Very Fast,
+    // building-only kamikaze that detonates in a 2.5-radius, 404-damage
+    // burst on its first hit -- spawned via SpawnOnDeath the instant the
+    // ranged Goblin Demolisher above kills itself at <=50% hp (see
+    // CombatEntity::transformKillsSelf). Reuses the ranged form's own
+    // 1300 hp rather than inventing a separate transformed-form hp figure
+    // (not part of the sourced data either way). The real card's 10s
+    // post-transform lifetime cap isn't modeled -- dieAfterFirstHit
+    // already bounds it in practice (buildings/towers are essentially
+    // always present for a building-only target to detonate against).
+    static CardStats goblinDemolisherKamikazeStats() {
+        return troop(-37, "Kamikaze Goblin Demolisher", 0.0f, Archetype::MeleeBuildingTargeter,
+            1300, 1.0f, 0.5f, 404, 10, '&')
+            .withSplash(2.5f).withDieAfterFirstHit();
+    }
 
     void add(const CardStats& stats) {
         CardDefinition def;
@@ -380,13 +395,14 @@ private:
             .withSplash(1.5f));
         add(troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
             .withTargetsAir());
-        // Confirmed shape: a straight-line piercing shot (extra 7.5-tile
-        // travel past the 4-tile attack range, ~1.8 radius width) with
-        // knockback, not a radius -- this engine has no line/rectangle hit
-        // geometry, only circular splash, so stays a plain radius
-        // approximation.
+        // Now modeled as a real piercing line (applyLineSplashDamage) --
+        // total travel 11.5 (4.0 attack range + 7.5 extra), half-width
+        // 1.8 (splashRadius doubles as the line's half-width in line-
+        // splash mode). Knockback on every hit target still isn't
+        // modeled -- AreaSpell's knockback has no equivalent on the
+        // troop-attack path this engine's splash/line-splash share.
         add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, 0.4f, 4.0f, 289, 25, 'w')
-            .withSplash(1.5f));
+            .withSplash(1.8f).withLineSplash(11.5f));
 
         add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
             .withOffsets({ {0.0f, 0.0f}, {0.7f, 0.0f}, {-0.7f, 0.0f} }));
@@ -515,15 +531,17 @@ private:
             .withCharge(3.0f, 2.0f)); // confirmed: +100% (double) damage on a charging hit
         add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
             .withInvisibility(5)); // brief reveal window after attacking
-        // Deploy slam confirmed and now modeled via the existing one-time
-        // spawn-effect burst (radius 1.3, damage 430). The periodic jump
-        // ability (leaps to a ground target 3.5-5 tiles away, splash 2.2,
-        // damage 537) still isn't -- it's a move-and-attack hybrid outside
-        // the normal attack cycle, with no equivalent primitive in this
-        // engine yet.
+        // Deploy slam via the existing one-time spawn-effect burst (radius
+        // 1.3, damage 430). Periodic jump now modeled too, reusing
+        // Fisherman's pullToward primitive to instantly close from
+        // 3.5-5 tiles away instead of walking in, landing a ~2x-damage,
+        // 2.2-radius splash hit (537 confirmed vs. 268 normal -- ratio
+        // ~2.003, rounds to the same 2.0 multiplier convention already
+        // used for every other charge card).
         add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
             .withSplash(1.5f)
-            .withSpawnEffect(1.3f, 430));
+            .withSpawnEffect(1.3f, 430)
+            .withJump(3.5f, 5.0f, 2.0f, 2.2f));
         // Confirmed: real heal lands as 4 pulses of 25.5 (102 total) per
         // attack cycle -- collapsed here into this engine's single
         // heal-on-landed-hit model as one 102 lump, corrected from an
@@ -596,20 +614,26 @@ private:
         add(troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
             .withTargetsAir()
             .withSplash(1.5f));
-        // Confirmed mechanism: not a falloff formula -- 10 pellets fire in
-        // random directions with a wide spread, each landing pellet always
-        // dealing the same fixed 84 damage; "weaker at range" is really
-        // "fewer pellets statistically land," a geometric/random effect
-        // this engine has no equivalent for. Stays a plain radius splash.
+        // No sourced falloff formula exists (confirmed: 10 fixed-damage
+        // pellets in a random, unquantified spread -- "weaker at range" is
+        // really "fewer pellets statistically land," not a per-pellet
+        // damage curve). withRangeFalloff below is this project's own
+        // invented approximation of that qualitative behavior, NOT a
+        // sourced number -- deliberately deterministic (damage scales
+        // linearly from full at point-blank to half at max range) rather
+        // than simulating actual random pellets, matching every other
+        // mechanic in this engine (reproducibility for tests/RL training
+        // matters more here than faithfully modeling randomness the real
+        // card has but no published curve for).
         add(troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
             .withTargetsAir()
-            .withSplash(1.5f));
-        // Confirmed shape: a thin (0.5-wide) straight line across his full
-        // 11-tile range, not a cone -- same missing-geometry caveat as
-        // Bowler above.
+            .withSplash(1.5f)
+            .withRangeFalloff(0.5f));
+        // Now modeled as a real piercing line: total travel 11.0, half-
+        // width 0.25 (0.5 total width) -- thin, not a cone.
         add(troop(63, "Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
             .withTargetsAir()
-            .withSplash(1.5f));
+            .withSplash(0.25f).withLineSplash(11.0f));
         add(troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
             .withTargetsAir()
             .withSplash(1.5f)
@@ -617,18 +641,13 @@ private:
         add(troop(65, "Skeleton Dragons", 4.0f, Archetype::RangedSquad, 560, 0.7f, 3.5f, 151, 20, '%')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }).withFlying().withTargetsAir()
             .withSplash(1.5f));
-        // Confirmed real transform at <=50% hp: becomes a short-range
-        // (0.5), Very Fast (120), building-only kamikaze that self-
-        // destructs in a 2.5-radius, 404-damage burst after a 10s
-        // lifetime. Unlike Cannon Cart's transform (same stats, just
-        // grounded), this one changes range/speed/targeting/attack-mode
-        // together -- doesn't fit the same "freeze speed to 0" trick, and
-        // would need an actual archetype swap (ranged squad -> melee
-        // building-targeter kamikaze) this engine has no primitive for.
-        // Still unmodeled; real numbers kept here for whenever that
-        // primitive gets built.
+        // Transform now modeled via transformKillsSelf + SpawnOnDeath
+        // (see goblinDemolisherKamikazeStats above) -- at <=50% hp this
+        // entity kills itself and the kamikaze form spawns in its place
+        // at the same position, on the same team.
         add(troop(66, "Goblin Demolisher", 4.0f, Archetype::RangedSquad, 1300, 0.5f, 5.0f, 186, 11, '&')
-            .withSplash(1.5f));
+            .withSplash(1.5f)
+            .withHpTransformIntoDeath(0.5f, std::make_shared<SpawnOnDeath>(goblinDemolisherKamikazeStats())));
         add(troop(67, "Flying Machine", 4.0f, Archetype::RangedSquad, 614, 0.7f, 6.0f, 171, 11, '+')
             .withFlying().withTargetsAir());
         // Confirmed: the spawned unit is a unique "Cursed Hog" (building-

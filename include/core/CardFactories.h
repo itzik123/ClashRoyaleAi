@@ -64,6 +64,16 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->transformCheckMaxHp = stats.hp;
     entity->transformLifetimeTicks = stats.transformLifetimeTicks;
     entity->transformBecomesStationary = stats.transformBecomesStationary;
+    entity->transformKillsSelf = stats.transformKillsSelf;
+    entity->transformDeathEffect = stats.transformDeathEffect;
+    entity->jumpMinRange = stats.jumpMinRange;
+    entity->jumpMaxRange = stats.jumpMaxRange;
+    entity->jumpDamageMultiplier = stats.jumpDamageMultiplier;
+    entity->jumpSplashRadius = stats.jumpSplashRadius;
+    entity->lineSplash = stats.lineSplash;
+    entity->lineSplashRange = stats.lineSplashRange;
+    entity->rangeFalloff = stats.rangeFalloff;
+    entity->rangeFalloffMinFraction = stats.rangeFalloffMinFraction;
     applyOnHit(entity, stats);
     if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
 }

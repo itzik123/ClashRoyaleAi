@@ -216,6 +216,27 @@ struct CardStats {
     float transformAtHpFraction = 0.0f;
     int transformLifetimeTicks = 0;
     bool transformBecomesStationary = false;
+    // Archetype-swap transform (Goblin Demolisher) -- see
+    // CombatEntity::transformKillsSelf/transformDeathEffect. Deliberately
+    // separate from the ordinary `deathEffect` above -- see that field's
+    // own comment for why.
+    bool transformKillsSelf = false;
+    std::shared_ptr<IDeathEffect> transformDeathEffect;
+
+    // Periodic jump (Mega Knight) -- see CombatEntity::jumpMinRange/jumpMaxRange.
+    float jumpMinRange = 0.0f;
+    float jumpMaxRange = 0.0f;
+    float jumpDamageMultiplier = 1.0f;
+    float jumpSplashRadius = 0.0f;
+
+    // Piercing-line hit (Bowler, Magic Archer) -- see CombatEntity::lineSplash.
+    bool lineSplash = false;
+    float lineSplashRange = 0.0f;
+
+    // Range-based damage falloff (Hunter) -- NOT sourced data, see
+    // CombatEntity::rangeFalloff's own comment for why.
+    bool rangeFalloff = false;
+    float rangeFalloffMinFraction = 1.0f;
 
     // AreaSpell-only: Vines' top-N-highest-HP targeting -- see
     // AreaSpell::targetTopHpCount. 0 (the default) is every other spell.
@@ -409,6 +430,32 @@ struct CardStats {
         spellTierSingleDamage = single;
         spellTierFewDamage = few;
         spellTierManyDamage = many;
+        return *this;
+    }
+    CardStats& withHpTransformIntoDeath(float atFraction, std::shared_ptr<IDeathEffect> effect) {
+        transformAtHpFraction = atFraction;
+        transformKillsSelf = true;
+        transformDeathEffect = std::move(effect);
+        return *this;
+    }
+    CardStats& withJump(float minRange, float maxRange, float damageMultiplier, float splashRadiusOnLand) {
+        jumpMinRange = minRange;
+        jumpMaxRange = maxRange;
+        jumpDamageMultiplier = damageMultiplier;
+        jumpSplashRadius = splashRadiusOnLand;
+        return *this;
+    }
+    // splashRadius (see withSplash) doubles as the line's half-width.
+    CardStats& withLineSplash(float range) {
+        lineSplash = true;
+        lineSplashRange = range;
+        return *this;
+    }
+    // minFraction is an invented engine constant, not sourced data -- see
+    // CombatEntity::rangeFalloff's comment.
+    CardStats& withRangeFalloff(float minFraction) {
+        rangeFalloff = true;
+        rangeFalloffMinFraction = minFraction;
         return *this;
     }
 };

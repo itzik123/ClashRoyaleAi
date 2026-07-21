@@ -1202,6 +1202,162 @@ TEST_CASE("A transformed attacker self-destructs once its post-transform lifetim
     REQUIRE_FALSE(attacker->isAlive());
 }
 
+// ---------------- archetype-swap transform (Goblin Demolisher) ----------------
+
+TEST_CASE("transformKillsSelf kills the entity and fires transformDeathEffect, separately from the normal deathEffect", "[combat_entity][transform]") {
+    Board board;
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);
+    attacker->transformAtHpFraction = 0.5f;
+    attacker->transformCheckMaxHp = 1000;
+    attacker->transformKillsSelf = true;
+    auto transformEffect = std::make_shared<RecordingDeathEffect>();
+    auto normalDeathEffect = std::make_shared<RecordingDeathEffect>();
+    attacker->transformDeathEffect = transformEffect;
+    attacker->deathEffect = normalDeathEffect;
+    spawn(board, attacker); // needs to be on the board for cleanDeadEntities to find it below
+
+    attacker->takeDamage(600); // 400/1000 = 40%, at/below the 50% threshold
+    attacker->update(board);
+
+    REQUIRE_FALSE(attacker->isAlive());
+    REQUIRE(transformEffect->applied); // fires immediately, from inside update()
+    REQUIRE_FALSE(normalDeathEffect->applied); // NOT fired yet -- that's Board::cleanDeadEntities' job
+
+    board.cleanDeadEntities();
+    REQUIRE(normalDeathEffect->applied); // the ordinary death pipeline still runs too, independently
+}
+
+TEST_CASE("A lethal hit that skips straight past the transform threshold does not fire transformDeathEffect", "[combat_entity][transform]") {
+    Board board;
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);
+    attacker->transformAtHpFraction = 0.5f;
+    attacker->transformCheckMaxHp = 1000;
+    attacker->transformKillsSelf = true;
+    auto transformEffect = std::make_shared<RecordingDeathEffect>();
+    attacker->transformDeathEffect = transformEffect;
+
+    // One hit straight from 100% to 0% -- this attacker is never observed
+    // alive at <=50%, so its own update() (where the transform check
+    // lives) never gets a chance to run again; GameManager::step() only
+    // calls update() on entities that are still isAlive().
+    attacker->takeDamage(1000);
+    REQUIRE_FALSE(attacker->isAlive());
+    REQUIRE_FALSE(transformEffect->applied); // no bonus kamikaze spawn from an ordinary kill
+}
+
+// ---------------- periodic jump (Mega Knight) ----------------
+
+TEST_CASE("Jump instantly closes distance and lands a boosted splash hit instead of walking in", "[combat_entity][jump]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 10000, 1); // dist 4.0, beyond attack range
+    auto bystander = std::make_shared<DummyEntity>(2, 1.0f, 4.0f, 10000, 1); // near the target
+    spawn(board, target);
+    spawn(board, bystander);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 1.2f, 268, 17);
+    attacker->jumpMinRange = 3.5f;
+    attacker->jumpMaxRange = 5.0f;
+    attacker->jumpDamageMultiplier = 2.0f;
+    attacker->jumpSplashRadius = 2.2f;
+
+    attacker->update(board);
+
+    REQUIRE(target->hp == 10000 - 536);    // 268 * 2.0
+    REQUIRE(bystander->hp == 10000 - 536); // caught by the landing splash too
+    REQUIRE(attacker->position.y > 0.0f);  // jumped toward the target instead of staying put
+    REQUIRE(attacker->attackCount == 0);   // went through the jump branch, not performAttack()
+}
+
+TEST_CASE("A target outside the jump window is walked toward normally, not jumped to", "[combat_entity][jump]") {
+    Board board;
+    auto tooFar = std::make_shared<DummyEntity>(1, 0.0f, 8.0f, 10000, 1); // dist 8.0, past jumpMaxRange
+    spawn(board, tooFar);
+
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 1.0f, 1.2f, 268, 17, 'X');
+    attacker->jumpMinRange = 3.5f;
+    attacker->jumpMaxRange = 5.0f;
+    attacker->jumpDamageMultiplier = 2.0f;
+    attacker->jumpSplashRadius = 2.2f;
+
+    attacker->update(board);
+
+    REQUIRE(tooFar->hp == 10000);             // no jump damage landed
+    REQUIRE(attacker->position.y == Catch::Approx(1.0f)); // just walked its normal `speed` (1.0) instead
+}
+
+// ---------------- piercing-line splash (Bowler, Magic Archer) ----------------
+
+TEST_CASE("applyLineSplashDamage hits entities within the line's width along its length", "[combat_entity][line_splash]") {
+    Board board;
+    auto onLine = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1);        // directly on the firing line
+    auto offToSide = std::make_shared<DummyEntity>(2, 3.0f, 5.0f, 1000, 1);     // same distance along, far to the side
+    auto behindShooter = std::make_shared<DummyEntity>(3, 0.0f, -2.0f, 1000, 1); // wrong direction from the origin
+    auto pastEnd = std::make_shared<DummyEntity>(4, 0.0f, 20.0f, 1000, 1);      // beyond the line's range
+    spawn(board, onLine);
+    spawn(board, offToSide);
+    spawn(board, behindShooter);
+    spawn(board, pastEnd);
+
+    applyLineSplashDamage(board, Vector2D{ 0.0f, 0.0f }, Vector2D{ 0.0f, 10.0f }, 11.0f, 1.0f, -1, 99, 0, 5, 100);
+
+    REQUIRE(onLine->hp == 900);
+    REQUIRE(offToSide->hp == 1000);     // too far off to the side
+    REQUIRE(behindShooter->hp == 1000); // clamped projection excludes the wrong direction
+    REQUIRE(pastEnd->hp == 1000);       // beyond the line's total range
+}
+
+TEST_CASE("applyLineSplashDamage excludes the primary target (already damaged directly) via excludeId", "[combat_entity][line_splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1);
+    spawn(board, primary);
+
+    applyLineSplashDamage(board, Vector2D{ 0.0f, 0.0f }, Vector2D{ 0.0f, 10.0f }, 11.0f, 1.0f, 1, 99, 0, 5, 100);
+
+    REQUIRE(primary->hp == 1000); // excluded by id, not hit a second time
+}
+
+// ---------------- range-based damage falloff (Hunter) ----------------
+
+TEST_CASE("rangeFalloff deals full damage at point-blank range", "[combat_entity][range_falloff]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 0.5f, 1000, 1); // dist 0.5, well inside range 4.0
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 4.0f, 84, 22);
+    attacker->rangeFalloff = true;
+    attacker->rangeFalloffMinFraction = 0.5f;
+    spawn(board, target);
+
+    attacker->update(board);
+
+    REQUIRE(target->hp > 1000 - 84); // less than full 84 would land at dist 0, but very close to it at 0.5
+    REQUIRE(target->hp <= 1000 - 84 * 0.5); // never weaker than the min fraction
+}
+
+TEST_CASE("rangeFalloff deals the minimum fraction of damage right at max range", "[combat_entity][range_falloff]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist exactly at attackRange 4.0
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 4.0f, 84, 22);
+    attacker->rangeFalloff = true;
+    attacker->rangeFalloffMinFraction = 0.5f;
+
+    attacker->update(board);
+
+    REQUIRE(target->hp == 1000 - 42); // 84 * 0.5, the minimum fraction
+}
+
+TEST_CASE("A card without rangeFalloff configured (the default) always deals full damage", "[combat_entity][range_falloff]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist exactly at attackRange
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 4.0f, 84, 22);
+    attacker->update(board);
+
+    REQUIRE(target->hp == 1000 - 84); // no falloff: full damage regardless of distance
+}
+
 TEST_CASE("A card without transformAtHpFraction configured (the default) never transforms", "[combat_entity][transform]") {
     Board board;
     auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 5.0f, 50, 10);

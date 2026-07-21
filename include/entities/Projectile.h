@@ -32,6 +32,17 @@ private:
     // every non-splash card's normal single-target hit.
     float splashRadius;
 
+    // Piercing-line hit (Bowler, Magic Archer) -- see
+    // CombatEntity::applyLineSplashDamage. When lineSplash is set,
+    // splashRadius above doubles as the line's half-width instead of a
+    // circle radius. origin is the shooter's own position at the moment
+    // it fired, captured in the constructor before this projectile starts
+    // moving (position itself gets snapped to the impact point on
+    // arrival, so it can't be reused for the line's start point by then).
+    bool lineSplash;
+    float lineSplashRange;
+    Vector2D origin;
+
     // Boomerang support (Executioner): after the outbound hit lands, instead
     // of dying immediately, wait returnDelayTicks and hit the same target
     // again (if it's still alive) before dying. The real axe pierces every
@@ -47,10 +58,12 @@ public:
     Projectile(int id, float x, float y, int team, std::weak_ptr<Entity> target, float speed, int damage,
         std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects = {},
         bool returnsToSender = false, int returnDelayTicks = 0,
-        int attackerId = -1, int attackerCardId = -1, float splashRadius = 0.0f)
+        int attackerId = -1, int attackerCardId = -1, float splashRadius = 0.0f,
+        bool lineSplash = false, float lineSplashRange = 0.0f)
         : Entity(id, x, y, 1, team, '-'), target(target), speed(speed), damage(damage),
         onHitEffects(std::move(onHitEffects)), attackerId(attackerId), attackerCardId(attackerCardId),
-        splashRadius(splashRadius), returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
+        splashRadius(splashRadius), lineSplash(lineSplash), lineSplashRange(lineSplashRange), origin{ x, y },
+        returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
 
     bool isTargetable() const override { return false; }
 
@@ -100,6 +113,11 @@ private:
                 }
             }
         }
-        applySplashDamage(board, t->position, splashRadius, t->id, attackerId, team, attackerCardId, damage);
+        if (lineSplash) {
+            applyLineSplashDamage(board, origin, t->position, lineSplashRange, splashRadius,
+                t->id, attackerId, team, attackerCardId, damage);
+        } else {
+            applySplashDamage(board, t->position, splashRadius, t->id, attackerId, team, attackerCardId, damage);
+        }
     }
 };

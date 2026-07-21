@@ -20,6 +20,11 @@ inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, in
     int team, float multiplier, int durationTicks, int maxTargets);
 inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, int amount);
+// Forward-declared for the same reason as the two above: Mega Knight's
+// jump (see update() below) calls this directly from inside the class
+// body, before its own definition later in this file is visible.
+inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
+    int attackerId, int attackerTeam, int attackerCardId, int dealt);
 
 class CombatEntity : public CardEntity {
 protected:
@@ -255,6 +260,74 @@ public:
     bool hasTransformed = false;
     int transformTicksRemaining = 0;
 
+    // HP-threshold transform, archetype-swap variant (Goblin Demolisher:
+    // becomes a fundamentally different unit -- ranged squad turns into a
+    // melee building-only kamikaze -- not just "the same stats, grounded"
+    // like Cannon Cart above). This engine has no way to change an
+    // already-spawned entity's C++ type in place, so it's modeled by
+    // killing this entity outright the instant the threshold is crossed
+    // (see update() below) and letting the ordinary deathEffect/
+    // SpawnOnDeath machinery -- already used everywhere else for
+    // Golem/Golemites, Lava Hound/Pups, etc. -- spawn the transformed
+    // form as a normal, independent child entity. false (the default) is
+    // every other transform-capable card, which uses
+    // transformBecomesStationary instead.
+    bool transformKillsSelf = false;
+    // Fired only by the transformKillsSelf self-kill itself (see update()
+    // below) -- deliberately a SEPARATE slot from the ordinary
+    // `deathEffect` above, not a reuse of it. A genuine combat death (a
+    // hit big enough to skip straight past the transform threshold to 0
+    // hp in one blow, never triggering the transform check at all) must
+    // NOT also spawn the transformed form -- only an actual
+    // threshold-triggered transform should.
+    std::shared_ptr<IDeathEffect> transformDeathEffect;
+
+    // Periodic jump (Mega Knight): once a ground target is between
+    // jumpMinRange and jumpMaxRange away (farther than normal
+    // attackRange), instantly closes the distance -- reusing the exact
+    // same pullToward primitive as Fisherman's hook, just pulling this
+    // attacker toward the target instead of the other way around -- and
+    // lands a boosted, splashy hit immediately instead of spending
+    // several ticks walking in. jumpMaxRange == 0.0f (the default)
+    // disables the mechanic for every card without one.
+    float jumpMinRange = 0.0f;
+    float jumpMaxRange = 0.0f;
+    float jumpDamageMultiplier = 1.0f;
+    float jumpSplashRadius = 0.0f;
+
+    // Piercing-line hit (Bowler, Magic Archer): instead of a circular
+    // splash around the primary target, hits everyone within splashRadius
+    // of the straight line from this attacker's own position toward the
+    // target, out to lineSplashRange total distance -- splashRadius is
+    // reused as the line's half-width rather than adding a whole separate
+    // field, matching this engine's existing habit of dual-purposing one
+    // field across a card's single active mode (see auraRadius above).
+    // lineSplash == false (the default) is every other card, which keeps
+    // the ordinary circular applySplashDamage behavior.
+    bool lineSplash = false;
+    float lineSplashRange = 0.0f;
+
+    // Range-based damage falloff (Hunter): unlike every other numeric
+    // field on this class, this one is NOT modeling a sourced mechanic --
+    // the wiki research explicitly found no documented falloff formula
+    // (the real effect is 10 fixed-damage pellets in a random spread,
+    // fewer of which statistically land at range; no angle/probability
+    // curve is published anywhere). This is a deliberately invented,
+    // clearly-labeled approximation of the *qualitative* behavior
+    // ("weaker at range") via a deterministic linear scale instead --
+    // kept deterministic on purpose, matching every other mechanic in
+    // this engine (including the real game's OTHER randomized cards,
+    // e.g. Bowler's knockback, all modeled without dice rolls), since
+    // combat here needs to stay reproducible for both tests and RL
+    // training. rangeFalloff == false (the default) is every other card.
+    bool rangeFalloff = false;
+    float rangeFalloffMinFraction = 1.0f; // damage fraction at max range
+    // Distance to the target at the moment of the most recent attack --
+    // set right alongside currentHitCount, just before performAttack(),
+    // purely so getCurrentDamage() (a const method with no target of its
+    // own) has something to scale rangeFalloff against.
+    float lastAttackDistance = 0.0f;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
@@ -339,6 +412,16 @@ public:
         if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
             && static_cast<float>(hp) / static_cast<float>(transformCheckMaxHp) <= transformAtHpFraction) {
             hasTransformed = true;
+            if (transformKillsSelf) {
+                hp = 0;
+                if (transformDeathEffect) transformDeathEffect->apply(board, position, team);
+                // Dead this tick -- skip the rest of update() (targeting,
+                // movement, attack) entirely. Board::cleanDeadEntities()
+                // still runs its own normal dead-entity cleanup later this
+                // tick, but with deathEffect (not transformDeathEffect)
+                // left unset on this card, that pass fires nothing further.
+                return;
+            }
             transformTicksRemaining = transformLifetimeTicks;
             if (transformBecomesStationary) applyFreeze(transformLifetimeTicks, 0.0f);
         }
@@ -408,6 +491,7 @@ public:
                     // because *when* they should fire depends on *when* the
                     // damage actually lands: instantly for a direct hit, but
                     // only on arrival for an attack that spawns a projectile.
+                    lastAttackDistance = dist;
                     if (maxSplitTargets <= 1) {
                         currentHitCount = 1;
                         performAttack(board, target);
@@ -445,6 +529,21 @@ public:
                     if (recoilDistance > 0.0f) pushAway(*this, target->position, recoilDistance);
                     if (dieAfterFirstHit) hp = 0;
                 }
+            } else if (jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {
+                // Jump: instantly close to just inside attack range instead
+                // of walking in over several ticks, then land the boosted,
+                // splashy hit immediately -- Mega Knight's leap. A simpler
+                // self-contained special case than the main attack branch
+                // above, same precedent as the hook branch below (no
+                // enrage/aura/dieAfterFirstHit follow-up, none of Mega
+                // Knight's cards need it here).
+                pullToward(*this, target->position, dist - effectiveAttackRange + 0.1f);
+                int jumpDamage = static_cast<int>(getCurrentDamage() * jumpDamageMultiplier);
+                target->takeDamage(jumpDamage);
+                board.statsEvents.notifyDamageDealt(
+                    { id, team, cardId, target->id, target->cardId, target->team, jumpDamage, board.currentTick });
+                applySplashDamage(board, target->position, jumpSplashRadius, target->id, id, team, cardId, jumpDamage);
+                currentCooldown = static_cast<float>(attackCooldown);
             } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
                 // Hook: instantly pull the target to just inside melee
                 // range instead of walking toward it. No damage lands this
@@ -561,6 +660,11 @@ protected:
         if (buffTicksRemaining > 0) {
             base = static_cast<int>(base * buffDamageMultiplier);
         }
+        if (rangeFalloff && attackRange > 0.0f) {
+            float distFraction = std::min(lastAttackDistance / attackRange, 1.0f);
+            float rangeFactor = 1.0f - (1.0f - rangeFalloffMinFraction) * distFraction;
+            base = static_cast<int>(base * rangeFactor);
+        }
         return (currentHitCount > 1 && !splitTargetsFullDamage) ? base / currentHitCount : base;
     }
 
@@ -602,6 +706,44 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
         if (entity->id == excludeId) continue; // already damaged as the primary target
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
+        entity->takeDamage(dealt);
+        board.statsEvents.notifyDamageDealt(
+            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+    }
+}
+
+// Piercing-line splash (Bowler, Magic Archer): applies `dealt` to every
+// valid enemy within `halfWidth` of the straight line segment from
+// `origin` (the attacker's own position at the moment it fired) toward
+// `aimPoint` (the primary target's position), extended out to `range`
+// total distance from origin -- a real line/rectangle hit test instead of
+// applySplashDamage's circle-around-the-primary-target. No-op when range
+// or halfWidth <= 0 -- every card that doesn't opt into line splash.
+inline void applyLineSplashDamage(Board& board, const Vector2D& origin, const Vector2D& aimPoint,
+        float range, float halfWidth, int excludeId, int attackerId, int attackerTeam, int attackerCardId, int dealt) {
+    if (range <= 0.0f || halfWidth <= 0.0f) return;
+    float dx = aimPoint.x - origin.x;
+    float dy = aimPoint.y - origin.y;
+    float lineLen = std::sqrt(dx * dx + dy * dy);
+    if (lineLen <= 0.01f) return; // no direction to fire along
+    float ux = dx / lineLen, uy = dy / lineLen; // unit direction, origin -> aimPoint
+
+    for (const auto& entity : board.getEntities()) {
+        if (entity->id == excludeId) continue; // already damaged as the primary target
+        if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+
+        // Project the candidate onto the line, clamped to [0, range] so
+        // nothing behind the shooter or past the line's far end counts,
+        // then measure perpendicular distance from that closest point.
+        float proj = (entity->position.x - origin.x) * ux + (entity->position.y - origin.y) * uy;
+        if (proj < 0.0f) proj = 0.0f;
+        if (proj > range) proj = range;
+        float closestX = origin.x + ux * proj;
+        float closestY = origin.y + uy * proj;
+        float ddx = entity->position.x - closestX;
+        float ddy = entity->position.y - closestY;
+        if (std::sqrt(ddx * ddx + ddy * ddy) > halfWidth) continue;
+
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
             { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });

@@ -1086,6 +1086,84 @@ TEST_CASE("Goblin Hut only summons while an enemy is within its detection range"
     REQUIRE(board.getEntities().size() > countNoEnemy + 1); // Hut + enemy + at least one Spear Goblin
 }
 
+TEST_CASE("Goblin Demolisher transforms into a kamikaze that detonates on a building at <=50% hp", "[card_registry][transform]") {
+    Board board;
+    CardRegistry::getInstance().getCard(66)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto demolisher = board.getEntities()[0];
+
+    demolisher->takeDamage(demolisher->hp / 2 + 1); // just past half: triggers the transform
+    demolisher->update(board);
+
+    REQUIRE_FALSE(demolisher->isAlive());
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    std::shared_ptr<Entity> kamikaze;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Kamikaze Goblin Demolisher") kamikaze = e;
+    }
+    REQUIRE(kamikaze != nullptr);
+    REQUIRE(kamikaze->team == 0);
+
+    // The kamikaze form only targets buildings and self-destructs on its
+    // first hit -- verify it against a building-shaped target, close
+    // enough to attack immediately.
+    auto building = std::make_shared<Building>(999, 5.0f, 5.4f, 5000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, building);
+    kamikaze->update(board);
+
+    REQUIRE(building->hp == 5000 - 404);
+    REQUIRE_FALSE(kamikaze->isAlive()); // dieAfterFirstHit
+}
+
+TEST_CASE("Mega Knight jumps to a distant target instead of walking, via the real registered card", "[card_registry][jump]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 5.0f, 9.0f, 100000, 1); // dist 4.0 from (5,5)
+    spawn(board, target);
+
+    CardRegistry::getInstance().getCard(48)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    // Mega Knight also has a deploy-slam spawn effect (a separate
+    // AreaSpell entity) -- find the actual troop, not just take .back().
+    std::shared_ptr<MeleeTroop> knight;
+    for (const auto& e : board.getEntities()) {
+        knight = std::dynamic_pointer_cast<MeleeTroop>(e);
+        if (knight) break;
+    }
+    REQUIRE(knight != nullptr);
+
+    knight->update(board);
+
+    REQUIRE(target->hp < 100000); // jump landed a hit immediately, no multi-tick walk needed
+}
+
+TEST_CASE("Bowler's piercing line hits a bystander behind the primary target, not just around it", "[card_registry][line_splash]") {
+    Board board;
+    auto primary = std::make_shared<DummyEntity>(1, 5.0f, 8.0f, 100000, 1);   // dist 3.0 from (5,5)
+    auto behindPrimary = std::make_shared<DummyEntity>(2, 5.0f, 9.5f, 100000, 1); // further along the same line
+    spawn(board, primary);
+    spawn(board, behindPrimary);
+
+    CardRegistry::getInstance().getCard(22)->spawnEntity(5.0f, 5.0f, 0, board); // Bowler
+    board.commitPendingEntities();
+    auto bowler = board.getEntities().back();
+
+    bowler->update(board); // fires the projectile
+    board.commitPendingEntities();
+    for (int i = 0; i < 10; ++i) {
+        for (const auto& e : board.getEntities()) {
+            if (e->isAlive()) e->update(board);
+        }
+        board.commitPendingEntities();
+        if (primary->hp < 100000) break;
+    }
+
+    REQUIRE(primary->hp < 100000);
+    REQUIRE(behindPrimary->hp < 100000); // caught by the piercing line, not just a circle around primary
+}
+
 TEST_CASE("X-Bow can't fire until its slow initial deploy delay elapses", "[card_registry][deploy_delay]") {
     Board board;
     auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1); // well within X-Bow's range
