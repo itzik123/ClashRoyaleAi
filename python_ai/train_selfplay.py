@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import time
 import torch
 import torch.nn as nn
@@ -78,6 +79,16 @@ STALL_REBOOST_COOLDOWN_EPISODES = 1000
 # since this is a broader "nothing's converged in a while" signal, not an
 # acute passivity relapse -- shares the same last_stall_reboost_episode
 # cooldown clock as the draw-rate trigger (whichever fires resets it).
+#
+# Narrowed to also require win_rate < 0.5 at the point of use below (not just
+# "hasn't cleared the gate yet"): confirmed in practice against opponent 19/19
+# (ep 65400-65880, see training_selfplay_run1.log) that firing this while
+# ALREADY decisively winning (e.g. a stable 60-75%, just short of
+# SELFPLAY_WIN_RATE_GATE) measurably hurts -- there's no better joint policy
+# for injected noise to find in a matchup that's already going well, only
+# sampling noise for the entropy bonus to add (see MIN_OPPONENT_AGE_EPISODES's
+# comment below for why near-parity matchups happen at all). Below 0.5 the
+# trainee is genuinely losing more than winning, which IS worth reacting to.
 ENTROPY_STALE_REBOOST_EPISODES = 1500
 # How long a >=SELFPLAY_WIN_RATE_GATE window has to hold CONTINUOUSLY before
 # it counts as real mastery rather than one lucky 100-episode sample -- without
@@ -85,6 +96,22 @@ ENTROPY_STALE_REBOOST_EPISODES = 1500
 # would immediately unlock a harder opponent the trainee hasn't actually
 # beaten reliably yet.
 MASTERY_CONFIRM_EPISODES = 100
+# Pipeline #2's own snapshots (saved every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES
+# = 5000 episodes, see train.py) refill the SAME shared pool this script draws
+# opponents from -- once the genuinely-old/weak pipeline #1 snapshots are used
+# up, every remaining "opponent" the queue can offer is one of the trainee's
+# own very recent selves. Confirmed in practice against opponent 19/19 (a
+# snapshot only ~3,000 episodes old): decisive win rate settled near 50%, not
+# because the trainee stopped improving, but because that "opponent" was
+# barely behind its current skill -- a fair fight, not a meaningful mastery
+# test. discover_historical_checkpoints() excludes pipeline #2 snapshots
+# younger than this many episodes (relative to the live trainee's CURRENT
+# episodes_completed) from eligibility, so every stage is a genuinely-beatable
+# earlier version and SELFPLAY_WIN_RATE_GATE keeps measuring real mastery
+# instead of coin-flip parity. Pipeline #1 snapshots are always eligible
+# (wholly separate, earlier, much weaker phase -- see that function's
+# docstring for why their episode count isn't even comparable to this one).
+MIN_OPPONENT_AGE_EPISODES = 15000
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -94,13 +121,30 @@ WEIGHT_PATH = "model_weights_selfplay.pth"
 BOOTSTRAP_FROM_PATH = "model_weights.pth"
 
 
-def discover_historical_checkpoints():
-    """All *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first (mtime).
-    Save order is the ordering signal, not filenames -- pipeline #1 and this
-    same script both drop snapshots into this one shared folder, on two
-    unrelated episode-count scales, so parsing/comparing episode numbers out
-    of the filename wouldn't give a meaningful weakest->strongest order."""
+def discover_historical_checkpoints(current_episode=None):
+    """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
+    (mtime). Save order is the ordering signal, not filenames -- pipeline #1
+    and this same script both drop snapshots into this one shared folder, on
+    two unrelated episode-count scales, so parsing/comparing episode numbers
+    out of the filename wouldn't give a meaningful weakest->strongest order.
+
+    When current_episode is given, pipeline #2's OWN snapshots (filenames
+    embed THIS script's own episodes_completed at save time -- same scale as
+    current_episode, unlike pipeline #1's) younger than
+    MIN_OPPONENT_AGE_EPISODES are excluded from eligibility -- see that
+    constant's comment for why. Pipeline #1 snapshots are always eligible
+    regardless of current_episode (their episode count lives on a wholly
+    different, incomparable scale, and they're always from an earlier, weaker
+    phase anyway)."""
     paths = glob.glob(os.path.join(HISTORICAL_CHECKPOINT_DIR, "*.pth"))
+    if current_episode is not None:
+        eligible = []
+        for p in paths:
+            match = re.search(r"_pipeline2_ep(\d+)\.pth$", os.path.basename(p))
+            if match and current_episode - int(match.group(1)) < MIN_OPPONENT_AGE_EPISODES:
+                continue
+            eligible.append(p)
+        paths = eligible
     return sorted(paths, key=os.path.getmtime)
 
 
@@ -257,17 +301,12 @@ def train_selfplay_ppo():
     os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
     log_dir = "runs/clash_royale_selfplay"
 
-    historical_pool = discover_historical_checkpoints()
-    if not historical_pool:
-        raise RuntimeError(
-            f"No historical snapshots found in {HISTORICAL_CHECKPOINT_DIR}/ -- "
-            "pipeline #1 (train.py) needs to have run long enough to have saved "
-            "at least one (every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES episodes) "
-            "before pipeline #2 has anything to play against.")
-
+    # NOTE: historical_pool is discovered further below, only once
+    # episodes_completed is resolved (either 0 on a from-scratch run or
+    # restored from a resumed checkpoint) -- MIN_OPPONENT_AGE_EPISODES
+    # filtering needs that value to know what's "too young" to be eligible.
     num_envs = 8
-    print(f"Initializing {num_envs} self-play environments against "
-          f"{len(historical_pool)} known historical snapshot(s)...")
+    print(f"Initializing {num_envs} self-play environments...")
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -336,6 +375,16 @@ def train_selfplay_ppo():
             f"Neither {WEIGHT_PATH} nor {BOOTSTRAP_FROM_PATH} exists -- pipeline #2 needs "
             "pipeline #1's finished bot to start from.")
 
+    historical_pool = discover_historical_checkpoints(episodes_completed)
+    if not historical_pool:
+        raise RuntimeError(
+            f"No historical snapshot in {HISTORICAL_CHECKPOINT_DIR}/ is at least "
+            f"MIN_OPPONENT_AGE_EPISODES ({MIN_OPPONENT_AGE_EPISODES}) episodes older than "
+            f"the current trainee (episode {episodes_completed}) -- pipeline #1 (train.py) "
+            "needs to have run long enough to have saved at least one eligible snapshot "
+            "(every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES episodes) before pipeline #2 "
+            "has anything old enough to play against.")
+
     if historical_opponent_index >= len(historical_pool):
         historical_opponent_index = len(historical_pool) - 1
     current_opponent_path = historical_pool[historical_opponent_index]
@@ -399,6 +448,14 @@ def train_selfplay_ppo():
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(num_envs, 1),
+                # No network head samples this yet (see gym_wrapper.py's own
+                # comment on the same key) -- always "don't activate". Must
+                # still be present: AsyncVectorEnv's Dict-space iteration
+                # requires every action_space key to exist in the dict, it
+                # doesn't fall back to a default like MicroRoyaleSelfPlayEnv.
+                # step()'s own action.get("activate_ability", 0) does for a
+                # direct (non-vectorized) call.
+                "activate_ability": np.zeros(num_envs, dtype=np.int64),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
@@ -541,7 +598,7 @@ def train_selfplay_ppo():
                                     and episodes_completed - mastery_streak_start >= MASTERY_CONFIRM_EPISODES)
 
                         if mastered or timed_out:
-                            refreshed_pool = discover_historical_checkpoints()
+                            refreshed_pool = discover_historical_checkpoints(episodes_completed)
                             if len(refreshed_pool) > historical_opponent_index + 1:
                                 historical_pool = refreshed_pool
                                 historical_opponent_index += 1
@@ -590,7 +647,7 @@ def train_selfplay_ppo():
                             print(f">>> High draw rate ({draw_rate:.2f}) against opponent "
                                   f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
                                   "re-boosting exploration to try to break out of a passive equilibrium.")
-                        elif (window_full
+                        elif (window_full and win_rate < 0.5
                                 and episodes_completed - last_stall_reboost_episode >= ENTROPY_STALE_REBOOST_EPISODES):
                             # Covers the failure mode the draw-rate trigger above
                             # can't see: draws near zero but win rate still stuck
@@ -598,11 +655,21 @@ def train_selfplay_ppo():
                             # stretch with nothing ever refreshing it (see this
                             # constant's own comment). Same shared cooldown clock
                             # as the draw-rate trigger -- whichever fires resets it.
+                            #
+                            # win_rate < 0.5 (not just "< gate"): confirmed against
+                            # opponent 19/19 that firing this while ALREADY
+                            # decisively winning (a stable 60-75%, just short of
+                            # SELFPLAY_WIN_RATE_GATE) measurably hurts -- injected
+                            # noise has no better joint policy to find in a matchup
+                            # that's already going well. Below 0.5 the trainee is
+                            # genuinely losing more than winning, which IS worth
+                            # reacting to.
                             stage_start_episode = episodes_completed
                             last_stall_reboost_episode = episodes_completed
-                            print(f">>> No mastery/draw-stall trigger in {ENTROPY_STALE_REBOOST_EPISODES}+ episodes "
-                                  f"against opponent {historical_opponent_index + 1}/{len(historical_pool)} "
-                                  f"(win rate {win_rate:.2f}) -- periodically re-boosting exploration anyway.")
+                            print(f">>> Losing trend (win rate {win_rate:.2f}) with no mastery/draw-stall "
+                                  f"trigger in {ENTROPY_STALE_REBOOST_EPISODES}+ episodes against opponent "
+                                  f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
+                                  "periodically re-boosting exploration anyway.")
 
             obs = next_obs
             prev_stats = stats

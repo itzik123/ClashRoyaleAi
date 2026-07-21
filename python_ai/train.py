@@ -449,7 +449,15 @@ def train_ppo():
             action = {
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(num_envs, 1),
-                "target_y": target_y.cpu().numpy().reshape(num_envs, 1)
+                "target_y": target_y.cpu().numpy().reshape(num_envs, 1),
+                # No network head samples this yet (see gym_wrapper.py's own
+                # comment on the same key) -- always "don't activate". Must
+                # still be present: AsyncVectorEnv's Dict-space iteration
+                # requires every action_space key to exist in the dict, it
+                # doesn't fall back to a default like MicroRoyaleEnv.step()'s
+                # own action.get("activate_ability", 0) does for a direct
+                # (non-vectorized) call.
+                "activate_ability": np.zeros(num_envs, dtype=np.int64),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
