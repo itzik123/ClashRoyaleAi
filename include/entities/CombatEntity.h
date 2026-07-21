@@ -799,6 +799,8 @@ protected:
 
     virtual void moveTowards(Board& board, const Vector2D& dest) {
         // Default: stationary entities don't move
+        (void)board;
+        (void)dest;
     }
 };
 
