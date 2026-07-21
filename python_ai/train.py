@@ -79,7 +79,7 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
 # channels 4-6 enemy troops, 7 enemy buildings, 8 river mask.
 N_CHANNELS = 9
-BOARD_H, BOARD_W = 32, 18
+BOARD_H, BOARD_W = 34, 18
 SPATIAL_SIZE = N_CHANNELS * BOARD_H * BOARD_W
 
 # Same blanket HP normalizers ClashEnv::extractObservation() divides by when
@@ -232,8 +232,11 @@ def train_ppo():
     
     # BOARD_MAX_X in the engine is 17.0 -- placements with x>17 are silently
     # rejected (isValidPlacement), so scaling by 18 wasted part of the action range.
+    # MAX_Y_AI = riverStart(16.0) - OWN_HALF_RIVER_BUFFER(0.5) -- real-map sync
+    # moved the river back one row (see Board.h's riverY_start), so this moved
+    # with it (was 14.5).
     MAX_X = 17.0
-    MAX_Y_AI = 14.5
+    MAX_Y_AI = 15.5
 
     # --- Curriculum: once the agent's win-rate against the current opponent
     # settles above a threshold, escalate the opponent's elixir multiplier.

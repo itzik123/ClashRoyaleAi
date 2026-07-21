@@ -66,7 +66,7 @@ class MicroRoyaleEnv(gym.Env):
             # ל-[0,4), כך שהסוכן יכול סוף-סוף לאגור אליקסיר במקום להיות מאולץ לשחק.
             "card_index": spaces.Discrete(5),
             "target_x": spaces.Box(low=0.0, high=17.0, shape=(1,), dtype=np.float32),
-            "target_y": spaces.Box(low=0.0, high=14.5, shape=(1,), dtype=np.float32)
+            "target_y": spaces.Box(low=0.0, high=15.5, shape=(1,), dtype=np.float32)
         })
         
         obs_size = self.game.observation_size()

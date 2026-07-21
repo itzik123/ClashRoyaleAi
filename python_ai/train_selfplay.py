@@ -34,7 +34,13 @@ from train import (
 # team 1 being the built-in random C++ bot.
 
 # Raw win rate (not decisive), same convention as train.py's curriculum gates.
-SELFPLAY_WIN_RATE_GATE = 0.95
+# Lowered from 0.95 -- observed win rate against real pool opponents tops out
+# around 0.80-0.85, so 0.95 was practically unreachable and every transition
+# ended up relying on the MAX_EPISODES_PER_HISTORICAL_OPPONENT safety valve
+# below instead of genuine mastery. Paired with MASTERY_CONFIRM_EPISODES
+# further down so a lower bar doesn't just trade "never advances" for
+# "advances on a lucky noisy window."
+SELFPLAY_WIN_RATE_GATE = 0.85
 # Safety valve, not the intended advancement trigger -- same role as pipeline
 # #1's MAX_EPISODES_PER_RANDOM_DECK. A near-mirror matchup (the current
 # trainee vs. a historical snapshot of itself from not very long ago) can
@@ -60,6 +66,25 @@ STALL_DRAW_RATE_THRESHOLD = 0.5
 # saturated with draws -- gives each boost a real window to actually take
 # effect before deciding whether another one is needed.
 STALL_REBOOST_COOLDOWN_EPISODES = 1000
+# Escape hatch for the failure mode the draw-rate trigger above CAN'T see:
+# draws near zero (the passivity fix worked) but win rate still stuck below
+# SELFPLAY_WIN_RATE_GATE, with entropy floored the whole time and nothing
+# ever refreshing it. Confirmed happening in practice: stage_start_episode
+# sitting unreset for 24,800+ episodes straight, measured policy entropy
+# drifting UP the whole stretch (more random, not less) while win rate and
+# tower-HP margins both got WORSE -- floored entropy for that long just lets
+# ordinary gradient noise erode an already-good policy with no exploration
+# boost ever pulling it back. Longer than STALL_REBOOST_COOLDOWN_EPISODES
+# since this is a broader "nothing's converged in a while" signal, not an
+# acute passivity relapse -- shares the same last_stall_reboost_episode
+# cooldown clock as the draw-rate trigger (whichever fires resets it).
+ENTROPY_STALE_REBOOST_EPISODES = 1500
+# How long a >=SELFPLAY_WIN_RATE_GATE window has to hold CONTINUOUSLY before
+# it counts as real mastery rather than one lucky 100-episode sample -- without
+# this, a single noisy window crossing the (now-lower) gate for an instant
+# would immediately unlock a harder opponent the trainee hasn't actually
+# beaten reliably yet.
+MASTERY_CONFIRM_EPISODES = 100
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -120,7 +145,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
     """
 
     MAX_X = 17.0
-    MAX_Y = 14.5
+    MAX_Y = 15.5  # riverStart(16.0) - OWN_HALF_RIVER_BUFFER(0.5), see train.py's MAX_Y_AI
 
     def __init__(self, env_config=None):
         super().__init__()
@@ -262,7 +287,8 @@ def train_selfplay_ppo():
     historical_opponent_index = 0
     stage_start_episode = 0
     opponent_episode_start = 0  # episodes_completed value when the CURRENT historical opponent started
-    last_stall_reboost_episode = 0  # episodes_completed value at the last high-draw-rate entropy re-boost
+    last_stall_reboost_episode = 0  # episodes_completed value at the last entropy re-boost (draw-stall or stale-plateau)
+    mastery_streak_start = None  # episodes_completed value when the win-rate gate was first continuously cleared
     episodes_completed = 0
     outcome_history = deque(maxlen=100)
     outcome_history_long = deque(maxlen=500)
@@ -286,6 +312,7 @@ def train_selfplay_ppo():
         # episodes against the new limit.
         opponent_episode_start = checkpoint.get("opponent_episode_start", episodes_completed)
         last_stall_reboost_episode = checkpoint.get("last_stall_reboost_episode", episodes_completed)
+        mastery_streak_start = checkpoint.get("mastery_streak_start", None)
         outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
         full_resume = True
         print(f"Resumed pipeline #2 from {WEIGHT_PATH}: episode {episodes_completed}, "
@@ -488,7 +515,22 @@ def train_selfplay_ppo():
                         else:
                             win_rate = 0.0
                             draw_rate = 0.0
-                        mastered = window_full and win_rate >= SELFPLAY_WIN_RATE_GATE
+
+                        # Gate-clearing win rate alone isn't enough to advance -- a
+                        # single lucky 100-episode window can cross the (now-lower)
+                        # gate by chance and immediately unlock a harder opponent
+                        # the trainee hasn't actually mastered. Require the window-
+                        # level win rate to stay >= the gate CONTINUOUSLY for a
+                        # further MASTERY_CONFIRM_EPISODES before treating it as
+                        # real mastery instead of noise.
+                        gate_cleared_now = window_full and win_rate >= SELFPLAY_WIN_RATE_GATE
+                        if gate_cleared_now:
+                            if mastery_streak_start is None:
+                                mastery_streak_start = episodes_completed
+                        else:
+                            mastery_streak_start = None
+                        mastered = (mastery_streak_start is not None
+                                    and episodes_completed - mastery_streak_start >= MASTERY_CONFIRM_EPISODES)
 
                         if mastered or timed_out:
                             refreshed_pool = discover_historical_checkpoints()
@@ -500,7 +542,9 @@ def train_selfplay_ppo():
                                 outcome_history.clear()
                                 stage_start_episode = episodes_completed
                                 opponent_episode_start = episodes_completed
-                                reason = (f"mastered it (win rate {win_rate:.2f})" if mastered
+                                mastery_streak_start = None
+                                reason = (f"mastered it (win rate {win_rate:.2f}, held "
+                                          f"{MASTERY_CONFIRM_EPISODES}+ episodes)" if mastered
                                           else f"hit the {MAX_EPISODES_PER_HISTORICAL_OPPONENT}-episode "
                                                f"safety cap without mastering it (win rate {win_rate:.2f})")
                                 print(f">>> Beat opponent {historical_opponent_index}/{len(historical_pool)} "
@@ -515,6 +559,7 @@ def train_selfplay_ppo():
                                 outcome_history.clear()
                                 stage_start_episode = episodes_completed
                                 opponent_episode_start = episodes_completed
+                                mastery_streak_start = None
                                 print(f">>> Opponent {historical_opponent_index + 1}/{len(historical_pool)} timed out "
                                       f"(win rate {win_rate:.2f}) but no stronger snapshot exists yet -- "
                                       "re-boosting exploration and retrying the same opponent.")
@@ -537,6 +582,19 @@ def train_selfplay_ppo():
                             print(f">>> High draw rate ({draw_rate:.2f}) against opponent "
                                   f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
                                   "re-boosting exploration to try to break out of a passive equilibrium.")
+                        elif (window_full
+                                and episodes_completed - last_stall_reboost_episode >= ENTROPY_STALE_REBOOST_EPISODES):
+                            # Covers the failure mode the draw-rate trigger above
+                            # can't see: draws near zero but win rate still stuck
+                            # below the mastery gate, entropy floored the whole
+                            # stretch with nothing ever refreshing it (see this
+                            # constant's own comment). Same shared cooldown clock
+                            # as the draw-rate trigger -- whichever fires resets it.
+                            stage_start_episode = episodes_completed
+                            last_stall_reboost_episode = episodes_completed
+                            print(f">>> No mastery/draw-stall trigger in {ENTROPY_STALE_REBOOST_EPISODES}+ episodes "
+                                  f"against opponent {historical_opponent_index + 1}/{len(historical_pool)} "
+                                  f"(win rate {win_rate:.2f}) -- periodically re-boosting exploration anyway.")
 
             obs = next_obs
             prev_stats = stats
@@ -673,6 +731,7 @@ def train_selfplay_ppo():
                 "stage_start_episode": stage_start_episode,
                 "opponent_episode_start": opponent_episode_start,
                 "last_stall_reboost_episode": last_stall_reboost_episode,
+                "mastery_streak_start": mastery_streak_start,
                 "outcome_history": list(outcome_history),
             }, WEIGHT_PATH)
             print(f">>> Checkpoint saved to {WEIGHT_PATH} (episode {episodes_completed}, "

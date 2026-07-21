@@ -1,10 +1,11 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
-    def __init__(self, channels=9, board_width=18, board_height=32, hand_size=4, num_card_ids=120):
+    def __init__(self, channels=9, board_width=18, board_height=34, hand_size=4, num_card_ids=120):
         super(MicroRoyaleNet, self).__init__()
 
         self.channels = channels
@@ -18,22 +19,28 @@ class MicroRoyaleNet(nn.Module):
         
         # ==========================================
         # 1. חילוץ תכונות מרחבי (CNN)
-        # קלט: (Batch, 5, 32, 18)
+        # קלט: (Batch, 9, 34, 18)
         # ==========================================
+        # ceil_mode=True בשני ה-MaxPool: board_height=34 לא מתחלק נקי פי 4
+        # (34 -> 17 -> 8 עם floor רגיל, מה שהיה מוחק שורה שלמה -- בדיוק השורה
+        # האחורית החדשה ליד מגדל המלך, שזה כל הטעם בשינוי הזה). עם ceil_mode
+        # שום שורה/עמודה לא נופלת בשקט, רק התמונה המרחבית קצת יותר גדולה.
         self.cnn = nn.Sequential(
             nn.Conv2d(channels, 16, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2), # מקטין ל- (16, 16, 9)
-            
+            nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
+
             nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2), # מקטין ל- (32, 8, 4) - בהתאמה לחלוקת השלמים ברוחב
-            
+            nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
+
             nn.Flatten()
         )
-        
-        # חישוב ממד הפלט של ה-CNN לאחר הפולנג: 32 ערוצים * גובה 8 * רוחב 4
-        self.cnn_out_dim = 32 * (board_height // 4) * (board_width // 4)
+
+        # חישוב ממד הפלט של ה-CNN לאחר הפולינג (ceil פעמיים, תואם ceil_mode=True למעלה)
+        pooled_h = math.ceil(math.ceil(board_height / 2) / 2)
+        pooled_w = math.ceil(math.ceil(board_width / 2) / 2)
+        self.cnn_out_dim = 32 * pooled_h * pooled_w
         
         # ==========================================
         # 2. חילוץ תכונות סקלרי (MLP)

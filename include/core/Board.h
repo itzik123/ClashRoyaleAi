@@ -12,10 +12,18 @@ private:
     std::vector<std::shared_ptr<Entity>> pendingEntities;
     int idCounter = 1000;
 
-    float riverY_start = 15.0f;
-    float riverY_end = 17.0f;
-    Vector2D leftBridge{ 4.0f, 16.0f };
-    Vector2D rightBridge{ 14.0f, 16.0f };
+    float riverY_start = 16.0f;
+    float riverY_end = 18.0f;
+    Vector2D leftBridge{ 4.0f, 17.0f };
+    Vector2D rightBridge{ 14.0f, 17.0f };
+
+    // Real-map sync: the arena is 18x34, not 18x32 -- there's one extra row
+    // behind each King Tower that this engine used to just not have. Most of
+    // that row is dead space (matches the decorative rock/wall texture
+    // flanking the real King Tower), except a BACK_ROW_OPENING_WIDTH-wide gap
+    // centered on the board, which is real, placeable ground. See
+    // isBackRowDeadZone() below.
+    static constexpr float BACK_ROW_OPENING_HALF_WIDTH = 3.0f;
 
 public:
     // Public, not a getter-wrapped private member: every fire site
@@ -46,7 +54,7 @@ public:
     // Board doesn't act on this value itself.
     float pendingElixirGrant[2] = { 0.0f, 0.0f };
 
-    Board(int w = 18, int h = 32) : width(w), height(h) {}
+    Board(int w = 18, int h = 34) : width(w), height(h) {}
 
     int allocateId() { return idCounter++; }
 
@@ -58,6 +66,20 @@ public:
     // of re-guessing the same two numbers as a second, driftable copy.
     float getRiverStart() const { return riverY_start; }
     float getRiverEnd() const { return riverY_end; }
+
+    // True for the unplaceable corners of the two new back rows (y in
+    // [0,1) or (height-2, height-1], outside the BACK_ROW_OPENING_HALF_WIDTH
+    // gap centered on the board) -- everywhere else returns false, including
+    // every row that existed before this back-row expansion. Exposed so
+    // GameManager::isValidPlacement checks it alongside the plain width/
+    // height bounds check, the same way it already reads getRiverStart()/
+    // getRiverEnd() instead of re-deriving river geometry itself.
+    bool isBackRowDeadZone(float x, float y) const {
+        bool inBackRow = (y < 1.0f) || (y > static_cast<float>(height) - 2.0f);
+        if (!inBackRow) return false;
+        float centerX = (static_cast<float>(width) - 1.0f) / 2.0f;
+        return (x < centerX - BACK_ROW_OPENING_HALF_WIDTH) || (x > centerX + BACK_ROW_OPENING_HALF_WIDTH);
+    }
 
     void addEntity(std::shared_ptr<Entity> entity) {
         pendingEntities.push_back(entity);
@@ -231,8 +253,8 @@ public:
             return targetPos;
         }
 
-        float distToLeft = currentPos.distanceTo(Vector2D{leftBridge.x, 16.0f});
-        float distToRight = currentPos.distanceTo(Vector2D{rightBridge.x, 16.0f});
+        float distToLeft = currentPos.distanceTo(leftBridge);
+        float distToRight = currentPos.distanceTo(rightBridge);
         float bridgeX = (distToLeft < distToRight) ? leftBridge.x : rightBridge.x;
 
         if (isCurrentBelow) {
