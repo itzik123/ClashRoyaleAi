@@ -375,6 +375,21 @@ TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldow
     REQUIRE(game.getElixirAI() == Catch::Approx(elixirBefore - 1.0f)); // 1-elixir ability cost
 }
 
+TEST_CASE("activateChampionAbility feeds MatchStatistics' Champion ability tracking", "[game_manager][champion][stats]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+
+    REQUIRE(game.activateChampionAbility(0));
+
+    REQUIRE(game.getStatistics().championAbilityElixirSpent(0) == Catch::Approx(1.0f));
+    REQUIRE(game.getStatistics().championAbilityActivations(0) == 1);
+    REQUIRE(game.getStatistics().championAbilityActivations(1) == 0);
+    // Distinct from playCard's own tracking -- deploying the Champion
+    // itself is the only thing that shows up as elixirSpent/cardsPlayed.
+    REQUIRE(game.getStatistics().cardsPlayed(0).size() == 1);
+}
+
 TEST_CASE("activateChampionAbility fails when the team has no deployed Champion", "[game_manager][champion]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     REQUIRE_FALSE(game.activateChampionAbility(0));

@@ -46,10 +46,14 @@ private:
 
     // Shared scan for both activateChampionAbility and
     // isChampionAbilityReady: "find team's one deployed, living Champion,
-    // if any." If more than one is somehow alive at once -- this engine
-    // doesn't enforce the real game's "only one Champion in your deck"
-    // rule -- the first one found (board-scan order) is used; not expected
-    // to matter with a normal deck containing a Champion card only once.
+    // if any." This engine doesn't enforce the real game's "only one
+    // Champion in your deck" rule at all -- see countChampions() in
+    // CardRegistry.h, which a caller can use to check a deck before
+    // handing it to GameManager. If more than one Champion is somehow
+    // alive at once, board-scan order is NOT arbitrary: Board::activeEntities
+    // is append-only and cleanDeadEntities()'s erase-remove preserves
+    // relative order, so this deterministically returns whichever surviving
+    // Champion was deployed earliest.
     std::shared_ptr<CombatEntity> findChampion(int team) const {
         for (const auto& entity : board.getEntities()) {
             if (entity->team != team || !entity->isAlive()) continue;
@@ -188,6 +192,7 @@ public:
 
         player.elixir -= champion->abilityElixirCost;
         champion->activateAbility(board);
+        board.statsEvents.notifyChampionAbilityActivated({ team, champion->cardId, champion->abilityElixirCost, currentTick });
         return true;
     }
 

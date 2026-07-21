@@ -53,6 +53,10 @@ struct CardDefinition {
     // this player's own half -- see GameManager::isValidPlacement. false
     // (the default) is every other troop/building.
     bool deployAnywhere;
+    // Mirrors CombatEntity::isChampion/CardStats::isChampion -- surfaced
+    // here (not just on the spawned entity) so deck contents can be
+    // inspected before anything is placed, e.g. by countChampions() below.
+    bool isChampion;
     std::function<void(float x, float y, int team, Board& board)> spawnEntity;
 };
 
@@ -304,6 +308,7 @@ private:
         def.isBuilding = (stats.archetype == Archetype::DefensiveBuilding);
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.deployAnywhere = stats.deployAnywhere;
+        def.isChampion = stats.isChampion;
         def.spawnEntity = [stats](float x, float y, int team, Board& board) {
             CardFactories::spawn(stats, x, y, team, board);
         };
@@ -959,11 +964,15 @@ private:
         //
         // 3-stage damage ramp (40 -> 204 -> 409) while locked onto one
         // target, same ramp mechanism as Inferno Dragon/Inferno Tower --
-        // `damage` stores the fully-ramped max (409). Exact tick thresholds
-        // for the stage transitions are NOT yet confirmed by research --
-        // defaulted to Inferno Dragon's own cadence (mid at 15 ticks/1.5s,
-        // full at 30 ticks/3s) as a placeholder; flagged as a follow-up
-        // web-research item, not a sourced number.
+        // `damage` stores the fully-ramped max (409). Stage-transition
+        // timing is now sourced (Liquipedia version history): "Time
+        // required to change stages" is 2 seconds per stage as of the
+        // 2025-01-08 balance patch (down from 2.25s, itself up from an
+        // original 2s in 2023-08-08) -- i.e. 2s to reach stage 2, another 2s
+        // (4s total) to reach stage 3/max. At this engine's 10-ticks/second
+        // rate that's mid=20 ticks, full=40 ticks -- previously a 15/30
+        // placeholder borrowed from Inferno Dragon's own (different)
+        // cadence, now corrected.
         //
         // Activated ability "Explosive Escape" (1 elixir, ~13s/130-tick
         // cooldown -- see CombatEntity::abilityElixirCost/
@@ -976,7 +985,7 @@ private:
         // engine-internal geometry constant, same caveat as splashRadius/
         // shieldHp elsewhere in this file. See MightyMinerEscapeEffect.
         add(troop(115, "Mighty Miner", 4.0f, Archetype::MeleeSquad, 2250, 0.5f, 1.6f, 409, 4, '\'')
-            .withDamageRamp(15, 30, 40.0f / 409.0f, 204.0f / 409.0f)
+            .withDamageRamp(20, 40, 40.0f / 409.0f, 204.0f / 409.0f)
             .withChampionAbility(1.0f, 130, std::make_shared<MightyMinerEscapeEffect>(2.5f, 332, 10, 1.8f)));
 
         // Golden Knight: "Dashing Dash" -- chain-dashes to the nearest
@@ -1096,3 +1105,21 @@ public:
         return cards;
     }
 };
+
+// How many Champion cards appear in a deck config. The real game limits a
+// deck to at most one Champion via the deck-builder UI; this engine has no
+// equivalent gate -- PlayerState::initializeDeck (and GameManager::reset(),
+// which calls it) accept whatever card ids they're given with zero
+// validation of any kind, by design, matching this project's convention of
+// leaving deck legality to the caller (see GameManager::findChampion's own
+// comment on the same point). This is opt-in for a caller (tests, Python)
+// that wants to check a deck before using it -- not called from anywhere
+// in this engine itself.
+inline int countChampions(const std::vector<int>& deck) {
+    int count = 0;
+    for (int cardId : deck) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (def && def->isChampion) count++;
+    }
+    return count;
+}

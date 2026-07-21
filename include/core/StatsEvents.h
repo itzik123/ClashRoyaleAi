@@ -44,6 +44,21 @@ struct CardPlayedEvent {
     int tick;
 };
 
+// Fired by GameManager::activateChampionAbility() on a successful
+// activation -- deliberately NOT a CardPlayedEvent: activating an
+// already-deployed Champion's ability doesn't touch the hand/deck the way
+// playing a card does (see PlayerState::playCard vs.
+// GameManager::activateChampionAbility), so folding it into
+// CardPlayStatsCollector's "what was played and when" timeline would be
+// misleading. No x/y -- an ability fires wherever the Champion currently
+// is, not at a chosen placement point.
+struct ChampionAbilityActivatedEvent {
+    int team;
+    int cardId;
+    float cost;
+    int tick;
+};
+
 struct MatchEndedEvent {
     int loserTeam; // -1 for a draw
     int tick;

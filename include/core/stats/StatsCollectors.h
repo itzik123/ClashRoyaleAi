@@ -133,6 +133,33 @@ public:
     }
 };
 
+// Elixir spent (and activation count) on Champion abilities, per team and
+// per (team, cardId) -- separate from ElixirStatsCollector/
+// CardPlayStatsCollector since an ability activation isn't a card played
+// from hand (see ChampionAbilityActivatedEvent). Previously this spend was
+// simply invisible to MatchStatistics.
+class ChampionAbilityStatsCollector : public IStatsObserver {
+    float spentByTeam[2] = { 0.0f, 0.0f };
+    int activationsByTeam[2] = { 0, 0 };
+    std::unordered_map<int, int> activationsByCardByTeam[2];
+
+public:
+    void onChampionAbilityActivated(const ChampionAbilityActivatedEvent& e) override {
+        int t = (e.team == 0) ? 0 : 1;
+        spentByTeam[t] += e.cost;
+        activationsByTeam[t]++;
+        activationsByCardByTeam[t][e.cardId]++;
+    }
+
+    float elixirSpent(int team) const { return spentByTeam[(team == 0) ? 0 : 1]; }
+    int activations(int team) const { return activationsByTeam[(team == 0) ? 0 : 1]; }
+    int activationsByCard(int cardId, int team) const {
+        const auto& m = activationsByCardByTeam[(team == 0) ? 0 : 1];
+        auto it = m.find(cardId);
+        return (it != m.end()) ? it->second : 0;
+    }
+};
+
 // Ordered per-team timeline of every card played -- "what did each side
 // play and when" reconstruction without re-diffing hands.
 class CardPlayStatsCollector : public IStatsObserver {

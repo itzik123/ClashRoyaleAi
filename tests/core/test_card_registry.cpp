@@ -981,10 +981,36 @@ TEST_CASE("Mighty Miner (115) is a Champion with the correct stats, ramp, and ab
     REQUIRE(miner != nullptr);
     REQUIRE(miner->hp == 2250);
     REQUIRE(miner->isChampion);
+    // Sourced (Liquipedia version history): 2 seconds per stage transition
+    // as of the 2025-01-08 balance patch -- 20 ticks to stage 2, 40 to max.
+    REQUIRE(miner->rampMidTick == 20);
+    REQUIRE(miner->rampFullTick == 40);
     REQUIRE(miner->abilityElixirCost == Catch::Approx(1.0f));
     REQUIRE(miner->abilityCooldownTicks == 130);
     REQUIRE(miner->abilityEffect != nullptr);
     REQUIRE(miner->abilityCooldownRemaining == 0); // ready immediately at deploy
+}
+
+TEST_CASE("CardDefinition::isChampion is set for all 8 Champions and no ordinary card", "[card_registry][champion]") {
+    for (int id : { 115, 116, 117, 118, 119, 120, 121, 122 }) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(id);
+        REQUIRE(def != nullptr);
+        REQUIRE(def->isChampion);
+    }
+    // A handful of ordinary troops/spells/buildings, none of them Champions.
+    for (int id : { 0, 4, 25, 52, 114 }) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(id);
+        REQUIRE(def != nullptr);
+        REQUIRE_FALSE(def->isChampion);
+    }
+}
+
+TEST_CASE("countChampions counts how many Champion cards appear in a deck", "[card_registry][champion]") {
+    REQUIRE(countChampions({ 0, 1, 2, 3, 4, 5, 6, 7 }) == 0); // no Champion at all
+    REQUIRE(countChampions({ 115, 1, 2, 3, 4, 5, 6, 7 }) == 1); // Mighty Miner only
+    REQUIRE(countChampions({ 115, 118, 2, 3, 4, 5, 6, 7 }) == 2); // Mighty Miner + Archer Queen: the illegal case
+    REQUIRE(countChampions({}) == 0); // empty deck: no crash
+    REQUIRE(countChampions({ 9999 }) == 0); // unknown id: ignored, not a crash
 }
 
 // ---------------- wiki-research pass: closing the "no sourced stats" gaps ----------------
@@ -1105,7 +1131,7 @@ TEST_CASE("Goblin Hut only summons while an enemy is within its detection range"
     for (int i = 0; i < 22; ++i) hut->update(board);
     board.commitPendingEntities();
 
-    REQUIRE(board.getEntities().size() > countNoEnemy + 1); // Hut + enemy + at least one Spear Goblin
+    REQUIRE(static_cast<int>(board.getEntities().size()) > countNoEnemy + 1); // Hut + enemy + at least one Spear Goblin
 }
 
 TEST_CASE("Goblin Demolisher transforms into a kamikaze that detonates on a building at <=50% hp", "[card_registry][transform]") {

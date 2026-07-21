@@ -21,6 +21,7 @@ class MatchStatistics {
     std::shared_ptr<KillStatsCollector> kill;
     std::shared_ptr<ElixirStatsCollector> elixir;
     std::shared_ptr<CardPlayStatsCollector> cardPlay;
+    std::shared_ptr<ChampionAbilityStatsCollector> championAbility;
     std::shared_ptr<MatchOutcomeCollector> outcome;
 
     static std::string floatStr(float v) {
@@ -48,6 +49,7 @@ public:
         kill = std::make_shared<KillStatsCollector>();
         elixir = std::make_shared<ElixirStatsCollector>();
         cardPlay = std::make_shared<CardPlayStatsCollector>();
+        championAbility = std::make_shared<ChampionAbilityStatsCollector>();
         outcome = std::make_shared<MatchOutcomeCollector>();
 
         board.statsEvents.subscribe(damage);
@@ -55,6 +57,7 @@ public:
         board.statsEvents.subscribe(kill);
         board.statsEvents.subscribe(elixir);
         board.statsEvents.subscribe(cardPlay);
+        board.statsEvents.subscribe(championAbility);
         board.statsEvents.subscribe(outcome);
     }
 
@@ -77,6 +80,9 @@ public:
         static const std::vector<CardPlayedEvent> empty;
         return cardPlay ? cardPlay->timeline(team) : empty;
     }
+
+    float championAbilityElixirSpent(int team) const { return championAbility ? championAbility->elixirSpent(team) : 0.0f; }
+    int championAbilityActivations(int team) const { return championAbility ? championAbility->activations(team) : 0; }
 
     int loserTeam() const { return outcome ? outcome->loserTeam() : -1; }
     int matchDurationTicks() const { return outcome ? outcome->matchDurationTicks() : 0; }
@@ -102,6 +108,10 @@ public:
         out << "\"kills\":{\"team0\":" << kills(0) << ",\"team1\":" << kills(1) << "},";
         out << "\"elixirSpent\":{\"team0\":" << floatStr(elixirSpent(0))
             << ",\"team1\":" << floatStr(elixirSpent(1)) << "},";
+        out << "\"championAbilityElixirSpent\":{\"team0\":" << floatStr(championAbilityElixirSpent(0))
+            << ",\"team1\":" << floatStr(championAbilityElixirSpent(1)) << "},";
+        out << "\"championAbilityActivations\":{\"team0\":" << championAbilityActivations(0)
+            << ",\"team1\":" << championAbilityActivations(1) << "},";
 
         out << "\"damageDealtByCard\":{";
         writeTeamCardMaps(out, damage ? &damage->byCardMap(0) : nullptr, damage ? &damage->byCardMap(1) : nullptr);

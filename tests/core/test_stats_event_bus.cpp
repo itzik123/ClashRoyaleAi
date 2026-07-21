@@ -11,6 +11,7 @@ namespace {
         int entityDiedCount = 0;
         int entitySpawnedCount = 0;
         int cardPlayedCount = 0;
+        int championAbilityActivatedCount = 0;
         int matchEndedCount = 0;
         int attributionClearedCount = 0;
         DamageDealtEvent lastDamage{};
@@ -19,6 +20,7 @@ namespace {
         void onEntityDied(const EntityDiedEvent&) override { entityDiedCount++; }
         void onEntitySpawned(const EntitySpawnedEvent&) override { entitySpawnedCount++; }
         void onCardPlayed(const CardPlayedEvent&) override { cardPlayedCount++; }
+        void onChampionAbilityActivated(const ChampionAbilityActivatedEvent&) override { championAbilityActivatedCount++; }
         void onMatchEnded(const MatchEndedEvent&) override { matchEndedCount++; }
         void onAttributionCleared(const AttributionClearedEvent&) override { attributionClearedCount++; }
     };
@@ -41,6 +43,7 @@ TEST_CASE("StatsEventBus delivers each event type to a subscribed observer", "[s
     bus.notifyEntityDied({ 2, 20, 1, 5 });
     bus.notifyEntitySpawned({ 3, 30, 0, 1 });
     bus.notifyCardPlayed({ 0, 10, 3.0f, 9.0f, 10.0f, 1 });
+    bus.notifyChampionAbilityActivated({ 0, 115, 1.0f, 6 });
     bus.notifyMatchEnded({ -1, 100 });
     bus.notifyAttributionCleared({ 2 });
 
@@ -48,6 +51,7 @@ TEST_CASE("StatsEventBus delivers each event type to a subscribed observer", "[s
     REQUIRE(observer->entityDiedCount == 1);
     REQUIRE(observer->entitySpawnedCount == 1);
     REQUIRE(observer->cardPlayedCount == 1);
+    REQUIRE(observer->championAbilityActivatedCount == 1);
     REQUIRE(observer->matchEndedCount == 1);
     REQUIRE(observer->attributionClearedCount == 1);
 
@@ -87,6 +91,7 @@ TEST_CASE("An observer that only overrides one callback safely ignores the other
     REQUIRE_NOTHROW(bus.notifyEntityDied({ 1, 10, 0, 1 }));
     REQUIRE_NOTHROW(bus.notifyEntitySpawned({ 1, 10, 0, 1 }));
     REQUIRE_NOTHROW(bus.notifyCardPlayed({ 0, 10, 3.0f, 9.0f, 10.0f, 1 }));
+    REQUIRE_NOTHROW(bus.notifyChampionAbilityActivated({ 0, 115, 1.0f, 6 }));
     REQUIRE_NOTHROW(bus.notifyMatchEnded({ -1, 100 }));
     REQUIRE_NOTHROW(bus.notifyAttributionCleared({ 1 }));
 

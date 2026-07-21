@@ -8,6 +8,8 @@ TEST_CASE("MatchStatistics is safely queryable before attach() (unattached defau
     REQUIRE(stats.kills(0) == 0);
     REQUIRE(stats.elixirSpent(0) == Catch::Approx(0.0f));
     REQUIRE(stats.cardsPlayed(0).empty());
+    REQUIRE(stats.championAbilityElixirSpent(0) == Catch::Approx(0.0f));
+    REQUIRE(stats.championAbilityActivations(0) == 0);
     REQUIRE(stats.loserTeam() == -1);
     REQUIRE(stats.matchDurationTicks() == 0);
 }
@@ -139,6 +141,39 @@ TEST_CASE("MatchStatistics records an ordered per-team card-play timeline", "[ma
     REQUIRE(timeline[1].cardId == 6);
     REQUIRE(timeline[1].tick == 20);
     REQUIRE(stats.cardsPlayed(1).empty());
+}
+
+TEST_CASE("MatchStatistics accumulates Champion ability elixir spend and activation counts, "
+          "separately from cards played", "[match_statistics][champion]") {
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+
+    board.statsEvents.notifyChampionAbilityActivated({ 0, 115, 1.0f, 6 });  // Mighty Miner
+    board.statsEvents.notifyChampionAbilityActivated({ 0, 115, 1.0f, 200 });
+    board.statsEvents.notifyChampionAbilityActivated({ 1, 118, 1.0f, 10 }); // Archer Queen
+
+    REQUIRE(stats.championAbilityElixirSpent(0) == Catch::Approx(2.0f));
+    REQUIRE(stats.championAbilityActivations(0) == 2);
+    REQUIRE(stats.championAbilityElixirSpent(1) == Catch::Approx(1.0f));
+    REQUIRE(stats.championAbilityActivations(1) == 1);
+
+    // Distinct from the card-played timeline/elixir tracking -- activating
+    // an ability never touches either.
+    REQUIRE(stats.elixirSpent(0) == Catch::Approx(0.0f));
+    REQUIRE(stats.cardsPlayed(0).empty());
+}
+
+TEST_CASE("MatchStatistics::toJson includes Champion ability elixir spend and activations", "[match_statistics][champion][json]") {
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+
+    board.statsEvents.notifyChampionAbilityActivated({ 0, 115, 1.0f, 6 });
+
+    std::string json = stats.toJson();
+    REQUIRE(json.find("\"championAbilityElixirSpent\":{\"team0\":1.00,\"team1\":0.00}") != std::string::npos);
+    REQUIRE(json.find("\"championAbilityActivations\":{\"team0\":1,\"team1\":0}") != std::string::npos);
 }
 
 TEST_CASE("MatchStatistics reports the match outcome from MatchEndedEvent", "[match_statistics]") {

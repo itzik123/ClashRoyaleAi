@@ -18,6 +18,7 @@ public:
     virtual void onEntityDied(const EntityDiedEvent&) {}
     virtual void onEntitySpawned(const EntitySpawnedEvent&) {}
     virtual void onCardPlayed(const CardPlayedEvent&) {}
+    virtual void onChampionAbilityActivated(const ChampionAbilityActivatedEvent&) {}
     virtual void onMatchEnded(const MatchEndedEvent&) {}
     virtual void onAttributionCleared(const AttributionClearedEvent&) {}
 };
@@ -46,6 +47,9 @@ public:
     }
     void notifyCardPlayed(const CardPlayedEvent& e) const {
         for (const auto& o : observers) o->onCardPlayed(e);
+    }
+    void notifyChampionAbilityActivated(const ChampionAbilityActivatedEvent& e) const {
+        for (const auto& o : observers) o->onChampionAbilityActivated(e);
     }
     void notifyMatchEnded(const MatchEndedEvent& e) const {
         for (const auto& o : observers) o->onMatchEnded(e);
