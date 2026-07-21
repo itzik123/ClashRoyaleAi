@@ -66,7 +66,13 @@ class MicroRoyaleEnv(gym.Env):
             # ל-[0,4), כך שהסוכן יכול סוף-סוף לאגור אליקסיר במקום להיות מאולץ לשחק.
             "card_index": spaces.Discrete(5),
             "target_x": spaces.Box(low=0.0, high=17.0, shape=(1,), dtype=np.float32),
-            "target_y": spaces.Box(low=0.0, high=15.5, shape=(1,), dtype=np.float32)
+            "target_y": spaces.Box(low=0.0, high=15.5, shape=(1,), dtype=np.float32),
+            # הפעלת יכולת צ'מפיון (למשל Explosive Escape של Mighty Miner) --
+            # 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש צ'מפיון פרוס, לא ב-cooldown,
+            # ויש מספיק אליקסיר (אחרת no-op שקט, כמו ה-no-op של card_index).
+            # אף ראש-רשת לא דוגם את זה עדיין (ראה ההערה על Mighty Miner ב-
+            # CardRegistry.h) -- ברירת המחדל False בכל מקום שלא מעביר את המפתח.
+            "activate_ability": spaces.Discrete(2),
         })
         
         obs_size = self.game.observation_size()
@@ -95,8 +101,11 @@ class MicroRoyaleEnv(gym.Env):
         card_idx = int(_to_scalar(action["card_index"]))
         target_x = float(_to_scalar(action["target_x"]))
         target_y = float(_to_scalar(action["target_y"]))
-        
-        step_result = self.game.step(card_idx, target_x, target_y, skip_frames)
+        # .get(..., 0): callers that build this dict by hand without this
+        # key (e.g. train.py's existing PPO loop) must not KeyError here.
+        activate_ability = bool(_to_scalar(action.get("activate_ability", 0)))
+
+        step_result = self.game.step(card_idx, target_x, target_y, skip_frames, activate_ability)
         
         obs = np.array(step_result.observation, dtype=np.float32)
         reward = float(step_result.reward)
@@ -120,6 +129,11 @@ class MicroRoyaleEnv(gym.Env):
             # enemy spend more than we do, independent of the damage itself).
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
+            # Not part of observation_space -- see ClashEnv.h's own comment
+            # on why champion-ability state stays out of the flat
+            # observation vector (would break model.py's fixed scalar_size
+            # formula) rather than growing it.
+            "champion_ability_ready": self.game.is_champion_ability_ready(0),
         }
 
         return obs, reward, terminated, truncated, info

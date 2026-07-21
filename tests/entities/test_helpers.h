@@ -6,6 +6,7 @@
 #include "Board.h"
 #include "Entity.h"
 #include "CombatEntity.h"
+#include "AbilityEffect.h"
 #include <memory>
 
 // Adds an entity to the board and makes it immediately visible to
@@ -86,5 +87,16 @@ public:
         applyCount++;
         lastPosition = position;
         lastTeam = team;
+    }
+};
+
+// Same idea again, but for IAbilityEffect (Champion activated abilities) --
+// just counts calls, doesn't do anything real.
+class RecordingAbilityEffect : public IAbilityEffect {
+public:
+    mutable int applyCount = 0;
+
+    void apply(Board&, CombatEntity&) const override {
+        applyCount++;
     }
 };

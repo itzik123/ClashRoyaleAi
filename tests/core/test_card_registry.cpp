@@ -88,6 +88,7 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {106, "Tornado", 3.0f, true}, {107, "Freeze", 4.0f, true}, {108, "Rage", 2.0f, true},
         {109, "Goblin Barrel", 3.0f, true}, {110, "Graveyard", 5.0f, true}, {111, "Royal Delivery", 3.0f, true},
         {112, "Goblin Gang", 3.0f, false}, {113, "Rascals", 5.0f, false}, {114, "Clone", 3.0f, true},
+        {115, "Mighty Miner", 4.0f, false},
     };
 
     const auto& registry = CardRegistry::getInstance();
@@ -963,6 +964,25 @@ TEST_CASE("Compound cards spawn a primary and a secondary unit that target indep
         REQUIRE(meleeCount == 3);
         REQUIRE(rangedCount == 3);
     }
+}
+
+TEST_CASE("Mighty Miner (115) is a Champion with the correct stats, ramp, and ability", "[card_registry][champion]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(115);
+    REQUIRE(def != nullptr);
+    REQUIRE_FALSE(def->deployAnywhere); // unlike the regular Miner (52): confirmed no deploy-anywhere
+
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto miner = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(miner != nullptr);
+    REQUIRE(miner->hp == 2250);
+    REQUIRE(miner->isChampion);
+    REQUIRE(miner->abilityElixirCost == Catch::Approx(1.0f));
+    REQUIRE(miner->abilityCooldownTicks == 130);
+    REQUIRE(miner->abilityEffect != nullptr);
+    REQUIRE(miner->abilityCooldownRemaining == 0); // ready immediately at deploy
 }
 
 // ---------------- wiki-research pass: closing the "no sourced stats" gaps ----------------

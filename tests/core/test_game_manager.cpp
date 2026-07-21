@@ -356,3 +356,89 @@ TEST_CASE("PlayerState::playCard does not spend elixir when the deck queue is em
     REQUIRE(player.elixir == Catch::Approx(5.0f)); // untouched
     REQUIRE(player.hand[0] == 0);                  // hand slot untouched
 }
+
+// ---------------- activateChampionAbility ----------------
+// Deck seeds card 115 (Mighty Miner) as the first hand slot -- affordable
+// (4.0 elixir) from the starting 5.0, so game.playCard(0, 115, 9.0f, 10.0f)
+// (team 0's own half, same spot playCard's own "fails once game over" test
+// above already uses) reliably deploys him before each ability test.
+
+TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldown", "[game_manager][champion]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+    float elixirBefore = game.getElixirAI();
+
+    bool activated = game.activateChampionAbility(0);
+
+    REQUIRE(activated);
+    REQUIRE(game.getElixirAI() == Catch::Approx(elixirBefore - 1.0f)); // 1-elixir ability cost
+}
+
+TEST_CASE("activateChampionAbility fails when the team has no deployed Champion", "[game_manager][champion]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    REQUIRE_FALSE(game.activateChampionAbility(0));
+}
+
+TEST_CASE("activateChampionAbility fails when unaffordable, without deducting anything", "[game_manager][champion]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+    game.playerAI.elixir = 0.5f; // below the 1.0 ability cost
+
+    bool activated = game.activateChampionAbility(0);
+
+    REQUIRE_FALSE(activated);
+    REQUIRE(game.getElixirAI() == Catch::Approx(0.5f)); // untouched
+}
+
+TEST_CASE("activateChampionAbility fails while still on cooldown", "[game_manager][champion]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+    game.playerAI.elixir = 10.0f; // plenty for a second attempt, if cooldown didn't block it
+
+    REQUIRE(game.activateChampionAbility(0));
+    REQUIRE_FALSE(game.activateChampionAbility(0));
+}
+
+TEST_CASE("activateChampionAbility is ready again once its full cooldown elapses via step()", "[game_manager][champion]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+    game.playerAI.elixir = 10.0f;
+    REQUIRE(game.activateChampionAbility(0));
+
+    // Fast-forward the cooldown directly instead of driving 130 real
+    // game.step() ticks -- the Miner has no restriction to buildings only
+    // (plain MeleeSquad), so 130 ticks of real simulation would let him
+    // wander into and fight enemy towers along the way, making this
+    // test's timing depend on unrelated combat outcomes instead of just
+    // the cooldown mechanism itself.
+    std::shared_ptr<CombatEntity> champion;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto candidate = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (candidate && candidate->isChampion) { champion = candidate; break; }
+    }
+    REQUIRE(champion != nullptr);
+
+    champion->abilityCooldownRemaining = 1;
+    game.playerAI.elixir = 10.0f;
+    REQUIRE_FALSE(game.activateChampionAbility(0)); // still 1 tick left
+
+    game.step(); // decrements the last tick via CombatEntity::update()
+    game.playerAI.elixir = 10.0f;
+    REQUIRE(game.activateChampionAbility(0));
+}
+
+TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager][champion]") {
+    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step(); // commits the pending entity so findChampion can see it
+    auto aiKing = game.getBoard().getEntities()[0];
+    aiKing->takeDamage(aiKing->hp);
+    game.step();
+
+    REQUIRE(game.isGameOver());
+    REQUIRE_FALSE(game.activateChampionAbility(0));
+}

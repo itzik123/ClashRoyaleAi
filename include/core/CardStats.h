@@ -3,6 +3,7 @@
 #include "OnHitEffect.h"
 #include "DeathEffect.h"
 #include "PeriodicEffect.h"
+#include "AbilityEffect.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -248,6 +249,20 @@ struct CardStats {
     int spellTierFewDamage = 0;
     int spellTierManyDamage = 0;
 
+    // Champion marker + activated ability (Mighty Miner's "Explosive
+    // Escape") -- see CombatEntity::isChampion/abilityElixirCost/
+    // abilityCooldownTicks/abilityEffect. isChampion alone changes no
+    // targeting/combat behavior -- a Champion stays whatever ordinary
+    // Archetype it already is (Mighty Miner is plain MeleeSquad, same as
+    // the regular Miner); this is purely a marker so
+    // GameManager::activateChampionAbility can find "my deployed Champion"
+    // on the board. false/0/nullptr (the defaults) are every non-Champion
+    // card.
+    bool isChampion = false;
+    float abilityElixirCost = 0.0f;
+    int abilityCooldownTicks = 0;
+    std::shared_ptr<IAbilityEffect> abilityEffect;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -456,6 +471,13 @@ struct CardStats {
     CardStats& withRangeFalloff(float minFraction) {
         rangeFalloff = true;
         rangeFalloffMinFraction = minFraction;
+        return *this;
+    }
+    CardStats& withChampionAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect) {
+        isChampion = true;
+        abilityElixirCost = elixirCost;
+        abilityCooldownTicks = cooldownTicks;
+        abilityEffect = std::move(effect);
         return *this;
     }
 };

@@ -206,7 +206,28 @@ public:
         return game.isGameOver() || currentTick >= maxTicks;
     }
 
-    StepResult step(int cardIndex, float targetX, float targetY, int skipFrames = 10) {
+    // Champion ability: true iff `team` currently has a living, deployed
+    // Champion whose ability is off cooldown AND affordable right now.
+    // Exposed as a plain accessor rather than folded into the flat
+    // observation vector returned by step()/reset() -- growing that vector
+    // would silently break python_ai/model.py's fixed scalar_size formula
+    // (self.scalar_size = 1 + hand_size + hand_size*num_card_ids, computed
+    // independently of observationSize() -- see MatchStatistics-adjacent
+    // discussion in the Champion plan for why this stays out of the
+    // vector).
+    bool isChampionAbilityReady(int team) const {
+        return game.isChampionAbilityReady(team);
+    }
+
+    // Activates `team`'s deployed Champion's ability, if any -- see
+    // GameManager::activateChampionAbility. Exposed directly (not just via
+    // step()'s new activateAbility param below) so tests / ad hoc scripts
+    // can trigger it without going through a full skip_frames window.
+    bool activateChampionAbility(int team) {
+        return game.activateChampionAbility(team);
+    }
+
+    StepResult step(int cardIndex, float targetX, float targetY, int skipFrames = 10, bool activateAbility = false) {
         float totalReward = 0.0f;
         bool isDone = false;
 
@@ -217,6 +238,9 @@ public:
                     int cardId = hand[cardIndex];
                     game.playCard(0, cardId, targetX, targetY);
                 }
+            }
+            if (i == 0 && activateAbility) {
+                game.activateChampionAbility(0);
             }
 
             opponentTurn();
@@ -252,7 +276,8 @@ public:
     // observation also inverts it here.
     SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
                                      int cardIndex1, float targetX1, float targetY1,
-                                     int skipFrames = 10) {
+                                     int skipFrames = 10,
+                                     bool activateAbility0 = false, bool activateAbility1 = false) {
         float totalReward = 0.0f;
         bool isDone = false;
 
@@ -272,6 +297,8 @@ public:
                         game.playCard(1, hand1[cardIndex1], targetX1, realY1);
                     }
                 }
+                if (activateAbility0) game.activateChampionAbility(0);
+                if (activateAbility1) game.activateChampionAbility(1);
             }
 
             game.step();

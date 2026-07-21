@@ -74,6 +74,14 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->lineSplashRange = stats.lineSplashRange;
     entity->rangeFalloff = stats.rangeFalloff;
     entity->rangeFalloffMinFraction = stats.rangeFalloffMinFraction;
+    entity->isChampion = stats.isChampion;
+    entity->abilityElixirCost = stats.abilityElixirCost;
+    entity->abilityCooldownTicks = stats.abilityCooldownTicks;
+    entity->abilityEffect = stats.abilityEffect;
+    // abilityCooldownRemaining is intentionally NOT copied from stats --
+    // it's pure runtime state (defaults to 0, ready immediately at
+    // deploy), same idiom as chargeProgress/ticksOnTarget never being
+    // sourced from CardStats either.
     applyOnHit(entity, stats);
     if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
 }

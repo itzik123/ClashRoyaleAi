@@ -1401,3 +1401,67 @@ TEST_CASE("Without splitTargetsFullDamage, split-target damage is divided as bef
     REQUIRE(enemyA->hp == 950); // 100 / 2 targets
     REQUIRE(enemyB->hp == 950);
 }
+
+// ---------------- Champion activated ability ----------------
+
+TEST_CASE("activateAbility fires the configured effect and starts the cooldown", "[combat_entity][champion]") {
+    Board board;
+    auto champion = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    auto effect = std::make_shared<RecordingAbilityEffect>();
+    champion->abilityEffect = effect;
+    champion->abilityCooldownTicks = 50;
+
+    bool fired = champion->activateAbility(board);
+
+    REQUIRE(fired);
+    REQUIRE(effect->applyCount == 1);
+    REQUIRE(champion->abilityCooldownRemaining == 50);
+}
+
+TEST_CASE("activateAbility is a no-op while on cooldown", "[combat_entity][champion]") {
+    Board board;
+    auto champion = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    auto effect = std::make_shared<RecordingAbilityEffect>();
+    champion->abilityEffect = effect;
+    champion->abilityCooldownTicks = 50;
+
+    champion->activateAbility(board);
+    bool firedAgain = champion->activateAbility(board);
+
+    REQUIRE_FALSE(firedAgain);
+    REQUIRE(effect->applyCount == 1); // still just the one, real, activation
+}
+
+TEST_CASE("The ability becomes available again once its cooldown fully elapses", "[combat_entity][champion]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 100.0f, 100.0f, 100, 1); // far away: never actually attacked
+    auto champion = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+    spawn(board, target);
+    auto effect = std::make_shared<RecordingAbilityEffect>();
+    champion->abilityEffect = effect;
+    champion->abilityCooldownTicks = 3;
+
+    champion->activateAbility(board);
+    REQUIRE(effect->applyCount == 1);
+
+    champion->update(board); // cooldown 3 -> 2
+    champion->update(board); // 2 -> 1
+    REQUIRE_FALSE(champion->activateAbility(board));
+    REQUIRE(effect->applyCount == 1); // still not ready
+
+    champion->update(board); // 1 -> 0: ready again
+    REQUIRE(champion->activateAbility(board));
+    REQUIRE(effect->applyCount == 2);
+}
+
+TEST_CASE("A card without an ability configured (the default) never fires anything", "[combat_entity][champion]") {
+    Board board;
+    auto champion = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 1.0f, 10, 10);
+
+    bool fired = champion->activateAbility(board);
+
+    REQUIRE_FALSE(fired);
+    REQUIRE_FALSE(champion->isChampion);
+    REQUIRE(champion->abilityElixirCost == Catch::Approx(0.0f));
+    REQUIRE(champion->abilityCooldownTicks == 0);
+}

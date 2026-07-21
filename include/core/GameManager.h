@@ -2,6 +2,7 @@
 #include "Board.h"
 #include "PlayerState.h"
 #include "Tower.h"
+#include "CombatEntity.h"
 #include "MatchRules.h"
 #include "MatchStatistics.h"
 #include <algorithm>
@@ -41,6 +42,21 @@ private:
         tower->name = towerName;
         tower->cardId = (symbol == 'R') ? TOWER_KING_ID : TOWER_PRINCESS_ID;
         board.addEntity(tower);
+    }
+
+    // Shared scan for both activateChampionAbility and
+    // isChampionAbilityReady: "find team's one deployed, living Champion,
+    // if any." If more than one is somehow alive at once -- this engine
+    // doesn't enforce the real game's "only one Champion in your deck"
+    // rule -- the first one found (board-scan order) is used; not expected
+    // to matter with a normal deck containing a Champion card only once.
+    std::shared_ptr<CombatEntity> findChampion(int team) const {
+        for (const auto& entity : board.getEntities()) {
+            if (entity->team != team || !entity->isAlive()) continue;
+            auto combatEntity = std::dynamic_pointer_cast<CombatEntity>(entity);
+            if (combatEntity && combatEntity->isChampion) return combatEntity;
+        }
+        return nullptr;
     }
 
 public:
@@ -139,6 +155,39 @@ public:
             return true;
         }
         return false;
+    }
+
+    // Read-only: whether `team` could successfully activate its Champion's
+    // ability right now (deployed, off cooldown, affordable) without
+    // actually doing so -- exposed for ClashEnv to surface without
+    // mutating state.
+    bool isChampionAbilityReady(int team) const {
+        auto champion = findChampion(team);
+        if (!champion || !champion->abilityEffect) return false;
+        if (champion->abilityCooldownRemaining > 0) return false;
+        const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        return player.elixir >= champion->abilityElixirCost;
+    }
+
+    // Activates `team`'s deployed Champion's ability (e.g. Mighty Miner's
+    // "Explosive Escape") -- distinct from playCard, which places a NEW
+    // card from hand onto an empty spot. Mirrors playCard's own shape:
+    // returns bool, never throws, deducts elixir only once success is
+    // already guaranteed (find the champion, confirm cooldown/elixir, THEN
+    // deduct and fire) so a failed call never partially spends resources.
+    bool activateChampionAbility(int team) {
+        if (gameOver) return false;
+
+        auto champion = findChampion(team);
+        if (!champion || !champion->abilityEffect) return false;
+        if (champion->abilityCooldownRemaining > 0) return false;
+
+        PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        if (player.elixir < champion->abilityElixirCost) return false;
+
+        player.elixir -= champion->abilityElixirCost;
+        champion->activateAbility(board);
+        return true;
     }
 
     void reset() {

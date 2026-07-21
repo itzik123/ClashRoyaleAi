@@ -20,6 +20,7 @@
 #include "SpawnOnDeathForEnemyTeam.h"
 #include "ProximityGatedPeriodicSpawnEffect.h"
 #include "CursedHogOnHit.h"
+#include "MightyMinerEscapeEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -924,9 +925,42 @@ private:
         add(spell(114, "Clone", 3.0f, 3.0f, 0, 8, ')')
             .withSpellClone());
 
+        // === Champions ===
+        // First Champion implemented in this engine -- previously entirely
+        // out of scope (see the "Excluded from this sync" note below,
+        // updated accordingly). Mighty Miner is plain MeleeSquad, identical
+        // archetype/targeting to the regular Miner (52) -- ground only, no
+        // building restriction -- but, confirmed, does NOT deploy anywhere
+        // like the regular Miner does: .withDeployAnywhere() is
+        // deliberately omitted, so this stays on the caster's own half like
+        // any ordinary troop.
+        //
+        // 3-stage damage ramp (40 -> 204 -> 409) while locked onto one
+        // target, same ramp mechanism as Inferno Dragon/Inferno Tower --
+        // `damage` stores the fully-ramped max (409). Exact tick thresholds
+        // for the stage transitions are NOT yet confirmed by research --
+        // defaulted to Inferno Dragon's own cadence (mid at 15 ticks/1.5s,
+        // full at 30 ticks/3s) as a placeholder; flagged as a follow-up
+        // web-research item, not a sourced number.
+        //
+        // Activated ability "Explosive Escape" (1 elixir, ~13s/130-tick
+        // cooldown -- see CombatEntity::abilityElixirCost/
+        // abilityCooldownTicks): teleports to the horizontally-mirrored
+        // position across the board's center line (a lane swap, same Y)
+        // and leaves a bomb at the ORIGINAL position that detonates after
+        // ~1s (10 ticks) for 332 damage (tournament standard), hitting
+        // ground and air alike, with a 1.8-tile knockback. Bomb radius
+        // (2.5) isn't part of the sourced data -- a reasonable
+        // engine-internal geometry constant, same caveat as splashRadius/
+        // shieldHp elsewhere in this file. See MightyMinerEscapeEffect.
+        add(troop(115, "Mighty Miner", 4.0f, Archetype::MeleeSquad, 2250, 0.5f, 1.6f, 409, 4, '\'')
+            .withDamageRamp(15, 30, 40.0f / 409.0f, 204.0f / 409.0f)
+            .withChampionAbility(1.0f, 130, std::make_shared<MightyMinerEscapeEffect>(2.5f, 332, 10, 1.8f)));
+
         // === Excluded from this sync (no supporting mechanism in this engine) ===
         // Champions (Golden Knight, Skeleton King, Archer Queen, Monk,
-        // Mighty Miner, Little Prince, Goblinstein, Boss Bandit), Evolutions,
+        // Little Prince, Goblinstein, Boss Bandit -- Mighty Miner is now
+        // implemented above), Evolutions,
         // and Tower Troops (Tower Princess, Cannoneer, Dagger Duchess, Royal
         // Chef) were out of scope per the sync request and never researched.
         // Also excluded, for lack of any matching mechanism even

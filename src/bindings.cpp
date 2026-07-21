@@ -22,11 +22,15 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def(py::init<const std::vector<int>&, const std::vector<int>&, int>(),
             py::arg("ai_deck"), py::arg("opp_deck"), py::arg("max_ticks") = 1800)
         .def("reset", &ClashEnv::reset)
-        .def("step", &ClashEnv::step, py::arg("card_index"), py::arg("target_x"), py::arg("target_y"), py::arg("skip_frames") = 10)
+        .def("step", &ClashEnv::step, py::arg("card_index"), py::arg("target_x"), py::arg("target_y"),
+            py::arg("skip_frames") = 10, py::arg("activate_ability") = false)
         .def("step_self_play", &ClashEnv::stepSelfPlay,
             py::arg("card_index0"), py::arg("target_x0"), py::arg("target_y0"),
             py::arg("card_index1"), py::arg("target_x1"), py::arg("target_y1"),
-            py::arg("skip_frames") = 10)
+            py::arg("skip_frames") = 10,
+            py::arg("activate_ability0") = false, py::arg("activate_ability1") = false)
+        .def("is_champion_ability_ready", &ClashEnv::isChampionAbilityReady, py::arg("team"))
+        .def("activate_champion_ability", &ClashEnv::activateChampionAbility, py::arg("team"))
         .def("get_hand", &ClashEnv::getHand)
         .def("get_elixir", &ClashEnv::getElixir)
         .def("get_observation_for_team", &ClashEnv::getObservationForTeam, py::arg("team"))

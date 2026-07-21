@@ -170,6 +170,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "card_index": spaces.Discrete(5),
             "target_x": spaces.Box(low=0.0, high=self.MAX_X, shape=(1,), dtype=np.float32),
             "target_y": spaces.Box(low=0.0, high=self.MAX_Y, shape=(1,), dtype=np.float32),
+            # Same key as gym_wrapper.MicroRoyaleEnv's action_space -- see
+            # its own comment. No network head samples this yet; team 1
+            # (the frozen historical opponent, via _opponent_action()) also
+            # never activates one, so this stays effectively unused until a
+            # real head is added on both sides.
+            "activate_ability": spaces.Discrete(2),
         })
         obs_size = self.game.observation_size()
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
@@ -215,9 +221,10 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         card_idx0 = int(_to_scalar(action["card_index"]))
         x0 = float(_to_scalar(action["target_x"]))
         y0 = float(_to_scalar(action["target_y"]))
+        activate_ability0 = bool(_to_scalar(action.get("activate_ability", 0)))
         card_idx1, x1, y1 = self._opponent_action()
 
-        result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames)
+        result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames, activate_ability0)
 
         obs = np.array(result.observation0, dtype=np.float32)
         reward = float(result.reward0)
@@ -234,6 +241,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team1_building_damage": self.game.get_building_damage_dealt(1),
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
+            "champion_ability_ready": self.game.is_champion_ability_ready(0),
         }
         return obs, reward, terminated, False, info
 

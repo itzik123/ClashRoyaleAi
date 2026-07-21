@@ -4,6 +4,7 @@
 #include "OnHitEffect.h"
 #include "DeathEffect.h"
 #include "PeriodicEffect.h"
+#include "AbilityEffect.h"
 #include <memory>
 #include <limits>
 #include <vector>
@@ -328,6 +329,38 @@ public:
     // own) has something to scale rangeFalloff against.
     float lastAttackDistance = 0.0f;
 
+    // Champion-only activated ability (Mighty Miner's "Explosive Escape",
+    // and any future Champion). isChampion itself gates no combat behavior
+    // on its own -- Champions fight exactly like an ordinary troop of
+    // their archetype (see CardStats::isChampion's own comment for why
+    // this isn't a 7th Archetype); it exists purely so
+    // GameManager::activateChampionAbility can find "my one deployed
+    // Champion" on the board by scanning for (team, isAlive(), isChampion)
+    // instead of a fragile cardId allowlist. false (the default) is every
+    // non-Champion card.
+    bool isChampion = false;
+    // In-battle elixir cost of activating this ability -- separate from
+    // CardStats::cost (the up-front deploy cost already spent placing this
+    // entity on the board), charged again on every activation by
+    // GameManager::activateChampionAbility. 0.0f (the default, alongside
+    // abilityEffect == nullptr) means "no activated ability" -- every
+    // non-Champion card.
+    float abilityElixirCost = 0.0f;
+    // Cooldown between activations, and how many ticks remain before the
+    // next one is allowed. abilityCooldownRemaining starts at 0 -- ready
+    // immediately at deploy, matching the real game's Champions (no forced
+    // wait before the first use) -- and is reset to abilityCooldownTicks
+    // every time activateAbility() actually fires.
+    int abilityCooldownTicks = 0;
+    int abilityCooldownRemaining = 0;
+    // What the ability actually does (Mighty Miner: teleport + delayed bomb
+    // -- see MightyMinerEscapeEffect in core/, following the same
+    // "concrete effects live in core/" convention as SpawnOnDeath/
+    // PeriodicSpawnEffect). nullptr (the default) is every card without
+    // one -- activateAbility() is always a no-op in that case, regardless
+    // of cooldown.
+    std::shared_ptr<IAbilityEffect> abilityEffect;
+
     CombatEntity(int id, float x, float y, int hp, int team, char symbol,
         float attackRange, int damage, int attackCooldown)
         : CardEntity(id, x, y, hp, team, symbol),
@@ -346,6 +379,20 @@ public:
     void applyCurse(float damageTakenMultiplier, int ticks) {
         curseDamageTakenMultiplier = damageTakenMultiplier;
         curseTicksRemaining = ticks;
+    }
+
+    // Activated ability (Champion-only). Fires abilityEffect and resets the
+    // cooldown, but only when one is actually configured and off cooldown
+    // -- elixir affordability is GameManager's concern (mirrors playCard's
+    // own split: CombatEntity/CardFactories never touch PlayerState), so
+    // the caller (GameManager::activateChampionAbility) must confirm and
+    // deduct elixir BEFORE calling this; this method only ever gates on
+    // cooldown/configuration. Returns whether it actually fired.
+    bool activateAbility(Board& board) {
+        if (!abilityEffect || abilityCooldownRemaining > 0) return false;
+        abilityEffect->apply(board, *this);
+        abilityCooldownRemaining = abilityCooldownTicks;
+        return true;
     }
 
     // Deploy delay (X-Bow: ~3.5s slow lock-on before its first shot,
@@ -447,6 +494,7 @@ public:
         if (startsInvisible && visibleTicksRemaining > 0) visibleTicksRemaining--;
         if (buffTicksRemaining > 0) buffTicksRemaining--;
         if (curseTicksRemaining > 0) curseTicksRemaining--;
+        if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
 
         if (periodicIntervalTicks > 0) {
             periodicTicksUntilNext--;
