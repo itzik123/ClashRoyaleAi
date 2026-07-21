@@ -900,9 +900,9 @@ function renderTick() {
     ctx.beginPath(); ctx.moveTo(PADDING, py); ctx.lineTo(w - PADDING, py); ctx.stroke();
   }
 
-  // River (y = 15 to 17)
-  const riverTop = PADDING + (gameData.boardHeight - 17) * CELL_SIZE;
-  const riverBottom = PADDING + (gameData.boardHeight - 15) * CELL_SIZE;
+  // River (y = 16 to 18)
+  const riverTop = PADDING + (gameData.boardHeight - 18) * CELL_SIZE;
+  const riverBottom = PADDING + (gameData.boardHeight - 16) * CELL_SIZE;
   ctx.fillStyle = 'rgba(35, 90, 150, 0.45)';
   ctx.fillRect(PADDING, riverTop, w - PADDING * 2, riverBottom - riverTop);
 

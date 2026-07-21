@@ -37,7 +37,7 @@ private:
     }
 
 public:
-    GameLogger(int boardWidth = 18, int boardHeight = 32)
+    GameLogger(int boardWidth = 18, int boardHeight = 34)
         : enabled(true), boardWidth(boardWidth), boardHeight(boardHeight) {}
 
     void setEnabled(bool value) { enabled = value; }

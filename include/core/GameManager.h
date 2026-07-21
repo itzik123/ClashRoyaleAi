@@ -84,6 +84,7 @@ public:
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);
         if (x < 0.0f || x > maxX || y < 0.0f || y > maxY) return false;
+        if (board.isBackRowDeadZone(x, y)) return false;
 
         if (!isSpell) {
             // Miner/Goblin Drill skip the own-half restriction (they can
@@ -166,13 +167,24 @@ public:
         // the alignment fix (3-wide footprint, already correctly aligned);
         // the Red-side princesses moved slightly only to match the King's
         // corrected position, preserving the two teams' visual symmetry.
+        //
+        // Real-map sync: the board grew by one back row per side (see
+        // Board.h's BACK_ROW_OPENING_HALF_WIDTH), and the King Tower moved
+        // back exactly one tile into that new space -- Blue's Y is
+        // numerically unchanged (2.5) only because the board's own new row
+        // 0 already accounts for the other tile of growth; Red mirrors it
+        // via (height-1) - y = 33 - 2.5 = 30.5, same convention as every
+        // other team-mirroring formula in this engine (e.g.
+        // ClashEnv::extractObservationForTeam). Princess Towers didn't move
+        // independently -- their Y values below are just the same +1 board-
+        // growth carry-along every pre-existing coordinate got.
         addTower(8.5f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
-        addTower(8.5f, 28.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
+        addTower(8.5f, 30.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        addTower(3.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(14.0f, 5.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(3.0f, 26.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(14.0f, 26.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(3.0f, 6.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(14.0f, 6.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
 
         board.commitPendingEntities(currentTick);
     }

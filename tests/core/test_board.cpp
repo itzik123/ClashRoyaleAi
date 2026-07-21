@@ -13,25 +13,25 @@ TEST_CASE("clampToBoard clamps out-of-bounds positions to the board edges", "[bo
     REQUIRE(board.clampToBoard(Vector2D{ -5.0f, 10.0f }, false).x == Catch::Approx(0.0f));
     REQUIRE(board.clampToBoard(Vector2D{ 25.0f, 10.0f }, false).x == Catch::Approx(17.0f));
     REQUIRE(board.clampToBoard(Vector2D{ 10.0f, -5.0f }, false).y == Catch::Approx(0.0f));
-    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 40.0f }, false).y == Catch::Approx(31.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 40.0f }, false).y == Catch::Approx(33.0f));
 }
 
 TEST_CASE("clampToBoard pushes non-bridge river-band positions to the nearest bank", "[board][clamp]") {
     Board board;
-    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 15.5f }, false).y == Catch::Approx(15.0f));
-    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 16.0f }, false).y == Catch::Approx(17.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 16.5f }, false).y == Catch::Approx(16.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ 10.0f, 17.0f }, false).y == Catch::Approx(18.0f));
 }
 
 TEST_CASE("clampToBoard does not snap positions sitting on a bridge column", "[board][clamp]") {
     Board board;
-    REQUIRE(board.clampToBoard(Vector2D{ 4.0f, 16.0f }, false).y == Catch::Approx(16.0f));  // left bridge
-    REQUIRE(board.clampToBoard(Vector2D{ 14.0f, 16.0f }, false).y == Catch::Approx(16.0f)); // right bridge
+    REQUIRE(board.clampToBoard(Vector2D{ 4.0f, 17.0f }, false).y == Catch::Approx(17.0f));  // left bridge
+    REQUIRE(board.clampToBoard(Vector2D{ 14.0f, 17.0f }, false).y == Catch::Approx(17.0f)); // right bridge
 }
 
 TEST_CASE("clampToBoard skips the river snap entirely when ignoresRiver is true", "[board][clamp]") {
     Board board;
-    Vector2D result = board.clampToBoard(Vector2D{ 10.0f, 16.0f }, true); // off-bridge, mid-river
-    REQUIRE(result.y == Catch::Approx(16.0f)); // left untouched
+    Vector2D result = board.clampToBoard(Vector2D{ 10.0f, 17.0f }, true); // off-bridge, mid-river
+    REQUIRE(result.y == Catch::Approx(17.0f)); // left untouched
 }
 
 TEST_CASE("Board::allocateId returns increasing, unique ids", "[board][id]") {
@@ -297,9 +297,9 @@ TEST_CASE("getNextWaypoint returns the target directly when both points are abov
 
 TEST_CASE("getNextWaypoint returns the target directly when both points are inside the river band", "[board][waypoint]") {
     Board board;
-    Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 15.5f }, Vector2D{ 14.0f, 16.5f });
+    Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.5f }, Vector2D{ 14.0f, 17.5f });
     REQUIRE(wp.x == Catch::Approx(14.0f));
-    REQUIRE(wp.y == Catch::Approx(16.5f));
+    REQUIRE(wp.y == Catch::Approx(17.5f));
 }
 
 TEST_CASE("getNextWaypoint routes below-to-above via the nearest bridge's start edge", "[board][waypoint]") {
@@ -307,14 +307,14 @@ TEST_CASE("getNextWaypoint routes below-to-above via the nearest bridge's start 
     // Closer to the right bridge (x=14) than the left (x=4).
     Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 5.0f }, Vector2D{ 10.0f, 25.0f });
     REQUIRE(wp.x == Catch::Approx(14.0f));
-    REQUIRE(wp.y == Catch::Approx(15.0f)); // riverY_start
+    REQUIRE(wp.y == Catch::Approx(16.0f)); // riverY_start
 }
 
 TEST_CASE("getNextWaypoint routes above-to-below via the nearest bridge's end edge", "[board][waypoint]") {
     Board board;
     Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 25.0f }, Vector2D{ 10.0f, 5.0f });
     REQUIRE(wp.x == Catch::Approx(14.0f));
-    REQUIRE(wp.y == Catch::Approx(17.0f)); // riverY_end
+    REQUIRE(wp.y == Catch::Approx(18.0f)); // riverY_end
 }
 
 TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][waypoint]") {
@@ -327,12 +327,41 @@ TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge tow
     Board board;
 
     SECTION("target is above -> heads to the river end edge") {
-        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.0f }, Vector2D{ 4.0f, 25.0f });
-        REQUIRE(wp.y == Catch::Approx(17.0f));
+        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 17.0f }, Vector2D{ 4.0f, 25.0f });
+        REQUIRE(wp.y == Catch::Approx(18.0f));
     }
 
     SECTION("target is below -> heads to the river start edge") {
-        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.0f }, Vector2D{ 4.0f, 5.0f });
-        REQUIRE(wp.y == Catch::Approx(15.0f));
+        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 17.0f }, Vector2D{ 4.0f, 5.0f });
+        REQUIRE(wp.y == Catch::Approx(16.0f));
     }
+}
+
+// ---------------- isBackRowDeadZone ----------------
+// Real-map sync: one extra row behind each King Tower, mostly dead space
+// except a narrow center gap. See Board.h's BACK_ROW_OPENING_HALF_WIDTH.
+
+TEST_CASE("isBackRowDeadZone is false everywhere outside the two new back rows", "[board][deadzone]") {
+    Board board;
+    REQUIRE_FALSE(board.isBackRowDeadZone(0.0f, 5.0f));   // ordinary row, corner x
+    REQUIRE_FALSE(board.isBackRowDeadZone(17.0f, 5.0f));  // ordinary row, other corner x
+    REQUIRE_FALSE(board.isBackRowDeadZone(8.5f, 16.5f));  // mid-board
+}
+
+TEST_CASE("isBackRowDeadZone blocks the corners of the bottom back row but not its center gap", "[board][deadzone]") {
+    Board board;
+    REQUIRE(board.isBackRowDeadZone(0.0f, 0.0f));
+    REQUIRE(board.isBackRowDeadZone(17.0f, 0.0f));
+    REQUIRE_FALSE(board.isBackRowDeadZone(8.5f, 0.0f));   // board's own horizontal center
+    REQUIRE_FALSE(board.isBackRowDeadZone(5.5f, 0.0f));   // left edge of the opening
+    REQUIRE_FALSE(board.isBackRowDeadZone(11.5f, 0.0f));  // right edge of the opening
+    REQUIRE(board.isBackRowDeadZone(5.4f, 0.0f));         // just outside the opening
+    REQUIRE(board.isBackRowDeadZone(11.6f, 0.0f));        // just outside the opening
+}
+
+TEST_CASE("isBackRowDeadZone mirrors the same opening on the top back row", "[board][deadzone]") {
+    Board board;
+    float maxY = static_cast<float>(board.getHeight() - 1); // 33
+    REQUIRE(board.isBackRowDeadZone(0.0f, maxY));
+    REQUIRE_FALSE(board.isBackRowDeadZone(8.5f, maxY));
 }

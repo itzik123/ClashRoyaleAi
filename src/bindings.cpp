@@ -39,4 +39,7 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("get_troop_damage_dealt", &ClashEnv::getTroopDamageDealt, py::arg("team"))
         .def("get_building_damage_dealt", &ClashEnv::getBuildingDamageDealt, py::arg("team"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"));
+
+    m.def("get_all_card_ids", &getAllCardIds,
+        "All ids CardRegistry currently has registered (real, playable cards only).");
 }

@@ -26,19 +26,25 @@ TEST_CASE("GameManager construction sets up exactly the 6 expected towers", "[ga
     REQUIRE(entities[1]->team == 1);
     REQUIRE(entities[1]->name == "King Tower");
     REQUIRE(entities[1]->position.x == Catch::Approx(8.5f));
-    REQUIRE(entities[1]->position.y == Catch::Approx(28.5f));
+    // Mirrors the ally king via (height-1) - y = 33 - 2.5 = 30.5, same
+    // convention as ClashEnv::extractObservationForTeam's team-1 mirroring.
+    REQUIRE(entities[1]->position.y == Catch::Approx(30.5f));
 
     REQUIRE(entities[2]->symbol == 'P');
     REQUIRE(entities[2]->team == 0);
     REQUIRE(entities[2]->hp == 2534);
     REQUIRE(entities[2]->name == "Princess Tower");
+    REQUIRE(entities[2]->position.y == Catch::Approx(6.0f));
     REQUIRE(entities[3]->symbol == 'P');
     REQUIRE(entities[3]->team == 0);
+    REQUIRE(entities[3]->position.y == Catch::Approx(6.0f));
 
     REQUIRE(entities[4]->symbol == 'P');
     REQUIRE(entities[4]->team == 1);
+    REQUIRE(entities[4]->position.y == Catch::Approx(27.0f));
     REQUIRE(entities[5]->symbol == 'P');
     REQUIRE(entities[5]->team == 1);
+    REQUIRE(entities[5]->position.y == Catch::Approx(27.0f));
 }
 
 TEST_CASE("GameManager construction gives both players starting elixir and a 4-card hand", "[game_manager][reset]") {
@@ -61,14 +67,24 @@ TEST_CASE("isValidPlacement rejects out-of-bounds coordinates regardless of spel
     REQUIRE_FALSE(game.isValidPlacement(0, 5.0f, 40.0f, true, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
+TEST_CASE("isValidPlacement rejects the back-row dead-zone corners but allows its center gap", "[game_manager][placement]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    // Spells skip the own-half check but must still respect real board
+    // geometry -- true=isSpell keeps this focused on the dead-zone rule.
+    REQUIRE_FALSE(game.isValidPlacement(0, 0.0f, 0.0f, true, 0.0f));   // bottom-row corner
+    REQUIRE(game.isValidPlacement(0, 8.5f, 0.0f, true, 0.0f));         // bottom-row center gap
+    REQUIRE_FALSE(game.isValidPlacement(1, 17.0f, 33.0f, true, 0.0f)); // top-row corner
+    REQUIRE(game.isValidPlacement(1, 8.5f, 33.0f, true, 0.0f));        // top-row center gap
+}
+
 TEST_CASE("isValidPlacement restricts troop/building placement to the caller's own half", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
 
-    REQUIRE(game.isValidPlacement(0, 9.0f, 14.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
-    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 15.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(game.isValidPlacement(0, 9.0f, 15.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 16.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 
-    REQUIRE(game.isValidPlacement(1, 9.0f, 18.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
-    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 17.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE(game.isValidPlacement(1, 9.0f, 19.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 18.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 TEST_CASE("isValidPlacement lets spells ignore the half restriction", "[game_manager][placement]") {
@@ -257,15 +273,15 @@ TEST_CASE("step()'s post-collision re-clamp respects riverIgnores (regression te
     // river-clamp pass even though its own clampPosition() call (inside
     // update()) correctly left it alone. Now both calls go through the same
     // Board::clampToBoard(), so the second call is a no-op for it too.
-    auto hog = std::make_shared<BuildingTargeter>(board.allocateId(), 8.0f, 16.0f, 1408, 0, 0.8f, 1.0f, 264, 15, 'H');
+    auto hog = std::make_shared<BuildingTargeter>(board.allocateId(), 8.0f, 17.0f, 1408, 0, 0.8f, 1.0f, 264, 15, 'H');
     hog->setIgnoresRiver(true);
     board.addEntity(hog);
     board.commitPendingEntities();
 
     game.step();
 
-    REQUIRE(hog->position.y > 15.0f);
-    REQUIRE(hog->position.y < 17.0f);
+    REQUIRE(hog->position.y > 16.0f);
+    REQUIRE(hog->position.y < 18.0f);
 }
 
 // ---------------- statistics ----------------

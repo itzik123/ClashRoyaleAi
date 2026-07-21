@@ -17,7 +17,7 @@ private:
     }
 
 public:
-    TerminalRenderer(int w = 18, int h = 32) : width(w), height(h) {}
+    TerminalRenderer(int w = 18, int h = 34) : width(w), height(h) {}
 
     // הפונקציה כעת מקבלת את מנהל המשחק כולו
     void render(const GameManager& game) {
@@ -28,10 +28,10 @@ public:
 
         for (int x = 0; x < width; ++x) {
             if ((x >= 3 && x <= 5) || (x >= 13 && x <= 15)) {
-                grid[16][x] = 'B';
+                grid[17][x] = 'B';
             }
             else {
-                grid[16][x] = 'W';
+                grid[17][x] = 'W';
             }
         }
 

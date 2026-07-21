@@ -37,7 +37,11 @@ private:
     GameLogger logger;
 
     static constexpr int BOARD_WIDTH = 18;
-    static constexpr int BOARD_HEIGHT = 32;
+    // Real-map sync: 34, not 32 -- one extra row behind each King Tower
+    // (mostly dead space, a narrow center gap is real ground). See Board.h's
+    // BACK_ROW_OPENING_HALF_WIDTH / isBackRowDeadZone for the placement side
+    // of this; this constant only affects the observation tensor's shape.
+    static constexpr int BOARD_HEIGHT = 34;
     // Spatial channels, per team: melee troops / ranged troops / building-targeters
     // (win-conditions like Hog, Giant, Golem) / buildings (towers + defensive).
     // Unit-TYPE visibility is what lets the net answer "what is attacking me and
@@ -69,7 +73,7 @@ private:
         // River/bridge marker row -- x is already left/right symmetric (both
         // teams' towers and the bridge gaps sit at the same x coordinates),
         // so only the row itself needs mirroring for team 1.
-        int riverRow = (team == 0) ? 16 : (BOARD_HEIGHT - 1 - 16);
+        int riverRow = (team == 0) ? 17 : (BOARD_HEIGHT - 1 - 17);
         for (int x = 0; x < BOARD_WIDTH; ++x) {
             if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
                 obs[getIndex(8, riverRow, x)] = 1.0f;
@@ -311,3 +315,25 @@ public:
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
+
+// Every id CardRegistry actually has registered right now (real, playable
+// cards only -- death/periodic/secondary child-unit stats like Golemite or
+// Ram Rider's crossbow use negative sentinel ids and are never add()-ed, so
+// they never appear here). A free function, not a ClashEnv method, since
+// CardRegistry is a singleton independent of any particular env instance.
+//
+// Exists so Python-side random-deck sampling (gym_wrapper.py, train.py) can
+// derive its card pool from whatever's actually registered instead of a
+// hardcoded id range + exclusion list that silently drifts out of sync the
+// next time a card is added to (or removed from) CardRegistry.h -- exactly
+// what happened here: a hardcoded range(46) pool went stale the moment the
+// roster grew to 114 registered cards, and a hand-maintained exclusion list
+// is exactly the kind of thing that's easy to get wrong in the other
+// direction too (mistaking real registered ids for gaps).
+inline std::vector<int> getAllCardIds() {
+    std::vector<int> ids;
+    for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
+        ids.push_back(id);
+    }
+    return ids;
+}

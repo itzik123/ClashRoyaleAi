@@ -21,21 +21,45 @@ from model import MicroRoyaleNet
 # the win-rate in TensorBoard: if the shaping sum dwarfs +/-1, lower these.
 W_BLDG = 0.5     # weight on building (tower) HP swings
 W_TROOPS = 0.1   # weight on troop HP swings
-# Positive elixir trade: reward forcing the enemy to spend more elixir than we
-# spend ourselves over the same window -- the classic CR "won the trade"
+# Reward forcing the ENEMY to spend elixir -- the classic CR "won the trade"
 # concept (e.g. a 2-elixir Skeletons stopping a 5-elixir Giant), independent of
 # and additive to the damage terms above, which already separately reward/
 # punish the damage itself but can't distinguish an efficient answer from a
-# wasteful one. Kept small and additive, same philosophy as W_BLDG/W_TROOPS --
-# watch Reward/Episode_Shaping_Sum, lower this if it dominates the terminal +/-1.
+# wasteful one.
+#
+# Deliberately one-sided (no symmetric -ally_elixir_spent term anymore, unlike
+# this term's original version): that symmetric version taxed the agent the
+# INSTANT it spent elixir, while the payoff for a good trade (troop/building
+# damage) only lands gradually over many future ticks, discounted by gamma
+# across a ~360-decision episode -- doing nothing at all was therefore always
+# a perfectly safe, guaranteed-zero outcome. Confirmed causing exactly this in
+# self-play (train_selfplay.py): both sides converged to holding elixir and
+# never acting, running out the clock into a draw every game. Bad spends are
+# still punished via the ally_troops_damage/ally_bldg_damage terms below (and
+# the terminal loss) -- this term no longer ALSO taxes acting itself.
 W_ELIXIR_TRADE = 0.15
+# Continuous (not one-time) pressure against sitting on a full elixir bar --
+# a real player never intentionally caps out (it wastes ongoing regen), and
+# unlike DRAW_PENALTY below this is felt every single step it's true, not
+# discounted away over a long episode. Same role as W_ELIXIR_TRADE's fix
+# above: makes passivity actively cost something instead of being free.
+ELIXIR_OVERFLOW_THRESHOLD = 9.0
+W_ELIXIR_OVERFLOW = 0.1
 
 # One-time penalty applied at episode end when the game times out without a
 # decisive winner (raw engine reward ~0 at a done step). Draws don't teach the
 # agent to close games, so nudge it away from stalling into the timeout on top
 # of the existing +1/-1 win/loss signal. Applied once at the terminal step (not
-# accumulated per-step), so it stays comparable in scale to +/-1 like W_BLDG/W_TROOPS.
-DRAW_PENALTY = 0.2
+# accumulated per-step).
+#
+# Raised from 0.2 -- that was too weak (and too temporally distant, heavily
+# discounted by gamma over a long episode) to outweigh a whole game's worth of
+# guaranteed per-step "safe to do nothing" incentive once self-play converged
+# toward mutual passivity (see the elixir-trade comment above). 1.0 makes a
+# draw as costly as an outright loss, matching real high-level play where a
+# scoreless draw basically never happens -- someone always eventually finds
+# the chip damage.
+DRAW_PENALTY = 1.0
 
 # Historical self-play (pipeline #2, train_selfplay.py) needs a library of past
 # versions of this same policy to play against, weakest to strongest -- these
@@ -55,7 +79,7 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
 # channels 4-6 enemy troops, 7 enemy buildings, 8 river mask.
 N_CHANNELS = 9
-BOARD_H, BOARD_W = 32, 18
+BOARD_H, BOARD_W = 34, 18
 SPATIAL_SIZE = N_CHANNELS * BOARD_H * BOARD_W
 
 # Same blanket HP normalizers ClashEnv::extractObservation() divides by when
@@ -70,18 +94,21 @@ MAX_BUILDING_HP = 4008.0
 # term's per-step magnitude comparable to the HP-normalized damage terms above.
 MAX_ELIXIR_PER_STEP = 10.0
 
-def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixir=W_ELIXIR_TRADE):
+def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixir=W_ELIXIR_TRADE,
+                     w_overflow=W_ELIXIR_OVERFLOW):
     """
     Vectorized dense-reward shaping term based on per-step damage-dealt and
     elixir-spent deltas, read from the engine's authoritative MatchStatistics
     (via gym_wrapper's info dict) instead of inferred by diffing HP channels in
     the observation. Rewards damage dealt to the enemy and elixir forced out of
-    them, penalizes damage taken and elixir we spend ourselves.
+    them, penalizes damage taken and sitting on a near-full elixir bar.
     Returns the shaping term ONLY (num_envs,), excluding the sparse win/loss reward.
     stats / prev_stats: dict of (num_envs,) arrays, keys 'team0_troop_damage',
     'team1_troop_damage', 'team0_building_damage', 'team1_building_damage',
     'team0_elixir_spent', 'team1_elixir_spent' -- cumulative totals this match,
-    team0 = ally/AI, team1 = enemy/opponent.
+    team0 = ally/AI, team1 = enemy/opponent. 'team0_elixir_current' is an
+    instantaneous (not cumulative) reading, only used from `stats`, never
+    diffed against `prev_stats`.
     """
     if prev_stats is None:
         return np.zeros(stats["team0_troop_damage"].shape[0], dtype=np.float32)
@@ -101,11 +128,14 @@ def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixi
     enemy_bldg_damage = delta("team0_building_damage") / MAX_BUILDING_HP
     ally_bldg_damage = delta("team1_building_damage") / MAX_BUILDING_HP
     enemy_elixir_spent = delta("team1_elixir_spent") / MAX_ELIXIR_PER_STEP
-    ally_elixir_spent = delta("team0_elixir_spent") / MAX_ELIXIR_PER_STEP
+
+    ally_elixir_current = stats["team0_elixir_current"]
+    overflow = np.maximum(0.0, ally_elixir_current - ELIXIR_OVERFLOW_THRESHOLD) / (10.0 - ELIXIR_OVERFLOW_THRESHOLD)
 
     shaping = (w_bldg * (enemy_bldg_damage - ally_bldg_damage)
                + w_troops * (enemy_troops_damage - ally_troops_damage)
-               + w_elixir * (enemy_elixir_spent - ally_elixir_spent))
+               + w_elixir * enemy_elixir_spent
+               - w_overflow * overflow)
 
     return shaping.astype(np.float32)
 
@@ -202,8 +232,11 @@ def train_ppo():
     
     # BOARD_MAX_X in the engine is 17.0 -- placements with x>17 are silently
     # rejected (isValidPlacement), so scaling by 18 wasted part of the action range.
+    # MAX_Y_AI = riverStart(16.0) - OWN_HALF_RIVER_BUFFER(0.5) -- real-map sync
+    # moved the river back one row (see Board.h's riverY_start), so this moved
+    # with it (was 14.5).
     MAX_X = 17.0
-    MAX_Y_AI = 14.5
+    MAX_Y_AI = 15.5
 
     # --- Curriculum: once the agent's win-rate against the current opponent
     # settles above a threshold, escalate the opponent's elixir multiplier.
@@ -256,9 +289,10 @@ def train_ppo():
     # explicitly fine for a deck that's hard-but-learnable; this only cuts in
     # for the rare deck that isn't converging at all.
     MAX_EPISODES_PER_RANDOM_DECK = 5000
-    # 0..45 minus 16/37/38 (never defined in CardRegistry.h -- see
-    # test_card_registry.cpp's "Card ids that were never defined" test).
-    RANDOM_DECK_POOL = [i for i in range(46) if i not in (16, 37, 38)]
+    # Derived live from CardRegistry rather than a hardcoded range+exclusion
+    # list -- see gym_wrapper.get_all_card_ids's comment for why that drifts
+    # stale (already happened once when the roster grew past the old range(46)).
+    RANDOM_DECK_POOL = gym_wrapper.get_all_card_ids()
 
     def sample_random_deck():
         return random.sample(RANDOM_DECK_POOL, 8)
@@ -447,6 +481,10 @@ def train_ppo():
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
                 "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),
+                # Instantaneous elixir reading (not cumulative) -- feeds the
+                # overflow-penalty term in compute_shaping(). infos["elixir"]
+                # is a scalar per env from gym_wrapper.MicroRoyaleEnv.step().
+                "team0_elixir_current": infos.get("elixir", zeros_f),
             }
 
             # Dense shaping term. On the step right after an episode ended, the vector env
