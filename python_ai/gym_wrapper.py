@@ -77,11 +77,13 @@ class MicroRoyaleEnv(gym.Env):
         self.game.set_opponent_elixir_multiplier(opp_elixir_multiplier)
 
         self.action_space = spaces.Dict({
-            # אינדקס 4 = no-op (לא לשחק קלף הצעד הזה). המנוע מתעלם מ-cardIndex מחוץ
-            # ל-[0,4), כך שהסוכן יכול סוף-סוף לאגור אליקסיר במקום להיות מאולץ לשחק.
-            "card_index": spaces.Discrete(5),
-            "target_x": spaces.Box(low=0.0, high=17.0, shape=(1,), dtype=np.float32),
-            "target_y": spaces.Box(low=0.0, high=15.5, shape=(1,), dtype=np.float32),
+            # אינדקס HAND_SIZE = no-op (לא לשחק קלף הצעד הזה). המנוע מתעלם מ-cardIndex
+            # מחוץ ל-[0,HAND_SIZE), כך שהסוכן יכול סוף-סוף לאגור אליקסיר במקום להיות
+            # מאולץ לשחק. הגבולות נשלפים חי מהמנוע (לא hardcoded) כדי שלא יהיה
+            # צורך לסנכרן ידנית אם גודל הלוח/היד ישתנה בצד ה-C++.
+            "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
+            "target_x": spaces.Box(low=0.0, high=self.game.get_max_placement_x(), shape=(1,), dtype=np.float32),
+            "target_y": spaces.Box(low=0.0, high=self.game.get_own_half_max_y(), shape=(1,), dtype=np.float32),
             # הפעלת יכולת צ'מפיון (למשל Explosive Escape של Mighty Miner) --
             # 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש צ'מפיון פרוס, לא ב-cooldown,
             # ויש מספיק אליקסיר (אחרת no-op שקט, כמו ה-no-op של card_index).

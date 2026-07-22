@@ -273,9 +273,6 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
     one.
     """
 
-    MAX_X = 17.0
-    MAX_Y = 15.5  # riverStart(16.0) - OWN_HALF_RIVER_BUFFER(0.5), see train.py's MAX_Y_AI
-
     def __init__(self, env_config=None):
         super().__init__()
         env_config = env_config or {}
@@ -287,6 +284,11 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         ai_tower_troop = env_config.get("ai_tower_troop", clash_royale_env.TowerTroopType.NONE)
         opp_tower_troop = env_config.get("opp_tower_troop", clash_royale_env.TowerTroopType.NONE)
         self.game = clash_royale_env.ClashRoyaleEnv(self.deck, self.deck, max_ticks, ai_tower_troop, opp_tower_troop)
+        # Instance attributes (not class-level constants) -- pulled live from
+        # the engine's own enforced placement bounds instead of a hardcoded
+        # copy that could silently drift if board geometry ever changes.
+        self.MAX_X = self.game.get_max_placement_x()
+        self.MAX_Y = self.game.get_own_half_max_y()
 
         # Team 1's brain -- CPU is plenty for a single inference-only forward
         # pass per step per worker process, and keeps this off the GPU the
@@ -310,7 +312,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             self.set_historical_opponent(env_config["historical_checkpoint_path"])
 
         self.action_space = spaces.Dict({
-            "card_index": spaces.Discrete(5),
+            "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
             "target_x": spaces.Box(low=0.0, high=self.MAX_X, shape=(1,), dtype=np.float32),
             "target_y": spaces.Box(low=0.0, high=self.MAX_Y, shape=(1,), dtype=np.float32),
             # Same key as gym_wrapper.MicroRoyaleEnv's action_space -- see
@@ -462,8 +464,15 @@ def train_selfplay_ppo():
     min_entropy_coef = 0.01
     entropy_decay_rate = 0.995
 
-    MAX_X = MicroRoyaleSelfPlayEnv.MAX_X
-    MAX_Y = MicroRoyaleSelfPlayEnv.MAX_Y
+    # Pulled live from the engine (a throwaway bare env is enough -- these
+    # don't depend on which deck is used, and this avoids building a whole
+    # extra MicroRoyaleSelfPlayEnv, opponent net included, just to read two
+    # floats) instead of a class-level hardcoded copy that could silently
+    # drift if board geometry ever changes.
+    _dim_probe = clash_royale_env.ClashRoyaleEnv(list(DEFAULT_DECK), list(DEFAULT_DECK), 100)
+    MAX_X = _dim_probe.get_max_placement_x()
+    MAX_Y = _dim_probe.get_own_half_max_y()
+    del _dim_probe
 
     # Episode at which the entropy decay schedule last reset -- renamed from
     # the old ladder's "stage_start_episode" now that there's no per-opponent

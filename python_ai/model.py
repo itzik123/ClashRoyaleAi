@@ -3,10 +3,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import clash_royale_env
+
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
-    def __init__(self, channels=9, board_width=18, board_height=34, hand_size=4, num_card_ids=175):
+    def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None):
         super(MicroRoyaleNet, self).__init__()
+
+        # ברירות מחדל נשלפות חי מהמנוע המקומפל (לא hardcoded) -- כל שינוי גודל
+        # לוח/מספר קלפים בצד ה-C++ מתפשט לכאן אוטומטית, בלי צורך בעדכון ידני
+        # תואם בקובץ הזה. זו בדיוק סוג הסחיפה (drift) שגרמה לקריסות אימון
+        # בפועל בפרויקט הזה יותר מפעם אחת לפני התיקון הזה.
+        channels = channels if channels is not None else clash_royale_env.ClashRoyaleEnv.NUM_CHANNELS
+        board_width = board_width if board_width is not None else clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
+        board_height = board_height if board_height is not None else clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
+        hand_size = hand_size if hand_size is not None else clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+        num_card_ids = num_card_ids if num_card_ids is not None else clash_royale_env.ClashRoyaleEnv.NUM_CARD_IDS
 
         self.channels = channels
         self.board_width = board_width
@@ -62,9 +74,9 @@ class MicroRoyaleNet(nn.Module):
         # 4. ראשי הפעולה - Actor Heads
         # ==========================================
         # א. ראש בחירת הקלף (התפלגות קטגוריאלית)
-        # 5 פעולות: 4 משבצות היד + פעולה 4 = no-op (המתנה/אגירת אליקסיר).
-        # המנוע מתעלם מ-cardIndex מחוץ ל-[0,4) כך שאין צורך בשינוי C++.
-        self.card_head = nn.Linear(256, 5)
+        # hand_size משבצות יד + פעולה אחת נוספת = no-op (המתנה/אגירת אליקסיר).
+        # המנוע מתעלם מ-cardIndex מחוץ ל-[0,hand_size) כך שאין צורך בשינוי C++.
+        self.card_head = nn.Linear(256, hand_size + 1)
         
         # ב. ראש המיקום במרחב (התפלגות גאוסיאנית / תחימה)
         # אנו מוציאים 2 ערכים, ונעביר אותם דרך פונקציית Sigmoid כדי לתחום אותם בין [0, 1]
