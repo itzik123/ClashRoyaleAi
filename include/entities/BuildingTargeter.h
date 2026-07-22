@@ -17,23 +17,37 @@ public:
     }
 
 protected:
+    // Same two-tier sight-range/tower-fallback shape as
+    // CombatEntity::findTarget's own (see its comment), just filtered to
+    // buildings only -- a building-targeter never considers troops at
+    // all. Since every enemy Tower is itself a Building, this is really
+    // "closest non-tower defensive building within sightRange, else the
+    // closest tower regardless of distance," matching a building-
+    // targeter's actual real-game behavior: engage a visible defensive
+    // building, otherwise beeline for the enemy tower. isBuilding()
+    // (Entity.h) replaces this method's own dynamic_pointer_cast<Building>
+    // that used to live here.
     std::shared_ptr<Entity> findTarget(Board& board) const override {
-        std::shared_ptr<Entity> closestBuilding = nullptr;
-        float minDistance = std::numeric_limits<float>::max();
+        std::shared_ptr<Entity> closestInSight = nullptr;
+        float minSightDistance = std::numeric_limits<float>::max();
+        std::shared_ptr<Entity> closestTower = nullptr;
+        float minTowerDistance = std::numeric_limits<float>::max();
 
         for (const auto& entity : board.getEntities()) {
-            if (entity->team != this->team && entity->isAlive() && entity->isTargetable()) {
-                auto buildingPtr = std::dynamic_pointer_cast<Building>(entity);
-                if (buildingPtr) {
-                    float dist = position.distanceTo(entity->position);
-                    if (dist < minDistance) {
-                        minDistance = dist;
-                        closestBuilding = entity;
-                    }
+            if (entity->team == this->team || !entity->isAlive() || !entity->isTargetable()) continue;
+            if (!entity->isBuilding()) continue;
+            float dist = position.distanceTo(entity->position);
+            if (entity->isTower()) {
+                if (dist < minTowerDistance) {
+                    minTowerDistance = dist;
+                    closestTower = entity;
                 }
+            } else if (dist <= sightRange && dist < minSightDistance) {
+                minSightDistance = dist;
+                closestInSight = entity;
             }
         }
-        return closestBuilding;
+        return closestInSight ? closestInSight : closestTower;
     }
 
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {

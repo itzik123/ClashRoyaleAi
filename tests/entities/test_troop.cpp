@@ -31,6 +31,7 @@ TEST_CASE("Troop routes through the nearest bridge when crossing the river", "[t
     spawn(board, enemy);
 
     auto troop = std::make_shared<MeleeTroop>(2, 10.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about river routing, not sight
     troop->update(board);
 
     // Right bridge (x=14) is closer than left (x=4) from (10,10), so the
@@ -49,6 +50,7 @@ TEST_CASE("Troop with ignoresRiver set walks straight through the river band", "
 
     auto troop = std::make_shared<MeleeTroop>(2, 10.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'H');
     troop->setIgnoresRiver(true);
+    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about river routing, not sight
     troop->update(board);
 
     // No bridge detour: x stays put, only y advances toward the target.
@@ -64,6 +66,7 @@ TEST_CASE("Freeze slows movement speed by the slow factor", "[troop][movement][f
     spawn(board, enemy);
 
     auto troop = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about freeze, not sight
     troop->update(board); // unfrozen: moves full `speed` (1.0)
     REQUIRE(troop->position.y == Catch::Approx(1.0f));
 

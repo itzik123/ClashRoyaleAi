@@ -28,6 +28,11 @@ enum class TowerTroopType {
 inline CardStats towerTroopStats(TowerTroopType type) {
     CardStats stats;
     stats.spawnOffsets = { {0.0f, 0.0f} };
+    // Sourced sight range (7.5 tiles) for the Princess Tower applies
+    // uniformly to all 4 variants -- every one of them already uses the
+    // same 7.5 attackRange above, and no source distinguishes a
+    // different sight range per Tower Troop.
+    stats.sightRange = 7.5f;
 
     switch (type) {
         case TowerTroopType::TowerPrincess:

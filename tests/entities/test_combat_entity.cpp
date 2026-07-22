@@ -4,6 +4,7 @@
 #include "CappedSpawnOnHitEffect.h"
 #include "PoisonOnHit.h"
 #include "Building.h"
+#include "Tower.h"
 
 // StationaryCombatant: attackRange, no movement, no decay -- isolates
 // CombatEntity::update()'s targeting/attack/cooldown/freeze logic.
@@ -57,6 +58,81 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
     REQUIRE(attacker->lastTargetId == near->id);
 }
 
+// ---------------- sight range + tower fallback ----------------
+
+TEST_CASE("findTarget never picks an enemy beyond sightRange, even if it's the only one on the board",
+        "[combat_entity][targeting][sight_range]") {
+    Board board;
+    auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 6.0f, 1000, 1); // dist 6.0 > default sightRange 5.5
+    spawn(board, farEnemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10); // huge attackRange
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 0); // never even acquired as a target, despite being well within attackRange
+}
+
+TEST_CASE("sightRange is read per-instance, not a hardcoded constant", "[combat_entity][targeting][sight_range]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 3.0f, 1000, 1); // dist 3.0: inside the default, outside a custom 2.0
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->sightRange = 2.0f;
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 0);
+}
+
+TEST_CASE("findTarget falls back to the nearest enemy Tower when nothing else is in sight",
+        "[combat_entity][targeting][sight_range][tower]") {
+    Board board;
+    auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 20.0f, 1000, 1); // well beyond sight
+    auto tower = std::make_shared<Tower>(2, 0.0f, 10.0f, 4008, 1, 7.0f, 90, 10, 'R');
+    spawn(board, farEnemy);
+    spawn(board, tower);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == tower->id); // the tower, not the out-of-sight troop
+}
+
+TEST_CASE("A closer enemy Tower never steals priority from a farther-but-in-sight enemy",
+        "[combat_entity][targeting][sight_range][tower]") {
+    Board board;
+    auto inSightEnemy = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist 4.0, within sight
+    auto closerTower = std::make_shared<Tower>(2, 0.0f, 1.0f, 4008, 1, 7.0f, 90, 10, 'R'); // dist 1.0, much closer
+    spawn(board, inSightEnemy);
+    spawn(board, closerTower);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == inSightEnemy->id); // not the tower, despite it being far closer
+}
+
+TEST_CASE("Tower fallback picks whichever enemy Tower is closer", "[combat_entity][targeting][sight_range][tower]") {
+    Board board;
+    auto farTower = std::make_shared<Tower>(1, 0.0f, 20.0f, 4008, 1, 7.0f, 90, 10, 'R');
+    auto nearTower = std::make_shared<Tower>(2, 0.0f, 10.0f, 3204, 1, 7.5f, 90, 8, 'P');
+    spawn(board, farTower);
+    spawn(board, nearTower);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == nearTower->id);
+}
+
+TEST_CASE("A default CombatEntity's sightRange is 5.5 tiles", "[combat_entity][targeting][sight_range]") {
+    auto attacker = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 5.0f, 50, 10);
+    REQUIRE(attacker->sightRange == Catch::Approx(5.5f));
+}
+
 // ---------------- target-lock ----------------
 // Once an attacker has picked a target, it stays committed to that fight
 // instead of re-running "who's closest" every tick -- matches the real
@@ -89,6 +165,35 @@ TEST_CASE("An attacker stays locked onto its target even when a closer enemy sho
     attacker->update(board);
     REQUIRE(attacker->lastTargetId == original->id); // still locked on the original target
     REQUIRE(closer->hp == 1000); // untouched
+}
+
+TEST_CASE("Unlike an active fight, chasing a not-yet-reached target has no lock -- a closer enemy steals aggro",
+        "[combat_entity][targeting][lock][sight_range]") {
+    Board board;
+    auto original = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1, 'O'); // dist 5.0: in sight, not in attack range
+
+    // currentTargetId is protected (only StationaryCombatant's own
+    // lastTargetId/attackCount instrumentation exposes it, and that class
+    // can't move) -- this test verifies the same switch through publicly
+    // observable position/hp instead.
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 0.5f, 1.0f, 100, 10, 'p');
+    attacker->setIgnoresRiver(true);
+    spawn(board, original);
+
+    attacker->update(board); // moves 0.5 toward the original target: still far from attack range
+    REQUIRE(original->hp == 1000); // too far to actually land a hit yet
+    REQUIRE(attacker->position.y == Catch::Approx(0.5f));
+
+    // A much closer enemy shows up mid-chase, right next to the attacker's
+    // new position -- unlike the mid-FIGHT case above, this DOES steal the
+    // attacker's attention, because it was never actually locked on (still
+    // approaching, not yet in range).
+    auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.6f, 1000, 1, 'C'); // dist 0.1 from the attacker's new spot
+    spawn(board, closer);
+
+    attacker->update(board);
+    REQUIRE(closer->hp < 1000); // switched: landed a hit on the new, closer enemy instead
+    REQUIRE(original->hp == 1000); // never reached, still untouched
 }
 
 TEST_CASE("An attacker acquires a new target once its locked target dies", "[combat_entity][targeting][lock]") {
@@ -992,6 +1097,7 @@ TEST_CASE("findTarget skips an invisible unit entirely, even if it's the closest
     spawn(board, visible);
 
     auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->sightRange = 20.0f; // visible is placed at dist 10, beyond the default; this test is about invisibility, not sight
     attacker->update(board);
 
     REQUIRE(attacker->lastTargetId == visible->id); // skips the invisible, closer ghost entirely
@@ -1423,6 +1529,7 @@ TEST_CASE("chargeGrantsInvulnerability blocks damage once past half the charge t
     spawn(board, target);
 
     auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
+    attacker->sightRange = 10.0f; // target is placed at dist 10, beyond the default; this test is about charge, not sight
     attacker->chargeThreshold = 4.0f;
     attacker->chargeMultiplier = 2.0f;
     attacker->chargeGrantsInvulnerability = true;
@@ -1442,6 +1549,7 @@ TEST_CASE("A charging attacker without chargeGrantsInvulnerability takes damage 
     spawn(board, target);
 
     auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
+    attacker->sightRange = 10.0f; // target is placed at dist 10, beyond the default; this test is about charge, not sight
     attacker->chargeThreshold = 4.0f;
     attacker->chargeMultiplier = 2.0f;
     // chargeGrantsInvulnerability left false (the default)
@@ -1641,6 +1749,7 @@ TEST_CASE("A target outside the jump window is walked toward normally, not jumpe
     attacker->jumpMaxRange = 5.0f;
     attacker->jumpDamageMultiplier = 2.0f;
     attacker->jumpSplashRadius = 2.2f;
+    attacker->sightRange = 10.0f; // wide enough to still see tooFar; this test is about the jump window, not sight
 
     attacker->update(board);
 

@@ -219,6 +219,10 @@ struct CardStats {
     float recoilDistance = 0.0f;
     // Minimum attack range / blind spot (Mortar) -- see CombatEntity::minAttackRange.
     float minAttackRange = 0.0f;
+    // Sight/aggro range -- see CombatEntity::sightRange for the full
+    // explanation. 5.5 tiles (that source's own stated "main standard")
+    // is the default for every card not individually overridden below.
+    float sightRange = 5.5f;
     // Deploy delay before the first attack is ready (X-Bow) -- see
     // CombatEntity::seedCooldown. 0 (the default) is every other card,
     // ready to fire as soon as a target's in range.
@@ -504,6 +508,10 @@ struct CardStats {
     }
     CardStats& withMinRange(float range) {
         minAttackRange = range;
+        return *this;
+    }
+    CardStats& withSightRange(float range) {
+        sightRange = range;
         return *this;
     }
     CardStats& withDeployDelay(int ticks) {

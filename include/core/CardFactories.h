@@ -64,6 +64,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->resetCooldownOnFreeze = stats.resetCooldownOnFreeze;
     entity->recoilDistance = stats.recoilDistance;
     entity->minAttackRange = stats.minAttackRange;
+    entity->sightRange = stats.sightRange;
     entity->transformAtHpFraction = stats.transformAtHpFraction;
     entity->transformCheckMaxHp = stats.hp;
     entity->transformLifetimeTicks = stats.transformLifetimeTicks;

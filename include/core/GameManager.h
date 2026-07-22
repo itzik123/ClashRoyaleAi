@@ -55,6 +55,12 @@ private:
         auto tower = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, attackRange, damage, attackCooldown, symbol);
         tower->name = towerName;
         tower->cardId = (symbol == 'R') ? TOWER_KING_ID : TOWER_PRINCESS_ID;
+        // This overload bypasses CardStats/applyCardMetadata entirely (raw
+        // hp/range/damage args), so sightRange needs setting directly --
+        // only ever called for the King Tower (symbol 'R'), sourced at
+        // 7.0 tiles. The Tower Troops overload below sets its own from
+        // towerTroopStats() instead.
+        if (symbol == 'R') tower->sightRange = 7.0f;
         board.addEntity(tower);
     }
 

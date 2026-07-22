@@ -16,9 +16,16 @@ TEST_CASE("Building::getCollisionRadius is always 1.0", "[building]") {
 TEST_CASE("Building::isBuilding is true, unlike the Entity default", "[building]") {
     Building b(1, 5.0f, 5.0f, 1000, 0, 'C', 5.0f, 100, 10);
     REQUIRE(b.isBuilding());
+    REQUIRE_FALSE(b.isTower()); // a plain Building is not a Tower
 
     DummyEntity notABuilding(2, 5.0f, 5.0f, 1000, 0);
     REQUIRE_FALSE(notABuilding.isBuilding());
+}
+
+TEST_CASE("Tower::isTower is true, unlike the Entity default and plain Building", "[building][tower]") {
+    Tower t(1, 5.0f, 5.0f, 4008, 0, 7.0f, 90, 10, 'R');
+    REQUIRE(t.isTower());
+    REQUIRE(t.isBuilding()); // still a Building too (inherited)
 }
 
 TEST_CASE("Building never moves, even with a target far out of range", "[building][movement]") {
@@ -130,7 +137,7 @@ TEST_CASE("Tower defaults to targetsAir true, since every tower defends against 
 TEST_CASE("BuildingTargeter ignores enemy troops and walks past them toward a building", "[building_targeter][targeting]") {
     Board board;
     auto decoyTroop = std::make_shared<DummyEntity>(1, 5.0f, 5.3f, 100, 1); // right next to it
-    auto enemyBuilding = std::make_shared<Building>(2, 5.0f, 12.0f, 1000, 1, 'C', 5.0f, 10, 10); // far, same side
+    auto enemyBuilding = std::make_shared<Building>(2, 5.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10); // dist 5.0: farther than the decoy, still within default sightRange
     spawn(board, decoyTroop);
     spawn(board, enemyBuilding);
 
@@ -180,6 +187,7 @@ TEST_CASE("RangedBuildingTargeter ignores enemy troops just like BuildingTargete
     spawn(board, enemyBuilding);
 
     RangedBuildingTargeter targeter(3, 5.0f, 5.0f, 2544, 0, 0.3f, 6.5f, 159, 17, 'Y');
+    targeter.sightRange = 10.0f; // real cards set this explicitly (own attackRange + ~0.5); the default alone wouldn't reach this far
     targeter.update(board);
 
     REQUIRE(decoyTroop->hp == 100);

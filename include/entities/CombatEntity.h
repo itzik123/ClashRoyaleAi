@@ -340,6 +340,21 @@ public:
     // freezing up. 0.0f (the default) is every card without one.
     float minAttackRange = 0.0f;
 
+    // Sight/aggro range (distinct from attackRange -- see findTarget()
+    // below): how far this attacker can detect an enemy troop/building to
+    // go fight instead of just heading for the enemy tower. Sourced per-
+    // card (a Clash Royale community stats breakdown of exactly this,
+    // not shown on the in-game card info screens); 5.5 tiles is that
+    // source's own stated "main standard for most cards", used here as
+    // the default for every card not individually called out with its
+    // own value. For buildings this is generally the same number as
+    // their own attackRange (buildings can't chase, so sight beyond
+    // attack range would never actually matter) but is still set
+    // per-card from the same source rather than derived from
+    // attackRange, since the two aren't always exactly equal in the
+    // sourced data.
+    float sightRange = 5.5f;
+
     // HP-threshold transform (Cannon Cart: at <=50% hp, permanently
     // grounds itself and gets a fixed lifespan before self-destructing).
     // transformAtHpFraction == 0.0f (the default) disables the mechanic;
@@ -708,16 +723,21 @@ public:
             }
         }
 
-        // Target-lock: once committed to a target, stay on it -- attacking
-        // or chasing -- instead of re-picking "whoever's closest" every
-        // tick. Matches the real game: a unit mid-fight doesn't get
-        // distracted just because something else wandered closer. The lock
-        // only breaks when the target itself becomes invalid (dies, etc.)
-        // or leaves this attacker's effective range (e.g. pulled out by
-        // Tornado, or knocked back) -- at that point a fresh closest-enemy
-        // scan runs immediately, same tick, so nothing is left stuck
-        // chasing a target it can no longer reach while ignoring whoever's
-        // actually closest now.
+        // Target-lock only applies once actually in attack range -- not
+        // while still chasing. If the currently-locked target is within
+        // effectiveRangeTo (i.e. this attacker is genuinely fighting it
+        // this tick, or about to), resolveCurrentTarget() is trusted as-is
+        // and findTarget() never runs: an attacker mid-fight doesn't get
+        // distracted just because something else wandered closer. But if
+        // the lock target is out of attack range (still being approached,
+        // never reached it, or just left it -- pulled out by Tornado,
+        // knocked back, etc.), there is deliberately NO lock: a fresh
+        // findTarget() scan runs this same tick and every tick after,
+        // freely switching to whatever's actually closest now. This is
+        // also where findTarget's own sightRange limit does the real
+        // work -- an attacker only ever chases something it can actually
+        // see, falling back to the nearest enemy tower once nothing else
+        // is in sight (see findTarget's own comment).
         auto target = resolveCurrentTarget(board);
         if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
             target = nullptr;
@@ -952,20 +972,38 @@ protected:
         return nullptr;
     }
 
+    // Two-tier scan: prefer the closest valid enemy within sightRange (a
+    // troop or non-tower building it can actually "see"); only if nothing
+    // qualifies there, fall back to the closest enemy Tower regardless of
+    // distance -- a tower is always the eventual objective, never
+    // competing with something in-sight purely on raw distance (a closer
+    // tower does NOT steal aggro from a farther-but-still-in-sight enemy).
+    // Combined with update()'s existing "only trust the current lock while
+    // it's within actual attack range" check above, this reproduces the
+    // real game's targeting model: locked on and fighting once in attack
+    // range; freely re-evaluating "what's closest in sight" every tick
+    // while just chasing (no lock during the chase itself); and, with
+    // nothing in sight at all, heading for the nearest tower.
     virtual std::shared_ptr<Entity> findTarget(Board& board) const {
-        std::shared_ptr<Entity> closestTarget = nullptr;
-        float minDistance = std::numeric_limits<float>::max();
+        std::shared_ptr<Entity> closestInSight = nullptr;
+        float minSightDistance = std::numeric_limits<float>::max();
+        std::shared_ptr<Entity> closestTower = nullptr;
+        float minTowerDistance = std::numeric_limits<float>::max();
 
         for (const auto& entity : board.getEntities()) {
-            if (isValidTarget(entity)) {
-                float dist = position.distanceTo(entity->position);
-                if (dist < minDistance) {
-                    minDistance = dist;
-                    closestTarget = entity;
+            if (!isValidTarget(entity)) continue;
+            float dist = position.distanceTo(entity->position);
+            if (entity->isTower()) {
+                if (dist < minTowerDistance) {
+                    minTowerDistance = dist;
+                    closestTower = entity;
                 }
+            } else if (dist <= sightRange && dist < minSightDistance) {
+                minSightDistance = dist;
+                closestInSight = entity;
             }
         }
-        return closestTarget;
+        return closestInSight ? closestInSight : closestTower;
     }
 
     // Only called when maxSplitTargets > 1 (Electro Wizard). Reuses

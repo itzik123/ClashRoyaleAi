@@ -68,6 +68,13 @@ public:
     // Overridden to return true in Building.h.
     virtual bool isBuilding() const { return false; }
 
+    // True only for Tower (King/Princess) -- lets CombatEntity::findTarget
+    // treat towers as an always-visible fallback destination (see
+    // sightRange's own comment) without a dynamic_cast<Tower*>, same
+    // circular-include reasoning as isBuilding() above. Overridden to
+    // return true in Tower.h.
+    virtual bool isTower() const { return false; }
+
     virtual float getCollisionRadius() const { return 0.0f; }
 
     // Re-applies board bounds/river constraints to this entity's position.
