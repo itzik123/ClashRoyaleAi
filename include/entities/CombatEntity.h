@@ -738,7 +738,18 @@ public:
         // work -- an attacker only ever chases something it can actually
         // see, falling back to the nearest enemy tower once nothing else
         // is in sight (see findTarget's own comment).
-        auto target = resolveCurrentTarget(board);
+        //
+        // A stun breaks the lock outright, same as leaving effective
+        // range: resolveCurrentTarget() is skipped entirely on a tick
+        // spent frozen, forcing a fresh findTarget() scan -- if something
+        // is already in attack range once the stun clears (or during a
+        // partial slow that still lets this tick's cooldown reach 0),
+        // this attacker goes straight for it rather than blindly resuming
+        // whatever it was fighting before. Matches the ramp system's own
+        // "stun resets the charge" rule (below) being a full reset, not
+        // just a number going back to 0 while the old fight continues
+        // uninterrupted.
+        auto target = wasFrozen ? nullptr : resolveCurrentTarget(board);
         if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
             target = nullptr;
         }
@@ -915,17 +926,21 @@ public:
                 moveTowards(board, target->position);
                 if (chargeThreshold > 0.0f) chargeProgress += beforeMove.distanceTo(position);
             }
-        } else if (rampGracePeriodTicks <= 0 || ticksSinceLastHit >= rampGracePeriodTicks) {
-            // No target at all, and either no grace period configured (the
-            // baseline, unchanged rule) or the grace period already ran
-            // out -- reset fully, same as before.
+        } else if (wasFrozen || rampGracePeriodTicks <= 0 || ticksSinceLastHit >= rampGracePeriodTicks) {
+            // No target at all -- reset fully if this tick was spent
+            // frozen (a stun always resets, bypassing any grace period
+            // entirely, same as the target-found branch above), or if
+            // there's no grace period configured (the baseline, unchanged
+            // rule), or the grace period already ran out.
             currentTargetId = -1;
             ticksOnTarget = 0;
+            ticksSinceLastHit = 0;
         }
-        // else: within the grace period with no target to fight -- hold
-        // currentTargetId/ticksOnTarget exactly where they are, so the
-        // ramp stage is still there if a new target shows up before
-        // ticksSinceLastHit crosses rampGracePeriodTicks.
+        // else: not frozen this tick, and still within the grace period
+        // with no target to fight -- hold currentTargetId/ticksOnTarget
+        // exactly where they are, so the ramp stage is still there if a
+        // new target shows up before ticksSinceLastHit crosses
+        // rampGracePeriodTicks.
 
         clampPosition(board);
     }

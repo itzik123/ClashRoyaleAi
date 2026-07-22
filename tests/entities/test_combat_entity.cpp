@@ -167,8 +167,30 @@ TEST_CASE("An attacker stays locked onto its target even when a closer enemy sho
     REQUIRE(closer->hp == 1000); // untouched
 }
 
+TEST_CASE("A stun breaks the target lock too, unlike a plain closer enemy showing up",
+        "[combat_entity][targeting][lock][freeze]") {
+    Board board;
+    auto original = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'O');
+    spawn(board, original);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 1);
+    attacker->update(board); // locks onto and attacks original
+    REQUIRE(attacker->lastTargetId == original->id);
+
+    auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.1f, 1000, 1, 'C');
+    spawn(board, closer);
+
+    // Same setup as the "stays locked" test above -- but this time the
+    // attacker gets stunned first. slowFactor 1.0 is neutral (doesn't
+    // actually slow the cooldown), just marks this tick as frozen.
+    attacker->applyFreeze(1, 1.0f);
+    attacker->update(board);
+
+    REQUIRE(attacker->lastTargetId == closer->id); // lock broken by the stun: switched to the closer enemy
+}
+
 TEST_CASE("Unlike an active fight, chasing a not-yet-reached target has no lock -- a closer enemy steals aggro",
-        "[combat_entity][targeting][lock][sight_range]") {
+        "[combat_entity][targeting][sight_range][lock]") {
     Board board;
     auto original = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1, 'O'); // dist 5.0: in sight, not in attack range
 
