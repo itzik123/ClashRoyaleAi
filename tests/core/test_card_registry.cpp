@@ -119,6 +119,18 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {148, "P.E.K.K.A.", 7.0f, false}, // Evolution slot -- same name/cost as base id 13
         {149, "Minion Horde", 5.0f, false}, // Evolution slot -- same name/cost as base id 42
         {150, "Royal Recruits", 7.0f, false}, // Evolution slot -- same name/cost as base id 77
+        {151, "Electro Dragon", 5.0f, false}, // Evolution slot -- same name/cost as base id 57
+        {152, "Mortar", 4.0f, false}, // Evolution slot -- same name/cost as base id 93
+        {153, "Goblin Drill", 4.0f, false}, // Evolution slot -- same name/cost as base id 98
+        {154, "Tesla", 4.0f, false}, // Evolution slot -- same name/cost as base id 26
+        {155, "Barbarians", 5.0f, false}, // Evolution slot -- same name/cost as base id 8
+        {156, "Lumberjack", 4.0f, false}, // Evolution slot -- same name/cost as base id 21
+        {157, "Executioner", 5.0f, false}, // Evolution slot -- same name/cost as base id 36
+        {158, "Giant Snowball", 2.0f, true}, // Evolution slot -- same name/cost as base id 100
+        {159, "Goblin Giant", 6.0f, false}, // Evolution slot -- same name/cost as base id 88
+        {160, "Mega Knight", 7.0f, false}, // Evolution slot -- same name/cost as base id 48
+        {161, "Battle Ram", 4.0f, false}, // Evolution slot -- same name/cost as base id 81
+        {162, "Royal Hogs", 5.0f, false}, // Evolution slot -- same name/cost as base id 82
     };
 
     const auto& registry = CardRegistry::getInstance();
