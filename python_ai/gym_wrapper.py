@@ -67,8 +67,13 @@ class MicroRoyaleEnv(gym.Env):
         max_ticks = env_config.get("max_ticks", 3600)
         # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
         opp_elixir_multiplier = env_config.get("opp_elixir_multiplier", 1.0)
+        # Tower Troops: per-match config like the deck itself, not a per-step
+        # action -- see GameManager's constructor. NONE (the default)
+        # reproduces the original hardcoded Princess Tower unchanged.
+        ai_tower_troop = env_config.get("ai_tower_troop", clash_royale_env.TowerTroopType.NONE)
+        opp_tower_troop = env_config.get("opp_tower_troop", clash_royale_env.TowerTroopType.NONE)
 
-        self.game = clash_royale_env.ClashRoyaleEnv(ai_deck, self.opp_deck, max_ticks)
+        self.game = clash_royale_env.ClashRoyaleEnv(ai_deck, self.opp_deck, max_ticks, ai_tower_troop, opp_tower_troop)
         self.game.set_opponent_elixir_multiplier(opp_elixir_multiplier)
 
         self.action_space = spaces.Dict({

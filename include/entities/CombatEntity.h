@@ -18,7 +18,12 @@ class CombatEntity;
 // applySplashDamage, which only ever gets called from leaf classes that
 // include this whole header first), so the class body needs to see these
 // signatures before they're fully defined.
-inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
+// Returns whichever entities actually got buffed -- callers that need to
+// do something ELSE to the same targets (Royal Chef's Tower Troop also
+// bumps hp on whoever it just buffed) can reuse the exact selection
+// instead of re-scanning the board. Every existing caller ignores the
+// return value, so this is backward compatible.
+inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, float multiplier, int durationTicks, int maxTargets);
 inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, int amount);
@@ -961,9 +966,9 @@ inline void applyLineSplashDamage(Board& board, const Vector2D& origin, const Ve
 // per-3rd-attack enchant, Lumberjack's death-potion, Rage). excludeId
 // skips the source itself (a buffing unit doesn't buff itself). No-op
 // when radius <= 0 or maxTargets <= 0.
-inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
+inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
         int team, float multiplier, int durationTicks, int maxTargets) {
-    if (radius <= 0.0f || maxTargets <= 0) return;
+    if (radius <= 0.0f || maxTargets <= 0) return {};
     std::vector<std::shared_ptr<CombatEntity>> candidates;
     for (const auto& entity : board.getEntities()) {
         if (entity->id == excludeId) continue;
@@ -979,6 +984,7 @@ inline void applyAreaBuff(Board& board, const Vector2D& origin, float radius, in
         });
     if (static_cast<int>(candidates.size()) > maxTargets) candidates.resize(maxTargets);
     for (const auto& c : candidates) c->applyBuff(multiplier, durationTicks);
+    return candidates;
 }
 
 // Ally heal (Battle Healer): heals every same-team Entity within radius of

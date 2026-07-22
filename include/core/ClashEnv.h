@@ -179,8 +179,10 @@ private:
     }
 
 public:
-    ClashEnv(const std::vector<int>& aiDeck, const std::vector<int>& oppDeck, int maxTicks = 3600)
-        : game(aiDeck, oppDeck), maxTicks(maxTicks), currentTick(0),
+    ClashEnv(const std::vector<int>& aiDeck, const std::vector<int>& oppDeck, int maxTicks = 3600,
+            TowerTroopType aiTowerTroop = TowerTroopType::None,
+            TowerTroopType oppTowerTroop = TowerTroopType::None)
+        : game(aiDeck, oppDeck, aiTowerTroop, oppTowerTroop), maxTicks(maxTicks), currentTick(0),
           rng(std::random_device{}()) {}
 
     int observationSize() const {

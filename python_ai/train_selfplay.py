@@ -312,7 +312,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         env_config = env_config or {}
         self.deck = env_config.get("deck", list(DEFAULT_DECK))
         max_ticks = env_config.get("max_ticks", 3600)
-        self.game = clash_royale_env.ClashRoyaleEnv(self.deck, self.deck, max_ticks)
+        # Tower Troops: per-match config, not a per-step action -- see
+        # gym_wrapper.py's identical wiring. NONE (the default) reproduces
+        # the original hardcoded Princess Tower unchanged.
+        ai_tower_troop = env_config.get("ai_tower_troop", clash_royale_env.TowerTroopType.NONE)
+        opp_tower_troop = env_config.get("opp_tower_troop", clash_royale_env.TowerTroopType.NONE)
+        self.game = clash_royale_env.ClashRoyaleEnv(self.deck, self.deck, max_ticks, ai_tower_troop, opp_tower_troop)
 
         # Team 1's brain -- CPU is plenty for a single inference-only forward
         # pass per step per worker process, and keeps this off the GPU the
