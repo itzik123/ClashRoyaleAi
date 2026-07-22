@@ -4,26 +4,36 @@ import numpy as np
 
 import clash_royale_env
 
-# Giant Beatdown (tank + support), not the old Hog cycle deck: measured in
-# practice that the cycle deck (Hog Rider + Skeletons + Zap) got training stuck
-# around 40-50% win rate for 2800+ episodes with no improving trend -- its good-
-# play window (precise cycle timing, counters) was too narrow for random
-# exploration to ever stumble into. Tank+support gives a coarse heuristic
-# ("push the tank forward, support behind it") that already yields reasonable
-# reward even with imperfect execution, so it's significantly easier to
-# bootstrap. 2=Giant, 5=Mini PEKKA, 35=Electro Wizard, 7=Fireball, 33=The Log,
-# 24=Skeletons, 40=Ice Golem, 25=Cannon.
-# Replaces an earlier draft of this same archetype that used Wizard(11)/
-# Musketeer(6) for anti-air and Zap(29) as the light spell -- both were quietly
-# broken for the role: Musketeer/Wizard never got .withTargetsAir() in
-# CardRegistry.h (ground-only here despite hitting air in the real game), and
-# Zap here is damage-only with no stun (its actual niche in the real game).
-# Electro Wizard/The Log are the two cards in this roster whose real-game
-# signature mechanic (air-targeting+split+stun; ground-only roll) is actually
-# modeled. Exposed at module level so other scripts (e.g. train_selfplay.py,
-# which builds its ClashRoyaleEnv directly instead of through this wrapper)
-# can import the same deck instead of duplicating/drifting from this literal.
-DEFAULT_DECK = [2, 5, 35, 7, 33, 24, 40, 25]
+# Real-meta Balloon Freeze deck, replacing the earlier Giant Beatdown archetype
+# entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
+# Reasons: (1) the old deck was picked back when CardRegistry had far fewer
+# cards implemented and doesn't reflect the roster available now; (2) pipeline
+# #1's phase 2 (randomized opponent decks, see train.py's PHASE2_WIN_RATE_GATE)
+# never actually ran -- the old model only ever played mirror-deck self-play,
+# a real overfitting risk; (3) the old checkpoint accumulated architecture
+# drift across several unrelated engine changes this project went through
+# (map geometry, champion-ability action space); (4) the old model never saw
+# the enlarged board/back-row placement area at all -- trained entirely before
+# that change.
+#
+# 44=Baby Dragon, 0=Knight, 56=Inferno Dragon, 45=Balloon (win condition),
+# 22=Bowler, 106=Tornado, 107=Freeze, 101=Barbarian Barrel.
+#
+# All 8 confirmed against CardRegistry.h + a full green ClashRoyaleTests run
+# (1759 assertions/376 cases) before committing to this deck. Two known,
+# deliberate engine simplifications worth remembering if this deck's learning
+# curve ever looks off: Bowler's hit does NOT knock enemies back here (real
+# card does) -- AreaSpell's knockback has no equivalent on the troop-attack
+# path this engine's splash/line-splash share, a structural limitation, not a
+# bug specific to Bowler. Balloon's death-explosion fires unconditionally and
+# instantly on death (real card: only if killed before its bomb-drop
+# animation finishes, with a short delay) -- close enough to be a non-issue in
+# practice, not a missing mechanic.
+#
+# Exposed at module level so other scripts (e.g. train_selfplay.py, which
+# builds its ClashRoyaleEnv directly instead of through this wrapper) can
+# import the same deck instead of duplicating/drifting from this literal.
+DEFAULT_DECK = [44, 0, 56, 45, 22, 106, 107, 101]
 
 
 def get_all_card_ids():

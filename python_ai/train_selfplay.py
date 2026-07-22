@@ -2,6 +2,7 @@ import os
 import glob
 import re
 import time
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,96 +23,125 @@ from train import (
     DRAW_PENALTY,
 )
 
-# --- Pipeline #2: Historical Self-Play ---
+# --- Pipeline #2: Historical Self-Play (League / PFSP) ---
 # Pipeline #1 (train.py) teaches the bot to beat a random-but-unskilled
 # opponent -- a necessary bootstrap, but not a ceiling: nothing in that
 # opponent ever punishes a bad trade, reads a push, or plays around a specific
 # threat the way a real opponent would. This pipeline is what actually
 # introduces that pressure: the trainee (still the same live policy, continuing
-# gradient updates) plays against FROZEN snapshots of its own past selves,
-# weakest first, advancing to the next-strongest snapshot once it consistently
-# beats the current one. Both sides genuinely decide what to play now (see
-# ClashEnv::stepSelfPlay/extractObservationForTeam in the C++ layer) instead of
-# team 1 being the built-in random C++ bot.
+# gradient updates) plays against FROZEN snapshots of its own past selves.
+# Both sides genuinely decide what to play (see ClashEnv::stepSelfPlay/
+# extractObservationForTeam in the C++ layer) instead of team 1 being the
+# built-in random C++ bot.
+#
+# Opponent selection is Prioritized Fictitious Self-Play (PFSP, as used by
+# AlphaStar's league), NOT a linear ladder -- replaces an earlier design that
+# advanced through the pool one opponent at a time, gated on a win-rate
+# threshold. That design had two structural problems, both confirmed in
+# practice (see training_selfplay_run1.log from this project's own history):
+# (1) once the pool's genuinely-old/weak snapshots were exhausted, the "next"
+# opponent was inevitably a near-mirror of the live trainee (the pool refills
+# from the trainee's OWN recent snapshots), so the win-rate gate became
+# structurally unreachable -- not because the trainee stopped improving, but
+# because a near-mirror matchup settles near 50% by construction; (2) a
+# linear ladder never revisits opponents once passed, so nothing prevents
+# catastrophic forgetting of earlier matchups. PFSP fixes both: EVERY env,
+# at EVERY episode reset, independently samples an opponent from the whole
+# eligible pool with probability weighted toward whichever opponents it's
+# currently doing WORST against (see PFSP_EXPONENT below) -- so old,
+# already-beaten opponents keep appearing (just rarely), and there is no
+# single "current opponent" or gate to get stuck against.
 
-# Raw win rate (not decisive), same convention as train.py's curriculum gates.
-# Lowered from 0.95 -- observed win rate against real pool opponents tops out
-# around 0.80-0.85, so 0.95 was practically unreachable and every transition
-# ended up relying on the MAX_EPISODES_PER_HISTORICAL_OPPONENT safety valve
-# below instead of genuine mastery. Paired with MASTERY_CONFIRM_EPISODES
-# further down so a lower bar doesn't just trade "never advances" for
-# "advances on a lucky noisy window."
-SELFPLAY_WIN_RATE_GATE = 0.85
-# Safety valve, not the intended advancement trigger -- same role as pipeline
-# #1's MAX_EPISODES_PER_RANDOM_DECK. A near-mirror matchup (the current
-# trainee vs. a historical snapshot of itself from not very long ago) can
-# converge toward mutual passivity once both sides are closely matched and
-# entropy is floored -- games time out into draws instead of being decisively
-# won, and win_rate (draws count against it, same as losses) never clears
-# SELFPLAY_WIN_RATE_GATE. Confirmed happening in practice: stuck on the same
-# opponent for 10,000+ episodes with draw rate pinned at 82-94%. Without this,
-# such a stall blocks the entire opponent queue forever.
-MAX_EPISODES_PER_HISTORICAL_OPPONENT = 5000
-# Escape hatch for the SAME mutual-passivity problem, triggered much earlier
-# than the timeout above: once draws cross this share of the current 100-
-# episode window, re-boost exploration right away instead of waiting the
-# whole MAX_EPISODES_PER_HISTORICAL_OPPONENT window out at floored entropy --
-# floored entropy is exactly what locks a passive equilibrium in place, since
-# neither side has any remaining chance to stumble into a different joint
-# strategy. Reward-shaping fixes (see train.py's W_ELIXIR_TRADE/DRAW_PENALTY/
-# W_ELIXIR_OVERFLOW comments) address WHY passivity looked attractive; this
-# addresses the fact that once both sides are already sitting in it, ordinary
-# gradient descent has no exploration left to climb back out.
+# Each of the num_envs worker processes keeps its OWN local per-opponent
+# win-rate estimate (see MicroRoyaleSelfPlayEnv.pfsp_stats) and samples from
+# it independently -- deliberately decentralized rather than synchronized
+# across workers/processes, since AsyncVectorEnv workers are separate OS
+# processes and cross-process synchronization of a growing stats dict every
+# episode would add real complexity for little benefit at only 8 workers;
+# each worker converges its own reasonable local estimate from its own
+# experience over time, same as any decentralized-actor RL setup.
+PFSP_EXPONENT = 2.0
+# Floor on sampling weight even for an opponent the trainee already wins
+# 100% against -- keeps EVERY eligible opponent in rotation forever (at low
+# frequency) instead of fully forgetting it once its local win-rate estimate
+# saturates. This is what actually prevents catastrophic forgetting; PFSP's
+# difficulty-weighting alone would drive an already-mastered opponent's
+# sampling weight toward (but never quite to) zero, so this floor gives it a
+# guaranteed non-zero share.
+PFSP_MIN_WEIGHT = 0.05
+# Smoothing factor for each worker's local per-opponent win-rate EMA
+# (outcome in {1.0 win, 0.5 draw, 0.0 loss}, new_stat = old*(1-a) + outcome*a).
+# ~1/0.08 = 12-game effective window -- short enough to track a real trend as
+# both the trainee and the sampling weights shift over a long run, without
+# being so short that one lucky/unlucky game swings the weight.
+PFSP_EMA_ALPHA = 0.08
+
+# Same escape hatch as before for mutual passivity: once draws cross this
+# share of the current 100-episode window (now aggregated across whatever mix
+# of pool opponents each worker happened to sample, not one fixed opponent),
+# re-boost exploration -- floored entropy is exactly what locks a passive
+# equilibrium in place, since neither side has any remaining chance to
+# stumble into a different joint strategy. Reward-shaping fixes (see
+# train.py's W_ELIXIR_TRADE/DRAW_PENALTY/W_ELIXIR_OVERFLOW comments) address
+# WHY passivity looked attractive; this addresses the fact that once both
+# sides are already sitting in it, ordinary gradient descent has no
+# exploration left to climb back out.
 STALL_DRAW_RATE_THRESHOLD = 0.5
 # Cooldown so this doesn't re-fire every single episode once the window is
 # saturated with draws -- gives each boost a real window to actually take
 # effect before deciding whether another one is needed.
 STALL_REBOOST_COOLDOWN_EPISODES = 1000
 # Escape hatch for the failure mode the draw-rate trigger above CAN'T see:
-# draws near zero (the passivity fix worked) but win rate still stuck below
-# SELFPLAY_WIN_RATE_GATE, with entropy floored the whole time and nothing
-# ever refreshing it. Confirmed happening in practice: stage_start_episode
-# sitting unreset for 24,800+ episodes straight, measured policy entropy
-# drifting UP the whole stretch (more random, not less) while win rate and
-# tower-HP margins both got WORSE -- floored entropy for that long just lets
-# ordinary gradient noise erode an already-good policy with no exploration
-# boost ever pulling it back. Longer than STALL_REBOOST_COOLDOWN_EPISODES
-# since this is a broader "nothing's converged in a while" signal, not an
-# acute passivity relapse -- shares the same last_stall_reboost_episode
-# cooldown clock as the draw-rate trigger (whichever fires resets it).
-#
-# Narrowed to also require win_rate < 0.5 at the point of use below (not just
-# "hasn't cleared the gate yet"): confirmed in practice against opponent 19/19
-# (ep 65400-65880, see training_selfplay_run1.log) that firing this while
-# ALREADY decisively winning (e.g. a stable 60-75%, just short of
-# SELFPLAY_WIN_RATE_GATE) measurably hurts -- there's no better joint policy
-# for injected noise to find in a matchup that's already going well, only
-# sampling noise for the entropy bonus to add (see MIN_OPPONENT_AGE_EPISODES's
-# comment below for why near-parity matchups happen at all). Below 0.5 the
-# trainee is genuinely losing more than winning, which IS worth reacting to.
+# draws near zero but the aggregate win rate across the pool still stuck
+# losing, entropy floored the whole time with nothing ever refreshing it.
+# Narrowed to also require win_rate < 0.5 (not just "below some target"):
+# confirmed in practice (this project's own earlier ladder-based run) that
+# firing an exploration re-boost while ALREADY decisively winning measurably
+# HURTS -- there's no better joint policy for injected noise to find in a
+# matchup that's already going well, only sampling noise for the entropy
+# bonus to add. Below 0.5 the trainee is genuinely losing more than winning
+# against the pool it's currently being sampled against, which IS worth
+# reacting to.
 ENTROPY_STALE_REBOOST_EPISODES = 1500
-# How long a >=SELFPLAY_WIN_RATE_GATE window has to hold CONTINUOUSLY before
-# it counts as real mastery rather than one lucky 100-episode sample -- without
-# this, a single noisy window crossing the (now-lower) gate for an instant
-# would immediately unlock a harder opponent the trainee hasn't actually
-# beaten reliably yet.
-MASTERY_CONFIRM_EPISODES = 100
 # Pipeline #2's own snapshots (saved every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES
 # = 5000 episodes, see train.py) refill the SAME shared pool this script draws
 # opponents from -- once the genuinely-old/weak pipeline #1 snapshots are used
-# up, every remaining "opponent" the queue can offer is one of the trainee's
-# own very recent selves. Confirmed in practice against opponent 19/19 (a
-# snapshot only ~3,000 episodes old): decisive win rate settled near 50%, not
-# because the trainee stopped improving, but because that "opponent" was
-# barely behind its current skill -- a fair fight, not a meaningful mastery
-# test. discover_historical_checkpoints() excludes pipeline #2 snapshots
+# up, every remaining candidate is one of the trainee's own very recent
+# selves. discover_historical_checkpoints() excludes pipeline #2 snapshots
 # younger than this many episodes (relative to the live trainee's CURRENT
-# episodes_completed) from eligibility, so every stage is a genuinely-beatable
-# earlier version and SELFPLAY_WIN_RATE_GATE keeps measuring real mastery
-# instead of coin-flip parity. Pipeline #1 snapshots are always eligible
-# (wholly separate, earlier, much weaker phase -- see that function's
-# docstring for why their episode count isn't even comparable to this one).
+# episodes_completed) from eligibility, so the pool -- and therefore both PFSP
+# sampling and the evaluation roster below -- always reflects genuinely-older,
+# genuinely-distinguishable versions instead of coin-flip-parity mirrors.
+# Pipeline #1 snapshots are always eligible (wholly separate, earlier, much
+# weaker phase -- see discover_historical_checkpoints()'s docstring for why
+# their episode count isn't even comparable to this one).
 MIN_OPPONENT_AGE_EPISODES = 15000
+
+# --- Fixed-roster Elo-style evaluation ---
+# Win rate against "whichever opponent PFSP happened to sample this window"
+# is not a stable progress signal (it swings with the pool composition, same
+# root problem the ladder had). This periodically plays the CURRENT policy,
+# GREEDY (argmax card, distribution mean placement -- no sampling, so the
+# measurement isn't itself noisy from exploration), against a small FIXED
+# roster of reference opponents that, once chosen, never changes -- so the
+# resulting score is comparable across the whole run and actually answers
+# "is this getting better" instead of "did this window's sampled mix happen
+# to be easy or hard."
+EVAL_INTERVAL_EPISODES = 5000
+EVAL_GAMES_PER_OPPONENT = 10
+# Reference roster grows (see update_reference_roster()) as new age-eligible
+# checkpoints appear, capped here -- once full, it's permanently frozen so
+# the Elo scale stays comparable for the rest of the run.
+REFERENCE_ROSTER_MAX_SIZE = 5
+# Anchor Elo values are HAND-ASSIGNED, evenly spaced by pool position at the
+# time each anchor is added -- NOT empirically cross-calibrated against each
+# other. This means the absolute number this produces is not a "real"
+# competitive Elo rating; what's meaningful is the TREND across successive
+# evaluation rounds against this exact fixed roster (is Eval/Elo trending up
+# over tens of thousands of episodes), which is exactly the signal that was
+# missing before.
+REFERENCE_ROSTER_BASE_ELO = 1000
+REFERENCE_ROSTER_ELO_STEP = 150
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -148,6 +178,86 @@ def discover_historical_checkpoints(current_episode=None):
     return sorted(paths, key=os.path.getmtime)
 
 
+def update_reference_roster(reference_roster, historical_pool):
+    """Grows the FIXED evaluation roster (in place) as new age-eligible
+    checkpoints become available in historical_pool, up to
+    REFERENCE_ROSTER_MAX_SIZE. Entries already in the roster are NEVER
+    reordered or replaced -- see REFERENCE_ROSTER_ELO_STEP's comment on why
+    the roster has to stay fixed for the Elo trend to mean anything. Iterates
+    historical_pool oldest-first (its own sort order), so anchors get added
+    weakest-first as the pool grows, same "weakest known so far" assumption
+    used everywhere else in this file."""
+    known_paths = {entry["path"] for entry in reference_roster}
+    for path in historical_pool:
+        if len(reference_roster) >= REFERENCE_ROSTER_MAX_SIZE:
+            break
+        if path in known_paths:
+            continue
+        next_elo = REFERENCE_ROSTER_BASE_ELO + REFERENCE_ROSTER_ELO_STEP * len(reference_roster)
+        reference_roster.append({"path": path, "elo": next_elo})
+        known_paths.add(path)
+    return reference_roster
+
+
+def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
+    """Plays the CURRENT live policy, GREEDY (argmax card, distribution mean
+    placement -- no sampling), against each fixed roster opponent for n_games
+    each. The opponent itself is NOT forced greedy -- it plays its own normal
+    (stochastic) game, since the point is "how does the trainee do against
+    this opponent's real behavior," and only the trainee's OWN sampling noise
+    needs removing from the measurement.
+
+    Returns (agent_elo, per_opponent_stats). agent_elo is the average of the
+    trainee's Elo implied by its score against each anchor's fixed Elo (see
+    REFERENCE_ROSTER_ELO_STEP's comment: a comparable trend, not a calibrated
+    rating). per_opponent_stats maps checkpoint path -> {wins, losses, draws,
+    score}, useful for per-opponent diagnostics beyond the single aggregate
+    number.
+    """
+    net.eval()
+    per_opponent_stats = {}
+    implied_elos = []
+    try:
+        for entry in roster:
+            path, ref_elo = entry["path"], entry["elo"]
+            env = MicroRoyaleSelfPlayEnv()
+            env.set_historical_opponent(path)
+            wins = losses = draws = 0
+            for _ in range(n_games):
+                obs, _ = env.reset()
+                hx = torch.zeros(1, 256).to(device)
+                cx = torch.zeros(1, 256).to(device)
+                done = False
+                reward = 0.0
+                while not done:
+                    obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        card_logits, mean, _, _, (hx, cx) = net(obs_t, (hx, cx))
+                    card_idx = int(card_logits.argmax(dim=-1).item())
+                    placement = torch.clamp(mean, 0.0, 1.0)
+                    action = {
+                        "card_index": np.array([card_idx]),
+                        "target_x": np.array([(placement[0, 0] * max_x).item()]),
+                        "target_y": np.array([(placement[0, 1] * max_y).item()]),
+                    }
+                    obs, reward, terminated, truncated, _ = env.step(action)
+                    done = terminated or truncated
+                if reward > 0.5:
+                    wins += 1
+                elif reward < -0.5:
+                    losses += 1
+                else:
+                    draws += 1
+            score = (wins + 0.5 * draws) / n_games
+            per_opponent_stats[path] = {"wins": wins, "losses": losses, "draws": draws, "score": score}
+            score_clipped = min(max(score, 0.03), 0.97)
+            implied_elos.append(ref_elo - 400.0 * math.log10(1.0 / score_clipped - 1.0))
+    finally:
+        net.train()
+    agent_elo = float(np.mean(implied_elos)) if implied_elos else None
+    return agent_elo, per_opponent_stats
+
+
 def load_state_dict_flexible(net, state_dict, context_label):
     """Loads state_dict into net. Returns True on a clean, fully-matching load.
 
@@ -182,10 +292,16 @@ def load_state_dict_flexible(net, state_dict, context_label):
 class MicroRoyaleSelfPlayEnv(gym.Env):
     """Same action/observation shape as gym_wrapper.MicroRoyaleEnv, but team 1
     is a frozen copy of MicroRoyaleNet (never trained here -- eval()/no_grad
-    only) instead of the built-in random C++ opponentTurn(). Swapping which
-    historical snapshot team 1 uses is a live, resumable-mid-episode operation
-    (set_historical_opponent), the same shape as set_opponent_deck in
-    gym_wrapper.py.
+    only) instead of the built-in random C++ opponentTurn().
+
+    Opponent selection is PFSP (see this module's own top-of-file comment):
+    each instance keeps its own local pool (pfsp_pool) and per-opponent
+    win-rate EMA (pfsp_stats), and samples a fresh opponent at every reset()
+    weighted toward whichever it's currently doing worst against. The main
+    process broadcasts pool updates via refresh_pfsp_pool(); set_historical_
+    opponent() is still available directly for one-off uses (evaluation,
+    replay generation) that want a SPECIFIC opponent rather than a sampled
+    one.
     """
 
     MAX_X = 17.0
@@ -207,6 +323,15 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
         self.opponent_checkpoint_path = None
+
+        # PFSP pool/stats -- see refresh_pfsp_pool()/_sample_pfsp_opponent().
+        # Empty until the main process's first broadcast; reset() no-ops the
+        # sampling step until then (should never actually happen in normal
+        # operation, since train_selfplay_ppo() broadcasts before the first
+        # envs.reset() call).
+        self.pfsp_pool = []
+        self.pfsp_stats = {}
+
         if env_config.get("historical_checkpoint_path"):
             self.set_historical_opponent(env_config["historical_checkpoint_path"])
 
@@ -231,8 +356,33 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.opponent_net.eval()
         self.opponent_checkpoint_path = checkpoint_path
 
+    def refresh_pfsp_pool(self, pool_paths):
+        """Broadcast from the main process (train_selfplay_ppo, via
+        envs.call) whenever the eligible pool changes -- at startup, and
+        after every new historical snapshot is saved. New entries start at a
+        neutral 0.5 win-rate prior; PFSP_EXPONENT's weighting naturally
+        prioritizes them for extra games until their real difficulty is
+        established. Pool only ever grows (an eligible checkpoint never
+        becomes ineligible again), so this never needs to prune pfsp_stats."""
+        self.pfsp_pool = list(pool_paths)
+        for p in self.pfsp_pool:
+            if p not in self.pfsp_stats:
+                self.pfsp_stats[p] = 0.5
+
+    def _sample_pfsp_opponent(self):
+        if not self.pfsp_pool:
+            return
+        weights = np.array([
+            max(PFSP_MIN_WEIGHT, (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
+            for p in self.pfsp_pool
+        ], dtype=np.float64)
+        weights /= weights.sum()
+        chosen = self.pfsp_pool[np.random.choice(len(self.pfsp_pool), p=weights)]
+        self.set_historical_opponent(chosen)
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self._sample_pfsp_opponent()
         obs_list = self.game.reset()
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
@@ -274,6 +424,16 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         reward = float(result.reward0)
         terminated = bool(result.done)
 
+        if terminated and self.opponent_checkpoint_path is not None:
+            if reward > 0.5:
+                outcome = 1.0
+            elif reward < -0.5:
+                outcome = 0.0
+            else:
+                outcome = 0.5
+            prev = self.pfsp_stats.get(self.opponent_checkpoint_path, 0.5)
+            self.pfsp_stats[self.opponent_checkpoint_path] = prev * (1.0 - PFSP_EMA_ALPHA) + outcome * PFSP_EMA_ALPHA
+
         # Same key names/shape as gym_wrapper.MicroRoyaleEnv.step()'s info dict
         # on purpose -- lets compute_shaping() from train.py be reused as-is.
         info = {
@@ -314,7 +474,7 @@ def train_selfplay_ppo():
     optimizer = optim.Adam(net.parameters(), lr=3e-4)
 
     # Same PPO hyperparameters as train.py -- same architecture and algorithm,
-    # only the opponent-progression mechanic differs, so there's no reason to
+    # only the opponent-selection mechanic differs, so there's no reason to
     # re-derive these from scratch.
     gamma = 0.99
     gae_lambda = 0.9
@@ -331,12 +491,15 @@ def train_selfplay_ppo():
     MAX_X = MicroRoyaleSelfPlayEnv.MAX_X
     MAX_Y = MicroRoyaleSelfPlayEnv.MAX_Y
 
-    historical_opponent_index = 0
-    stage_start_episode = 0
-    opponent_episode_start = 0  # episodes_completed value when the CURRENT historical opponent started
-    last_stall_reboost_episode = 0  # episodes_completed value at the last entropy re-boost (draw-stall or stale-plateau)
-    mastery_streak_start = None  # episodes_completed value when the win-rate gate was first continuously cleared
+    # Episode at which the entropy decay schedule last reset -- renamed from
+    # the old ladder's "stage_start_episode" now that there's no per-opponent
+    # "stage" concept under PFSP; only reset by the two re-boost triggers
+    # below (draw-rate stall, losing-trend stale-plateau).
+    entropy_reboost_episode = 0
+    last_stall_reboost_episode = 0  # episodes_completed value at the last entropy re-boost
+    last_eval_ep = 0  # episodes_completed value at the last fixed-roster evaluation
     episodes_completed = 0
+    reference_roster = []  # list of {"path":, "elo":}, see update_reference_roster()
     outcome_history = deque(maxlen=100)
     outcome_history_long = deque(maxlen=500)
 
@@ -351,19 +514,18 @@ def train_selfplay_ppo():
             print("Optimizer state NOT restored (architecture mismatch above) -- "
                   "starting the optimizer fresh; network weights were still warm-started where shapes matched.")
         episodes_completed = checkpoint["episodes_completed"]
-        historical_opponent_index = checkpoint["historical_opponent_index"]
-        stage_start_episode = checkpoint["stage_start_episode"]
-        # .get() with episodes_completed as the fallback: checkpoints saved
-        # before this safety valve existed just restart the per-opponent
-        # clock now, rather than retroactively counting already-elapsed
-        # episodes against the new limit.
-        opponent_episode_start = checkpoint.get("opponent_episode_start", episodes_completed)
+        # .get() with a fallback to the OLD ladder-era field name, then to
+        # episodes_completed: lets a checkpoint saved before this PFSP
+        # rewrite still resume sanely instead of KeyError-ing.
+        entropy_reboost_episode = checkpoint.get(
+            "entropy_reboost_episode", checkpoint.get("stage_start_episode", episodes_completed))
         last_stall_reboost_episode = checkpoint.get("last_stall_reboost_episode", episodes_completed)
-        mastery_streak_start = checkpoint.get("mastery_streak_start", None)
+        last_eval_ep = checkpoint.get("last_eval_ep", episodes_completed)
+        reference_roster = checkpoint.get("reference_roster", [])
         outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
         full_resume = True
-        print(f"Resumed pipeline #2 from {WEIGHT_PATH}: episode {episodes_completed}, "
-              f"historical_opponent_index {historical_opponent_index}")
+        print(f"Resumed pipeline #2 (PFSP) from {WEIGHT_PATH}: episode {episodes_completed}, "
+              f"reference roster size {len(reference_roster)}")
     elif os.path.exists(BOOTSTRAP_FROM_PATH):
         bootstrap = torch.load(BOOTSTRAP_FROM_PATH, map_location=device, weights_only=False)
         state_dict = bootstrap["model"] if isinstance(bootstrap, dict) and "model" in bootstrap else bootstrap
@@ -385,11 +547,8 @@ def train_selfplay_ppo():
             "(every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES episodes) before pipeline #2 "
             "has anything old enough to play against.")
 
-    if historical_opponent_index >= len(historical_pool):
-        historical_opponent_index = len(historical_pool) - 1
-    current_opponent_path = historical_pool[historical_opponent_index]
-    envs.call("set_historical_opponent", current_opponent_path)
-    print(f"Initial historical opponent ({historical_opponent_index + 1}/{len(historical_pool)}): {current_opponent_path}")
+    envs.call("refresh_pfsp_pool", historical_pool)
+    print(f"PFSP pool initialized with {len(historical_pool)} eligible opponent(s).")
 
     if not full_resume and os.path.exists(log_dir):
         import shutil
@@ -422,8 +581,8 @@ def train_selfplay_ppo():
     print(f"Self-play training started on {num_envs} CPU cores simultaneously!")
 
     while episodes_completed < 1000000:
-        episodes_in_stage = episodes_completed - stage_start_episode
-        current_entropy_coef = max(min_entropy_coef, initial_entropy_coef * (entropy_decay_rate ** episodes_in_stage))
+        episodes_since_reboost = episodes_completed - entropy_reboost_episode
+        current_entropy_coef = max(min_entropy_coef, initial_entropy_coef * (entropy_decay_rate ** episodes_since_reboost))
 
         hx0 = hx.detach().clone()
         cx0 = cx.detach().clone()
@@ -533,7 +692,7 @@ def train_selfplay_ppo():
                         avg_shaping = np.mean(shaping_history)
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
-                              f"Opponent: {historical_opponent_index + 1}/{len(historical_pool)} | Entropy: {current_entropy_coef:.4f}")
+                              f"Pool: {len(historical_pool)} | Entropy: {current_entropy_coef:.4f}")
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
@@ -550,125 +709,35 @@ def train_selfplay_ppo():
                         writer.add_scalar("Progress/Episode_Length_50", np.mean(ep_len_history), episodes_completed)
                         writer.add_scalar("Progress/Enemy_Building_HP_End_50", np.mean(enemy_bldg_end_history), episodes_completed)
                         writer.add_scalar("Progress/Ally_Building_HP_End_50", np.mean(ally_bldg_end_history), episodes_completed)
-                        writer.add_scalar("Training/Historical_Opponent_Index", historical_opponent_index, episodes_completed)
+                        writer.add_scalar("Training/PFSP_Pool_Size", len(historical_pool), episodes_completed)
                         writer.add_scalar("Training/Entropy_Coef", current_entropy_coef, episodes_completed)
 
-                    # --- Historical-opponent advancement: beat the current
-                    # snapshot ~SELFPLAY_WIN_RATE_GATE of the time, then move to
-                    # the next-strongest known one. If the queue's exhausted,
-                    # re-scan the shared folder -- pipeline #1 may still be
-                    # running, and this same script also drops its own new
-                    # snapshots in there as it improves (see the save below) --
-                    # and if nothing new has appeared yet, just keep training
-                    # against the current (strongest known) opponent rather
-                    # than blocking.
-                    #
-                    # MAX_EPISODES_PER_HISTORICAL_OPPONENT is a safety valve,
-                    # not the intended trigger -- see its own comment above. A
-                    # near-mirror matchup can converge toward mutual passivity
-                    # (draws, not decisive wins) and never clear the win-rate
-                    # gate on its own; this makes sure that stalls the queue
-                    # for at most one timeout instead of forever.
+                    # --- Entropy re-boost heuristics only -- opponent
+                    # SELECTION is PFSP's job now (see
+                    # MicroRoyaleSelfPlayEnv._sample_pfsp_opponent, called
+                    # independently by each of the 8 workers at every
+                    # reset()). This block only manages exploration, reading
+                    # the GLOBAL outcome_history across whatever mix of pool
+                    # opponents each worker happened to sample this window.
                     window_full = len(outcome_history) == outcome_history.maxlen
-                    timed_out = episodes_completed - opponent_episode_start >= MAX_EPISODES_PER_HISTORICAL_OPPONENT
-                    if window_full or timed_out:
-                        n_outcomes = len(outcome_history)
-                        if n_outcomes > 0:
-                            outcomes_arr = np.array(outcome_history)
-                            win_rate = int((outcomes_arr == 1).sum()) / n_outcomes
-                            draw_rate = int((outcomes_arr == 0).sum()) / n_outcomes
-                        else:
-                            win_rate = 0.0
-                            draw_rate = 0.0
+                    if window_full:
+                        outcomes_arr = np.array(outcome_history)
+                        n_outcomes = len(outcomes_arr)
+                        win_rate = int((outcomes_arr == 1).sum()) / n_outcomes
+                        draw_rate = int((outcomes_arr == 0).sum()) / n_outcomes
 
-                        # Gate-clearing win rate alone isn't enough to advance -- a
-                        # single lucky 100-episode window can cross the (now-lower)
-                        # gate by chance and immediately unlock a harder opponent
-                        # the trainee hasn't actually mastered. Require the window-
-                        # level win rate to stay >= the gate CONTINUOUSLY for a
-                        # further MASTERY_CONFIRM_EPISODES before treating it as
-                        # real mastery instead of noise.
-                        gate_cleared_now = window_full and win_rate >= SELFPLAY_WIN_RATE_GATE
-                        if gate_cleared_now:
-                            if mastery_streak_start is None:
-                                mastery_streak_start = episodes_completed
-                        else:
-                            mastery_streak_start = None
-                        mastered = (mastery_streak_start is not None
-                                    and episodes_completed - mastery_streak_start >= MASTERY_CONFIRM_EPISODES)
-
-                        if mastered or timed_out:
-                            refreshed_pool = discover_historical_checkpoints(episodes_completed)
-                            if len(refreshed_pool) > historical_opponent_index + 1:
-                                historical_pool = refreshed_pool
-                                historical_opponent_index += 1
-                                current_opponent_path = historical_pool[historical_opponent_index]
-                                envs.call("set_historical_opponent", current_opponent_path)
-                                outcome_history.clear()
-                                stage_start_episode = episodes_completed
-                                opponent_episode_start = episodes_completed
-                                mastery_streak_start = None
-                                reason = (f"mastered it (win rate {win_rate:.2f}, held "
-                                          f"{MASTERY_CONFIRM_EPISODES}+ episodes)" if mastered
-                                          else f"hit the {MAX_EPISODES_PER_HISTORICAL_OPPONENT}-episode "
-                                               f"safety cap without mastering it (win rate {win_rate:.2f})")
-                                print(f">>> Beat opponent {historical_opponent_index}/{len(historical_pool)} "
-                                      f"({reason}) -- advancing to "
-                                      f"{historical_opponent_index + 1}/{len(historical_pool)}: {current_opponent_path}")
-                                writer.add_scalar("Training/Historical_Opponent_Index", historical_opponent_index, episodes_completed)
-                            elif timed_out:
-                                # Timed out but nothing stronger is known yet -- re-boost
-                                # exploration and give it a fresh attempt window against
-                                # the SAME opponent instead of continuing indefinitely at
-                                # floored entropy with zero further exploration pressure.
-                                outcome_history.clear()
-                                stage_start_episode = episodes_completed
-                                opponent_episode_start = episodes_completed
-                                mastery_streak_start = None
-                                print(f">>> Opponent {historical_opponent_index + 1}/{len(historical_pool)} timed out "
-                                      f"(win rate {win_rate:.2f}) but no stronger snapshot exists yet -- "
-                                      "re-boosting exploration and retrying the same opponent.")
-                            # else: nothing stronger known yet and not timed out --
-                            # keep training against the current opponent,
-                            # outcome_history keeps sliding so this re-checks
-                            # every episode.
-                        elif (window_full and draw_rate >= STALL_DRAW_RATE_THRESHOLD
+                        if (draw_rate >= STALL_DRAW_RATE_THRESHOLD
                                 and episodes_completed - last_stall_reboost_episode >= STALL_REBOOST_COOLDOWN_EPISODES):
-                            # High draw rate well before either the win gate or the
-                            # timeout -- re-boost exploration NOW rather than let it
-                            # sit at floored entropy for the rest of the timeout
-                            # window, since floored entropy is exactly what locks a
-                            # passive equilibrium in place (see this constant's
-                            # comment above). Doesn't touch opponent_episode_start
-                            # or outcome_history -- still the same opponent, same
-                            # win-rate/timeout clock, just a fresh exploration push.
-                            stage_start_episode = episodes_completed
+                            entropy_reboost_episode = episodes_completed
                             last_stall_reboost_episode = episodes_completed
-                            print(f">>> High draw rate ({draw_rate:.2f}) against opponent "
-                                  f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
+                            print(f">>> High draw rate ({draw_rate:.2f}) across the pool -- "
                                   "re-boosting exploration to try to break out of a passive equilibrium.")
-                        elif (window_full and win_rate < 0.5
+                        elif (win_rate < 0.5
                                 and episodes_completed - last_stall_reboost_episode >= ENTROPY_STALE_REBOOST_EPISODES):
-                            # Covers the failure mode the draw-rate trigger above
-                            # can't see: draws near zero but win rate still stuck
-                            # below the mastery gate, entropy floored the whole
-                            # stretch with nothing ever refreshing it (see this
-                            # constant's own comment). Same shared cooldown clock
-                            # as the draw-rate trigger -- whichever fires resets it.
-                            #
-                            # win_rate < 0.5 (not just "< gate"): confirmed against
-                            # opponent 19/19 that firing this while ALREADY
-                            # decisively winning (a stable 60-75%, just short of
-                            # SELFPLAY_WIN_RATE_GATE) measurably hurts -- injected
-                            # noise has no better joint policy to find in a matchup
-                            # that's already going well. Below 0.5 the trainee is
-                            # genuinely losing more than winning, which IS worth
-                            # reacting to.
-                            stage_start_episode = episodes_completed
+                            entropy_reboost_episode = episodes_completed
                             last_stall_reboost_episode = episodes_completed
-                            print(f">>> Losing trend (win rate {win_rate:.2f}) with no mastery/draw-stall "
-                                  f"trigger in {ENTROPY_STALE_REBOOST_EPISODES}+ episodes against opponent "
-                                  f"{historical_opponent_index + 1}/{len(historical_pool)} -- "
+                            print(f">>> Losing trend (win rate {win_rate:.2f}) across the pool with no draw-stall "
+                                  f"trigger in {ENTROPY_STALE_REBOOST_EPISODES}+ episodes -- "
                                   "periodically re-boosting exploration anyway.")
 
             obs = next_obs
@@ -802,21 +871,22 @@ def train_selfplay_ppo():
                 "model": net.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "episodes_completed": episodes_completed,
-                "historical_opponent_index": historical_opponent_index,
-                "stage_start_episode": stage_start_episode,
-                "opponent_episode_start": opponent_episode_start,
+                "entropy_reboost_episode": entropy_reboost_episode,
                 "last_stall_reboost_episode": last_stall_reboost_episode,
-                "mastery_streak_start": mastery_streak_start,
+                "last_eval_ep": last_eval_ep,
+                "reference_roster": reference_roster,
                 "outcome_history": list(outcome_history),
             }, WEIGHT_PATH)
             print(f">>> Checkpoint saved to {WEIGHT_PATH} (episode {episodes_completed}, "
-                  f"opponent {historical_opponent_index + 1}/{len(historical_pool)})")
+                  f"pool {len(historical_pool)})")
             last_save_ep = episodes_completed
 
         # This run's own new snapshots join the SAME shared historical pool
-        # (see HISTORICAL_CHECKPOINT_DIR's comment in train.py) -- once the
-        # trainee clears every currently-known opponent, these are what it
-        # faces next: itself, a little while further into self-play.
+        # (see HISTORICAL_CHECKPOINT_DIR's comment in train.py). Refreshing
+        # historical_pool here (main process) AND broadcasting it to every
+        # worker keeps both PFSP sampling and the evaluation roster growing
+        # as the trainee improves, without waiting for any single "current
+        # opponent" to be beaten first (there isn't one anymore).
         if episodes_completed - last_historical_save_ep >= HISTORICAL_CHECKPOINT_INTERVAL_EPISODES:
             hist_path = os.path.join(
                 HISTORICAL_CHECKPOINT_DIR,
@@ -824,11 +894,32 @@ def train_selfplay_ppo():
             torch.save({"model": net.state_dict()}, hist_path)
             print(f">>> Historical snapshot saved to {hist_path}")
             last_historical_save_ep = episodes_completed
+            historical_pool = discover_historical_checkpoints(episodes_completed)
+            envs.call("refresh_pfsp_pool", historical_pool)
 
-        if episodes_completed - last_replay_ep >= 1000:
+        if episodes_completed - last_eval_ep >= EVAL_INTERVAL_EPISODES:
+            update_reference_roster(reference_roster, historical_pool)
+            if reference_roster:
+                print(f"Evaluating current policy (greedy) against {len(reference_roster)} fixed "
+                      f"reference opponent(s), {EVAL_GAMES_PER_OPPONENT} games each...")
+                agent_elo, per_opponent = evaluate_against_roster(
+                    net, device, reference_roster, MAX_X, MAX_Y, n_games=EVAL_GAMES_PER_OPPONENT)
+                writer.add_scalar("Eval/Elo", agent_elo, episodes_completed)
+                for i, entry in enumerate(reference_roster):
+                    stats_i = per_opponent[entry["path"]]
+                    writer.add_scalar(f"Eval/WinRate_vs_Anchor{i}", stats_i["score"], episodes_completed)
+                print(f">>> Eval @ ep {episodes_completed}: Elo~{agent_elo:.0f} "
+                      f"(vs {len(reference_roster)} fixed anchor(s) -- a comparable trend against a "
+                      "never-changing roster, not a calibrated rating; see REFERENCE_ROSTER_ELO_STEP's comment)")
+            last_eval_ep = episodes_completed
+
+        if episodes_completed - last_replay_ep >= 1000 and historical_pool:
             print(f"Generating replay video for episode {episodes_completed}...")
             test_env = MicroRoyaleSelfPlayEnv()
-            test_env.set_historical_opponent(current_opponent_path)
+            # Newest/strongest known pool entry -- purely for a representative
+            # demo/monitoring replay, unrelated to PFSP sampling or eval.
+            demo_opponent_path = historical_pool[-1]
+            test_env.set_historical_opponent(demo_opponent_path)
             t_obs, _ = test_env.reset()
             t_hx = torch.zeros(1, 256).to(device)
             t_cx = torch.zeros(1, 256).to(device)
