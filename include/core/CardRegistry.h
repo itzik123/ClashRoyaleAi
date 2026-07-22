@@ -58,6 +58,18 @@ struct CardDefinition {
     // inspected before anything is placed, e.g. by countChampions() below.
     bool isChampion;
     std::function<void(float x, float y, int team, Board& board)> spawnEntity;
+
+    // Evolution slot (see addEvolution() below and PlayerState::playCard).
+    // isEvolution=false (every ordinary card) means the rest of these are
+    // unused. cost/isSpell/isBuilding/placementRadius/deployAnywhere above
+    // are always derived from the BASE (un-evolved) stats -- real
+    // Evolutions never change elixir cost or placement legality -- so
+    // spawnEntity above already spawns the base form; spawnEvolvedEntity
+    // is the one extra thing an evolution slot needs.
+    bool isEvolution = false;
+    int evolutionCycleThreshold = 0;
+    int evolvedUsesGranted = 0;
+    std::function<void(float x, float y, int team, Board& board)> spawnEvolvedEntity;
 };
 
 class CardRegistry {
@@ -298,6 +310,18 @@ private:
         return troop(-39, "Guardienne", 0.0f, Archetype::MeleeSquad, 1600, 0.5f, 1.2f, 217, 12, 'u')
             .withCharge(3.0f, 2.0f);
     }
+    // Wall Breakers Evolution's "Runner": spawned on death (see
+    // evolvedWallBreakersStats below). Only Level-6 data was found (103hp/
+    // 113dmg) -- scaled to this file's level-11 convention via the ~10%/
+    // level compounding growth already used elsewhere in this file for
+    // similar level-gap approximations (103*1.1^5≈166, 113*1.1^5≈182),
+    // not independently sourced at level 11. Symbol 'g' reused from the
+    // Goblins family (harmless cosmetic reuse, same precedent as every
+    // other reused symbol in this file) -- this roster has exhausted
+    // nearly the entire printable-ASCII symbol space.
+    static CardStats runnerStats() {
+        return troop(-41, "Runner", 0.0f, Archetype::MeleeBuildingTargeter, 166, 1.2f, 0.6f, 182, 8, 'g');
+    }
 
     void add(const CardStats& stats) {
         CardDefinition def;
@@ -313,6 +337,43 @@ private:
             CardFactories::spawn(stats, x, y, team, board);
         };
         cards[stats.id] = std::move(def);
+    }
+
+    // Registers one Evolution slot: `evolutionId` is what a deck puts in
+    // that slot instead of the base card's own id (e.g. Knight stays 0;
+    // "Evolution Knight" gets its own id here). baseStats/evolvedStats
+    // must otherwise represent the same card -- cost/isSpell/isBuilding/
+    // placementRadius/deployAnywhere are all derived from baseStats alone,
+    // since a real Evolution never changes any of those, only combat
+    // behavior. cycleThreshold is how many times this slot must be played
+    // (un-evolved) before it unlocks; evolvedUses is how many of the
+    // following plays use evolvedStats before the slot goes back to
+    // counting un-evolved cycles again -- this repeats for the whole
+    // match, it's not a one-time charge (confirmed: Wall Breakers
+    // Evolution's "1 in every 3 deploys will be evolved" describes a
+    // repeating 2-cycles-then-1-evolved pattern, not a fixed total) -- see
+    // PlayerState::EvolutionSlotState/playCard for where that's tracked.
+    void addEvolution(int evolutionId, CardStats baseStats, CardStats evolvedStats,
+            int cycleThreshold, int evolvedUses) {
+        CardDefinition def;
+        def.id = evolutionId;
+        def.name = baseStats.name;
+        def.cost = baseStats.cost;
+        def.isSpell = (baseStats.archetype == Archetype::Spell);
+        def.isBuilding = (baseStats.archetype == Archetype::DefensiveBuilding);
+        def.placementRadius = CardFactories::placementRadius(baseStats.archetype);
+        def.deployAnywhere = baseStats.deployAnywhere;
+        def.isChampion = baseStats.isChampion;
+        def.spawnEntity = [baseStats](float x, float y, int team, Board& board) {
+            CardFactories::spawn(baseStats, x, y, team, board);
+        };
+        def.isEvolution = true;
+        def.evolutionCycleThreshold = cycleThreshold;
+        def.evolvedUsesGranted = evolvedUses;
+        def.spawnEvolvedEntity = [evolvedStats](float x, float y, int team, Board& board) {
+            CardFactories::spawn(evolvedStats, x, y, team, board);
+        };
+        cards[evolutionId] = std::move(def);
     }
 
     CardRegistry() {
@@ -1064,13 +1125,48 @@ private:
             .withChargeInvulnerability()
             .withChampionAbility(1.0f, 30, std::make_shared<BossBanditGetawayGrenadeEffect>(10, 6.0f), 2));
 
+        // === Evolutions ===
+        // Framework pilot: proves the evolution-slot machinery (see
+        // CardDefinition::isEvolution/addEvolution and
+        // PlayerState::EvolutionSlotState/playCard) end to end with one
+        // card before the remaining 40 are batched in. A deck that wants
+        // Wall Breakers evolved puts id 123 in a slot instead of 83 (the
+        // regular Wall Breakers stays completely unaffected/unchanged).
+        //
+        // Confirmed (Liquipedia): 2 cycles to unlock, "1 in every 3
+        // deploys will be evolved" (2 un-evolved cycles, then 1 evolved
+        // play, repeating for the rest of the match -- see addEvolution's
+        // own comment on why this isn't a one-time charge). Evolved form:
+        // "will spawn a Runner each" -- one Runner PER Wall Breaker unit
+        // that dies (there are 2 in the squad), not a 2-Runner burst from
+        // a single death, so runnerStats keeps its default single-offset
+        // spawn and each of the 2 Wall Breakers just carries its own copy
+        // of the same deathEffect. Sources disagreed on whether the
+        // evolved Wall Breakers' own walking stats also get a damage
+        // buff, so the more conservative reading (unchanged combat stats,
+        // only the new death behavior) is used here, not the contested
+        // number.
+        addEvolution(123,
+            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
+                .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
+                .withSplash(1.5f)
+                .withDieAfterFirstHit(),
+            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
+                .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
+                .withSplash(1.5f)
+                .withDieAfterFirstHit()
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(runnerStats())),
+            2, 1);
+
         // === Excluded from this sync (no supporting mechanism in this engine) ===
         // All 8 Champions are now implemented above (Mighty Miner, Golden
         // Knight, Skeleton King, Archer Queen, Monk, Little Prince,
-        // Goblinstein, Boss Bandit). Evolutions and Tower Troops (Tower
-        // Princess, Cannoneer, Dagger Duchess, Royal Chef) remain out of
-        // scope per the original sync request and were never researched.
-        // Also excluded, for lack of any matching mechanism even
+        // Goblinstein, Boss Bandit). Evolutions (framework now built --
+        // Wall Breakers, id 123, is the first of 41 real evolutions, the
+        // other 40 are a follow-up batching pass) and Tower Troops (Tower
+        // Princess, Cannoneer, Dagger Duchess, Royal Chef) remain the
+        // rest of an approved-but-in-progress full refactor. Also
+        // excluded, for lack of any matching mechanism even
         // approximately:
         //   - Mirror: replays the last card played, at +1 elixir cost and
         //     +1 level -- needs "what was the last card played, by whom"

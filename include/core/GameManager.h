@@ -152,10 +152,15 @@ public:
 
         if (!isValidPlacement(team, x, y, cardDef->isSpell, cardDef->placementRadius, cardDef->deployAnywhere)) return false;
 
-        int cardId = player.playCard(handIndex);
-        if (cardId != -1) {
-            cardDef->spawnEntity(x, y, team, board);
-            board.statsEvents.notifyCardPlayed({ team, cardId, cardDef->cost, x, y, currentTick });
+        PlayerState::PlayCardResult result = player.playCard(handIndex);
+        if (result.cardId != -1) {
+            if (result.useEvolvedForm && cardDef->spawnEvolvedEntity) {
+                cardDef->spawnEvolvedEntity(x, y, team, board);
+            } else {
+                cardDef->spawnEntity(x, y, team, board);
+            }
+            board.statsEvents.notifyCardPlayed({ team, result.cardId, cardDef->cost, x, y, currentTick });
+            player.lastPlayedCardId = result.cardId;
             return true;
         }
         return false;

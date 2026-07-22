@@ -1,6 +1,7 @@
 #pragma once
 #include "Entity.h"
 #include "OnHitEffect.h"
+#include "OnDamageTakenEffect.h"
 #include "DeathEffect.h"
 #include "PeriodicEffect.h"
 #include "AbilityEffect.h"
@@ -280,6 +281,17 @@ struct CardStats {
     float hitSpeedRampMidFraction = 1.0f;
     float hitSpeedRampFullFraction = 1.0f;
 
+    // Burst-on-Nth-attack (Dagger Duchess, some Evolutions) -- see
+    // CombatEntity::burstEveryNAttacks's own comment. 0 (the default)
+    // disables it.
+    int burstEveryNAttacks = 0;
+    float burstDamageMultiplier = 1.0f;
+
+    // Self-buff (or other self effect) on taking damage (some Evolutions,
+    // e.g. Barbarians) -- see CombatEntity::onDamageTakenEffect. nullptr
+    // (the default) is every card without one.
+    std::shared_ptr<IOnDamageTakenEffect> onDamageTaken;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -509,6 +521,15 @@ struct CardStats {
         hitSpeedRampFullTick = fullTick;
         hitSpeedRampMidFraction = midFraction;
         hitSpeedRampFullFraction = fullFraction;
+        return *this;
+    }
+    CardStats& withBurstAttack(int everyNAttacks, float multiplier) {
+        burstEveryNAttacks = everyNAttacks;
+        burstDamageMultiplier = multiplier;
+        return *this;
+    }
+    CardStats& withOnDamageTaken(std::shared_ptr<IOnDamageTakenEffect> effect) {
+        onDamageTaken = std::move(effect);
         return *this;
     }
 };

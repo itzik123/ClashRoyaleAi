@@ -350,9 +350,10 @@ TEST_CASE("PlayerState::playCard does not spend elixir when the deck queue is em
     player.initializeDeck({ 0, 1, 2, 3 }); // only 4 cards: deckQueue starts empty
     REQUIRE(player.elixir == Catch::Approx(5.0f));
 
-    int result = player.playCard(0); // Knight, cost 3.0
+    PlayerState::PlayCardResult result = player.playCard(0); // Knight, cost 3.0
 
-    REQUIRE(result == -1);
+    REQUIRE(result.cardId == -1);
+    REQUIRE_FALSE(result.useEvolvedForm);
     REQUIRE(player.elixir == Catch::Approx(5.0f)); // untouched
     REQUIRE(player.hand[0] == 0);                  // hand slot untouched
 }

@@ -50,10 +50,14 @@ private:
     // 0-3: ally melee, ranged, tank, buildings | 4-7: enemy same | 8: river/bridges
     static constexpr int NUM_CHANNELS = 9;
     static constexpr int HAND_SIZE = 4;
-    // One-hot size for card identity in hand. Card ids run 0..114 in CardRegistry
-    // (kept a few slots ahead of the current max so future card additions don't
-    // silently go blind again -- see CardRegistry.h for the actual registered range).
-    static constexpr int NUM_CARD_IDS = 120;
+    // One-hot size for card identity in hand. Registered ids currently run up
+    // to 165 (Evolutions 123-163, Mirror 164, Spirit Empress 165) -- kept a
+    // few slots ahead of that max so future card additions don't silently go
+    // blind again the way ids 120-122 did between the last bump and this one
+    // (see CardRegistry.h for the actual registered range). ANY future bump
+    // here must also bump python_ai/model.py's num_card_ids default in
+    // lockstep, or the two sides silently disagree on the observation shape.
+    static constexpr int NUM_CARD_IDS = 175;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
@@ -357,9 +361,16 @@ public:
 // roster grew to 114 registered cards, and a hand-maintained exclusion list
 // is exactly the kind of thing that's easy to get wrong in the other
 // direction too (mistaking real registered ids for gaps).
+// Evolution-slot ids (see CardRegistry::addEvolution) are deliberately
+// excluded -- they're not an independently-playable 8th-of-a-deck card,
+// they're an upgrade equipped onto whichever base card already occupies a
+// slot. Without this filter, random-deck sampling (train.py's
+// RANDOM_DECK_POOL, gym_wrapper.py's randomize_opp_deck) would start
+// picking them as if they were ordinary standalone cards.
 inline std::vector<int> getAllCardIds() {
     std::vector<int> ids;
     for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
+        if (def.isEvolution) continue;
         ids.push_back(id);
     }
     return ids;

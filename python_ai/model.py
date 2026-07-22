@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
-    def __init__(self, channels=9, board_width=18, board_height=34, hand_size=4, num_card_ids=120):
+    def __init__(self, channels=9, board_width=18, board_height=34, hand_size=4, num_card_ids=175):
         super(MicroRoyaleNet, self).__init__()
 
         self.channels = channels

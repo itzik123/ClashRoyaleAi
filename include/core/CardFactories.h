@@ -85,6 +85,9 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->hitSpeedRampFullTick = stats.hitSpeedRampFullTick;
     entity->hitSpeedRampMidFraction = stats.hitSpeedRampMidFraction;
     entity->hitSpeedRampFullFraction = stats.hitSpeedRampFullFraction;
+    entity->burstEveryNAttacks = stats.burstEveryNAttacks;
+    entity->burstDamageMultiplier = stats.burstDamageMultiplier;
+    entity->onDamageTakenEffect = stats.onDamageTaken;
     // abilityCooldownRemaining/soulCount/temporaryInvisibilityTicksRemaining/
     // temporaryHitSpeedMultiplier are intentionally NOT copied from stats --
     // pure runtime state (defaults to 0/1.0, ready/empty/inactive

@@ -2,6 +2,7 @@
 #include "CardEntity.h"
 #include "Board.h"
 #include "OnHitEffect.h"
+#include "OnDamageTakenEffect.h"
 #include "DeathEffect.h"
 #include "PeriodicEffect.h"
 #include "AbilityEffect.h"
@@ -197,6 +198,23 @@ public:
     float auraBuffMultiplier = 1.0f;
     int auraBuffDurationTicks = 0;
     int healAllyAmount = 0;
+
+    // Burst-on-Nth-attack (Dagger Duchess/Evolution burst mechanics): every
+    // burstEveryNAttacks-th landed hit deals burstDamageMultiplier extra
+    // damage to itself, instead of buffing allies the way the aura above
+    // does. currentHitIsBurst is transient, set right before performAttack
+    // fires and read back by getCurrentDamage() -- same idiom as
+    // lastAttackDistance/currentHitCount below.
+    int burstEveryNAttacks = 0;
+    float burstDamageMultiplier = 1.0f;
+    int attacksSinceBurst = 0;
+    bool currentHitIsBurst = false;
+
+    // Composable extra behavior when this entity actually TAKES damage
+    // (mirrors onHitEffects, which fires for the attacker that LANDS a
+    // hit) -- e.g. an evolution that buffs itself when struck. nullptr
+    // (the default) is every card without one.
+    std::shared_ptr<IOnDamageTakenEffect> onDamageTakenEffect;
 
     // Kamikaze (Wall Breakers, the "Spirit" troops): dies immediately
     // after landing its one hit instead of surviving to attack
@@ -477,7 +495,10 @@ public:
             shieldHp -= absorbed;
             amount -= absorbed;
         }
-        if (amount > 0) Entity::takeDamage(amount);
+        if (amount > 0) {
+            Entity::takeDamage(amount);
+            if (onDamageTakenEffect) onDamageTakenEffect->apply(*this);
+        }
     }
 
     void applyFreeze(int ticks, float slowFactor) {
@@ -590,6 +611,13 @@ public:
                     // damage actually lands: instantly for a direct hit, but
                     // only on arrival for an attack that spawns a projectile.
                     lastAttackDistance = dist;
+                    if (burstEveryNAttacks > 0) {
+                        attacksSinceBurst++;
+                        currentHitIsBurst = (attacksSinceBurst >= burstEveryNAttacks);
+                        if (currentHitIsBurst) attacksSinceBurst = 0;
+                    } else {
+                        currentHitIsBurst = false;
+                    }
                     if (maxSplitTargets <= 1) {
                         currentHitCount = 1;
                         performAttack(board, target);
@@ -775,6 +803,9 @@ protected:
             float distFraction = std::min(lastAttackDistance / attackRange, 1.0f);
             float rangeFactor = 1.0f - (1.0f - rangeFalloffMinFraction) * distFraction;
             base = static_cast<int>(base * rangeFactor);
+        }
+        if (currentHitIsBurst) {
+            base = static_cast<int>(base * burstDamageMultiplier);
         }
         return (currentHitCount > 1 && !splitTargetsFullDamage) ? base / currentHitCount : base;
     }
