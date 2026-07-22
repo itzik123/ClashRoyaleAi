@@ -5,6 +5,9 @@
 #include "CombatEntity.h"
 #include "MatchRules.h"
 #include "MatchStatistics.h"
+#include "TowerTroops.h"
+#include "CardFactories.h"
+#include "SpiritEmpressForms.h"
 #include <algorithm>
 #include <vector>
 #include <string>
@@ -17,6 +20,12 @@ public:
     // `name`. Negative so they can never collide with a real CardRegistry id.
     static constexpr int TOWER_KING_ID = -2;
     static constexpr int TOWER_PRINCESS_ID = -3;
+    // Mirror's own registered CardRegistry id (see CardRegistry.h) --
+    // named here since playCard special-cases it directly.
+    static constexpr int MIRROR_CARD_ID = 164;
+    // Spirit Empress's own registered CardRegistry id -- see
+    // SpiritEmpressForms.h and playCard's own dynamic-cost branch.
+    static constexpr int SPIRIT_EMPRESS_CARD_ID = 165;
 
 private:
     Board board;
@@ -35,12 +44,39 @@ private:
 
     std::vector<int> aiDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
     std::vector<int> oppDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    // Per-match config, like the deck itself -- not a step() action (see
+    // TowerTroops.h). None (the default) reproduces this engine's
+    // original hardcoded Princess Tower exactly.
+    TowerTroopType aiTowerTroop = TowerTroopType::None;
+    TowerTroopType oppTowerTroop = TowerTroopType::None;
 
     void addTower(float x, float y, int hp, int team, float attackRange, int damage, int attackCooldown,
         char symbol, const std::string& towerName) {
         auto tower = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, attackRange, damage, attackCooldown, symbol);
         tower->name = towerName;
         tower->cardId = (symbol == 'R') ? TOWER_KING_ID : TOWER_PRINCESS_ID;
+        board.addEntity(tower);
+    }
+
+    // Tower Troops overload: builds a Princess Tower from a CardStats
+    // (see TowerTroops.h) instead of individual hp/range/damage/cooldown
+    // args, then reuses CardFactories::applyCardMetadata to wire whatever
+    // extra fields that troop's stats carry (Dagger Duchess's burst,
+    // Royal Chef's periodic buff) -- the same generic metadata-copy every
+    // CardRegistry-spawned entity already gets, even though Towers aren't
+    // registered in CardRegistry. Symbol stays 'P' for every variant:
+    // web/viewer.html sizes an entity's footprint by symbol, and
+    // MatchRules only checks 'R' for win conditions, so varying the
+    // symbol per troop would shrink 3 of the 4 to the wrong footprint for
+    // no benefit -- only name/stats vary.
+    void addTower(float x, float y, int team, const std::string& towerName, const CardStats& stats) {
+        auto tower = std::make_shared<Tower>(board.allocateId(), x, y, stats.hp, team, stats.attackRange, stats.damage, stats.attackCooldown, 'P');
+        // Order matters: applyCardMetadata sets name/cardId from `stats`
+        // too (both left at their CardStats defaults, empty/-1), so the
+        // real values are assigned after, not before.
+        CardFactories::applyCardMetadata(tower, stats);
+        tower->name = towerName;
+        tower->cardId = TOWER_PRINCESS_ID;
         board.addEntity(tower);
     }
 
@@ -67,10 +103,14 @@ public:
     PlayerState playerAI;
     PlayerState playerOpponent;
 
-    GameManager(const std::vector<int>& aiDeck, const std::vector<int>& opponentDeck)
+    GameManager(const std::vector<int>& aiDeck, const std::vector<int>& opponentDeck,
+            TowerTroopType aiTowerTroopType = TowerTroopType::None,
+            TowerTroopType oppTowerTroopType = TowerTroopType::None)
         : gameOver(false), loserTeam(-1) {
         aiDeckConfig = aiDeck;
         oppDeckConfig = opponentDeck;
+        aiTowerTroop = aiTowerTroopType;
+        oppTowerTroop = oppTowerTroopType;
         reset();
     }
 
@@ -150,17 +190,52 @@ public:
         const CardDefinition* cardDef = CardRegistry::getInstance().getCard(targetCardId);
         if (!cardDef) return false;
 
-        if (!isValidPlacement(team, x, y, cardDef->isSpell, cardDef->placementRadius, cardDef->deployAnywhere)) return false;
+        // Mirror: placement legality, spawn, and cost all come from
+        // whatever this team last played (+1 elixir), not from Mirror's
+        // own (otherwise-unused) registration -- reuses the real
+        // mirrored card's own rules verbatim (a mirrored Fireball must
+        // target the enemy half, a mirrored Knight must not) instead of
+        // a bespoke Mirror spawn closure. Fails outright with nothing
+        // played yet (lastPlayedCardId == -1), same as any other
+        // unaffordable/invalid play.
+        bool isMirror = (targetCardId == MIRROR_CARD_ID);
+        // Spirit Empress: form (and elixir cost) is deduced fresh from
+        // CURRENT elixir at the moment of play, not sticky/ratcheted --
+        // documented approximation, see SpiritEmpressForms.h's own
+        // comment (the real switching rule isn't clearly sourced even
+        // from this project's usual trusted sources). Unlike Mirror, both
+        // forms share the same placement footprint (see that header's
+        // comment), so no effectiveDef substitution is needed for
+        // isValidPlacement -- only cost and which spawn function runs.
+        bool isSpiritEmpress = (targetCardId == SPIRIT_EMPRESS_CARD_ID);
+        const CardDefinition* effectiveDef = cardDef;
+        float costOverride = -1.0f;
+        if (isMirror) {
+            effectiveDef = CardRegistry::getInstance().getCard(player.lastPlayedCardId);
+            if (!effectiveDef) return false;
+            costOverride = effectiveDef->cost + 1.0f;
+        } else if (isSpiritEmpress) {
+            costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
+        }
 
-        PlayerState::PlayCardResult result = player.playCard(handIndex);
+        if (!isValidPlacement(team, x, y, effectiveDef->isSpell, effectiveDef->placementRadius, effectiveDef->deployAnywhere)) return false;
+
+        PlayerState::PlayCardResult result = player.playCard(handIndex, costOverride);
         if (result.cardId != -1) {
-            if (result.useEvolvedForm && cardDef->spawnEvolvedEntity) {
-                cardDef->spawnEvolvedEntity(x, y, team, board);
+            if (isSpiritEmpress) {
+                bool flying = (costOverride >= 6.0f);
+                CardFactories::spawn(flying ? spiritEmpressFlyingStats() : spiritEmpressGroundStats(), x, y, team, board);
+            } else if (result.useEvolvedForm && effectiveDef->spawnEvolvedEntity) {
+                effectiveDef->spawnEvolvedEntity(x, y, team, board);
             } else {
-                cardDef->spawnEntity(x, y, team, board);
+                effectiveDef->spawnEntity(x, y, team, board);
             }
-            board.statsEvents.notifyCardPlayed({ team, result.cardId, cardDef->cost, x, y, currentTick });
-            player.lastPlayedCardId = result.cardId;
+            float reportedCost = (costOverride >= 0.0f) ? costOverride : cardDef->cost;
+            board.statsEvents.notifyCardPlayed({ team, result.cardId, reportedCost, x, y, currentTick });
+            // A second Mirror replays whatever was played before the
+            // FIRST Mirror, not the first Mirror itself -- so a Mirror
+            // play must not overwrite lastPlayedCardId with its own id.
+            if (!isMirror) player.lastPlayedCardId = result.cardId;
             return true;
         }
         return false;
@@ -241,10 +316,10 @@ public:
         addTower(8.5f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
         addTower(8.5f, 30.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        addTower(3.0f, 6.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(14.0f, 6.0f, 2534, 0, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(3.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
-        addTower(14.0f, 27.0f, 2534, 1, 7.5f, 90, 8, 'P', "Princess Tower");
+        addTower(3.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+        addTower(14.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+        addTower(3.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
+        addTower(14.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
 
         board.commitPendingEntities(currentTick);
     }

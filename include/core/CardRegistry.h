@@ -322,8 +322,25 @@ private:
     // Goblins family (harmless cosmetic reuse, same precedent as every
     // other reused symbol in this file) -- this roster has exhausted
     // nearly the entire printable-ASCII symbol space.
+    // Lumberjack Evolution's death-spawn "ghost" -- real card's ghost is
+    // invincible only while inside its own dropped Rage zone, for the
+    // zone's duration; approximated as a plain invisible troop with no
+    // conditional invincibility (this engine has no "invincible while
+    // standing in a specific spell zone" mechanism).
+    static CardStats lumberjackGhostStats() {
+        return troop(-44, "Lumberjack Ghost", 0.0f, Archetype::MeleeSquad, 400, 1.0f, 0.7f, 256, 8, 'l')
+            .withInvisibility(10);
+    }
     static CardStats runnerStats() {
         return troop(-41, "Runner", 0.0f, Archetype::MeleeBuildingTargeter, 166, 1.2f, 0.6f, 182, 8, 'g');
+    }
+    // Battle Ram Evolution's death-spawn: a stronger version of the
+    // ordinary battleRamBarbarianStats() pair -- see that Evolution's own
+    // registration comment for why this is a flat stat buff rather than
+    // recursively invoking the Evolution framework itself.
+    static CardStats battleRamEvolvedBarbarianStats() {
+        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 830, 0.5f, 0.7f, 230, 14, 'B')
+            .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     // Evolved Skeletons' "Never-ending Horde" spawn -- deliberately reuses
     // id 24 (the base Skeletons card's own id), not a fresh negative
@@ -1562,29 +1579,227 @@ private:
                 .withCharge(2.0f, 1.5f),
             2, 1);
 
-        // === Excluded from this sync (no supporting mechanism in this engine) ===
-        // All 8 Champions are now implemented above (Mighty Miner, Golden
-        // Knight, Skeleton King, Archer Queen, Monk, Little Prince,
-        // Goblinstein, Boss Bandit). Evolutions (framework now built --
-        // Wall Breakers, id 123, is the first of 41 real evolutions, the
-        // other 40 are a follow-up batching pass) and Tower Troops (Tower
-        // Princess, Cannoneer, Dagger Duchess, Royal Chef) remain the
-        // rest of an approved-but-in-progress full refactor. Also
-        // excluded, for lack of any matching mechanism even
-        // approximately:
-        //   - Mirror: replays the last card played, at +1 elixir cost and
-        //     +1 level -- needs "what was the last card played, by whom"
-        //     state that lives in GameManager/PlayerState, a layer entirely
-        //     above CardFactories/AreaSpell (which only ever see a single
-        //     spawn point, not match history). No other card in this pass
-        //     needed cross-layer state like this.
-        //   - Spirit Empress: stateful dual-form (ground vs. flying)
-        //     auto-switching has no equivalent and the exact switching rule
-        //     couldn't be confirmed from sourced data.
-        //     weight sub-unit types with independent HP pools, unlike e.g.
-        //     Goblin Giant/Ram Rider/Goblin Machine above which have one
-        //     clear primary body) -- no single-unit approximation fits
-        //     without fabricating unsourced numbers.
+        // Electro Dragon Evolution: 2 cycles (standard pattern). "Infinite
+        // Bolts" chains beyond the base's 3 targets (at reduced damage/
+        // speed, no longer stunning past the 3rd) until only one enemy
+        // remains -- approximated as a fixed higher split-target count (6)
+        // at full damage throughout, not a true unbounded chain with
+        // degrading effect past the 3rd target.
+        addEvolution(151,
+            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, 0.5f, 3.5f, 192, 21, '5')
+                .withFlying().withTargetsAir()
+                .withSplitTargets(3).withSplitTargetsFullDamage()
+                .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f)),
+            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, 0.5f, 3.5f, 192, 21, '5')
+                .withFlying().withTargetsAir()
+                .withSplitTargets(6).withSplitTargetsFullDamage()
+                .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f)),
+            2, 1);
+
+        // Mortar Evolution: 2 cycles (standard pattern). Periodically
+        // spawns Goblins alongside its bombardment -- reuses the existing
+        // periodic-spawn mechanism (goblinDrillGoblinStats, interval not
+        // independently sourced).
+        addEvolution(152,
+            building(93, "Mortar", 4.0f, 1369, 'R', 11.5f, 266, 50)
+                .withMinRange(3.5f),
+            building(93, "Mortar", 4.0f, 1369, 'R', 11.5f, 266, 50)
+                .withMinRange(3.5f)
+                .withPeriodicEffect(100, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
+            2, 1);
+
+        // Goblin Drill Evolution: 2 cycles (standard pattern). Real
+        // mechanic resurfaces at 66%/33% hp, leaving a Goblin behind each
+        // time -- approximated as more Goblins in the single final
+        // death-spawn instead (this engine has no multi-threshold
+        // resurface-in-place mechanism), not modeling the actual
+        // resurfacing/repositioning.
+        addEvolution(153,
+            building(98, "Goblin Drill", 4.0f, 1313, '7', 0.0f, 0, 100)
+                .withPeriodicEffect(30, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats()))
+                .withDeployAnywhere()
+                .withSpawnEffect(2.0f, 84)
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinDrillDeathGoblinStats())),
+            building(98, "Goblin Drill", 4.0f, 1313, '7', 0.0f, 0, 100)
+                .withPeriodicEffect(30, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats()))
+                .withDeployAnywhere()
+                .withSpawnEffect(2.0f, 84)
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinDrillDeathGoblinStats()
+                    .withOffsets({ {-0.4f,0.0f},{0.4f,0.0f},{0.0f,0.4f},{0.0f,-0.4f} }))),
+            2, 1);
+
+        // Tesla Evolution: 2 cycles (standard pattern). "Electro Pulse"
+        // fires when it emerges from hiding -- this engine's Tesla has no
+        // invisibility/hiding mechanic to "emerge" from at all, so this
+        // is approximated as a one-time stun burst at deploy only
+        // (reusing the existing spawn-effect mechanism), not a repeating
+        // per-emergence pulse.
+        addEvolution(154,
+            building(26, "Tesla", 4.0f, 1182, 'T', 5.5f, 220, 11).withTargetsAir(),
+            building(26, "Tesla", 4.0f, 1182, 'T', 5.5f, 220, 11).withTargetsAir()
+                .withSpawnEffect(3.0f, 100, std::make_shared<FreezeOnHit>(5, 0.0f)),
+            2, 1);
+
+        // Barbarians Evolution: 2 cycles (standard pattern). +10% hp
+        // (691->760). Real mechanic also grants +30% attack/movement
+        // speed for 3s on every attack -- not modeled (this engine has no
+        // movement-speed-buff plumbing at all, and no "buff self on
+        // landing a hit" hook, only "buff nearby allies").
+        addEvolution(155,
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+                .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 760, 0.5f, 0.7f, 192, 14, 'B')
+                .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
+            2, 1);
+
+        // Lumberjack Evolution: 2 cycles (standard pattern). See
+        // lumberjackGhostStats above for the ghost-spawn design; composed
+        // with the existing Rage-drop-on-death via CompositeDeathEffect.
+        addEvolution(156,
+            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+                .withDeathEffect(std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55)),
+            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+                .withDeathEffect(std::make_shared<CompositeDeathEffect>(
+                    std::vector<std::shared_ptr<IDeathEffect>>{
+                        std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55),
+                        std::make_shared<SpawnOnDeath>(lumberjackGhostStats())
+                    })),
+            2, 1);
+
+        // Executioner Evolution: 1 cycle (confirmed different from the
+        // standard 2 -- "Axe Smash" only needs 1 cycle to unlock).
+        // Real mechanic doubles damage on both the outgoing and returning
+        // axe when the initial target is within 3.5 tiles -- approximated
+        // as a flat +50% damage instead of the range-conditional double
+        // (this engine has no "bonus damage at close range" primitive,
+        // only rangeFalloff for the opposite direction).
+        addEvolution(157,
+            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
+                .withTargetsAir().withBoomerang(15),
+            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 268, 24, 'x')
+                .withTargetsAir().withBoomerang(15),
+            1, 1);
+
+        // Giant Snowball Evolution: 2 cycles (standard pattern). "Snow
+        // Bowling" pulls enemies together and rolls them 4-4.5 tiles,
+        // untargetable while trapped -- approximated as a bigger
+        // knockback distance and longer slow instead (this engine has no
+        // "pull together" or "untargetable while being knocked back"
+        // mechanism).
+        addEvolution(158,
+            spell(100, "Giant Snowball", 2.0f, 2.5f, 179, 8, '!')
+                .withSpellOnHit(std::make_shared<FreezeOnHit>(15, 0.5f))
+                .withKnockback(1.0f),
+            spell(100, "Giant Snowball", 2.0f, 2.5f, 179, 8, '!')
+                .withSpellOnHit(std::make_shared<FreezeOnHit>(40, 0.7f))
+                .withKnockback(4.5f),
+            2, 1);
+
+        // Goblin Giant Evolution: 2 cycles (standard pattern). "Sack-
+        // trick" spawns knife Goblins every 2.2s once below 50% hp --
+        // approximated as an unconditional periodic spawn from deploy
+        // (this engine has no "enable a periodic effect only below an hp
+        // threshold" mechanism, only full-transform hp thresholds).
+        addEvolution(159,
+            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+                .withSecondaryUnit(goblinGiantSpearGoblinsStats()),
+            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+                .withSecondaryUnit(goblinGiantSpearGoblinsStats())
+                .withPeriodicEffect(22, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
+            2, 1);
+
+        // Mega Knight Evolution: 2 cycles (standard pattern). "Mega
+        // Uppercut" launches every hit target back 4 tiles toward the
+        // enemy tower -- approximated as +20% flat damage instead (this
+        // engine has no "knock the target toward a specific side"
+        // primitive, only recoilDistance which pushes the attacker, not
+        // the target).
+        addEvolution(160,
+            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
+                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
+            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 322, 17, 'X')
+                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
+            2, 1);
+
+        // Battle Ram Evolution: 2 cycles (standard pattern). Real card is
+        // the only evolution that spawns another EVOLVED troop (its
+        // death-spawned Barbarians are themselves upgraded) --
+        // approximated as a flat stat buff on the spawned Barbarians
+        // instead of recursively invoking the Evolution framework for a
+        // spawned child (that machinery is keyed by deck-slot cycling,
+        // which a death-spawned child has no equivalent of).
+        addEvolution(161,
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
+                .withCharge(3.0f, 2.0f),
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamEvolvedBarbarianStats()))
+                .withCharge(3.0f, 2.0f),
+            2, 1);
+
+        // Royal Hogs Evolution: 2 cycles (standard pattern). Exact
+        // mechanic not confirmed to a satisfactory level -- sources
+        // disagreed/were vague (one described "flying toward towers",
+        // implausible for what's otherwise a ground-jumping troop and
+        // not corroborated elsewhere). Approximated as a modest hp buff
+        // only, flagged as low-confidence pending better sourcing.
+        addEvolution(162,
+            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
+                .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
+                .withCharge(3.0f, 2.0f),
+            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 950, 0.85f, 1.0f, 74, 12, '_')
+                .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
+                .withCharge(3.0f, 2.0f),
+            2, 1);
+
+        // Inferno Dragon Evolution: deliberately NOT implemented.
+        // Real mechanic (stays at max ramp stage for a 9s grace period if
+        // it loses its target, plus a rarely-reached 4th damage stage at
+        // ~20s of continuous beam) needs the ramp system to support a
+        // grace period before resetting ticksOnTarget on a target change
+        // -- a real change to the shared ramp mechanism itself (also used
+        // by Inferno Tower/Mighty Miner), not a per-card CardStats
+        // addition, and the sourced numbers for the 4th stage were
+        // internally inconsistent (49 ticks vs. 20 seconds don't agree at
+        // this engine's 10-ticks/second rate). Left out rather than
+        // forcing a poor approximation -- a genuine follow-up item.
+
+        // === Mirror ===
+        // Registered mainly so it's a real, playable hand/deck slot --
+        // its own cost/isSpell/placementRadius/deployAnywhere here are
+        // never actually read at play time (GameManager::playCard
+        // special-cases MIRROR_CARD_ID and substitutes whatever card was
+        // last played instead, including for the elixir cost, which is
+        // always the mirrored card's own cost + 1). Symbol '=' reused
+        // from Heal Spirit (harmless cosmetic reuse, same precedent as
+        // every other reused symbol in this file) -- this roster has
+        // exhausted nearly the entire printable-ASCII symbol space.
+        add(spell(164, "Mirror", 3.0f, 0.0f, 0, 0, '='));
+
+        // === Spirit Empress ===
+        // Registered as a Champion-shaped MeleeSquad at the ground form's
+        // floor cost (3.0) -- like Mirror, this static registration is
+        // mostly a placeholder for hand-display purposes (the observation
+        // feature showing hand-slot cost) and for isValidPlacement, since
+        // GameManager::playCard's SPIRIT_EMPRESS_CARD_ID branch always
+        // spawns via SpiritEmpressForms.h's two dedicated CardStats
+        // instead of this entry's own (unused) spawnEntity. isChampion is
+        // NOT set here on purpose: Champion-ness only matters for
+        // findChampion()/activateChampionAbility, and Spirit Empress has
+        // no activated ability to speak of in the sourced data -- see
+        // SpiritEmpressForms.h for the full mechanic and its caveats.
+        add(troop(165, "Spirit Empress", 3.0f, Archetype::MeleeSquad, 926, 0.85f, 1.2f, 249, 12, '<'));
+
+        // === Status of the full-refactor initiative (Champions/Evolutions/
+        // === Tower Troops/Mirror/Spirit Empress) ===
+        // All 8 Champions, all 4 Tower Troops, Mirror, and Spirit Empress
+        // are now fully implemented above. 40 of the 41 real Evolutions
+        // are implemented (see each addEvolution(...) call's own comment
+        // for what's approximated and why) -- Inferno Dragon Evolution is
+        // the one deliberate exception, left out rather than forcing a
+        // poor approximation (see its own comment, a few cards above this
+        // one) -- a genuine follow-up needing a real change to the shared
+        // ramp system, not a per-card addition.
     }
 
 public:

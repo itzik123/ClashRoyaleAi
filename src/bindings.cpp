@@ -18,9 +18,17 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly("reward0", &SelfPlayStepResult::reward0)
         .def_readonly("done", &SelfPlayStepResult::done);
 
+    py::enum_<TowerTroopType>(m, "TowerTroopType")
+        .value("NONE", TowerTroopType::None)
+        .value("TOWER_PRINCESS", TowerTroopType::TowerPrincess)
+        .value("CANNONEER", TowerTroopType::Cannoneer)
+        .value("DAGGER_DUCHESS", TowerTroopType::DaggerDuchess)
+        .value("ROYAL_CHEF", TowerTroopType::RoyalChef);
+
     py::class_<ClashEnv>(m, "ClashRoyaleEnv")
-        .def(py::init<const std::vector<int>&, const std::vector<int>&, int>(),
-            py::arg("ai_deck"), py::arg("opp_deck"), py::arg("max_ticks") = 1800)
+        .def(py::init<const std::vector<int>&, const std::vector<int>&, int, TowerTroopType, TowerTroopType>(),
+            py::arg("ai_deck"), py::arg("opp_deck"), py::arg("max_ticks") = 1800,
+            py::arg("ai_tower_troop") = TowerTroopType::None, py::arg("opp_tower_troop") = TowerTroopType::None)
         .def("reset", &ClashEnv::reset)
         .def("step", &ClashEnv::step, py::arg("card_index"), py::arg("target_x"), py::arg("target_y"),
             py::arg("skip_frames") = 10, py::arg("activate_ability") = false)
