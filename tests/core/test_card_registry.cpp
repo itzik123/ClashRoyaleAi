@@ -112,6 +112,13 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {141, "Wizard", 5.0f, false}, // Evolution slot -- same name/cost as base id 11
         {142, "Witch", 5.0f, false}, // Evolution slot -- same name/cost as base id 71
         {143, "Royal Giant", 6.0f, false}, // Evolution slot -- same name/cost as base id 18
+        {144, "Ice Spirit", 1.0f, false}, // Evolution slot -- same name/cost as base id 72
+        {145, "Princess", 3.0f, false}, // Evolution slot -- same name/cost as base id 61
+        {146, "Hunter", 4.0f, false}, // Evolution slot -- same name/cost as base id 62
+        {147, "Valkyrie", 4.0f, false}, // Evolution slot -- same name/cost as base id 10
+        {148, "P.E.K.K.A.", 7.0f, false}, // Evolution slot -- same name/cost as base id 13
+        {149, "Minion Horde", 5.0f, false}, // Evolution slot -- same name/cost as base id 42
+        {150, "Royal Recruits", 7.0f, false}, // Evolution slot -- same name/cost as base id 77
     };
 
     const auto& registry = CardRegistry::getInstance();

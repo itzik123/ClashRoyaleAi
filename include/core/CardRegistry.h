@@ -30,6 +30,7 @@
 #include "BossBanditGetawayGrenadeEffect.h"
 #include "CappedSpawnOnHitEffect.h"
 #include "PoisonOnHit.h"
+#include "PeriodicFreezeNearestEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -1460,6 +1461,105 @@ private:
             troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y'),
             troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y')
                 .withSplash(2.5f),
+            2, 1);
+
+        // Ice Spirit Evolution: 2 cycles (standard pattern). Real
+        // mechanic re-applies the same stun 3s after the first (a
+        // delayed second pulse) -- approximated as one longer freeze
+        // instead of two separate pulses (10 ticks -> 51 ticks, covering
+        // roughly the same total window: 1s initial + 3s delay + 1.1s
+        // repeat).
+        addEvolution(144,
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
+                .withTargetsAir()
+                .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
+                .withDieAfterFirstHit(),
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
+                .withTargetsAir()
+                .withOnHit(std::make_shared<FreezeOnHit>(51, 0.5f))
+                .withDieAfterFirstHit(),
+            2, 1);
+
+        // Princess Evolution: 2 cycles (standard pattern). Real mechanic
+        // alternates: 1st/4th/7th... shot slows (30%, 7s, 3-tile), other
+        // shots are normal, and death leaves a lingering slow zone --
+        // approximated as every hit slowing (not just every 3rd) and no
+        // death zone (this engine has no "spawn a lingering area effect
+        // on death" primitive).
+        addEvolution(145,
+            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
+                .withTargetsAir().withSplash(1.5f),
+            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
+                .withTargetsAir().withSplash(1.5f)
+                .withOnHit(std::make_shared<FreezeOnHit>(70, 0.7f)),
+            2, 1);
+
+        // Hunter Evolution: 2 cycles (standard pattern). "Net throw":
+        // every 5s, fully freezes (can't move or attack) the nearest
+        // enemy for 3s -- new PeriodicFreezeNearestEffect, reusing the
+        // existing freeze machinery, "letting ground units pile on"
+        // falls out naturally (a frozen unit just takes normal damage
+        // from whatever reaches it).
+        addEvolution(146,
+            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
+                .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f),
+            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
+                .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f)
+                .withPeriodicEffect(50, std::make_shared<PeriodicFreezeNearestEffect>(4.0f, 30)),
+            2, 1);
+
+        // Valkyrie Evolution: 2 cycles (standard pattern). Real mechanic
+        // pulls all nearby enemies toward her on every swing (tornado-
+        // like) -- approximated as a bigger splash radius instead (this
+        // engine has no area-pull primitive), capturing "hits everything
+        // nearby" without true pull physics.
+        addEvolution(147,
+            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+                .withSplash(1.5f),
+            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+                .withSplash(2.5f),
+            2, 1);
+
+        // P.E.K.K.A. Evolution: 2 cycles (standard pattern). "Healing
+        // Blade": heals 12.5% max hp per KILL, up to 150% max hp total --
+        // approximated as a smaller heal on every landed HIT instead
+        // (this engine has no "notify on kill" hook, only on-hit), tuned
+        // down since hits are far more frequent than kills.
+        addEvolution(148,
+            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E'),
+            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E')
+                .withHealOnHit(40, 5640),
+            2, 1);
+
+        // Minion Horde Evolution: 2 cycles (standard pattern). Each
+        // member is invincible against the first hit it takes --
+        // approximated as a flat, large shield instead of true
+        // any-damage immunity (this engine's shield is a fixed absorb
+        // amount, not "ignore the first hit no matter its size").
+        addEvolution(149,
+            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
+                .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
+                               {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
+                .withFlying().withTargetsAir(),
+            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
+                .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
+                               {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
+                .withFlying().withTargetsAir()
+                .withShield(500),
+            2, 1);
+
+        // Royal Recruits Evolution: 2 cycles (standard pattern). Real
+        // mechanic grants a charge specifically once the shield breaks;
+        // approximated as an unconditional charge bonus instead (this
+        // engine's charge mechanism isn't gated on shield state).
+        addEvolution(150,
+            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+                .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
+                .withShield(240),
+            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+                .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
+                .withShield(240)
+                .withCharge(2.0f, 1.5f),
             2, 1);
 
         // === Excluded from this sync (no supporting mechanism in this engine) ===
