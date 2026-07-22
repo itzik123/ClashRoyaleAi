@@ -3,6 +3,7 @@
 #include "AreaSpell.h"
 #include "FreezeOnHit.h"
 #include "MeleeTroop.h"
+#include "Building.h"
 
 TEST_CASE("AreaSpell is never itself a valid combat target", "[area_spell]") {
     AreaSpell spell(1, 5.0f, 5.0f, 0, 3.0f, 100, 5);
@@ -208,6 +209,35 @@ TEST_CASE("A spell without knockback configured (0.0f, the default) never reposi
 
     REQUIRE(enemy->position.x == Catch::Approx(6.0f)); // untouched
     REQUIRE(enemy->position.y == Catch::Approx(5.0f));
+}
+
+TEST_CASE("Tornado's pull damages a building but never drags it out of position", "[area_spell][knockback][building]") {
+    Board board;
+    // Real-game rule: Tornado has damaged buildings since a 2020 balance
+    // update, but has never been able to displace them -- buildings are
+    // stationary regardless of which spell's knockback hits them.
+    auto building = std::make_shared<Building>(1, 8.0f, 5.0f, 1000, 1, 'B', 5.0f, 10, 10); // dist 3.0 from (5,5)
+    spawn(board, building);
+
+    AreaSpell spell(2, 5.0f, 5.0f, 0, 5.5f, 100, 0, '*', nullptr, false, 1, 0, false, 1.0f, 0, -1.5f); // pulls 1.5
+    spell.update(board);
+
+    REQUIRE(building->hp == 900); // still takes the damage
+    REQUIRE(building->position.x == Catch::Approx(8.0f)); // never dragged toward (5,5)
+    REQUIRE(building->position.y == Catch::Approx(5.0f));
+}
+
+TEST_CASE("Positive knockback likewise never pushes a building away", "[area_spell][knockback][building]") {
+    Board board;
+    auto building = std::make_shared<Building>(1, 6.0f, 5.0f, 1000, 1, 'B', 5.0f, 10, 10); // dist 1.0 from (5,5)
+    spawn(board, building);
+
+    AreaSpell spell(2, 5.0f, 5.0f, 0, 2.5f, 100, 0, '*', nullptr, false, 1, 0, false, 1.0f, 0, 1.0f); // pushes 1.0
+    spell.update(board);
+
+    REQUIRE(building->hp == 900);
+    REQUIRE(building->position.x == Catch::Approx(6.0f)); // untouched
+    REQUIRE(building->position.y == Catch::Approx(5.0f));
 }
 
 // ---------------- clone ----------------

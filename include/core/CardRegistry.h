@@ -1752,17 +1752,36 @@ private:
                 .withCharge(3.0f, 2.0f),
             2, 1);
 
-        // Inferno Dragon Evolution: deliberately NOT implemented.
-        // Real mechanic (stays at max ramp stage for a 9s grace period if
-        // it loses its target, plus a rarely-reached 4th damage stage at
-        // ~20s of continuous beam) needs the ramp system to support a
-        // grace period before resetting ticksOnTarget on a target change
-        // -- a real change to the shared ramp mechanism itself (also used
-        // by Inferno Tower/Mighty Miner), not a per-card CardStats
-        // addition, and the sourced numbers for the 4th stage were
-        // internally inconsistent (49 ticks vs. 20 seconds don't agree at
-        // this engine's 10-ticks/second rate). Left out rather than
-        // forcing a poor approximation -- a genuine follow-up item.
+        // Inferno Dragon Evolution: 2 cycles, 12 shards, 4 elixir (matches
+        // the base card) -- "Identical Stats" per the sourced evolution
+        // table, i.e. hp/damage/speed/range/attackCooldown are unchanged
+        // from the regular Inferno Dragon (id 56) below; the entire
+        // difference is the "Damage Charge-up" behavior itself:
+        //   1) Losing its target (or having none at all) no longer resets
+        //      the ramp instantly -- the current stage is held for a 9s
+        //      (90-tick) grace period, so a fresh target picked up within
+        //      that window inherits whatever stage the dragon was already
+        //      at ("keeps that stage on the following troops"). Only a
+        //      stun still resets immediately, same as the base card --
+        //      see CombatEntity's rampGracePeriodTicks/ticksSinceLastHit.
+        //   2) A 4th ramp stage after 20s (200 ticks) of continuous
+        //      attacking, dealing double the 3rd-stage (max) damage --
+        //      see rampStage4Tick/rampStage4Fraction. This resolves the
+        //      previous internal inconsistency in the sourced numbers
+        //      (49 ticks vs. 20 seconds) simply by trusting the
+        //      seconds-based figure and this engine's own 10-ticks/second
+        //      rate throughout, rather than a raw tick count from a
+        //      differently-timed source.
+        addEvolution(163,
+            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, 0.5f, 5.0f, 422, 4, '4')
+                .withFlying().withTargetsAir()
+                .withDamageRamp(15, 30, 0.083f, 0.284f),
+            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, 0.5f, 5.0f, 422, 4, '4')
+                .withFlying().withTargetsAir()
+                .withDamageRamp(15, 30, 0.083f, 0.284f)
+                .withRampStage4(200, 2.0f)
+                .withRampGracePeriod(90),
+            2, 1);
 
         // === Mirror ===
         // Registered mainly so it's a real, playable hand/deck slot --
@@ -1793,13 +1812,14 @@ private:
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===
         // All 8 Champions, all 4 Tower Troops, Mirror, and Spirit Empress
-        // are now fully implemented above. 40 of the 41 real Evolutions
-        // are implemented (see each addEvolution(...) call's own comment
-        // for what's approximated and why) -- Inferno Dragon Evolution is
-        // the one deliberate exception, left out rather than forcing a
-        // poor approximation (see its own comment, a few cards above this
-        // one) -- a genuine follow-up needing a real change to the shared
-        // ramp system, not a per-card addition.
+        // are now fully implemented above, along with all 41 real
+        // Evolutions (see each addEvolution(...) call's own comment for
+        // what's approximated and why) -- Inferno Dragon Evolution was
+        // the last holdout, needing the shared ramp system itself
+        // extended with a reset grace period and a 4th stage (see
+        // CombatEntity's rampGracePeriodTicks/rampStage4Tick/
+        // ticksSinceLastHit and this card's own comment, a few cards
+        // above this one) rather than a per-card addition.
     }
 
 public:

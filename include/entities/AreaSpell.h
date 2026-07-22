@@ -1,6 +1,7 @@
 #pragma once
 #include "CardEntity.h"
 #include "CombatEntity.h"
+#include "Building.h"
 #include "OnHitEffect.h"
 #include "PeriodicEffect.h"
 #include "Board.h"
@@ -43,6 +44,14 @@ private:
     // Positive pushes away from the spell's position, negative pulls
     // toward it -- see Entity.h's pushAway/pullToward. 0.0f (the default)
     // is every other spell here.
+    //
+    // Buildings (Building and its Tower subclass) are never physically
+    // moved by this, though they still take damage same as any other
+    // target -- confirmed real-game rule: Tornado has dealt damage to
+    // buildings since a May 2020 balance update, but its pull has never
+    // displaced them (buildings are stationary regardless of which
+    // spell's knockback hits them, not a Tornado-specific carve-out), see
+    // the dynamic_cast guard below.
     float knockback;
 
     // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard):
@@ -146,10 +155,12 @@ public:
                 continue;
             }
             entity->takeDamage(effectiveDamage);
-            if (knockback > 0.0f) {
-                pushAway(*entity, position, knockback);
-            } else if (knockback < 0.0f) {
-                pullToward(*entity, position, -knockback);
+            if (knockback != 0.0f && !dynamic_cast<Building*>(entity.get())) {
+                if (knockback > 0.0f) {
+                    pushAway(*entity, position, knockback);
+                } else {
+                    pullToward(*entity, position, -knockback);
+                }
             }
             // The spell entity itself is the "attacker" -- it never
             // has a separate caster once cast (the troop/tower that

@@ -406,6 +406,87 @@ TEST_CASE("A card without ramping configured (rampFullTick 0, the default) alway
     REQUIRE(enemy->hp == 1000000 - 50 * 1000); // every one of the 50 hits dealt the full 1000
 }
 
+// ---------------- ramp grace period + 4th stage (Inferno Dragon Evolution) ----------------
+
+namespace {
+    std::shared_ptr<StationaryCombatant> makeGracePeriodRampingAttacker() {
+        auto attacker = makeRampingAttacker();
+        attacker->rampGracePeriodTicks = 10;
+        return attacker;
+    }
+}
+
+TEST_CASE("A grace period keeps the ramp stage across a target switch, within the window",
+        "[combat_entity][ramp][grace]") {
+    Board board;
+    auto enemyA = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000000, 1, 'A');
+    spawn(board, enemyA);
+    auto attacker = makeGracePeriodRampingAttacker();
+
+    for (int i = 0; i < 41; ++i) attacker->update(board); // fully ramped (ticksOnTarget reaches 40)
+
+    enemyA->takeDamage(enemyA->hp); // dies -- target lost, nothing to replace it yet
+    for (int i = 0; i < 5; ++i) attacker->update(board); // 5 idle ticks, well under the 10-tick grace
+
+    auto enemyB = std::make_shared<DummyEntity>(3, 0.0f, 0.5f, 1000000, 1, 'B');
+    spawn(board, enemyB);
+
+    int hpBefore = enemyB->hp;
+    attacker->update(board); // picks up enemyB inside the grace window
+    REQUIRE(hpBefore - enemyB->hp == 1000); // still full (stage 3) damage, not reset to stage 1
+}
+
+TEST_CASE("A grace period still fully resets the ramp once the window elapses with no target",
+        "[combat_entity][ramp][grace]") {
+    Board board;
+    auto enemyA = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000000, 1, 'A');
+    spawn(board, enemyA);
+    auto attacker = makeGracePeriodRampingAttacker();
+
+    for (int i = 0; i < 41; ++i) attacker->update(board); // fully ramped
+
+    enemyA->takeDamage(enemyA->hp);
+    for (int i = 0; i < 15; ++i) attacker->update(board); // 15 idle ticks, past the 10-tick grace
+
+    auto enemyB = std::make_shared<DummyEntity>(3, 0.0f, 0.5f, 1000000, 1, 'B');
+    spawn(board, enemyB);
+
+    int hpBefore = enemyB->hp;
+    attacker->update(board);
+    REQUIRE(hpBefore - enemyB->hp == 50); // grace expired -- back to stage 1, same as no grace at all
+}
+
+TEST_CASE("A grace period does not delay the reset caused by a stun -- freeze still resets instantly",
+        "[combat_entity][ramp][grace]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000000, 1);
+    spawn(board, enemy);
+    auto attacker = makeGracePeriodRampingAttacker();
+
+    for (int i = 0; i < 41; ++i) attacker->update(board); // fully ramped
+
+    attacker->applyFreeze(1, 1.0f);
+    int hpBefore = enemy->hp;
+    attacker->update(board); // spent frozen -> resets even though a grace period is configured
+
+    REQUIRE(hpBefore - enemy->hp == 50); // back to stage 1, not the preserved full stage
+}
+
+TEST_CASE("A 4th ramp stage deals rampStage4Fraction of damage once ticksOnTarget reaches rampStage4Tick",
+        "[combat_entity][ramp][stage4]") {
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 10000000, 1);
+    spawn(board, enemy);
+    auto attacker = makeRampingAttacker();
+    attacker->rampStage4Tick = 60;
+    attacker->rampStage4Fraction = 2.0f;
+
+    for (int i = 0; i < 60; ++i) attacker->update(board); // ticksOnTarget 0..59 spent (still stage 3: full damage)
+    int hpBefore = enemy->hp;
+    attacker->update(board); // 61st call: ticksOnTarget == 60 -> stage 4
+    REQUIRE(hpBefore - enemy->hp == 2000); // 1000 * 2.0
+}
+
 // ---------------- split-target attacks ----------------
 
 TEST_CASE("Split-target attacker deals full damage when only one enemy is in range", "[combat_entity][split]") {

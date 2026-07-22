@@ -104,6 +104,12 @@ struct CardStats {
     int rampFullTick = 0;
     float rampStartFraction = 1.0f;
     float rampMidFraction = 1.0f;
+    // 4th ramp stage + reset grace period (Inferno Dragon Evolution only)
+    // -- see CombatEntity's own fields of the same name. Both default to
+    // 0 (disabled), leaving every other ramping card's behavior untouched.
+    int rampStage4Tick = 0;
+    float rampStage4Fraction = 1.0f;
+    int rampGracePeriodTicks = 0;
 
     // Split-target attacks (Electro Wizard) -- see
     // CombatEntity::findSplitTargets/getCurrentDamage. 1 (the default)
@@ -351,6 +357,15 @@ struct CardStats {
         rampFullTick = fullTick;
         rampStartFraction = startFraction;
         rampMidFraction = midFraction;
+        return *this;
+    }
+    CardStats& withRampStage4(int stage4Tick, float stage4Fraction) {
+        rampStage4Tick = stage4Tick;
+        rampStage4Fraction = stage4Fraction;
+        return *this;
+    }
+    CardStats& withRampGracePeriod(int graceTicks) {
+        rampGracePeriodTicks = graceTicks;
         return *this;
     }
     CardStats& withSplitTargets(int maxTargets) {

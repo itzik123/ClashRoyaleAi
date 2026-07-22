@@ -3,6 +3,7 @@
 #include "PlayerState.h"
 #include "GameManager.h"
 #include "ClashEnv.h"
+#include "CombatEntity.h"
 #include <vector>
 #include <algorithm>
 
@@ -103,6 +104,42 @@ TEST_CASE("GameManager::playCard spawns the evolved entity only on an evolved pl
         if (e->name == "Runner") runnerCount++;
     }
     REQUIRE(runnerCount == 2); // only the evolved play's pair died-and-spawned Runners
+}
+
+TEST_CASE("Inferno Dragon Evolution's evolved spawn carries the ramp grace period and 4th stage",
+        "[game_manager][evolution][inferno_dragon]") {
+    GameManager game({ 163, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    game.playerAI.elixir = 100.0f;
+
+    game.playCard(0, 163, 9.0f, 10.0f); // 1st play: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 163;
+    game.playCard(0, 163, 9.0f, 10.0f); // 2nd play: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 163;
+    game.playCard(0, 163, 9.0f, 10.0f); // 3rd play: evolved
+    game.step();
+
+    std::shared_ptr<CombatEntity> evolvedDragon;
+    int dragonCount = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name == "Inferno Dragon") {
+            dragonCount++;
+            auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+            if (ce && ce->rampGracePeriodTicks > 0) evolvedDragon = ce;
+        }
+    }
+    REQUIRE(dragonCount == 3); // 3 plays, 1 Inferno Dragon each
+    REQUIRE(evolvedDragon != nullptr); // exactly one of the 3 is the evolved play
+
+    REQUIRE(evolvedDragon->rampGracePeriodTicks == 90); // 9s at this engine's 10-ticks/second rate
+    REQUIRE(evolvedDragon->rampStage4Tick == 200); // 20s
+    REQUIRE(evolvedDragon->rampStage4Fraction == Catch::Approx(2.0f));
+    // Base ramp schedule (3-stage 35/120/422) is untouched -- "Identical
+    // Stats" per the sourced evolution table, only the charge-up behavior
+    // itself differs.
+    REQUIRE(evolvedDragon->rampMidTick == 15);
+    REQUIRE(evolvedDragon->rampFullTick == 30);
 }
 
 TEST_CASE("getAllCardIds excludes Evolution slots -- the RANDOM_DECK_POOL landmine guard",

@@ -34,6 +34,9 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->rampFullTick = stats.rampFullTick;
     entity->rampStartFraction = stats.rampStartFraction;
     entity->rampMidFraction = stats.rampMidFraction;
+    entity->rampStage4Tick = stats.rampStage4Tick;
+    entity->rampStage4Fraction = stats.rampStage4Fraction;
+    entity->rampGracePeriodTicks = stats.rampGracePeriodTicks;
     entity->maxSplitTargets = stats.maxSplitTargets;
     entity->splitTargetsFullDamage = stats.splitTargetsFullDamage;
     entity->splashRadius = stats.splashRadius;

@@ -47,6 +47,19 @@ protected:
     // logic lives in exactly one place instead of being opt-in duplicated.
     int currentTargetId = -1;
     int ticksOnTarget = 0;
+    // Ticks elapsed since the last landed hit (any target) -- also tracked
+    // unconditionally, same reasoning. Only consulted when
+    // rampGracePeriodTicks > 0 (Inferno Dragon Evolution): normally
+    // (rampGracePeriodTicks == 0) a target switch or losing the target
+    // entirely resets ticksOnTarget straight to 0, same as always. With a
+    // grace period configured, that reset is deferred -- the current ramp
+    // stage is preserved across a target switch, or through a gap with no
+    // target at all, for up to rampGracePeriodTicks, only actually
+    // resetting once this counter crosses that threshold without a hit
+    // landing. A freeze/stun still resets immediately regardless (see
+    // wasFrozen below) -- the grace period only ever softens the "lost my
+    // target" case, never the "got stunned" one.
+    int ticksSinceLastHit = 0;
 
     // How many targets the attack actually landed on this time (1 normally,
     // up to maxSplitTargets otherwise) -- set right before performAttack()
@@ -93,6 +106,21 @@ public:
     int rampFullTick = 0;
     float rampStartFraction = 1.0f;
     float rampMidFraction = 1.0f;
+
+    // 4th ramp stage (Inferno Dragon Evolution only): a rarely-reached
+    // stage beyond rampFullTick, dealing rampStage4Fraction * damage
+    // instead of the usual full damage. rampStage4Tick == 0 (the default)
+    // disables it, leaving getCurrentDamage's 3-stage schedule above
+    // completely unchanged for every other ramping card (Inferno Tower,
+    // regular Inferno Dragon, Mighty Miner).
+    int rampStage4Tick = 0;
+    float rampStage4Fraction = 1.0f;
+
+    // Grace period before a lost/switched target resets the ramp (Inferno
+    // Dragon Evolution only) -- see ticksSinceLastHit above for the full
+    // explanation. 0 (the default) means an instant reset, exactly like
+    // every other ramping card today.
+    int rampGracePeriodTicks = 0;
 
     // Split-target attacks (Electro Wizard): instead of hitting only the
     // closest enemy, hits up to this many of the closest enemies at once,
@@ -560,6 +588,7 @@ public:
         // reset -- matches the real "a stun resets the charge" rule for
         // every tick actually spent frozen, not all-but-the-last one.
         bool wasFrozen = freezeTicks > 0;
+        ticksSinceLastHit++; // zeroed below the moment a hit actually lands this tick
 
         if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
             && static_cast<float>(hp) / static_cast<float>(transformCheckMaxHp) <= transformAtHpFraction) {
@@ -643,9 +672,21 @@ public:
         }
 
         if (target) {
-            if (wasFrozen || target->id != currentTargetId) {
+            if (wasFrozen) {
+                // Stun always resets immediately, grace period or not --
+                // "or it is hit by a stun attack" is an unconditional
+                // reset in the sourced Evolution text, same as the
+                // baseline (non-evolved) rule this branch already covered.
                 currentTargetId = target->id;
                 ticksOnTarget = 0;
+                ticksSinceLastHit = 0;
+            } else if (target->id != currentTargetId) {
+                bool withinGrace = rampGracePeriodTicks > 0 && ticksSinceLastHit < rampGracePeriodTicks;
+                currentTargetId = target->id;
+                if (!withinGrace) ticksOnTarget = 0;
+                // else: keep the current ramp stage across the switch --
+                // this tick neither resets nor increments it, matching the
+                // existing "switch tick itself doesn't count" shape below.
             } else {
                 ticksOnTarget++;
             }
@@ -660,6 +701,13 @@ public:
                     // damage actually lands: instantly for a direct hit, but
                     // only on arrival for an attack that spawns a projectile.
                     lastAttackDistance = dist;
+                    // Fired here (rather than on projectile arrival) is
+                    // fine for ticksSinceLastHit specifically -- the only
+                    // card that ever configures rampGracePeriodTicks
+                    // (Inferno Dragon Evolution) attacks instantly, same
+                    // "no projectile travel time" shaping as the base
+                    // Inferno Dragon (see its own CardRegistry comment).
+                    ticksSinceLastHit = 0;
                     if (burstEveryNAttacks > 0) {
                         attacksSinceBurst++;
                         currentHitIsBurst = (attacksSinceBurst >= burstEveryNAttacks);
@@ -763,10 +811,17 @@ public:
                 moveTowards(board, target->position);
                 if (chargeThreshold > 0.0f) chargeProgress += beforeMove.distanceTo(position);
             }
-        } else {
+        } else if (rampGracePeriodTicks <= 0 || ticksSinceLastHit >= rampGracePeriodTicks) {
+            // No target at all, and either no grace period configured (the
+            // baseline, unchanged rule) or the grace period already ran
+            // out -- reset fully, same as before.
             currentTargetId = -1;
             ticksOnTarget = 0;
         }
+        // else: within the grace period with no target to fight -- hold
+        // currentTargetId/ticksOnTarget exactly where they are, so the
+        // ramp stage is still there if a new target shows up before
+        // ticksSinceLastHit crosses rampGracePeriodTicks.
 
         clampPosition(board);
     }
@@ -855,7 +910,8 @@ protected:
     int getCurrentDamage() const {
         int base = damage;
         if (rampFullTick > 0) {
-            float fraction = (ticksOnTarget >= rampFullTick) ? 1.0f
+            float fraction = (rampStage4Tick > 0 && ticksOnTarget >= rampStage4Tick) ? rampStage4Fraction
+                : (ticksOnTarget >= rampFullTick) ? 1.0f
                 : (ticksOnTarget >= rampMidTick) ? rampMidFraction
                 : rampStartFraction;
             base = static_cast<int>(damage * fraction);
