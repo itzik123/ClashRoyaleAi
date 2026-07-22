@@ -286,13 +286,12 @@ public:
 
     // Pull nearby enemies toward self on landing a hit (Evolved
     // Valkyrie's Whirlwind Axe) -- see applyPullNearby below.
-    // onHitPullRadius == 0.0f (the default) disables it. Applies to
-    // troops only (see Entity::isBuilding), same "buildings never move"
-    // invariant AreaSpell's own knockback enforces. onHitPullDamage is a
-    // separate, typically-low amount applied via applySplashDamage to
-    // everyone in radius (which does hit buildings, matching the sourced
-    // "including Crown Towers" wording -- only the pull itself exempts
-    // them).
+    // onHitPullRadius == 0.0f (the default) disables it. Buildings/Towers
+    // are never actually displaced by the pull (enforced inside
+    // pullToward itself, Entity.h), but onHitPullDamage -- a separate,
+    // typically-low amount applied via applySplashDamage -- still reaches
+    // everyone in radius, matching the sourced "including Crown Towers"
+    // wording; only the physical pull exempts them.
     float onHitPullRadius = 0.0f;
     float onHitPullDistance = 0.0f;
     int onHitPullDamage = 0;
@@ -885,7 +884,10 @@ public:
                 // range instead of walking toward it. No damage lands this
                 // tick -- the real hit happens on a later, normal-range
                 // attack once it arrives, consistent with the real card
-                // (hook first, melee second).
+                // (hook first, melee second). If `target` ever resolved to
+                // a building this would be a no-op, same as every other
+                // pull/push in this codebase -- see pullToward's own
+                // comment.
                 pullToward(*target, position, dist - effectiveAttackRange + 0.1f);
                 currentCooldown = static_cast<float>(attackCooldown);
             } else {
@@ -1065,17 +1067,16 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
 }
 
 // On-hit area pull (Evolved Valkyrie's Whirlwind Axe): pulls every valid
-// enemy TROOP within `radius` of `origin` toward it by `distance` tiles.
-// Buildings/Towers are excluded (Entity::isBuilding) -- the same
-// "buildings never move" invariant AreaSpell's own knockback enforces for
-// Tornado/Giant Snowball. No-op when radius or distance <= 0.
+// enemy within `radius` of `origin` toward it by `distance` tiles.
+// Buildings/Towers are never actually displaced by this -- enforced
+// inside pullToward itself (Entity.h), not a check here. No-op when
+// radius or distance <= 0.
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
         int excludeId, int attackerTeam) {
     if (radius <= 0.0f || distance <= 0.0f) return;
     for (const auto& entity : board.getEntities()) {
         if (entity->id == excludeId) continue;
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
-        if (entity->isBuilding()) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
         pullToward(*entity, origin, distance);
     }

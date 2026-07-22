@@ -48,9 +48,8 @@ private:
     // moved by this, though they still take damage same as any other
     // target -- confirmed real-game rule: Tornado has dealt damage to
     // buildings since a May 2020 balance update, but its pull has never
-    // displaced them (buildings are stationary regardless of which
-    // spell's knockback hits them, not a Tornado-specific carve-out), see
-    // the isBuilding() guard below.
+    // displaced them. Enforced inside pushAway/pullToward themselves
+    // (Entity.h), not with a check here -- see their own comment.
     float knockback;
 
     // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard):
@@ -154,7 +153,7 @@ public:
                 continue;
             }
             entity->takeDamage(effectiveDamage);
-            if (knockback != 0.0f && !entity->isBuilding()) {
+            if (knockback != 0.0f) {
                 if (knockback > 0.0f) {
                     pushAway(*entity, position, knockback);
                 } else {

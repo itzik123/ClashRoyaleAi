@@ -883,6 +883,23 @@ TEST_CASE("Hook instantly pulls an out-of-range target to just inside melee rang
     REQUIRE(attacker->attackCount == 0); // hook isn't counted as a landed attack
 }
 
+TEST_CASE("A hook can never drag a Building, even if one were somehow targeted", "[combat_entity][hook][building]") {
+    // Not a real in-game scenario (hook-wielding cards target troops), but
+    // confirms the "buildings never move" invariant holds structurally
+    // inside pullToward itself, regardless of caller -- not just for
+    // AreaSpell's knockback and Evolved Valkyrie's pull.
+    Board board;
+    auto target = std::make_shared<Building>(1, 0.0f, 5.0f, 10000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 100, 1);
+    attacker->hookRange = 6.5f;
+
+    attacker->update(board);
+
+    REQUIRE(target->position.y == Catch::Approx(5.0f)); // never moved
+}
+
 TEST_CASE("After being hooked into range, the next attack lands normally", "[combat_entity][hook]") {
     Board board;
     auto target = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 10000, 1);

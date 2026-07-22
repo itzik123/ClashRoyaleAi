@@ -107,15 +107,29 @@ public:
 };
 
 // Repositioning helpers shared by every pull/push mechanic (Fisherman's
-// hook, Tornado's pull, Bowler/Fireball/Rocket/Giant Snowball's knockback)
-// -- free functions since they're just geometry, needed from entity
-// classes and spell classes alike. Neither clamps to board bounds; callers
-// that need that already call clampPosition() separately afterward (same
-// as normal movement).
+// hook, Tornado's pull, Bowler/Fireball/Rocket/Giant Snowball's knockback,
+// Evolved Valkyrie's Whirlwind Axe) -- free functions since they're just
+// geometry, needed from entity classes and spell classes alike. Neither
+// clamps to board bounds; callers that need that already call
+// clampPosition() separately afterward (same as normal movement).
+//
+// Both are a no-op on a Building (Entity::isBuilding) regardless of which
+// mechanic is calling -- buildings are stationary, full stop, whether the
+// pull/push comes from a spell's knockback, a hook, or anything else that
+// exists now or gets added later. Enforced here, once, rather than at
+// every individual call site, so nothing can reintroduce this bug by
+// forgetting a per-site check. Self-directed calls (Mega Knight's jump,
+// Golden Knight's dash both move `entity` == the attacker itself toward
+// its target) are unaffected in practice -- no card that moves itself
+// this way is ever a building.
+inline bool exemptFromForcedMovement(const Entity& entity) {
+    return entity.isBuilding();
+}
 
 // Moves `entity` up to `distance` tiles toward `point`, never overshooting
 // past it.
 inline void pullToward(Entity& entity, const Vector2D& point, float distance) {
+    if (exemptFromForcedMovement(entity)) return;
     float dist = entity.position.distanceTo(point);
     if (dist <= 0.01f) return; // already there (or coincident): no direction to move in
     float moveBy = (distance < dist) ? distance : dist;
@@ -126,6 +140,7 @@ inline void pullToward(Entity& entity, const Vector2D& point, float distance) {
 // Moves `entity` exactly `distance` tiles directly away from `point`
 // (knockback) -- no "overshoot" concept the other direction, so no clamp.
 inline void pushAway(Entity& entity, const Vector2D& point, float distance) {
+    if (exemptFromForcedMovement(entity)) return;
     float dist = entity.position.distanceTo(point);
     if (dist <= 0.01f) return; // coincident: no direction to push in
     entity.position.x += (entity.position.x - point.x) / dist * distance;
