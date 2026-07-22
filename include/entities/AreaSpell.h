@@ -1,7 +1,6 @@
 #pragma once
 #include "CardEntity.h"
 #include "CombatEntity.h"
-#include "Building.h"
 #include "OnHitEffect.h"
 #include "PeriodicEffect.h"
 #include "Board.h"
@@ -51,7 +50,7 @@ private:
     // buildings since a May 2020 balance update, but its pull has never
     // displaced them (buildings are stationary regardless of which
     // spell's knockback hits them, not a Tornado-specific carve-out), see
-    // the dynamic_cast guard below.
+    // the isBuilding() guard below.
     float knockback;
 
     // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard):
@@ -155,7 +154,7 @@ public:
                 continue;
             }
             entity->takeDamage(effectiveDamage);
-            if (knockback != 0.0f && !dynamic_cast<Building*>(entity.get())) {
+            if (knockback != 0.0f && !entity->isBuilding()) {
                 if (knockback > 0.0f) {
                     pushAway(*entity, position, knockback);
                 } else {

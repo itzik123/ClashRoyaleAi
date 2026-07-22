@@ -154,6 +154,10 @@ struct CardStats {
     // "not part of the sourced data" caveat as splashRadius above.
     float chargeThreshold = 0.0f;
     float chargeMultiplier = 1.0f;
+    // Sticky charge (Evolved Battle Ram only) -- see
+    // CombatEntity::chargeIsSticky. false (the default) is every other
+    // charging card, unaffected.
+    bool chargeIsSticky = false;
 
     // Enrage (Berserker) -- see CombatEntity::enrageMaxHp/enrageHealPerHit.
     // 0 (the default) is every card without it. Set via withEnrage below,
@@ -246,6 +250,13 @@ struct CardStats {
     bool rangeFalloff = false;
     float rangeFalloffMinFraction = 1.0f;
 
+    // Bonus damage within a distance band (Archers' Power Shot, Executioner's
+    // Axe Smash) -- see CombatEntity's own fields of the same name.
+    // rangeBandMaxDist == 0.0f (the default) disables it.
+    float rangeBandMinDist = 0.0f;
+    float rangeBandMaxDist = 0.0f;
+    float rangeBandDamageMultiplier = 1.0f;
+
     // AreaSpell-only: Vines' top-N-highest-HP targeting -- see
     // AreaSpell::targetTopHpCount. 0 (the default) is every other spell.
     int spellTargetTopHpCount = 0;
@@ -307,6 +318,19 @@ struct CardStats {
     // CombatEntity::onHitSpawnEffect. nullptr (the default) is every
     // card without one.
     std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
+
+    // Pull nearby enemy troops on landing a hit (Evolved Valkyrie) -- see
+    // CombatEntity::onHitPullRadius/onHitPullDistance/onHitPullDamage.
+    // onHitPullRadius == 0.0f (the default) disables it.
+    float onHitPullRadius = 0.0f;
+    float onHitPullDistance = 0.0f;
+    int onHitPullDamage = 0;
+
+    // Self-haste on landing a hit, refreshing each hit (Evolved Barbarians'
+    // Blade Rage) -- see CombatEntity's own fields of the same name.
+    // selfHasteDurationTicks == 0 (the default) disables it.
+    int selfHasteDurationTicks = 0;
+    float selfHasteCooldownMultiplier = 1.0f;
 
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
@@ -392,6 +416,10 @@ struct CardStats {
     CardStats& withCharge(float threshold, float multiplier) {
         chargeThreshold = threshold;
         chargeMultiplier = multiplier;
+        return *this;
+    }
+    CardStats& withStickyCharge() {
+        chargeIsSticky = true;
         return *this;
     }
     // Reads back `hp` (already set by troop(...) before this chains on).
@@ -527,6 +555,12 @@ struct CardStats {
         rangeFalloffMinFraction = minFraction;
         return *this;
     }
+    CardStats& withRangeBandBonus(float minDist, float maxDist, float multiplier) {
+        rangeBandMinDist = minDist;
+        rangeBandMaxDist = maxDist;
+        rangeBandDamageMultiplier = multiplier;
+        return *this;
+    }
     CardStats& withChampionAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect,
             int usesLimit = -1) {
         isChampion = true;
@@ -564,6 +598,17 @@ struct CardStats {
     }
     CardStats& withOnHitSpawn(std::shared_ptr<IPeriodicEffect> effect) {
         onHitSpawnEffect = std::move(effect);
+        return *this;
+    }
+    CardStats& withOnHitPull(float radius, float distance, int damage = 0) {
+        onHitPullRadius = radius;
+        onHitPullDistance = distance;
+        onHitPullDamage = damage;
+        return *this;
+    }
+    CardStats& withSelfHasteOnHit(int durationTicks, float cooldownMultiplier) {
+        selfHasteDurationTicks = durationTicks;
+        selfHasteCooldownMultiplier = cooldownMultiplier;
         return *this;
     }
     // Permanent damage-taken reduction from spawn (Evolved Knight's

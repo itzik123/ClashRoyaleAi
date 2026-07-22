@@ -43,6 +43,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->shieldHp = stats.shieldHp;
     entity->chargeThreshold = stats.chargeThreshold;
     entity->chargeMultiplier = stats.chargeMultiplier;
+    entity->chargeIsSticky = stats.chargeIsSticky;
     entity->enrageMaxHp = stats.enrageMaxHp;
     entity->enrageHealPerHit = stats.enrageHealPerHit;
     entity->parryIntervalTicks = stats.parryIntervalTicks;
@@ -77,6 +78,9 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->lineSplashRange = stats.lineSplashRange;
     entity->rangeFalloff = stats.rangeFalloff;
     entity->rangeFalloffMinFraction = stats.rangeFalloffMinFraction;
+    entity->rangeBandMinDist = stats.rangeBandMinDist;
+    entity->rangeBandMaxDist = stats.rangeBandMaxDist;
+    entity->rangeBandDamageMultiplier = stats.rangeBandDamageMultiplier;
     entity->isChampion = stats.isChampion;
     entity->abilityElixirCost = stats.abilityElixirCost;
     entity->abilityCooldownTicks = stats.abilityCooldownTicks;
@@ -94,6 +98,11 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->healOnHitAmount = stats.healOnHitAmount;
     entity->healOnHitMaxHp = stats.healOnHitMaxHp;
     entity->onHitSpawnEffect = stats.onHitSpawnEffect;
+    entity->onHitPullRadius = stats.onHitPullRadius;
+    entity->onHitPullDistance = stats.onHitPullDistance;
+    entity->onHitPullDamage = stats.onHitPullDamage;
+    entity->selfHasteDurationTicks = stats.selfHasteDurationTicks;
+    entity->selfHasteCooldownMultiplier = stats.selfHasteCooldownMultiplier;
     // abilityCooldownRemaining/soulCount/temporaryInvisibilityTicksRemaining/
     // temporaryHitSpeedMultiplier are intentionally NOT copied from stats --
     // pure runtime state (defaults to 0/1.0, ready/empty/inactive

@@ -4,6 +4,7 @@
 #include "GameManager.h"
 #include "ClashEnv.h"
 #include "CombatEntity.h"
+#include "test_helpers.h"
 #include <vector>
 #include <algorithm>
 
@@ -140,6 +141,110 @@ TEST_CASE("Inferno Dragon Evolution's evolved spawn carries the ramp grace perio
     // itself differs.
     REQUIRE(evolvedDragon->rampMidTick == 15);
     REQUIRE(evolvedDragon->rampFullTick == 30);
+}
+
+TEST_CASE("Minion Horde Evolution's Dark Guard turns a member untargetable after it takes damage",
+        "[game_manager][evolution][minion_horde]") {
+    GameManager game({ 149, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    game.playerAI.elixir = 100.0f;
+
+    game.playCard(0, 149, 9.0f, 10.0f); // 1st play: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 149;
+    game.playCard(0, 149, 9.0f, 10.0f); // 2nd play: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 149;
+    game.playCard(0, 149, 9.0f, 10.0f); // 3rd play: evolved
+    game.step();
+
+    std::shared_ptr<CombatEntity> evolvedMinion;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name != "Minion Horde") continue;
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->onDamageTakenEffect) { evolvedMinion = ce; break; }
+    }
+    REQUIRE(evolvedMinion != nullptr); // found one of the 6 members from the evolved play
+
+    REQUIRE(evolvedMinion->isTargetable()); // untouched so far
+    evolvedMinion->takeDamage(1);
+    REQUIRE_FALSE(evolvedMinion->isTargetable()); // Dark Guard triggered: briefly untargetable
+    REQUIRE(evolvedMinion->temporaryInvisibilityTicksRemaining == 30); // 3s at this engine's 10-ticks/second rate
+}
+
+TEST_CASE("Skeleton Army Evolution's evolved play deploys 16 skeletons (+1, the Skeleton General), not 15",
+        "[game_manager][evolution][skeleton_army]") {
+    GameManager game({ 133, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    game.playerAI.elixir = 100.0f;
+
+    game.playCard(0, 133, 9.0f, 10.0f); // 1st play: un-evolved (15)
+    game.step();
+    int unevolvedCount = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name == "Skeleton Army") unevolvedCount++;
+    }
+    REQUIRE(unevolvedCount == 15);
+
+    game.playerAI.hand[0] = 133;
+    game.playCard(0, 133, 9.0f, 10.0f); // 2nd play: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 133;
+    game.playCard(0, 133, 9.0f, 10.0f); // 3rd play: evolved (16)
+    game.step();
+
+    int totalCount = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name == "Skeleton Army") totalCount++;
+    }
+    REQUIRE(totalCount == 15 + 15 + 16); // the 3rd play's evolved squad has one more than the first two
+}
+
+TEST_CASE("Wall Breakers Evolution's death effect both explodes (moderate AoE) and spawns a Runner",
+        "[game_manager][evolution][wall_breakers]") {
+    GameManager game({ 123, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    game.playerAI.elixir = 100.0f;
+
+    game.playCard(0, 123, 9.0f, 10.0f); // 1st: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 123;
+    game.playCard(0, 123, 9.0f, 10.0f); // 2nd: un-evolved
+    game.step();
+    game.playerAI.hand[0] = 123;
+    game.playCard(0, 123, 9.0f, 10.0f); // 3rd: evolved
+    game.step();
+
+    // Only the evolved play's 2 copies carry a deathEffect at all (the
+    // un-evolved copies from the first 2 plays don't) -- board iteration
+    // order isn't guaranteed to put the 3rd play's entities first, so
+    // this is the reliable way to grab one of the evolved copies
+    // specifically, not just "any Wall Breakers".
+    std::shared_ptr<CombatEntity> evolvedWallBreaker;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name != "Wall Breakers") continue;
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->deathEffect) { evolvedWallBreaker = ce; break; }
+    }
+    REQUIRE(evolvedWallBreaker != nullptr);
+
+    // A bystander right next to it, well within the new 1.5-tile death
+    // explosion but far enough that it was never hit by anything else this
+    // test does -- confirms AreaDamageOnDeath actually fires now, not just
+    // the pre-existing Runner spawn.
+    auto bystander = std::make_shared<DummyEntity>(9999, evolvedWallBreaker->position.x + 0.5f,
+        evolvedWallBreaker->position.y, 100000, 1);
+    game.getBoard().addEntity(bystander);
+    game.getBoard().commitPendingEntities();
+
+    evolvedWallBreaker->takeDamage(evolvedWallBreaker->hp); // kill it directly
+    game.getBoard().cleanDeadEntities();
+    game.getBoard().commitPendingEntities();
+
+    REQUIRE(bystander->hp == 100000 - 150); // AreaDamageOnDeath(1.5, 150)
+
+    int runnerCount = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        if (e->name == "Runner") runnerCount++;
+    }
+    REQUIRE(runnerCount == 1); // the same death also still spawns its Runner
 }
 
 TEST_CASE("getAllCardIds excludes Evolution slots -- the RANDOM_DECK_POOL landmine guard",

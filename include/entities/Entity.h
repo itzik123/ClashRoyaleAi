@@ -60,6 +60,14 @@ public:
 
     virtual bool isTargetable() const { return true; }
 
+    // True only for Building (and its Tower subclass) -- lets code outside
+    // the Building/CombatEntity inheritance chain (e.g. knockback/pull
+    // effects) check "is this a stationary building" without a
+    // dynamic_cast<Building*>, which would need Building.h and create a
+    // circular include from anywhere inside CombatEntity.h itself.
+    // Overridden to return true in Building.h.
+    virtual bool isBuilding() const { return false; }
+
     virtual float getCollisionRadius() const { return 0.0f; }
 
     // Re-applies board bounds/river constraints to this entity's position.

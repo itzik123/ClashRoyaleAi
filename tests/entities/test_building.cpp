@@ -13,6 +13,14 @@ TEST_CASE("Building::getCollisionRadius is always 1.0", "[building]") {
     REQUIRE(b.getCollisionRadius() == Catch::Approx(1.0f));
 }
 
+TEST_CASE("Building::isBuilding is true, unlike the Entity default", "[building]") {
+    Building b(1, 5.0f, 5.0f, 1000, 0, 'C', 5.0f, 100, 10);
+    REQUIRE(b.isBuilding());
+
+    DummyEntity notABuilding(2, 5.0f, 5.0f, 1000, 0);
+    REQUIRE_FALSE(notABuilding.isBuilding());
+}
+
 TEST_CASE("Building never moves, even with a target far out of range", "[building][movement]") {
     Board board;
     auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 50.0f, 100, 1);

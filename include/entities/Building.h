@@ -21,6 +21,8 @@ public:
 
     float getCollisionRadius() const override { return COLLISION_RADIUS; }
 
+    bool isBuilding() const override { return true; }
+
     void update(Board& board) override {
         CombatEntity::update(board);
         if (lifetimeTicks > 0) {

@@ -32,6 +32,10 @@ inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, in
 // body, before its own definition later in this file is visible.
 inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
     int attackerId, int attackerTeam, int attackerCardId, int dealt);
+// Forward-declared for the same reason: Evolved Valkyrie's on-hit pull
+// (see update() below) calls this directly from inside the class body.
+inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
+    int excludeId, int attackerTeam);
 
 class CombatEntity : public CardEntity {
 protected:
@@ -165,6 +169,18 @@ public:
     float chargeMultiplier = 1.0f;
     float chargeProgress = 0.0f;
 
+    // Sticky charge (Evolved Battle Ram): unlike the "have to run it up
+    // again" reset above, once this attacker has reached chargeThreshold
+    // ONE time, chargeMultiplier keeps applying to every hit for the rest
+    // of its life instead of resetting -- "constantly ramming into its
+    // target... dealing double damage for every connection made."
+    // chargeIsSticky == false (the default) is every other charging card
+    // (Prince, base Battle Ram, Ram Rider, Royal Hogs, Bandit), completely
+    // unaffected. chargeHasStuck is internal bookkeeping, not
+    // CardStats-configurable.
+    bool chargeIsSticky = false;
+    bool chargeHasStuck = false;
+
     // Enrage (Berserker): attack cooldown shortens (up to 2x speed at 0 hp)
     // and a small self-heal lands with every hit, scaling with how much of
     // enrageMaxHp is already gone. enrageMaxHp == 0 (the default) disables
@@ -267,6 +283,19 @@ public:
     // (Evolved Skeletons) -- see CappedSpawnOnHitEffect. nullptr (the
     // default) is every card without one.
     std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
+
+    // Pull nearby enemies toward self on landing a hit (Evolved
+    // Valkyrie's Whirlwind Axe) -- see applyPullNearby below.
+    // onHitPullRadius == 0.0f (the default) disables it. Applies to
+    // troops only (see Entity::isBuilding), same "buildings never move"
+    // invariant AreaSpell's own knockback enforces. onHitPullDamage is a
+    // separate, typically-low amount applied via applySplashDamage to
+    // everyone in radius (which does hit buildings, matching the sourced
+    // "including Crown Towers" wording -- only the pull itself exempts
+    // them).
+    float onHitPullRadius = 0.0f;
+    float onHitPullDistance = 0.0f;
+    int onHitPullDamage = 0;
 
     // Kamikaze (Wall Breakers, the "Spirit" troops): dies immediately
     // after landing its one hit instead of surviving to attack
@@ -393,6 +422,18 @@ public:
     // training. rangeFalloff == false (the default) is every other card.
     bool rangeFalloff = false;
     float rangeFalloffMinFraction = 1.0f; // damage fraction at max range
+
+    // Bonus damage within a specific distance band (Archers' Power Shot:
+    // +50% at 4-6 tiles; Executioner's Axe Smash: +75% at <= 3.5 tiles) --
+    // distinct from rangeFalloff above (a continuous scale-down across the
+    // whole range), this is a flat multiplier that only applies while
+    // lastAttackDistance falls within [rangeBandMinDist, rangeBandMaxDist].
+    // rangeBandMaxDist == 0.0f (the default) disables it for every card
+    // that doesn't opt in.
+    float rangeBandMinDist = 0.0f;
+    float rangeBandMaxDist = 0.0f;
+    float rangeBandDamageMultiplier = 1.0f;
+
     // Distance to the target at the moment of the most recent attack --
     // set right alongside currentHitCount, just before performAttack(),
     // purely so getCurrentDamage() (a const method with no target of its
@@ -455,6 +496,20 @@ public:
     // component elsewhere in this codebase.
     int temporaryInvisibilityTicksRemaining = 0;
     float temporaryHitSpeedMultiplier = 1.0f;
+
+    // Self-haste on landing a hit, refreshing on every subsequent hit
+    // (Evolved Barbarians' Blade Rage: +35% attack speed for 3s, timer
+    // resets while they keep attacking) -- deliberately separate from
+    // temporaryInvisibilityTicksRemaining/temporaryHitSpeedMultiplier
+    // above: those are champion-ability-activation-only (see
+    // CardFactories::applyCardMetadata's own comment) and carry an
+    // invisibility side effect this needs to avoid. selfHasteDurationTicks
+    // == 0 (the default) disables it; the real card's accompanying
+    // movement-speed component isn't modeled, same documented gap as
+    // Rage/Baby Dragon Evolution elsewhere in this file.
+    int selfHasteDurationTicks = 0;
+    float selfHasteCooldownMultiplier = 1.0f;
+    int selfHasteTicksRemaining = 0;
 
     // Hit-speed ramp while locked onto the same target (Little Prince):
     // unlike rampMidTick/rampFullTick above (which ramp DAMAGE while
@@ -630,6 +685,7 @@ public:
         if (curseTicksRemaining > 0) curseTicksRemaining--;
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
         if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
+        if (selfHasteTicksRemaining > 0) selfHasteTicksRemaining--;
 
         // Poison-style damage-over-time mark from PoisonOnHit (Dart
         // Goblin/Firecracker Evolutions) -- independent of freeze/curse,
@@ -726,7 +782,10 @@ public:
                         }
                     }
                     currentCooldown = static_cast<float>(attackCooldown);
-                    if (chargeThreshold > 0.0f) chargeProgress = 0.0f;
+                    if (chargeThreshold > 0.0f) {
+                        if (chargeIsSticky && chargeProgress >= chargeThreshold) chargeHasStuck = true;
+                        if (!chargeHasStuck) chargeProgress = 0.0f;
+                    }
                     if (startsInvisible) visibleTicksRemaining = revealTicksAfterAttack;
                     if (enrageMaxHp > 0) {
                         float hpFraction = static_cast<float>(hp) / static_cast<float>(enrageMaxHp);
@@ -748,6 +807,16 @@ public:
                     // Temporary haste (Archer Queen's Cloaking Cape, Boss
                     // Bandit's Getaway Grenade).
                     if (temporaryInvisibilityTicksRemaining > 0) currentCooldown *= temporaryHitSpeedMultiplier;
+                    // Self-haste on hit (Evolved Barbarians' Blade Rage):
+                    // refresh the window first, then apply it to the
+                    // cooldown this same attack just set -- so the very
+                    // next attack is the hastened one, and continuing to
+                    // land hits keeps the window (and the haste) alive
+                    // indefinitely ("timer resets if they keep attacking").
+                    if (selfHasteDurationTicks > 0) {
+                        selfHasteTicksRemaining = selfHasteDurationTicks;
+                        currentCooldown *= selfHasteCooldownMultiplier;
+                    }
                     // Ally aura on landed attacks (Rune Giant's every-Nth
                     // buff, Battle Healer's heal) -- see CombatEntity's own
                     // aura* fields above.
@@ -781,6 +850,19 @@ public:
                     // not here, since it needs to know which cardId to
                     // count.
                     if (onHitSpawnEffect) onHitSpawnEffect->apply(board, position, team);
+                    // Whirlwind pull (Evolved Valkyrie): everyone in
+                    // radius takes the (typically low) pull damage,
+                    // including the entity already hit by this same
+                    // attack (excludeId -1 so nothing is skipped) and
+                    // including buildings/towers -- only the physical
+                    // pull itself exempts buildings, inside
+                    // applyPullNearby.
+                    if (onHitPullRadius > 0.0f) {
+                        if (onHitPullDamage > 0) {
+                            applySplashDamage(board, position, onHitPullRadius, -1, id, team, cardId, onHitPullDamage);
+                        }
+                        applyPullNearby(board, position, onHitPullRadius, onHitPullDistance, id, team);
+                    }
                     if (dieAfterFirstHit) hp = 0;
                 }
             } else if (jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {
@@ -916,7 +998,7 @@ protected:
                 : rampStartFraction;
             base = static_cast<int>(damage * fraction);
         }
-        if (chargeThreshold > 0.0f && chargeProgress >= chargeThreshold) {
+        if (chargeThreshold > 0.0f && (chargeProgress >= chargeThreshold || chargeHasStuck)) {
             base = static_cast<int>(base * chargeMultiplier);
         }
         if (buffTicksRemaining > 0) {
@@ -926,6 +1008,9 @@ protected:
             float distFraction = std::min(lastAttackDistance / attackRange, 1.0f);
             float rangeFactor = 1.0f - (1.0f - rangeFalloffMinFraction) * distFraction;
             base = static_cast<int>(base * rangeFactor);
+        }
+        if (rangeBandMaxDist > 0.0f && lastAttackDistance >= rangeBandMinDist && lastAttackDistance <= rangeBandMaxDist) {
+            base = static_cast<int>(base * rangeBandDamageMultiplier);
         }
         if (currentHitIsBurst) {
             base = static_cast<int>(base * burstDamageMultiplier);
@@ -976,6 +1061,23 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
             { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+    }
+}
+
+// On-hit area pull (Evolved Valkyrie's Whirlwind Axe): pulls every valid
+// enemy TROOP within `radius` of `origin` toward it by `distance` tiles.
+// Buildings/Towers are excluded (Entity::isBuilding) -- the same
+// "buildings never move" invariant AreaSpell's own knockback enforces for
+// Tornado/Giant Snowball. No-op when radius or distance <= 0.
+inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
+        int excludeId, int attackerTeam) {
+    if (radius <= 0.0f || distance <= 0.0f) return;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->id == excludeId) continue;
+        if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+        if (entity->isBuilding()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        pullToward(*entity, origin, distance);
     }
 }
 

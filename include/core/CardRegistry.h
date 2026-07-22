@@ -31,6 +31,7 @@
 #include "CappedSpawnOnHitEffect.h"
 #include "PoisonOnHit.h"
 #include "PeriodicFreezeNearestEffect.h"
+#include "DarkGuardOnDamageEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -113,6 +114,15 @@ private:
             float oy = (static_cast<float>(i / 4) - 1.0f) * 0.6f;
             offsets.push_back({ ox, oy });
         }
+        return offsets;
+    }
+    // Skeleton Army Evolution's "+1 Skeleton" stat boost: the same 4-wide
+    // grid, extended by the one remaining cell (row 3, col 3) the base
+    // loop above deliberately stops short of -- 16 total, representing
+    // the 15 ordinary Skeletons plus the Skeleton General.
+    static std::vector<Vector2D> skeletonArmyEvolvedOffsets() {
+        std::vector<Vector2D> offsets = skeletonArmyOffsets();
+        offsets.push_back({ 0.9f, 1.2f });
         return offsets;
     }
 
@@ -332,7 +342,17 @@ private:
             .withInvisibility(10);
     }
     static CardStats runnerStats() {
-        return troop(-41, "Runner", 0.0f, Archetype::MeleeBuildingTargeter, 166, 1.2f, 0.6f, 182, 8, 'g');
+        // 175 = 50% of Wall Breakers' own 350 damage, matching the sourced
+        // "continue to run to the nearest building... dealing 50% of the
+        // original damage" figure precisely (corrected from an earlier,
+        // unsourced 182). Still an approximation of the real one-shot-
+        // then-gone barrel: this engine models it as an ordinary
+        // MeleeBuildingTargeter that keeps attacking on a normal cooldown
+        // once it arrives, rather than a single detonation that consumes
+        // it, and doesn't reduce its damage against Crown Towers
+        // specifically the way the sourced text does for the FIRST
+        // (death) explosion.
+        return troop(-41, "Runner", 0.0f, Archetype::MeleeBuildingTargeter, 166, 1.2f, 0.6f, 175, 8, 'g');
     }
     // Battle Ram Evolution's death-spawn: a stronger version of the
     // ordinary battleRamBarbarianStats() pair -- see that Evolution's own
@@ -367,6 +387,14 @@ private:
     // described mechanical difference beyond cosmetic positioning.
     static CardStats skeletonArmyShadowStats() {
         return troop(-43, "Skeleton Shadow", 0.0f, Archetype::MeleeSquad, 500, 1.0f, 0.5f, 81, 11, 'k');
+    }
+    // Royal Ghost Evolution's on-hit spawn: 51% damage (261*0.51=133),
+    // 6.7% hp (1210*0.067=81) of the Royal Ghost's own stats, per the
+    // sourced table. Reuses her own invisibility duration/symbol -- "the
+    // Souldiers' stats are identical to the Royal Ghost's" beyond the two
+    // scaled-down numbers.
+    static CardStats royalGhostSouldierStats() {
+        return troop(-42, "Souldier", 0.0f, Archetype::MeleeSquad, 81, 0.7f, 1.2f, 133, 18, 'Q');
     }
 
     void add(const CardStats& stats) {
@@ -1182,16 +1210,22 @@ private:
         // Confirmed (Liquipedia): 2 cycles to unlock, "1 in every 3
         // deploys will be evolved" (2 un-evolved cycles, then 1 evolved
         // play, repeating for the rest of the match -- see addEvolution's
-        // own comment on why this isn't a one-time charge). Evolved form:
-        // "will spawn a Runner each" -- one Runner PER Wall Breaker unit
-        // that dies (there are 2 in the squad), not a 2-Runner burst from
-        // a single death, so runnerStats keeps its default single-offset
-        // spawn and each of the 2 Wall Breakers just carries its own copy
-        // of the same deathEffect. Sources disagreed on whether the
-        // evolved Wall Breakers' own walking stats also get a damage
-        // buff, so the more conservative reading (unchanged combat stats,
-        // only the new death behavior) is used here, not the contested
-        // number.
+        // own comment on why this isn't a one-time charge). Evolved form,
+        // "Powder Barrels" (per a later, more precise source): if a Wall
+        // Breaker is defeated, its barrel breaks -- a moderate-damage
+        // (reduced vs. Crown Towers, not modeled) explosion in a 1.5-tile
+        // radius, modeled via AreaDamageOnDeath -- then a barrel remnant
+        // continues rolling to the nearest building at Very Fast speed,
+        // dealing 50% of the original damage once it connects (see
+        // runnerStats' own comment for that piece). Composed via
+        // CompositeDeathEffect, same shape as Lumberjack Evolution above.
+        // One Runner PER Wall Breaker unit that dies (there are 2 in the
+        // squad), not a 2-Runner burst from a single death, so each of
+        // the 2 Wall Breakers just carries its own copy of the same
+        // deathEffect. Sources disagreed on whether the evolved Wall
+        // Breakers' own walking stats also get a damage buff, so the more
+        // conservative reading (unchanged combat stats, only the new
+        // death behavior) is used here, not the contested number.
         addEvolution(123,
             troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
                 .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
@@ -1201,7 +1235,11 @@ private:
                 .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
                 .withSplash(1.5f)
                 .withDieAfterFirstHit()
-                .withDeathEffect(std::make_shared<SpawnOnDeath>(runnerStats())),
+                .withDeathEffect(std::make_shared<CompositeDeathEffect>(
+                    std::vector<std::shared_ptr<IDeathEffect>>{
+                        std::make_shared<AreaDamageOnDeath>(1.5f, 150),
+                        std::make_shared<SpawnOnDeath>(runnerStats())
+                    })),
             2, 1);
 
         // Zap Evolution: 2 cycles, "1 in every 3 deploys will be evolved"
@@ -1264,14 +1302,17 @@ private:
                 .withSplitTargets(3).withSplitTargetsFullDamage(),
             2, 1);
 
-        // Archers Evolution: 2 cycles (standard pattern). Range 5.0 ->
-        // 6.5 (confirmed equal to Dart Goblin's own range) -- a pure
-        // stat change, no new mechanism.
+        // Archers Evolution: 2 cycles (standard pattern). Sourced stat
+        // boost is "+1 tile Range" (5.0 -> 6.0, corrected from an earlier
+        // guess of 6.5). "Power Shot": +50% damage against a target 4-6
+        // tiles away -- new rangeBandBonus primitive (see CombatEntity/
+        // CardStats), also reused by Executioner's Axe Smash below.
         addEvolution(128,
             troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 5.0f, 112, 9, 'A')
                 .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir(),
-            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 6.5f, 112, 9, 'A')
-                .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir(),
+            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 6.0f, 112, 9, 'A')
+                .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir()
+                .withRangeBandBonus(4.0f, 6.0f, 1.5f),
             2, 1);
 
         // Cannon Evolution: 2 cycles (standard pattern). "Deploy Barrage":
@@ -1289,20 +1330,24 @@ private:
             2, 1);
 
         // Firecracker Evolution: 2 cycles (standard pattern). Real
-        // mechanic is 5 shrapnel projectiles + sparks that leave a
-        // Poison-like DoT+slow field -- approximated here as a flat DoT
-        // mark on whatever the main shot hits (new PoisonOnHit/
-        // CombatEntity::applyDot), not modeling the shrapnel spread or
-        // the slow. Damage-per-tick/duration/interval aren't independently
-        // sourced (only "every 0.25s, similar to Poison" is), so these are
-        // reasonable engine-internal constants, same caveat category as
-        // splashRadius elsewhere in this file.
+        // mechanic is a center spark (2.5-tile radius) plus shrapnel
+        // sparks (1.2-tile radius) dealing very low damage every 0.25s
+        // for 3 seconds (sourced duration -- corrected from an earlier
+        // guess of 4s/40 ticks), plus a 15% move-speed slow -- approximated
+        // here as a flat DoT mark on whatever the main shot hits (new
+        // PoisonOnHit/CombatEntity::applyDot), not modeling the shrapnel
+        // spread or the slow (this engine's DoT has no accompanying
+        // speed-reduction component). Damage-per-tick isn't independently
+        // sourced (only "very low, every 0.25s" is), so it's a reasonable
+        // engine-internal constant, same caveat category as splashRadius
+        // elsewhere in this file; the 3-tick interval approximates 0.25s
+        // (2.5 ticks) at this engine's 10-ticks/second rate.
         addEvolution(130,
             troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
                 .withTargetsAir().withSplash(1.5f).withRecoil(1.0f),
             troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
                 .withTargetsAir().withSplash(1.5f).withRecoil(1.0f)
-                .withOnHit(std::make_shared<PoisonOnHit>(16, 40, 3)),
+                .withOnHit(std::make_shared<PoisonOnHit>(16, 30, 3)),
             2, 1);
 
         // Dart Goblin Evolution: 2 cycles (standard pattern). Real
@@ -1332,13 +1377,19 @@ private:
                     .withOffsets({ {-0.4f,0.0f},{0.4f,0.0f},{0.0f,0.4f},{-0.4f,0.4f},{0.4f,0.4f},{0.0f,-0.4f} }))),
             2, 1);
 
-        // Skeleton Army Evolution: 2 cycles (standard pattern). See
-        // skeletonArmyShadowStats above for the shadow-spawn design.
+        // Skeleton Army Evolution: 2 cycles (standard pattern). "+1
+        // Skeleton" (16 total, corrected from an earlier version that
+        // left the evolved form at the same 15 as the base card) --
+        // see skeletonArmyEvolvedOffsets above, representing the Skeleton
+        // General alongside skeletonArmyShadowStats for the shadow-spawn
+        // design. The General's own distinct shield-hp isn't modeled
+        // (every spawned unit in an .withOffsets() squad shares one
+        // CardStats, no per-position stat variation).
         addEvolution(133,
             troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
                 .withOffsets(skeletonArmyOffsets()),
             troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
-                .withOffsets(skeletonArmyOffsets())
+                .withOffsets(skeletonArmyEvolvedOffsets())
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonArmyShadowStats())),
             2, 1);
 
@@ -1376,12 +1427,22 @@ private:
         // Royal Ghost Evolution: 2 cycles (standard pattern). Longer
         // reveal window after attacking (18 ticks/1.8s vs the base's 5
         // ticks/0.5s) -- a pure stat change on the existing invisibility
-        // mechanism.
+        // mechanism. "Souldier Summoning": every landed hit spawns 2
+        // Souldiers dealing spawn damage at the attack location -- new
+        // royalGhostSouldierStats() (see its own comment), wired via the
+        // existing onHitSpawnEffect mechanism (a clean fit, same shape as
+        // Evolved Skeletons' self-spawn). The "only while invisible"
+        // qualifier isn't separately gated -- the Royal Ghost is already
+        // cloaked for virtually all of her own attacks by design, so this
+        // fires unconditionally on every hit rather than adding an extra
+        // invisibility check.
         addEvolution(136,
             troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
                 .withInvisibility(5),
             troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
-                .withInvisibility(18),
+                .withInvisibility(18)
+                .withOnHitSpawn(std::make_shared<PeriodicSpawnEffect>(royalGhostSouldierStats()
+                    .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }))),
             2, 1);
 
         // Baby Dragon Evolution: 2 cycles (standard pattern). Real aura
@@ -1400,18 +1461,21 @@ private:
                 .withAllyBuffAura(4.0f, 1, 1.3f, 20, 1000000),
             2, 1);
 
-        // Furnace Evolution: 2 cycles (standard pattern). "Hot Spawns":
-        // Fire Spirits spawn roughly twice as often (halved interval),
-        // each dealing +180% damage. Directional alternating-side spawn
-        // positioning and the "lingers one extra spawn after combat
-        // stops" nuance aren't modeled.
+        // Furnace Evolution: 2 cycles (standard pattern). "Hot Spawning":
+        // Fire Spirit spawn period drops to 2.4s (24 ticks, corrected from
+        // an earlier halved-interval guess of 35 ticks/3.5s -- the sourced
+        // number isn't simply half of the base's 7.0s). No Fire Spirit
+        // damage change is sourced (an earlier version of this comment
+        // incorrectly claimed +180% damage; not modeled, and shouldn't
+        // be). Directional alternating-side spawn positioning isn't
+        // modeled either (single spawn point, same as the base card).
         addEvolution(138,
             troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
                 .withTargetsAir()
                 .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())),
             troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
                 .withTargetsAir()
-                .withPeriodicEffect(35, std::make_shared<PeriodicSpawnEffect>(
+                .withPeriodicEffect(24, std::make_shared<PeriodicSpawnEffect>(
                     furnaceFireSpiritStats().withOffsets({ {0.0f, 0.0f} }))),
             2, 1);
 
@@ -1429,29 +1493,31 @@ private:
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinCageBrawlerStats())),
             2, 1);
 
-        // Musketeer Evolution: 2 cycles (standard pattern). "Long Shot":
-        // periodically fires an empowered long-range shot (+50% damage)
-        // -- the damage part reuses the burst-on-Nth-attack primitive
-        // directly (a clean fit); the "hits across nearly the whole
-        // arena" range extension isn't modeled (burst only affects
-        // damage, not a conditional range increase).
+        // Musketeer Evolution: 2 cycles (standard pattern). "Sniper Shot":
+        // 3 empowered long-range shots (+80% damage, corrected from an
+        // earlier guess of +50%) -- the damage part reuses the burst-on-
+        // Nth-attack primitive (a clean fit for "every 3rd shot"), though
+        // that primitive repeats forever rather than the sourced "3
+        // total, then never again"; the "vertically infinite / 2-tile
+        // horizontal, can't target towers" range shape isn't modeled
+        // either (burst only affects damage, not targeting).
         addEvolution(140,
             troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U'),
             troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
-                .withBurstAttack(3, 1.5f),
+                .withBurstAttack(3, 1.8f),
             2, 1);
 
-        // Wizard Evolution: 2 cycles (standard pattern). "Fire Shield"
-        // prevents dying in one hit -- reuses the existing shield
-        // mechanism directly (amount not independently sourced, a
-        // reasonable engine-internal constant). The shield-break
-        // knockback+damage explosion isn't modeled (no "on shield
-        // depleted" trigger exists in this engine).
+        // Wizard Evolution: 2 cycles (standard pattern). "Fire Shield" is
+        // sourced as 25% of his own hp (755*0.25=189, corrected from an
+        // earlier unsourced guess of 300) -- reuses the existing shield
+        // mechanism directly. The shield-break knockback+damage explosion
+        // isn't modeled (no "on shield depleted" trigger exists in this
+        // engine).
         addEvolution(141,
             troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
                 .withSplash(1.5f),
             troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
-                .withSplash(1.5f).withShield(300),
+                .withSplash(1.5f).withShield(189),
             2, 1);
 
         // Witch Evolution: 2 cycles (standard pattern). Real mechanic
@@ -1480,12 +1546,19 @@ private:
                 .withSplash(2.5f),
             2, 1);
 
-        // Ice Spirit Evolution: 2 cycles (standard pattern). Real
-        // mechanic re-applies the same stun 3s after the first (a
-        // delayed second pulse) -- approximated as one longer freeze
-        // instead of two separate pulses (10 ticks -> 51 ticks, covering
-        // roughly the same total window: 1s initial + 3s delay + 1.1s
-        // repeat).
+        // Ice Spirit Evolution: 2 cycles (standard pattern). Sourced stat
+        // boost is "+0.5 tiles Splash Radius" -- the base Ice Spirit (id
+        // 72 above) has no splash modeled in this engine at all (a
+        // pre-existing, separate simplification, single-target only), so
+        // this is applied as a new absolute splash radius on the evolved
+        // form alone (1.7 tiles, based on the real card's own ~1.2-tile
+        // splash + the sourced 0.5 delta) rather than literally "base
+        // + 0.5", to avoid quietly changing the un-evolved card's own
+        // behavior as a side effect of this fix. Real mechanic also
+        // re-applies the same stun 3s after the first (a delayed second
+        // pulse) -- approximated as one longer freeze instead of two
+        // separate pulses (10 ticks -> 51 ticks, covering roughly the
+        // same total window: 1s initial + 3s delay + 1.1s repeat).
         addEvolution(144,
             troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
                 .withTargetsAir()
@@ -1493,6 +1566,7 @@ private:
                 .withDieAfterFirstHit(),
             troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
                 .withTargetsAir()
+                .withSplash(1.7f)
                 .withOnHit(std::make_shared<FreezeOnHit>(51, 0.5f))
                 .withDieAfterFirstHit(),
             2, 1);
@@ -1511,48 +1585,73 @@ private:
                 .withOnHit(std::make_shared<FreezeOnHit>(70, 0.7f)),
             2, 1);
 
-        // Hunter Evolution: 2 cycles (standard pattern). "Net throw":
-        // every 5s, fully freezes (can't move or attack) the nearest
-        // enemy for 3s -- new PeriodicFreezeNearestEffect, reusing the
-        // existing freeze machinery, "letting ground units pile on"
-        // falls out naturally (a frozen unit just takes normal damage
-        // from whatever reaches it).
+        // Hunter Evolution: 2 cycles (standard pattern). "Netting Trap":
+        // nets the nearest enemy (can't move or attack) for 3s, recharging
+        // 5s after that -- read as an 8s total cycle (30-tick net +
+        // 50-tick recharge = 80 ticks between throws), corrected from an
+        // earlier reading of the interval as a flat 5s/50 ticks. New
+        // PeriodicFreezeNearestEffect, reusing the existing freeze
+        // machinery -- "letting ground units pile on" falls out naturally
+        // (a frozen unit just takes normal damage from whatever reaches
+        // it).
         addEvolution(146,
             troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
                 .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f),
             troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
                 .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f)
-                .withPeriodicEffect(50, std::make_shared<PeriodicFreezeNearestEffect>(4.0f, 30)),
+                .withPeriodicEffect(80, std::make_shared<PeriodicFreezeNearestEffect>(4.0f, 30)),
             2, 1);
 
-        // Valkyrie Evolution: 2 cycles (standard pattern). Real mechanic
-        // pulls all nearby enemies toward her on every swing (tornado-
-        // like) -- approximated as a bigger splash radius instead (this
-        // engine has no area-pull primitive), capturing "hits everything
-        // nearby" without true pull physics.
+        // Valkyrie Evolution: 2 cycles (standard pattern). "Identical
+        // Stats" per the sourced table (reverted an earlier, incorrect
+        // splash-radius buff that had been invented to compensate for the
+        // unmodeled pull -- now that a real pull primitive exists, there's
+        // no need to compensate with a stat change at all). "Whirlwind
+        // Axe": every landed hit pulls enemy troops within a 5.5-tile
+        // radius toward her (new onHitPull primitive, excludes buildings/
+        // towers same as Tornado's own knockback) plus low damage to
+        // everyone in that radius, including Crown Towers (the pull
+        // itself still exempts them). Pull distance-per-hit and the low
+        // damage amount aren't independently sourced -- reasonable
+        // engine-internal constants, same caveat category as
+        // splashRadius elsewhere in this file. The lingering 0.5s zone
+        // itself isn't modeled (this is an instant per-hit effect, not a
+        // separate lingering hazard).
         addEvolution(147,
             troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
                 .withSplash(1.5f),
             troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
-                .withSplash(2.5f),
+                .withSplash(1.5f)
+                .withOnHitPull(5.5f, 2.0f, 50),
             2, 1);
 
-        // P.E.K.K.A. Evolution: 2 cycles (standard pattern). "Healing
-        // Blade": heals 12.5% max hp per KILL, up to 150% max hp total --
-        // approximated as a smaller heal on every landed HIT instead
-        // (this engine has no "notify on kill" hook, only on-hit), tuned
-        // down since hits are far more frequent than kills.
+        // P.E.K.K.A. Evolution: 2 cycles (standard pattern). "Butter-Heal"
+        // heals on the FINAL BLOW that defeats a troop/building (scaled to
+        // the victim's hp), overhealing up to +66% max hp (3760*1.66=6242,
+        // corrected from an earlier guess of +50%/5640) -- approximated as
+        // a smaller heal on every landed HIT instead (this engine has no
+        // "notify on kill" hook, only on-hit), tuned down since hits are
+        // far more frequent than kills.
         addEvolution(148,
             troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E'),
             troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E')
-                .withHealOnHit(40, 5640),
+                .withHealOnHit(40, 6242),
             2, 1);
 
-        // Minion Horde Evolution: 2 cycles (standard pattern). Each
-        // member is invincible against the first hit it takes --
-        // approximated as a flat, large shield instead of true
-        // any-damage immunity (this engine's shield is a fixed absorb
-        // amount, not "ignore the first hit no matter its size").
+        // Minion Horde Evolution: 2 cycles (standard pattern). "Dark
+        // Guard": taking damage from a troop or spell turns the hit
+        // member invisible (untargetable) for 3s, after which it's
+        // vulnerable again -- corrected from an earlier reading (a flat
+        // absorb-shield) that modeled a fundamentally different mechanic
+        // (damage immunity, not evasion). New DarkGuardOnDamageEffect,
+        // reusing temporaryInvisibilityTicksRemaining via the existing
+        // onDamageTaken hook, same technique as Archer Queen's Cloaking
+        // Cape/Boss Bandit's Getaway Grenade (an activated ability there,
+        // a defensive trigger here). Still an approximation: real Dark
+        // Guard specifically requires the FIRST hit taken to trigger it
+        // (already-invisible members presumably don't re-trigger/extend
+        // it), whereas this fires -- and refreshes the 3s window -- on
+        // every hit taken, invisible or not.
         addEvolution(149,
             troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
                 .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
@@ -1562,13 +1661,16 @@ private:
                 .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
                                {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
                 .withFlying().withTargetsAir()
-                .withShield(500),
+                .withOnDamageTaken(std::make_shared<DarkGuardOnDamageEffect>(30)),
             2, 1);
 
         // Royal Recruits Evolution: 2 cycles (standard pattern). Real
-        // mechanic grants a charge specifically once the shield breaks;
-        // approximated as an unconditional charge bonus instead (this
-        // engine's charge mechanism isn't gated on shield state).
+        // mechanic grants a charge specifically once the shield breaks,
+        // requiring 2.5 tiles of travel for 2x damage -- approximated as
+        // an unconditional charge bonus instead (this engine's charge
+        // mechanism isn't gated on shield state), but now using the
+        // sourced distance/multiplier (2.5, 2.0) rather than an earlier
+        // guess (2.0, 1.5).
         addEvolution(150,
             troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
                 .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
@@ -1576,7 +1678,7 @@ private:
             troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
                 .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
                 .withShield(240)
-                .withCharge(2.0f, 1.5f),
+                .withCharge(2.5f, 2.0f),
             2, 1);
 
         // Electro Dragon Evolution: 2 cycles (standard pattern). "Infinite
@@ -1596,16 +1698,18 @@ private:
                 .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f)),
             2, 1);
 
-        // Mortar Evolution: 2 cycles (standard pattern). Periodically
-        // spawns Goblins alongside its bombardment -- reuses the existing
-        // periodic-spawn mechanism (goblinDrillGoblinStats, interval not
-        // independently sourced).
+        // Mortar Evolution: 2 cycles (standard pattern). Sourced stat
+        // boost is "-1 second Attack Period" (50 ticks -> 40). "Green
+        // Siege": a Goblin spawns with every landed shot -- modeled via
+        // onHitSpawnEffect (fires exactly when a shot lands), not an
+        // independent periodic timer, so the spawn can never drift out of
+        // sync with actual shots the way a fixed-interval timer could.
         addEvolution(152,
             building(93, "Mortar", 4.0f, 1369, 'R', 11.5f, 266, 50)
                 .withMinRange(3.5f),
-            building(93, "Mortar", 4.0f, 1369, 'R', 11.5f, 266, 50)
+            building(93, "Mortar", 4.0f, 1369, 'R', 11.5f, 266, 40)
                 .withMinRange(3.5f)
-                .withPeriodicEffect(100, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
+                .withOnHitSpawn(std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
             2, 1);
 
         // Goblin Drill Evolution: 2 cycles (standard pattern). Real
@@ -1629,27 +1733,31 @@ private:
             2, 1);
 
         // Tesla Evolution: 2 cycles (standard pattern). "Electro Pulse"
-        // fires when it emerges from hiding -- this engine's Tesla has no
-        // invisibility/hiding mechanic to "emerge" from at all, so this
-        // is approximated as a one-time stun burst at deploy only
-        // (reusing the existing spawn-effect mechanism), not a repeating
-        // per-emergence pulse.
+        // fires when it emerges from hiding, 6-tile radius (corrected from
+        // an earlier guess of 3.0), low damage + 0.5s stun -- this
+        // engine's Tesla has no invisibility/hiding mechanic to "emerge"
+        // from at all, so this is approximated as a one-time stun burst
+        // at deploy only (reusing the existing spawn-effect mechanism),
+        // not a repeating per-emergence pulse.
         addEvolution(154,
             building(26, "Tesla", 4.0f, 1182, 'T', 5.5f, 220, 11).withTargetsAir(),
             building(26, "Tesla", 4.0f, 1182, 'T', 5.5f, 220, 11).withTargetsAir()
-                .withSpawnEffect(3.0f, 100, std::make_shared<FreezeOnHit>(5, 0.0f)),
+                .withSpawnEffect(6.0f, 100, std::make_shared<FreezeOnHit>(5, 0.0f)),
             2, 1);
 
         // Barbarians Evolution: 2 cycles (standard pattern). +10% hp
-        // (691->760). Real mechanic also grants +30% attack/movement
-        // speed for 3s on every attack -- not modeled (this engine has no
-        // movement-speed-buff plumbing at all, and no "buff self on
-        // landing a hit" hook, only "buff nearby allies").
+        // (691->760). "Blade Rage": +35% attack speed (corrected from an
+        // earlier reading of +30%) for 3s on every attack, timer resets
+        // while they keep attacking -- new selfHasteOnHit primitive
+        // (0.74 approximates 1/1.35). The accompanying +35% movement
+        // speed isn't modeled (this engine has no movement-speed-buff
+        // plumbing at all, same documented gap as Baby Dragon Evolution).
         addEvolution(155,
             troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
                 .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
             troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 760, 0.5f, 0.7f, 192, 14, 'B')
-                .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
+                .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
+                .withSelfHasteOnHit(30, 0.74f),
             2, 1);
 
         // Lumberjack Evolution: 2 cycles (standard pattern). See
@@ -1667,32 +1775,37 @@ private:
             2, 1);
 
         // Executioner Evolution: 1 cycle (confirmed different from the
-        // standard 2 -- "Axe Smash" only needs 1 cycle to unlock).
-        // Real mechanic doubles damage on both the outgoing and returning
-        // axe when the initial target is within 3.5 tiles -- approximated
-        // as a flat +50% damage instead of the range-conditional double
-        // (this engine has no "bonus damage at close range" primitive,
-        // only rangeFalloff for the opposite direction).
+        // standard 2 -- "Axe Smash" only needs 1 cycle to unlock). Real
+        // mechanic deals +75% damage (corrected from an earlier "doubles"
+        // reading of a less precise source) plus 1.5-tile knockback when
+        // the target is within 3.5 tiles -- now uses the same
+        // rangeBandBonus primitive as Archers' Power Shot (0-3.5 tiles,
+        // 1.75x), replacing the earlier flat +50% unconditional buff.
+        // Knockback on the outgoing hit (but not the return, and not
+        // against heavy units) isn't modeled (no "push the target, not
+        // the attacker" primitive at this specific call site).
         addEvolution(157,
             troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
                 .withTargetsAir().withBoomerang(15),
-            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 268, 24, 'x')
-                .withTargetsAir().withBoomerang(15),
+            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
+                .withTargetsAir().withBoomerang(15)
+                .withRangeBandBonus(0.0f, 3.5f, 1.75f),
             1, 1);
 
         // Giant Snowball Evolution: 2 cycles (standard pattern). "Snow
-        // Bowling" pulls enemies together and rolls them 4-4.5 tiles,
-        // untargetable while trapped -- approximated as a bigger
-        // knockback distance and longer slow instead (this engine has no
-        // "pull together" or "untargetable while being knocked back"
-        // mechanism).
+        // Roll" sacrifices the base card's knockback (push) for a 4.5-tile
+        // PULL instead -- gathering enemies in its path rather than
+        // scattering them, the opposite direction from the base card and
+        // from an earlier (incorrectly-signed) version of this file that
+        // used a bigger push. "Untargetable while trapped" isn't modeled
+        // (this engine has no such mechanism).
         addEvolution(158,
             spell(100, "Giant Snowball", 2.0f, 2.5f, 179, 8, '!')
                 .withSpellOnHit(std::make_shared<FreezeOnHit>(15, 0.5f))
                 .withKnockback(1.0f),
             spell(100, "Giant Snowball", 2.0f, 2.5f, 179, 8, '!')
                 .withSpellOnHit(std::make_shared<FreezeOnHit>(40, 0.7f))
-                .withKnockback(4.5f),
+                .withKnockback(-4.5f),
             2, 1);
 
         // Goblin Giant Evolution: 2 cycles (standard pattern). "Sack-
@@ -1708,16 +1821,19 @@ private:
                 .withPeriodicEffect(22, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
             2, 1);
 
-        // Mega Knight Evolution: 2 cycles (standard pattern). "Mega
-        // Uppercut" launches every hit target back 4 tiles toward the
-        // enemy tower -- approximated as +20% flat damage instead (this
-        // engine has no "knock the target toward a specific side"
-        // primitive, only recoilDistance which pushes the attacker, not
-        // the target).
+        // Mega Knight Evolution: 2 cycles (standard pattern). "Identical
+        // Stats" per the sourced table -- reverted an earlier, incorrect
+        // +20% flat damage buff that had been invented to compensate for
+        // the unmodeled ability. "Mega Uppercut" launches every hit target
+        // back 4 tiles toward the enemy Crown Tower -- not modeled (this
+        // engine has no "knock the target toward a specific board-
+        // relative point" primitive, only recoilDistance which pushes the
+        // attacker, not the target, and no existing "find the nearest
+        // enemy tower's position" board query to aim it at).
         addEvolution(160,
             troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
                 .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
-            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 322, 17, 'X')
+            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
                 .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
             2, 1);
 
@@ -1727,27 +1843,43 @@ private:
         // approximated as a flat stat buff on the spawned Barbarians
         // instead of recursively invoking the Evolution framework for a
         // spawned child (that machinery is keyed by deck-slot cycling,
-        // which a death-spawned child has no equivalent of).
+        // which a death-spawned child has no equivalent of). "Head-First
+        // Ram": once its charge connects, the Battle Ram keeps dealing
+        // double damage on every subsequent hit against that target
+        // instead of just the first ("constantly ramming... for every
+        // connection made") -- new withStickyCharge() (see
+        // CombatEntity::chargeIsSticky), layered on the existing charge
+        // mechanism already used by the base card. The contact damage +
+        // 2-tile knockback dealt to OTHER small/medium troops while still
+        // approaching isn't modeled (this engine's charge only affects
+        // the Ram's own damage on arrival, not a moving hitbox along the
+        // way).
         addEvolution(161,
             troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
                 .withCharge(3.0f, 2.0f),
             troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamEvolvedBarbarianStats()))
-                .withCharge(3.0f, 2.0f),
+                .withCharge(3.0f, 2.0f).withStickyCharge(),
             2, 1);
 
-        // Royal Hogs Evolution: 2 cycles (standard pattern). Exact
-        // mechanic not confirmed to a satisfactory level -- sources
-        // disagreed/were vague (one described "flying toward towers",
-        // implausible for what's otherwise a ground-jumping troop and
-        // not corroborated elsewhere). Approximated as a modest hp buff
-        // only, flagged as low-confidence pending better sourcing.
+        // Royal Hogs Evolution: 2 cycles (standard pattern). "Identical
+        // Stats" per the sourced table -- reverted an earlier hp buff
+        // that had been invented under a since-resolved low-confidence
+        // reading of the mechanic. "Hog Flight": each Hog spawns flying,
+        // then falls to the ground on its first attack, dealing fall
+        // damage equal to 155% of its normal damage -- not modeled. This
+        // engine's charge bonus (already on both forms, unchanged) is
+        // also framed as a one-time bonus on an early hit, and how the
+        // two would actually stack in the real game isn't clear from the
+        // sourced text (which doesn't mention charge at all here), so
+        // this is left as a genuine follow-up rather than guessing at an
+        // interaction.
         addEvolution(162,
             troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
                 .withCharge(3.0f, 2.0f),
-            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 950, 0.85f, 1.0f, 74, 12, '_')
+            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
                 .withCharge(3.0f, 2.0f),
             2, 1);

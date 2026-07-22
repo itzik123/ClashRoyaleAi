@@ -3,6 +3,7 @@
 #include "MeleeTroop.h"
 #include "CappedSpawnOnHitEffect.h"
 #include "PoisonOnHit.h"
+#include "Building.h"
 
 // StationaryCombatant: attackRange, no movement, no decay -- isolates
 // CombatEntity::update()'s targeting/attack/cooldown/freeze logic.
@@ -720,6 +721,29 @@ TEST_CASE("Charge resets after landing a hit -- the next attack isn't charged ag
     REQUIRE(target->hp == 10000 - 200 - 100); // second hit is base damage, not charged
 }
 
+TEST_CASE("chargeIsSticky keeps every subsequent hit charged instead of resetting (Evolved Battle Ram)",
+        "[combat_entity][charge][sticky]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 4.0f, 1.0f, 100, 1, 'p'); // cooldown 1
+    attacker->setIgnoresRiver(true);
+    attacker->chargeThreshold = 3.0f;
+    attacker->chargeMultiplier = 2.0f;
+    attacker->chargeIsSticky = true;
+
+    attacker->update(board); // moves 4.0: charged
+    attacker->update(board); // in range: charged hit (200), sticks now
+    REQUIRE(target->hp == 10000 - 200);
+
+    attacker->update(board); // would normally reset to base damage -- stays charged instead
+    REQUIRE(target->hp == 10000 - 200 - 200);
+
+    attacker->update(board); // and again, indefinitely ("constantly ramming")
+    REQUIRE(target->hp == 10000 - 200 - 200 - 200);
+}
+
 TEST_CASE("A card without charge configured (chargeThreshold 0, the default) never deals bonus damage", "[combat_entity][charge]") {
     Board board;
     auto target = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 10000, 1);
@@ -1228,6 +1252,125 @@ TEST_CASE("onHitSpawnEffect fires on every landed hit", "[combat_entity][evoluti
     REQUIRE(countAfterCap == 2);
 }
 
+// ---------------- on-hit area pull (Evolved Valkyrie's Whirlwind Axe) ----------------
+
+TEST_CASE("onHitPull deals pull damage to (and pulls) both the main target and other nearby enemies",
+        "[combat_entity][pull]") {
+    Board board;
+    auto mainTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1); // dist 1.0: within attack range
+    auto nearby = std::make_shared<DummyEntity>(2, 0.0f, 2.5f, 1000, 1); // dist 2.5: pull radius only
+    spawn(board, mainTarget);
+    spawn(board, nearby);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 1.2f, 100, 10);
+    attacker->onHitPullRadius = 3.0f;
+    attacker->onHitPullDistance = 1.0f;
+    attacker->onHitPullDamage = 20;
+
+    attacker->update(board);
+
+    REQUIRE(mainTarget->hp == 1000 - 100 - 20); // main attack damage plus the pull's own damage
+    REQUIRE(mainTarget->position.y == Catch::Approx(0.0f)); // already at dist 1.0 == pull distance: pulled fully in
+
+    REQUIRE(nearby->hp == 1000 - 20); // never in attack range, only the pull's damage
+    REQUIRE(nearby->position.y == Catch::Approx(1.5f)); // pulled 1.0 toward the attacker at (0,0)
+}
+
+TEST_CASE("onHitPull never moves a Building, though it still takes the pull damage",
+        "[combat_entity][pull][building]") {
+    Board board;
+    auto mainTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1); // needed so an attack actually lands
+    auto building = std::make_shared<Building>(2, 0.0f, 2.0f, 1000, 1, 'C', 5.0f, 10, 10); // dist 2.0, in pull radius
+    spawn(board, mainTarget);
+    spawn(board, building);
+
+    auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 1.2f, 100, 10);
+    attacker->onHitPullRadius = 3.0f;
+    attacker->onHitPullDistance = 1.0f;
+    attacker->onHitPullDamage = 20;
+
+    attacker->update(board);
+
+    REQUIRE(building->hp == 1000 - 20); // still takes the pull's own damage
+    REQUIRE(building->position.y == Catch::Approx(2.0f)); // never moved
+}
+
+TEST_CASE("A card without onHitPull configured (onHitPullRadius 0, the default) never pulls or deals extra damage",
+        "[combat_entity][pull]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.2f, 100, 10);
+    attacker->update(board);
+
+    REQUIRE(target->hp == 1000 - 100); // only the main attack's damage
+    REQUIRE(target->position.y == Catch::Approx(1.0f)); // untouched
+}
+
+// ---------------- self-haste on hit (Evolved Barbarians' Blade Rage) ----------------
+
+TEST_CASE("selfHasteOnHit speeds up the cooldown after landing a hit", "[combat_entity][haste]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.2f, 10, 10); // cooldown 10
+    attacker->selfHasteDurationTicks = 30;
+    attacker->selfHasteCooldownMultiplier = 0.5f; // halved: next attack ready in 5 ticks, not 10
+
+    attacker->update(board); // 1st hit lands; cooldown set to 10, then halved to 5
+    REQUIRE(target->hp == 1000000 - 10);
+
+    for (int i = 0; i < 5; ++i) attacker->update(board); // 5 more ticks: 5 -> 0, 2nd hit lands on the last one
+    REQUIRE(target->hp == 1000000 - 20); // confirms the cooldown was actually halved, not left at 10
+}
+
+TEST_CASE("A card without selfHasteOnHit configured (selfHasteDurationTicks 0, the default) keeps its normal cooldown",
+        "[combat_entity][haste]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.2f, 10, 10);
+    attacker->update(board);
+    REQUIRE(target->hp == 1000000 - 10);
+
+    for (int i = 0; i < 5; ++i) attacker->update(board); // only 5 more ticks: not enough for a 10-tick cooldown
+    REQUIRE(target->hp == 1000000 - 10); // still no 2nd hit
+}
+
+// ---------------- on-damage-taken effects (Evolved Minion Horde's Dark Guard) ----------------
+
+namespace {
+    struct TestOnDamageTakenEffect : IOnDamageTakenEffect {
+        mutable int timesFired = 0;
+        void apply(CombatEntity& self) const override {
+            timesFired++;
+            self.hp += 5; // arbitrary marker so the effect's own application is independently observable
+        }
+    };
+}
+
+TEST_CASE("onDamageTakenEffect fires from takeDamage() whenever real damage actually lands",
+        "[combat_entity][on_damage_taken]") {
+    auto effect = std::make_shared<TestOnDamageTakenEffect>();
+    auto entity = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
+    entity->onDamageTakenEffect = effect;
+
+    entity->takeDamage(30);
+
+    REQUIRE(effect->timesFired == 1);
+    REQUIRE(entity->hp == 100 - 30 + 5);
+}
+
+TEST_CASE("A CombatEntity without onDamageTakenEffect configured (nullptr, the default) behaves exactly as before",
+        "[combat_entity][on_damage_taken]") {
+    auto entity = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 100, 0, 5.0f, 10, 10);
+    REQUIRE_NOTHROW(entity->takeDamage(30));
+    REQUIRE(entity->hp == 70);
+}
+
 // ---------------- kamikaze (dieAfterFirstHit) ----------------
 
 TEST_CASE("An attacker with dieAfterFirstHit dies the instant its attack lands", "[combat_entity][kamikaze]") {
@@ -1559,6 +1702,49 @@ TEST_CASE("A card without rangeFalloff configured (the default) always deals ful
     attacker->update(board);
 
     REQUIRE(target->hp == 1000 - 84); // no falloff: full damage regardless of distance
+}
+
+// ---------------- distance-band bonus damage (Archers' Power Shot, Executioner's Axe Smash) ----------------
+
+TEST_CASE("rangeBandBonus applies its multiplier when the attack distance falls inside the band",
+        "[combat_entity][range_band]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1); // dist 5.0, inside [4.0, 6.0]
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 6.0f, 100, 10);
+    attacker->rangeBandMinDist = 4.0f;
+    attacker->rangeBandMaxDist = 6.0f;
+    attacker->rangeBandDamageMultiplier = 1.5f;
+
+    attacker->update(board);
+    REQUIRE(target->hp == 1000 - 150); // 100 * 1.5
+}
+
+TEST_CASE("rangeBandBonus leaves damage unchanged outside the band", "[combat_entity][range_band]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1); // dist 2.0, below the [4.0, 6.0] band
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 6.0f, 100, 10);
+    attacker->rangeBandMinDist = 4.0f;
+    attacker->rangeBandMaxDist = 6.0f;
+    attacker->rangeBandDamageMultiplier = 1.5f;
+
+    attacker->update(board);
+    REQUIRE(target->hp == 1000 - 100); // outside the band: full damage, no bonus
+}
+
+TEST_CASE("A card without rangeBandBonus configured (rangeBandMaxDist 0, the default) never applies it",
+        "[combat_entity][range_band]") {
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 6.0f, 100, 10);
+    attacker->update(board);
+
+    REQUIRE(target->hp == 1000 - 100);
 }
 
 TEST_CASE("A card without transformAtHpFraction configured (the default) never transforms", "[combat_entity][transform]") {
