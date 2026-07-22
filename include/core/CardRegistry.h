@@ -29,6 +29,7 @@
 #include "GoblinsteinLightningLinkEffect.h"
 #include "BossBanditGetawayGrenadeEffect.h"
 #include "CappedSpawnOnHitEffect.h"
+#include "PoisonOnHit.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -339,6 +340,15 @@ private:
     // either way.
     static CardStats evolvedSkeletonChildStats() {
         return troop(24, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k');
+    }
+    // Skeleton Army Evolution's death-spawn "shadow": real card's shadows
+    // have unlimited hp and are untargetable by anything but spells --
+    // approximated as a normal targetable unit with a large-but-finite hp
+    // instead (500), avoiding an unremovable unit cluttering the board.
+    // "General Gerry" (a named unit in the squad) isn't modeled -- no
+    // described mechanical difference beyond cosmetic positioning.
+    static CardStats skeletonArmyShadowStats() {
+        return troop(-43, "Skeleton Shadow", 0.0f, Archetype::MeleeSquad, 500, 1.0f, 0.5f, 81, 11, 'k');
     }
 
     void add(const CardStats& stats) {
@@ -1258,6 +1268,198 @@ private:
             building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10),
             building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10)
                 .withSpawnEffect(2.5f, 202),
+            2, 1);
+
+        // Firecracker Evolution: 2 cycles (standard pattern). Real
+        // mechanic is 5 shrapnel projectiles + sparks that leave a
+        // Poison-like DoT+slow field -- approximated here as a flat DoT
+        // mark on whatever the main shot hits (new PoisonOnHit/
+        // CombatEntity::applyDot), not modeling the shrapnel spread or
+        // the slow. Damage-per-tick/duration/interval aren't independently
+        // sourced (only "every 0.25s, similar to Poison" is), so these are
+        // reasonable engine-internal constants, same caveat category as
+        // splashRadius elsewhere in this file.
+        addEvolution(130,
+            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
+                .withTargetsAir().withSplash(1.5f).withRecoil(1.0f),
+            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
+                .withTargetsAir().withSplash(1.5f).withRecoil(1.0f)
+                .withOnHit(std::make_shared<PoisonOnHit>(16, 40, 3)),
+            2, 1);
+
+        // Dart Goblin Evolution: 2 cycles (standard pattern). Real
+        // mechanic is a 3-tier escalating poison (51/115/307 dmg per
+        // consecutive dart) with a 1.25s initial delay -- approximated
+        // as a flat DoT at the tier-1 rate throughout (51 dmg/tick, 4s,
+        // 1 tick/second), not modeling the escalation or the initial
+        // delay. The real card's "poison persists even if the Dart
+        // Goblin dies" already falls out for free here -- the mark lives
+        // on the victim, independent of the attacker's lifetime.
+        addEvolution(131,
+            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd'),
+            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
+                .withOnHit(std::make_shared<PoisonOnHit>(51, 40, 10)),
+            2, 1);
+
+        // Goblin Barrel Evolution: 2 cycles (standard pattern). Real
+        // mechanic launches a 2nd barrel on the mirrored lane with 3
+        // Decoy Goblins -- approximated as 6 Goblins at the same landing
+        // point instead (double the base's 3), not modeling the mirrored
+        // second location.
+        addEvolution(132,
+            spell(109, "Goblin Barrel", 3.0f, 0.5f, 0, 8, '[')
+                .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(goblinBarrelGoblinStats())),
+            spell(109, "Goblin Barrel", 3.0f, 0.5f, 0, 8, '[')
+                .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(goblinBarrelGoblinStats()
+                    .withOffsets({ {-0.4f,0.0f},{0.4f,0.0f},{0.0f,0.4f},{-0.4f,0.4f},{0.4f,0.4f},{0.0f,-0.4f} }))),
+            2, 1);
+
+        // Skeleton Army Evolution: 2 cycles (standard pattern). See
+        // skeletonArmyShadowStats above for the shadow-spawn design.
+        addEvolution(133,
+            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
+                .withOffsets(skeletonArmyOffsets()),
+            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
+                .withOffsets(skeletonArmyOffsets())
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonArmyShadowStats())),
+            2, 1);
+
+        // Skeleton Barrel Evolution: 2 cycles (standard pattern). +25% hp
+        // (532->665). Real card drops 2 waves of 7 skeletons (at 75% hp
+        // and on death); this engine only models the on-death spawn (the
+        // base card doesn't have an hp-threshold trigger mechanism wired
+        // for a non-transforming side effect), scaled up to 7 skeletons
+        // instead of the base's 2. The base card's own death-damage stat
+        // referenced in some sources isn't modeled here either way (not
+        // present on the un-evolved card in this engine).
+        addEvolution(134,
+            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, 0.85f, 1.0f, 81, 10, ',')
+                .withFlying()
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonBarrelSkeletonStats())),
+            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 665, 0.85f, 1.0f, 81, 10, ',')
+                .withFlying()
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonBarrelSkeletonStats().withOffsets({
+                    {-0.6f,0.0f},{0.6f,0.0f},{-0.3f,0.3f},{0.3f,0.3f},{-0.3f,-0.3f},{0.3f,-0.3f},{0.0f,0.0f}
+                }))),
+            2, 1);
+
+        // Knight Evolution: 2 cycles (standard pattern). Real shield: 60%
+        // less damage while approaching, drops once he starts attacking
+        // -- approximated as a flat, permanent, smaller reduction (35%)
+        // instead, since this engine has no "is mid-attack vs.
+        // approaching" signal at the CardStats level (see
+        // withPassiveDamageReduction's own comment).
+        addEvolution(135,
+            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K'),
+            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
+                .withPassiveDamageReduction(0.65f),
+            2, 1);
+
+        // Royal Ghost Evolution: 2 cycles (standard pattern). Longer
+        // reveal window after attacking (18 ticks/1.8s vs the base's 5
+        // ticks/0.5s) -- a pure stat change on the existing invisibility
+        // mechanism.
+        addEvolution(136,
+            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+                .withInvisibility(5),
+            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+                .withInvisibility(18),
+            2, 1);
+
+        // Baby Dragon Evolution: 2 cycles (standard pattern). Real aura
+        // slows enemies 30% and speeds up allies 30% continuously in an
+        // 8x9 area -- approximated via the existing ally-buff aura
+        // (reinterpreting "speed buff" as a damage buff, since this
+        // engine has no movement-speed-buff plumbing at all -- see
+        // CardStats.h's own comment on Rage skipping the same thing) and
+        // triggered per landed hit rather than continuously. Enemy-slow
+        // half of the aura isn't modeled either, for the same reason.
+        addEvolution(137,
+            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
+                .withFlying().withTargetsAir(),
+            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
+                .withFlying().withTargetsAir()
+                .withAllyBuffAura(4.0f, 1, 1.3f, 20, 1000000),
+            2, 1);
+
+        // Furnace Evolution: 2 cycles (standard pattern). "Hot Spawns":
+        // Fire Spirits spawn roughly twice as often (halved interval),
+        // each dealing +180% damage. Directional alternating-side spawn
+        // positioning and the "lingers one extra spawn after combat
+        // stops" nuance aren't modeled.
+        addEvolution(138,
+            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
+                .withTargetsAir()
+                .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())),
+            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
+                .withTargetsAir()
+                .withPeriodicEffect(35, std::make_shared<PeriodicSpawnEffect>(
+                    furnaceFireSpiritStats().withOffsets({ {0.0f, 0.0f} }))),
+            2, 1);
+
+        // Goblin Cage Evolution: 2 cycles (standard pattern). Real
+        // mechanic pulls enemies in and holds them, dealing DoT until the
+        // cage expires -- approximated via the existing hook (pull) plus
+        // the new PoisonOnHit DoT mark, not a true persistent hold/root
+        // (this engine has no such lock mechanism).
+        addEvolution(139,
+            building(97, "Goblin Cage", 4.0f, 780, '6', 0.0f, 0, 100)
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinCageBrawlerStats())),
+            building(97, "Goblin Cage", 4.0f, 780, '6', 3.0f, 40, 20)
+                .withHook(3.0f)
+                .withOnHit(std::make_shared<PoisonOnHit>(30, 40, 10))
+                .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinCageBrawlerStats())),
+            2, 1);
+
+        // Musketeer Evolution: 2 cycles (standard pattern). "Long Shot":
+        // periodically fires an empowered long-range shot (+50% damage)
+        // -- the damage part reuses the burst-on-Nth-attack primitive
+        // directly (a clean fit); the "hits across nearly the whole
+        // arena" range extension isn't modeled (burst only affects
+        // damage, not a conditional range increase).
+        addEvolution(140,
+            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U'),
+            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+                .withBurstAttack(3, 1.5f),
+            2, 1);
+
+        // Wizard Evolution: 2 cycles (standard pattern). "Fire Shield"
+        // prevents dying in one hit -- reuses the existing shield
+        // mechanism directly (amount not independently sourced, a
+        // reasonable engine-internal constant). The shield-break
+        // knockback+damage explosion isn't modeled (no "on shield
+        // depleted" trigger exists in this engine).
+        addEvolution(141,
+            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+                .withSplash(1.5f),
+            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+                .withSplash(1.5f).withShield(300),
+            2, 1);
+
+        // Witch Evolution: 2 cycles (standard pattern). Real mechanic
+        // heals when a spawned Skeleton dies, overhealing up to 24% above
+        // max hp -- approximated as healing on her own landed hits
+        // instead (this engine has no "notify parent when spawned child
+        // dies" hook), capped at 839*1.24=1040.
+        addEvolution(142,
+            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
+                .withTargetsAir()
+                .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats())),
+            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
+                .withTargetsAir()
+                .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats()))
+                .withHealOnHit(20, 1040),
+            2, 1);
+
+        // Royal Giant Evolution: 2 cycles (standard pattern). Identical
+        // base stats; every attack (always against a building, since this
+        // archetype already only targets buildings) also splashes a 2.5
+        // radius -- a clean direct fit for the existing splash mechanism.
+        // Knockback on the splash isn't modeled.
+        addEvolution(143,
+            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y'),
+            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y')
+                .withSplash(2.5f),
             2, 1);
 
         // === Excluded from this sync (no supporting mechanism in this engine) ===

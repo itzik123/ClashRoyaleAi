@@ -98,6 +98,20 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {127, "Bomber", 2.0f, false}, // Evolution slot -- same name/cost as base id 9
         {128, "Archers", 3.0f, false}, // Evolution slot -- same name/cost as base id 1
         {129, "Cannon", 3.0f, false}, // Evolution slot -- same name/cost as base id 25
+        {130, "Firecracker", 3.0f, false}, // Evolution slot -- same name/cost as base id 64
+        {131, "Dart Goblin", 3.0f, false}, // Evolution slot -- same name/cost as base id 20
+        {132, "Goblin Barrel", 3.0f, true}, // Evolution slot -- same name/cost as base id 109
+        {133, "Skeleton Army", 3.0f, false}, // Evolution slot -- same name/cost as base id 12
+        {134, "Skeleton Barrel", 3.0f, false}, // Evolution slot -- same name/cost as base id 89
+        {135, "Knight", 3.0f, false}, // Evolution slot -- same name/cost as base id 0
+        {136, "Royal Ghost", 3.0f, false}, // Evolution slot -- same name/cost as base id 47
+        {137, "Baby Dragon", 4.0f, false}, // Evolution slot -- same name/cost as base id 44
+        {138, "Furnace", 4.0f, false}, // Evolution slot -- same name/cost as base id 70
+        {139, "Goblin Cage", 4.0f, false}, // Evolution slot -- same name/cost as base id 97
+        {140, "Musketeer", 4.0f, false}, // Evolution slot -- same name/cost as base id 6
+        {141, "Wizard", 5.0f, false}, // Evolution slot -- same name/cost as base id 11
+        {142, "Witch", 5.0f, false}, // Evolution slot -- same name/cost as base id 71
+        {143, "Royal Giant", 6.0f, false}, // Evolution slot -- same name/cost as base id 18
     };
 
     const auto& registry = CardRegistry::getInstance();

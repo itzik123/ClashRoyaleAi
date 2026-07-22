@@ -551,4 +551,19 @@ struct CardStats {
         onHitSpawnEffect = std::move(effect);
         return *this;
     }
+    // Permanent damage-taken reduction from spawn (Evolved Knight's
+    // shield) -- approximates a real mechanic that's conditional on
+    // movement state (shield only while not actively attacking) as a
+    // flat, permanent, smaller reduction instead, since this engine has
+    // no "is this entity currently mid-attack vs. approaching" signal
+    // exposed at the CardStats level. multiplier < 1.0 reduces damage
+    // taken; 1.0 (the default) is every card without one. Applied via
+    // CombatEntity::applyCurse at spawn with an effectively-infinite
+    // duration -- reuses the existing curse machinery, just seeded once
+    // instead of by a timed ability/spell.
+    float passiveDamageReduction = 1.0f;
+    CardStats& withPassiveDamageReduction(float multiplier) {
+        passiveDamageReduction = multiplier;
+        return *this;
+    }
 };

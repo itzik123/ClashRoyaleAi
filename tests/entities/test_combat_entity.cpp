@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "MeleeTroop.h"
 #include "CappedSpawnOnHitEffect.h"
+#include "PoisonOnHit.h"
 
 // StationaryCombatant: attackRange, no movement, no decay -- isolates
 // CombatEntity::update()'s targeting/attack/cooldown/freeze logic.
@@ -1055,6 +1056,41 @@ TEST_CASE("A card without burstEveryNAttacks configured (the default) always dea
     for (int i = 0; i < 5; ++i) attacker->update(board);
 
     REQUIRE(enemyTarget->hp == 100000 - 50);
+}
+
+TEST_CASE("applyDot deals periodic damage independent of freeze/curse, then stops", "[combat_entity][evolution]") {
+    Board board; // no enemy present -- victim has nothing to attack, isolating its own status-tick behavior
+    auto victim = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 1.0f, 10, 5);
+    spawn(board, victim);
+
+    victim->applyDot(10, 6, 3); // 10 dmg every 3 ticks, for 6 ticks total
+
+    for (int i = 0; i < 3; ++i) victim->update(board);
+    REQUIRE(victim->hp == 990); // 1 tick of damage at tick 3
+
+    for (int i = 0; i < 3; ++i) victim->update(board);
+    REQUIRE(victim->hp == 980); // 2nd (and final) tick of damage at tick 6
+
+    victim->update(board); // dotTicksRemaining exhausted: no more damage
+    REQUIRE(victim->hp == 980);
+}
+
+TEST_CASE("PoisonOnHit applies the DoT mark to whatever gets hit", "[combat_entity][evolution]") {
+    Board board;
+    // Range 0.1: can never reach the attacker 1.0 away, so it never fights
+    // back -- isolates the mark landing on it from its own attack side effects.
+    auto victim = std::make_shared<StationaryCombatant>(1, 0.0f, 1.0f, 1000, 1, 0.1f, 5, 100);
+    spawn(board, victim);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 10, 1);
+    attacker->addOnHitEffect(std::make_shared<PoisonOnHit>(15, 4, 2));
+
+    attacker->update(board); // lands a hit: applies the mark + the normal 10 damage
+    REQUIRE(victim->hp == 990);
+
+    victim->update(board);
+    victim->update(board);
+    REQUIRE(victim->hp == 975); // 1 DoT tick landed
 }
 
 TEST_CASE("healOnHitAmount heals the attacker itself on a landed hit, capped at healOnHitMaxHp",

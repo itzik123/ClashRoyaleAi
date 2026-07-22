@@ -98,6 +98,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     // never being sourced from CardStats either.
     applyOnHit(entity, stats);
     if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
+    if (stats.passiveDamageReduction < 1.0f) entity->applyCurse(stats.passiveDamageReduction, 999999);
 }
 
 // A flying card ignores the river as a consequence of being airborne, even

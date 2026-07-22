@@ -56,6 +56,15 @@ public:
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
+    // Poison-style damage-over-time mark (Dart Goblin/Firecracker
+    // Evolutions) -- see applyDot/PoisonOnHit. dotTicksRemaining == 0
+    // (the default) means no active mark; ticks down independently of
+    // freeze/curse.
+    int dotDamagePerTick = 0;
+    int dotTicksRemaining = 0;
+    int dotTickInterval = 0;
+    int dotTicksUntilNextDamage = 0;
+
     // Whether this attacker's findTarget() may pick a flying candidate.
     // Lives here (not Entity) because only things that attack care --
     // Troop and Building alike (Inferno Tower/Tesla hit air, Cannon/Bomb
@@ -511,6 +520,17 @@ public:
         }
     }
 
+    // Refreshes the mark outright (unlike applyFreeze's independent-judge
+    // idiom) -- matches applyBuff/applyCurse's simpler "latest application
+    // wins" behavior, the more common idiom for this kind of timed mark
+    // in this codebase.
+    void applyDot(int damagePerTick, int totalTicks, int tickInterval) {
+        dotDamagePerTick = damagePerTick;
+        dotTicksRemaining = totalTicks;
+        dotTickInterval = tickInterval;
+        dotTicksUntilNextDamage = tickInterval;
+    }
+
     void applyFreeze(int ticks, float slowFactor) {
         // Duration and strength are judged independently so a new freeze can
         // never leave the target better off than it already was: a shorter
@@ -576,6 +596,20 @@ public:
         if (curseTicksRemaining > 0) curseTicksRemaining--;
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
         if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
+
+        // Poison-style damage-over-time mark from PoisonOnHit (Dart
+        // Goblin/Firecracker Evolutions) -- independent of freeze/curse,
+        // ticks down even while otherwise idle. takeDamage (not a direct
+        // hp -=) so shield/parry/curse-on-incoming-damage still apply,
+        // same as every other damage source.
+        if (dotTicksRemaining > 0) {
+            dotTicksRemaining--;
+            dotTicksUntilNextDamage--;
+            if (dotTicksUntilNextDamage <= 0 && dotDamagePerTick > 0) {
+                takeDamage(dotDamagePerTick);
+                dotTicksUntilNextDamage = dotTickInterval;
+            }
+        }
 
         if (periodicIntervalTicks > 0) {
             periodicTicksUntilNext--;
