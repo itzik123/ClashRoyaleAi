@@ -1,6 +1,8 @@
 import os
+import sys
 import json
 import random
+import subprocess
 import time
 import torch
 import torch.nn as nn
@@ -170,6 +172,55 @@ def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
     with open(filepath, "w") as f:
         json.dump(data, f)
 
+# Per-process cache of context_labels already warned about (see
+# load_state_dict_flexible below) -- train_selfplay.py's PFSP calls
+# set_historical_opponent, and therefore this function, on EVERY episode
+# reset in EVERY worker, so without this a single genuinely-mismatched
+# checkpoint floods the log with an identical line every episode for as long
+# as PFSP keeps sampling it (observed in practice: one mismatched checkpoint
+# alone produced ~4000 repeats of the same line). context_label already
+# encodes the checkpoint path, so this naturally dedupes per unique
+# checkpoint, not just per call.
+_warned_mismatches = set()
+
+def load_state_dict_flexible(net, state_dict, context_label):
+    """Loads state_dict into net. Returns True on a clean, fully-matching load.
+
+    On an architecture mismatch (e.g. a card-roster change resizing the hand
+    one-hot encoding, which is the only part of MicroRoyaleNet that depends on
+    NUM_CARD_IDS -- see model.py's scalar_size), falls back to loading only
+    the tensors whose shape still matches, leaving the rest at their fresh
+    initialization instead of crashing outright. The CNN/LSTM/action heads are
+    independent of NUM_CARD_IDS, so this warm-starts on everything except the
+    one incompatible layer rather than discarding a whole checkpoint (and,
+    upstream of this function, an entire opponent-history library, for
+    train_selfplay.py's callers) over it.
+
+    Shared between both pipelines (train.py's own resume, and everything
+    train_selfplay.py uses it for) rather than defined twice -- lives here
+    since train_selfplay.py already imports from train.py, and the reverse
+    would be a circular import.
+
+    Returns False when this fallback path was taken -- the caller should NOT
+    then load a paired optimizer state dict, since Adam's per-parameter
+    buffers would be stale/mismatched for whatever just got reinitialized.
+    """
+    try:
+        net.load_state_dict(state_dict)
+        return True
+    except RuntimeError:
+        own_state = net.state_dict()
+        compatible = {k: v for k, v in state_dict.items()
+                      if k in own_state and v.shape == own_state[k].shape}
+        skipped = sorted(set(state_dict.keys()) - set(compatible.keys()))
+        own_state.update(compatible)
+        net.load_state_dict(own_state)
+        if context_label not in _warned_mismatches:
+            _warned_mismatches.add(context_label)
+            print(f"[{context_label}] Architecture mismatch -- warm-started "
+                  f"{len(compatible)}/{len(state_dict)} tensor(s), re-initialized: {skipped}")
+        return False
+
 def train_ppo():
     os.makedirs("replays", exist_ok=True)
     os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
@@ -294,6 +345,18 @@ def train_ppo():
     # stale (already happened once when the roster grew past the old range(46)).
     RANDOM_DECK_POOL = gym_wrapper.get_all_card_ids()
 
+    # Unlike phase 1 (which naturally terminates via the stage-5 + PHASE2_
+    # WIN_RATE_GATE transition into phase 2), phase 2 itself has no completion
+    # condition of its own -- it just keeps rotating random decks forever
+    # (mastered or timed out, on to the next one), since generalization is a
+    # continuous process with no natural "done" point the way a single fixed
+    # curriculum is. User decision: once total episodes_completed reaches this
+    # many (while in phase 2), that's judged as enough random-opponent
+    # exposure to hand off to pipeline #2 (self-play/PFSP) -- at that point
+    # training stops itself and automatically launches train_selfplay.py, so
+    # this doesn't depend on anyone watching for the right moment.
+    PHASE2_TOTAL_EPISODE_CAP = 150000
+
     def sample_random_deck():
         return random.sample(RANDOM_DECK_POOL, 8)
 
@@ -330,8 +393,12 @@ def train_ppo():
         checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
         try:
             if isinstance(checkpoint, dict) and "model" in checkpoint and "optimizer" in checkpoint:
-                net.load_state_dict(checkpoint["model"])
-                optimizer.load_state_dict(checkpoint["optimizer"])
+                clean_load = load_state_dict_flexible(net, checkpoint["model"], f"pipeline1 resume ({weight_path})")
+                if clean_load:
+                    optimizer.load_state_dict(checkpoint["optimizer"])
+                else:
+                    print("Optimizer state NOT restored (architecture mismatch above) -- "
+                          "starting the optimizer fresh; network weights were still warm-started where shapes matched.")
                 curriculum_stage = checkpoint["curriculum_stage"]
                 stage_start_episode = checkpoint["stage_start_episode"]
                 episodes_completed = checkpoint["episodes_completed"]
@@ -359,12 +426,14 @@ def train_ppo():
                       f"curriculum stage {curriculum_stage}, phase {phase}")
             else:
                 # Legacy checkpoint: bare model state_dict, no training state to restore.
-                net.load_state_dict(checkpoint)
+                load_state_dict_flexible(net, checkpoint, f"pipeline1 legacy resume ({weight_path})")
                 print(f"Loaded legacy weights-only checkpoint from {weight_path} "
                       f"(training state starts fresh).")
         except RuntimeError:
-            # Architecture changed since these weights were saved (e.g. the card head
-            # grew from 4 to 5 actions). Keep them as a backup and start fresh.
+            # Genuinely unexpected/corrupt checkpoint -- load_state_dict_flexible
+            # itself already handles ordinary architecture-shape mismatches
+            # (e.g. NUM_CARD_IDS growing) without raising, so reaching here means
+            # something else is wrong. Keep it as a backup and start fresh.
             backup = weight_path + ".bak"
             os.replace(weight_path, backup)
             print(f"Saved weights are incompatible with the current architecture; moved to {backup}, starting fresh.")
@@ -413,7 +482,10 @@ def train_ppo():
     # Raised from 50000: that cap was hit mid-session while training was still
     # working well (cleared the entire curriculum, stages 0-5, right around the old
     # cap) -- extending it so remaining time isn't wasted on an arbitrary limit.
-    while episodes_completed < 1000000:
+    # Second condition: see PHASE2_TOTAL_EPISODE_CAP's own comment -- phase 2
+    # has no natural stopping point, so this is what actually ends the run.
+    while episodes_completed < 1000000 and not (
+            phase == "random_opponent" and episodes_completed >= PHASE2_TOTAL_EPISODE_CAP):
         # Entropy decays within each curriculum stage, not over all time: advancing a
         # stage resets the clock (stage_start_episode) so exploration is boosted again
         # for the new, harder opponent instead of staying collapsed (improvement #5).
@@ -923,7 +995,36 @@ def train_ppo():
             annotate_replay_with_agent_info(replay_path, t_decisions, REPLAY_SKIP_FRAMES)
             last_replay_ep = episodes_completed
 
+    # Guaranteed fresh save right at the stop point (not just whatever the
+    # periodic 500-episode cadence happened to catch) -- pipeline #2 bootstraps
+    # from this exact file next, so it should reflect the truly-latest trained
+    # state, not one up to 500 episodes stale.
+    torch.save({
+        "model": net.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "episodes_completed": episodes_completed,
+        "curriculum_stage": curriculum_stage,
+        "stage_start_episode": stage_start_episode,
+        "outcome_history": list(outcome_history),
+        "phase": phase,
+        "phase_deck_episode_start": phase_deck_episode_start,
+        "current_random_deck": current_random_deck,
+        "deck_curriculum_stage": deck_curriculum_stage,
+    }, weight_path)
+    envs.close()
     writer.close()
+    print(f">>> Pipeline #1 stopped at episode {episodes_completed} (phase={phase}) -- "
+          f"final checkpoint saved to {weight_path}.")
+
+    # Automatic handoff to pipeline #2 (self-play/PFSP) -- see
+    # PHASE2_TOTAL_EPISODE_CAP's comment for why this doesn't wait for anyone
+    # to notice and launch it manually. sys.executable guarantees the same
+    # venv interpreter this script itself is running under.
+    selfplay_out = open("training_selfplay_pfsp.log", "w")
+    selfplay_err = open("training_selfplay_pfsp_err.log", "w")
+    subprocess.Popen([sys.executable, "train_selfplay.py"], stdout=selfplay_out, stderr=selfplay_err)
+    print(">>> Launched train_selfplay.py (pipeline #2) -- see training_selfplay_pfsp.log / "
+          "training_selfplay_pfsp_err.log")
 
 if __name__ == "__main__":
     # Prevent safe pickling errors in Windows multiprocessing

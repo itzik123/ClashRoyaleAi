@@ -20,7 +20,7 @@ from model import MicroRoyaleNet
 from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
-    DRAW_PENALTY,
+    DRAW_PENALTY, load_state_dict_flexible,
 )
 
 # --- Pipeline #2: Historical Self-Play (League / PFSP) ---
@@ -256,37 +256,6 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
         net.train()
     agent_elo = float(np.mean(implied_elos)) if implied_elos else None
     return agent_elo, per_opponent_stats
-
-
-def load_state_dict_flexible(net, state_dict, context_label):
-    """Loads state_dict into net. Returns True on a clean, fully-matching load.
-
-    On an architecture mismatch (e.g. a card-roster change resizing the hand
-    one-hot encoding, which is the only part of MicroRoyaleNet that depends on
-    NUM_CARD_IDS -- see model.py's scalar_size), falls back to loading only
-    the tensors whose shape still matches, leaving the rest at their fresh
-    initialization instead of crashing outright. The CNN/LSTM/action heads are
-    independent of NUM_CARD_IDS, so this warm-starts on everything except the
-    one incompatible layer rather than discarding a whole checkpoint (and,
-    upstream of this function, an entire opponent-history library) over it.
-
-    Returns False when this fallback path was taken -- the caller should NOT
-    then load a paired optimizer state dict, since Adam's per-parameter
-    buffers would be stale/mismatched for whatever just got reinitialized.
-    """
-    try:
-        net.load_state_dict(state_dict)
-        return True
-    except RuntimeError:
-        own_state = net.state_dict()
-        compatible = {k: v for k, v in state_dict.items()
-                      if k in own_state and v.shape == own_state[k].shape}
-        skipped = sorted(set(state_dict.keys()) - set(compatible.keys()))
-        own_state.update(compatible)
-        net.load_state_dict(own_state)
-        print(f"[{context_label}] Architecture mismatch -- warm-started "
-              f"{len(compatible)}/{len(state_dict)} tensor(s), re-initialized: {skipped}")
-        return False
 
 
 class MicroRoyaleSelfPlayEnv(gym.Env):
