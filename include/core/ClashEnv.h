@@ -29,13 +29,14 @@ struct SelfPlayStepResult {
 };
 
 class ClashEnv {
-private:
-    GameManager game;
-    int maxTicks;
-    int currentTick;
-    std::mt19937 rng;
-    GameLogger logger;
-
+public:
+    // Structural constants the observation/action encoding is actually built
+    // from -- public (and bound read-only in bindings.cpp) so the Python side
+    // can query them directly at runtime instead of hardcoding a matching copy
+    // that has to be remembered and hand-updated every time one of these
+    // changes on the C++ side. Confirmed painful in practice: silent drift
+    // here (a card-roster bump, a board-geometry change) has crashed training
+    // more than once this project's history before this was queryable.
     static constexpr int BOARD_WIDTH = 18;
     // Real-map sync: 34, not 32 -- one extra row behind each King Tower
     // (mostly dead space, a narrow center gap is real ground). See Board.h's
@@ -54,12 +55,19 @@ private:
     // to 165 (Evolutions 123-163, Mirror 164, Spirit Empress 165) -- kept a
     // few slots ahead of that max so future card additions don't silently go
     // blind again the way ids 120-122 did between the last bump and this one
-    // (see CardRegistry.h for the actual registered range). ANY future bump
-    // here must also bump python_ai/model.py's num_card_ids default in
-    // lockstep, or the two sides silently disagree on the observation shape.
+    // (see CardRegistry.h for the actual registered range). No longer needs a
+    // matching manual bump in python_ai/model.py -- see this constant's
+    // binding in bindings.cpp.
     static constexpr int NUM_CARD_IDS = 175;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
+
+private:
+    GameManager game;
+    int maxTicks;
+    int currentTick;
+    std::mt19937 rng;
+    GameLogger logger;
 
     // Generalized over which team the observation is FOR, so the same
     // network -- always trained believing it's "team 0" (self near low y,
@@ -191,6 +199,14 @@ public:
              + HAND_SIZE                                    // card costs
              + HAND_SIZE * NUM_CARD_IDS;                    // card identity one-hots
     }
+
+    // Thin delegates to GameManager's own placement-bound queries (see that
+    // class's comment) -- exposed here since ClashEnv, not GameManager, is
+    // what's actually bound to Python. Lets the training scripts scale their
+    // action space from the engine's real enforced bounds instead of a
+    // hardcoded copy of the same numbers.
+    float getMaxPlacementX() const { return game.getMaxPlacementX(); }
+    float getOwnHalfMaxY() const { return game.getOwnHalfMaxY(); }
 
     std::vector<float> reset() {
         logger.clear();

@@ -14,6 +14,7 @@ from torch.distributions import Categorical, Normal
 from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 
+import clash_royale_env
 import gym_wrapper
 from model import MicroRoyaleNet
 
@@ -80,17 +81,24 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
 # Spatial layout of the observation (must match ClashEnv.h):
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
 # channels 4-6 enemy troops, 7 enemy buildings, 8 river mask.
-N_CHANNELS = 9
-BOARD_H, BOARD_W = 34, 18
+# Pulled live from the compiled engine's own exposed constants instead of a
+# hardcoded copy -- a board-geometry or channel-layout change on the C++ side
+# now propagates here automatically instead of silently drifting out of sync
+# (confirmed painful in practice: this exact kind of drift crashed training
+# more than once this project's history before these were queryable).
+N_CHANNELS = clash_royale_env.ClashRoyaleEnv.NUM_CHANNELS
+BOARD_H = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
+BOARD_W = clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
 SPATIAL_SIZE = N_CHANNELS * BOARD_H * BOARD_W
 
 # Same blanket HP normalizers ClashEnv::extractObservation() divides by when
 # building the observation (MAX_TROOP_HP/MAX_BUILDING_HP in ClashEnv.h) --
 # reused here purely to keep the shaping magnitude identical to the old
 # HP-channel-diffing version below, now that the raw damage numbers come from
-# the engine's MatchStatistics (via gym_wrapper's info dict) instead.
-MAX_TROOP_HP = 4256.0
-MAX_BUILDING_HP = 4008.0
+# the engine's MatchStatistics (via gym_wrapper's info dict) instead. Pulled
+# live for the same drift-safety reason as N_CHANNELS/BOARD_H/BOARD_W above.
+MAX_TROOP_HP = clash_royale_env.ClashRoyaleEnv.MAX_TROOP_HP
+MAX_BUILDING_HP = clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP
 # A full elixir bar -- a generous upper bound for what either side can spend in
 # a single skip_frames-wide step (at most one or two card plays), keeping this
 # term's per-step magnitude comparable to the HP-normalized damage terms above.
@@ -281,13 +289,14 @@ def train_ppo():
     # episode 300, matching realistic training budgets instead of a 9000-episode one.
     entropy_decay_rate = 0.995
     
-    # BOARD_MAX_X in the engine is 17.0 -- placements with x>17 are silently
-    # rejected (isValidPlacement), so scaling by 18 wasted part of the action range.
-    # MAX_Y_AI = riverStart(16.0) - OWN_HALF_RIVER_BUFFER(0.5) -- real-map sync
-    # moved the river back one row (see Board.h's riverY_start), so this moved
-    # with it (was 14.5).
-    MAX_X = 17.0
-    MAX_Y_AI = 15.5
+    # Pulled live from the engine's own enforced placement bounds (a throwaway
+    # instance is enough -- these don't depend on which deck is used) instead
+    # of a hardcoded copy of BOARD_WIDTH-1 / riverStart-OWN_HALF_RIVER_BUFFER
+    # that could silently drift if either changes on the C++ side.
+    _dim_probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
+    MAX_X = _dim_probe.get_max_placement_x()
+    MAX_Y_AI = _dim_probe.get_own_half_max_y()
+    del _dim_probe
 
     # --- Curriculum: once the agent's win-rate against the current opponent
     # settles above a threshold, escalate the opponent's elixir multiplier.

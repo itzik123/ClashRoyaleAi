@@ -126,6 +126,25 @@ public:
     const Board& getBoard() const { return board; }
     const MatchStatistics& getStatistics() const { return stats; }
 
+    // Exact bounds isValidPlacement enforces, exposed so callers (the Python
+    // binding layer) query the real boundary instead of re-deriving it from
+    // separate board/river/buffer constants that could silently drift out of
+    // sync (confirmed painful in practice -- this project's own map-geometry
+    // and NUM_CARD_IDS incidents were both exactly this kind of drift, just
+    // for other constants).
+    float getMaxPlacementX() const {
+        return static_cast<float>(board.getWidth() - 1);
+    }
+
+    // "How far into your own half can a non-spell, non-deploy-anywhere card
+    // be aimed" -- symmetric for both teams from each one's own point of view
+    // (extractObservationForTeam mirrors team 1's board so it sees itself the
+    // same way team 0 does), so one value covers both sides' action-space
+    // scaling.
+    float getOwnHalfMaxY() const {
+        return board.getRiverStart() - OWN_HALF_RIVER_BUFFER;
+    }
+
     float getElixirAI() const { return playerAI.elixir; }
     float getElixirOpp() const { return playerOpponent.elixir; }
 

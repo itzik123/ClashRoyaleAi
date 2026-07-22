@@ -50,7 +50,25 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("save_log", &ClashEnv::saveLog, py::arg("filepath"))
         .def("get_troop_damage_dealt", &ClashEnv::getTroopDamageDealt, py::arg("team"))
         .def("get_building_damage_dealt", &ClashEnv::getBuildingDamageDealt, py::arg("team"))
-        .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"));
+        .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
+        // Real enforced placement bounds -- see GameManager::getMaxPlacementX/
+        // getOwnHalfMaxY's own comments. Lets the Python side scale its action
+        // space from the engine's actual numbers instead of a hardcoded copy.
+        .def("get_max_placement_x", &ClashEnv::getMaxPlacementX)
+        .def("get_own_half_max_y", &ClashEnv::getOwnHalfMaxY)
+        // Structural constants the observation/action encoding is built from --
+        // read-only class attributes (ClashRoyaleEnv.NUM_CARD_IDS etc, no
+        // instance needed) so model.py/train.py/train_selfplay.py/
+        // gym_wrapper.py can derive their own dimensions from these instead of
+        // hardcoding a matching copy that has to be remembered and updated by
+        // hand every time one of these changes on the C++ side.
+        .def_readonly_static("BOARD_WIDTH", &ClashEnv::BOARD_WIDTH)
+        .def_readonly_static("BOARD_HEIGHT", &ClashEnv::BOARD_HEIGHT)
+        .def_readonly_static("NUM_CHANNELS", &ClashEnv::NUM_CHANNELS)
+        .def_readonly_static("HAND_SIZE", &ClashEnv::HAND_SIZE)
+        .def_readonly_static("NUM_CARD_IDS", &ClashEnv::NUM_CARD_IDS)
+        .def_readonly_static("MAX_TROOP_HP", &ClashEnv::MAX_TROOP_HP)
+        .def_readonly_static("MAX_BUILDING_HP", &ClashEnv::MAX_BUILDING_HP);
 
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");
