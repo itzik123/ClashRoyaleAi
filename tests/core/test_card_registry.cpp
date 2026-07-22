@@ -92,6 +92,12 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {118, "Archer Queen", 5.0f, false}, {119, "Monk", 4.0f, false}, {120, "Little Prince", 3.0f, false},
         {121, "Goblinstein", 5.0f, false}, {122, "Boss Bandit", 6.0f, false},
         {123, "Wall Breakers", 2.0f, false}, // Evolution slot -- same name/cost as base id 83
+        {124, "Zap", 2.0f, true}, // Evolution slot -- same name/cost as base id 29
+        {125, "Skeletons", 1.0f, false}, // Evolution slot -- same name/cost as base id 24
+        {126, "Bats", 2.0f, false}, // Evolution slot -- same name/cost as base id 78
+        {127, "Bomber", 2.0f, false}, // Evolution slot -- same name/cost as base id 9
+        {128, "Archers", 3.0f, false}, // Evolution slot -- same name/cost as base id 1
+        {129, "Cannon", 3.0f, false}, // Evolution slot -- same name/cost as base id 25
     };
 
     const auto& registry = CardRegistry::getInstance();

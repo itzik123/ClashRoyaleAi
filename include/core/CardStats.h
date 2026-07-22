@@ -292,6 +292,16 @@ struct CardStats {
     // (the default) is every card without one.
     std::shared_ptr<IOnDamageTakenEffect> onDamageTaken;
 
+    // Self-heal on landing a hit (Evolved Bats) -- see
+    // CombatEntity::healOnHitAmount. 0 (the default) disables it.
+    int healOnHitAmount = 0;
+    int healOnHitMaxHp = 0;
+
+    // Self-spawn on landing a hit (Evolved Skeletons) -- see
+    // CombatEntity::onHitSpawnEffect. nullptr (the default) is every
+    // card without one.
+    std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
+
     // Small fluent setters so CardRegistry's data table can stay one card
     // per line/two, instead of spelling out every field for every card.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
@@ -530,6 +540,15 @@ struct CardStats {
     }
     CardStats& withOnDamageTaken(std::shared_ptr<IOnDamageTakenEffect> effect) {
         onDamageTaken = std::move(effect);
+        return *this;
+    }
+    CardStats& withHealOnHit(int amount, int maxHp) {
+        healOnHitAmount = amount;
+        healOnHitMaxHp = maxHp;
+        return *this;
+    }
+    CardStats& withOnHitSpawn(std::shared_ptr<IPeriodicEffect> effect) {
+        onHitSpawnEffect = std::move(effect);
         return *this;
     }
 };

@@ -28,6 +28,7 @@
 #include "SpawnOnAbility.h"
 #include "GoblinsteinLightningLinkEffect.h"
 #include "BossBanditGetawayGrenadeEffect.h"
+#include "CappedSpawnOnHitEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -321,6 +322,23 @@ private:
     // nearly the entire printable-ASCII symbol space.
     static CardStats runnerStats() {
         return troop(-41, "Runner", 0.0f, Archetype::MeleeBuildingTargeter, 166, 1.2f, 0.6f, 182, 8, 'g');
+    }
+    // Evolved Skeletons' "Never-ending Horde" spawn -- deliberately reuses
+    // id 24 (the base Skeletons card's own id), not a fresh negative
+    // sentinel like every other spawned-helper stats function in this
+    // file: CappedSpawnOnHitEffect's cap check counts entities by cardId,
+    // so sharing id 24 makes it count the 3 originally-deployed Evolved
+    // Skeletons AND every child this effect has already spawned as one
+    // combined population, capping the true on-field total at exactly 8
+    // (see addEvolution(125,...) below) -- matching the sourced "up to
+    // eight Evolved Skeletons on the field at once" precisely, instead of
+    // a separate id needing its own approximate sub-cap. Doesn't itself
+    // carry the spawn-on-hit trigger (only the 3 originals do), so growth
+    // is bounded by 3 spawn sources, not an unbounded chain reaction --
+    // the real card's exact spawn-chain depth isn't in the sourced data
+    // either way.
+    static CardStats evolvedSkeletonChildStats() {
+        return troop(24, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k');
     }
 
     void add(const CardStats& stats) {
@@ -1156,6 +1174,90 @@ private:
                 .withSplash(1.5f)
                 .withDieAfterFirstHit()
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(runnerStats())),
+            2, 1);
+
+        // Zap Evolution: 2 cycles, "1 in every 3 deploys will be evolved"
+        // (same repeating pattern). "Triple Shock": zaps the area 3 times
+        // instead of once, with the radius growing between zaps -- only
+        // the repeat-hit count is modeled (via the same multi-tick
+        // AreaSpell mechanism as Poison/Arrows, see withRepeats), not the
+        // growing radius, which this engine's AreaSpell has no per-repeat
+        // -radius field for. Base Zap has no stun modeled in this engine
+        // at all (id 29 above never chains a stun effect), so there's no
+        // stun-refresh interaction to model either -- confirmed real-game
+        // nuance (resetting charge attacks like Battle Ram/Sparky twice)
+        // that's simply inapplicable here. 3-tick interval between zaps
+        // is an engine-internal timing choice, not sourced.
+        addEvolution(124,
+            spell(29, "Zap", 2.0f, 2.5f, 192, 3, 'Z'),
+            spell(29, "Zap", 2.0f, 2.5f, 192, 3, 'Z').withRepeats(3, 3),
+            2, 1);
+
+        // Skeletons Evolution: 2 cycles ("at least twice a match" given
+        // the 1-elixir cost, not a distinct evolved-uses number -- kept
+        // at the standard 1). "Never-ending Horde": see
+        // evolvedSkeletonChildStats above for the cap-counting design.
+        addEvolution(125,
+            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+                .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} }),
+            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+                .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
+                .withOnHitSpawn(std::make_shared<CappedSpawnOnHitEffect>(evolvedSkeletonChildStats(), 8)),
+            2, 1);
+
+        // Bats Evolution: 2 cycles, "1 in every 3 deploys will be
+        // evolved" (same repeating pattern as the others above). +50% hp
+        // (81 -> 121) and heals on every landed hit, up to double its OWN
+        // (already-boosted) starting hp -- 121*2=242. Heal-per-hit amount
+        // isn't part of the sourced data (only the hp figures are) -- a
+        // reasonable ~10%-of-cap engine-internal constant, same caveat
+        // category as splashRadius/shieldHp elsewhere in this file.
+        addEvolution(126,
+            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, 0.85f, 1.0f, 81, 12, 't')
+                .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
+                .withFlying().withTargetsAir(),
+            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 121, 0.85f, 1.0f, 81, 12, 't')
+                .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
+                .withFlying().withTargetsAir()
+                .withHealOnHit(24, 242),
+            2, 1);
+
+        // Bomber Evolution: 2 cycles (standard pattern). +25% hp
+        // (304->380). "Bouncy Bomb": bounces 2 additional times, each
+        // dealing full damage -- approximated via the existing split-
+        // target mechanism (Electro Wizard/Dragon) at 3 total targets,
+        // full damage each, rather than a bespoke sequential-bounce
+        // primitive; the net effect (up to 3 nearby enemies take full
+        // damage from one shot) is the same even though the real
+        // animation chains instead of hitting simultaneously.
+        addEvolution(127,
+            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, 0.5f, 4.5f, 225, 18, 'b'),
+            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 380, 0.5f, 4.5f, 225, 18, 'b')
+                .withSplitTargets(3).withSplitTargetsFullDamage(),
+            2, 1);
+
+        // Archers Evolution: 2 cycles (standard pattern). Range 5.0 ->
+        // 6.5 (confirmed equal to Dart Goblin's own range) -- a pure
+        // stat change, no new mechanism.
+        addEvolution(128,
+            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 5.0f, 112, 9, 'A')
+                .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir(),
+            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 6.5f, 112, 9, 'A')
+                .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir(),
+            2, 1);
+
+        // Cannon Evolution: 2 cycles (standard pattern). "Deploy Barrage":
+        // a one-time 9-projectile burst the instant it deploys (2.5-tile
+        // damage radius per sources) -- maps directly onto the existing
+        // spawnEffect one-time-burst-on-deploy mechanism (already used
+        // elsewhere, e.g. Electro Wizard). Knockback on the burst isn't
+        // modeled (spawnEffect has no knockback param); the burst's own
+        // damage figure isn't independently sourced, so it reuses the
+        // Cannon's regular per-hit damage as a reasonable placeholder.
+        addEvolution(129,
+            building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10),
+            building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10)
+                .withSpawnEffect(2.5f, 202),
             2, 1);
 
         // === Excluded from this sync (no supporting mechanism in this engine) ===

@@ -216,6 +216,16 @@ public:
     // (the default) is every card without one.
     std::shared_ptr<IOnDamageTakenEffect> onDamageTakenEffect;
 
+    // Self-heal on landing a hit (Evolved Bats) -- healOnHitMaxHp is an
+    // absolute cap, not a multiplier; 0 (the default) disables it.
+    int healOnHitAmount = 0;
+    int healOnHitMaxHp = 0;
+
+    // Self-spawn on landing a hit, capped inside the effect itself
+    // (Evolved Skeletons) -- see CappedSpawnOnHitEffect. nullptr (the
+    // default) is every card without one.
+    std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
+
     // Kamikaze (Wall Breakers, the "Spirit" troops): dies immediately
     // after landing its one hit instead of surviving to attack
     // repeatedly. For ranged troops this fires the instant the shot is
@@ -666,6 +676,24 @@ public:
                         }
                     }
                     if (recoilDistance > 0.0f) pushAway(*this, target->position, recoilDistance);
+                    // Self-heal on landing a hit (Evolved Bats: heals past
+                    // its own starting max hp, up to healOnHitMaxHp -- an
+                    // absolute cap set at spawn time, not a live fraction
+                    // of `hp` the way enrageMaxHp/enrageHealPerHit is).
+                    if (healOnHitAmount > 0 && hp < healOnHitMaxHp) {
+                        hp = std::min(hp + healOnHitAmount, healOnHitMaxHp);
+                    }
+                    // Self-spawn on landing a hit, capped at how many are
+                    // already alive (Evolved Skeletons' "Never-ending
+                    // Horde") -- reuses IPeriodicEffect's exact shape
+                    // (Board&, position, team) since it's the same
+                    // "spawn something at my position" need as
+                    // periodicEffect above, just triggered by a landed
+                    // hit instead of a tick interval. The cap check itself
+                    // lives inside the effect (see CappedSpawnOnHitEffect),
+                    // not here, since it needs to know which cardId to
+                    // count.
+                    if (onHitSpawnEffect) onHitSpawnEffect->apply(board, position, team);
                     if (dieAfterFirstHit) hp = 0;
                 }
             } else if (jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {

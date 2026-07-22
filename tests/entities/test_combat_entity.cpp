@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "MeleeTroop.h"
+#include "CappedSpawnOnHitEffect.h"
 
 // StationaryCombatant: attackRange, no movement, no decay -- isolates
 // CombatEntity::update()'s targeting/attack/cooldown/freeze logic.
@@ -1023,6 +1024,91 @@ TEST_CASE("Heal aura fires with every landed attack", "[combat_entity][aura]") {
     healer->update(board); // lands a hit: heals nearby allies too
 
     REQUIRE(ally->hp == 530);
+}
+
+TEST_CASE("burstEveryNAttacks multiplies damage only on the Nth landed hit", "[combat_entity][evolution]") {
+    Board board;
+    auto enemyTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
+    spawn(board, enemyTarget);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 10, 1);
+    attacker->burstEveryNAttacks = 3;
+    attacker->burstDamageMultiplier = 5.0f;
+
+    attacker->update(board); // hit 1: normal
+    REQUIRE(enemyTarget->hp == 100000 - 10);
+    attacker->update(board); // hit 2: normal
+    REQUIRE(enemyTarget->hp == 100000 - 20);
+    attacker->update(board); // hit 3: burst (10 * 5.0)
+    REQUIRE(enemyTarget->hp == 100000 - 20 - 50);
+    attacker->update(board); // hit 4: back to normal, counter reset
+    REQUIRE(enemyTarget->hp == 100000 - 20 - 50 - 10);
+}
+
+TEST_CASE("A card without burstEveryNAttacks configured (the default) always deals flat damage",
+        "[combat_entity][evolution]") {
+    Board board;
+    auto enemyTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
+    spawn(board, enemyTarget);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 10, 1);
+    for (int i = 0; i < 5; ++i) attacker->update(board);
+
+    REQUIRE(enemyTarget->hp == 100000 - 50);
+}
+
+TEST_CASE("healOnHitAmount heals the attacker itself on a landed hit, capped at healOnHitMaxHp",
+        "[combat_entity][evolution]") {
+    Board board;
+    auto enemyTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
+    spawn(board, enemyTarget);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 90, 0, 1.0f, 10, 1);
+    attacker->healOnHitAmount = 20;
+    attacker->healOnHitMaxHp = 100;
+
+    attacker->update(board); // 90 -> 100 (capped, not 110)
+    REQUIRE(attacker->hp == 100);
+
+    attacker->update(board); // already at the cap: stays put
+    REQUIRE(attacker->hp == 100);
+}
+
+TEST_CASE("onHitSpawnEffect fires on every landed hit", "[combat_entity][evolution]") {
+    Board board;
+    auto enemyTarget = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
+    spawn(board, enemyTarget);
+
+    CardStats childStats;
+    childStats.id = 999;
+    childStats.name = "Spawned Child";
+    childStats.archetype = Archetype::MeleeSquad;
+    childStats.hp = 1;
+    childStats.attackRange = 1.0f;
+    childStats.damage = 1;
+    childStats.attackCooldown = 100;
+    childStats.symbol = '?';
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 10, 1);
+    attacker->onHitSpawnEffect = std::make_shared<CappedSpawnOnHitEffect>(childStats, 2);
+
+    attacker->update(board); // lands a hit: spawns 1
+    board.commitPendingEntities();
+    int countAfterOne = 0;
+    for (const auto& e : board.getEntities()) if (e->cardId == 999) countAfterOne++;
+    REQUIRE(countAfterOne == 1);
+
+    attacker->update(board); // spawns a 2nd
+    board.commitPendingEntities();
+    int countAfterTwo = 0;
+    for (const auto& e : board.getEntities()) if (e->cardId == 999) countAfterTwo++;
+    REQUIRE(countAfterTwo == 2);
+
+    attacker->update(board); // at the cap (2): no more spawn
+    board.commitPendingEntities();
+    int countAfterCap = 0;
+    for (const auto& e : board.getEntities()) if (e->cardId == 999) countAfterCap++;
+    REQUIRE(countAfterCap == 2);
 }
 
 // ---------------- kamikaze (dieAfterFirstHit) ----------------
