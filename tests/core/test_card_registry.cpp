@@ -131,6 +131,8 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {160, "Mega Knight", 7.0f, false}, // Evolution slot -- same name/cost as base id 48
         {161, "Battle Ram", 4.0f, false}, // Evolution slot -- same name/cost as base id 81
         {162, "Royal Hogs", 5.0f, false}, // Evolution slot -- same name/cost as base id 82
+        {164, "Mirror", 3.0f, true},
+        {165, "Spirit Empress", 3.0f, false},
     };
 
     const auto& registry = CardRegistry::getInstance();

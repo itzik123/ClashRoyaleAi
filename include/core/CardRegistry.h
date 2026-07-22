@@ -1764,29 +1764,42 @@ private:
         // this engine's 10-ticks/second rate). Left out rather than
         // forcing a poor approximation -- a genuine follow-up item.
 
-        // === Excluded from this sync (no supporting mechanism in this engine) ===
-        // All 8 Champions are now implemented above (Mighty Miner, Golden
-        // Knight, Skeleton King, Archer Queen, Monk, Little Prince,
-        // Goblinstein, Boss Bandit). Evolutions (framework now built --
-        // Wall Breakers, id 123, is the first of 41 real evolutions, the
-        // other 40 are a follow-up batching pass) and Tower Troops (Tower
-        // Princess, Cannoneer, Dagger Duchess, Royal Chef) remain the
-        // rest of an approved-but-in-progress full refactor. Also
-        // excluded, for lack of any matching mechanism even
-        // approximately:
-        //   - Mirror: replays the last card played, at +1 elixir cost and
-        //     +1 level -- needs "what was the last card played, by whom"
-        //     state that lives in GameManager/PlayerState, a layer entirely
-        //     above CardFactories/AreaSpell (which only ever see a single
-        //     spawn point, not match history). No other card in this pass
-        //     needed cross-layer state like this.
-        //   - Spirit Empress: stateful dual-form (ground vs. flying)
-        //     auto-switching has no equivalent and the exact switching rule
-        //     couldn't be confirmed from sourced data.
-        //     weight sub-unit types with independent HP pools, unlike e.g.
-        //     Goblin Giant/Ram Rider/Goblin Machine above which have one
-        //     clear primary body) -- no single-unit approximation fits
-        //     without fabricating unsourced numbers.
+        // === Mirror ===
+        // Registered mainly so it's a real, playable hand/deck slot --
+        // its own cost/isSpell/placementRadius/deployAnywhere here are
+        // never actually read at play time (GameManager::playCard
+        // special-cases MIRROR_CARD_ID and substitutes whatever card was
+        // last played instead, including for the elixir cost, which is
+        // always the mirrored card's own cost + 1). Symbol '=' reused
+        // from Heal Spirit (harmless cosmetic reuse, same precedent as
+        // every other reused symbol in this file) -- this roster has
+        // exhausted nearly the entire printable-ASCII symbol space.
+        add(spell(164, "Mirror", 3.0f, 0.0f, 0, 0, '='));
+
+        // === Spirit Empress ===
+        // Registered as a Champion-shaped MeleeSquad at the ground form's
+        // floor cost (3.0) -- like Mirror, this static registration is
+        // mostly a placeholder for hand-display purposes (the observation
+        // feature showing hand-slot cost) and for isValidPlacement, since
+        // GameManager::playCard's SPIRIT_EMPRESS_CARD_ID branch always
+        // spawns via SpiritEmpressForms.h's two dedicated CardStats
+        // instead of this entry's own (unused) spawnEntity. isChampion is
+        // NOT set here on purpose: Champion-ness only matters for
+        // findChampion()/activateChampionAbility, and Spirit Empress has
+        // no activated ability to speak of in the sourced data -- see
+        // SpiritEmpressForms.h for the full mechanic and its caveats.
+        add(troop(165, "Spirit Empress", 3.0f, Archetype::MeleeSquad, 926, 0.85f, 1.2f, 249, 12, '<'));
+
+        // === Status of the full-refactor initiative (Champions/Evolutions/
+        // === Tower Troops/Mirror/Spirit Empress) ===
+        // All 8 Champions, all 4 Tower Troops, Mirror, and Spirit Empress
+        // are now fully implemented above. 40 of the 41 real Evolutions
+        // are implemented (see each addEvolution(...) call's own comment
+        // for what's approximated and why) -- Inferno Dragon Evolution is
+        // the one deliberate exception, left out rather than forcing a
+        // poor approximation (see its own comment, a few cards above this
+        // one) -- a genuine follow-up needing a real change to the shared
+        // ramp system, not a per-card addition.
     }
 
 public:
