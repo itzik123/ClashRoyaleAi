@@ -151,6 +151,48 @@ WEIGHT_PATH = "model_weights_selfplay.pth"
 # own checkpoint is never overwritten by this script).
 BOOTSTRAP_FROM_PATH = "model_weights.pth"
 
+# --- Diverse scripted opponents (industry precedent: OpenAI Five bootstrapped
+# against scripted bots before self-play -- pure self-play alone tends to
+# converge onto whatever beats a narrow, self-similar pool rather than
+# generalizing). Added as PERMANENT members of the SAME PFSP pool/weighting
+# used for historical checkpoints (see _sample_pfsp_opponent) -- not a
+# separate curriculum stage, since PFSP's own (1-winrate)^exponent weighting
+# with a floor already does exactly what's wanted here: never fully drops
+# out, gets sampled more if the trainee is currently weak against it. Tagged
+# "scripted:<name>" (never a real file path) so _sample_pfsp_opponent's
+# dispatch and pfsp_stats' win-rate keying both work unchanged -- see
+# _set_opponent's prefix check.
+SCRIPTED_OPPONENTS = ["scripted:Rusher", "scripted:Defender", "scripted:Cycler", "scripted:Counter"]
+
+# Pulled live from the engine (see model.py's own identical pattern) so a
+# board-geometry or channel-layout change on the C++ side propagates here
+# automatically -- the scripted opponents below parse the raw observation
+# vector directly (same one their neural counterparts already consume via
+# get_observation_for_team), not through model.py, so they need their own
+# copy of this layout math.
+_N_CH = clash_royale_env.ClashRoyaleEnv.NUM_CHANNELS
+_BOARD_H = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
+_BOARD_W = clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
+_SPATIAL_SIZE = _N_CH * _BOARD_H * _BOARD_W
+_HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+
+
+def sample_legal_random_deck(pool, max_tries=200):
+    """Rejection-samples an 8-card deck from `pool` that satisfies
+    CardRegistry's Evolution/Champion slot-position rules (validate_deck_
+    slots, bound from CardRegistry::validateDeckSlots) -- measured empirically
+    at ~35% of naive random.sample(get_all_card_ids(), 8) draws being illegal
+    (get_all_card_ids() includes Champions/Evolutions, which only some slots
+    accept), which GameManager::reset() throws std::invalid_argument on. Only
+    ~1.5 tries needed on average at that rate; max_tries is a generous safety
+    margin, not a realistic ceiling."""
+    for _ in range(max_tries):
+        candidate = random.sample(pool, 8)
+        if not clash_royale_env.validate_deck_slots(candidate):
+            return candidate
+    raise RuntimeError(f"Could not sample a legal random deck from a pool of {len(pool)} cards "
+                        f"after {max_tries} tries.")
+
 
 def discover_historical_checkpoints(current_episode=None):
     """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
@@ -307,6 +349,20 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
         self.opponent_checkpoint_path = None
+        # "neural" (self.opponent_net drives team 1) or one of SCRIPTED_
+        # OPPONENTS' bare names ("Rusher"/"Defender"/"Cycler"/"Counter") --
+        # see _set_opponent's dispatch and _scripted_opponent_action.
+        self.opponent_kind = "neural"
+        # Rusher/Counter commit to one lane for the whole episode (real
+        # players don't re-decide their push lane every single card) --
+        # set once per episode in set_scripted_opponent, read in
+        # _scripted_opponent_action.
+        self.opponent_lane = None
+        # Card ids available to draw a random opponent deck from -- see
+        # set_scripted_opponent. Computed once here (not per-episode): it
+        # never changes at runtime, and get_all_card_ids() is a real call
+        # into the engine, not a free property lookup.
+        self._all_card_ids = clash_royale_env.get_all_card_ids()
 
         # PFSP pool/stats -- see refresh_pfsp_pool()/_sample_pfsp_opponent().
         # Empty until the main process's first broadcast; reset() no-ops the
@@ -339,6 +395,36 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         load_state_dict_flexible(self.opponent_net, state_dict, f"historical opponent {checkpoint_path}")
         self.opponent_net.eval()
         self.opponent_checkpoint_path = checkpoint_path
+        self.opponent_kind = "neural"
+        # Revert a previous scripted opponent's randomized deck, if any --
+        # set_opponent_deck() has no auto-reset of its own (see
+        # gym_wrapper.py's identical reset()-time re-apply), so without this
+        # a neural opponent sampled right after a scripted one would
+        # silently keep playing that random deck instead of self.deck.
+        self.game.set_opponent_deck(self.deck)
+
+    def set_scripted_opponent(self, name):
+        """Team 1 becomes a hand-written heuristic bot instead of a frozen
+        checkpoint -- see SCRIPTED_OPPONENTS. Also randomizes team 1's deck
+        (scoped to scripted opponents only, never neural ones: these
+        heuristics read nothing card-ID-specific -- only elixir/cost from
+        the observation and enemy positions from the spatial channels -- so
+        they're deck-agnostic by construction, unlike a historical
+        checkpoint, which only ever learned to play self.deck)."""
+        self.opponent_kind = name
+        self.opponent_checkpoint_path = f"scripted:{name}"
+        self.game.set_opponent_deck(sample_legal_random_deck(self._all_card_ids))
+        if name in ("Rusher", "Counter"):
+            self.opponent_lane = random.choice(["left", "right"])
+
+    def _set_opponent(self, descriptor):
+        """Dispatch for whatever _sample_pfsp_opponent() (or a direct
+        override) picked -- a real checkpoint path, or one of SCRIPTED_
+        OPPONENTS' "scripted:<name>" tags."""
+        if descriptor.startswith("scripted:"):
+            self.set_scripted_opponent(descriptor[len("scripted:"):])
+        else:
+            self.set_historical_opponent(descriptor)
 
     def refresh_pfsp_pool(self, pool_paths):
         """Broadcast from the main process (train_selfplay_ppo, via
@@ -362,7 +448,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         ], dtype=np.float64)
         weights /= weights.sum()
         chosen = self.pfsp_pool[np.random.choice(len(self.pfsp_pool), p=weights)]
-        self.set_historical_opponent(chosen)
+        self._set_opponent(chosen)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -381,6 +467,8 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         team 1 would systematically never use Champion abilities even once
         the trainee (team 0) does."""
         obs1 = np.array(self.game.get_observation_for_team(1), dtype=np.float32)
+        if self.opponent_kind != "neural":
+            return self._scripted_opponent_action(obs1)
         with torch.no_grad():
             obs1_t = torch.tensor(obs1, dtype=torch.float32).unsqueeze(0).to(self.device)
             features1, card_embeds1 = self.opponent_net.extract_features(obs1_t)
@@ -396,6 +484,81 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             ability_slot1_action1 = bool(Categorical(logits=ability_slot1_logits1).sample().item())
             ability_slot2_action1 = bool(Categorical(logits=ability_slot2_logits1).sample().item())
         return card_idx1, x1, y1, ability_slot1_action1, ability_slot2_action1
+
+    def _scripted_opponent_action(self, obs1):
+        """Team 1's move for one of SCRIPTED_OPPONENTS, computed purely from
+        the same observation vector its neural counterpart already gets --
+        no card-ID-specific logic anywhere here (only elixir/cost and enemy
+        spatial position), so these behave sensibly regardless of the
+        randomized deck set_scripted_opponent gave them. Never activates a
+        Champion ability (no ability logic in these heuristics at all) --
+        always (False, False) for the two slots.
+        """
+        spatial = obs1[:_SPATIAL_SIZE].reshape(_N_CH, _BOARD_H, _BOARD_W)
+        scalar = obs1[_SPATIAL_SIZE:]
+        elixir = float(scalar[0])
+        costs = scalar[1:1 + _HAND_SIZE]
+        # cost <= 0 marks an empty/invalid hand slot (see ClashEnv::
+        # extractObservationForTeam: card ? card->cost/10.0f : 0.0f) --
+        # never a real, free card.
+        affordable = [i for i in range(_HAND_SIZE) if costs[i] > 0.0 and costs[i] <= elixir + 1e-6]
+
+        def lane_x():
+            return self.MAX_X * (0.2 if self.opponent_lane == "left" else 0.8)
+
+        def find_incursion():
+            # Channels 4-6 = enemy (team 0) melee/ranged/tank troops, from
+            # THIS observer's own mirrored point of view -- see model.py's
+            # identical channel-layout comment. "My own half" = rows up to
+            # int(self.MAX_Y): reuses the same enforced-placement-bound
+            # binding everything else in this file already pulls live,
+            # rather than hardcoding ClashEnv.h's own riverRow constant a
+            # second time on the Python side.
+            enemy_troops = spatial[4] + spatial[5] + spatial[6]
+            river_row = int(self.MAX_Y)
+            incursion_zone = enemy_troops[:river_row + 1, :]
+            nonzero = np.nonzero(incursion_zone)
+            if nonzero[0].size == 0:
+                return None
+            ys, xs = nonzero
+            deepest = int(np.argmin(ys))  # smallest y = closest to team 1's own tower = most urgent
+            return float(xs[deepest]), float(ys[deepest])
+
+        NO_OP = (_HAND_SIZE, 0.0, 0.0, False, False)
+        kind = self.opponent_kind
+
+        if kind == "Rusher":
+            if not affordable:
+                return NO_OP
+            slot = max(affordable, key=lambda i: costs[i])
+            return slot, lane_x(), self.MAX_Y, False, False
+
+        if kind == "Cycler":
+            if not affordable:
+                return NO_OP
+            slot = min(affordable, key=lambda i: costs[i])
+            return slot, self.MAX_X * 0.5, self.MAX_Y * 0.5, False, False
+
+        incursion = find_incursion()
+
+        if kind == "Defender":
+            if incursion is None or not affordable:
+                return NO_OP
+            slot = min(affordable, key=lambda i: costs[i])
+            x, y = incursion
+            return slot, x, y, False, False
+
+        if kind == "Counter":
+            if not affordable:
+                return NO_OP
+            if incursion is not None:
+                slot = max(affordable, key=lambda i: costs[i])
+                x, y = incursion
+                return slot, x, y, False, False
+            slot = max(affordable, key=lambda i: costs[i])
+            return slot, lane_x(), self.MAX_Y, False, False
+
+        return NO_OP
 
     def step(self, action, skip_frames=10):
         def _to_scalar(val):
@@ -567,8 +730,15 @@ def train_selfplay_ppo():
             "(every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES episodes) before pipeline #2 "
             "has anything old enough to play against.")
 
-    envs.call("refresh_pfsp_pool", historical_pool)
-    print(f"PFSP pool initialized with {len(historical_pool)} eligible opponent(s).")
+    # SCRIPTED_OPPONENTS are permanent PFSP-pool members (see that constant's
+    # comment) -- broadcast for TRAINING sampling only, appended on top of
+    # historical_pool rather than mixed into the variable itself, since
+    # historical_pool alone also feeds update_reference_roster/evaluate_
+    # against_roster below, both of which torch.load() every entry they're
+    # given (a "scripted:X" tag would crash there, not just misbehave).
+    envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+    print(f"PFSP pool initialized with {len(historical_pool)} historical + "
+          f"{len(SCRIPTED_OPPONENTS)} scripted opponent(s).")
 
     if not full_resume and os.path.exists(log_dir):
         import shutil
@@ -954,7 +1124,7 @@ def train_selfplay_ppo():
             print(f">>> Historical snapshot saved to {hist_path}")
             last_historical_save_ep = episodes_completed
             historical_pool = discover_historical_checkpoints(episodes_completed)
-            envs.call("refresh_pfsp_pool", historical_pool)
+            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
 
         if episodes_completed - last_eval_ep >= EVAL_INTERVAL_EPISODES:
             update_reference_roster(reference_roster, historical_pool)

@@ -76,4 +76,13 @@ PYBIND11_MODULE(clash_royale_env, m) {
 
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");
+
+    // Exposes the exact same slot-legality check GameManager::reset()/
+    // setOpponentDeck() already enforce (throwing on a non-empty result) --
+    // lets a caller pre-validate (or rejection-sample) a random 8-card deck
+    // from Python without duplicating the Evolution/Champion slot rules on
+    // that side. Returns "" for a legal deck, otherwise a human-readable
+    // reason naming the offending slot/card.
+    m.def("validate_deck_slots", &validateDeckSlots,
+        "Returns \"\" if `deck` (8 card ids) satisfies Evolution/Champion slot-position rules, else an error string.");
 }
