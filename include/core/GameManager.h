@@ -87,23 +87,51 @@ private:
         board.addEntity(tower);
     }
 
-    // Shared scan for both activateChampionAbility and
-    // isChampionAbilityReady: "find team's one deployed, living Champion,
-    // if any." This engine doesn't enforce the real game's "only one
-    // Champion in your deck" rule at all -- see countChampions() in
-    // CardRegistry.h, which a caller can use to check a deck before
-    // handing it to GameManager. If more than one Champion is somehow
-    // alive at once, board-scan order is NOT arbitrary: Board::activeEntities
-    // is append-only and cleanDeadEntities()'s erase-remove preserves
-    // relative order, so this deterministically returns whichever surviving
-    // Champion was deployed earliest.
-    std::shared_ptr<CombatEntity> findChampion(int team) const {
+    // Resolves a specific Champion slot (1 = Heroic, 2 = Wild Card -- see
+    // CardRegistry::validateDeckSlots/PlayerState::ChampionSlotState) to its
+    // currently-tracked live entity, if any. Deliberately NOT a generic
+    // "find any isChampion entity" board scan (that was the old
+    // findChampion(team), now removed) -- resolving strictly through
+    // championSlots[slot].trackedEntityId is what makes a Clone-spell
+    // duplicate permanently unable to activate an ability (it's never
+    // created via playCard, so it can never become a tracked id) and what
+    // makes "whoever was created last" the one that answers, with zero
+    // extra special-casing needed for either rule.
+    std::shared_ptr<CombatEntity> findChampionInSlot(int team, int slot) const {
+        const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        auto it = player.championSlots.find(slot);
+        if (it == player.championSlots.end() || it->second.trackedEntityId == -1) return nullptr;
         for (const auto& entity : board.getEntities()) {
-            if (entity->team != team || !entity->isAlive()) continue;
-            auto combatEntity = std::dynamic_pointer_cast<CombatEntity>(entity);
-            if (combatEntity && combatEntity->isChampion) return combatEntity;
+            if (entity->id == it->second.trackedEntityId) {
+                if (!entity->isAlive()) return nullptr;
+                return std::dynamic_pointer_cast<CombatEntity>(entity);
+            }
         }
         return nullptr;
+    }
+
+    // Called once per tick (see step()) for each team: mirrors the tracked
+    // Champion's own live abilityCooldownRemaining into
+    // persistedCooldownRemaining, so that value is always fresh right up
+    // until the entity dies -- at which point it simply stops being
+    // updated, and that last-known value is what seeds a fresh redeploy of
+    // the same slot's Champion (see playCard's own tracking hook), giving
+    // "redeploying while on cooldown just continues the timer" for free.
+    void syncChampionCooldowns(int team) {
+        PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        for (auto& entry : player.championSlots) {
+            PlayerState::ChampionSlotState& state = entry.second;
+            if (state.trackedEntityId == -1) continue;
+            for (const auto& entity : board.getEntities()) {
+                if (entity->id != state.trackedEntityId) continue;
+                if (entity->isAlive()) {
+                    if (auto ce = std::dynamic_pointer_cast<CombatEntity>(entity)) {
+                        state.persistedCooldownRemaining = ce->abilityCooldownRemaining;
+                    }
+                }
+                break;
+            }
+        }
     }
 
 public:
@@ -241,6 +269,14 @@ public:
         if (isMirror) {
             effectiveDef = CardRegistry::getInstance().getCard(player.lastPlayedCardId);
             if (!effectiveDef) return false;
+            // Real-game fidelity: Mirror can't duplicate a Champion at all.
+            // Harmless either way under the new per-slot tracking (a
+            // mirrored Champion's result.cardId would be Mirror's own id,
+            // 164, never a slot's original id, so its ability would be
+            // permanently unreachable regardless) -- blocked outright here
+            // to match the real card's own restriction, not just to avoid
+            // an inert duplicate.
+            if (effectiveDef->isChampion) return false;
             costOverride = effectiveDef->cost + 1.0f;
         } else if (isSpiritEmpress) {
             costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
@@ -250,6 +286,7 @@ public:
 
         PlayerState::PlayCardResult result = player.playCard(handIndex, costOverride);
         if (result.cardId != -1) {
+            size_t pendingBefore = board.pendingEntityCount();
             if (isSpiritEmpress) {
                 bool flying = (costOverride >= 6.0f);
                 CardFactories::spawn(flying ? spiritEmpressFlyingStats() : spiritEmpressGroundStats(), x, y, team, board);
@@ -264,17 +301,42 @@ public:
             // FIRST Mirror, not the first Mirror itself -- so a Mirror
             // play must not overwrite lastPlayedCardId with its own id.
             if (!isMirror) player.lastPlayedCardId = result.cardId;
+
+            // Champion per-slot tracking (see PlayerState::ChampionSlotState):
+            // only a play whose RESULT cardId matches deck slot 1 or 2's own
+            // ORIGINAL id counts -- a Mirror play's result.cardId is Mirror's
+            // own id (164), never a slot's original id, so a Mirror-duplicated
+            // Champion can never become anyone's tracked entity.
+            const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
+            for (int slot : { 1, 2 }) {
+                if (result.cardId != deckConfig[slot]) continue;
+                for (size_t i = pendingBefore; i < board.pendingEntityCount(); ++i) {
+                    auto ce = std::dynamic_pointer_cast<CombatEntity>(board.getPendingEntity(i));
+                    if (ce && ce->isChampion) {
+                        PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
+                        ce->abilityCooldownRemaining = slotState.persistedCooldownRemaining;
+                        slotState.trackedEntityId = ce->id;
+                        break;
+                    }
+                }
+                break;
+            }
+
             return true;
         }
         return false;
     }
 
-    // Read-only: whether `team` could successfully activate its Champion's
-    // ability right now (deployed, off cooldown, affordable) without
+    // Read-only: whether `team`'s Champion in the given slot (1 = Heroic,
+    // 2 = Wild Card; defaults to 1 so any single-Champion-in-slot-1 caller
+    // keeps compiling and behaving unchanged) could successfully activate
+    // its ability right now (deployed, off cooldown, affordable) without
     // actually doing so -- exposed for ClashEnv to surface without
-    // mutating state.
-    bool isChampionAbilityReady(int team) const {
-        auto champion = findChampion(team);
+    // mutating state. Two different Champions (slots 1 and 2) are fully
+    // independent -- checking/activating one never touches the other's
+    // cooldown or elixir cost.
+    bool isChampionAbilityReady(int team, int slot = 1) const {
+        auto champion = findChampionInSlot(team, slot);
         if (!champion || !champion->abilityEffect) return false;
         if (champion->abilityCooldownRemaining > 0) return false;
         if (champion->abilityUsesRemaining == 0) return false;
@@ -282,16 +344,17 @@ public:
         return player.elixir >= champion->abilityElixirCost;
     }
 
-    // Activates `team`'s deployed Champion's ability (e.g. Mighty Miner's
-    // "Explosive Escape") -- distinct from playCard, which places a NEW
-    // card from hand onto an empty spot. Mirrors playCard's own shape:
-    // returns bool, never throws, deducts elixir only once success is
-    // already guaranteed (find the champion, confirm cooldown/elixir, THEN
-    // deduct and fire) so a failed call never partially spends resources.
-    bool activateChampionAbility(int team) {
+    // Activates `team`'s deployed Champion's ability in the given slot
+    // (e.g. Mighty Miner's "Explosive Escape") -- distinct from playCard,
+    // which places a NEW card from hand onto an empty spot. Mirrors
+    // playCard's own shape: returns bool, never throws, deducts elixir only
+    // once success is already guaranteed (find the champion, confirm
+    // cooldown/elixir, THEN deduct and fire) so a failed call never
+    // partially spends resources.
+    bool activateChampionAbility(int team, int slot = 1) {
         if (gameOver) return false;
 
-        auto champion = findChampion(team);
+        auto champion = findChampionInSlot(team, slot);
         if (!champion || !champion->abilityEffect) return false;
         if (champion->abilityCooldownRemaining > 0) return false;
 
@@ -389,6 +452,13 @@ public:
             loserTeam = outcome.loserTeam;
             board.statsEvents.notifyMatchEnded({ loserTeam, currentTick });
         }
+
+        // After this tick's entity updates (so this tick's cooldown
+        // decrement is captured) but before dead entities are erased (so a
+        // Champion that died this very tick still gets its final cooldown
+        // value persisted) -- see PlayerState::ChampionSlotState's comment.
+        syncChampionCooldowns(0);
+        syncChampionCooldowns(1);
 
         board.cleanDeadEntities(currentTick);
     }

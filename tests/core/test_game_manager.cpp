@@ -486,3 +486,109 @@ TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager]
     REQUIRE(game.isGameOver());
     REQUIRE_FALSE(game.activateChampionAbility(0));
 }
+
+// ---------------- multi-Champion, per-slot ability tracking ----------------
+
+TEST_CASE("Two different Champions in slots 1 and 2 have fully independent ability readiness", "[game_manager][champion][multi]") {
+    GameManager game({ 1, 115, 118, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.elixir = 100.0f;
+    game.playCard(0, 115, 9.0f, 10.0f);  // Mighty Miner -> slot 1
+    game.playCard(0, 118, 12.0f, 10.0f); // Archer Queen -> slot 2
+    game.step();
+
+    REQUIRE(game.isChampionAbilityReady(0, 1));
+    REQUIRE(game.isChampionAbilityReady(0, 2));
+
+    REQUIRE(game.activateChampionAbility(0, 1));
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1)); // now on cooldown
+    REQUIRE(game.isChampionAbilityReady(0, 2));        // slot 2 completely unaffected
+
+    REQUIRE(game.activateChampionAbility(0, 2));
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 2));
+}
+
+TEST_CASE("Redeploying the same Champion tracks the newest instance for ability activation", "[game_manager][champion][multi]") {
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.elixir = 100.0f;
+    game.playCard(0, 115, 9.0f, 10.0f); // 1st deploy
+    game.step();
+
+    std::shared_ptr<CombatEntity> firstInstance;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->isChampion) { firstInstance = ce; break; }
+    }
+    REQUIRE(firstInstance != nullptr);
+
+    game.playerAI.hand[1] = 115; // simulate it having cycled back to hand
+    game.playCard(0, 115, 12.0f, 10.0f); // 2nd deploy, while the first is still alive
+    game.step();
+
+    int championCount = 0;
+    std::shared_ptr<CombatEntity> secondInstance;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->isChampion) {
+            championCount++;
+            if (ce->id != firstInstance->id) secondInstance = ce;
+        }
+    }
+    REQUIRE(championCount == 2); // both alive simultaneously
+    REQUIRE(secondInstance != nullptr);
+
+    game.playerAI.elixir = 100.0f;
+    REQUIRE(game.activateChampionAbility(0, 1));
+    REQUIRE(secondInstance->abilityCooldownRemaining > 0); // the newest instance is the one that fired
+    REQUIRE(firstInstance->abilityCooldownRemaining == 0); // the original, no-longer-tracked instance is untouched
+}
+
+TEST_CASE("A Champion's ability cooldown persists across death and redeploy of the same slot", "[game_manager][champion][multi]") {
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.elixir = 100.0f;
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step();
+
+    REQUIRE(game.activateChampionAbility(0, 1)); // cooldown set to 130 on the live entity
+    game.step(); // synced into persistedCooldownRemaining (129) while still alive
+
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->isChampion) { ce->takeDamage(ce->hp); break; }
+    }
+    game.step(); // this tick's sync sees it already dead, leaves the persisted value at 129; cleans the corpse up
+
+    game.playerAI.hand[1] = 115;
+    game.playerAI.elixir = 100.0f;
+    game.playCard(0, 115, 9.0f, 10.0f); // redeploy -- should seed from the persisted cooldown, not start at 0
+    game.step();
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1)); // still cooling down, not freshly ready
+}
+
+TEST_CASE("A cloned Champion can never activate the ability, even after the original dies", "[game_manager][champion][multi]") {
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.elixir = 100.0f;
+    game.playCard(0, 115, 9.0f, 10.0f);
+    game.step();
+
+    std::shared_ptr<CombatEntity> original;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->isChampion) { original = ce; break; }
+    }
+    REQUIRE(original != nullptr);
+
+    auto clone = std::dynamic_pointer_cast<CombatEntity>(original->clone(game.getBoard().allocateId()));
+    REQUIRE(clone != nullptr);
+    REQUIRE(clone->isChampion); // the clone DOES carry isChampion=true -- it's the tracking that must exclude it
+    game.getBoard().addEntity(clone);
+    game.step();
+
+    REQUIRE(game.isChampionAbilityReady(0, 1)); // still resolves to the original (still alive), not the clone
+
+    original->takeDamage(original->hp); // kill the original
+    game.step();
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1)); // the clone is alive but was never tracked -- unreachable
+    REQUIRE_FALSE(game.activateChampionAbility(0, 1));
+}
