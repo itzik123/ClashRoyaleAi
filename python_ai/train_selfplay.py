@@ -232,8 +232,11 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
                 while not done:
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
                     with torch.no_grad():
-                        card_logits, mean, _, _, (hx, cx) = net(obs_t, (hx, cx))
-                    card_idx = int(card_logits.argmax(dim=-1).item())
+                        features, card_embeds = net.extract_features(obs_t)
+                        card_logits, _, (hx, cx) = net.step_lstm_and_card(features, (hx, cx))
+                        card_idx_t = card_logits.argmax(dim=-1)
+                        mean, _ = net.placement_given_card(hx, card_embeds, card_idx_t)
+                    card_idx = int(card_idx_t.item())
                     placement = torch.clamp(mean, 0.0, 1.0)
                     action = {
                         "card_index": np.array([card_idx]),
@@ -372,9 +375,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         obs1 = np.array(self.game.get_observation_for_team(1), dtype=np.float32)
         with torch.no_grad():
             obs1_t = torch.tensor(obs1, dtype=torch.float32).unsqueeze(0).to(self.device)
-            logits1, mean1, log_std1, _, (self.opponent_hx, self.opponent_cx) = self.opponent_net(
-                obs1_t, (self.opponent_hx, self.opponent_cx))
-            card_idx1 = Categorical(logits=logits1).sample().item()
+            features1, card_embeds1 = self.opponent_net.extract_features(obs1_t)
+            logits1, _, (self.opponent_hx, self.opponent_cx) = self.opponent_net.step_lstm_and_card(
+                features1, (self.opponent_hx, self.opponent_cx))
+            card_idx1_t = Categorical(logits=logits1).sample()
+            mean1, log_std1 = self.opponent_net.placement_given_card(self.opponent_hx, card_embeds1, card_idx1_t)
+            card_idx1 = card_idx1_t.item()
             placement1 = torch.clamp(Normal(mean1, log_std1.exp()).sample(), 0.0, 1.0)
             x1 = (placement1[0, 0] * self.MAX_X).item()
             y1 = (placement1[0, 1] * self.MAX_Y).item()
@@ -497,11 +503,27 @@ def train_selfplay_ppo():
             print("Optimizer state NOT restored (architecture mismatch above) -- "
                   "starting the optimizer fresh; network weights were still warm-started where shapes matched.")
         episodes_completed = checkpoint["episodes_completed"]
-        # .get() with a fallback to the OLD ladder-era field name, then to
-        # episodes_completed: lets a checkpoint saved before this PFSP
-        # rewrite still resume sanely instead of KeyError-ing.
-        entropy_reboost_episode = checkpoint.get(
-            "entropy_reboost_episode", checkpoint.get("stage_start_episode", episodes_completed))
+        if not clean_load:
+            # Part of the network just got reinitialized (architecture change --
+            # see load_state_dict_flexible's warm-start above, e.g. right now:
+            # placement_head's card-conditioning). Entropy is almost certainly
+            # floored this deep into training, so without this the freshly-
+            # random part would settle into another near-deterministic
+            # "averaged" policy before ever exploring enough to discover it
+            # can now behave differently per card -- same reasoning as every
+            # curriculum-stage transition elsewhere in this project resetting
+            # the entropy clock, just triggered by an architecture change
+            # instead of a harder opponent.
+            entropy_reboost_episode = episodes_completed
+            print(f">>> Architecture changed on resume -- forcing a fresh entropy "
+                  f"re-boost from episode {episodes_completed} so the reinitialized "
+                  "part actually gets explored, not just re-converged under floored entropy.")
+        else:
+            # .get() with a fallback to the OLD ladder-era field name, then to
+            # episodes_completed: lets a checkpoint saved before this PFSP
+            # rewrite still resume sanely instead of KeyError-ing.
+            entropy_reboost_episode = checkpoint.get(
+                "entropy_reboost_episode", checkpoint.get("stage_start_episode", episodes_completed))
         last_stall_reboost_episode = checkpoint.get("last_stall_reboost_episode", episodes_completed)
         last_eval_ep = checkpoint.get("last_eval_ep", episodes_completed)
         reference_roster = checkpoint.get("reference_roster", [])
@@ -574,9 +596,15 @@ def train_selfplay_ppo():
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
 
             with torch.no_grad():
-                card_logits, placement_mean, placement_log_std, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
+                # Autoregressive placement: card must actually be SAMPLED
+                # before placement can be conditioned on it -- see model.py's
+                # own comment on why forward_from_features (card_idx already
+                # known) doesn't fit the rollout case.
+                features, card_embeds = net.extract_features(obs_tensor)
+                card_logits, state_value, (hx, cx) = net.step_lstm_and_card(features, (hx, cx))
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
+                placement_mean, placement_log_std = net.placement_given_card(hx, card_embeds, card_idx)
                 placement_dist = Normal(placement_mean, placement_log_std.exp())
                 placement_sample = placement_dist.sample()
                 placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
@@ -739,7 +767,11 @@ def train_selfplay_ppo():
 
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            _, _, _, next_value, _ = net(next_obs_tensor, (hx, cx))
+            # Value only depends on hx, never needs a card/placement -- skips
+            # straight past card_logits and never touches placement (see
+            # model.py's own comment on why this split exists).
+            next_features, _ = net.extract_features(next_obs_tensor)
+            _, next_value, _ = net.step_lstm_and_card(next_features, (hx, cx))
             next_value = next_value.squeeze(-1)
 
         advantages_seq = torch.zeros_like(rewards_seq)
@@ -767,14 +799,22 @@ def train_selfplay_ppo():
                 mb = mb_env_t.shape[0]
 
                 mb_obs = obs_seq[:, mb_env_t]
-                feats_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
+                feats_seq, card_embeds_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
                 feats_seq = feats_seq.view(update_timestep, mb, -1)
+                card_embeds_seq = card_embeds_seq.view(update_timestep, mb, net.hand_size + 1, -1)
 
                 rhx = hx0[mb_env_t]
                 rcx = cx0[mb_env_t]
                 new_logprobs, new_values, new_entropies = [], [], []
                 for t in range(update_timestep):
-                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(feats_seq[t], (rhx, rcx))
+                    # card_actions_seq[t, mb_env_t] -- the STORED action from
+                    # rollout, not a fresh sample -- conditions placement here
+                    # exactly like the log-prob evaluation two lines below
+                    # does. Using anything else here would evaluate placement
+                    # under a DIFFERENT card than the one log-prob is scored
+                    # against, silently breaking the PPO ratio.
+                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(
+                        feats_seq[t], card_embeds_seq[t], (rhx, rcx), card_actions_seq[t, mb_env_t])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Normal(mean_t, log_std_t.exp())
                     lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
@@ -911,8 +951,10 @@ def train_selfplay_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, t_value, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                t_features, t_card_embeds = net.extract_features(t_obs_tensor)
+                t_logits, t_value, (t_hx, t_cx) = net.step_lstm_and_card(t_features, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
+                t_norm, _ = net.placement_given_card(t_hx, t_card_embeds, t_idx)
                 t_card_idx = t_idx.item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1

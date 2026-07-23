@@ -512,11 +512,18 @@ def train_ppo():
             # Rollout is pure data collection - no gradients here. Gradients are
             # produced later by replaying these transitions with the current params.
             with torch.no_grad():
-                card_logits, placement_mean, placement_log_std, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
+                # Autoregressive placement: card must actually be SAMPLED before
+                # placement can be conditioned on it, so this can't be a single
+                # net(...) call -- see model.py's own comment on why
+                # forward_from_features (which takes card_idx already known)
+                # doesn't fit the rollout case.
+                features, card_embeds = net.extract_features(obs_tensor)
+                card_logits, state_value, (hx, cx) = net.step_lstm_and_card(features, (hx, cx))
 
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
 
+                placement_mean, placement_log_std = net.placement_given_card(hx, card_embeds, card_idx)
                 placement_dist = Normal(placement_mean, placement_log_std.exp())
                 placement_sample = placement_dist.sample()
 
@@ -791,10 +798,15 @@ def train_ppo():
         noop_frac = ((card_actions_seq == 4).float() * valid_seq).sum() / valid_seq.sum().clamp(min=1.0)
         writer.add_scalar("Policy/Noop_Fraction", noop_frac.item(), episodes_completed)
 
-        # Bootstrap value for the state right after the last stored step
+        # Bootstrap value for the state right after the last stored step --
+        # value only depends on hx, never needs a card/placement at all, so
+        # this skips straight past step_lstm_and_card's card_logits and never
+        # touches placement (see model.py's own comment on why this split
+        # exists).
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            _, _, _, next_value, _ = net(next_obs_tensor, (hx, cx))
+            next_features, _ = net.extract_features(next_obs_tensor)
+            _, next_value, _ = net.step_lstm_and_card(next_features, (hx, cx))
             next_value = next_value.squeeze(-1)
 
         # Generalized Advantage Estimation (GAE-lambda)
@@ -833,8 +845,9 @@ def train_ppo():
                 # calling the CNN update_timestep times on a tiny batch and is the main
                 # speedup of the update step.
                 mb_obs = obs_seq[:, mb_env_t]                                  # (T, mb, obs_dim)
-                feats_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
+                feats_seq, card_embeds_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
                 feats_seq = feats_seq.view(update_timestep, mb, -1)           # (T, mb, feat_dim)
+                card_embeds_seq = card_embeds_seq.view(update_timestep, mb, net.hand_size + 1, -1)
 
                 # Replay this minibatch's env sequences through the LSTM with current params
                 rhx = hx0[mb_env_t]
@@ -843,7 +856,14 @@ def train_ppo():
                 new_values = []
                 new_entropies = []
                 for t in range(update_timestep):
-                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(feats_seq[t], (rhx, rcx))
+                    # card_actions_seq[t, mb_env_t] -- the STORED action from
+                    # rollout, not a fresh sample -- conditions placement here
+                    # exactly like the log-prob evaluation two lines below
+                    # does. Using anything else here would evaluate placement
+                    # under a DIFFERENT card than the one log-prob is scored
+                    # against, silently breaking the PPO ratio.
+                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(
+                        feats_seq[t], card_embeds_seq[t], (rhx, rcx), card_actions_seq[t, mb_env_t])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Normal(mean_t, log_std_t.exp())
                     lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
@@ -981,8 +1001,10 @@ def train_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, t_value, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                t_features, t_card_embeds = net.extract_features(t_obs_tensor)
+                t_logits, t_value, (t_hx, t_cx) = net.step_lstm_and_card(t_features, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
+                t_norm, _ = net.placement_given_card(t_hx, t_card_embeds, t_idx)
                 t_card_idx = t_idx.item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
