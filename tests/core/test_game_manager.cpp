@@ -56,6 +56,30 @@ TEST_CASE("GameManager construction gives both players starting elixir and a 4-c
     REQUIRE(game.getHand(1)[0] == 8);
 }
 
+TEST_CASE("GameManager construction throws on a deck that fails validateDeckSlots", "[game_manager][reset][deck_slots]") {
+    // Champion (115) in slot 0 -- only legal in slot 1 or 2.
+    REQUIRE_THROWS_AS(
+        GameManager({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 }),
+        std::invalid_argument);
+    // The opponent deck is checked too, not just the AI's.
+    REQUIRE_THROWS_AS(
+        GameManager({ 0, 1, 2, 3, 4, 5, 6, 7 }, { 115, 1, 2, 3, 4, 5, 6, 7 }),
+        std::invalid_argument);
+}
+
+TEST_CASE("GameManager::setOpponentDeck throws on a deck that fails validateDeckSlots", "[game_manager][deck_slots]") {
+    GameManager game({ 0, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    REQUIRE_THROWS_AS(
+        game.setOpponentDeck({ 115, 1, 2, 3, 4, 5, 6, 7 }),
+        std::invalid_argument);
+}
+
+TEST_CASE("GameManager construction and setOpponentDeck accept a legal deck", "[game_manager][deck_slots]") {
+    REQUIRE_NOTHROW(GameManager({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 }));
+    GameManager game({ 0, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
+    REQUIRE_NOTHROW(game.setOpponentDeck({ 1, 115, 118, 3, 4, 5, 6, 7 }));
+}
+
 // ---------------- isValidPlacement ----------------
 
 TEST_CASE("isValidPlacement rejects out-of-bounds coordinates regardless of spell", "[game_manager][placement]") {
@@ -359,13 +383,17 @@ TEST_CASE("PlayerState::playCard does not spend elixir when the deck queue is em
 }
 
 // ---------------- activateChampionAbility ----------------
-// Deck seeds card 115 (Mighty Miner) as the first hand slot -- affordable
+// Deck seeds card 115 (Mighty Miner) at deck slot 1 (the Heroic slot --
+// Champions are only legal in slot 1 or 2, see CardRegistry::
+// validateDeckSlots), which is still in the starting hand -- affordable
 // (4.0 elixir) from the starting 5.0, so game.playCard(0, 115, 9.0f, 10.0f)
 // (team 0's own half, same spot playCard's own "fails once game over" test
 // above already uses) reliably deploys him before each ability test.
+// activateChampionAbility(0) below relies on its slot parameter defaulting
+// to 1, matching where he's seeded.
 
 TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldown", "[game_manager][champion]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     float elixirBefore = game.getElixirAI();
@@ -377,7 +405,7 @@ TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldow
 }
 
 TEST_CASE("activateChampionAbility feeds MatchStatistics' Champion ability tracking", "[game_manager][champion][stats]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
 
@@ -397,7 +425,7 @@ TEST_CASE("activateChampionAbility fails when the team has no deployed Champion"
 }
 
 TEST_CASE("activateChampionAbility fails when unaffordable, without deducting anything", "[game_manager][champion]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 0.5f; // below the 1.0 ability cost
@@ -409,7 +437,7 @@ TEST_CASE("activateChampionAbility fails when unaffordable, without deducting an
 }
 
 TEST_CASE("activateChampionAbility fails while still on cooldown", "[game_manager][champion]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 10.0f; // plenty for a second attempt, if cooldown didn't block it
@@ -419,7 +447,7 @@ TEST_CASE("activateChampionAbility fails while still on cooldown", "[game_manage
 }
 
 TEST_CASE("activateChampionAbility is ready again once its full cooldown elapses via step()", "[game_manager][champion]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 10.0f;
@@ -448,7 +476,7 @@ TEST_CASE("activateChampionAbility is ready again once its full cooldown elapses
 }
 
 TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager][champion]") {
-    GameManager game({ 115, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     auto aiKing = game.getBoard().getEntities()[0];

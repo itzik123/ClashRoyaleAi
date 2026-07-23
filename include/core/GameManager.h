@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <stdexcept>
 
 class GameManager {
 public:
@@ -121,6 +122,8 @@ public:
     }
 
     void setOpponentDeck(const std::vector<int>& deck) {
+        std::string err = validateDeckSlots(deck);
+        if (!err.empty()) throw std::invalid_argument("GameManager::setOpponentDeck: invalid deck -- " + err);
         oppDeckConfig = deck;
     }
 
@@ -312,6 +315,11 @@ public:
         currentTick = 0;
         gameOver = false;
         loserTeam = -1;
+
+        std::string aiErr = validateDeckSlots(aiDeckConfig);
+        if (!aiErr.empty()) throw std::invalid_argument("GameManager: invalid AI deck -- " + aiErr);
+        std::string oppErr = validateDeckSlots(oppDeckConfig);
+        if (!oppErr.empty()) throw std::invalid_argument("GameManager: invalid opponent deck -- " + oppErr);
 
         playerAI.initializeDeck(aiDeckConfig);
         playerOpponent.initializeDeck(oppDeckConfig);

@@ -2004,3 +2004,36 @@ inline int countChampions(const std::vector<int>& deck) {
     }
     return count;
 }
+
+// Deck slot-position legality: slot 0 (Evolution slot) may hold an
+// Evolution-flagged card or a plain card; slot 1 (Heroic slot) may hold a
+// Champion or a plain card; slot 2 (Wild Card slot) may hold a Champion, an
+// Evolution, or a plain card; slots 3-7 must be plain (no Champion, no
+// Evolution). This gives "at most 2 Champions" for free -- only slots 1/2
+// can ever accept one. Unlike countChampions above, this IS meant to be
+// called as a real gate -- see GameManager::reset()/setOpponentDeck(),
+// which throw std::invalid_argument on a non-empty result. Returns "" for
+// a legal deck, otherwise a human-readable reason naming the offending
+// slot/card.
+inline std::string validateDeckSlots(const std::vector<int>& deck) {
+    if (deck.size() != 8) {
+        return "deck must have exactly 8 cards (got " + std::to_string(deck.size()) + ")";
+    }
+    for (int i = 0; i < 8; ++i) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(deck[i]);
+        if (!def) {
+            return "slot " + std::to_string(i) + ": card id " + std::to_string(deck[i]) + " is not a registered card";
+        }
+        bool championAllowed = (i == 1 || i == 2);  // Heroic / Wild Card
+        bool evolutionAllowed = (i == 0 || i == 2); // Evolution slot / Wild Card
+        if (def->isChampion && !championAllowed) {
+            return "slot " + std::to_string(i) + ": " + def->name +
+                " is a Champion, only allowed in slot 1 (Heroic) or slot 2 (Wild Card)";
+        }
+        if (def->isEvolution && !evolutionAllowed) {
+            return "slot " + std::to_string(i) + ": " + def->name +
+                " is an Evolution, only allowed in slot 0 or slot 2 (Wild Card)";
+        }
+    }
+    return "";
+}
