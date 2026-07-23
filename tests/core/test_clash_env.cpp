@@ -33,16 +33,19 @@ TEST_CASE("isChampionAbilityReady/activateChampionAbility return false with noth
 }
 
 TEST_CASE("step()'s activateAbility param defaults to false and only fires when explicitly true", "[clash_env][champion]") {
-    std::vector<int> deck = { 115, 1, 2, 3, 4, 5, 6, 7 }; // Mighty Miner in hand slot 0
+    // Mighty Miner in deck slot 1 (the Heroic slot -- Champions are only
+    // legal in slot 1 or 2, see CardRegistry::validateDeckSlots), still hand
+    // index 1 at match start (opening hand is deck[0..3] in order).
+    std::vector<int> deck = { 1, 115, 2, 3, 4, 5, 6, 7 };
     ClashEnv env(deck, deck, 100);
     env.reset();
 
-    env.step(0, 9.0f, 10.0f, 1); // deploy Mighty Miner; activateAbility defaults to false
+    env.step(1, 9.0f, 10.0f, 1); // deploy Mighty Miner; activateAbility defaults to false
     REQUIRE(env.isChampionAbilityReady(0)); // deployed, off cooldown, affordable
 
     env.step(-1, 0.0f, 0.0f, 1); // no card, no ability -- default stays false
     REQUIRE(env.isChampionAbilityReady(0)); // still ready: nothing consumed it
 
-    env.step(-1, 0.0f, 0.0f, 1, true); // explicitly activate now
+    env.step(-1, 0.0f, 0.0f, 1, true); // explicitly activate slot 1's ability now
     REQUIRE_FALSE(env.isChampionAbilityReady(0)); // now on cooldown
 }

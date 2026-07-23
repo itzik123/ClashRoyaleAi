@@ -85,6 +85,14 @@ public:
         pendingEntities.push_back(entity);
     }
 
+    // Lets a caller (GameManager::playCard, to find the Champion entity a
+    // deploy just spawned) inspect what's about to be committed, without
+    // waiting for the next commitPendingEntities() -- CardDefinition::
+    // spawnEntity is void-returning (fire and forget), so this is the only
+    // handle back to a just-spawned entity this tick.
+    size_t pendingEntityCount() const { return pendingEntities.size(); }
+    const std::shared_ptr<Entity>& getPendingEntity(size_t index) const { return pendingEntities[index]; }
+
     // tick defaults to 0 (rather than Board storing its own tick mirror,
     // which would be a second, driftable copy of GameManager's currentTick
     // -- exactly the kind of duplication this codebase avoids elsewhere,

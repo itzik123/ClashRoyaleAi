@@ -21,7 +21,7 @@ int main() {
     // Configure decks with proper ordering to match our manual script plays
     GameManager game(
         { 15, 6, 0, 25, 7, 24, 34, 29 },  // AI: Hog, Musketeer, Knight, Cannon, Fireball, Skeletons, IceWiz, Zap
-        { 8, 2, 38, 13, 37, 32, 29, 12 }   // Opp: Barbarians, Giant, Witch, PEKKA, BabyDragon, Poison, Zap, SkelArmy
+        { 8, 2, 71, 13, 44, 32, 29, 12 }   // Opp: Barbarians, Giant, Witch, PEKKA, BabyDragon, Poison, Zap, SkelArmy
     );
 
     GameLogger logger;

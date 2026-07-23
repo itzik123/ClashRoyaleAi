@@ -115,6 +115,16 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         self.value_head = nn.Linear(256, 1)
 
+        # ==========================================
+        # 6. ראשי הפעלת יכולת צ'מפיון (עד 2 צ'מפיונים בו-זמנית -- ראו
+        # activate_ability_slot1/2 ב-gym_wrapper.py, ו-
+        # CardRegistry::validateDeckSlots בצד ה-C++). כל אחד: 2 לוגיטים
+        # (0=אל תפעיל, 1=הפעל), בדיוק כמו activate_ability הישן היה אמור
+        # להיות אילו נדגם אי-פעם (לא נדגם בפועל -- ראה ההערה ב-train.py).
+        # ==========================================
+        self.ability_slot1_head = nn.Linear(256, 2)
+        self.ability_slot2_head = nn.Linear(256, 2)
+
     def extract_features(self, obs):
         """
         חילוץ מאפיינים (CNN + MLP סקלרי + embeddings של זהות קלף) - החלק
@@ -162,7 +172,11 @@ class MicroRoyaleNet(nn.Module):
         hx, cx = self.lstm(features, hidden_state)
         card_logits = self.card_head(hx)
         state_value = self.value_head(hx)
-        return card_logits, state_value, (hx, cx)
+        # שני ראשי הפעלת הצ'מפיון תלויים רק ב-hx, בדיוק כמו card_logits/
+        # state_value -- לכן מחושבים כאן, לא ב-placement_given_card.
+        ability_slot1_logits = self.ability_slot1_head(hx)
+        ability_slot2_logits = self.ability_slot2_head(hx)
+        return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
     def placement_given_card(self, hx, card_embeds, card_idx):
         """
@@ -187,6 +201,8 @@ class MicroRoyaleNet(nn.Module):
         שדוגמים אותו מ-card_logits) -- שם קוראים ל-step_lstm_and_card ואז
         ל-placement_given_card בנפרד, ראה train.py/train_selfplay.py.
         """
-        card_logits, state_value, (hx, cx) = self.step_lstm_and_card(features, hidden_state)
+        (card_logits, ability_slot1_logits, ability_slot2_logits, state_value,
+         (hx, cx)) = self.step_lstm_and_card(features, hidden_state)
         placement_normalized, placement_log_std = self.placement_given_card(hx, card_embeds, card_idx)
-        return card_logits, placement_normalized, placement_log_std, state_value, (hx, cx)
+        return (card_logits, placement_normalized, placement_log_std, state_value,
+                ability_slot1_logits, ability_slot2_logits, (hx, cx))

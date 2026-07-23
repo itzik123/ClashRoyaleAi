@@ -237,19 +237,28 @@ public:
     // independently of observationSize() -- see MatchStatistics-adjacent
     // discussion in the Champion plan for why this stays out of the
     // vector).
-    bool isChampionAbilityReady(int team) const {
-        return game.isChampionAbilityReady(team);
+    // slot: 1 = Heroic, 2 = Wild Card (see CardRegistry::validateDeckSlots) --
+    // defaults to 1 so any single-Champion-in-slot-1 caller keeps compiling
+    // and behaving unchanged. The two slots are fully independent.
+    bool isChampionAbilityReady(int team, int slot = 1) const {
+        return game.isChampionAbilityReady(team, slot);
     }
 
-    // Activates `team`'s deployed Champion's ability, if any -- see
-    // GameManager::activateChampionAbility. Exposed directly (not just via
-    // step()'s new activateAbility param below) so tests / ad hoc scripts
-    // can trigger it without going through a full skip_frames window.
-    bool activateChampionAbility(int team) {
-        return game.activateChampionAbility(team);
+    // Activates `team`'s deployed Champion's ability in the given slot, if
+    // any -- see GameManager::activateChampionAbility. Exposed directly
+    // (not just via step()'s activateAbilitySlot1/2 params below) so tests /
+    // ad hoc scripts can trigger it without going through a full
+    // skip_frames window.
+    bool activateChampionAbility(int team, int slot = 1) {
+        return game.activateChampionAbility(team, slot);
     }
 
-    StepResult step(int cardIndex, float targetX, float targetY, int skipFrames = 10, bool activateAbility = false) {
+    // activateAbilitySlot1/2 correspond to deck slots 1 (Heroic) and 2
+    // (Wild Card) -- see GameManager::activateChampionAbility's own slot
+    // parameter. Independent triggers: either, both, or neither can fire
+    // the same step.
+    StepResult step(int cardIndex, float targetX, float targetY, int skipFrames = 10,
+            bool activateAbilitySlot1 = false, bool activateAbilitySlot2 = false) {
         float totalReward = 0.0f;
         bool isDone = false;
 
@@ -261,8 +270,11 @@ public:
                     game.playCard(0, cardId, targetX, targetY);
                 }
             }
-            if (i == 0 && activateAbility) {
-                game.activateChampionAbility(0);
+            if (i == 0 && activateAbilitySlot1) {
+                game.activateChampionAbility(0, 1);
+            }
+            if (i == 0 && activateAbilitySlot2) {
+                game.activateChampionAbility(0, 2);
             }
 
             opponentTurn();
@@ -289,6 +301,14 @@ public:
         return extractObservationForTeam(team);
     }
 
+    // Test-only escape hatch: ClashEnv wraps GameManager privately (Python
+    // only ever drives it through step()/reset()), but tests that need to
+    // force a specific hand slot -- e.g. after hand randomization made the
+    // opening hand's exact contents non-deterministic -- have no other way
+    // to reach playerAI/playerOpponent the way GameManager-level tests
+    // already do directly. Not meant for anything but tests.
+    GameManager& debugGame() { return game; }
+
     // Self-play stepping: BOTH sides' actions are supplied externally instead
     // of team 1 being driven by the built-in random opponentTurn() (which
     // this does NOT call at all). targetY1 arrives in team 1's own local
@@ -299,7 +319,8 @@ public:
     SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
                                      int cardIndex1, float targetX1, float targetY1,
                                      int skipFrames = 10,
-                                     bool activateAbility0 = false, bool activateAbility1 = false) {
+                                     bool activateAbility0Slot1 = false, bool activateAbility0Slot2 = false,
+                                     bool activateAbility1Slot1 = false, bool activateAbility1Slot2 = false) {
         float totalReward = 0.0f;
         bool isDone = false;
 
@@ -319,8 +340,10 @@ public:
                         game.playCard(1, hand1[cardIndex1], targetX1, realY1);
                     }
                 }
-                if (activateAbility0) game.activateChampionAbility(0);
-                if (activateAbility1) game.activateChampionAbility(1);
+                if (activateAbility0Slot1) game.activateChampionAbility(0, 1);
+                if (activateAbility0Slot2) game.activateChampionAbility(0, 2);
+                if (activateAbility1Slot1) game.activateChampionAbility(1, 1);
+                if (activateAbility1Slot2) game.activateChampionAbility(1, 2);
             }
 
             game.step();

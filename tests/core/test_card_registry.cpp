@@ -1056,6 +1056,45 @@ TEST_CASE("countChampions counts how many Champion cards appear in a deck", "[ca
     REQUIRE(countChampions({ 9999 }) == 0); // unknown id: ignored, not a crash
 }
 
+// ---------------- validateDeckSlots ----------------
+// Slot 0 = Evolution slot, slot 1 = Heroic slot (Champion), slot 2 = Wild
+// Card (Champion or Evolution), slots 3-7 = plain only. Id 123 (Wall
+// Breakers Evolution) and id 115 (Mighty Miner, a Champion) are used
+// throughout as the two flagged cards.
+
+TEST_CASE("validateDeckSlots accepts a fully plain deck", "[card_registry][deck_slots]") {
+    REQUIRE(validateDeckSlots({ 0, 1, 2, 3, 4, 5, 6, 7 }).empty());
+}
+
+TEST_CASE("validateDeckSlots accepts an Evolution in slot 0 or slot 2, rejects it elsewhere", "[card_registry][deck_slots]") {
+    REQUIRE(validateDeckSlots({ 123, 1, 2, 3, 4, 5, 6, 7 }).empty());   // slot 0: fine
+    REQUIRE(validateDeckSlots({ 1, 2, 123, 3, 4, 5, 6, 7 }).empty());   // slot 2 (Wild Card): fine
+    REQUIRE_FALSE(validateDeckSlots({ 1, 123, 2, 3, 4, 5, 6, 7 }).empty()); // slot 1: rejected
+    REQUIRE_FALSE(validateDeckSlots({ 1, 2, 3, 123, 4, 5, 6, 7 }).empty()); // slot 3: rejected
+    REQUIRE_FALSE(validateDeckSlots({ 1, 2, 3, 4, 5, 6, 7, 123 }).empty()); // slot 7: rejected
+}
+
+TEST_CASE("validateDeckSlots accepts a Champion in slot 1 or slot 2, rejects it elsewhere", "[card_registry][deck_slots]") {
+    REQUIRE(validateDeckSlots({ 1, 115, 2, 3, 4, 5, 6, 7 }).empty());   // slot 1 (Heroic): fine
+    REQUIRE(validateDeckSlots({ 1, 2, 115, 3, 4, 5, 6, 7 }).empty());   // slot 2 (Wild Card): fine
+    REQUIRE_FALSE(validateDeckSlots({ 115, 1, 2, 3, 4, 5, 6, 7 }).empty()); // slot 0: rejected
+    REQUIRE_FALSE(validateDeckSlots({ 1, 2, 3, 115, 4, 5, 6, 7 }).empty()); // slot 3: rejected
+}
+
+TEST_CASE("validateDeckSlots accepts 2 Champions, one in slot 1 and one in slot 2", "[card_registry][deck_slots]") {
+    REQUIRE(validateDeckSlots({ 1, 115, 118, 3, 4, 5, 6, 7 }).empty());
+}
+
+TEST_CASE("validateDeckSlots rejects a deck of the wrong size", "[card_registry][deck_slots]") {
+    REQUIRE_FALSE(validateDeckSlots({ 0, 1, 2, 3, 4, 5, 6 }).empty());       // 7 cards
+    REQUIRE_FALSE(validateDeckSlots({ 0, 1, 2, 3, 4, 5, 6, 7, 8 }).empty()); // 9 cards
+    REQUIRE_FALSE(validateDeckSlots({}).empty());
+}
+
+TEST_CASE("validateDeckSlots rejects an unregistered card id in any slot", "[card_registry][deck_slots]") {
+    REQUIRE_FALSE(validateDeckSlots({ 9999, 1, 2, 3, 4, 5, 6, 7 }).empty());
+}
+
 // ---------------- wiki-research pass: closing the "no sourced stats" gaps ----------------
 
 TEST_CASE("Lava Hound splits into 6 Lava Pups on death", "[card_registry][death]") {
