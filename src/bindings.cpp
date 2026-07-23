@@ -31,14 +31,18 @@ PYBIND11_MODULE(clash_royale_env, m) {
             py::arg("ai_tower_troop") = TowerTroopType::None, py::arg("opp_tower_troop") = TowerTroopType::None)
         .def("reset", &ClashEnv::reset)
         .def("step", &ClashEnv::step, py::arg("card_index"), py::arg("target_x"), py::arg("target_y"),
-            py::arg("skip_frames") = 10, py::arg("activate_ability") = false)
+            py::arg("skip_frames") = 10,
+            py::arg("activate_ability_slot1") = false, py::arg("activate_ability_slot2") = false)
         .def("step_self_play", &ClashEnv::stepSelfPlay,
             py::arg("card_index0"), py::arg("target_x0"), py::arg("target_y0"),
             py::arg("card_index1"), py::arg("target_x1"), py::arg("target_y1"),
             py::arg("skip_frames") = 10,
-            py::arg("activate_ability0") = false, py::arg("activate_ability1") = false)
-        .def("is_champion_ability_ready", &ClashEnv::isChampionAbilityReady, py::arg("team"))
-        .def("activate_champion_ability", &ClashEnv::activateChampionAbility, py::arg("team"))
+            py::arg("activate_ability0_slot1") = false, py::arg("activate_ability0_slot2") = false,
+            py::arg("activate_ability1_slot1") = false, py::arg("activate_ability1_slot2") = false)
+        // slot: 1 = Heroic, 2 = Wild Card (see CardRegistry::validateDeckSlots) --
+        // up to 2 independently-tracked Champions per deck.
+        .def("is_champion_ability_ready", &ClashEnv::isChampionAbilityReady, py::arg("team"), py::arg("slot") = 1)
+        .def("activate_champion_ability", &ClashEnv::activateChampionAbility, py::arg("team"), py::arg("slot") = 1)
         .def("get_hand", &ClashEnv::getHand)
         .def("get_elixir", &ClashEnv::getElixir)
         .def("get_observation_for_team", &ClashEnv::getObservationForTeam, py::arg("team"))

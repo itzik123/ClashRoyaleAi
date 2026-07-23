@@ -46,6 +46,6 @@ TEST_CASE("step()'s activateAbility param defaults to false and only fires when 
     env.step(-1, 0.0f, 0.0f, 1); // no card, no ability -- default stays false
     REQUIRE(env.isChampionAbilityReady(0)); // still ready: nothing consumed it
 
-    env.step(-1, 0.0f, 0.0f, 1, true); // explicitly activate now
+    env.step(-1, 0.0f, 0.0f, 1, true); // explicitly activate slot 1's ability now
     REQUIRE_FALSE(env.isChampionAbilityReady(0)); // now on cooldown
 }

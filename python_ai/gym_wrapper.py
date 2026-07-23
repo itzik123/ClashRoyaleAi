@@ -84,12 +84,14 @@ class MicroRoyaleEnv(gym.Env):
             "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
             "target_x": spaces.Box(low=0.0, high=self.game.get_max_placement_x(), shape=(1,), dtype=np.float32),
             "target_y": spaces.Box(low=0.0, high=self.game.get_own_half_max_y(), shape=(1,), dtype=np.float32),
-            # הפעלת יכולת צ'מפיון (למשל Explosive Escape של Mighty Miner) --
-            # 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש צ'מפיון פרוס, לא ב-cooldown,
-            # ויש מספיק אליקסיר (אחרת no-op שקט, כמו ה-no-op של card_index).
-            # אף ראש-רשת לא דוגם את זה עדיין (ראה ההערה על Mighty Miner ב-
-            # CardRegistry.h) -- ברירת המחדל False בכל מקום שלא מעביר את המפתח.
-            "activate_ability": spaces.Discrete(2),
+            # הפעלת יכולת צ'מפיון -- שתי משבצות עצמאיות (1=Heroic, 2=Wild Card,
+            # ראו CardRegistry::validateDeckSlots), כי דק יכול להכיל עד 2
+            # צ'מפיונים בו-זמנית. כל אחת: 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש
+            # צ'מפיון פרוס באותה משבצת, לא ב-cooldown, ויש מספיק אליקסיר (אחרת
+            # no-op שקט, כמו ה-no-op של card_index). ברירת המחדל False בכל מקום
+            # שלא מעביר את המפתח.
+            "activate_ability_slot1": spaces.Discrete(2),
+            "activate_ability_slot2": spaces.Discrete(2),
         })
         
         obs_size = self.game.observation_size()
@@ -118,11 +120,13 @@ class MicroRoyaleEnv(gym.Env):
         card_idx = int(_to_scalar(action["card_index"]))
         target_x = float(_to_scalar(action["target_x"]))
         target_y = float(_to_scalar(action["target_y"]))
-        # .get(..., 0): callers that build this dict by hand without this
-        # key (e.g. train.py's existing PPO loop) must not KeyError here.
-        activate_ability = bool(_to_scalar(action.get("activate_ability", 0)))
+        # .get(..., 0): callers that build this dict by hand without these
+        # keys (e.g. train.py's existing PPO loop) must not KeyError here.
+        activate_ability_slot1 = bool(_to_scalar(action.get("activate_ability_slot1", 0)))
+        activate_ability_slot2 = bool(_to_scalar(action.get("activate_ability_slot2", 0)))
 
-        step_result = self.game.step(card_idx, target_x, target_y, skip_frames, activate_ability)
+        step_result = self.game.step(card_idx, target_x, target_y, skip_frames,
+                                      activate_ability_slot1, activate_ability_slot2)
         
         obs = np.array(step_result.observation, dtype=np.float32)
         reward = float(step_result.reward)
@@ -149,8 +153,10 @@ class MicroRoyaleEnv(gym.Env):
             # Not part of observation_space -- see ClashEnv.h's own comment
             # on why champion-ability state stays out of the flat
             # observation vector (would break model.py's fixed scalar_size
-            # formula) rather than growing it.
-            "champion_ability_ready": self.game.is_champion_ability_ready(0),
+            # formula) rather than growing it. Two independent slots -- see
+            # activate_ability_slot1/2's own comment above.
+            "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
+            "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
         }
 
         return obs, reward, terminated, truncated, info

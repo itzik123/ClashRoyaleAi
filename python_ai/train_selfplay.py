@@ -232,13 +232,17 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
                 while not done:
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
                     with torch.no_grad():
-                        card_logits, mean, _, _, (hx, cx) = net(obs_t, (hx, cx))
+                        (card_logits, mean, _, _,
+                         ability_slot1_logits, ability_slot2_logits, (hx, cx)) = net(obs_t, (hx, cx))
                     card_idx = int(card_logits.argmax(dim=-1).item())
                     placement = torch.clamp(mean, 0.0, 1.0)
                     action = {
                         "card_index": np.array([card_idx]),
                         "target_x": np.array([(placement[0, 0] * max_x).item()]),
                         "target_y": np.array([(placement[0, 1] * max_y).item()]),
+                        # Greedy, same as card/placement above -- no sampling.
+                        "activate_ability_slot1": np.array([int(ability_slot1_logits.argmax(dim=-1).item())]),
+                        "activate_ability_slot2": np.array([int(ability_slot2_logits.argmax(dim=-1).item())]),
                     }
                     obs, reward, terminated, truncated, _ = env.step(action)
                     done = terminated or truncated
@@ -315,12 +319,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
             "target_x": spaces.Box(low=0.0, high=self.MAX_X, shape=(1,), dtype=np.float32),
             "target_y": spaces.Box(low=0.0, high=self.MAX_Y, shape=(1,), dtype=np.float32),
-            # Same key as gym_wrapper.MicroRoyaleEnv's action_space -- see
-            # its own comment. No network head samples this yet; team 1
-            # (the frozen historical opponent, via _opponent_action()) also
-            # never activates one, so this stays effectively unused until a
-            # real head is added on both sides.
-            "activate_ability": spaces.Discrete(2),
+            # Same keys as gym_wrapper.MicroRoyaleEnv's action_space -- see
+            # its own comment. Team 1 (the frozen historical opponent) samples
+            # its own independent pair via _opponent_action(), so both sides
+            # can actually use Champion abilities during self-play.
+            "activate_ability_slot1": spaces.Discrete(2),
+            "activate_ability_slot2": spaces.Discrete(2),
         })
         obs_size = self.game.observation_size()
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
@@ -368,17 +372,24 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         """Team 1's own decision, from ITS OWN (mirrored) point of view --
         see ClashEnv::extractObservationForTeam. Sampled the same way rollout
         actions are everywhere else in this project, just with no_grad and no
-        buffering: this network never gets updated here."""
+        buffering: this network never gets updated here. Also samples its own
+        two independent Champion-ability decisions (slot1/slot2) -- otherwise
+        team 1 would systematically never use Champion abilities even once
+        the trainee (team 0) does."""
         obs1 = np.array(self.game.get_observation_for_team(1), dtype=np.float32)
         with torch.no_grad():
             obs1_t = torch.tensor(obs1, dtype=torch.float32).unsqueeze(0).to(self.device)
-            logits1, mean1, log_std1, _, (self.opponent_hx, self.opponent_cx) = self.opponent_net(
+            (logits1, mean1, log_std1, _,
+             ability_slot1_logits1, ability_slot2_logits1,
+             (self.opponent_hx, self.opponent_cx)) = self.opponent_net(
                 obs1_t, (self.opponent_hx, self.opponent_cx))
             card_idx1 = Categorical(logits=logits1).sample().item()
             placement1 = torch.clamp(Normal(mean1, log_std1.exp()).sample(), 0.0, 1.0)
             x1 = (placement1[0, 0] * self.MAX_X).item()
             y1 = (placement1[0, 1] * self.MAX_Y).item()
-        return card_idx1, x1, y1
+            ability_slot1_action1 = bool(Categorical(logits=ability_slot1_logits1).sample().item())
+            ability_slot2_action1 = bool(Categorical(logits=ability_slot2_logits1).sample().item())
+        return card_idx1, x1, y1, ability_slot1_action1, ability_slot2_action1
 
     def step(self, action, skip_frames=10):
         def _to_scalar(val):
@@ -391,10 +402,13 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         card_idx0 = int(_to_scalar(action["card_index"]))
         x0 = float(_to_scalar(action["target_x"]))
         y0 = float(_to_scalar(action["target_y"]))
-        activate_ability0 = bool(_to_scalar(action.get("activate_ability", 0)))
-        card_idx1, x1, y1 = self._opponent_action()
+        activate_ability0_slot1 = bool(_to_scalar(action.get("activate_ability_slot1", 0)))
+        activate_ability0_slot2 = bool(_to_scalar(action.get("activate_ability_slot2", 0)))
+        card_idx1, x1, y1, activate_ability1_slot1, activate_ability1_slot2 = self._opponent_action()
 
-        result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames, activate_ability0)
+        result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames,
+                                           activate_ability0_slot1, activate_ability0_slot2,
+                                           activate_ability1_slot1, activate_ability1_slot2)
 
         obs = np.array(result.observation0, dtype=np.float32)
         reward = float(result.reward0)
@@ -421,7 +435,8 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team1_building_damage": self.game.get_building_damage_dealt(1),
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
-            "champion_ability_ready": self.game.is_champion_ability_ready(0),
+            "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
+            "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
         }
         return obs, reward, terminated, False, info
 
@@ -539,6 +554,7 @@ def train_selfplay_ppo():
     writer = SummaryWriter(log_dir=log_dir)
 
     obs_buffer, card_actions_buffer, placement_actions_buffer = [], [], []
+    ability1_actions_buffer, ability2_actions_buffer = [], []
     logprobs_buffer, values_buffer, rewards_buffer = [], [], []
     masks_buffer, valid_buffer = [], []
 
@@ -574,13 +590,20 @@ def train_selfplay_ppo():
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
 
             with torch.no_grad():
-                card_logits, placement_mean, placement_log_std, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
+                (card_logits, placement_mean, placement_log_std, state_value,
+                 ability1_logits, ability2_logits, (hx, cx)) = net(obs_tensor, (hx, cx))
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
                 placement_dist = Normal(placement_mean, placement_log_std.exp())
                 placement_sample = placement_dist.sample()
                 placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
-                total_logprob = card_dist.log_prob(card_idx) + placement_logprob
+                ability1_dist = Categorical(logits=ability1_logits)
+                ability1_action = ability1_dist.sample()
+                ability2_dist = Categorical(logits=ability2_logits)
+                ability2_action = ability2_dist.sample()
+                total_logprob = (card_dist.log_prob(card_idx) + placement_logprob
+                                 + ability1_dist.log_prob(ability1_action)
+                                 + ability2_dist.log_prob(ability2_action))
 
             placement_clamped = torch.clamp(placement_sample, 0.0, 1.0)
             target_x = placement_clamped[:, 0] * MAX_X
@@ -590,14 +613,14 @@ def train_selfplay_ppo():
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(num_envs, 1),
-                # No network head samples this yet (see gym_wrapper.py's own
-                # comment on the same key) -- always "don't activate". Must
-                # still be present: AsyncVectorEnv's Dict-space iteration
-                # requires every action_space key to exist in the dict, it
-                # doesn't fall back to a default like MicroRoyaleSelfPlayEnv.
-                # step()'s own action.get("activate_ability", 0) does for a
-                # direct (non-vectorized) call.
-                "activate_ability": np.zeros(num_envs, dtype=np.int64),
+                # AsyncVectorEnv's Dict-space iteration requires every
+                # action_space key to exist in the dict (it doesn't fall back
+                # to a default like MicroRoyaleSelfPlayEnv.step()'s own
+                # action.get("activate_ability_slot1", 0) does for a direct,
+                # non-vectorized call), so both real sampled arrays must be
+                # supplied here rather than omitted.
+                "activate_ability_slot1": ability1_action.cpu().numpy(),
+                "activate_ability_slot2": ability2_action.cpu().numpy(),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
@@ -631,6 +654,8 @@ def train_selfplay_ppo():
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
             placement_actions_buffer.append(placement_sample)
+            ability1_actions_buffer.append(ability1_action)
+            ability2_actions_buffer.append(ability2_action)
             logprobs_buffer.append(total_logprob)
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
@@ -731,6 +756,8 @@ def train_selfplay_ppo():
         obs_seq = torch.stack(obs_buffer)
         card_actions_seq = torch.stack(card_actions_buffer)
         placement_actions_seq = torch.stack(placement_actions_buffer)
+        ability1_actions_seq = torch.stack(ability1_actions_buffer)
+        ability2_actions_seq = torch.stack(ability2_actions_buffer)
         old_logprobs_seq = torch.stack(logprobs_buffer)
         values_seq = torch.stack(values_buffer)
         rewards_seq = torch.stack(rewards_buffer)
@@ -739,7 +766,7 @@ def train_selfplay_ppo():
 
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            _, _, _, next_value, _ = net(next_obs_tensor, (hx, cx))
+            _, _, _, next_value, _, _, _ = net(next_obs_tensor, (hx, cx))
             next_value = next_value.squeeze(-1)
 
         advantages_seq = torch.zeros_like(rewards_seq)
@@ -774,12 +801,18 @@ def train_selfplay_ppo():
                 rcx = cx0[mb_env_t]
                 new_logprobs, new_values, new_entropies = [], [], []
                 for t in range(update_timestep):
-                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(feats_seq[t], (rhx, rcx))
+                    (logits_t, mean_t, log_std_t, value_t,
+                     ability1_logits_t, ability2_logits_t, (rhx, rcx)) = net.forward_from_features(feats_seq[t], (rhx, rcx))
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Normal(mean_t, log_std_t.exp())
+                    ability1_dist_t = Categorical(logits=ability1_logits_t)
+                    ability2_dist_t = Categorical(logits=ability2_logits_t)
                     lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
-                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1)
-                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1)
+                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1) \
+                        + ability1_dist_t.log_prob(ability1_actions_seq[t, mb_env_t]) \
+                        + ability2_dist_t.log_prob(ability2_actions_seq[t, mb_env_t])
+                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1) \
+                        + ability1_dist_t.entropy() + ability2_dist_t.entropy()
                     new_logprobs.append(lp_t)
                     new_values.append(value_t.squeeze(-1))
                     new_entropies.append(ent_t)
@@ -841,6 +874,8 @@ def train_selfplay_ppo():
         obs_buffer.clear()
         card_actions_buffer.clear()
         placement_actions_buffer.clear()
+        ability1_actions_buffer.clear()
+        ability2_actions_buffer.clear()
         logprobs_buffer.clear()
         values_buffer.clear()
         rewards_buffer.clear()
@@ -911,15 +946,20 @@ def train_selfplay_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, t_value, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                (t_logits, t_norm, _, t_value,
+                 t_ability1_logits, t_ability2_logits, (t_hx, t_cx)) = net(t_obs_tensor, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
                 t_card_idx = t_idx.item()
+                t_ability1_action = Categorical(logits=t_ability1_logits).sample().item()
+                t_ability2_action = Categorical(logits=t_ability2_logits).sample().item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
                 t_action = {
                     "card_index": np.array([t_card_idx]),
                     "target_x": np.array([torch.clamp(t_norm[0, 0] * MAX_X, 0.0, MAX_X).item()]),
                     "target_y": np.array([torch.clamp(t_norm[0, 1] * MAX_Y, 0.0, MAX_Y).item()]),
+                    "activate_ability_slot1": np.array([t_ability1_action]),
+                    "activate_ability_slot2": np.array([t_ability2_action]),
                 }
                 t_decisions.append({
                     "stateValue": t_value.item(),

@@ -90,6 +90,16 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         self.value_head = nn.Linear(256, 1)
 
+        # ==========================================
+        # 6. ראשי הפעלת יכולת צ'מפיון (עד 2 צ'מפיונים בו-זמנית -- ראו
+        # activate_ability_slot1/2 ב-gym_wrapper.py, ו-
+        # CardRegistry::validateDeckSlots בצד ה-C++). כל אחד: 2 לוגיטים
+        # (0=אל תפעיל, 1=הפעל), בדיוק כמו activate_ability הישן היה אמור
+        # להיות אילו נדגם אי-פעם (לא נדגם בפועל -- ראה ההערה ב-train.py).
+        # ==========================================
+        self.ability_slot1_head = nn.Linear(256, 2)
+        self.ability_slot2_head = nn.Linear(256, 2)
+
     def extract_features(self, obs):
         """
         חילוץ מאפיינים (CNN + MLP סקלרי) - החלק הלא-רקורנטי של הרשת.
@@ -117,8 +127,11 @@ class MicroRoyaleNet(nn.Module):
         placement_normalized = torch.sigmoid(self.placement_head(hx))
         placement_log_std = torch.clamp(self.placement_log_std, -4.0, 0.0).expand_as(placement_normalized)
         state_value = self.value_head(hx)
+        ability_slot1_logits = self.ability_slot1_head(hx)
+        ability_slot2_logits = self.ability_slot2_head(hx)
 
-        return card_logits, placement_normalized, placement_log_std, state_value, (hx, cx)
+        return (card_logits, placement_normalized, placement_log_std, state_value,
+                ability_slot1_logits, ability_slot2_logits, (hx, cx))
 
     def forward(self, obs, hidden_state):
         """

@@ -455,6 +455,8 @@ def train_ppo():
     obs_buffer = []
     card_actions_buffer = []
     placement_actions_buffer = []
+    ability1_actions_buffer = []
+    ability2_actions_buffer = []
     logprobs_buffer = []
     values_buffer = []
     rewards_buffer = []
@@ -512,7 +514,8 @@ def train_ppo():
             # Rollout is pure data collection - no gradients here. Gradients are
             # produced later by replaying these transitions with the current params.
             with torch.no_grad():
-                card_logits, placement_mean, placement_log_std, state_value, (hx, cx) = net(obs_tensor, (hx, cx))
+                (card_logits, placement_mean, placement_log_std, state_value,
+                 ability1_logits, ability2_logits, (hx, cx)) = net(obs_tensor, (hx, cx))
 
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
@@ -520,8 +523,15 @@ def train_ppo():
                 placement_dist = Normal(placement_mean, placement_log_std.exp())
                 placement_sample = placement_dist.sample()
 
+                ability1_dist = Categorical(logits=ability1_logits)
+                ability1_action = ability1_dist.sample()
+                ability2_dist = Categorical(logits=ability2_logits)
+                ability2_action = ability2_dist.sample()
+
                 placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
-                total_logprob = card_dist.log_prob(card_idx) + placement_logprob
+                total_logprob = (card_dist.log_prob(card_idx) + placement_logprob
+                                 + ability1_dist.log_prob(ability1_action)
+                                 + ability2_dist.log_prob(ability2_action))
 
             placement_clamped = torch.clamp(placement_sample, 0.0, 1.0)
             target_x = placement_clamped[:, 0] * MAX_X
@@ -531,14 +541,8 @@ def train_ppo():
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(num_envs, 1),
-                # No network head samples this yet (see gym_wrapper.py's own
-                # comment on the same key) -- always "don't activate". Must
-                # still be present: AsyncVectorEnv's Dict-space iteration
-                # requires every action_space key to exist in the dict, it
-                # doesn't fall back to a default like MicroRoyaleEnv.step()'s
-                # own action.get("activate_ability", 0) does for a direct
-                # (non-vectorized) call.
-                "activate_ability": np.zeros(num_envs, dtype=np.int64),
+                "activate_ability_slot1": ability1_action.cpu().numpy(),
+                "activate_ability_slot2": ability2_action.cpu().numpy(),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
@@ -606,6 +610,8 @@ def train_ppo():
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
             placement_actions_buffer.append(placement_sample)
+            ability1_actions_buffer.append(ability1_action)
+            ability2_actions_buffer.append(ability2_action)
             logprobs_buffer.append(total_logprob)
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
@@ -778,6 +784,8 @@ def train_ppo():
         obs_seq = torch.stack(obs_buffer)                              # (T, N, obs_dim)
         card_actions_seq = torch.stack(card_actions_buffer)            # (T, N)
         placement_actions_seq = torch.stack(placement_actions_buffer)  # (T, N, 2)
+        ability1_actions_seq = torch.stack(ability1_actions_buffer)     # (T, N)
+        ability2_actions_seq = torch.stack(ability2_actions_buffer)    # (T, N)
         old_logprobs_seq = torch.stack(logprobs_buffer)                # (T, N)
         values_seq = torch.stack(values_buffer)                        # (T, N)  (old critic values)
         rewards_seq = torch.stack(rewards_buffer)                      # (T, N)
@@ -794,7 +802,7 @@ def train_ppo():
         # Bootstrap value for the state right after the last stored step
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            _, _, _, next_value, _ = net(next_obs_tensor, (hx, cx))
+            _, _, _, next_value, _, _, _ = net(next_obs_tensor, (hx, cx))
             next_value = next_value.squeeze(-1)
 
         # Generalized Advantage Estimation (GAE-lambda)
@@ -843,12 +851,18 @@ def train_ppo():
                 new_values = []
                 new_entropies = []
                 for t in range(update_timestep):
-                    logits_t, mean_t, log_std_t, value_t, (rhx, rcx) = net.forward_from_features(feats_seq[t], (rhx, rcx))
+                    (logits_t, mean_t, log_std_t, value_t,
+                     ability1_logits_t, ability2_logits_t, (rhx, rcx)) = net.forward_from_features(feats_seq[t], (rhx, rcx))
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Normal(mean_t, log_std_t.exp())
+                    ability1_dist_t = Categorical(logits=ability1_logits_t)
+                    ability2_dist_t = Categorical(logits=ability2_logits_t)
                     lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
-                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1)
-                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1)
+                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1) \
+                        + ability1_dist_t.log_prob(ability1_actions_seq[t, mb_env_t]) \
+                        + ability2_dist_t.log_prob(ability2_actions_seq[t, mb_env_t])
+                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1) \
+                        + ability1_dist_t.entropy() + ability2_dist_t.entropy()
                     new_logprobs.append(lp_t)
                     new_values.append(value_t.squeeze(-1))
                     new_entropies.append(ent_t)
@@ -924,6 +938,8 @@ def train_ppo():
         obs_buffer.clear()
         card_actions_buffer.clear()
         placement_actions_buffer.clear()
+        ability1_actions_buffer.clear()
+        ability2_actions_buffer.clear()
         logprobs_buffer.clear()
         values_buffer.clear()
         rewards_buffer.clear()
@@ -981,15 +997,20 @@ def train_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                t_logits, t_norm, _, t_value, (t_hx, t_cx) = net(t_obs_tensor, (t_hx, t_cx))
+                (t_logits, t_norm, _, t_value,
+                 t_ability1_logits, t_ability2_logits, (t_hx, t_cx)) = net(t_obs_tensor, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
                 t_card_idx = t_idx.item()
+                t_ability1_action = Categorical(logits=t_ability1_logits).sample().item()
+                t_ability2_action = Categorical(logits=t_ability2_logits).sample().item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
                 t_action = {
                     "card_index": np.array([t_card_idx]),
                     "target_x": np.array([torch.clamp(t_norm[0,0]*MAX_X, 0.0, MAX_X).item()]),
-                    "target_y": np.array([torch.clamp(t_norm[0,1]*MAX_Y_AI, 0.0, MAX_Y_AI).item()])
+                    "target_y": np.array([torch.clamp(t_norm[0,1]*MAX_Y_AI, 0.0, MAX_Y_AI).item()]),
+                    "activate_ability_slot1": np.array([t_ability1_action]),
+                    "activate_ability_slot2": np.array([t_ability2_action]),
                 }
                 t_decisions.append({
                     "stateValue": t_value.item(),
