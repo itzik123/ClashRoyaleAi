@@ -164,6 +164,24 @@ BOOTSTRAP_FROM_PATH = "model_weights.pth"
 # _set_opponent's prefix check.
 SCRIPTED_OPPONENTS = ["scripted:Rusher", "scripted:Defender", "scripted:Cycler", "scripted:Counter"]
 
+# Defender/Counter specifically model defensive play. PFSP's own win-rate-
+# based weighting works AGAINST deliberately seeing more of them: once the
+# trainee reliably beats a given opponent, (1-winrate)^PFSP_EXPONENT pushes
+# its weight toward PFSP_MIN_WEIGHT same as anything else already mastered --
+# so simply having them in the pool doesn't increase exposure on its own,
+# and if anything actively suppresses it the better the trainee gets against
+# them. The actual reason to keep facing them isn't "the trainee is
+# currently weak against them" (PFSP's own criterion) -- it's that defensive
+# pressure looked underrepresented in what's deciding average game length
+# (see the ~300-tick average game length discussion this responds to), a
+# property PFSP has no way to see or weight for on its own. This floor
+# overrides PFSP_MIN_WEIGHT for these two specifically, independent of
+# measured win-rate. 4x the base floor as a starting point -- tune from
+# here based on whether Progress/Episode_Length_Ticks_50 and Scenario/
+# Defense_Success_Rate actually move.
+DEFENSIVE_SCRIPTED_OPPONENTS = {"scripted:Defender", "scripted:Counter"}
+DEFENSIVE_SCRIPTED_MIN_WEIGHT = 0.20
+
 # Pulled live from the engine (see model.py's own identical pattern) so a
 # board-geometry or channel-layout change on the C++ side propagates here
 # automatically -- the scripted opponents below parse the raw observation
@@ -175,6 +193,121 @@ _BOARD_H = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
 _BOARD_W = clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
 _SPATIAL_SIZE = _N_CH * _BOARD_H * _BOARD_W
 _HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+
+# --- Scenario injection (start-state distribution design) ------------------
+# Industry precedent: reshaping the START-STATE distribution is how rare-but-
+# critical situations get learned when normal play visits them too seldom for
+# the credit-assignment horizon to connect cause and effect (robotics resets
+# from curated states; AlphaGo trained on curated positions; "Backplay"). The
+# problem this targets here: a win-condition (Hog/Giant/...) dropped on the
+# bridge is a "defend in the next couple of seconds or lose the tower" moment,
+# but in a full 3600-tick game the causal link between that drop and the tower
+# loss ~40 ticks later is buried under a long, noisy GAE trace and is a rare
+# event -- so the reflex never gets enough gradient. We fix that by STARTING a
+# fraction of episodes already in that state so the net sees it constantly.
+#
+# Design choices that keep it from becoming a different game (the isolation
+# failure mode): the opponent is NOT frozen -- team 1 keeps playing its normal
+# PFSP policy on top of the injected threat; it's the real engine/board/towers;
+# and the existing reward (win/loss + compute_shaping's HP/elixir-trade terms)
+# already scores "defend efficiently + keep something alive to counter-push",
+# so no bespoke scenario reward is needed. The one artificial edge -- an
+# optional short truncation window (max_steps) that focuses each episode on the
+# critical moment -- is handled with a proper value BOOTSTRAP (see the training
+# loop's is_terminal/needs_boot split), never a terminal, so the critic doesn't
+# learn a biased "the world ends here" value.
+SCENARIO_INJECTION_PROB = 0.30
+
+# Building-targeter win-conditions -- every id here confirmed against
+# CardRegistry.h directly (not from memory) as Archetype::MeleeBuildingTargeter/
+# RangedBuildingTargeter/a building with a persistent tower-damage role, i.e.
+# guaranteed to beeline for a tower ignoring troops in its path, matching the
+# scenario's own premise ("defend or lose the tower in the next few seconds").
+# Miner (52) deliberately excluded despite being a real-game win condition --
+# this engine registers him as plain Archetype::MeleeSquad (no building-
+# targeter/dig-anywhere behavior implemented), so injecting him wouldn't
+# actually exercise the "must answer a beelining threat" reflex this scenario
+# is for. Goblin Barrel (109) / Graveyard (110) also excluded for now -- both
+# are spell(...)-registered (PeriodicSpawnEffect), and inject_enemy's
+# card->spawnEntity(...) path is only confirmed exercised (via Hog/Royal
+# Giant) for a troop/building CardDefinition; using it for a spell-shaped one
+# is unverified, not worth risking on a data-fill task.
+_WIN_CONDITION_IDS = [
+    15,  # Hog Rider
+    18,  # Royal Giant
+    45,  # Balloon
+    2,   # Giant
+    19,  # Golem
+    81,  # Battle Ram
+    82,  # Royal Hogs
+    83,  # Wall Breakers
+    84,  # Electro Giant
+    87,  # Ram Rider
+    88,  # Goblin Giant
+    89,  # Skeleton Barrel
+    91,  # Lava Hound
+]
+# Ranged units commonly played to escort/protect a win-condition push (the
+# "supported" scenario's second spawn) -- confirmed RangedSquad/ranged-role
+# troops, a mix of cheap chip support and real mid-fight damage.
+_SUPPORT_IDS = [
+    6,   # Musketeer
+    1,   # Archers
+    11,  # Wizard
+    44,  # Baby Dragon
+    63,  # Magic Archer
+    36,  # Executioner
+    20,  # Dart Goblin
+]
+# Real board coords for inject_enemy (team 1, low-y-bound), which bypasses
+# isValidPlacement so an on-the-bridge spawn at the river row is allowed. River
+# row is 17 (see ClashEnv::extractObservationForTeam); bridges sit at x lanes
+# 3-4 (left) and 13-14 (right).
+_RIVER_Y = 17.0
+_BRIDGE_LANES = [3.5, 13.5]
+
+
+def _scenario_bridge_push(rng):
+    """The exact case: one enemy win-condition on a random bridge, nothing
+    else engineered. Short window -- the defense itself resolves in ~2-4 steps,
+    the rest lets a counter-push start and get shaped-rewarded."""
+    lane = rng.choice(_BRIDGE_LANES)
+    return {
+        "name": "bridge_push",
+        "spawns": [(int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y)],
+        "max_steps": 15,
+    }
+
+
+def _scenario_bridge_push_supported(rng):
+    """Win-condition + a ranged support just behind it (same lane) -- a tankier,
+    two-part threat that a single cheap defender can't fully answer. Longer
+    window for the bigger commitment."""
+    lane = rng.choice(_BRIDGE_LANES)
+    return {
+        "name": "bridge_push_supported",
+        "spawns": [
+            (int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y),
+            (int(rng.choice(_SUPPORT_IDS)), lane, _RIVER_Y + 3.0),
+        ],
+        "max_steps": 25,
+    }
+
+
+# (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
+# drop in here with the same machinery. Set a scenario's "max_steps" to None
+# to run it to the natural end of the game instead of a focused window.
+SCENARIOS = [
+    (_scenario_bridge_push, 2.0),
+    (_scenario_bridge_push_supported, 1.0),
+]
+
+
+def sample_scenario(rng):
+    builders, weights = zip(*SCENARIOS)
+    weights = np.array(weights, dtype=np.float64)
+    weights /= weights.sum()
+    return builders[rng.choice(len(builders), p=weights)](rng)
 
 
 def sample_legal_random_deck(pool, max_tries=200):
@@ -263,7 +396,9 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
     try:
         for entry in roster:
             path, ref_elo = entry["path"], entry["elo"]
-            env = MicroRoyaleSelfPlayEnv()
+            # Scenarios OFF for evaluation: Elo must measure clean-game strength,
+            # not defense of an injected handicap.
+            env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
             env.set_historical_opponent(path)
             wins = losses = draws = 0
             for _ in range(n_games):
@@ -372,6 +507,16 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.pfsp_pool = []
         self.pfsp_stats = {}
 
+        # Scenario injection (see SCENARIOS / sample_scenario). Independent
+        # per-worker RNG so the vectorized envs don't all inject the same
+        # scenario in lockstep. scenarios_enabled=False (used by the replay
+        # env) keeps replays representative of full, un-engineered games.
+        self.scenarios_enabled = env_config.get("scenarios_enabled", True)
+        self.scenario_rng = np.random.default_rng()
+        self.scenario_active = None       # name of the current episode's scenario, or None
+        self.scenario_max_steps = None    # truncation window in bot-steps, or None for full game
+        self.scenario_steps_taken = 0
+
         if env_config.get("historical_checkpoint_path"):
             self.set_historical_opponent(env_config["historical_checkpoint_path"])
 
@@ -443,7 +588,10 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         if not self.pfsp_pool:
             return
         weights = np.array([
-            max(PFSP_MIN_WEIGHT, (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
+            max(
+                DEFENSIVE_SCRIPTED_MIN_WEIGHT if p in DEFENSIVE_SCRIPTED_OPPONENTS else PFSP_MIN_WEIGHT,
+                (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT
+            )
             for p in self.pfsp_pool
         ], dtype=np.float64)
         weights /= weights.sum()
@@ -453,7 +601,30 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._sample_pfsp_opponent()
-        obs_list = self.game.reset()
+        self.game.reset()
+
+        self.scenario_active = None
+        self.scenario_max_steps = None
+        self.scenario_steps_taken = 0
+        if self.scenarios_enabled and self.scenario_rng.random() < SCENARIO_INJECTION_PROB:
+            scenario = sample_scenario(self.scenario_rng)
+            for card_id, x, y in scenario["spawns"]:
+                self.game.inject_enemy(card_id, x, y)
+            # inject_enemy only QUEUES units into pendingEntities -- they aren't
+            # in the observation until a game.step() commits them. Run a single
+            # 1-tick no-op self-play step (card index HAND_SIZE = no-op on both
+            # sides, no opponentTurn) so the threat is visible in the very first
+            # observation the trainee acts on; otherwise a Hog would be a step's
+            # worth of travel toward the tower before the net ever sees it. One
+            # tick of drift is negligible.
+            noop = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+            self.game.step_self_play(noop, 0.0, 0.0, noop, 0.0, 0.0, 1)
+            self.scenario_active = scenario["name"]
+            self.scenario_max_steps = scenario["max_steps"]
+
+        # get_observation_for_team(0) == game.reset()'s own return for a normal
+        # reset, but re-read here so it reflects any just-injected units.
+        obs_list = self.game.get_observation_for_team(0)
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
         return np.array(obs_list, dtype=np.float32), {}
@@ -507,22 +678,37 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             return self.MAX_X * (0.2 if self.opponent_lane == "left" else 0.8)
 
         def find_incursion():
-            # Channels 4-6 = enemy (team 0) melee/ranged/tank troops, from
-            # THIS observer's own mirrored point of view -- see model.py's
-            # identical channel-layout comment. "My own half" = rows up to
-            # int(self.MAX_Y): reuses the same enforced-placement-bound
-            # binding everything else in this file already pulls live,
-            # rather than hardcoding ClashEnv.h's own riverRow constant a
-            # second time on the Python side.
-            enemy_troops = spatial[4] + spatial[5] + spatial[6]
+            """Returns (x, y, is_heavy) for the deepest enemy incursion in
+            this observer's own half, or None. Channels 4-6 = enemy (team 0)
+            melee/ranged/tank troops, from THIS observer's own mirrored
+            point of view -- see model.py's identical channel-layout
+            comment. "My own half" = rows up to int(self.MAX_Y): reuses the
+            same enforced-placement-bound binding everything else in this
+            file already pulls live, rather than hardcoding ClashEnv.h's
+            own riverRow constant a second time on the Python side.
+
+            is_heavy: True iff the incursion includes a channel-6 (building-
+            targeter/tank archetype) unit -- the same archetype category
+            _WIN_CONDITION_IDS/scenario injection already treats as "the
+            real threat" (see that constant's own comment: Hog/Giant/
+            Golem/Balloon/... are all this archetype). A plain melee/ranged
+            squad troop (channels 4-5) doesn't set this even if it's also
+            in range -- the distinction is what Defender escalates on.
+            """
             river_row = int(self.MAX_Y)
-            incursion_zone = enemy_troops[:river_row + 1, :]
-            nonzero = np.nonzero(incursion_zone)
-            if nonzero[0].size == 0:
+            tank_zone = spatial[6][:river_row + 1, :]
+            other_zone = (spatial[4] + spatial[5])[:river_row + 1, :]
+            tank_nz = np.nonzero(tank_zone)
+            if tank_nz[0].size > 0:
+                ys, xs = tank_nz
+                deepest = int(np.argmin(ys))
+                return float(xs[deepest]), float(ys[deepest]), True
+            other_nz = np.nonzero(other_zone)
+            if other_nz[0].size == 0:
                 return None
-            ys, xs = nonzero
+            ys, xs = other_nz
             deepest = int(np.argmin(ys))  # smallest y = closest to team 1's own tower = most urgent
-            return float(xs[deepest]), float(ys[deepest])
+            return float(xs[deepest]), float(ys[deepest]), False
 
         NO_OP = (_HAND_SIZE, 0.0, 0.0, False, False)
         kind = self.opponent_kind
@@ -544,8 +730,17 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         if kind == "Defender":
             if incursion is None or not affordable:
                 return NO_OP
-            slot = min(affordable, key=lambda i: costs[i])
-            x, y = incursion
+            x, y, is_heavy = incursion
+            # Escalate to the strongest affordable answer against a real
+            # win-condition-style threat (channel 6 -- see find_incursion's
+            # own comment); an ordinary squad troop still just gets the
+            # cheapest efficient trade, same as before. A Defender that
+            # always reaches for its cheapest card regardless of what's
+            # actually attacking loses to any sufficiently strong rush no
+            # matter how often it's sampled -- this is what actually makes
+            # facing it more often (see DEFENSIVE_SCRIPTED_MIN_WEIGHT) worth
+            # anything.
+            slot = max(affordable, key=lambda i: costs[i]) if is_heavy else min(affordable, key=lambda i: costs[i])
             return slot, x, y, False, False
 
         if kind == "Counter":
@@ -553,7 +748,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
                 return NO_OP
             if incursion is not None:
                 slot = max(affordable, key=lambda i: costs[i])
-                x, y = incursion
+                x, y, _is_heavy = incursion
                 return slot, x, y, False, False
             slot = max(affordable, key=lambda i: costs[i])
             return slot, lane_x(), self.MAX_Y, False, False
@@ -583,7 +778,21 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         reward = float(result.reward0)
         terminated = bool(result.done)
 
-        if terminated and self.opponent_checkpoint_path is not None:
+        # Scenario truncation: end the focused defensive window WITHOUT marking
+        # the game terminated (it isn't -- no king died). The training loop
+        # bootstraps V(final_obs) for this, so the critic isn't told the world
+        # ends here. Only applies while a scenario with a finite window is
+        # active and the game hasn't already ended on its own.
+        truncated = False
+        if self.scenario_max_steps is not None and not terminated:
+            self.scenario_steps_taken += 1
+            if self.scenario_steps_taken >= self.scenario_max_steps:
+                truncated = True
+
+        # PFSP difficulty tracking must measure the OPPONENT's strength, not the
+        # extra handicap of a free injected threat -- so scenario episodes never
+        # update pfsp_stats (self.scenario_active is None only on normal games).
+        if terminated and self.opponent_checkpoint_path is not None and self.scenario_active is None:
             if reward > 0.5:
                 outcome = 1.0
             elif reward < -0.5:
@@ -606,8 +815,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team1_elixir_spent": self.game.get_elixir_spent(1),
             "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
+            # 1.0 while the current episode started from an injected scenario --
+            # lets the training loop score scenario defenses separately from
+            # normal-matchup win/loss (see Scenario/Defense_Success_Rate).
+            "is_scenario": 1.0 if self.scenario_active is not None else 0.0,
         }
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
 
 
 def make_env():
@@ -749,12 +962,21 @@ def train_selfplay_ppo():
     ability1_actions_buffer, ability2_actions_buffer = [], []
     logprobs_buffer, values_buffer, rewards_buffer = [], [], []
     masks_buffer, valid_buffer = [], []
+    # Correct-bootstrap GAE bookkeeping (see the is_terminal/needs_boot split in
+    # the rollout): boot_nonterminal = 0 only on TRUE terminals (bootstrap
+    # otherwise), trunc_flag marks steps whose next-state value must come from
+    # the captured trunc_boot rather than the next (already-reset) episode's V.
+    boot_nonterminal_buffer, trunc_flag_buffer, trunc_boot_buffer = [], [], []
 
     reward_history = deque(maxlen=50)
     shaping_history = deque(maxlen=50)
     ep_len_history = deque(maxlen=50)
     ally_bldg_end_history = deque(maxlen=50)
     enemy_bldg_end_history = deque(maxlen=50)
+    # Scenario defenses scored separately from normal-matchup win/loss: success
+    # = the injected episode did NOT end in a tower/game loss (survived the
+    # threat, or truncated out of the focused window still alive).
+    scenario_success_history = deque(maxlen=200)
 
     obs, _ = envs.reset()
     prev_stats = None
@@ -825,7 +1047,34 @@ def train_selfplay_ppo():
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
             dones = terminateds | truncateds
 
-            is_draw = dones & (np.abs(step_rewards) < 0.5)
+            # TRUE terminal (a king died: raw reward +/-1) vs TRUNCATION (natural
+            # max-tick timeout OR a scenario-window cutoff, raw reward ~0). Only
+            # true terminals get value 0 bootstrapped; truncations must bootstrap
+            # V(final_obs) or the critic learns a biased "world ends here" value.
+            # Derived from the raw engine reward sign so it needs no extra signal
+            # from the wrapper -- a scenario cutoff arrives as truncated=True with
+            # reward ~0, a timeout as terminated=True with reward ~0, both -> boot.
+            is_terminal = dones & (np.abs(step_rewards) > 0.5)
+            needs_boot = dones & ~is_terminal
+            trunc_boot_val = torch.zeros(num_envs, dtype=torch.float32, device=device)
+            if needs_boot.any():
+                # next_obs at a done step is the episode's TRUE final observation
+                # (gymnasium next-step autoreset), and (hx, cx) here is the hidden
+                # state that would process it (post this step's forward, pre the
+                # done-mask reset below) -- so this is exactly V(final_obs).
+                with torch.no_grad():
+                    boot_feats, _ = net.extract_features(torch.tensor(next_obs, dtype=torch.float32).to(device))
+                    _, _, _, boot_v, _ = net.step_lstm_and_card(boot_feats, (hx, cx))
+                    boot_v = boot_v.squeeze(-1)
+                needs_boot_t = torch.as_tensor(needs_boot, dtype=torch.bool, device=device)
+                trunc_boot_val = torch.where(needs_boot_t, boot_v, trunc_boot_val)
+
+            # DRAW_PENALTY punishes a real game that timed out (passivity) --
+            # keyed on `terminateds` (engine game-over with no winner), NOT on
+            # `dones`, so a scenario-window truncation (arrives as truncated=True,
+            # reward ~0) is NOT mistaken for a draw and a SUCCESSFUL defense that
+            # simply ran out its focused window isn't spuriously penalized.
+            is_draw = terminateds & (np.abs(step_rewards) < 0.5)
             draw_penalty = DRAW_PENALTY * is_draw.astype(np.float32)
 
             zeros = np.zeros(num_envs, dtype=np.int64)
@@ -849,6 +1098,13 @@ def train_selfplay_ppo():
 
             valid = torch.tensor(1.0 - prev_dones, dtype=torch.float32).to(device)
             mask = torch.tensor(1.0 - dones, dtype=torch.float32).to(device) * valid
+            # Bootstrap coefficient: 1 except on TRUE terminals (0). Folded with
+            # valid so the throwaway post-autoreset step matches the trace mask
+            # exactly -- keeps this a strict, provable generalization of the old
+            # single-mask GAE (identical when nothing truncates).
+            boot_nonterminal = torch.as_tensor(1.0 - is_terminal.astype(np.float32),
+                                               dtype=torch.float32, device=device) * valid
+            trunc_flag = torch.as_tensor(needs_boot.astype(np.float32), dtype=torch.float32, device=device)
 
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
@@ -860,34 +1116,44 @@ def train_selfplay_ppo():
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(mask)
             valid_buffer.append(valid)
+            boot_nonterminal_buffer.append(boot_nonterminal)
+            trunc_flag_buffer.append(trunc_flag)
+            trunc_boot_buffer.append(trunc_boot_val)
 
             mask_tensor = mask.unsqueeze(1)
             hx = hx * mask_tensor
             cx = cx * mask_tensor
 
+            is_scenario_arr = infos.get("is_scenario", np.zeros(num_envs, dtype=np.float32))
             for i, done in enumerate(dones):
                 if done:
-                    reward_history.append(ep_rewards[i])
-                    shaping_history.append(ep_shaping[i])
-                    ep_len_history.append(ep_steps[i])
-                    ally_end, enemy_end = building_hp_end(next_obs[i])
-                    ally_bldg_end_history.append(ally_end)
-                    enemy_bldg_end_history.append(enemy_end)
+                    episodes_completed += 1
+                    if is_scenario_arr[i] > 0.5:
+                        # Scenario defense scored on its own axis, kept OUT of the
+                        # matchup histories so the headline W/L/D and the length/
+                        # building-HP progress curves stay pure normal-game signals.
+                        # Success = the episode did not end in a tower/game loss.
+                        scenario_success_history.append(1.0 if step_rewards[i] > -0.5 else 0.0)
+                    else:
+                        reward_history.append(ep_rewards[i])
+                        shaping_history.append(ep_shaping[i])
+                        ep_len_history.append(ep_steps[i])
+                        ally_end, enemy_end = building_hp_end(next_obs[i])
+                        ally_bldg_end_history.append(ally_end)
+                        enemy_bldg_end_history.append(enemy_end)
+                        if step_rewards[i] > 0.5:
+                            outcome_value = 1
+                        elif step_rewards[i] < -0.5:
+                            outcome_value = -1
+                        else:
+                            outcome_value = 0
+                        outcome_history.append(outcome_value)
+                        outcome_history_long.append(outcome_value)
                     ep_rewards[i] = 0
                     ep_shaping[i] = 0
                     ep_steps[i] = 0
-                    episodes_completed += 1
 
-                    if step_rewards[i] > 0.5:
-                        outcome_value = 1
-                    elif step_rewards[i] < -0.5:
-                        outcome_value = -1
-                    else:
-                        outcome_value = 0
-                    outcome_history.append(outcome_value)
-                    outcome_history_long.append(outcome_value)
-
-                    if episodes_completed % 10 == 0:
+                    if episodes_completed % 10 == 0 and outcome_history:
                         outcomes = np.array(outcome_history)
                         wins = int((outcomes == 1).sum())
                         losses = int((outcomes == -1).sum())
@@ -897,9 +1163,23 @@ def train_selfplay_ppo():
                         decisive_wr = wins / decided if decided > 0 else 0.0
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
+                        scenario_sr = np.mean(scenario_success_history) if scenario_success_history else float("nan")
+                        # ep_len_history is in bot-steps (each step == skip_frames ticks,
+                        # 10 by default -- see envs.step(action) above, which never
+                        # overrides it), so *10 converts to real engine ticks. A short
+                        # average here (well under a few hundred ticks) means most
+                        # recent games are ending fast -- worth knowing whether that's
+                        # decisive, well-played games or a degenerate/exploited shortcut,
+                        # not just inferring it from the win-rate number alone.
+                        avg_ticks_50 = np.mean(ep_len_history) * 10 if ep_len_history else float("nan")
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
+                              f"ScenDef: {scenario_sr:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
                               f"Pool: {len(historical_pool)} | Entropy: {current_entropy_coef:.4f}")
+                        writer.add_scalar("Progress/Episode_Length_Ticks_50", avg_ticks_50, episodes_completed)
+                        if scenario_success_history:
+                            writer.add_scalar("Scenario/Defense_Success_Rate", scenario_sr, episodes_completed)
+                            writer.add_scalar("Scenario/Sample_Count", len(scenario_success_history), episodes_completed)
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
@@ -962,6 +1242,9 @@ def train_selfplay_ppo():
         rewards_seq = torch.stack(rewards_buffer)
         masks_seq = torch.stack(masks_buffer)
         valid_seq = torch.stack(valid_buffer)
+        boot_nonterminal_seq = torch.stack(boot_nonterminal_buffer)
+        trunc_flag_seq = torch.stack(trunc_flag_buffer)
+        trunc_boot_seq = torch.stack(trunc_boot_buffer)
 
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
@@ -975,8 +1258,15 @@ def train_selfplay_ppo():
         advantages_seq = torch.zeros_like(rewards_seq)
         gae = torch.zeros(num_envs).to(device)
         for t in reversed(range(update_timestep)):
-            next_val = next_value if t == update_timestep - 1 else values_seq[t + 1]
-            delta = rewards_seq[t] + gamma * next_val * masks_seq[t] - values_seq[t]
+            base_next_val = next_value if t == update_timestep - 1 else values_seq[t + 1]
+            # On a truncation/timeout step, values_seq[t+1] belongs to the NEXT
+            # (already-reset) episode, so it must NOT be used as this step's
+            # next-state value -- swap in the captured V(final_obs) bootstrap.
+            # boot_nonterminal zeroes the whole bootstrap term on true terminals.
+            next_val = torch.where(trunc_flag_seq[t] > 0.5, trunc_boot_seq[t], base_next_val)
+            delta = rewards_seq[t] + gamma * next_val * boot_nonterminal_seq[t] - values_seq[t]
+            # Trace still cut at every episode boundary (masks_seq = 1-done, folded
+            # with valid) -- unchanged.
             gae = delta + gamma * gae_lambda * masks_seq[t] * gae
             advantages_seq[t] = gae
 
@@ -1092,6 +1382,9 @@ def train_selfplay_ppo():
         rewards_buffer.clear()
         masks_buffer.clear()
         valid_buffer.clear()
+        boot_nonterminal_buffer.clear()
+        trunc_flag_buffer.clear()
+        trunc_boot_buffer.clear()
 
         hx, cx = hx.detach(), cx.detach()
 
@@ -1144,7 +1437,8 @@ def train_selfplay_ppo():
 
         if episodes_completed - last_replay_ep >= 1000 and historical_pool:
             print(f"Generating replay video for episode {episodes_completed}...")
-            test_env = MicroRoyaleSelfPlayEnv()
+            # Scenarios OFF: a demo replay should show a normal full game.
+            test_env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
             # Newest/strongest known pool entry -- purely for a representative
             # demo/monitoring replay, unrelated to PFSP sampling or eval.
             demo_opponent_path = historical_pool[-1]
