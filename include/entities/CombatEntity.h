@@ -36,6 +36,11 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
 // (see update() below) calls this directly from inside the class body.
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
     int excludeId, int attackerTeam);
+// Forward-declared for the same reason: Hero Knight's Triumphant Taunt
+// (see HeroKnightTauntEffect) calls this directly, and it's defined later
+// in this file alongside applyPullNearby/applySplashDamage.
+inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
+    int taunterId, int taunterTeam);
 
 class CombatEntity : public CardEntity {
 protected:
@@ -157,6 +162,22 @@ public:
     // per-attacker. Doesn't regenerate. 0 (the default) is every card
     // without one.
     int shieldHp = 0;
+    // Fixed-duration shield expiry (Hero Knight's Triumphant Taunt: the
+    // shield lasts exactly 5s even if never fully depleted by damage) --
+    // distinct from shieldHp's own permanent variant above, which never
+    // expires on its own. 0 (the default) is every card using the
+    // permanent shieldHp above unaffected -- update() only zeroes shieldHp
+    // once this counts down to 0, never touching it otherwise.
+    int shieldExpiresTicksRemaining = 0;
+
+    // Forced retarget (Hero Knight's Triumphant Taunt): while > 0, this
+    // entity's update() is forced onto forcedTargetEntityId instead of its
+    // own normal resolveCurrentTarget()/findTarget() resolution -- see
+    // applyTauntNearby below and update()'s own targeting block. 0 (the
+    // default) is every card without one, whose targeting is entirely
+    // unaffected.
+    int forcedTargetEntityId = -1;
+    int forcedTargetTicksRemaining = 0;
 
     // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
     // Bandit): once this attacker has moved at least chargeThreshold tiles
@@ -707,6 +728,11 @@ public:
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
         if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
         if (selfHasteTicksRemaining > 0) selfHasteTicksRemaining--;
+        if (forcedTargetTicksRemaining > 0) forcedTargetTicksRemaining--;
+        if (shieldExpiresTicksRemaining > 0) {
+            shieldExpiresTicksRemaining--;
+            if (shieldExpiresTicksRemaining == 0) shieldHp = 0;
+        }
 
         // Poison-style damage-over-time mark from PoisonOnHit (Dart
         // Goblin/Firecracker Evolutions) -- independent of freeze/curse,
@@ -756,12 +782,28 @@ public:
         // "stun resets the charge" rule (below) being a full reset, not
         // just a number going back to 0 while the old fight continues
         // uninterrupted.
-        auto target = wasFrozen ? nullptr : resolveCurrentTarget(board);
-        if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
-            target = nullptr;
+        // Forced retarget (Hero Knight's Triumphant Taunt) overrides the
+        // whole normal lock/findTarget chain below outright -- resolved
+        // first, same linear id-scan idiom as resolveCurrentTarget itself.
+        // Once forced, this becomes THE target for every purpose below
+        // (movement, lock bookkeeping, attack) exactly like any normally-
+        // resolved one; forcedTargetTicksRemaining <= 0 (every card without
+        // an active taunt on it) leaves this whole block a no-op, falling
+        // straight through to the unchanged original resolution.
+        std::shared_ptr<Entity> target;
+        if (forcedTargetTicksRemaining > 0) {
+            for (const auto& e : board.getEntities()) {
+                if (e->id == forcedTargetEntityId && e->isAlive() && e->isTargetable()) { target = e; break; }
+            }
         }
         if (!target) {
-            target = findTarget(board);
+            target = wasFrozen ? nullptr : resolveCurrentTarget(board);
+            if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
+                target = nullptr;
+            }
+            if (!target) {
+                target = findTarget(board);
+            }
         }
 
         if (target) {
@@ -1139,6 +1181,24 @@ inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, 
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
         pullToward(*entity, origin, distance);
+    }
+}
+
+// Taunt (Hero Knight's Triumphant Taunt): forces every valid enemy within
+// `radius` of `origin` onto `taunterId` as their target for `ticks` --
+// see CombatEntity::forcedTargetEntityId/forcedTargetTicksRemaining and
+// update()'s own targeting block for how this actually overrides normal
+// targeting. No-op when radius or ticks <= 0.
+inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
+        int taunterId, int taunterTeam) {
+    if (radius <= 0.0f || ticks <= 0) return;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->team == taunterTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        if (auto ce = std::dynamic_pointer_cast<CombatEntity>(entity)) {
+            ce->forcedTargetEntityId = taunterId;
+            ce->forcedTargetTicksRemaining = ticks;
+        }
     }
 }
 

@@ -4,6 +4,7 @@
 #include "GameManager.h"
 #include "HeroMiniPekkaBoostEffect.h"
 #include "SpawnOnAbility.h"
+#include "HeroKnightTauntEffect.h"
 
 // ---------------- registry wiring: one sanity check per Hero ----------------
 // Stage 1 pilot pair -- both use zero new engine primitives, proving the
@@ -136,4 +137,82 @@ TEST_CASE("A Hero's one-use ability (usesLimit=1) can't be reactivated once spen
 
     REQUIRE(game.activateChampionAbility(0, 1));
     REQUIRE_FALSE(game.activateChampionAbility(0, 1)); // usesRemaining exhausted, no cooldown to wait out
+}
+
+// ---------------- Hero Knight (166): taunt + expiring shield ----------------
+
+TEST_CASE("Hero Knight (166) is registered with base Knight's stats and the Taunt ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(166);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    REQUIRE_FALSE(def->isChampion);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 1766); // base Knight's own hp, copied verbatim -- see CardRegistry.h id 0
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
+    REQUIRE(hero->abilityCooldownTicks == 250);
+}
+
+TEST_CASE("HeroKnightTauntEffect forces nearby enemies to retarget and grants an expiring shield",
+        "[hero_knight]") {
+    Board board;
+    auto knight = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1766, 0, 1.2f, 202, 12);
+    // applyTauntNearby only forces entities it can dynamic_pointer_cast to
+    // CombatEntity -- a plain DummyEntity (: Entity, not : CombatEntity)
+    // would never pick up forcedTargetEntityId at all.
+    auto enemy = std::make_shared<StationaryCombatant>(2, 6.0f, 5.0f, 10000, 1, 1.0f, 100, 10); // dist 1.0, within radius 6.5
+    spawn(board, knight);
+    spawn(board, enemy);
+
+    HeroKnightTauntEffect effect(880, 50, 6.5f);
+    effect.apply(board, *knight);
+
+    REQUIRE(knight->shieldHp == 880);
+    REQUIRE(knight->shieldExpiresTicksRemaining == 50);
+    REQUIRE(enemy->forcedTargetEntityId == 1);
+    REQUIRE(enemy->forcedTargetTicksRemaining == 50);
+}
+
+TEST_CASE("A taunted CombatEntity's update() locks onto the taunter regardless of its own normal targeting",
+        "[hero_knight]") {
+    Board board;
+    auto knight = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1766, 0, 1.2f, 202, 12);
+    // Wide attack range so both potential targets are already in range this
+    // same tick -- isolates the assertion to targeting, not movement/chase.
+    auto tauntedAttacker = std::make_shared<StationaryCombatant>(2, 6.0f, 5.0f, 1000, 1, 5.0f, 100, 10);
+    // Closer than the Knight -- what tauntedAttacker's own ordinary
+    // findTarget() would pick if the taunt weren't overriding it.
+    auto trueDecoy = std::make_shared<DummyEntity>(3, 6.5f, 5.0f, 1000, 0);
+    spawn(board, knight);
+    spawn(board, tauntedAttacker);
+    spawn(board, trueDecoy);
+
+    tauntedAttacker->forcedTargetEntityId = knight->id;
+    tauntedAttacker->forcedTargetTicksRemaining = 50;
+    tauntedAttacker->update(board);
+
+    REQUIRE(tauntedAttacker->lastTargetId == knight->id); // forced onto the Knight, not the closer trueDecoy
+}
+
+TEST_CASE("A fixed-duration shield clears once shieldExpiresTicksRemaining runs out, taunt with it", "[hero_knight]") {
+    Board board;
+    auto knight = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1766, 0, 1.2f, 202, 12);
+    spawn(board, knight);
+
+    HeroKnightTauntEffect effect(880, 3, 6.5f); // short 3-tick duration for a fast test
+    effect.apply(board, *knight);
+    REQUIRE(knight->shieldHp == 880);
+
+    knight->update(board);
+    knight->update(board);
+    REQUIRE(knight->shieldHp == 880); // still active after 2 of 3 ticks
+
+    knight->update(board); // the 3rd tick: duration elapses
+    REQUIRE(knight->shieldHp == 0);
+    REQUIRE(knight->shieldExpiresTicksRemaining == 0);
 }

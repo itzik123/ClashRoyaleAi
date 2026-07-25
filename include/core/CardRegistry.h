@@ -33,6 +33,7 @@
 #include "PeriodicFreezeNearestEffect.h"
 #include "DarkGuardOnDamageEffect.h"
 #include "HeroMiniPekkaBoostEffect.h"
+#include "HeroKnightTauntEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -2033,6 +2034,17 @@ private:
         add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
             .withSightRange(6.0f)
             .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
+
+        // Hero Knight. Base stats copied from card id 0 (Knight), see that
+        // registration above. "Triumphant Taunt" (2 elixir, 250-tick/25s
+        // cooldown): gains a shield and forces enemies within 6.5 tiles to
+        // attack him for 50 ticks/5s -- see HeroKnightTauntEffect,
+        // CombatEntity::forcedTargetEntityId/shieldExpiresTicksRemaining.
+        // Shield amount isn't part of the sourced data -- a reasonable
+        // engine-internal constant (roughly half his own hp), same caveat
+        // as splashRadius/shieldHp elsewhere in this file.
+        add(troop(166, "Hero Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
+            .withHeroAbility(2.0f, 250, std::make_shared<HeroKnightTauntEffect>(880, 50, 6.5f)));
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===
