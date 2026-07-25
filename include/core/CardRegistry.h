@@ -38,6 +38,7 @@
 #include "HeroGiantHurlEffect.h"
 #include "HeroMegaMinionWarpEffect.h"
 #include "HeroMagicArcherTripleThreatEffect.h"
+#include "HeroIceGolemSnowstormEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -2106,6 +2107,20 @@ private:
             .withSplash(0.25f).withLineSplash(11.0f).withSightRange(7.5f)
             .withHeroAbility(2.0f, 250, std::make_shared<HeroMagicArcherTripleThreatEffect>(
                 5.0f, heroMagicArcherDecoyStats(), 70)));
+
+        // Hero Ice Golem. Base stats copied from card id 40 (Ice Golem),
+        // see that registration above. "Snowstorm" (2 elixir, 170-tick/17s
+        // cooldown): 3 staggered blasts in a 4-tile radius -- the first two
+        // push+damage+slow, the third a full 15-tick/1.5s freeze -- damage
+        // to Crown Towers reduced via AreaSpell's new
+        // spellTowerDamageMultiplier. See HeroIceGolemSnowstormEffect.
+        // Per-blast damage/knockback/slow strength aren't part of the
+        // sourced data -- reasonable engine-internal constants, same
+        // caveat as splashRadius/shieldHp elsewhere in this file.
+        add(troop(175, "Hero Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, 0.4f, 0.75f, 84, 25, 'c')
+            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f)
+            .withHeroAbility(2.0f, 170, std::make_shared<HeroIceGolemSnowstormEffect>(4.0f, 80, 1.0f, 20, 0.6f, 15)));
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===

@@ -9,6 +9,8 @@
 #include "HeroGiantHurlEffect.h"
 #include "HeroMegaMinionWarpEffect.h"
 #include "HeroMagicArcherTripleThreatEffect.h"
+#include "HeroIceGolemSnowstormEffect.h"
+#include "AreaSpell.h"
 #include "TargetingHelpers.h"
 #include "Tower.h"
 
@@ -464,4 +466,87 @@ TEST_CASE("The temporary split-target window restores maxSplitTargets once it el
 
     archer->update(board); // the 3rd tick: window elapses
     REQUIRE(archer->maxSplitTargets == 1);
+}
+
+// ---------------- Hero Ice Golem (175) ----------------
+
+TEST_CASE("Hero Ice Golem (175) is registered with base Ice Golem's stats and the Snowstorm ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(175);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 1315); // base Ice Golem's own hp, copied verbatim -- see CardRegistry.h id 40
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
+    REQUIRE(hero->abilityCooldownTicks == 170);
+}
+
+TEST_CASE("HeroIceGolemSnowstormEffect's first blast damages/slows, discounting Tower damage",
+        "[hero_ice_golem]") {
+    Board board;
+    auto golem = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1315, 0, 0.75f, 84, 25);
+    auto enemyTroop = std::make_shared<StationaryCombatant>(2, 5.5f, 5.0f, 10000, 1, 1.0f, 100, 10);
+    auto enemyTower = std::make_shared<Tower>(3, 4.5f, 5.0f, 5000, 1, 7.0f, 90, 10, 'R');
+    spawn(board, golem);
+    spawn(board, enemyTroop);
+    spawn(board, enemyTower);
+
+    HeroIceGolemSnowstormEffect effect(4.0f, 80, 1.0f, 20, 0.6f, 15);
+    effect.apply(board, *golem);
+    board.commitPendingEntities();
+
+    std::vector<std::shared_ptr<AreaSpell>> blasts;
+    for (const auto& e : board.getEntities()) {
+        if (auto spell = std::dynamic_pointer_cast<AreaSpell>(e)) blasts.push_back(spell);
+    }
+    REQUIRE(blasts.size() == 3);
+
+    blasts[0]->update(board); // delayTicks=0: fires immediately
+    REQUIRE(enemyTroop->hp == 10000 - 80);
+    REQUIRE(enemyTower->hp == 5000 - 4); // 80 * 0.05 spellTowerDamageMultiplier, rounded down
+    REQUIRE(enemyTroop->freezeTicks == 20);
+    REQUIRE(enemyTroop->freezeSlow == Catch::Approx(0.6f)); // partial slow, not a full freeze
+}
+
+TEST_CASE("HeroIceGolemSnowstormEffect's third blast fully freezes instead of slowing", "[hero_ice_golem]") {
+    Board board;
+    auto golem = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1315, 0, 0.75f, 84, 25);
+    auto enemyTroop = std::make_shared<StationaryCombatant>(2, 5.5f, 5.0f, 10000, 1, 1.0f, 100, 10);
+    spawn(board, golem);
+    spawn(board, enemyTroop);
+
+    HeroIceGolemSnowstormEffect effect(4.0f, 80, 1.0f, 20, 0.6f, 15);
+    effect.apply(board, *golem);
+    board.commitPendingEntities();
+
+    std::vector<std::shared_ptr<AreaSpell>> blasts;
+    for (const auto& e : board.getEntities()) {
+        if (auto spell = std::dynamic_pointer_cast<AreaSpell>(e)) blasts.push_back(spell);
+    }
+    REQUIRE(blasts.size() == 3);
+
+    for (int i = 0; i < 11; ++i) blasts[2]->update(board); // delayTicks=10: needs 11 calls to fire
+    REQUIRE(enemyTroop->freezeTicks == 15);
+    REQUIRE(enemyTroop->freezeSlow == Catch::Approx(0.0f)); // full freeze, not a partial slow
+}
+
+TEST_CASE("AreaSpell's spellTowerDamageMultiplier only discounts Tower targets, not ordinary troops",
+        "[targeting_helpers][area_spell]") {
+    Board board;
+    auto troop1 = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1000, 1, 1.0f, 100, 10);
+    spawn(board, troop1);
+
+    auto spell = std::make_shared<AreaSpell>(
+        board.allocateId(), 5.0f, 5.0f, 0, 4.0f, 100, 0, '*', nullptr, false, 1, 0,
+        false, 1.0f, 0, 0.0f, nullptr, false, 0, false, 0, 0, 0, 0.05f);
+    board.addEntity(spell);
+    board.commitPendingEntities();
+
+    spell->update(board);
+    REQUIRE(troop1->hp == 1000 - 100); // full damage -- the discount only ever applies to isTower() targets
 }
