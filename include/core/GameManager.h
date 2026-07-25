@@ -12,6 +12,7 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <random>
 
 class GameManager {
 public:
@@ -42,6 +43,11 @@ private:
     // caller's own side (Board itself only enforces the river during
     // movement/clamping, not placement).
     static constexpr float OWN_HALF_RIVER_BUFFER = 0.5f;
+    // Seeded once (not on every reset() -- same pattern as ClashEnv::rng),
+    // so std::shuffle draws a genuinely fresh permutation each episode
+    // instead of the same one every reset. Feeds PlayerState::initializeDeck's
+    // random-hand overload.
+    std::mt19937 rng;
 
     std::vector<int> aiDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
     std::vector<int> oppDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -141,7 +147,7 @@ public:
     GameManager(const std::vector<int>& aiDeck, const std::vector<int>& opponentDeck,
             TowerTroopType aiTowerTroopType = TowerTroopType::None,
             TowerTroopType oppTowerTroopType = TowerTroopType::None)
-        : gameOver(false), loserTeam(-1) {
+        : gameOver(false), loserTeam(-1), rng(std::random_device{}()) {
         aiDeckConfig = aiDeck;
         oppDeckConfig = opponentDeck;
         aiTowerTroop = aiTowerTroopType;
@@ -384,8 +390,8 @@ public:
         std::string oppErr = validateDeckSlots(oppDeckConfig);
         if (!oppErr.empty()) throw std::invalid_argument("GameManager: invalid opponent deck -- " + oppErr);
 
-        playerAI.initializeDeck(aiDeckConfig);
-        playerOpponent.initializeDeck(oppDeckConfig);
+        playerAI.initializeDeck(aiDeckConfig, rng);
+        playerOpponent.initializeDeck(oppDeckConfig, rng);
 
         // King Tower is rendered as a 4x4-tile footprint (see web/viewer.html's
         // sizeInTiles), which only sits flush on whole tile boundaries when
@@ -428,6 +434,8 @@ public:
 
         playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE, 10.0f);
         playerOpponent.elixir = std::min(playerOpponent.elixir + ELIXIR_REGEN_RATE * oppElixirMultiplier, 10.0f);
+        playerAI.tick();
+        playerOpponent.tick();
 
         board.commitPendingEntities(currentTick);
 

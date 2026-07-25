@@ -34,11 +34,15 @@ TEST_CASE("isChampionAbilityReady/activateChampionAbility return false with noth
 
 TEST_CASE("step()'s activateAbility param defaults to false and only fires when explicitly true", "[clash_env][champion]") {
     // Mighty Miner in deck slot 1 (the Heroic slot -- Champions are only
-    // legal in slot 1 or 2, see CardRegistry::validateDeckSlots), still hand
-    // index 1 at match start (opening hand is deck[0..3] in order).
+    // legal in slot 1 or 2, see CardRegistry::validateDeckSlots). The
+    // opening hand is now randomized (see PlayerState::initializeDeck's rng
+    // overload), so deck order no longer guarantees hand order -- force him
+    // into hand index 1 directly via the test-only debugGame() accessor
+    // (ClashEnv wraps GameManager privately, so this is the only way in).
     std::vector<int> deck = { 1, 115, 2, 3, 4, 5, 6, 7 };
     ClashEnv env(deck, deck, 100);
     env.reset();
+    env.debugGame().playerAI.hand[1] = 115;
 
     env.step(1, 9.0f, 10.0f, 1); // deploy Mighty Miner; activateAbility defaults to false
     REQUIRE(env.isChampionAbilityReady(0)); // deployed, off cooldown, affordable

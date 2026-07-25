@@ -4,6 +4,8 @@
 #include "BuildingTargeter.h"
 #include "Building.h"
 #include <vector>
+#include <algorithm>
+#include <random>
 
 // ---------------- construction / reset ----------------
 
@@ -53,7 +55,14 @@ TEST_CASE("GameManager construction gives both players starting elixir and a 4-c
     REQUIRE(game.getElixirOpp() == Catch::Approx(5.0f));
     REQUIRE(game.getHand(0).size() == 4);
     REQUIRE(game.getHand(1).size() == 4);
-    REQUIRE(game.getHand(1)[0] == 8);
+    // The opening hand is now a random 4-of-8 (see PlayerState::
+    // initializeDeck's rng overload), not necessarily deck[0..3] in order --
+    // confirm it's still a genuine subset of the opponent's own deck instead
+    // of asserting a specific (no longer guaranteed) index.
+    std::vector<int> oppDeck = { 8,9,10,11,12,13,14,17 };
+    for (int cardId : game.getHand(1)) {
+        REQUIRE(std::find(oppDeck.begin(), oppDeck.end(), cardId) != oppDeck.end());
+    }
 }
 
 TEST_CASE("GameManager construction throws on a deck that fails validateDeckSlots", "[game_manager][reset][deck_slots]") {
@@ -125,12 +134,18 @@ TEST_CASE("isValidPlacement lets deployAnywhere troops (Miner, Goblin Drill) ign
 TEST_CASE("Miner can be played deep in the opponent's half via GameManager::playCard, unlike an ordinary troop", "[game_manager][placement]") {
     GameManager game({ 52, 0, 1, 2, 3, 4, 5, 6 }, { 0,1,2,3,4,5,6,7 }); // Miner (52) first in the AI's deck
     game.playerAI.elixir = 10.0f;
+    game.playerAI.hand[0] = 52; // force into hand -- opening hand is now randomized (see PlayerState::initializeDeck's rng overload)
 
     REQUIRE(game.playCard(0, 52, 9.0f, 25.0f)); // deep in the opponent's half: succeeds for Miner
 }
 
 TEST_CASE("Elixir Collector passively grants its owner extra elixir beyond normal regen", "[game_manager][elixir]") {
     GameManager game({ 99, 0, 1, 2, 3, 4, 5, 6 }, { 0,1,2,3,4,5,6,7 }); // Elixir Collector (99) first in the AI's deck
+    // Elixir Collector is now GUARANTEED excluded from the real opening hand
+    // (see PlayerState::initializeDeck's rng overload) -- force it in
+    // directly for this test, which is about ITS OWN mechanic once
+    // deployed, not the opening-hand exclusion rule itself.
+    game.playerAI.hand[0] = 99;
     game.playerAI.elixir = 10.0f; // enough to afford its cost (6)
     REQUIRE(game.playCard(0, 99, 9.0f, 10.0f));
 
@@ -170,6 +185,12 @@ TEST_CASE("isValidPlacement's required gap tracks the placed card's own footprin
 
 TEST_CASE("playCard: successful play deducts elixir, cycles the hand, and spawns the entity", "[game_manager][play_card]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 8,9,10,11,12,13,14,17 });
+    // Force the deterministic hand/queue partition this test depends on --
+    // it's specifically testing the cycling MECHANISM (played slot backfills
+    // from deckQueue.front()), which random hand selection (see
+    // PlayerState::initializeDeck's rng overload) would otherwise obscure.
+    game.playerAI.hand = { 0, 1, 2, 3 };
+    game.playerAI.deckQueue = { 4, 5, 6, 7 };
     REQUIRE(game.getHand(0) == std::vector<int>{0, 1, 2, 3});
     REQUIRE(game.getElixirAI() == Catch::Approx(5.0f));
 
@@ -195,6 +216,7 @@ TEST_CASE("playCard fails if the card id is not currently in hand", "[game_manag
 
 TEST_CASE("playCard fails if elixir is insufficient, without spending any", "[game_manager][play_card]") {
     GameManager game({ 19,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 }); // Golem costs 8.0, starting elixir 5.0
+    game.playerAI.hand[0] = 19; // force into hand -- opening hand is now randomized
     bool played = game.playCard(0, 19, 9.0f, 10.0f);
     REQUIRE_FALSE(played);
     REQUIRE(game.getElixirAI() == Catch::Approx(5.0f));
@@ -203,6 +225,7 @@ TEST_CASE("playCard fails if elixir is insufficient, without spending any", "[ga
 
 TEST_CASE("playCard fails for a placement in the opponent's half, without spending elixir", "[game_manager][play_card]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[0] = 0; // force into hand -- opening hand is now randomized
     bool played = game.playCard(0, 0, 9.0f, 20.0f); // team 0, deep in team 1's half
     REQUIRE_FALSE(played);
     REQUIRE(game.getElixirAI() == Catch::Approx(5.0f));
@@ -314,6 +337,7 @@ TEST_CASE("A full scripted mini-match produces sane getStatistics() output", "[g
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     Board& board = game.getBoard();
 
+    game.playerAI.hand[0] = 0; // force into hand -- opening hand is now randomized
     bool played = game.playCard(0, 0, 9.0f, 10.0f); // Knight, cost 3.0
     REQUIRE(played);
 
@@ -336,6 +360,7 @@ TEST_CASE("A full scripted mini-match produces sane getStatistics() output", "[g
 
 TEST_CASE("GameManager::reset() gives a fresh MatchStatistics, not stale numbers from the previous match", "[game_manager][statistics]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[0] = 0; // force into hand -- opening hand is now randomized
     bool played = game.playCard(0, 0, 9.0f, 10.0f); // Knight, cost 3.0
     REQUIRE(played);
     game.step();
@@ -344,6 +369,7 @@ TEST_CASE("GameManager::reset() gives a fresh MatchStatistics, not stale numbers
     REQUIRE(game.getStatistics().cardsPlayed(0).size() == 1);
 
     game.reset();
+    game.playerAI.hand[0] = 0; // reset() re-shuffles too -- force it again
 
     REQUIRE(game.getStatistics().elixirSpent(0) == Catch::Approx(0.0f));
     REQUIRE(game.getStatistics().cardsPlayed(0).empty());
@@ -382,18 +408,89 @@ TEST_CASE("PlayerState::playCard does not spend elixir when the deck queue is em
     REQUIRE(player.hand[0] == 0);                  // hand slot untouched
 }
 
+// ---------------- random opening hand / hand cycle-delay ----------------
+
+TEST_CASE("PlayerState::initializeDeck's random-hand overload excludes Elixir Collector/Mirror from the opening hand",
+        "[player_state][hand_random]") {
+    std::mt19937 rng(12345);
+    std::vector<int> deck = { 99, 164, 0, 1, 2, 3, 4, 5 }; // Elixir Collector + Mirror both present
+    for (int trial = 0; trial < 200; ++trial) {
+        PlayerState player;
+        player.initializeDeck(deck, rng);
+        REQUIRE(player.hand.size() == 4);
+        REQUIRE(std::find(player.hand.begin(), player.hand.end(), 99) == player.hand.end());
+        REQUIRE(std::find(player.hand.begin(), player.hand.end(), 164) == player.hand.end());
+
+        // hand + deckQueue together are still a permutation of the original
+        // 8 -- nothing lost or duplicated by the shuffle/fix-up.
+        std::vector<int> combined(player.hand.begin(), player.hand.end());
+        combined.insert(combined.end(), player.deckQueue.begin(), player.deckQueue.end());
+        std::sort(combined.begin(), combined.end());
+        std::vector<int> expected = deck;
+        std::sort(expected.begin(), expected.end());
+        REQUIRE(combined == expected);
+    }
+}
+
+TEST_CASE("Random-hand initializeDeck seeds championSlots by ORIGINAL deck index, not wherever the shuffle put the card",
+        "[player_state][hand_random][champion]") {
+    std::mt19937 rng(777);
+    std::vector<int> deck = { 1, 115, 2, 3, 4, 5, 6, 7 }; // Mighty Miner (Champion) at ORIGINAL index 1
+    for (int trial = 0; trial < 50; ++trial) {
+        PlayerState player;
+        player.initializeDeck(deck, rng);
+        // Always seeded by the ORIGINAL deck index (1), regardless of
+        // whether the shuffle put card 115 in the opening hand at all, or
+        // at a different hand index -- confirms championSlots tracks deck
+        // position, not wherever the shuffle happened to land the card.
+        REQUIRE(player.championSlots.count(1) == 1);
+        REQUIRE(player.championSlots.count(2) == 0);
+    }
+}
+
+TEST_CASE("A freshly-cycled-in hand slot is unplayable for 19 ticks, playable on the 20th -- the opening hand needs no such wait",
+        "[player_state][cycle_delay]") {
+    PlayerState player;
+    player.initializeDeck({ 0, 1, 2, 3, 4, 5, 6, 7 }); // deterministic overload: hand={0,1,2,3}, queue={4,5,6,7}
+    player.elixir = 100.0f;
+
+    // Opening hand needs no wait at all.
+    auto opening = player.playCard(0);
+    REQUIRE(opening.cardId == 0);
+
+    // hand[0] is now 4 (cycled in from deckQueue.front()) with a fresh
+    // 20-tick cooldown -- unplayable for the next 19 ticks...
+    REQUIRE(player.hand[0] == 4);
+    for (int i = 0; i < 19; ++i) {
+        auto blocked = player.playCard(0);
+        REQUIRE(blocked.cardId == -1); // still cooling down
+        REQUIRE(player.hand[0] == 4);  // nothing consumed, hand slot untouched
+        player.tick();
+    }
+    auto stillBlocked = player.playCard(0); // 19 ticks elapsed -- one more needed
+    REQUIRE(stillBlocked.cardId == -1);
+
+    // ...and playable once the 20th tick lands.
+    player.tick();
+    auto afterCooldown = player.playCard(0);
+    REQUIRE(afterCooldown.cardId == 4);
+}
+
 // ---------------- activateChampionAbility ----------------
 // Deck seeds card 115 (Mighty Miner) at deck slot 1 (the Heroic slot --
 // Champions are only legal in slot 1 or 2, see CardRegistry::
-// validateDeckSlots), which is still in the starting hand -- affordable
-// (4.0 elixir) from the starting 5.0, so game.playCard(0, 115, 9.0f, 10.0f)
-// (team 0's own half, same spot playCard's own "fails once game over" test
-// above already uses) reliably deploys him before each ability test.
-// activateChampionAbility(0) below relies on its slot parameter defaulting
-// to 1, matching where he's seeded.
+// validateDeckSlots). The opening hand is now randomized (see
+// PlayerState::initializeDeck's rng overload), so each test below forces
+// game.playerAI.hand[1] = 115 right after construction rather than relying
+// on him already being there -- affordable (4.0 elixir) from the starting
+// 5.0, so game.playCard(0, 115, 9.0f, 10.0f) (team 0's own half, same spot
+// playCard's own "fails once game over" test above already uses) reliably
+// deploys him before each ability test. activateChampionAbility(0) below
+// relies on its slot parameter defaulting to 1, matching where he's seeded.
 
 TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldown", "[game_manager][champion]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     float elixirBefore = game.getElixirAI();
@@ -406,6 +503,7 @@ TEST_CASE("activateChampionAbility fires, deducts elixir, and starts the cooldow
 
 TEST_CASE("activateChampionAbility feeds MatchStatistics' Champion ability tracking", "[game_manager][champion][stats]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
 
@@ -426,6 +524,7 @@ TEST_CASE("activateChampionAbility fails when the team has no deployed Champion"
 
 TEST_CASE("activateChampionAbility fails when unaffordable, without deducting anything", "[game_manager][champion]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 0.5f; // below the 1.0 ability cost
@@ -438,6 +537,7 @@ TEST_CASE("activateChampionAbility fails when unaffordable, without deducting an
 
 TEST_CASE("activateChampionAbility fails while still on cooldown", "[game_manager][champion]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 10.0f; // plenty for a second attempt, if cooldown didn't block it
@@ -448,6 +548,7 @@ TEST_CASE("activateChampionAbility fails while still on cooldown", "[game_manage
 
 TEST_CASE("activateChampionAbility is ready again once its full cooldown elapses via step()", "[game_manager][champion]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     game.playerAI.elixir = 10.0f;
@@ -477,6 +578,7 @@ TEST_CASE("activateChampionAbility is ready again once its full cooldown elapses
 
 TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager][champion]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 115;
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step(); // commits the pending entity so findChampion can see it
     auto aiKing = game.getBoard().getEntities()[0];
@@ -492,6 +594,8 @@ TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager]
 TEST_CASE("Two different Champions in slots 1 and 2 have fully independent ability readiness", "[game_manager][champion][multi]") {
     GameManager game({ 1, 115, 118, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[1] = 115; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[2] = 118;
     game.playCard(0, 115, 9.0f, 10.0f);  // Mighty Miner -> slot 1
     game.playCard(0, 118, 12.0f, 10.0f); // Archer Queen -> slot 2
     game.step();
@@ -510,6 +614,7 @@ TEST_CASE("Two different Champions in slots 1 and 2 have fully independent abili
 TEST_CASE("Redeploying the same Champion tracks the newest instance for ability activation", "[game_manager][champion][multi]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[1] = 115; // force into hand -- opening hand is now randomized
     game.playCard(0, 115, 9.0f, 10.0f); // 1st deploy
     game.step();
 
@@ -521,6 +626,7 @@ TEST_CASE("Redeploying the same Champion tracks the newest instance for ability 
     REQUIRE(firstInstance != nullptr);
 
     game.playerAI.hand[1] = 115; // simulate it having cycled back to hand
+    game.playerAI.handCooldownTicks[1] = 0; // ...immediately playable, not still on the 1st deploy's cycle-in delay
     game.playCard(0, 115, 12.0f, 10.0f); // 2nd deploy, while the first is still alive
     game.step();
 
@@ -545,6 +651,7 @@ TEST_CASE("Redeploying the same Champion tracks the newest instance for ability 
 TEST_CASE("A Champion's ability cooldown persists across death and redeploy of the same slot", "[game_manager][champion][multi]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[1] = 115; // force into hand -- opening hand is now randomized
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step();
 
@@ -558,6 +665,7 @@ TEST_CASE("A Champion's ability cooldown persists across death and redeploy of t
     game.step(); // this tick's sync sees it already dead, leaves the persisted value at 129; cleans the corpse up
 
     game.playerAI.hand[1] = 115;
+    game.playerAI.handCooldownTicks[1] = 0; // immediately playable, not still on a cycle-in delay
     game.playerAI.elixir = 100.0f;
     game.playCard(0, 115, 9.0f, 10.0f); // redeploy -- should seed from the persisted cooldown, not start at 0
     game.step();
@@ -568,6 +676,7 @@ TEST_CASE("A Champion's ability cooldown persists across death and redeploy of t
 TEST_CASE("A cloned Champion can never activate the ability, even after the original dies", "[game_manager][champion][multi]") {
     GameManager game({ 1, 115, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[1] = 115; // force into hand -- opening hand is now randomized
     game.playCard(0, 115, 9.0f, 10.0f);
     game.step();
 
