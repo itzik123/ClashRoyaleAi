@@ -35,6 +35,8 @@
 #include "HeroMiniPekkaBoostEffect.h"
 #include "HeroKnightTauntEffect.h"
 #include "HeroWizardFieryFlightEffect.h"
+#include "HeroGiantHurlEffect.h"
+#include "HeroMegaMinionWarpEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -2058,6 +2060,30 @@ private:
         add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
             .withSplash(1.5f)
             .withHeroAbility(1.0f, 200, std::make_shared<HeroWizardFieryFlightEffect>(50, 4.0f, 20, 0.5f)));
+
+        // Hero Giant. Base stats copied from card id 2 (Giant), see that
+        // registration above. "Heroic Hurl" (2 elixir, 140-tick/14s
+        // cooldown): grabs the highest-HP enemy troop within short range
+        // (3.0 tiles -- not part of the sourced data, a reasonable
+        // engine-internal constant) and throws it to the opposite lane,
+        // stunning it 20 ticks/2s on landing -- see HeroGiantHurlEffect.
+        add(troop(169, "Hero Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G')
+            .withSightRange(7.5f)
+            .withHeroAbility(2.0f, 140, std::make_shared<HeroGiantHurlEffect>(3.0f, 20)));
+
+        // Hero Mega Minion. Base stats copied from card id 43 (Mega
+        // Minion), see that registration above. "Wounding Warp" (2 elixir,
+        // ONE USE per deployment, unusable for the first 15 ticks/1.5s
+        // after spawn -- see CardStats::withInitialAbilityCooldown):
+        // teleports (infinite range) to the lowest-HP enemy on the board
+        // and deals bonus damage on arrival -- see HeroMegaMinionWarpEffect.
+        // Bonus damage isn't part of the sourced data -- a reasonable
+        // engine-internal constant roughly matching her own per-hit
+        // damage, same caveat as splashRadius/shieldHp elsewhere.
+        add(troop(173, "Hero Mega Minion", 3.0f, Archetype::MeleeSquad, 837, 0.5f, 1.6f, 312, 15, 'F')
+            .withFlying().withTargetsAir()
+            .withHeroAbility(2.0f, 0, std::make_shared<HeroMegaMinionWarpEffect>(300), 1)
+            .withInitialAbilityCooldown(15));
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===

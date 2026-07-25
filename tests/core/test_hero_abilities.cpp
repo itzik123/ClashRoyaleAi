@@ -6,6 +6,10 @@
 #include "SpawnOnAbility.h"
 #include "HeroKnightTauntEffect.h"
 #include "HeroWizardFieryFlightEffect.h"
+#include "HeroGiantHurlEffect.h"
+#include "HeroMegaMinionWarpEffect.h"
+#include "TargetingHelpers.h"
+#include "Tower.h"
 
 // ---------------- registry wiring: one sanity check per Hero ----------------
 // Stage 1 pilot pair -- both use zero new engine primitives, proving the
@@ -275,4 +279,115 @@ TEST_CASE("A landed attack during the flight window pulses damage/pull centered 
     wizard->update(board); // lands the attack (currentCooldown starts at 0) -- fires the pulse too
 
     REQUIRE(bystander->hp < 10000); // caught by the pulse's splash damage, despite never being wizard's own attack target
+}
+
+// ---------------- findHpExtremeEnemy ----------------
+
+TEST_CASE("findHpExtremeEnemy picks the correct entity among mixed HP and excludes Towers", "[targeting_helpers]") {
+    Board board;
+    auto lowHp = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 100, 1);
+    auto midHp = std::make_shared<DummyEntity>(2, 2.0f, 0.0f, 500, 1);
+    auto highHp = std::make_shared<DummyEntity>(3, 3.0f, 0.0f, 900, 1);
+    auto tower = std::make_shared<Tower>(4, 4.0f, 0.0f, 5000, 1, 7.0f, 90, 10, 'R'); // higher hp than everything else, but excluded
+    auto ally = std::make_shared<DummyEntity>(5, 0.5f, 0.0f, 50, 0); // own team, excluded regardless of hp
+    spawn(board, lowHp);
+    spawn(board, midHp);
+    spawn(board, highHp);
+    spawn(board, tower);
+    spawn(board, ally);
+
+    auto highest = findHpExtremeEnemy(board, Vector2D{ 0.0f, 0.0f }, 0.0f, 0, /*wantHighestHp=*/true);
+    REQUIRE(highest != nullptr);
+    REQUIRE(highest->id == 3); // highHp, not the Tower
+
+    auto lowest = findHpExtremeEnemy(board, Vector2D{ 0.0f, 0.0f }, 0.0f, 0, /*wantHighestHp=*/false);
+    REQUIRE(lowest != nullptr);
+    REQUIRE(lowest->id == 1); // lowHp
+}
+
+TEST_CASE("findHpExtremeEnemy respects a bounded maxRadius", "[targeting_helpers]") {
+    Board board;
+    auto nearLowHp = std::make_shared<DummyEntity>(1, 1.0f, 0.0f, 100, 1);
+    auto farHigherHp = std::make_shared<DummyEntity>(2, 10.0f, 0.0f, 900, 1); // outside a 3.0 radius
+    spawn(board, nearLowHp);
+    spawn(board, farHigherHp);
+
+    auto highest = findHpExtremeEnemy(board, Vector2D{ 0.0f, 0.0f }, 3.0f, 0, /*wantHighestHp=*/true);
+    REQUIRE(highest != nullptr);
+    REQUIRE(highest->id == 1); // farHigherHp is out of range, so nearLowHp wins by default
+}
+
+// ---------------- Hero Giant (169) ----------------
+
+TEST_CASE("Hero Giant (169) is registered with base Giant's stats and the Heroic Hurl ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(169);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 3968); // base Giant's own hp, copied verbatim -- see CardRegistry.h id 2
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
+    REQUIRE(hero->abilityCooldownTicks == 140);
+}
+
+TEST_CASE("HeroGiantHurlEffect throws the highest-HP enemy in range across the lane and stuns it",
+        "[hero_giant]") {
+    Board board;
+    auto giant = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 3968, 0, 1.2f, 253, 15);
+    auto victim = std::make_shared<StationaryCombatant>(2, 6.0f, 5.0f, 1000, 1, 1.0f, 100, 10); // dist 1.0, within 3.0 grab range
+    spawn(board, giant);
+    spawn(board, victim);
+
+    HeroGiantHurlEffect effect(3.0f, 20);
+    effect.apply(board, *giant);
+
+    // Board width isn't asserted directly here (board geometry is a
+    // separate concern) -- only that the victim's X actually flipped
+    // (mirrored) and it's now stunned (fully frozen).
+    REQUIRE(victim->position.x != Catch::Approx(6.0f));
+    REQUIRE(victim->freezeTicks == 20);
+    REQUIRE(victim->freezeSlow == Catch::Approx(0.0f));
+}
+
+// ---------------- Hero Mega Minion (173) ----------------
+
+TEST_CASE("Hero Mega Minion (173) is registered with base Mega Minion's stats, a one-use ability, and a post-spawn lockout",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(173);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 837); // base Mega Minion's own hp, copied verbatim -- see CardRegistry.h id 43
+    REQUIRE(hero->isFlying);
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
+    REQUIRE(hero->abilityUsesRemaining == 1);
+    REQUIRE(hero->abilityCooldownRemaining == 15); // post-spawn lockout, seeded via CardFactories::applyCardMetadata
+}
+
+TEST_CASE("HeroMegaMinionWarpEffect teleports to the lowest-HP enemy anywhere and deals bonus damage",
+        "[hero_mega_minion]") {
+    Board board;
+    auto minion = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 837, 0, 1.6f, 312, 15);
+    auto farLowHp = std::make_shared<DummyEntity>(2, 30.0f, 30.0f, 400, 1); // far away -- infinite range still finds it
+    auto nearHigherHp = std::make_shared<DummyEntity>(3, 1.0f, 0.0f, 900, 1);
+    spawn(board, minion);
+    spawn(board, farLowHp);
+    spawn(board, nearHigherHp);
+
+    HeroMegaMinionWarpEffect effect(300);
+    effect.apply(board, *minion);
+
+    REQUIRE(minion->position.x == Catch::Approx(30.0f)); // teleported to the lowest-HP enemy, not the nearest one
+    REQUIRE(minion->position.y == Catch::Approx(30.0f));
+    REQUIRE(farLowHp->hp == 100); // 400 - 300 bonus damage
 }
