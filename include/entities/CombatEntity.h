@@ -137,6 +137,18 @@ public:
     // full damage if only one target is in range, matching the real card.
     // 1 (the default) is the normal single-target case every other card uses.
     int maxSplitTargets = 1;
+    // Temporary split-target window (Hero Magic Archer's Triple Threat):
+    // bumps maxSplitTargets up for a fixed duration, then restores it --
+    // reuses the Electro Wizard machinery above as a documented
+    // approximation of "fires 2 extra arrows" (this engine divides damage
+    // across split targets rather than firing genuinely independent
+    // projectiles). baseMaxSplitTargets captures whatever maxSplitTargets
+    // was at the moment the window opened (always 1 for every card that
+    // uses this, since no card both split-targets permanently AND has this
+    // ability), restored once temporarySplitTargetsTicksRemaining reaches 0.
+    // 0 (the default) is every card without an active window.
+    int temporarySplitTargetsTicksRemaining = 0;
+    int baseMaxSplitTargets = 1;
 
     // Electro Dragon's chain: unlike Electro Wizard's split (which divides
     // `damage` across however many targets it hit), each chained target
@@ -755,6 +767,10 @@ public:
             if (temporaryFlightTicksRemaining == 0) isFlying = false;
         }
         if (flightPulseTicksRemaining > 0) flightPulseTicksRemaining--;
+        if (temporarySplitTargetsTicksRemaining > 0) {
+            temporarySplitTargetsTicksRemaining--;
+            if (temporarySplitTargetsTicksRemaining == 0) maxSplitTargets = baseMaxSplitTargets;
+        }
         if (forcedTargetTicksRemaining > 0) forcedTargetTicksRemaining--;
         if (shieldExpiresTicksRemaining > 0) {
             shieldExpiresTicksRemaining--;

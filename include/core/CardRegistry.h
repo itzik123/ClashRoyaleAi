@@ -37,6 +37,7 @@
 #include "HeroWizardFieryFlightEffect.h"
 #include "HeroGiantHurlEffect.h"
 #include "HeroMegaMinionWarpEffect.h"
+#include "HeroMagicArcherTripleThreatEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -362,6 +363,15 @@ private:
         return building(-45, "Trusty Turret", 0.0f, 200, 't', 4.0f, 90, 5)
             .withTargetsAir()
             .withHpTransform(1.0f, 100, false);
+    }
+    // Hero Magic Archer's Triple Threat: the decoy left behind at his old
+    // position. Real card's decoy soaks hits/draws aggro but deals none of
+    // its own -- modeled as a zero-damage, modest-hp stationary (speed 0)
+    // unit. hp/archetype/lifetime aren't part of the sourced data --
+    // reasonable engine-internal constants, same caveat as splashRadius/
+    // shieldHp elsewhere in this file.
+    static CardStats heroMagicArcherDecoyStats() {
+        return troop(-46, "Decoy", 0.0f, Archetype::MeleeSquad, 100, 0.0f, 1.0f, 0, 100, 'd');
     }
     // Wall Breakers Evolution's "Runner": spawned on death (see
     // evolvedWallBreakersStats below). Only Level-6 data was found (103hp/
@@ -2084,6 +2094,18 @@ private:
             .withFlying().withTargetsAir()
             .withHeroAbility(2.0f, 0, std::make_shared<HeroMegaMinionWarpEffect>(300), 1)
             .withInitialAbilityCooldown(15));
+
+        // Hero Magic Archer. Base stats copied from card id 63 (Magic
+        // Archer), see that registration above. "Triple Threat" (2 elixir,
+        // 250-tick/25s cooldown): dashes back 5 tiles, spawns a decoy at
+        // his old position (see heroMagicArcherDecoyStats above), and gains
+        // a 70-tick/7s multi-shot window -- see
+        // HeroMagicArcherTripleThreatEffect.
+        add(troop(171, "Hero Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
+            .withTargetsAir()
+            .withSplash(0.25f).withLineSplash(11.0f).withSightRange(7.5f)
+            .withHeroAbility(2.0f, 250, std::make_shared<HeroMagicArcherTripleThreatEffect>(
+                5.0f, heroMagicArcherDecoyStats(), 70)));
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===

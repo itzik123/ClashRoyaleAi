@@ -8,6 +8,7 @@
 #include "HeroWizardFieryFlightEffect.h"
 #include "HeroGiantHurlEffect.h"
 #include "HeroMegaMinionWarpEffect.h"
+#include "HeroMagicArcherTripleThreatEffect.h"
 #include "TargetingHelpers.h"
 #include "Tower.h"
 
@@ -390,4 +391,77 @@ TEST_CASE("HeroMegaMinionWarpEffect teleports to the lowest-HP enemy anywhere an
     REQUIRE(minion->position.x == Catch::Approx(30.0f)); // teleported to the lowest-HP enemy, not the nearest one
     REQUIRE(minion->position.y == Catch::Approx(30.0f));
     REQUIRE(farLowHp->hp == 100); // 400 - 300 bonus damage
+}
+
+// ---------------- Hero Magic Archer (171) ----------------
+
+TEST_CASE("Hero Magic Archer (171) is registered with base Magic Archer's stats and the Triple Threat ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(171);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 529); // base Magic Archer's own hp, copied verbatim -- see CardRegistry.h id 63
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
+    REQUIRE(hero->abilityCooldownTicks == 250);
+    REQUIRE(hero->maxSplitTargets == 1); // not yet activated
+}
+
+TEST_CASE("HeroMagicArcherTripleThreatEffect dashes back, spawns a decoy, and grants a temporary split-target window",
+        "[hero_magic_archer]") {
+    Board board;
+    auto archer = std::make_shared<StationaryCombatant>(1, 5.0f, 20.0f, 529, 0, 7.0f, 143, 11); // team 0
+    spawn(board, archer);
+
+    CardStats decoyStats;
+    decoyStats.name = "Decoy";
+    decoyStats.archetype = Archetype::MeleeSquad;
+    decoyStats.hp = 100; decoyStats.speed = 0.0f; decoyStats.attackRange = 1.0f;
+    decoyStats.damage = 0; decoyStats.attackCooldown = 100; decoyStats.symbol = 'd';
+    HeroMagicArcherTripleThreatEffect effect(5.0f, decoyStats, 70);
+
+    effect.apply(board, *archer);
+    board.commitPendingEntities();
+
+    REQUIRE(archer->position.y == Catch::Approx(15.0f)); // 20 - 5, toward team 0's own side (lower y)
+    REQUIRE(archer->maxSplitTargets == 3);
+    REQUIRE(archer->temporarySplitTargetsTicksRemaining == 70);
+
+    int decoyCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name == "Decoy") {
+            decoyCount++;
+            REQUIRE(e->position.x == Catch::Approx(5.0f)); // spawned at the archer's OLD position
+            REQUIRE(e->position.y == Catch::Approx(20.0f));
+        }
+    }
+    REQUIRE(decoyCount == 1);
+}
+
+TEST_CASE("The temporary split-target window restores maxSplitTargets once it elapses", "[hero_magic_archer]") {
+    Board board;
+    auto archer = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 529, 0, 7.0f, 143, 11);
+    spawn(board, archer);
+
+    CardStats decoyStats;
+    decoyStats.name = "Decoy";
+    decoyStats.archetype = Archetype::MeleeSquad;
+    decoyStats.hp = 100; decoyStats.speed = 0.0f; decoyStats.attackRange = 1.0f;
+    decoyStats.damage = 0; decoyStats.attackCooldown = 100; decoyStats.symbol = 'd';
+    HeroMagicArcherTripleThreatEffect effect(5.0f, decoyStats, 3); // short 3-tick window for a fast test
+
+    effect.apply(board, *archer);
+    REQUIRE(archer->maxSplitTargets == 3);
+
+    archer->update(board);
+    archer->update(board);
+    REQUIRE(archer->maxSplitTargets == 3); // still active after 2 of 3 ticks
+
+    archer->update(board); // the 3rd tick: window elapses
+    REQUIRE(archer->maxSplitTargets == 1);
 }
