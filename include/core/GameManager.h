@@ -281,8 +281,12 @@ public:
             // 164, never a slot's original id, so its ability would be
             // permanently unreachable regardless) -- blocked outright here
             // to match the real card's own restriction, not just to avoid
-            // an inert duplicate.
-            if (effectiveDef->isChampion) return false;
+            // an inert duplicate. Extended to Hero by inference (symmetry
+            // with Champion), not directly sourced: the real game's Mirror
+            // restriction is documented for Champions; Heroes share the
+            // same special-unit deck slots, so the same restriction is
+            // assumed to apply.
+            if (effectiveDef->isChampion || effectiveDef->isHero) return false;
             costOverride = effectiveDef->cost + 1.0f;
         } else if (isSpiritEmpress) {
             costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
@@ -308,17 +312,19 @@ public:
             // play must not overwrite lastPlayedCardId with its own id.
             if (!isMirror) player.lastPlayedCardId = result.cardId;
 
-            // Champion per-slot tracking (see PlayerState::ChampionSlotState):
-            // only a play whose RESULT cardId matches deck slot 1 or 2's own
-            // ORIGINAL id counts -- a Mirror play's result.cardId is Mirror's
-            // own id (164), never a slot's original id, so a Mirror-duplicated
-            // Champion can never become anyone's tracked entity.
+            // Champion/Hero per-slot tracking (see PlayerState::
+            // ChampionSlotState): only a play whose RESULT cardId matches
+            // deck slot 1 or 2's own ORIGINAL id counts -- a Mirror play's
+            // result.cardId is Mirror's own id (164), never a slot's
+            // original id, so a Mirror-duplicated Champion/Hero can never
+            // become anyone's tracked entity. Hero shares this exact same
+            // tracking as Champion -- both occupy the same two slots.
             const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
             for (int slot : { 1, 2 }) {
                 if (result.cardId != deckConfig[slot]) continue;
                 for (size_t i = pendingBefore; i < board.pendingEntityCount(); ++i) {
                     auto ce = std::dynamic_pointer_cast<CombatEntity>(board.getPendingEntity(i));
-                    if (ce && ce->isChampion) {
+                    if (ce && (ce->isChampion || ce->isHero)) {
                         PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
                         ce->abilityCooldownRemaining = slotState.persistedCooldownRemaining;
                         slotState.trackedEntityId = ce->id;
@@ -363,6 +369,15 @@ public:
         auto champion = findChampionInSlot(team, slot);
         if (!champion || !champion->abilityEffect) return false;
         if (champion->abilityCooldownRemaining > 0) return false;
+        // Matches isChampionAbilityReady's own check -- without this, a
+        // uses-limited ability (Boss Bandit; now also Hero Mini P.E.K.K.A's
+        // one-use Breakfast Boost) whose abilityCooldownTicks happens to be
+        // 0 would deduct elixir and return true on every call even after
+        // CombatEntity::activateAbility's own internal uses check makes the
+        // activation itself a no-op -- previously masked for Boss Bandit
+        // only because his cooldown (30 ticks) is nonzero, so a repeat call
+        // was always caught by the cooldown check above first.
+        if (champion->abilityUsesRemaining == 0) return false;
 
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         if (player.elixir < champion->abilityElixirCost) return false;

@@ -464,6 +464,13 @@ public:
     // instead of a fragile cardId allowlist. false (the default) is every
     // non-Champion card.
     bool isChampion = false;
+    // Hero marker (see CardStats::isHero's own comment) -- every existing
+    // Champion-slot consumer (PlayerState::seedSlotState, GameManager::
+    // playCard's tracking hook/Mirror-block) checks `isChampion || isHero`,
+    // so a Hero shares the exact same per-slot ability-tracking/activation
+    // path as a Champion without any of that machinery needing to change.
+    // false (the default) is every non-Hero card, including all 8 Champions.
+    bool isHero = false;
     // In-battle elixir cost of activating this ability -- separate from
     // CardStats::cost (the up-front deploy cost already spent placing this
     // entity on the board), charged again on every activation by

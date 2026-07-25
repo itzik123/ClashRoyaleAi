@@ -92,7 +92,11 @@ public:
                 evolutionState[deckList[i]] = EvolutionSlotState{
                     def->evolutionCycleThreshold, def->evolvedUsesGranted };
             }
-            if (def && def->isChampion && (i == 1 || i == 2)) {
+            // Hero (see CardDefinition::isHero) shares the exact same
+            // per-slot tracking as Champion -- both special-unit
+            // categories occupy the same two deck slots and resolve
+            // through the same championSlots/ChampionSlotState machinery.
+            if (def && (def->isChampion || def->isHero) && (i == 1 || i == 2)) {
                 championSlots[static_cast<int>(i)] = ChampionSlotState{};
             }
         }

@@ -53,13 +53,13 @@ public:
     static constexpr int NUM_CHANNELS = 9;
     static constexpr int HAND_SIZE = 4;
     // One-hot size for card identity in hand. Registered ids currently run up
-    // to 165 (Evolutions 123-163, Mirror 164, Spirit Empress 165) -- kept a
-    // few slots ahead of that max so future card additions don't silently go
-    // blind again the way ids 120-122 did between the last bump and this one
-    // (see CardRegistry.h for the actual registered range). No longer needs a
-    // matching manual bump in python_ai/model.py -- see this constant's
-    // binding in bindings.cpp.
-    static constexpr int NUM_CARD_IDS = 175;
+    // to 175 (Evolutions 123-163, Mirror 164, Spirit Empress 165, Heroes
+    // 166-175) -- kept a few slots ahead of that max so future card
+    // additions don't silently go blind again the way ids 120-122 did
+    // between the last bump and this one (see CardRegistry.h for the actual
+    // registered range). No longer needs a matching manual bump in
+    // python_ai/model.py -- see this constant's binding in bindings.cpp.
+    static constexpr int NUM_CARD_IDS = 185;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
@@ -420,22 +420,26 @@ inline std::vector<int> getAllCardIds() {
 
 // Builds a random 8-card deck that's ALWAYS validateDeckSlots-legal by
 // construction, not by rejection-sampling and retrying -- buckets every
-// registered card into plain/Evolution/Champion pools once, then fills each
-// deck slot only from whichever pools CardRegistry::validateDeckSlots
-// actually allows there (slot 0: plain+Evolution, slot 1: plain+Champion,
-// slot 2: plain+Evolution+Champion, slots 3-7: plain only), independently
-// rolling a moderate chance per eligible slot of using a Champion/Evolution
-// instead of defaulting to plain. That chance is a training-curriculum
-// judgment call (not sourced from the game itself) picked so random decks
-// aren't artificially Champion/Evolution-heavy compared to a real deck.
-// Never repeats a card within one deck (a real deck can't either) -- always
-// possible here since every pool comfortably exceeds the at-most-2 special
-// cards any single deck could ever need.
+// registered card into plain/Evolution/special-unit pools once, then fills
+// each deck slot only from whichever pools CardRegistry::validateDeckSlots
+// actually allows there (slot 0: plain+Evolution, slot 1: plain+special
+// unit, slot 2: plain+Evolution+special unit, slots 3-7: plain only),
+// independently rolling a moderate chance per eligible slot of using a
+// special unit/Evolution instead of defaulting to plain. "Special unit"
+// means Champion OR Hero (see CardDefinition::isHero's own comment --
+// Heroes and Champions share the same two deck slots), bucketed together
+// since they're equally eligible everywhere validateDeckSlots allows one.
+// That chance is a training-curriculum judgment call (not sourced from the
+// game itself) picked so random decks aren't artificially special-unit/
+// Evolution-heavy compared to a real deck. Never repeats a card within one
+// deck (a real deck can't either) -- always possible here since every pool
+// comfortably exceeds the at-most-2 special cards any single deck could
+// ever need.
 inline std::vector<int> sampleRandomDeck(std::mt19937& rng) {
-    std::vector<int> plainPool, evolutionPool, championPool;
+    std::vector<int> plainPool, evolutionPool, specialUnitPool;
     for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
         if (def.isEvolution) evolutionPool.push_back(id);
-        else if (def.isChampion) championPool.push_back(id);
+        else if (def.isChampion || def.isHero) specialUnitPool.push_back(id);
         else plainPool.push_back(id);
     }
 
@@ -456,17 +460,17 @@ inline std::vector<int> sampleRandomDeck(std::mt19937& rng) {
     // Slot 0: Evolution slot.
     deck[0] = (!evolutionPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
         ? pickFrom(evolutionPool) : pickFrom(plainPool);
-    // Slot 1: Heroic slot (Champion-eligible).
-    deck[1] = (!championPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
-        ? pickFrom(championPool) : pickFrom(plainPool);
-    // Slot 2: Wild Card slot (Champion OR Evolution-eligible) -- roll once
-    // for "special or not", then once more for which kind if so.
-    bool slot2Special = (!evolutionPool.empty() || !championPool.empty())
+    // Slot 1: Heroic slot (Champion/Hero-eligible).
+    deck[1] = (!specialUnitPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
+        ? pickFrom(specialUnitPool) : pickFrom(plainPool);
+    // Slot 2: Wild Card slot (Champion/Hero OR Evolution-eligible) -- roll
+    // once for "special or not", then once more for which kind if so.
+    bool slot2Special = (!evolutionPool.empty() || !specialUnitPool.empty())
         && chance01(rng) < SPECIAL_SLOT_CHANCE;
     if (slot2Special) {
         bool useEvolution = evolutionPool.empty() ? false
-            : championPool.empty() ? true : (chance01(rng) < 0.5f);
-        deck[2] = useEvolution ? pickFrom(evolutionPool) : pickFrom(championPool);
+            : specialUnitPool.empty() ? true : (chance01(rng) < 0.5f);
+        deck[2] = useEvolution ? pickFrom(evolutionPool) : pickFrom(specialUnitPool);
     } else {
         deck[2] = pickFrom(plainPool);
     }

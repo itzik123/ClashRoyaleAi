@@ -594,8 +594,15 @@ TEST_CASE("activateChampionAbility fails once the game is over", "[game_manager]
 TEST_CASE("Two different Champions in slots 1 and 2 have fully independent ability readiness", "[game_manager][champion][multi]") {
     GameManager game({ 1, 115, 118, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[1] = 115; // force into hand -- opening hand is now randomized
-    game.playerAI.hand[2] = 118;
+    // Fully pin hand/deckQueue (not a partial per-slot force) -- opening
+    // hand is randomized, and playing 115 from hand[1] draws
+    // deckQueue.front() into hand[1]; if the random shuffle happened to
+    // leave a residual 118 in deckQueue, that draw could collide with the
+    // forced hand[2]=118, making the later game.playCard(0, 118, ...) find
+    // the wrong (just-cycled, cooldown-blocked) index. See test_mirror.cpp
+    // for the same class of bug.
+    game.playerAI.hand = { 1, 115, 118, 3 };
+    game.playerAI.deckQueue = { 4, 5, 6, 7 };
     game.playCard(0, 115, 9.0f, 10.0f);  // Mighty Miner -> slot 1
     game.playCard(0, 118, 12.0f, 10.0f); // Archer Queen -> slot 2
     game.step();

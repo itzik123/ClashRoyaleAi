@@ -32,6 +32,7 @@
 #include "PoisonOnHit.h"
 #include "PeriodicFreezeNearestEffect.h"
 #include "DarkGuardOnDamageEffect.h"
+#include "HeroMiniPekkaBoostEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -61,6 +62,10 @@ struct CardDefinition {
     // here (not just on the spawned entity) so deck contents can be
     // inspected before anything is placed, e.g. by countChampions() below.
     bool isChampion;
+    // Mirrors CombatEntity::isHero/CardStats::isHero -- see that field's own
+    // comment. validateDeckSlots/PlayerState::seedSlotState/GameManager::
+    // playCard's tracking hook all check `isChampion || isHero` uniformly.
+    bool isHero = false;
     // Display/rendering metadata -- NOT used by any gameplay logic (that all
     // goes through the CardStats captured in spawnEntity's closure below).
     // Exists purely so GameLogger can embed an authoritative, per-replay
@@ -337,6 +342,23 @@ private:
         return troop(-39, "Guardienne", 0.0f, Archetype::MeleeSquad, 1600, 0.5f, 1.2f, 217, 12, 'u')
             .withCharge(3.0f, 2.0f);
     }
+    // Hero Musketeer's "Trusty Turret": a short-range auto-turret spawned
+    // in front of her, self-destructing after a fixed 10s (100-tick)
+    // lifetime -- see withHpTransform(1.0f, ...)'s own comment for how a
+    // fraction of EXACTLY 1.0 turns that HP-threshold mechanism into a
+    // pure fixed-lifetime timer with zero hp loss required.
+    // becomesStationary stays false: the turret is already stationary via
+    // its own DefensiveBuilding archetype, and that branch's
+    // applyFreeze(ticks, 0.0f) would additionally zero the turret's own
+    // attack-cooldown drain rate, permanently silencing it. hp/damage
+    // aren't part of any sourced data -- reasonable engine-internal
+    // constants for a small, short-lived defensive structure, same
+    // caveat as splashRadius/shieldHp elsewhere in this file.
+    static CardStats heroMusketeerTurretStats() {
+        return building(-45, "Trusty Turret", 0.0f, 200, 't', 4.0f, 90, 5)
+            .withTargetsAir()
+            .withHpTransform(1.0f, 100, false);
+    }
     // Wall Breakers Evolution's "Runner": spawned on death (see
     // evolvedWallBreakersStats below). Only Level-6 data was found (103hp/
     // 113dmg) -- scaled to this file's level-11 convention via the ~10%/
@@ -421,6 +443,7 @@ private:
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.deployAnywhere = stats.deployAnywhere;
         def.isChampion = stats.isChampion;
+        def.isHero = stats.isHero;
         def.hp = stats.hp;
         def.symbol = stats.symbol;
         def.isFlying = stats.isFlying;
@@ -455,6 +478,7 @@ private:
         def.placementRadius = CardFactories::placementRadius(baseStats.archetype);
         def.deployAnywhere = baseStats.deployAnywhere;
         def.isChampion = baseStats.isChampion;
+        def.isHero = baseStats.isHero;
         def.hp = baseStats.hp;
         def.symbol = baseStats.symbol;
         def.isFlying = baseStats.isFlying;
@@ -1975,6 +1999,41 @@ private:
         // SpiritEmpressForms.h for the full mechanic and its caveats.
         add(troop(165, "Spirit Empress", 3.0f, Archetype::MeleeSquad, 926, 0.85f, 1.2f, 249, 12, '<'));
 
+        // === Heroes ===
+        // Clash Royale's "Hero" mechanic (added ~Dec 2025/2026 real-game
+        // updates, researched from public sources -- no in-repo sourced
+        // text for this one). A Hero takes an EXISTING ordinary troop and
+        // gives it a second, ability-carrying form -- mechanically the
+        // same isChampion-style machinery as the 8 Champions above (see
+        // CardStats::isHero/withHeroAbility's own comments for why this is
+        // a parallel flag, not a rename), just layered onto an
+        // already-registered base card instead of a wholly new character.
+        // Base combat stats below are copied VERBATIM from this engine's
+        // own existing base-card registration (never the possibly-
+        // different real-game numbers found online) -- only the new
+        // ability layer is added on top. Staged implementation (see this
+        // project's own plan file): this pilot pair (Hero Mini P.E.K.K.A,
+        // Hero Musketeer) uses zero new engine primitives, proving the
+        // generalized isHero/championSlots path end-to-end before later
+        // Heroes introduce genuinely new mechanics (taunt, flight, etc.).
+
+        // Hero Mini P.E.K.K.A. Base stats copied from card id 5 (Mini
+        // PEKKA), see that registration above. "Breakfast Boost":
+        // simplified per this feature's own plan (no meter-fills-via-
+        // attacking simulation) to a flat, one-time (usesLimit=1, no
+        // repeating cooldown) hp+damage boost -- see
+        // HeroMiniPekkaBoostEffect.
+        add(troop(170, "Hero Mini P.E.K.K.A.", 4.0f, Archetype::MeleeSquad, 1390, 0.8f, 0.8f, 755, 16, 'M')
+            .withHeroAbility(1.0f, 0, std::make_shared<HeroMiniPekkaBoostEffect>(210, 1.15f), 1));
+
+        // Hero Musketeer. Base stats copied from card id 6 (Musketeer), see
+        // that registration above. "Trusty Turret": spawns a short-range
+        // auto-turret in front of her (see heroMusketeerTurretStats above)
+        // with a fixed 10s lifetime, targeting air+ground.
+        add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+            .withSightRange(6.0f)
+            .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
+
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===
         // All 8 Champions, all 4 Tower Troops, Mirror, and Spirit Empress
@@ -2025,16 +2084,33 @@ inline int countChampions(const std::vector<int>& deck) {
     return count;
 }
 
+// Same shape as countChampions above, but for Heroes (Clash Royale's
+// separate "Hero" card mechanic -- see CardDefinition::isHero's own
+// comment). Kept as its own function rather than folded into
+// countChampions so each stays an accurate count of exactly what its name
+// says.
+inline int countHeroes(const std::vector<int>& deck) {
+    int count = 0;
+    for (int cardId : deck) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (def && def->isHero) count++;
+    }
+    return count;
+}
+
 // Deck slot-position legality: slot 0 (Evolution slot) may hold an
 // Evolution-flagged card or a plain card; slot 1 (Heroic slot) may hold a
-// Champion or a plain card; slot 2 (Wild Card slot) may hold a Champion, an
-// Evolution, or a plain card; slots 3-7 must be plain (no Champion, no
-// Evolution). This gives "at most 2 Champions" for free -- only slots 1/2
-// can ever accept one. Unlike countChampions above, this IS meant to be
-// called as a real gate -- see GameManager::reset()/setOpponentDeck(),
-// which throw std::invalid_argument on a non-empty result. Returns "" for
-// a legal deck, otherwise a human-readable reason naming the offending
-// slot/card.
+// Champion, a Hero, or a plain card; slot 2 (Wild Card slot) may hold a
+// Champion, a Hero, an Evolution, or a plain card; slots 3-7 must be plain
+// (no Champion, no Hero, no Evolution). Champion and Hero share the same
+// two slots -- Clash Royale's real "Heroes and Champions now share deck
+// slots" rule -- so this gives "at most 2 special units total (Champion or
+// Hero, one per slot)" for free, same as the pre-Hero "at most 2
+// Champions" rule did. Unlike countChampions/countHeroes above, this IS
+// meant to be called as a real gate -- see GameManager::reset()/
+// setOpponentDeck(), which throw std::invalid_argument on a non-empty
+// result. Returns "" for a legal deck, otherwise a human-readable reason
+// naming the offending slot/card.
 inline std::string validateDeckSlots(const std::vector<int>& deck) {
     if (deck.size() != 8) {
         return "deck must have exactly 8 cards (got " + std::to_string(deck.size()) + ")";
@@ -2044,11 +2120,11 @@ inline std::string validateDeckSlots(const std::vector<int>& deck) {
         if (!def) {
             return "slot " + std::to_string(i) + ": card id " + std::to_string(deck[i]) + " is not a registered card";
         }
-        bool championAllowed = (i == 1 || i == 2);  // Heroic / Wild Card
-        bool evolutionAllowed = (i == 0 || i == 2); // Evolution slot / Wild Card
-        if (def->isChampion && !championAllowed) {
+        bool specialUnitAllowed = (i == 1 || i == 2); // Heroic / Wild Card -- Champion OR Hero
+        bool evolutionAllowed = (i == 0 || i == 2);   // Evolution slot / Wild Card
+        if ((def->isChampion || def->isHero) && !specialUnitAllowed) {
             return "slot " + std::to_string(i) + ": " + def->name +
-                " is a Champion, only allowed in slot 1 (Heroic) or slot 2 (Wild Card)";
+                " is a Champion/Hero, only allowed in slot 1 (Heroic) or slot 2 (Wild Card)";
         }
         if (def->isEvolution && !evolutionAllowed) {
             return "slot " + std::to_string(i) + ": " + def->name +
