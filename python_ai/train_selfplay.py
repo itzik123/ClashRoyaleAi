@@ -3,6 +3,7 @@ import glob
 import re
 import time
 import math
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -150,6 +151,181 @@ WEIGHT_PATH = "model_weights_selfplay.pth"
 # own checkpoint is never overwritten by this script).
 BOOTSTRAP_FROM_PATH = "model_weights.pth"
 
+# --- Diverse scripted opponents (industry precedent: OpenAI Five bootstrapped
+# against scripted bots before self-play -- pure self-play alone tends to
+# converge onto whatever beats a narrow, self-similar pool rather than
+# generalizing). Added as PERMANENT members of the SAME PFSP pool/weighting
+# used for historical checkpoints (see _sample_pfsp_opponent) -- not a
+# separate curriculum stage, since PFSP's own (1-winrate)^exponent weighting
+# with a floor already does exactly what's wanted here: never fully drops
+# out, gets sampled more if the trainee is currently weak against it. Tagged
+# "scripted:<name>" (never a real file path) so _sample_pfsp_opponent's
+# dispatch and pfsp_stats' win-rate keying both work unchanged -- see
+# _set_opponent's prefix check.
+SCRIPTED_OPPONENTS = ["scripted:Rusher", "scripted:Defender", "scripted:Cycler", "scripted:Counter"]
+
+# Defender/Counter specifically model defensive play. PFSP's own win-rate-
+# based weighting works AGAINST deliberately seeing more of them: once the
+# trainee reliably beats a given opponent, (1-winrate)^PFSP_EXPONENT pushes
+# its weight toward PFSP_MIN_WEIGHT same as anything else already mastered --
+# so simply having them in the pool doesn't increase exposure on its own,
+# and if anything actively suppresses it the better the trainee gets against
+# them. The actual reason to keep facing them isn't "the trainee is
+# currently weak against them" (PFSP's own criterion) -- it's that defensive
+# pressure looked underrepresented in what's deciding average game length
+# (see the ~300-tick average game length discussion this responds to), a
+# property PFSP has no way to see or weight for on its own. This floor
+# overrides PFSP_MIN_WEIGHT for these two specifically, independent of
+# measured win-rate. 4x the base floor as a starting point -- tune from
+# here based on whether Progress/Episode_Length_Ticks_50 and Scenario/
+# Defense_Success_Rate actually move.
+DEFENSIVE_SCRIPTED_OPPONENTS = {"scripted:Defender", "scripted:Counter"}
+DEFENSIVE_SCRIPTED_MIN_WEIGHT = 0.20
+
+# Pulled live from the engine (see model.py's own identical pattern) so a
+# board-geometry or channel-layout change on the C++ side propagates here
+# automatically -- the scripted opponents below parse the raw observation
+# vector directly (same one their neural counterparts already consume via
+# get_observation_for_team), not through model.py, so they need their own
+# copy of this layout math.
+_N_CH = clash_royale_env.ClashRoyaleEnv.NUM_CHANNELS
+_BOARD_H = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
+_BOARD_W = clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
+_SPATIAL_SIZE = _N_CH * _BOARD_H * _BOARD_W
+_HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+
+# --- Scenario injection (start-state distribution design) ------------------
+# Industry precedent: reshaping the START-STATE distribution is how rare-but-
+# critical situations get learned when normal play visits them too seldom for
+# the credit-assignment horizon to connect cause and effect (robotics resets
+# from curated states; AlphaGo trained on curated positions; "Backplay"). The
+# problem this targets here: a win-condition (Hog/Giant/...) dropped on the
+# bridge is a "defend in the next couple of seconds or lose the tower" moment,
+# but in a full 3600-tick game the causal link between that drop and the tower
+# loss ~40 ticks later is buried under a long, noisy GAE trace and is a rare
+# event -- so the reflex never gets enough gradient. We fix that by STARTING a
+# fraction of episodes already in that state so the net sees it constantly.
+#
+# Design choices that keep it from becoming a different game (the isolation
+# failure mode): the opponent is NOT frozen -- team 1 keeps playing its normal
+# PFSP policy on top of the injected threat; it's the real engine/board/towers;
+# and the existing reward (win/loss + compute_shaping's HP/elixir-trade terms)
+# already scores "defend efficiently + keep something alive to counter-push",
+# so no bespoke scenario reward is needed. The one artificial edge -- an
+# optional short truncation window (max_steps) that focuses each episode on the
+# critical moment -- is handled with a proper value BOOTSTRAP (see the training
+# loop's is_terminal/needs_boot split), never a terminal, so the critic doesn't
+# learn a biased "the world ends here" value.
+SCENARIO_INJECTION_PROB = 0.30
+
+# Building-targeter win-conditions -- every id here confirmed against
+# CardRegistry.h directly (not from memory) as Archetype::MeleeBuildingTargeter/
+# RangedBuildingTargeter/a building with a persistent tower-damage role, i.e.
+# guaranteed to beeline for a tower ignoring troops in its path, matching the
+# scenario's own premise ("defend or lose the tower in the next few seconds").
+# Miner (52) deliberately excluded despite being a real-game win condition --
+# this engine registers him as plain Archetype::MeleeSquad (no building-
+# targeter/dig-anywhere behavior implemented), so injecting him wouldn't
+# actually exercise the "must answer a beelining threat" reflex this scenario
+# is for. Goblin Barrel (109) / Graveyard (110) also excluded for now -- both
+# are spell(...)-registered (PeriodicSpawnEffect), and inject_enemy's
+# card->spawnEntity(...) path is only confirmed exercised (via Hog/Royal
+# Giant) for a troop/building CardDefinition; using it for a spell-shaped one
+# is unverified, not worth risking on a data-fill task.
+_WIN_CONDITION_IDS = [
+    15,  # Hog Rider
+    18,  # Royal Giant
+    45,  # Balloon
+    2,   # Giant
+    19,  # Golem
+    81,  # Battle Ram
+    82,  # Royal Hogs
+    83,  # Wall Breakers
+    84,  # Electro Giant
+    87,  # Ram Rider
+    88,  # Goblin Giant
+    89,  # Skeleton Barrel
+    91,  # Lava Hound
+]
+# Ranged units commonly played to escort/protect a win-condition push (the
+# "supported" scenario's second spawn) -- confirmed RangedSquad/ranged-role
+# troops, a mix of cheap chip support and real mid-fight damage.
+_SUPPORT_IDS = [
+    6,   # Musketeer
+    1,   # Archers
+    11,  # Wizard
+    44,  # Baby Dragon
+    63,  # Magic Archer
+    36,  # Executioner
+    20,  # Dart Goblin
+]
+# Real board coords for inject_enemy (team 1, low-y-bound), which bypasses
+# isValidPlacement so an on-the-bridge spawn at the river row is allowed. River
+# row is 17 (see ClashEnv::extractObservationForTeam); bridges sit at x lanes
+# 3-4 (left) and 13-14 (right).
+_RIVER_Y = 17.0
+_BRIDGE_LANES = [3.5, 13.5]
+
+
+def _scenario_bridge_push(rng):
+    """The exact case: one enemy win-condition on a random bridge, nothing
+    else engineered. Short window -- the defense itself resolves in ~2-4 steps,
+    the rest lets a counter-push start and get shaped-rewarded."""
+    lane = rng.choice(_BRIDGE_LANES)
+    return {
+        "name": "bridge_push",
+        "spawns": [(int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y)],
+        "max_steps": 15,
+    }
+
+
+def _scenario_bridge_push_supported(rng):
+    """Win-condition + a ranged support just behind it (same lane) -- a tankier,
+    two-part threat that a single cheap defender can't fully answer. Longer
+    window for the bigger commitment."""
+    lane = rng.choice(_BRIDGE_LANES)
+    return {
+        "name": "bridge_push_supported",
+        "spawns": [
+            (int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y),
+            (int(rng.choice(_SUPPORT_IDS)), lane, _RIVER_Y + 3.0),
+        ],
+        "max_steps": 25,
+    }
+
+
+# (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
+# drop in here with the same machinery. Set a scenario's "max_steps" to None
+# to run it to the natural end of the game instead of a focused window.
+SCENARIOS = [
+    (_scenario_bridge_push, 2.0),
+    (_scenario_bridge_push_supported, 1.0),
+]
+
+
+def sample_scenario(rng):
+    builders, weights = zip(*SCENARIOS)
+    weights = np.array(weights, dtype=np.float64)
+    weights /= weights.sum()
+    return builders[rng.choice(len(builders), p=weights)](rng)
+
+
+def sample_legal_random_deck(pool, max_tries=200):
+    """Rejection-samples an 8-card deck from `pool` that satisfies
+    CardRegistry's Evolution/Champion slot-position rules (validate_deck_
+    slots, bound from CardRegistry::validateDeckSlots) -- measured empirically
+    at ~35% of naive random.sample(get_all_card_ids(), 8) draws being illegal
+    (get_all_card_ids() includes Champions/Evolutions, which only some slots
+    accept), which GameManager::reset() throws std::invalid_argument on. Only
+    ~1.5 tries needed on average at that rate; max_tries is a generous safety
+    margin, not a realistic ceiling."""
+    for _ in range(max_tries):
+        candidate = random.sample(pool, 8)
+        if not clash_royale_env.validate_deck_slots(candidate):
+            return candidate
+    raise RuntimeError(f"Could not sample a legal random deck from a pool of {len(pool)} cards "
+                        f"after {max_tries} tries.")
+
 
 def discover_historical_checkpoints(current_episode=None):
     """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
@@ -220,7 +396,9 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
     try:
         for entry in roster:
             path, ref_elo = entry["path"], entry["elo"]
-            env = MicroRoyaleSelfPlayEnv()
+            # Scenarios OFF for evaluation: Elo must measure clean-game strength,
+            # not defense of an injected handicap.
+            env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
             env.set_historical_opponent(path)
             wins = losses = draws = 0
             for _ in range(n_games):
@@ -232,9 +410,12 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
                 while not done:
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
                     with torch.no_grad():
-                        (card_logits, mean, _, _,
-                         ability_slot1_logits, ability_slot2_logits, (hx, cx)) = net(obs_t, (hx, cx))
-                    card_idx = int(card_logits.argmax(dim=-1).item())
+                        features, card_embeds = net.extract_features(obs_t)
+                        (card_logits, ability_slot1_logits, ability_slot2_logits, _,
+                         (hx, cx)) = net.step_lstm_and_card(features, (hx, cx))
+                        card_idx_t = card_logits.argmax(dim=-1)
+                        mean, _ = net.placement_given_card(hx, card_embeds, card_idx_t)
+                    card_idx = int(card_idx_t.item())
                     placement = torch.clamp(mean, 0.0, 1.0)
                     action = {
                         "card_index": np.array([card_idx]),
@@ -303,6 +484,20 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
         self.opponent_checkpoint_path = None
+        # "neural" (self.opponent_net drives team 1) or one of SCRIPTED_
+        # OPPONENTS' bare names ("Rusher"/"Defender"/"Cycler"/"Counter") --
+        # see _set_opponent's dispatch and _scripted_opponent_action.
+        self.opponent_kind = "neural"
+        # Rusher/Counter commit to one lane for the whole episode (real
+        # players don't re-decide their push lane every single card) --
+        # set once per episode in set_scripted_opponent, read in
+        # _scripted_opponent_action.
+        self.opponent_lane = None
+        # Card ids available to draw a random opponent deck from -- see
+        # set_scripted_opponent. Computed once here (not per-episode): it
+        # never changes at runtime, and get_all_card_ids() is a real call
+        # into the engine, not a free property lookup.
+        self._all_card_ids = clash_royale_env.get_all_card_ids()
 
         # PFSP pool/stats -- see refresh_pfsp_pool()/_sample_pfsp_opponent().
         # Empty until the main process's first broadcast; reset() no-ops the
@@ -311,6 +506,16 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # envs.reset() call).
         self.pfsp_pool = []
         self.pfsp_stats = {}
+
+        # Scenario injection (see SCENARIOS / sample_scenario). Independent
+        # per-worker RNG so the vectorized envs don't all inject the same
+        # scenario in lockstep. scenarios_enabled=False (used by the replay
+        # env) keeps replays representative of full, un-engineered games.
+        self.scenarios_enabled = env_config.get("scenarios_enabled", True)
+        self.scenario_rng = np.random.default_rng()
+        self.scenario_active = None       # name of the current episode's scenario, or None
+        self.scenario_max_steps = None    # truncation window in bot-steps, or None for full game
+        self.scenario_steps_taken = 0
 
         if env_config.get("historical_checkpoint_path"):
             self.set_historical_opponent(env_config["historical_checkpoint_path"])
@@ -335,6 +540,36 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         load_state_dict_flexible(self.opponent_net, state_dict, f"historical opponent {checkpoint_path}")
         self.opponent_net.eval()
         self.opponent_checkpoint_path = checkpoint_path
+        self.opponent_kind = "neural"
+        # Revert a previous scripted opponent's randomized deck, if any --
+        # set_opponent_deck() has no auto-reset of its own (see
+        # gym_wrapper.py's identical reset()-time re-apply), so without this
+        # a neural opponent sampled right after a scripted one would
+        # silently keep playing that random deck instead of self.deck.
+        self.game.set_opponent_deck(self.deck)
+
+    def set_scripted_opponent(self, name):
+        """Team 1 becomes a hand-written heuristic bot instead of a frozen
+        checkpoint -- see SCRIPTED_OPPONENTS. Also randomizes team 1's deck
+        (scoped to scripted opponents only, never neural ones: these
+        heuristics read nothing card-ID-specific -- only elixir/cost from
+        the observation and enemy positions from the spatial channels -- so
+        they're deck-agnostic by construction, unlike a historical
+        checkpoint, which only ever learned to play self.deck)."""
+        self.opponent_kind = name
+        self.opponent_checkpoint_path = f"scripted:{name}"
+        self.game.set_opponent_deck(sample_legal_random_deck(self._all_card_ids))
+        if name in ("Rusher", "Counter"):
+            self.opponent_lane = random.choice(["left", "right"])
+
+    def _set_opponent(self, descriptor):
+        """Dispatch for whatever _sample_pfsp_opponent() (or a direct
+        override) picked -- a real checkpoint path, or one of SCRIPTED_
+        OPPONENTS' "scripted:<name>" tags."""
+        if descriptor.startswith("scripted:"):
+            self.set_scripted_opponent(descriptor[len("scripted:"):])
+        else:
+            self.set_historical_opponent(descriptor)
 
     def refresh_pfsp_pool(self, pool_paths):
         """Broadcast from the main process (train_selfplay_ppo, via
@@ -353,17 +588,43 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         if not self.pfsp_pool:
             return
         weights = np.array([
-            max(PFSP_MIN_WEIGHT, (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
+            max(
+                DEFENSIVE_SCRIPTED_MIN_WEIGHT if p in DEFENSIVE_SCRIPTED_OPPONENTS else PFSP_MIN_WEIGHT,
+                (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT
+            )
             for p in self.pfsp_pool
         ], dtype=np.float64)
         weights /= weights.sum()
         chosen = self.pfsp_pool[np.random.choice(len(self.pfsp_pool), p=weights)]
-        self.set_historical_opponent(chosen)
+        self._set_opponent(chosen)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._sample_pfsp_opponent()
-        obs_list = self.game.reset()
+        self.game.reset()
+
+        self.scenario_active = None
+        self.scenario_max_steps = None
+        self.scenario_steps_taken = 0
+        if self.scenarios_enabled and self.scenario_rng.random() < SCENARIO_INJECTION_PROB:
+            scenario = sample_scenario(self.scenario_rng)
+            for card_id, x, y in scenario["spawns"]:
+                self.game.inject_enemy(card_id, x, y)
+            # inject_enemy only QUEUES units into pendingEntities -- they aren't
+            # in the observation until a game.step() commits them. Run a single
+            # 1-tick no-op self-play step (card index HAND_SIZE = no-op on both
+            # sides, no opponentTurn) so the threat is visible in the very first
+            # observation the trainee acts on; otherwise a Hog would be a step's
+            # worth of travel toward the tower before the net ever sees it. One
+            # tick of drift is negligible.
+            noop = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+            self.game.step_self_play(noop, 0.0, 0.0, noop, 0.0, 0.0, 1)
+            self.scenario_active = scenario["name"]
+            self.scenario_max_steps = scenario["max_steps"]
+
+        # get_observation_for_team(0) == game.reset()'s own return for a normal
+        # reset, but re-read here so it reflects any just-injected units.
+        obs_list = self.game.get_observation_for_team(0)
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
         return np.array(obs_list, dtype=np.float32), {}
@@ -377,19 +638,122 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         team 1 would systematically never use Champion abilities even once
         the trainee (team 0) does."""
         obs1 = np.array(self.game.get_observation_for_team(1), dtype=np.float32)
+        if self.opponent_kind != "neural":
+            return self._scripted_opponent_action(obs1)
         with torch.no_grad():
             obs1_t = torch.tensor(obs1, dtype=torch.float32).unsqueeze(0).to(self.device)
-            (logits1, mean1, log_std1, _,
-             ability_slot1_logits1, ability_slot2_logits1,
-             (self.opponent_hx, self.opponent_cx)) = self.opponent_net(
-                obs1_t, (self.opponent_hx, self.opponent_cx))
-            card_idx1 = Categorical(logits=logits1).sample().item()
+            features1, card_embeds1 = self.opponent_net.extract_features(obs1_t)
+            (logits1, ability_slot1_logits1, ability_slot2_logits1, _,
+             (self.opponent_hx, self.opponent_cx)) = self.opponent_net.step_lstm_and_card(
+                features1, (self.opponent_hx, self.opponent_cx))
+            card_idx1_t = Categorical(logits=logits1).sample()
+            mean1, log_std1 = self.opponent_net.placement_given_card(self.opponent_hx, card_embeds1, card_idx1_t)
+            card_idx1 = card_idx1_t.item()
             placement1 = torch.clamp(Normal(mean1, log_std1.exp()).sample(), 0.0, 1.0)
             x1 = (placement1[0, 0] * self.MAX_X).item()
             y1 = (placement1[0, 1] * self.MAX_Y).item()
             ability_slot1_action1 = bool(Categorical(logits=ability_slot1_logits1).sample().item())
             ability_slot2_action1 = bool(Categorical(logits=ability_slot2_logits1).sample().item())
         return card_idx1, x1, y1, ability_slot1_action1, ability_slot2_action1
+
+    def _scripted_opponent_action(self, obs1):
+        """Team 1's move for one of SCRIPTED_OPPONENTS, computed purely from
+        the same observation vector its neural counterpart already gets --
+        no card-ID-specific logic anywhere here (only elixir/cost and enemy
+        spatial position), so these behave sensibly regardless of the
+        randomized deck set_scripted_opponent gave them. Never activates a
+        Champion ability (no ability logic in these heuristics at all) --
+        always (False, False) for the two slots.
+        """
+        spatial = obs1[:_SPATIAL_SIZE].reshape(_N_CH, _BOARD_H, _BOARD_W)
+        scalar = obs1[_SPATIAL_SIZE:]
+        elixir = float(scalar[0])
+        costs = scalar[1:1 + _HAND_SIZE]
+        # cost <= 0 marks an empty/invalid hand slot (see ClashEnv::
+        # extractObservationForTeam: card ? card->cost/10.0f : 0.0f) --
+        # never a real, free card.
+        affordable = [i for i in range(_HAND_SIZE) if costs[i] > 0.0 and costs[i] <= elixir + 1e-6]
+
+        def lane_x():
+            return self.MAX_X * (0.2 if self.opponent_lane == "left" else 0.8)
+
+        def find_incursion():
+            """Returns (x, y, is_heavy) for the deepest enemy incursion in
+            this observer's own half, or None. Channels 4-6 = enemy (team 0)
+            melee/ranged/tank troops, from THIS observer's own mirrored
+            point of view -- see model.py's identical channel-layout
+            comment. "My own half" = rows up to int(self.MAX_Y): reuses the
+            same enforced-placement-bound binding everything else in this
+            file already pulls live, rather than hardcoding ClashEnv.h's
+            own riverRow constant a second time on the Python side.
+
+            is_heavy: True iff the incursion includes a channel-6 (building-
+            targeter/tank archetype) unit -- the same archetype category
+            _WIN_CONDITION_IDS/scenario injection already treats as "the
+            real threat" (see that constant's own comment: Hog/Giant/
+            Golem/Balloon/... are all this archetype). A plain melee/ranged
+            squad troop (channels 4-5) doesn't set this even if it's also
+            in range -- the distinction is what Defender escalates on.
+            """
+            river_row = int(self.MAX_Y)
+            tank_zone = spatial[6][:river_row + 1, :]
+            other_zone = (spatial[4] + spatial[5])[:river_row + 1, :]
+            tank_nz = np.nonzero(tank_zone)
+            if tank_nz[0].size > 0:
+                ys, xs = tank_nz
+                deepest = int(np.argmin(ys))
+                return float(xs[deepest]), float(ys[deepest]), True
+            other_nz = np.nonzero(other_zone)
+            if other_nz[0].size == 0:
+                return None
+            ys, xs = other_nz
+            deepest = int(np.argmin(ys))  # smallest y = closest to team 1's own tower = most urgent
+            return float(xs[deepest]), float(ys[deepest]), False
+
+        NO_OP = (_HAND_SIZE, 0.0, 0.0, False, False)
+        kind = self.opponent_kind
+
+        if kind == "Rusher":
+            if not affordable:
+                return NO_OP
+            slot = max(affordable, key=lambda i: costs[i])
+            return slot, lane_x(), self.MAX_Y, False, False
+
+        if kind == "Cycler":
+            if not affordable:
+                return NO_OP
+            slot = min(affordable, key=lambda i: costs[i])
+            return slot, self.MAX_X * 0.5, self.MAX_Y * 0.5, False, False
+
+        incursion = find_incursion()
+
+        if kind == "Defender":
+            if incursion is None or not affordable:
+                return NO_OP
+            x, y, is_heavy = incursion
+            # Escalate to the strongest affordable answer against a real
+            # win-condition-style threat (channel 6 -- see find_incursion's
+            # own comment); an ordinary squad troop still just gets the
+            # cheapest efficient trade, same as before. A Defender that
+            # always reaches for its cheapest card regardless of what's
+            # actually attacking loses to any sufficiently strong rush no
+            # matter how often it's sampled -- this is what actually makes
+            # facing it more often (see DEFENSIVE_SCRIPTED_MIN_WEIGHT) worth
+            # anything.
+            slot = max(affordable, key=lambda i: costs[i]) if is_heavy else min(affordable, key=lambda i: costs[i])
+            return slot, x, y, False, False
+
+        if kind == "Counter":
+            if not affordable:
+                return NO_OP
+            if incursion is not None:
+                slot = max(affordable, key=lambda i: costs[i])
+                x, y, _is_heavy = incursion
+                return slot, x, y, False, False
+            slot = max(affordable, key=lambda i: costs[i])
+            return slot, lane_x(), self.MAX_Y, False, False
+
+        return NO_OP
 
     def step(self, action, skip_frames=10):
         def _to_scalar(val):
@@ -414,7 +778,21 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         reward = float(result.reward0)
         terminated = bool(result.done)
 
-        if terminated and self.opponent_checkpoint_path is not None:
+        # Scenario truncation: end the focused defensive window WITHOUT marking
+        # the game terminated (it isn't -- no king died). The training loop
+        # bootstraps V(final_obs) for this, so the critic isn't told the world
+        # ends here. Only applies while a scenario with a finite window is
+        # active and the game hasn't already ended on its own.
+        truncated = False
+        if self.scenario_max_steps is not None and not terminated:
+            self.scenario_steps_taken += 1
+            if self.scenario_steps_taken >= self.scenario_max_steps:
+                truncated = True
+
+        # PFSP difficulty tracking must measure the OPPONENT's strength, not the
+        # extra handicap of a free injected threat -- so scenario episodes never
+        # update pfsp_stats (self.scenario_active is None only on normal games).
+        if terminated and self.opponent_checkpoint_path is not None and self.scenario_active is None:
             if reward > 0.5:
                 outcome = 1.0
             elif reward < -0.5:
@@ -437,8 +815,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team1_elixir_spent": self.game.get_elixir_spent(1),
             "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
+            # 1.0 while the current episode started from an injected scenario --
+            # lets the training loop score scenario defenses separately from
+            # normal-matchup win/loss (see Scenario/Defense_Success_Rate).
+            "is_scenario": 1.0 if self.scenario_active is not None else 0.0,
         }
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
 
 
 def make_env():
@@ -512,11 +894,27 @@ def train_selfplay_ppo():
             print("Optimizer state NOT restored (architecture mismatch above) -- "
                   "starting the optimizer fresh; network weights were still warm-started where shapes matched.")
         episodes_completed = checkpoint["episodes_completed"]
-        # .get() with a fallback to the OLD ladder-era field name, then to
-        # episodes_completed: lets a checkpoint saved before this PFSP
-        # rewrite still resume sanely instead of KeyError-ing.
-        entropy_reboost_episode = checkpoint.get(
-            "entropy_reboost_episode", checkpoint.get("stage_start_episode", episodes_completed))
+        if not clean_load:
+            # Part of the network just got reinitialized (architecture change --
+            # see load_state_dict_flexible's warm-start above, e.g. right now:
+            # placement_head's card-conditioning). Entropy is almost certainly
+            # floored this deep into training, so without this the freshly-
+            # random part would settle into another near-deterministic
+            # "averaged" policy before ever exploring enough to discover it
+            # can now behave differently per card -- same reasoning as every
+            # curriculum-stage transition elsewhere in this project resetting
+            # the entropy clock, just triggered by an architecture change
+            # instead of a harder opponent.
+            entropy_reboost_episode = episodes_completed
+            print(f">>> Architecture changed on resume -- forcing a fresh entropy "
+                  f"re-boost from episode {episodes_completed} so the reinitialized "
+                  "part actually gets explored, not just re-converged under floored entropy.")
+        else:
+            # .get() with a fallback to the OLD ladder-era field name, then to
+            # episodes_completed: lets a checkpoint saved before this PFSP
+            # rewrite still resume sanely instead of KeyError-ing.
+            entropy_reboost_episode = checkpoint.get(
+                "entropy_reboost_episode", checkpoint.get("stage_start_episode", episodes_completed))
         last_stall_reboost_episode = checkpoint.get("last_stall_reboost_episode", episodes_completed)
         last_eval_ep = checkpoint.get("last_eval_ep", episodes_completed)
         reference_roster = checkpoint.get("reference_roster", [])
@@ -545,8 +943,15 @@ def train_selfplay_ppo():
             "(every HISTORICAL_CHECKPOINT_INTERVAL_EPISODES episodes) before pipeline #2 "
             "has anything old enough to play against.")
 
-    envs.call("refresh_pfsp_pool", historical_pool)
-    print(f"PFSP pool initialized with {len(historical_pool)} eligible opponent(s).")
+    # SCRIPTED_OPPONENTS are permanent PFSP-pool members (see that constant's
+    # comment) -- broadcast for TRAINING sampling only, appended on top of
+    # historical_pool rather than mixed into the variable itself, since
+    # historical_pool alone also feeds update_reference_roster/evaluate_
+    # against_roster below, both of which torch.load() every entry they're
+    # given (a "scripted:X" tag would crash there, not just misbehave).
+    envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+    print(f"PFSP pool initialized with {len(historical_pool)} historical + "
+          f"{len(SCRIPTED_OPPONENTS)} scripted opponent(s).")
 
     if not full_resume and os.path.exists(log_dir):
         import shutil
@@ -557,12 +962,21 @@ def train_selfplay_ppo():
     ability1_actions_buffer, ability2_actions_buffer = [], []
     logprobs_buffer, values_buffer, rewards_buffer = [], [], []
     masks_buffer, valid_buffer = [], []
+    # Correct-bootstrap GAE bookkeeping (see the is_terminal/needs_boot split in
+    # the rollout): boot_nonterminal = 0 only on TRUE terminals (bootstrap
+    # otherwise), trunc_flag marks steps whose next-state value must come from
+    # the captured trunc_boot rather than the next (already-reset) episode's V.
+    boot_nonterminal_buffer, trunc_flag_buffer, trunc_boot_buffer = [], [], []
 
     reward_history = deque(maxlen=50)
     shaping_history = deque(maxlen=50)
     ep_len_history = deque(maxlen=50)
     ally_bldg_end_history = deque(maxlen=50)
     enemy_bldg_end_history = deque(maxlen=50)
+    # Scenario defenses scored separately from normal-matchup win/loss: success
+    # = the injected episode did NOT end in a tower/game loss (survived the
+    # threat, or truncated out of the focused window still alive).
+    scenario_success_history = deque(maxlen=200)
 
     obs, _ = envs.reset()
     prev_stats = None
@@ -590,10 +1004,17 @@ def train_selfplay_ppo():
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
 
             with torch.no_grad():
-                (card_logits, placement_mean, placement_log_std, state_value,
-                 ability1_logits, ability2_logits, (hx, cx)) = net(obs_tensor, (hx, cx))
+                # Autoregressive placement: card must actually be SAMPLED
+                # before placement can be conditioned on it -- see model.py's
+                # own comment on why forward_from_features (card_idx already
+                # known) doesn't fit the rollout case. Ability-slot logits
+                # only depend on hx, exactly like card_logits/state_value.
+                features, card_embeds = net.extract_features(obs_tensor)
+                card_logits, ability1_logits, ability2_logits, state_value, (hx, cx) = net.step_lstm_and_card(
+                    features, (hx, cx))
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
+                placement_mean, placement_log_std = net.placement_given_card(hx, card_embeds, card_idx)
                 placement_dist = Normal(placement_mean, placement_log_std.exp())
                 placement_sample = placement_dist.sample()
                 placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
@@ -626,7 +1047,34 @@ def train_selfplay_ppo():
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
             dones = terminateds | truncateds
 
-            is_draw = dones & (np.abs(step_rewards) < 0.5)
+            # TRUE terminal (a king died: raw reward +/-1) vs TRUNCATION (natural
+            # max-tick timeout OR a scenario-window cutoff, raw reward ~0). Only
+            # true terminals get value 0 bootstrapped; truncations must bootstrap
+            # V(final_obs) or the critic learns a biased "world ends here" value.
+            # Derived from the raw engine reward sign so it needs no extra signal
+            # from the wrapper -- a scenario cutoff arrives as truncated=True with
+            # reward ~0, a timeout as terminated=True with reward ~0, both -> boot.
+            is_terminal = dones & (np.abs(step_rewards) > 0.5)
+            needs_boot = dones & ~is_terminal
+            trunc_boot_val = torch.zeros(num_envs, dtype=torch.float32, device=device)
+            if needs_boot.any():
+                # next_obs at a done step is the episode's TRUE final observation
+                # (gymnasium next-step autoreset), and (hx, cx) here is the hidden
+                # state that would process it (post this step's forward, pre the
+                # done-mask reset below) -- so this is exactly V(final_obs).
+                with torch.no_grad():
+                    boot_feats, _ = net.extract_features(torch.tensor(next_obs, dtype=torch.float32).to(device))
+                    _, _, _, boot_v, _ = net.step_lstm_and_card(boot_feats, (hx, cx))
+                    boot_v = boot_v.squeeze(-1)
+                needs_boot_t = torch.as_tensor(needs_boot, dtype=torch.bool, device=device)
+                trunc_boot_val = torch.where(needs_boot_t, boot_v, trunc_boot_val)
+
+            # DRAW_PENALTY punishes a real game that timed out (passivity) --
+            # keyed on `terminateds` (engine game-over with no winner), NOT on
+            # `dones`, so a scenario-window truncation (arrives as truncated=True,
+            # reward ~0) is NOT mistaken for a draw and a SUCCESSFUL defense that
+            # simply ran out its focused window isn't spuriously penalized.
+            is_draw = terminateds & (np.abs(step_rewards) < 0.5)
             draw_penalty = DRAW_PENALTY * is_draw.astype(np.float32)
 
             zeros = np.zeros(num_envs, dtype=np.int64)
@@ -650,6 +1098,13 @@ def train_selfplay_ppo():
 
             valid = torch.tensor(1.0 - prev_dones, dtype=torch.float32).to(device)
             mask = torch.tensor(1.0 - dones, dtype=torch.float32).to(device) * valid
+            # Bootstrap coefficient: 1 except on TRUE terminals (0). Folded with
+            # valid so the throwaway post-autoreset step matches the trace mask
+            # exactly -- keeps this a strict, provable generalization of the old
+            # single-mask GAE (identical when nothing truncates).
+            boot_nonterminal = torch.as_tensor(1.0 - is_terminal.astype(np.float32),
+                                               dtype=torch.float32, device=device) * valid
+            trunc_flag = torch.as_tensor(needs_boot.astype(np.float32), dtype=torch.float32, device=device)
 
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
@@ -661,34 +1116,44 @@ def train_selfplay_ppo():
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(mask)
             valid_buffer.append(valid)
+            boot_nonterminal_buffer.append(boot_nonterminal)
+            trunc_flag_buffer.append(trunc_flag)
+            trunc_boot_buffer.append(trunc_boot_val)
 
             mask_tensor = mask.unsqueeze(1)
             hx = hx * mask_tensor
             cx = cx * mask_tensor
 
+            is_scenario_arr = infos.get("is_scenario", np.zeros(num_envs, dtype=np.float32))
             for i, done in enumerate(dones):
                 if done:
-                    reward_history.append(ep_rewards[i])
-                    shaping_history.append(ep_shaping[i])
-                    ep_len_history.append(ep_steps[i])
-                    ally_end, enemy_end = building_hp_end(next_obs[i])
-                    ally_bldg_end_history.append(ally_end)
-                    enemy_bldg_end_history.append(enemy_end)
+                    episodes_completed += 1
+                    if is_scenario_arr[i] > 0.5:
+                        # Scenario defense scored on its own axis, kept OUT of the
+                        # matchup histories so the headline W/L/D and the length/
+                        # building-HP progress curves stay pure normal-game signals.
+                        # Success = the episode did not end in a tower/game loss.
+                        scenario_success_history.append(1.0 if step_rewards[i] > -0.5 else 0.0)
+                    else:
+                        reward_history.append(ep_rewards[i])
+                        shaping_history.append(ep_shaping[i])
+                        ep_len_history.append(ep_steps[i])
+                        ally_end, enemy_end = building_hp_end(next_obs[i])
+                        ally_bldg_end_history.append(ally_end)
+                        enemy_bldg_end_history.append(enemy_end)
+                        if step_rewards[i] > 0.5:
+                            outcome_value = 1
+                        elif step_rewards[i] < -0.5:
+                            outcome_value = -1
+                        else:
+                            outcome_value = 0
+                        outcome_history.append(outcome_value)
+                        outcome_history_long.append(outcome_value)
                     ep_rewards[i] = 0
                     ep_shaping[i] = 0
                     ep_steps[i] = 0
-                    episodes_completed += 1
 
-                    if step_rewards[i] > 0.5:
-                        outcome_value = 1
-                    elif step_rewards[i] < -0.5:
-                        outcome_value = -1
-                    else:
-                        outcome_value = 0
-                    outcome_history.append(outcome_value)
-                    outcome_history_long.append(outcome_value)
-
-                    if episodes_completed % 10 == 0:
+                    if episodes_completed % 10 == 0 and outcome_history:
                         outcomes = np.array(outcome_history)
                         wins = int((outcomes == 1).sum())
                         losses = int((outcomes == -1).sum())
@@ -698,9 +1163,23 @@ def train_selfplay_ppo():
                         decisive_wr = wins / decided if decided > 0 else 0.0
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
+                        scenario_sr = np.mean(scenario_success_history) if scenario_success_history else float("nan")
+                        # ep_len_history is in bot-steps (each step == skip_frames ticks,
+                        # 10 by default -- see envs.step(action) above, which never
+                        # overrides it), so *10 converts to real engine ticks. A short
+                        # average here (well under a few hundred ticks) means most
+                        # recent games are ending fast -- worth knowing whether that's
+                        # decisive, well-played games or a degenerate/exploited shortcut,
+                        # not just inferring it from the win-rate number alone.
+                        avg_ticks_50 = np.mean(ep_len_history) * 10 if ep_len_history else float("nan")
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
+                              f"ScenDef: {scenario_sr:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
                               f"Pool: {len(historical_pool)} | Entropy: {current_entropy_coef:.4f}")
+                        writer.add_scalar("Progress/Episode_Length_Ticks_50", avg_ticks_50, episodes_completed)
+                        if scenario_success_history:
+                            writer.add_scalar("Scenario/Defense_Success_Rate", scenario_sr, episodes_completed)
+                            writer.add_scalar("Scenario/Sample_Count", len(scenario_success_history), episodes_completed)
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
@@ -763,17 +1242,31 @@ def train_selfplay_ppo():
         rewards_seq = torch.stack(rewards_buffer)
         masks_seq = torch.stack(masks_buffer)
         valid_seq = torch.stack(valid_buffer)
+        boot_nonterminal_seq = torch.stack(boot_nonterminal_buffer)
+        trunc_flag_seq = torch.stack(trunc_flag_buffer)
+        trunc_boot_seq = torch.stack(trunc_boot_buffer)
 
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            _, _, _, next_value, _, _, _ = net(next_obs_tensor, (hx, cx))
+            # Value only depends on hx, never needs a card/placement -- skips
+            # straight past card_logits and never touches placement (see
+            # model.py's own comment on why this split exists).
+            next_features, _ = net.extract_features(next_obs_tensor)
+            _, _, _, next_value, _ = net.step_lstm_and_card(next_features, (hx, cx))
             next_value = next_value.squeeze(-1)
 
         advantages_seq = torch.zeros_like(rewards_seq)
         gae = torch.zeros(num_envs).to(device)
         for t in reversed(range(update_timestep)):
-            next_val = next_value if t == update_timestep - 1 else values_seq[t + 1]
-            delta = rewards_seq[t] + gamma * next_val * masks_seq[t] - values_seq[t]
+            base_next_val = next_value if t == update_timestep - 1 else values_seq[t + 1]
+            # On a truncation/timeout step, values_seq[t+1] belongs to the NEXT
+            # (already-reset) episode, so it must NOT be used as this step's
+            # next-state value -- swap in the captured V(final_obs) bootstrap.
+            # boot_nonterminal zeroes the whole bootstrap term on true terminals.
+            next_val = torch.where(trunc_flag_seq[t] > 0.5, trunc_boot_seq[t], base_next_val)
+            delta = rewards_seq[t] + gamma * next_val * boot_nonterminal_seq[t] - values_seq[t]
+            # Trace still cut at every episode boundary (masks_seq = 1-done, folded
+            # with valid) -- unchanged.
             gae = delta + gamma * gae_lambda * masks_seq[t] * gae
             advantages_seq[t] = gae
 
@@ -794,15 +1287,23 @@ def train_selfplay_ppo():
                 mb = mb_env_t.shape[0]
 
                 mb_obs = obs_seq[:, mb_env_t]
-                feats_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
+                feats_seq, card_embeds_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
                 feats_seq = feats_seq.view(update_timestep, mb, -1)
+                card_embeds_seq = card_embeds_seq.view(update_timestep, mb, net.hand_size + 1, -1)
 
                 rhx = hx0[mb_env_t]
                 rcx = cx0[mb_env_t]
                 new_logprobs, new_values, new_entropies = [], [], []
                 for t in range(update_timestep):
-                    (logits_t, mean_t, log_std_t, value_t,
-                     ability1_logits_t, ability2_logits_t, (rhx, rcx)) = net.forward_from_features(feats_seq[t], (rhx, rcx))
+                    # card_actions_seq[t, mb_env_t] -- the STORED action from
+                    # rollout, not a fresh sample -- conditions placement here
+                    # exactly like the log-prob evaluation two lines below
+                    # does. Using anything else here would evaluate placement
+                    # under a DIFFERENT card than the one log-prob is scored
+                    # against, silently breaking the PPO ratio.
+                    (logits_t, mean_t, log_std_t, value_t, ability1_logits_t, ability2_logits_t,
+                     (rhx, rcx)) = net.forward_from_features(
+                        feats_seq[t], card_embeds_seq[t], (rhx, rcx), card_actions_seq[t, mb_env_t])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Normal(mean_t, log_std_t.exp())
                     ability1_dist_t = Categorical(logits=ability1_logits_t)
@@ -881,6 +1382,9 @@ def train_selfplay_ppo():
         rewards_buffer.clear()
         masks_buffer.clear()
         valid_buffer.clear()
+        boot_nonterminal_buffer.clear()
+        trunc_flag_buffer.clear()
+        trunc_boot_buffer.clear()
 
         hx, cx = hx.detach(), cx.detach()
 
@@ -913,7 +1417,7 @@ def train_selfplay_ppo():
             print(f">>> Historical snapshot saved to {hist_path}")
             last_historical_save_ep = episodes_completed
             historical_pool = discover_historical_checkpoints(episodes_completed)
-            envs.call("refresh_pfsp_pool", historical_pool)
+            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
 
         if episodes_completed - last_eval_ep >= EVAL_INTERVAL_EPISODES:
             update_reference_roster(reference_roster, historical_pool)
@@ -933,7 +1437,8 @@ def train_selfplay_ppo():
 
         if episodes_completed - last_replay_ep >= 1000 and historical_pool:
             print(f"Generating replay video for episode {episodes_completed}...")
-            test_env = MicroRoyaleSelfPlayEnv()
+            # Scenarios OFF: a demo replay should show a normal full game.
+            test_env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
             # Newest/strongest known pool entry -- purely for a representative
             # demo/monitoring replay, unrelated to PFSP sampling or eval.
             demo_opponent_path = historical_pool[-1]
@@ -946,9 +1451,11 @@ def train_selfplay_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
-                (t_logits, t_norm, _, t_value,
-                 t_ability1_logits, t_ability2_logits, (t_hx, t_cx)) = net(t_obs_tensor, (t_hx, t_cx))
+                t_features, t_card_embeds = net.extract_features(t_obs_tensor)
+                (t_logits, t_ability1_logits, t_ability2_logits, t_value,
+                 (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx))
                 t_idx = Categorical(logits=t_logits).sample()
+                t_norm, _ = net.placement_given_card(t_hx, t_card_embeds, t_idx)
                 t_card_idx = t_idx.item()
                 t_ability1_action = Categorical(logits=t_ability1_logits).sample().item()
                 t_ability2_action = Categorical(logits=t_ability2_logits).sample().item()

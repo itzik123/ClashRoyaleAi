@@ -33,6 +33,14 @@ inline CardStats towerTroopStats(TowerTroopType type) {
     // same 7.5 attackRange above, and no source distinguishes a
     // different sight range per Tower Troop.
     stats.sightRange = 7.5f;
+    // Every tower defends against air (Tower's own constructor already sets
+    // this) -- but GameManager::addTower's CardStats overload applies this
+    // struct via CardFactories::applyCardMetadata AFTER construction, which
+    // unconditionally overwrites targetsAir from here, silently reverting
+    // the constructor's true back to CardStats's own default (false) unless
+    // set explicitly on every variant below. Confirmed missing: a flying
+    // troop parked in range took zero damage from a Princess Tower's fire.
+    stats.targetsAir = true;
 
     switch (type) {
         case TowerTroopType::TowerPrincess:

@@ -61,6 +61,20 @@ struct CardDefinition {
     // here (not just on the spawned entity) so deck contents can be
     // inspected before anything is placed, e.g. by countChampions() below.
     bool isChampion;
+    // Display/rendering metadata -- NOT used by any gameplay logic (that all
+    // goes through the CardStats captured in spawnEntity's closure below).
+    // Exists purely so GameLogger can embed an authoritative, per-replay
+    // symbol/maxHp/isFlying table sourced live from this registry instead of
+    // a hand-copied one (e.g. web/viewer.html's JS tables) drifting out of
+    // sync the next time a card is added -- see GameLogger::save()'s
+    // "cardMeta" block. hp=0 for spells (CardStats' own default -- spells
+    // never set it, matching "no persistent HP" correctly). Defaults here
+    // mirror CardStats' own, so a construction path that forgets to set
+    // them (there shouldn't be one -- both add() and addEvolution() do)
+    // fails safe instead of reading uninitialized memory.
+    int hp = 0;
+    char symbol = '?';
+    bool isFlying = false;
     std::function<void(float x, float y, int team, Board& board)> spawnEntity;
 
     // Evolution slot (see addEvolution() below and PlayerState::playCard).
@@ -407,6 +421,9 @@ private:
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.deployAnywhere = stats.deployAnywhere;
         def.isChampion = stats.isChampion;
+        def.hp = stats.hp;
+        def.symbol = stats.symbol;
+        def.isFlying = stats.isFlying;
         def.spawnEntity = [stats](float x, float y, int team, Board& board) {
             CardFactories::spawn(stats, x, y, team, board);
         };
@@ -438,6 +455,9 @@ private:
         def.placementRadius = CardFactories::placementRadius(baseStats.archetype);
         def.deployAnywhere = baseStats.deployAnywhere;
         def.isChampion = baseStats.isChampion;
+        def.hp = baseStats.hp;
+        def.symbol = baseStats.symbol;
+        def.isFlying = baseStats.isFlying;
         def.spawnEntity = [baseStats](float x, float y, int team, Board& board) {
             CardFactories::spawn(baseStats, x, y, team, board);
         };

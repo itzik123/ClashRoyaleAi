@@ -633,7 +633,18 @@ const SYMBOL_RADIUS = {
   '-': 3, '*': 6, 'O': 7, 'Z': 5, 'r': 6, 'j': 7, 'n': 7, 'o': 6
 };
 
-// Max HP per symbol, synced to CardRegistry.h's current level-11 stats.
+// LEGACY FALLBACK ONLY -- these 4 tables (SYMBOL_NAMES above, plus the 3
+// below) go stale the moment a new card is added and nobody remembers to
+// update this file (confirmed happening in practice: Inferno Dragon's
+// symbol '4' was missing from all of them, silently making MAX_HP[ent.symbol]
+// fall back to `|| ent.hp` -- i.e. hpRatio = ent.hp/ent.hp = 1.0 forever, an
+// Inferno Dragon that visually never took damage no matter how much it
+// actually had). Replays now embed their own authoritative "cardMeta" block
+// (id-keyed, generated live from CardRegistry -- see GameLogger::save()) plus
+// each entity's own cardId, so this can never drift again; getEntityMeta()
+// below prefers that and only falls through to these hardcoded tables for
+// replay files saved before cardMeta/cardId existed. Left in place for that
+// backward-compatibility case only -- do not "fix" these by hand again.
 const MAX_HP = {
   'P': 2534, 'R': 4008,
   'K': 1766, 'g': 202, 'M': 1390, 'B': 670, 'V': 1907, 's': 81, 'E': 3760, 'p': 1920,
@@ -649,6 +660,42 @@ const BUILDING_SYMBOLS = new Set(['P', 'R', 'C', 'T', 'D', 'I']);
 // Fallback for replay files saved before the isFlying field was added to the
 // log -- ent.isFlying (from the engine) is always preferred when present.
 const FLYING_SYMBOLS_FALLBACK = new Set(['m', 'h', 'F', 'y', 'a']);
+
+// Populated per-loaded-replay from gameData.cardMeta (id-keyed) in
+// initViewer() -- see getEntityMeta() below, the one place everything else
+// in this file should go through instead of touching the legacy tables
+// above directly.
+let CARD_META = {};
+
+// Single source of truth for "what is this entity" from here on. Prefers,
+// in order: (1) TOWER_DEFS by entity id (towers aren't cards, so cardMeta
+// never covers them -- this table's own per-corner names/HP are already
+// accurate and unrelated to the drift problem this fixes); (2) CARD_META by
+// ent.cardId (accurate, collision-free -- unlike symbol, which several
+// unrelated cards legitimately share with DIFFERENT maxHp, e.g. 'M' is both
+// Mini PEKKA at 1390 and Monk at 2214: a symbol-only lookup silently picks
+// whichever one happens to load last); (3) the legacy symbol-keyed tables,
+// only reached for a replay saved before cardId/cardMeta existed.
+function getEntityMeta(ent) {
+  const towerDef = TOWER_DEFS.find(td => td.id === ent.id);
+  if (towerDef) return { name: towerDef.name, maxHp: towerDef.maxHp, isBuilding: true, isSpell: false, isFlying: false };
+  if (ent.cardId !== undefined && CARD_META[ent.cardId]) return CARD_META[ent.cardId];
+  return {
+    name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
+    maxHp: MAX_HP[ent.symbol] || ent.hp,
+    isBuilding: BUILDING_SYMBOLS.has(ent.symbol),
+    isSpell: SPELL_SYMBOLS.has(ent.symbol),
+    isFlying: FLYING_SYMBOLS_FALLBACK.has(ent.symbol),
+  };
+}
+
+// ent.isFlying (logged live per-entity by the engine) is always preferred
+// over the card-level default when present -- see FLYING_SYMBOLS_FALLBACK's
+// own comment on why (pre-isFlying-field replays only).
+function isEntityFlying(ent) {
+  if (ent.isFlying !== undefined) return ent.isFlying;
+  return getEntityMeta(ent).isFlying;
+}
 
 // Icon shapes rather than letters -- a letter badge risked colliding with the
 // entity's own symbol letter (e.g. Giant's symbol is 'G', same letter the
@@ -729,6 +776,11 @@ function loadFile(file) {
 }
 
 function initViewer() {
+  // See getEntityMeta()'s own comment -- empty object (not an error) for a
+  // replay saved before cardMeta existed, which just means every entity
+  // falls through to the legacy symbol-keyed tables instead.
+  CARD_META = gameData.cardMeta || {};
+
   const w = gameData.boardWidth * CELL_SIZE + PADDING * 2;
   const h = gameData.boardHeight * CELL_SIZE + PADDING * 2;
   canvas.width = w;
@@ -822,10 +874,10 @@ function canvasToGame(cx, cy) {
 // small consistent badge on every entity so ground and air troops (which
 // look identical otherwise now that flying units exist) are never confused.
 function getEntityType(ent) {
-  if (SPELL_SYMBOLS.has(ent.symbol)) return 'spell';
-  if (BUILDING_SYMBOLS.has(ent.symbol)) return 'building';
-  const flying = ent.isFlying !== undefined ? ent.isFlying : FLYING_SYMBOLS_FALLBACK.has(ent.symbol);
-  return flying ? 'air' : 'ground';
+  const meta = getEntityMeta(ent);
+  if (meta.isSpell) return 'spell';
+  if (meta.isBuilding) return 'building';
+  return isEntityFlying(ent) ? 'air' : 'ground';
 }
 
 // Event detection
@@ -839,14 +891,14 @@ function detectAllEvents() {
     const curr = new Map();
 
     for (const ent of tick.entities) {
-      if (SPELL_SYMBOLS.has(ent.symbol)) continue;
+      if (getEntityMeta(ent).isSpell) continue;
       curr.set(ent.id, ent);
       if (!prev.has(ent.id)) {
         allEvents.push({
           tick: tick.tick,
           tickIndex: i,
           type: 'spawn',
-          name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
+          name: getEntityMeta(ent).name,
           team: ent.team,
           id: ent.id,
           hp: ent.hp
@@ -860,7 +912,7 @@ function detectAllEvents() {
           tick: tick.tick,
           tickIndex: i,
           type: 'death',
-          name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
+          name: getEntityMeta(ent).name,
           team: ent.team,
           id: id
         });
@@ -927,13 +979,13 @@ function renderTick() {
   const entities = tickData.entities;
 
   for (const ent of entities) {
-    if (SPELL_SYMBOLS.has(ent.symbol)) {
+    if (getEntityMeta(ent).isSpell) {
       drawEntity(ent, false);
     }
   }
 
   for (const ent of entities) {
-    if (!SPELL_SYMBOLS.has(ent.symbol)) {
+    if (!getEntityMeta(ent).isSpell) {
       drawEntity(ent, ent.id === selectedEntityId);
     }
   }
@@ -987,8 +1039,9 @@ function drawEntity(ent, isSelected) {
   const isBlue = ent.team === 0;
   const mainColor = isBlue ? '#4a9eff' : '#ff5252';
   const dimColor = isBlue ? '#1a3a66' : '#661a1a';
+  const meta = getEntityMeta(ent);
 
-  if (SPELL_SYMBOLS.has(ent.symbol) && ent.symbol !== '-') {
+  if (meta.isSpell && ent.symbol !== '-') {
     const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
     const pixelRadius = spellRadius * CELL_SIZE;
     ctx.beginPath();
@@ -1024,7 +1077,7 @@ function drawEntity(ent, isSelected) {
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.fill();
 
-  if (BUILDING_SYMBOLS.has(ent.symbol)) {
+  if (meta.isBuilding) {
     const sizeInTiles = ent.symbol === 'R' ? 4 : (ent.symbol === 'P' ? 3 : 2);
     const sz = sizeInTiles * CELL_SIZE;
     ctx.fillStyle = dimColor;
@@ -1043,7 +1096,7 @@ function drawEntity(ent, isSelected) {
   // Troops: flat-ish circle (dropped the extra outer glow ring -- with many
   // units on screen the overlapping halos were the main source of visual
   // clutter)
-  else if (!SPELL_SYMBOLS.has(ent.symbol)) {
+  else if (!meta.isSpell) {
     const bodyGrad = ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
     bodyGrad.addColorStop(0, mainColor);
     bodyGrad.addColorStop(1, dimColor);
@@ -1073,8 +1126,8 @@ function drawEntity(ent, isSelected) {
 
   drawTypeBadge(ent, pos, radius);
 
-  if (!SPELL_SYMBOLS.has(ent.symbol)) {
-    const maxHp = MAX_HP[ent.symbol] || ent.hp;
+  if (!meta.isSpell) {
+    const maxHp = meta.maxHp || ent.hp;
     const hpRatio = Math.min(1, ent.hp / maxHp);
     const barWidth = radius * 2.2;
     const barHeight = 3;
@@ -1253,9 +1306,10 @@ function updateInspector(tickData) {
     el.innerHTML = '<div class="inspector-empty">Entity no longer alive</div>';
     return;
   }
-  const name = SYMBOL_NAMES[ent.symbol] || ent.symbol;
+  const meta = getEntityMeta(ent);
+  const name = meta.name;
   const teamStr = ent.team === 0 ? '<span style="color:var(--blue-team)">Blue</span>' : '<span style="color:var(--red-team)">Red</span>';
-  const maxHp = MAX_HP[ent.symbol] || '?';
+  const maxHp = meta.maxHp || '?';
   const type = getEntityType(ent);
   const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[type];
 
@@ -1419,7 +1473,7 @@ canvas.addEventListener('mousemove', (e) => {
   }
 
   if (hovered) {
-    const name = SYMBOL_NAMES[hovered.symbol] || hovered.symbol;
+    const name = getEntityMeta(hovered).name;
     const teamStr = hovered.team === 0 ? 'Blue' : 'Red';
     const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[getEntityType(hovered)];
     tooltipName.textContent = `${name} (${teamStr})`;

@@ -5,6 +5,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <cstdio>
 
 struct EntitySnapshot {
     int id;
@@ -13,6 +14,16 @@ struct EntitySnapshot {
     int team;
     char symbol;
     bool isFlying;
+    // Some symbols are legitimately shared by unrelated cards with
+    // different maxHp (e.g. 'M' is both Mini PEKKA at 1390 and Monk at
+    // 2214) -- a single-char symbol alphabet ran out of room long before
+    // the card roster did. cardId is the unambiguous key into GameLogger::
+    // save()'s "cardMeta" block; symbol alone is not enough to look up
+    // correct metadata for every card. -1 for entities with no registry
+    // entry other than towers (GameManager::TOWER_KING_ID/TOWER_PRINCESS_ID,
+    // -2/-3 -- see GameManager.h), which the viewer already has separate,
+    // accurate per-corner metadata for (TOWER_DEFS).
+    int cardId;
 };
 
 struct TickSnapshot {
@@ -31,9 +42,31 @@ private:
     int boardHeight;
     std::vector<TickSnapshot> snapshots;
 
+    // Despite the name, this used to just wrap c in a 1-char string with no
+    // actual escaping -- harmless as long as every symbol in use was JSON-
+    // safe, until Ram Rider's own symbol turned out to be '"' (see
+    // CardRegistry.h's troop(87, "Ram Rider", ...)): writing it unescaped
+    // produces a bare `"` inside an already-open JSON string, corrupting
+    // the whole file the moment that symbol is written -- previously only
+    // when a Ram Rider entity actually appeared in a given replay's entity
+    // list, now unconditionally too via cardMeta's own per-card symbol
+    // (every registered card, every replay). Real JSON escaping fixes both.
     static std::string escapeChar(char c) {
-        std::string s(1, c);
-        return s;
+        switch (c) {
+            case '"': return "\\\"";
+            case '\\': return "\\\\";
+            default:
+                // Control characters (< 0x20) are also illegal bare in a
+                // JSON string; none are known to be in use as a card
+                // symbol today, but \u-escape defensively rather than
+                // assume that stays true.
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    return std::string(buf);
+                }
+                return std::string(1, c);
+        }
     }
 
 public:
@@ -64,6 +97,7 @@ public:
             es.team = entity->team;
             es.symbol = entity->symbol;
             es.isFlying = entity->isFlying;
+            es.cardId = entity->cardId;
             snap.entities.push_back(es);
         }
 
@@ -92,6 +126,34 @@ public:
             file << "\"" << pair.first << "\":\"" << pair.second.name
                  << " (" << static_cast<int>(pair.second.cost) << ")\"";
             firstCard = false;
+        }
+        file << "},\n";
+
+        // Authoritative per-card display metadata, sourced live from
+        // CardRegistry (see CardDefinition's own comment on why) instead of
+        // a hand-maintained table on the viewer side -- every replay is
+        // self-describing and can never drift out of sync with whatever
+        // cards exist at the time it was generated, even as the roster
+        // grows. Keyed by card id (same convention as cardNames above, and
+        // some ids share a symbol -- e.g. a card's own death-spawn reusing
+        // its parent's stats -- so this can't be symbol-keyed without
+        // silently collapsing those); the viewer derives its own
+        // symbol-keyed lookup from this at load time. maxHp is 0 for
+        // spells (no persistent HP to bar-render).
+        file << "  \"cardMeta\": {";
+        bool firstMeta = true;
+        for (const auto& pair : allCards) {
+            if (!firstMeta) file << ",";
+            const auto& def = pair.second;
+            file << "\"" << pair.first << "\":{"
+                 << "\"name\":\"" << def.name << "\""
+                 << ",\"symbol\":\"" << escapeChar(def.symbol) << "\""
+                 << ",\"maxHp\":" << def.hp
+                 << ",\"isFlying\":" << (def.isFlying ? "true" : "false")
+                 << ",\"isBuilding\":" << (def.isBuilding ? "true" : "false")
+                 << ",\"isSpell\":" << (def.isSpell ? "true" : "false")
+                 << "}";
+            firstMeta = false;
         }
         file << "},\n";
 
@@ -147,7 +209,8 @@ public:
                      << ",\"hp\":" << ent.hp
                      << ",\"team\":" << ent.team
                      << ",\"symbol\":\"" << escapeChar(ent.symbol) << "\""
-                     << ",\"isFlying\":" << (ent.isFlying ? "true" : "false") << "}";
+                     << ",\"isFlying\":" << (ent.isFlying ? "true" : "false")
+                     << ",\"cardId\":" << ent.cardId << "}";
 
                 if (e + 1 < snap.entities.size()) file << ",";
                 file << "\n";
