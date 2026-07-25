@@ -34,6 +34,7 @@
 #include "DarkGuardOnDamageEffect.h"
 #include "HeroMiniPekkaBoostEffect.h"
 #include "HeroKnightTauntEffect.h"
+#include "HeroWizardFieryFlightEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -2045,6 +2046,18 @@ private:
         // as splashRadius/shieldHp elsewhere in this file.
         add(troop(166, "Hero Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
             .withHeroAbility(2.0f, 250, std::make_shared<HeroKnightTauntEffect>(880, 50, 6.5f)));
+
+        // Hero Wizard. Base stats copied from card id 11 (Wizard), see that
+        // registration above. "Fiery Flight" (1 elixir, 200-tick/20s
+        // cooldown): takes flight for 50 ticks/5s, during which every
+        // landed attack also pulses a damaging, pulling tornado on the
+        // target -- see HeroWizardFieryFlightEffect. Pulse pull distance
+        // (0.5 tiles) approximates the sourced "~50% pull strength" --
+        // not an exact sourced tile value, same caveat category as
+        // splashRadius/shieldHp elsewhere in this file.
+        add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+            .withSplash(1.5f)
+            .withHeroAbility(1.0f, 200, std::make_shared<HeroWizardFieryFlightEffect>(50, 4.0f, 20, 0.5f)));
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===

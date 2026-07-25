@@ -5,6 +5,7 @@
 #include "HeroMiniPekkaBoostEffect.h"
 #include "SpawnOnAbility.h"
 #include "HeroKnightTauntEffect.h"
+#include "HeroWizardFieryFlightEffect.h"
 
 // ---------------- registry wiring: one sanity check per Hero ----------------
 // Stage 1 pilot pair -- both use zero new engine primitives, proving the
@@ -215,4 +216,63 @@ TEST_CASE("A fixed-duration shield clears once shieldExpiresTicksRemaining runs 
     knight->update(board); // the 3rd tick: duration elapses
     REQUIRE(knight->shieldHp == 0);
     REQUIRE(knight->shieldExpiresTicksRemaining == 0);
+}
+
+// ---------------- Hero Wizard (167): temporary flight + on-hit tornado pulse ----------------
+
+TEST_CASE("Hero Wizard (167) is registered with base Wizard's stats and the Fiery Flight ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(167);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    REQUIRE_FALSE(def->isChampion);
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
+    REQUIRE(hero != nullptr);
+    REQUIRE(hero->hp == 755); // base Wizard's own hp, copied verbatim -- see CardRegistry.h id 11
+    REQUIRE(hero->splashRadius == Catch::Approx(1.5f));
+    REQUIRE(hero->abilityElixirCost == Catch::Approx(1.0f));
+    REQUIRE(hero->abilityCooldownTicks == 200);
+    REQUIRE_FALSE(hero->isFlying); // not yet activated
+}
+
+TEST_CASE("HeroWizardFieryFlightEffect grants flight for a fixed duration, then reverts it", "[hero_wizard]") {
+    Board board;
+    auto wizard = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 755, 0, 5.5f, 281, 14);
+    spawn(board, wizard);
+    REQUIRE_FALSE(wizard->isFlying);
+
+    HeroWizardFieryFlightEffect effect(3, 4.0f, 20, 0.5f); // short 3-tick duration for a fast test
+    effect.apply(board, *wizard);
+    REQUIRE(wizard->isFlying);
+
+    wizard->update(board);
+    wizard->update(board);
+    REQUIRE(wizard->isFlying); // still flying after 2 of 3 ticks
+
+    wizard->update(board); // the 3rd tick: window elapses
+    REQUIRE_FALSE(wizard->isFlying);
+}
+
+TEST_CASE("A landed attack during the flight window pulses damage/pull centered on the target, not the caster",
+        "[hero_wizard]") {
+    Board board;
+    auto wizard = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 755, 0, 10.0f, 281, 14); // wide range: lands a hit this tick
+    auto target = std::make_shared<StationaryCombatant>(2, 5.0f, 0.0f, 10000, 1, 1.0f, 100, 10);
+    // Bystander near the TARGET (not near the caster) -- proves the pulse
+    // is centered on target->position, unlike onHitPullRadius's self-centered pull.
+    auto bystander = std::make_shared<StationaryCombatant>(3, 5.5f, 0.0f, 10000, 1, 1.0f, 100, 10);
+    spawn(board, wizard);
+    spawn(board, target);
+    spawn(board, bystander);
+
+    HeroWizardFieryFlightEffect effect(50, 4.0f, 20, 0.5f);
+    effect.apply(board, *wizard);
+
+    wizard->update(board); // lands the attack (currentCooldown starts at 0) -- fires the pulse too
+
+    REQUIRE(bystander->hp < 10000); // caught by the pulse's splash damage, despite never being wizard's own attack target
 }

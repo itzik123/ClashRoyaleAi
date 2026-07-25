@@ -553,6 +553,28 @@ public:
     float selfHasteCooldownMultiplier = 1.0f;
     int selfHasteTicksRemaining = 0;
 
+    // Temporary flight (Hero Wizard's Fiery Flight): isFlying itself lives
+    // on Entity (see its own comment there) and is already read live every
+    // tick by isValidTarget/Troop::moveTowards/Board's collision grouping,
+    // so toggling it at runtime needs no new field of its own -- this timer
+    // just reverts isFlying=false once the window ends. Does NOT also
+    // toggle ignoresRiver (fixed at spawn, CardFactories::
+    // shouldIgnoreRiver) -- an accepted gap, same as the real ability not
+    // relocating her across the map either. 0 (the default) is every card
+    // without a temporary flight window.
+    int temporaryFlightTicksRemaining = 0;
+    // On-hit tornado pulse while the flight window is active (Hero
+    // Wizard's Fiery Flight: fireballs gain their own damaging, pulling
+    // tornado) -- see update()'s attack-landing block. Centered on the
+    // TARGET's position, unlike Evolved Valkyrie's onHitPullRadius above
+    // (centered on self) -- this accompanies a ranged hit landing on the
+    // target, not a melee spin around the caster. 0 (the default) is every
+    // card without one.
+    int flightPulseTicksRemaining = 0;
+    float flightPulseRadius = 0.0f;
+    int flightPulseDamage = 0;
+    float flightPulsePullDistance = 0.0f;
+
     // Hit-speed ramp while locked onto the same target (Little Prince):
     // unlike rampMidTick/rampFullTick above (which ramp DAMAGE while
     // attackCooldown stays fixed, for Inferno Dragon/Tower/Mighty Miner),
@@ -728,6 +750,11 @@ public:
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
         if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
         if (selfHasteTicksRemaining > 0) selfHasteTicksRemaining--;
+        if (temporaryFlightTicksRemaining > 0) {
+            temporaryFlightTicksRemaining--;
+            if (temporaryFlightTicksRemaining == 0) isFlying = false;
+        }
+        if (flightPulseTicksRemaining > 0) flightPulseTicksRemaining--;
         if (forcedTargetTicksRemaining > 0) forcedTargetTicksRemaining--;
         if (shieldExpiresTicksRemaining > 0) {
             shieldExpiresTicksRemaining--;
@@ -941,6 +968,19 @@ public:
                             applySplashDamage(board, position, onHitPullRadius, -1, id, team, cardId, onHitPullDamage);
                         }
                         applyPullNearby(board, position, onHitPullRadius, onHitPullDistance, id, team);
+                    }
+                    // Tornado pulse while flying (Hero Wizard's Fiery
+                    // Flight) -- centered on the TARGET, not self (see
+                    // flightPulseTicksRemaining's own comment for why this
+                    // differs from onHitPullRadius above). excludeId -1
+                    // (nothing skipped), same as Valkyrie's own onHitPullRadius
+                    // splash above -- "does its own damage" reads as
+                    // additive on top of the main hit, not a replacement,
+                    // so the primary target isn't exempted from the pulse
+                    // just because it was already hit this same attack.
+                    if (flightPulseTicksRemaining > 0 && flightPulseRadius > 0.0f) {
+                        applySplashDamage(board, target->position, flightPulseRadius, -1, id, team, cardId, flightPulseDamage);
+                        applyPullNearby(board, target->position, flightPulseRadius, flightPulsePullDistance, -1, team);
                     }
                     if (dieAfterFirstHit) hp = 0;
                 }
