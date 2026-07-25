@@ -7,6 +7,7 @@
 #include <vector>
 #include <random>
 #include <tuple>
+#include <unordered_set>
 
 struct StepResult {
     std::vector<float> observation;
@@ -415,4 +416,62 @@ inline std::vector<int> getAllCardIds() {
         ids.push_back(id);
     }
     return ids;
+}
+
+// Builds a random 8-card deck that's ALWAYS validateDeckSlots-legal by
+// construction, not by rejection-sampling and retrying -- buckets every
+// registered card into plain/Evolution/Champion pools once, then fills each
+// deck slot only from whichever pools CardRegistry::validateDeckSlots
+// actually allows there (slot 0: plain+Evolution, slot 1: plain+Champion,
+// slot 2: plain+Evolution+Champion, slots 3-7: plain only), independently
+// rolling a moderate chance per eligible slot of using a Champion/Evolution
+// instead of defaulting to plain. That chance is a training-curriculum
+// judgment call (not sourced from the game itself) picked so random decks
+// aren't artificially Champion/Evolution-heavy compared to a real deck.
+// Never repeats a card within one deck (a real deck can't either) -- always
+// possible here since every pool comfortably exceeds the at-most-2 special
+// cards any single deck could ever need.
+inline std::vector<int> sampleRandomDeck(std::mt19937& rng) {
+    std::vector<int> plainPool, evolutionPool, championPool;
+    for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
+        if (def.isEvolution) evolutionPool.push_back(id);
+        else if (def.isChampion) championPool.push_back(id);
+        else plainPool.push_back(id);
+    }
+
+    std::unordered_set<int> used;
+    std::uniform_real_distribution<float> chance01(0.0f, 1.0f);
+    const float SPECIAL_SLOT_CHANCE = 0.4f;
+
+    auto pickFrom = [&rng, &used](const std::vector<int>& pool) {
+        std::vector<int> eligible;
+        for (int id : pool) if (!used.count(id)) eligible.push_back(id);
+        std::uniform_int_distribution<size_t> dist(0, eligible.size() - 1);
+        int chosen = eligible[dist(rng)];
+        used.insert(chosen);
+        return chosen;
+    };
+
+    std::vector<int> deck(8, -1);
+    // Slot 0: Evolution slot.
+    deck[0] = (!evolutionPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
+        ? pickFrom(evolutionPool) : pickFrom(plainPool);
+    // Slot 1: Heroic slot (Champion-eligible).
+    deck[1] = (!championPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
+        ? pickFrom(championPool) : pickFrom(plainPool);
+    // Slot 2: Wild Card slot (Champion OR Evolution-eligible) -- roll once
+    // for "special or not", then once more for which kind if so.
+    bool slot2Special = (!evolutionPool.empty() || !championPool.empty())
+        && chance01(rng) < SPECIAL_SLOT_CHANCE;
+    if (slot2Special) {
+        bool useEvolution = evolutionPool.empty() ? false
+            : championPool.empty() ? true : (chance01(rng) < 0.5f);
+        deck[2] = useEvolution ? pickFrom(evolutionPool) : pickFrom(championPool);
+    } else {
+        deck[2] = pickFrom(plainPool);
+    }
+    // Slots 3-7: plain only.
+    for (int i = 3; i < 8; ++i) deck[i] = pickFrom(plainPool);
+
+    return deck;
 }

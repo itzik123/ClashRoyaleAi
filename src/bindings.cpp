@@ -85,4 +85,17 @@ PYBIND11_MODULE(clash_royale_env, m) {
     // reason naming the offending slot/card.
     m.def("validate_deck_slots", &validateDeckSlots,
         "Returns \"\" if `deck` (8 card ids) satisfies Evolution/Champion slot-position rules, else an error string.");
+
+    // Correct-by-construction replacement for the various Python-side
+    // "random.sample(get_all_card_ids(), 8), retry until validate_deck_slots
+    // passes" patterns (gym_wrapper.py, train.py, train_selfplay.py) --
+    // sampleRandomDeck itself takes an std::mt19937& (reusable from other
+    // C++ callers), which pybind11 can't expose directly; this lambda wraps
+    // it with its own internally-seeded generator (seeded once, like
+    // ClashEnv::rng/GameManager::rng) so the Python-facing call takes no
+    // arguments.
+    m.def("sample_random_deck", []() {
+        static std::mt19937 rng(std::random_device{}());
+        return sampleRandomDeck(rng);
+    }, "Builds a random 8-card deck that always satisfies Evolution/Champion slot-position rules by construction.");
 }

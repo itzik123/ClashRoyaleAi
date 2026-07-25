@@ -310,23 +310,6 @@ def sample_scenario(rng):
     return builders[rng.choice(len(builders), p=weights)](rng)
 
 
-def sample_legal_random_deck(pool, max_tries=200):
-    """Rejection-samples an 8-card deck from `pool` that satisfies
-    CardRegistry's Evolution/Champion slot-position rules (validate_deck_
-    slots, bound from CardRegistry::validateDeckSlots) -- measured empirically
-    at ~35% of naive random.sample(get_all_card_ids(), 8) draws being illegal
-    (get_all_card_ids() includes Champions/Evolutions, which only some slots
-    accept), which GameManager::reset() throws std::invalid_argument on. Only
-    ~1.5 tries needed on average at that rate; max_tries is a generous safety
-    margin, not a realistic ceiling."""
-    for _ in range(max_tries):
-        candidate = random.sample(pool, 8)
-        if not clash_royale_env.validate_deck_slots(candidate):
-            return candidate
-    raise RuntimeError(f"Could not sample a legal random deck from a pool of {len(pool)} cards "
-                        f"after {max_tries} tries.")
-
-
 def discover_historical_checkpoints(current_episode=None):
     """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
     (mtime). Save order is the ordering signal, not filenames -- pipeline #1
@@ -493,11 +476,6 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # set once per episode in set_scripted_opponent, read in
         # _scripted_opponent_action.
         self.opponent_lane = None
-        # Card ids available to draw a random opponent deck from -- see
-        # set_scripted_opponent. Computed once here (not per-episode): it
-        # never changes at runtime, and get_all_card_ids() is a real call
-        # into the engine, not a free property lookup.
-        self._all_card_ids = clash_royale_env.get_all_card_ids()
 
         # PFSP pool/stats -- see refresh_pfsp_pool()/_sample_pfsp_opponent().
         # Empty until the main process's first broadcast; reset() no-ops the
@@ -558,7 +536,10 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         checkpoint, which only ever learned to play self.deck)."""
         self.opponent_kind = name
         self.opponent_checkpoint_path = f"scripted:{name}"
-        self.game.set_opponent_deck(sample_legal_random_deck(self._all_card_ids))
+        # Correct-by-construction (not rejection-sampling against
+        # validate_deck_slots) -- see sampleRandomDeck's own comment in
+        # ClashEnv.h.
+        self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
         if name in ("Rusher", "Counter"):
             self.opponent_lane = random.choice(["left", "right"])
 

@@ -1,6 +1,8 @@
 #include <catch_amalgamated.hpp>
 #include "ClashEnv.h"
 #include <vector>
+#include <algorithm>
+#include <random>
 
 // Champion support (Mighty Miner, id 115) deliberately does NOT grow the
 // flat observation vector -- see ClashEnv.h's own comment on
@@ -52,4 +54,18 @@ TEST_CASE("step()'s activateAbility param defaults to false and only fires when 
 
     env.step(-1, 0.0f, 0.0f, 1, true); // explicitly activate slot 1's ability now
     REQUIRE_FALSE(env.isChampionAbilityReady(0)); // now on cooldown
+}
+
+TEST_CASE("sampleRandomDeck always produces a deck that passes validateDeckSlots", "[clash_env][random_deck]") {
+    std::mt19937 rng(2024);
+    for (int trial = 0; trial < 300; ++trial) {
+        std::vector<int> deck = sampleRandomDeck(rng);
+        REQUIRE(deck.size() == 8);
+        REQUIRE(validateDeckSlots(deck).empty());
+
+        // A real deck can't repeat a card -- confirm sampleRandomDeck never does either.
+        std::vector<int> sorted = deck;
+        std::sort(sorted.begin(), sorted.end());
+        REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+    }
 }
