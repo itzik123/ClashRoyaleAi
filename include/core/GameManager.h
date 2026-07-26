@@ -327,18 +327,13 @@ public:
         if (isMirror) {
             effectiveDef = CardRegistry::getInstance().getCard(player.lastPlayedCardId);
             if (!effectiveDef) return false;
-            // Real-game fidelity: Mirror can't duplicate a Champion at all.
-            // Harmless either way under the new per-slot tracking (a
-            // mirrored Champion's result.cardId would be Mirror's own id,
-            // 164, never a slot's original id, so its ability would be
-            // permanently unreachable regardless) -- blocked outright here
-            // to match the real card's own restriction, not just to avoid
-            // an inert duplicate. Extended to Hero by inference (symmetry
-            // with Champion), not directly sourced: the real game's Mirror
-            // restriction is documented for Champions; Heroes share the
-            // same special-unit deck slots, so the same restriction is
-            // assumed to apply.
-            if (effectiveDef->isChampion || effectiveDef->isHero) return false;
+            // Mirror CAN duplicate a Champion/Hero -- the ability always
+            // belongs to whichever instance of that slot's troop was most
+            // recently deployed, whether that deployment came from playing
+            // the original card or from Mirror (see the tracking hook
+            // below, which resolves this off the spawned entity's own
+            // cardId rather than off result.cardId, so a Mirror-spawned
+            // instance is just as trackable as the original).
             costOverride = effectiveDef->cost + 1.0f;
         } else if (isSpiritEmpress) {
             costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
@@ -365,25 +360,30 @@ public:
             if (!isMirror) player.lastPlayedCardId = result.cardId;
 
             // Champion/Hero per-slot tracking (see PlayerState::
-            // ChampionSlotState): only a play whose RESULT cardId matches
-            // deck slot 1 or 2's own ORIGINAL id counts -- a Mirror play's
-            // result.cardId is Mirror's own id (164), never a slot's
-            // original id, so a Mirror-duplicated Champion/Hero can never
-            // become anyone's tracked entity. Hero shares this exact same
-            // tracking as Champion -- both occupy the same two slots.
+            // ChampionSlotState): resolved off the freshly-spawned
+            // entity's OWN cardId, not result.cardId -- a Mirror play's
+            // result.cardId is always Mirror's own id (164), but the
+            // entity it actually spawns carries the mirrored (effectiveDef)
+            // card's real id (see applyCardMetadata), so checking the
+            // entity itself tracks a Mirror-duplicated Champion/Hero just
+            // as well as an original play. This gives "the ability always
+            // belongs to whichever instance was deployed last" uniformly,
+            // matching real-game fidelity -- Mirror CAN duplicate a
+            // Champion/Hero, and activating the ability targets whichever
+            // copy (original or mirrored) was created most recently. Hero
+            // shares this exact same tracking as Champion -- both occupy
+            // the same two slots.
             const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
             for (int slot : { 1, 2 }) {
-                if (result.cardId != deckConfig[slot]) continue;
                 for (size_t i = pendingBefore; i < board.pendingEntityCount(); ++i) {
                     auto ce = std::dynamic_pointer_cast<CombatEntity>(board.getPendingEntity(i));
-                    if (ce && (ce->isChampion || ce->isHero)) {
+                    if (ce && (ce->isChampion || ce->isHero) && ce->cardId == deckConfig[slot]) {
                         PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
                         ce->abilityCooldownRemaining = slotState.persistedCooldownRemaining;
                         slotState.trackedEntityId = ce->id;
                         break;
                     }
                 }
-                break;
             }
 
             return true;

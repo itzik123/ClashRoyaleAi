@@ -1062,6 +1062,18 @@ TEST_CASE("countChampions counts how many Champion cards appear in a deck", "[ca
     REQUIRE(countChampions({ 9999 }) == 0); // unknown id: ignored, not a crash
 }
 
+// Same shape as countChampions's own test above -- countHeroes is its exact
+// Hero-flagged counterpart (see CardRegistry.h), added for symmetry when the
+// Hero mechanic was introduced.
+TEST_CASE("countHeroes counts how many Hero cards appear in a deck", "[card_registry][hero]") {
+    REQUIRE(countHeroes({ 0, 1, 2, 3, 4, 5, 6, 7 }) == 0); // no Hero at all
+    REQUIRE(countHeroes({ 170, 1, 2, 3, 4, 5, 6, 7 }) == 1); // Hero Mini P.E.K.K.A. only
+    REQUIRE(countHeroes({ 170, 168, 2, 3, 4, 5, 6, 7 }) == 2); // two Heroes -- the illegal case
+    REQUIRE(countHeroes({ 115, 170, 2, 3, 4, 5, 6, 7 }) == 1); // a Champion (115) doesn't count as a Hero
+    REQUIRE(countHeroes({}) == 0); // empty deck: no crash
+    REQUIRE(countHeroes({ 9999 }) == 0); // unknown id: ignored, not a crash
+}
+
 // ---------------- validateDeckSlots ----------------
 // Slot 0 = Evolution slot, slot 1 = Heroic slot (Champion), slot 2 = Wild
 // Card (Champion or Evolution), slots 3-7 = plain only. Id 123 (Wall
