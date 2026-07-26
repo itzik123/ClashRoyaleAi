@@ -39,6 +39,7 @@
 #include "HeroMegaMinionWarpEffect.h"
 #include "HeroMagicArcherTripleThreatEffect.h"
 #include "HeroIceGolemSnowstormEffect.h"
+#include "HeroBarbarianBarrelRerollEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -233,6 +234,14 @@ private:
     }
     static CardStats barbarianBarrelBarbarianStats() {
         return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B');
+    }
+    // Hero Barbarian Barrel Hero-ifies the SPAWNED Barbarian himself, not
+    // the ephemeral one-tick barrel spell (which has no persistent entity
+    // to carry an ability at all) -- same base stats as
+    // barbarianBarrelBarbarianStats above, plus "Rowdy Reroll".
+    static CardStats heroBarbarianBarrelBarbarianStats() {
+        return troop(-47, "Hero Barbarian Barrel", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+            .withHeroAbility(1.0f, 0, std::make_shared<HeroBarbarianBarrelRerollEffect>(3.0f, 0.7f, 233), 1);
     }
     // Compound-card secondary units (Goblin Machine's rocket turret, Ram
     // Rider's crossbow, Goblin Giant's carried Spear Goblins, Goblin
@@ -2121,6 +2130,27 @@ private:
             .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
             .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f)
             .withHeroAbility(2.0f, 170, std::make_shared<HeroIceGolemSnowstormEffect>(4.0f, 80, 1.0f, 20, 0.6f, 15)));
+
+        // Hero Barbarian Barrel. Base stats copied from card id 101
+        // (Barbarian Barrel), see that registration above -- but the
+        // ability itself lives on the SPAWNED Barbarian's own CardStats
+        // (heroBarbarianBarrelBarbarianStats above), not this ephemeral
+        // one-tick spell's, since the spell entity dies the same tick it
+        // spawns and never has a live turn to activate anything. isHero is
+        // set directly on this spell's own CardStats (not via
+        // withHeroAbility, which would also wire up ability fields this
+        // entity never uses) purely so validateDeckSlots/seedSlotState
+        // recognize deck id 174 itself as Hero-eligible --
+        // CardFactories::spawnSpell never reads isHero at all, so this has
+        // no runtime effect on the spawned AreaSpell. "Rowdy Reroll" (1
+        // elixir, ONE USE): see HeroBarbarianBarrelRerollEffect.
+        {
+            CardStats heroBarbarianBarrelSpellStats = spell(174, "Hero Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
+                .withGroundOnly()
+                .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(heroBarbarianBarrelBarbarianStats()));
+            heroBarbarianBarrelSpellStats.isHero = true;
+            add(heroBarbarianBarrelSpellStats);
+        }
 
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===

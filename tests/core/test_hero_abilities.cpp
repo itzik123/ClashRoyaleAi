@@ -11,6 +11,7 @@
 #include "HeroMagicArcherTripleThreatEffect.h"
 #include "HeroIceGolemSnowstormEffect.h"
 #include "AreaSpell.h"
+#include "HeroBarbarianBarrelRerollEffect.h"
 #include "TargetingHelpers.h"
 #include "Tower.h"
 
@@ -549,4 +550,58 @@ TEST_CASE("AreaSpell's spellTowerDamageMultiplier only discounts Tower targets, 
 
     spell->update(board);
     REQUIRE(troop1->hp == 1000 - 100); // full damage -- the discount only ever applies to isTower() targets
+}
+
+// ---------------- Hero Barbarian Barrel (174) ----------------
+
+TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Hero-flagged Barbarian with the Rowdy Reroll ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(174);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero); // deck-slot-legality flag, even though the spell entity itself carries no ability
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    // The spell itself has delayTicks=8 (see the base Barbarian Barrel's
+    // own registration) -- its spawnOnDetonate (the Barbarian) only fires
+    // partway through AreaSpell::update(), not at construction, so this
+    // needs to be driven forward before the Barbarian exists at all.
+    std::shared_ptr<AreaSpell> spell;
+    for (const auto& e : board.getEntities()) {
+        spell = std::dynamic_pointer_cast<AreaSpell>(e);
+        if (spell) break;
+    }
+    REQUIRE(spell != nullptr);
+    for (int i = 0; i < 9; ++i) spell->update(board);
+    board.commitPendingEntities();
+
+    std::shared_ptr<CombatEntity> barbarian;
+    for (const auto& e : board.getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce) { barbarian = ce; break; }
+    }
+    REQUIRE(barbarian != nullptr);
+    REQUIRE(barbarian->isHero);
+    REQUIRE(barbarian->hp == 691); // base Barbarian's own hp, copied verbatim -- see barbarianBarrelBarbarianStats
+    REQUIRE(barbarian->abilityElixirCost == Catch::Approx(1.0f));
+    REQUIRE(barbarian->abilityUsesRemaining == 1);
+}
+
+TEST_CASE("HeroBarbarianBarrelRerollEffect rolls forward, damages enemies in the line, and halves damage against Towers",
+        "[hero_barbarian_barrel]") {
+    Board board;
+    auto barbarian = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 691, 0, 0.7f, 192, 14); // team 0
+    auto enemyTroop = std::make_shared<StationaryCombatant>(2, 5.0f, 7.0f, 1000, 1, 1.0f, 100, 10); // in the roll's path
+    auto enemyTower = std::make_shared<Tower>(3, 5.0f, 8.0f, 5000, 1, 7.0f, 90, 10, 'R'); // also in the roll's path
+    spawn(board, barbarian);
+    spawn(board, enemyTroop);
+    spawn(board, enemyTower);
+
+    HeroBarbarianBarrelRerollEffect effect(3.0f, 0.7f, 233);
+    effect.apply(board, *barbarian);
+
+    REQUIRE(barbarian->position.y == Catch::Approx(8.0f)); // 5 + 3, forward toward the enemy half
+    REQUIRE(enemyTroop->hp == 1000 - 233); // full roll damage
+    REQUIRE(enemyTower->hp == 5000 - 116); // 233 / 2 = 116 (integer division), halved vs Towers
 }
