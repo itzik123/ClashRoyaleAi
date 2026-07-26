@@ -1,0 +1,842 @@
+[
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 500,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 180,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 230,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 510,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 490,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 560,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 150,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 1000,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 570,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 980,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 890,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 160,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 480,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 960,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 560,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Defender",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 900,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 430,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 560,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 170,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 150,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 210,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 620,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 560,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 530,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 540,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 130,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 230,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 140,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "scripted",
+    "opp_name": "Counter",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 560,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 150,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784862411793_pipeline2_ep00152450.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 970,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 90,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 170,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784864596288_pipeline2_ep00157521.pth",
+    "ticks": 100,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 550,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 120,
+    "outcome": "draw",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 410,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 1430,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784866424034_pipeline2_ep00162532.pth",
+    "ticks": 120,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 100,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 150,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784868474066_pipeline2_ep00167618.pth",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 1120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 950,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784870508477_pipeline2_ep00172718.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784872404196_pipeline2_ep00177841.pth",
+    "ticks": 610,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 110,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 1110,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 120,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 600,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784874169610_pipeline2_ep00182870.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 530,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 540,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 630,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 110,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 630,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784875919332_pipeline2_ep00187892.pth",
+    "ticks": 630,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 140,
+    "outcome": "loss",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784877751580_pipeline2_ep00192981.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 200,
+    "outcome": "loss",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 540,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 150,
+    "outcome": "draw",
+    "is_scenario": true
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  },
+  {
+    "opp_kind": "historical",
+    "opp_name": "1784880257662_pipeline2_ep00198005.pth",
+    "ticks": 120,
+    "outcome": "win",
+    "is_scenario": false
+  }
+]

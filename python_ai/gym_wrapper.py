@@ -33,7 +33,15 @@ import clash_royale_env
 # Exposed at module level so other scripts (e.g. train_selfplay.py, which
 # builds its ClashRoyaleEnv directly instead of through this wrapper) can
 # import the same deck instead of duplicating/drifting from this literal.
-DEFAULT_DECK = [44, 0, 56, 45, 22, 106, 107, 101]
+#
+# Classic Giant-beatdown archetype (Valkyrie, Archers, Minions, Cannon,
+# Fireball, Giant, Musketeer, Mini PEKKA) -- deliberately replaces the old
+# deck's two building-targeter tower-shredders (Inferno Dragon/Balloon) with
+# a single, non-ramping win condition (Giant just tanks; it doesn't melt a
+# tower and chain onto the next one the way Inferno Dragon's ramping damage
+# did -- see the replay autopsy this responds to), and gives real cheap
+# defensive tools (Cannon, Minions) that the old deck had none of at all.
+DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
 
 
 def get_all_card_ids():

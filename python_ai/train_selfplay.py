@@ -176,11 +176,28 @@ SCRIPTED_OPPONENTS = ["scripted:Rusher", "scripted:Defender", "scripted:Cycler",
 # (see the ~300-tick average game length discussion this responds to), a
 # property PFSP has no way to see or weight for on its own. This floor
 # overrides PFSP_MIN_WEIGHT for these two specifically, independent of
-# measured win-rate. 4x the base floor as a starting point -- tune from
-# here based on whether Progress/Episode_Length_Ticks_50 and Scenario/
-# Defense_Success_Rate actually move.
+# measured win-rate.
+#
+# First tried at 4x the base floor (0.20). Confirmed NOT enough: with a
+# ~98-member pool where the other 96 sit at PFSP_MIN_WEIGHT once mastered
+# (empirically true here -- aggregate decisive win rate stayed >=0.77
+# throughout), 0.20 each gives Defender+Counter only ~7.7% combined sampling
+# share -- against ep_len_history's maxlen=50 window, that's ~1-4 games/
+# window, statistically invisible in Progress/Episode_Length_Ticks_50 (no
+# trend after 3000+ episodes at that setting). A follow-up isolated eval
+# (current greedy policy vs ONLY Defender/Counter, bypassing PFSP sampling
+# entirely) confirmed the escalation logic itself does work -- AvgTicks 240
+# and 339 respectively vs the live aggregate's ~250-290, Counter games up to
+# 1000 ticks -- so the fix here is exposure, not the opponent logic. 0.8
+# retargets combined share to ~25% (2*0.8 / (96*0.05 + 2*0.8) under the same
+# all-others-floored assumption) -- large enough to actually move the
+# aggregate if the isolated-eval numbers hold at scale. Even at 25% exposure
+# the games are individually bimodal (most of both isolated runs still ended
+# fast, 110-230 ticks) -- so if THIS still doesn't move AvgTicks, the next
+# suspect is the bots' purely-reactive posture (no proactive early-game
+# stance), not sampling weight again.
 DEFENSIVE_SCRIPTED_OPPONENTS = {"scripted:Defender", "scripted:Counter"}
-DEFENSIVE_SCRIPTED_MIN_WEIGHT = 0.20
+DEFENSIVE_SCRIPTED_MIN_WEIGHT = 0.8
 
 # Pulled live from the engine (see model.py's own identical pattern) so a
 # board-geometry or channel-layout change on the C++ side propagates here
@@ -678,14 +695,26 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             return self.MAX_X * (0.2 if self.opponent_lane == "left" else 0.8)
 
         def find_incursion():
-            """Returns (x, y, is_heavy) for the deepest enemy incursion in
-            this observer's own half, or None. Channels 4-6 = enemy (team 0)
+            """Returns (x, y, is_heavy) for the most urgent enemy incursion
+            anywhere on the board, or None. Channels 4-6 = enemy (team 0)
             melee/ranged/tank troops, from THIS observer's own mirrored
             point of view -- see model.py's identical channel-layout
-            comment. "My own half" = rows up to int(self.MAX_Y): reuses the
-            same enforced-placement-bound binding everything else in this
-            file already pulls live, rather than hardcoding ClashEnv.h's
-            own riverRow constant a second time on the Python side.
+            comment.
+
+            Scans the WHOLE board, not just this observer's own half.
+            Previously scanned only rows up to int(self.MAX_Y) (the
+            enforced own-half placement bound, same one everything else in
+            this file pulls live) -- meaning Defender/Counter only ever
+            noticed a threat once it had already crossed the river into
+            their own territory, often most of the way to the tower by the
+            time a response spawned and reached it. An isolated eval of the
+            live policy vs. these two scripted bots (bypassing PFSP
+            sampling) found 55-70% of even head-to-head games still ended
+            in an early blowout (110-230 ticks) regardless of exposure --
+            i.e. sampling weight (see DEFENSIVE_SCRIPTED_MIN_WEIGHT) wasn't
+            the bottleneck, reaction latency was. Detecting the threat the
+            moment it's placed, anywhere, lets escalation (is_heavy) and
+            the response fire as early as possible.
 
             is_heavy: True iff the incursion includes a channel-6 (building-
             targeter/tank archetype) unit -- the same archetype category
@@ -696,19 +725,27 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             in range -- the distinction is what Defender escalates on.
             """
             river_row = int(self.MAX_Y)
-            tank_zone = spatial[6][:river_row + 1, :]
-            other_zone = (spatial[4] + spatial[5])[:river_row + 1, :]
-            tank_nz = np.nonzero(tank_zone)
+
+            def clamp_y(y):
+                # Placement is only ever legal within our own half (see
+                # self.MAX_Y's own docstring) -- for a threat still crossing
+                # from the enemy's half this meets it right at the bridge,
+                # the earliest legal interception point, instead of only
+                # reacting once it's already deep in our own territory (the
+                # old own-half-only scan's implicit behavior).
+                return min(float(y), float(river_row))
+
+            tank_nz = np.nonzero(spatial[6])
             if tank_nz[0].size > 0:
                 ys, xs = tank_nz
-                deepest = int(np.argmin(ys))
-                return float(xs[deepest]), float(ys[deepest]), True
-            other_nz = np.nonzero(other_zone)
+                deepest = int(np.argmin(ys))  # smallest y = closest to team 1's own tower = most urgent
+                return float(xs[deepest]), clamp_y(ys[deepest]), True
+            other_nz = np.nonzero(spatial[4] + spatial[5])
             if other_nz[0].size == 0:
                 return None
             ys, xs = other_nz
-            deepest = int(np.argmin(ys))  # smallest y = closest to team 1's own tower = most urgent
-            return float(xs[deepest]), float(ys[deepest]), False
+            deepest = int(np.argmin(ys))
+            return float(xs[deepest]), clamp_y(ys[deepest]), False
 
         NO_OP = (_HAND_SIZE, 0.0, 0.0, False, False)
         kind = self.opponent_kind
