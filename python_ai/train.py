@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import gymnasium as gym
-from torch.distributions import Categorical, Normal
+from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 
@@ -245,8 +245,19 @@ def train_ppo():
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = MicroRoyaleNet().to(device)
+    net = MicroRoyaleNet(num_ability_slots=gym_wrapper.DEFAULT_DECK_ABILITY_SLOTS).to(device)
     optimizer = optim.Adam(net.parameters(), lr=3e-4)
+    # This loop no longer samples/stores/scores Champion abilities at all --
+    # with a Champion-less deck they were pure noise in the PPO ratio and the
+    # entropy bonus (see gym_wrapper.DEFAULT_DECK_ABILITY_SLOTS). Fail loudly
+    # rather than silently ignoring a Champion that IS in the deck: the net
+    # would build the heads but nothing here would ever sample them, so the
+    # bot would simply never use its Champion and nothing would say why.
+    if gym_wrapper.DEFAULT_DECK_ABILITY_SLOTS > 0:
+        raise NotImplementedError(
+            "DEFAULT_DECK contains a Champion (DEFAULT_DECK_ABILITY_SLOTS > 0), but this "
+            "training loop's ability sampling was removed when the deck had none. Restore "
+            "the ability_dist sampling/buffering/log-prob branches before training this deck.")
 
     # PPO Hyperparameters
     gamma = 0.99
@@ -261,22 +272,47 @@ def train_ppo():
     gae_lambda = 0.9
     eps_clip = 0.2
     update_timestep = 500  # Number of steps PER CORE before update
-    ppo_epochs = 2         # How many times to reuse each rollout
-    # Minibatches per epoch, split across the env (sequence) dimension. Each minibatch
-    # replays its sequences through the LSTM, so cost ~= ppo_epochs * num_minibatches *
-    # update_timestep sequential forward/backward passes. With only 4 envs a single
-    # full-batch update is faster and lower-variance; raise this once num_envs grows.
-    num_minibatches = 1
-    max_grad_norm = 0.5    # Gradient clipping (stabilizes the long-horizon BPTT)
 
-    initial_entropy_coef = 0.1
+    # --- Truncated BPTT ---------------------------------------------------
+    # The update used to replay each env's WHOLE 500-step rollout through the
+    # LSTM as one sequence, with num_minibatches=1 and ppo_epochs=2 -- which is
+    # exactly 2 optimizer steps per 4000 collected transitions. Two measured
+    # consequences:
+    #   * Loss/Clip_Fraction was 0.0000 across ALL 228 updates of an 18,740-
+    #     episode run. That is structural, not a plateau: epoch 0 evaluates the
+    #     policy that generated the data, so its ratio is exactly 1 by
+    #     construction, leaving a single Adam step before epoch 1 -- far too
+    #     little movement to ever reach the 0.2 clip boundary.
+    #   * Profiling put ~5.0s of the ~7s epoch in the backward pass alone,
+    #     i.e. 79%, all of it unrolling one 500-long chain.
+    #
+    # Splitting the rollout into fixed-length chunks fixes both at once. Each
+    # (chunk, env) pair becomes an independent training segment starting from
+    # the hidden state that was actually stored at that timestep during the
+    # rollout (see hx_in_buffer), which is the standard stored-state approach
+    # for recurrent PPO. 500/25 = 20 chunks x 8 envs = 160 segments per
+    # rollout, so a minibatch is a real batch instead of 8 sequences.
+    #
+    # This is FASTER, not just more thorough: sequential LSTMCell calls per
+    # epoch drop from 500 (one 500-long chain, batch 8) to 8 x 25 = 200 (batch
+    # 20 each), and the Python-loop overhead per step is amortized over a wider
+    # batch. Same total timesteps processed, far fewer serial steps.
+    bptt_chunk = 25
+    ppo_epochs = 4
+    # 160 segments / 8 = 20 segments per minibatch, 8 optimizer steps per
+    # epoch, 32 per rollout -- 16x the previous 2.
+    num_minibatches = 8
+    max_grad_norm = 0.5    # Gradient clipping (stabilizes BPTT)
+    assert update_timestep % bptt_chunk == 0,         "update_timestep must be divisible by bptt_chunk so every chunk is full-length"
+
+    initial_entropy_coef = 0.02
     # Raised from 0.001: stage 2 (opp 1.2x) sat with entropy pinned at the old floor
     # for 6000+ episodes (confirmed in the log) while oscillating in a stable
     # 0.50-0.68 win-rate band that stopped trending toward the 0.80 gate -- i.e. zero
     # exploration pressure for a very long stretch while stuck. A small persistent
     # floor keeps a little exploration alive instead of fully exploiting a plateaued
     # policy forever.
-    min_entropy_coef = 0.01
+    min_entropy_coef = 0.006
     # 0.9995 decays over EPISODES (not updates), and at that rate reaching the floor
     # takes ~9200 episodes (0.1 * 0.9995^9200 ~= 0.001) -- far beyond any training
     # budget actually run so far. Confirmed by measurement: at episode 458 the coef
@@ -286,16 +322,17 @@ def train_ppo():
     # settle into a confident, predictable strategy for the critic to track. 0.995
     # reaches the floor by ~episode 1000 and is already down to ~2% of initial by
     # episode 300, matching realistic training budgets instead of a 9000-episode one.
-    entropy_decay_rate = 0.995
+    entropy_decay_rate = 0.9997
     
     # Pulled live from the engine's own enforced placement bounds (a throwaway
     # instance is enough -- these don't depend on which deck is used) instead
     # of a hardcoded copy of BOARD_WIDTH-1 / riverStart-OWN_HALF_RIVER_BUFFER
     # that could silently drift if either changes on the C++ side.
-    _dim_probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
-    MAX_X = _dim_probe.get_max_placement_x()
-    MAX_Y_AI = _dim_probe.get_own_half_max_y()
-    del _dim_probe
+    # Placement coordinates no longer come from scaling a normalized [0,1]
+    # sample by these bounds -- the discrete head emits a board-cell index and
+    # MicroRoyaleNet.cell_to_xy() converts it to coordinates inside the
+    # engine's enforced bounds by construction. The bounds are still read live
+    # from the engine, but inside model.py now (PLACEMENT_ROWS/MAX_PLACEMENT_X).
 
     # --- Curriculum: once the agent's win-rate against the current opponent
     # settles above a threshold, escalate the opponent's elixir multiplier.
@@ -452,9 +489,22 @@ def train_ppo():
 
     obs_buffer = []
     card_actions_buffer = []
-    placement_actions_buffer = []
-    ability1_actions_buffer = []
-    ability2_actions_buffer = []
+    placement_actions_buffer = []   # discrete board-cell indices now, not 2-vectors
+    # 1 on steps where the agent actually had a CHOICE (>=2 legal actions), 0
+    # where the affordability mask left only the forced no-op. On a forced step
+    # the sampled action has probability exactly 1, so its log-prob is exactly
+    # 0, the PPO ratio is a constant 1, and the actor/entropy terms contribute
+    # exactly zero gradient -- including them in the loss DENOMINATOR anyway
+    # would silently scale the actor gradient down by ~3.7x, since only ~27% of
+    # steps have any affordable card (measured). Critic loss still uses `valid`:
+    # the value function must be learned on every real state, choice or not.
+    decision_buffer = []
+    # LSTM state as it was ENTERING each timestep -- the starting state for
+    # whichever truncated-BPTT chunk begins there. Captured before the forward
+    # pass (so it is the post-episode-reset state from t-1) and already
+    # detached, since the rollout runs under no_grad.
+    hx_in_buffer = []
+    cx_in_buffer = []
     logprobs_buffer = []
     values_buffer = []
     rewards_buffer = []
@@ -501,55 +551,63 @@ def train_ppo():
         episodes_in_stage = episodes_completed - stage_start_episode
         current_entropy_coef = max(min_entropy_coef, initial_entropy_coef * (entropy_decay_rate ** episodes_in_stage))
 
-        # Hidden state at the start of this rollout; needed to correctly replay
-        # the LSTM sequences during the multi-epoch update.
-        hx0 = hx.detach().clone()
-        cx0 = cx.detach().clone()
+        # NOTE: the rollout-start hidden state used to be snapshotted here, as
+        # the single resume point for replaying each env's whole 500-step
+        # sequence. Truncated BPTT resumes each chunk from its OWN recorded
+        # state (hx_in_buffer, captured every timestep below), and hx_in_seq[0]
+        # is exactly what this snapshot was -- so it is redundant.
 
         for step in range(update_timestep):
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
 
             # Rollout is pure data collection - no gradients here. Gradients are
             # produced later by replaying these transitions with the current params.
+            # Affordability mask -- see model.py's affordability_mask docstring
+            # for the measured justification (74.9% of all steps used to be a
+            # card play the engine silently refused). Derived purely from
+            # obs_tensor, which is exactly what gets stored in obs_buffer, so
+            # the PPO update below can recompute a bit-identical mask without
+            # storing it separately.
+            card_mask = net.affordability_mask(obs_tensor)
+
+            # Captured BEFORE step_lstm_and_card advances (hx, cx) -- this is
+            # the state a chunk starting at this timestep must resume from.
+            hx_in_buffer.append(hx)
+            cx_in_buffer.append(cx)
+
             with torch.no_grad():
                 # Autoregressive placement: card must actually be SAMPLED before
                 # placement can be conditioned on it, so this can't be a single
                 # net(...) call -- see model.py's own comment on why
                 # forward_from_features (which takes card_idx already known)
-                # doesn't fit the rollout case. Ability-slot logits only depend
-                # on hx, exactly like card_logits/state_value, so they come
-                # from this same step_lstm_and_card call.
+                # doesn't fit the rollout case.
                 features, card_embeds = net.extract_features(obs_tensor)
-                card_logits, ability1_logits, ability2_logits, state_value, (hx, cx) = net.step_lstm_and_card(
-                    features, (hx, cx))
+                card_logits, _, _, state_value, (hx, cx) = net.step_lstm_and_card(
+                    features, (hx, cx), card_mask)
 
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
 
-                placement_mean, placement_log_std = net.placement_given_card(hx, card_embeds, card_idx)
-                placement_dist = Normal(placement_mean, placement_log_std.exp())
-                placement_sample = placement_dist.sample()
+                # Discrete placement over whole board cells, no Gaussian and no
+                # clamping -- every cell index maps to coordinates the engine
+                # already accepts (see model.cell_to_xy).
+                placement_logits = net.placement_given_card(hx, card_embeds, card_idx)
+                placement_dist = Categorical(logits=placement_logits)
+                placement_cell = placement_dist.sample()
 
-                ability1_dist = Categorical(logits=ability1_logits)
-                ability1_action = ability1_dist.sample()
-                ability2_dist = Categorical(logits=ability2_logits)
-                ability2_action = ability2_dist.sample()
+                total_logprob = card_dist.log_prob(card_idx) + placement_dist.log_prob(placement_cell)
 
-                placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
-                total_logprob = (card_dist.log_prob(card_idx) + placement_logprob
-                                 + ability1_dist.log_prob(ability1_action)
-                                 + ability2_dist.log_prob(ability2_action))
-
-            placement_clamped = torch.clamp(placement_sample, 0.0, 1.0)
-            target_x = placement_clamped[:, 0] * MAX_X
-            target_y = placement_clamped[:, 1] * MAX_Y_AI
+            target_x, target_y = net.cell_to_xy(placement_cell)
 
             action = {
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(num_envs, 1),
-                "activate_ability_slot1": ability1_action.cpu().numpy(),
-                "activate_ability_slot2": ability2_action.cpu().numpy(),
+                # Deck has no Champion -> nothing to activate. Explicit zeros
+                # rather than omitted: AsyncVectorEnv's Dict-space iteration
+                # requires every action_space key to be present.
+                "activate_ability_slot1": np.zeros(num_envs, dtype=np.int64),
+                "activate_ability_slot2": np.zeros(num_envs, dtype=np.int64),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
@@ -616,9 +674,9 @@ def train_ppo():
             # Store the transition (everything detached) for the PPO update
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
-            placement_actions_buffer.append(placement_sample)
-            ability1_actions_buffer.append(ability1_action)
-            ability2_actions_buffer.append(ability2_action)
+            placement_actions_buffer.append(placement_cell)
+            # >=2 legal card options means a real decision was made here.
+            decision_buffer.append((card_mask.sum(dim=1) > 1).float() * valid)
             logprobs_buffer.append(total_logprob)
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
@@ -790,21 +848,28 @@ def train_ppo():
         # --- PPO Update: GAE advantages + multiple epochs over env-minibatches ---
         obs_seq = torch.stack(obs_buffer)                              # (T, N, obs_dim)
         card_actions_seq = torch.stack(card_actions_buffer)            # (T, N)
-        placement_actions_seq = torch.stack(placement_actions_buffer)  # (T, N, 2)
-        ability1_actions_seq = torch.stack(ability1_actions_buffer)     # (T, N)
-        ability2_actions_seq = torch.stack(ability2_actions_buffer)    # (T, N)
+        placement_actions_seq = torch.stack(placement_actions_buffer)  # (T, N) -- board-cell indices
         old_logprobs_seq = torch.stack(logprobs_buffer)                # (T, N)
         values_seq = torch.stack(values_buffer)                        # (T, N)  (old critic values)
         rewards_seq = torch.stack(rewards_buffer)                      # (T, N)
         masks_seq = torch.stack(masks_buffer)                          # (T, N)
         valid_seq = torch.stack(valid_buffer)                          # (T, N) -- 0 on phantom auto-reset steps
+        decision_seq = torch.stack(decision_buffer)                    # (T, N) -- 1 only where a real choice existed
+        hx_in_seq = torch.stack(hx_in_buffer)                          # (T, N, 256) -- chunk resume states
+        cx_in_seq = torch.stack(cx_in_buffer)
 
-        # Watch how often the agent chooses to wait (action 4 = no-op), among real
-        # steps only. Near-1.0 means it collapsed into total passivity (draw > loss);
-        # near-0.0 means it still can't hold elixir. Healthy play should settle
-        # somewhere in between.
-        noop_frac = ((card_actions_seq == 4).float() * valid_seq).sum() / valid_seq.sum().clamp(min=1.0)
+        # Watch how often the agent chooses to wait (no-op) when it ACTUALLY had
+        # a choice -- restricted to decision steps, because counting the forced
+        # no-ops (~73% of all steps, where nothing was affordable) would make
+        # this read ~0.8 no matter what the policy does.
+        n_decisions = decision_seq.sum().clamp(min=1.0)
+        noop_frac = ((card_actions_seq == net.hand_size).float() * decision_seq).sum() / n_decisions
         writer.add_scalar("Policy/Noop_Fraction", noop_frac.item(), episodes_completed)
+        # What fraction of real steps offered any choice at all -- directly
+        # measures the structural sparsity the affordability mask exists for
+        # (~27% before this change).
+        writer.add_scalar("Policy/Decision_Fraction",
+                          (decision_seq.sum() / valid_seq.sum().clamp(min=1.0)).item(), episodes_completed)
 
         # Bootstrap value for the state right after the last stored step --
         # value only depends on hx, never needs a card/placement at all, so
@@ -830,8 +895,14 @@ def train_ppo():
         returns_seq = advantages_seq + values_seq
         adv_norm_seq = (advantages_seq - advantages_seq.mean()) / (advantages_seq.std() + 1e-8)
 
-        env_indices = np.arange(num_envs)
-        mb_size = max(1, num_envs // num_minibatches)
+        # Every (chunk-start, env) pair is one independent training segment of
+        # bptt_chunk timesteps -- see the bptt_chunk comment above.
+        chunk_starts = np.arange(0, update_timestep, bptt_chunk)
+        segments = np.array([(cs, e) for cs in chunk_starts for e in range(num_envs)], dtype=np.int64)
+        n_segments = len(segments)
+        seg_mb_size = max(1, n_segments // num_minibatches)
+        # Offsets within a chunk, reused every minibatch to build (L, B) time indices.
+        chunk_offsets = torch.arange(bptt_chunk, dtype=torch.long, device=device).unsqueeze(1)
 
         # Per-minibatch loss diagnostics, averaged and logged once per update below --
         # direct visibility into whether the network is still learning (shrinking
@@ -840,66 +911,80 @@ def train_ppo():
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
 
         for epoch in range(ppo_epochs):
-            np.random.shuffle(env_indices)
-            for mb_start in range(0, num_envs, mb_size):
-                mb_env = env_indices[mb_start:mb_start + mb_size]
-                if len(mb_env) == 0:
+            seg_perm = np.random.permutation(n_segments)
+            for mb_start in range(0, n_segments, seg_mb_size):
+                mb_seg = segments[seg_perm[mb_start:mb_start + seg_mb_size]]
+                if len(mb_seg) == 0:
                     continue
-                mb_env_t = torch.as_tensor(mb_env, dtype=torch.long, device=device)
-                mb = mb_env_t.shape[0]
+                t0 = torch.as_tensor(mb_seg[:, 0], dtype=torch.long, device=device)   # (B,)
+                ev = torch.as_tensor(mb_seg[:, 1], dtype=torch.long, device=device)   # (B,)
+                B = t0.shape[0]
 
-                # Batch the (non-recurrent) CNN + scalar feature extraction over ALL
-                # timesteps at once, then loop only the cheap LSTMCell. This avoids
-                # calling the CNN update_timestep times on a tiny batch and is the main
-                # speedup of the update step.
-                mb_obs = obs_seq[:, mb_env_t]                                  # (T, mb, obs_dim)
-                feats_seq, card_embeds_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
-                feats_seq = feats_seq.view(update_timestep, mb, -1)           # (T, mb, feat_dim)
-                card_embeds_seq = card_embeds_seq.view(update_timestep, mb, net.hand_size + 1, -1)
+                # (L, B) gather indices: row l selects timestep t0+l for each segment env.
+                tt = t0.unsqueeze(0) + chunk_offsets          # (L, B)
+                ee = ev.unsqueeze(0).expand(bptt_chunk, B)    # (L, B)
 
-                # Replay this minibatch's env sequences through the LSTM with current params
-                rhx = hx0[mb_env_t]
-                rcx = cx0[mb_env_t]
+                # Batch the (non-recurrent) CNN + scalar feature extraction over the
+                # whole chunk at once, then loop only the cheap LSTMCell.
+                mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
+                feats_seq, card_embeds_seq = net.extract_features(mb_obs_flat)
+                feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                card_embeds_seq = card_embeds_seq.view(bptt_chunk, B, net.hand_size + 1, -1)
+                # Recomputed from the SAME stored observations the rollout acted
+                # on, so it is bit-identical to the mask applied when the action
+                # was sampled. Deriving it (rather than storing it) makes it
+                # impossible for the two to drift apart, which would silently
+                # corrupt the PPO ratio.
+                card_mask_seq = net.affordability_mask(mb_obs_flat).view(
+                    bptt_chunk, B, net.hand_size + 1)
+
+                mb_card_actions = card_actions_seq[tt, ee]        # (L, B)
+                mb_place_actions = placement_actions_seq[tt, ee]  # (L, B)
+                mb_masks = masks_seq[tt, ee]                      # (L, B)
+
+                # Resume from the hidden state actually recorded at this chunk
+                # first timestep (stored-state truncated BPTT), not from the
+                # start of the whole rollout.
+                rhx = hx_in_seq[t0, ev]
+                rcx = cx_in_seq[t0, ev]
                 new_logprobs = []
                 new_values = []
                 new_entropies = []
-                for t in range(update_timestep):
-                    # card_actions_seq[t, mb_env_t] -- the STORED action from
-                    # rollout, not a fresh sample -- conditions placement here
-                    # exactly like the log-prob evaluation two lines below
-                    # does. Using anything else here would evaluate placement
-                    # under a DIFFERENT card than the one log-prob is scored
-                    # against, silently breaking the PPO ratio.
-                    (logits_t, mean_t, log_std_t, value_t, ability1_logits_t, ability2_logits_t,
+                for l in range(bptt_chunk):
+                    # mb_card_actions[l] -- the STORED action from rollout, not a
+                    # fresh sample -- conditions placement here exactly like the
+                    # log-prob evaluation two lines below does. Using anything
+                    # else here would evaluate placement under a DIFFERENT card
+                    # than the one log-prob is scored against, silently breaking
+                    # the PPO ratio.
+                    (logits_t, place_logits_t, value_t, _, _,
                      (rhx, rcx)) = net.forward_from_features(
-                        feats_seq[t], card_embeds_seq[t], (rhx, rcx), card_actions_seq[t, mb_env_t])
+                        feats_seq[l], card_embeds_seq[l], (rhx, rcx),
+                        mb_card_actions[l], card_mask_seq[l])
                     card_dist_t = Categorical(logits=logits_t)
-                    place_dist_t = Normal(mean_t, log_std_t.exp())
-                    ability1_dist_t = Categorical(logits=ability1_logits_t)
-                    ability2_dist_t = Categorical(logits=ability2_logits_t)
-                    lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
-                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1) \
-                        + ability1_dist_t.log_prob(ability1_actions_seq[t, mb_env_t]) \
-                        + ability2_dist_t.log_prob(ability2_actions_seq[t, mb_env_t])
-                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1) \
-                        + ability1_dist_t.entropy() + ability2_dist_t.entropy()
+                    place_dist_t = Categorical(logits=place_logits_t)
+                    lp_t = card_dist_t.log_prob(mb_card_actions[l]) \
+                        + place_dist_t.log_prob(mb_place_actions[l])
+                    ent_t = card_dist_t.entropy() + place_dist_t.entropy()
                     new_logprobs.append(lp_t)
                     new_values.append(value_t.squeeze(-1))
                     new_entropies.append(ent_t)
-                    reset_t = masks_seq[t, mb_env_t].unsqueeze(1)
+                    reset_t = mb_masks[l].unsqueeze(1)
                     rhx = rhx * reset_t
                     rcx = rcx * reset_t
 
-                new_logprobs = torch.stack(new_logprobs)   # (T, mb)
-                new_values = torch.stack(new_values)       # (T, mb)
+                new_logprobs = torch.stack(new_logprobs)   # (L, B)
+                new_values = torch.stack(new_values)       # (L, B)
                 new_entropies = torch.stack(new_entropies)
 
-                mb_adv = adv_norm_seq[:, mb_env_t]
-                mb_ret = returns_seq[:, mb_env_t]
-                mb_old_logprobs = old_logprobs_seq[:, mb_env_t]
-                mb_old_values = values_seq[:, mb_env_t]
-                mb_valid = valid_seq[:, mb_env_t]
+                mb_adv = adv_norm_seq[tt, ee]
+                mb_ret = returns_seq[tt, ee]
+                mb_old_logprobs = old_logprobs_seq[tt, ee]
+                mb_old_values = values_seq[tt, ee]
+                mb_valid = valid_seq[tt, ee]
+                mb_decision = decision_seq[tt, ee]
                 n_valid = mb_valid.sum().clamp(min=1.0)
+                n_decision = mb_decision.sum().clamp(min=1.0)
 
                 ratios = torch.exp(new_logprobs - mb_old_logprobs)
                 surr1 = ratios * mb_adv
@@ -919,9 +1004,15 @@ def train_ppo():
                 # Phantom auto-reset steps (mb_valid=0) carry an action that was never
                 # actually executed in the env -- excluded from every loss term instead
                 # of being averaged in as if it were a real transition.
-                actor_loss = -(torch.min(surr1, surr2) * mb_valid).sum() / n_valid
+                # Actor and entropy are normalized by mb_decision (a real choice
+                # was available), the critic by mb_valid (every real state). On a
+                # forced step the masked distribution is a point mass: log-prob 0,
+                # ratio constant 1, entropy 0 -- it contributes nothing to either
+                # term but WOULD inflate the denominator, shrinking the actor
+                # effective step size by the ~3.7x all-steps/decision-steps ratio.
+                actor_loss = -(torch.min(surr1, surr2) * mb_decision).sum() / n_decision
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
-                entropy_bonus = (new_entropies * mb_valid).sum() / n_valid
+                entropy_bonus = (new_entropies * mb_decision).sum() / n_decision
                 loss = actor_loss + 0.5 * critic_loss - (current_entropy_coef * entropy_bonus)
 
                 optimizer.zero_grad()
@@ -936,8 +1027,11 @@ def train_ppo():
                 # Fraction of (real) samples where the PPO ratio hit the clip range --
                 # near 0 means the policy barely moved this update (possible plateau/too
                 # low LR), consistently high means updates may be too aggressive.
+                # Measured over decision steps only -- forced steps have ratio
+                # exactly 1.0 by construction and would dilute this toward 0
+                # regardless of how much the policy actually moved.
                 clipped = ((ratios - 1.0).abs() > eps_clip).float()
-                clip_fracs.append(((clipped * mb_valid).sum() / n_valid).item())
+                clip_fracs.append(((clipped * mb_decision).sum() / n_decision).item())
 
         mean_actor_loss = np.mean(actor_losses)
         mean_critic_loss = np.mean(critic_losses)
@@ -958,8 +1052,9 @@ def train_ppo():
         obs_buffer.clear()
         card_actions_buffer.clear()
         placement_actions_buffer.clear()
-        ability1_actions_buffer.clear()
-        ability2_actions_buffer.clear()
+        decision_buffer.clear()
+        hx_in_buffer.clear()
+        cx_in_buffer.clear()
         logprobs_buffer.clear()
         values_buffer.clear()
         rewards_buffer.clear()
@@ -1017,22 +1112,23 @@ def train_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
+                t_mask = net.affordability_mask(t_obs_tensor)
                 t_features, t_card_embeds = net.extract_features(t_obs_tensor)
-                (t_logits, t_ability1_logits, t_ability2_logits, t_value,
-                 (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx))
+                (t_logits, _, _, t_value,
+                 (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx), t_mask)
                 t_idx = Categorical(logits=t_logits).sample()
-                t_norm, _ = net.placement_given_card(t_hx, t_card_embeds, t_idx)
+                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx)
+                t_cell = Categorical(logits=t_place_logits).sample()
+                t_x, t_y = net.cell_to_xy(t_cell)
                 t_card_idx = t_idx.item()
-                t_ability1_action = Categorical(logits=t_ability1_logits).sample().item()
-                t_ability2_action = Categorical(logits=t_ability2_logits).sample().item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
                 t_action = {
                     "card_index": np.array([t_card_idx]),
-                    "target_x": np.array([torch.clamp(t_norm[0,0]*MAX_X, 0.0, MAX_X).item()]),
-                    "target_y": np.array([torch.clamp(t_norm[0,1]*MAX_Y_AI, 0.0, MAX_Y_AI).item()]),
-                    "activate_ability_slot1": np.array([t_ability1_action]),
-                    "activate_ability_slot2": np.array([t_ability2_action]),
+                    "target_x": np.array([t_x.item()]),
+                    "target_y": np.array([t_y.item()]),
+                    "activate_ability_slot1": np.array([0]),
+                    "activate_ability_slot2": np.array([0]),
                 }
                 t_decisions.append({
                     "stateValue": t_value.item(),

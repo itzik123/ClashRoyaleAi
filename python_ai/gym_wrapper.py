@@ -33,7 +33,36 @@ import clash_royale_env
 # Exposed at module level so other scripts (e.g. train_selfplay.py, which
 # builds its ClashRoyaleEnv directly instead of through this wrapper) can
 # import the same deck instead of duplicating/drifting from this literal.
-DEFAULT_DECK = [44, 0, 56, 45, 22, 106, 107, 101]
+#
+# Classic Giant-beatdown archetype (Valkyrie, Archers, Minions, Cannon,
+# Fireball, Giant, Musketeer, Mini PEKKA) -- deliberately replaces the old
+# deck's two building-targeter tower-shredders (Inferno Dragon/Balloon) with
+# a single, non-ramping win condition (Giant just tanks; it doesn't melt a
+# tower and chain onto the next one the way Inferno Dragon's ramping damage
+# did -- see the replay autopsy this responds to), and gives real cheap
+# defensive tools (Cannon, Minions) that the old deck had none of at all.
+DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
+
+# How many Champion ability slots this deck actually has (0, 1 or 2 -- see
+# CardRegistry::validateDeckSlots). Deliberately declared right next to the
+# deck literal itself so the two can't drift apart unnoticed: it must be
+# updated together with DEFAULT_DECK, never independently.
+#
+# Why it exists at all: MicroRoyaleNet used to unconditionally create two
+# ability heads and both trainers unconditionally sampled from them every
+# tick. With a Champion-less deck (this one -- none of Valkyrie/Archers/
+# Minions/Cannon/Fireball/Giant/Musketeer/Mini PEKKA is a Champion) those
+# were pure noise: they widened the PPO ratio's variance via total_logprob
+# and contributed up to 2*log(2)=1.386 to the entropy bonus, so the entropy
+# coefficient was actively spending its budget keeping two irrelevant coin
+# flips maximally random. Now the heads simply aren't built (see
+# MicroRoyaleNet's num_ability_slots).
+#
+# NOTE: this is a hand-maintained value only because the engine currently
+# exposes no isChampion query to Python -- CardRegistry has the flag
+# (CardDefinition::isChampion) but bindings.cpp doesn't surface it. If a
+# card-info binding is ever added, derive this from the deck instead.
+DEFAULT_DECK_ABILITY_SLOTS = 0
 
 
 def get_all_card_ids():
