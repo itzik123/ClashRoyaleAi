@@ -11,12 +11,12 @@ import torch.optim as optim
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from torch.distributions import Categorical, Normal
+from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 
 import clash_royale_env
-from gym_wrapper import DEFAULT_DECK
+from gym_wrapper import DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS
 from model import MicroRoyaleNet
 from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
@@ -375,10 +375,14 @@ def update_reference_roster(reference_roster, historical_pool):
     return reference_roster
 
 
-def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
-    """Plays the CURRENT live policy, GREEDY (argmax card, distribution mean
-    placement -- no sampling), against each fixed roster opponent for n_games
-    each. The opponent itself is NOT forced greedy -- it plays its own normal
+def evaluate_against_roster(net, device, roster, n_games=10):
+    """Plays the CURRENT live policy, GREEDY (argmax masked card, argmax
+    placement cell -- no sampling), against each fixed roster opponent for
+    n_games each. No coordinate bounds are needed anymore: the discrete
+    placement head emits a board-cell index that MicroRoyaleNet.cell_to_xy()
+    converts to in-bounds coordinates by construction.
+
+    The opponent itself is NOT forced greedy -- it plays its own normal
     (stochastic) game, since the point is "how does the trainee do against
     this opponent's real behavior," and only the trainee's OWN sampling noise
     needs removing from the measurement.
@@ -410,20 +414,25 @@ def evaluate_against_roster(net, device, roster, max_x, max_y, n_games=10):
                 while not done:
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
                     with torch.no_grad():
+                        card_mask = net.affordability_mask(obs_t)
                         features, card_embeds = net.extract_features(obs_t)
-                        (card_logits, ability_slot1_logits, ability_slot2_logits, _,
-                         (hx, cx)) = net.step_lstm_and_card(features, (hx, cx))
+                        (card_logits, _, _, _,
+                         (hx, cx)) = net.step_lstm_and_card(features, (hx, cx), card_mask)
+                        # argmax over MASKED logits -- an unaffordable card can
+                        # never be the greedy pick, so the measurement reflects
+                        # the policy best LEGAL move rather than a play the
+                        # engine would silently drop.
                         card_idx_t = card_logits.argmax(dim=-1)
-                        mean, _ = net.placement_given_card(hx, card_embeds, card_idx_t)
+                        place_logits = net.placement_given_card(hx, card_embeds, card_idx_t)
+                        cell = place_logits.argmax(dim=-1)
+                        x_t, y_t = net.cell_to_xy(cell)
                     card_idx = int(card_idx_t.item())
-                    placement = torch.clamp(mean, 0.0, 1.0)
                     action = {
                         "card_index": np.array([card_idx]),
-                        "target_x": np.array([(placement[0, 0] * max_x).item()]),
-                        "target_y": np.array([(placement[0, 1] * max_y).item()]),
-                        # Greedy, same as card/placement above -- no sampling.
-                        "activate_ability_slot1": np.array([int(ability_slot1_logits.argmax(dim=-1).item())]),
-                        "activate_ability_slot2": np.array([int(ability_slot2_logits.argmax(dim=-1).item())]),
+                        "target_x": np.array([x_t.item()]),
+                        "target_y": np.array([y_t.item()]),
+                        "activate_ability_slot1": np.array([0]),
+                        "activate_ability_slot2": np.array([0]),
                     }
                     obs, reward, terminated, truncated, _ = env.step(action)
                     done = terminated or truncated
@@ -479,7 +488,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # pass per step per worker process, and keeps this off the GPU the
         # trainee's own updates use in the main process.
         self.device = torch.device("cpu")
-        self.opponent_net = MicroRoyaleNet().to(self.device)
+        self.opponent_net = MicroRoyaleNet(num_ability_slots=DEFAULT_DECK_ABILITY_SLOTS).to(self.device)
         self.opponent_net.eval()
         self.opponent_hx = torch.zeros(1, 256).to(self.device)
         self.opponent_cx = torch.zeros(1, 256).to(self.device)
@@ -640,19 +649,27 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             return self._scripted_opponent_action(obs1)
         with torch.no_grad():
             obs1_t = torch.tensor(obs1, dtype=torch.float32).unsqueeze(0).to(self.device)
+            # Team 1 gets the SAME affordability mask treatment as the trainee --
+            # obs1 is team 1 own mirrored observation, so its elixir/cost scalars
+            # are its own. Without this the frozen opponent would spend ~75% of
+            # its turns attempting plays the engine silently refuses, i.e. it
+            # would be a far weaker (and differently-behaved) opponent than the
+            # checkpoint it is supposed to be reproducing.
+            card_mask1 = self.opponent_net.affordability_mask(obs1_t)
             features1, card_embeds1 = self.opponent_net.extract_features(obs1_t)
-            (logits1, ability_slot1_logits1, ability_slot2_logits1, _,
+            (logits1, _, _, _,
              (self.opponent_hx, self.opponent_cx)) = self.opponent_net.step_lstm_and_card(
-                features1, (self.opponent_hx, self.opponent_cx))
+                features1, (self.opponent_hx, self.opponent_cx), card_mask1)
             card_idx1_t = Categorical(logits=logits1).sample()
-            mean1, log_std1 = self.opponent_net.placement_given_card(self.opponent_hx, card_embeds1, card_idx1_t)
+            place_logits1 = self.opponent_net.placement_given_card(
+                self.opponent_hx, card_embeds1, card_idx1_t)
+            cell1 = Categorical(logits=place_logits1).sample()
+            x1_t, y1_t = self.opponent_net.cell_to_xy(cell1)
             card_idx1 = card_idx1_t.item()
-            placement1 = torch.clamp(Normal(mean1, log_std1.exp()).sample(), 0.0, 1.0)
-            x1 = (placement1[0, 0] * self.MAX_X).item()
-            y1 = (placement1[0, 1] * self.MAX_Y).item()
-            ability_slot1_action1 = bool(Categorical(logits=ability_slot1_logits1).sample().item())
-            ability_slot2_action1 = bool(Categorical(logits=ability_slot2_logits1).sample().item())
-        return card_idx1, x1, y1, ability_slot1_action1, ability_slot2_action1
+            x1 = x1_t.item()
+            y1 = y1_t.item()
+        # Deck has no Champion -- see gym_wrapper.DEFAULT_DECK_ABILITY_SLOTS.
+        return card_idx1, x1, y1, False, False
 
     def _scripted_opponent_action(self, obs1):
         """Team 1's move for one of SCRIPTED_OPPONENTS, computed purely from
@@ -861,8 +878,16 @@ def train_selfplay_ppo():
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = MicroRoyaleNet().to(device)
+    net = MicroRoyaleNet(num_ability_slots=DEFAULT_DECK_ABILITY_SLOTS).to(device)
     optimizer = optim.Adam(net.parameters(), lr=3e-4)
+    # Same guard as train.py -- this loop no longer samples Champion abilities
+    # at all, so a Champion in the deck must fail loudly instead of silently
+    # never being used.
+    if DEFAULT_DECK_ABILITY_SLOTS > 0:
+        raise NotImplementedError(
+            "DEFAULT_DECK contains a Champion (DEFAULT_DECK_ABILITY_SLOTS > 0), but this "
+            "training loop ability sampling was removed when the deck had none. Restore "
+            "the ability_dist sampling/buffering/log-prob branches before training this deck.")
 
     # Same PPO hyperparameters as train.py -- same architecture and algorithm,
     # only the opponent-selection mechanic differs, so there's no reason to
@@ -871,23 +896,34 @@ def train_selfplay_ppo():
     gae_lambda = 0.9
     eps_clip = 0.2
     update_timestep = 500
-    ppo_epochs = 2
-    num_minibatches = 1
+    # Truncated BPTT -- same values and same reasoning as train.py; see the long
+    # bptt_chunk comment there for the two measurements that motivated it
+    # (Clip_Fraction 0.0000 across 228 updates, and ~79% of epoch time spent in
+    # the backward pass of a single 500-long chain).
+    bptt_chunk = 25
+    ppo_epochs = 4
+    num_minibatches = 8
     max_grad_norm = 0.5
+    assert update_timestep % bptt_chunk == 0, \
+        "update_timestep must be divisible by bptt_chunk so every chunk is full-length"
 
-    initial_entropy_coef = 0.1
-    min_entropy_coef = 0.01
-    entropy_decay_rate = 0.995
+    # Rescaled for the discrete placement head, and floor/decay calibrated from
+    # the measured entropy-vs-coefficient data points -- same values and same
+    # reasoning as train.py; see the long comment there.
+    initial_entropy_coef = 0.02
+    min_entropy_coef = 0.006
+    entropy_decay_rate = 0.9997
 
     # Pulled live from the engine (a throwaway bare env is enough -- these
     # don't depend on which deck is used, and this avoids building a whole
     # extra MicroRoyaleSelfPlayEnv, opponent net included, just to read two
     # floats) instead of a class-level hardcoded copy that could silently
     # drift if board geometry ever changes.
-    _dim_probe = clash_royale_env.ClashRoyaleEnv(list(DEFAULT_DECK), list(DEFAULT_DECK), 100)
-    MAX_X = _dim_probe.get_max_placement_x()
-    MAX_Y = _dim_probe.get_own_half_max_y()
-    del _dim_probe
+    # No coordinate bounds are needed in this scope anymore -- the discrete
+    # placement head emits a board-cell index and MicroRoyaleNet.cell_to_xy()
+    # converts it to coordinates already inside the engine enforced bounds.
+    # MicroRoyaleSelfPlayEnv keeps its own self.MAX_X/self.MAX_Y -- those are
+    # still genuinely used, by the scripted opponents and the action_space.
 
     # Episode at which the entropy decay schedule last reset -- renamed from
     # the old ladder's "stage_start_episode" now that there's no per-opponent
@@ -977,9 +1013,15 @@ def train_selfplay_ppo():
     writer = SummaryWriter(log_dir=log_dir)
 
     obs_buffer, card_actions_buffer, placement_actions_buffer = [], [], []
-    ability1_actions_buffer, ability2_actions_buffer = [], []
     logprobs_buffer, values_buffer, rewards_buffer = [], [], []
     masks_buffer, valid_buffer = [], []
+    # See train.py identical decision_buffer comment: 1 only where the
+    # affordability mask left a real choice, used to normalize the actor and
+    # entropy terms so forced no-ops do not shrink the effective step size.
+    decision_buffer = []
+    # LSTM state entering each timestep -- the resume point for whichever
+    # truncated-BPTT chunk starts there.
+    hx_in_buffer, cx_in_buffer = [], []
     # Correct-bootstrap GAE bookkeeping (see the is_terminal/needs_boot split in
     # the rollout): boot_nonterminal = 0 only on TRUE terminals (bootstrap
     # otherwise), trunc_flag marks steps whose next-state value must come from
@@ -1015,38 +1057,38 @@ def train_selfplay_ppo():
         episodes_since_reboost = episodes_completed - entropy_reboost_episode
         current_entropy_coef = max(min_entropy_coef, initial_entropy_coef * (entropy_decay_rate ** episodes_since_reboost))
 
-        hx0 = hx.detach().clone()
-        cx0 = cx.detach().clone()
+        # NOTE: the rollout-start hidden state snapshot is gone -- truncated
+        # BPTT resumes each chunk from its own recorded state (hx_in_buffer),
+        # and hx_in_seq[0] is exactly what this snapshot was.
 
         for step in range(update_timestep):
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
 
+            # Affordability mask -- see model.py affordability_mask docstring.
+            # Derived from obs_tensor, which is what obs_buffer stores, so the
+            # PPO update can recompute a bit-identical mask.
+            card_mask = net.affordability_mask(obs_tensor)
+
+            # Captured BEFORE step_lstm_and_card advances (hx, cx).
+            hx_in_buffer.append(hx)
+            cx_in_buffer.append(cx)
+
             with torch.no_grad():
                 # Autoregressive placement: card must actually be SAMPLED
-                # before placement can be conditioned on it -- see model.py's
+                # before placement can be conditioned on it -- see model.py
                 # own comment on why forward_from_features (card_idx already
-                # known) doesn't fit the rollout case. Ability-slot logits
-                # only depend on hx, exactly like card_logits/state_value.
+                # known) does not fit the rollout case.
                 features, card_embeds = net.extract_features(obs_tensor)
-                card_logits, ability1_logits, ability2_logits, state_value, (hx, cx) = net.step_lstm_and_card(
-                    features, (hx, cx))
+                card_logits, _, _, state_value, (hx, cx) = net.step_lstm_and_card(
+                    features, (hx, cx), card_mask)
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
-                placement_mean, placement_log_std = net.placement_given_card(hx, card_embeds, card_idx)
-                placement_dist = Normal(placement_mean, placement_log_std.exp())
-                placement_sample = placement_dist.sample()
-                placement_logprob = placement_dist.log_prob(placement_sample).sum(dim=-1)
-                ability1_dist = Categorical(logits=ability1_logits)
-                ability1_action = ability1_dist.sample()
-                ability2_dist = Categorical(logits=ability2_logits)
-                ability2_action = ability2_dist.sample()
-                total_logprob = (card_dist.log_prob(card_idx) + placement_logprob
-                                 + ability1_dist.log_prob(ability1_action)
-                                 + ability2_dist.log_prob(ability2_action))
+                placement_logits = net.placement_given_card(hx, card_embeds, card_idx)
+                placement_dist = Categorical(logits=placement_logits)
+                placement_cell = placement_dist.sample()
+                total_logprob = card_dist.log_prob(card_idx) + placement_dist.log_prob(placement_cell)
 
-            placement_clamped = torch.clamp(placement_sample, 0.0, 1.0)
-            target_x = placement_clamped[:, 0] * MAX_X
-            target_y = placement_clamped[:, 1] * MAX_Y
+            target_x, target_y = net.cell_to_xy(placement_cell)
 
             action = {
                 "card_index": card_idx.cpu().numpy(),
@@ -1058,8 +1100,9 @@ def train_selfplay_ppo():
                 # action.get("activate_ability_slot1", 0) does for a direct,
                 # non-vectorized call), so both real sampled arrays must be
                 # supplied here rather than omitted.
-                "activate_ability_slot1": ability1_action.cpu().numpy(),
-                "activate_ability_slot2": ability2_action.cpu().numpy(),
+                # Deck has no Champion -- see DEFAULT_DECK_ABILITY_SLOTS.
+                "activate_ability_slot1": np.zeros(num_envs, dtype=np.int64),
+                "activate_ability_slot2": np.zeros(num_envs, dtype=np.int64),
             }
 
             next_obs, step_rewards, terminateds, truncateds, infos = envs.step(action)
@@ -1126,9 +1169,8 @@ def train_selfplay_ppo():
 
             obs_buffer.append(obs_tensor)
             card_actions_buffer.append(card_idx)
-            placement_actions_buffer.append(placement_sample)
-            ability1_actions_buffer.append(ability1_action)
-            ability2_actions_buffer.append(ability2_action)
+            placement_actions_buffer.append(placement_cell)
+            decision_buffer.append((card_mask.sum(dim=1) > 1).float() * valid)
             logprobs_buffer.append(total_logprob)
             values_buffer.append(state_value.squeeze(-1))
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
@@ -1252,9 +1294,10 @@ def train_selfplay_ppo():
         # --- PPO Update (identical shape to train.py's) ---
         obs_seq = torch.stack(obs_buffer)
         card_actions_seq = torch.stack(card_actions_buffer)
-        placement_actions_seq = torch.stack(placement_actions_buffer)
-        ability1_actions_seq = torch.stack(ability1_actions_buffer)
-        ability2_actions_seq = torch.stack(ability2_actions_buffer)
+        placement_actions_seq = torch.stack(placement_actions_buffer)   # board-cell indices
+        decision_seq = torch.stack(decision_buffer)
+        hx_in_seq = torch.stack(hx_in_buffer)      # (T, N, 256) -- chunk resume states
+        cx_in_seq = torch.stack(cx_in_buffer)
         old_logprobs_seq = torch.stack(logprobs_buffer)
         values_seq = torch.stack(values_buffer)
         rewards_seq = torch.stack(rewards_buffer)
@@ -1291,51 +1334,64 @@ def train_selfplay_ppo():
         returns_seq = advantages_seq + values_seq
         adv_norm_seq = (advantages_seq - advantages_seq.mean()) / (advantages_seq.std() + 1e-8)
 
-        env_indices = np.arange(num_envs)
-        mb_size = max(1, num_envs // num_minibatches)
+        # Every (chunk-start, env) pair is one independent training segment --
+        # see train.py identical construction and its bptt_chunk comment.
+        chunk_starts = np.arange(0, update_timestep, bptt_chunk)
+        segments = np.array([(cs, e) for cs in chunk_starts for e in range(num_envs)], dtype=np.int64)
+        n_segments = len(segments)
+        seg_mb_size = max(1, n_segments // num_minibatches)
+        chunk_offsets = torch.arange(bptt_chunk, dtype=torch.long, device=device).unsqueeze(1)
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
 
         for epoch in range(ppo_epochs):
-            np.random.shuffle(env_indices)
-            for mb_start in range(0, num_envs, mb_size):
-                mb_env = env_indices[mb_start:mb_start + mb_size]
-                if len(mb_env) == 0:
+            seg_perm = np.random.permutation(n_segments)
+            for mb_start in range(0, n_segments, seg_mb_size):
+                mb_seg = segments[seg_perm[mb_start:mb_start + seg_mb_size]]
+                if len(mb_seg) == 0:
                     continue
-                mb_env_t = torch.as_tensor(mb_env, dtype=torch.long, device=device)
-                mb = mb_env_t.shape[0]
+                t0 = torch.as_tensor(mb_seg[:, 0], dtype=torch.long, device=device)
+                ev = torch.as_tensor(mb_seg[:, 1], dtype=torch.long, device=device)
+                B = t0.shape[0]
+                tt = t0.unsqueeze(0) + chunk_offsets          # (L, B)
+                ee = ev.unsqueeze(0).expand(bptt_chunk, B)    # (L, B)
 
-                mb_obs = obs_seq[:, mb_env_t]
-                feats_seq, card_embeds_seq = net.extract_features(mb_obs.reshape(update_timestep * mb, -1))
-                feats_seq = feats_seq.view(update_timestep, mb, -1)
-                card_embeds_seq = card_embeds_seq.view(update_timestep, mb, net.hand_size + 1, -1)
+                mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
+                feats_seq, card_embeds_seq = net.extract_features(mb_obs_flat)
+                feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                card_embeds_seq = card_embeds_seq.view(bptt_chunk, B, net.hand_size + 1, -1)
+                # Recomputed from the same stored observations the rollout acted
+                # on -- bit-identical to the sampling-time mask by construction.
+                card_mask_seq = net.affordability_mask(mb_obs_flat).view(
+                    bptt_chunk, B, net.hand_size + 1)
 
-                rhx = hx0[mb_env_t]
-                rcx = cx0[mb_env_t]
+                mb_card_actions = card_actions_seq[tt, ee]
+                mb_place_actions = placement_actions_seq[tt, ee]
+                mb_masks = masks_seq[tt, ee]
+
+                # Resume from the state recorded at this chunk first timestep.
+                rhx = hx_in_seq[t0, ev]
+                rcx = cx_in_seq[t0, ev]
                 new_logprobs, new_values, new_entropies = [], [], []
-                for t in range(update_timestep):
-                    # card_actions_seq[t, mb_env_t] -- the STORED action from
-                    # rollout, not a fresh sample -- conditions placement here
-                    # exactly like the log-prob evaluation two lines below
-                    # does. Using anything else here would evaluate placement
-                    # under a DIFFERENT card than the one log-prob is scored
-                    # against, silently breaking the PPO ratio.
-                    (logits_t, mean_t, log_std_t, value_t, ability1_logits_t, ability2_logits_t,
+                for l in range(bptt_chunk):
+                    # mb_card_actions[l] -- the STORED action from rollout, not
+                    # a fresh sample -- conditions placement here exactly like
+                    # the log-prob evaluation two lines below does. Using
+                    # anything else would evaluate placement under a DIFFERENT
+                    # card than the one log-prob is scored against, silently
+                    # breaking the PPO ratio.
+                    (logits_t, place_logits_t, value_t, _, _,
                      (rhx, rcx)) = net.forward_from_features(
-                        feats_seq[t], card_embeds_seq[t], (rhx, rcx), card_actions_seq[t, mb_env_t])
+                        feats_seq[l], card_embeds_seq[l], (rhx, rcx),
+                        mb_card_actions[l], card_mask_seq[l])
                     card_dist_t = Categorical(logits=logits_t)
-                    place_dist_t = Normal(mean_t, log_std_t.exp())
-                    ability1_dist_t = Categorical(logits=ability1_logits_t)
-                    ability2_dist_t = Categorical(logits=ability2_logits_t)
-                    lp_t = card_dist_t.log_prob(card_actions_seq[t, mb_env_t]) \
-                        + place_dist_t.log_prob(placement_actions_seq[t, mb_env_t]).sum(dim=-1) \
-                        + ability1_dist_t.log_prob(ability1_actions_seq[t, mb_env_t]) \
-                        + ability2_dist_t.log_prob(ability2_actions_seq[t, mb_env_t])
-                    ent_t = card_dist_t.entropy() + place_dist_t.entropy().sum(dim=-1) \
-                        + ability1_dist_t.entropy() + ability2_dist_t.entropy()
+                    place_dist_t = Categorical(logits=place_logits_t)
+                    lp_t = card_dist_t.log_prob(mb_card_actions[l]) \
+                        + place_dist_t.log_prob(mb_place_actions[l])
+                    ent_t = card_dist_t.entropy() + place_dist_t.entropy()
                     new_logprobs.append(lp_t)
                     new_values.append(value_t.squeeze(-1))
                     new_entropies.append(ent_t)
-                    reset_t = masks_seq[t, mb_env_t].unsqueeze(1)
+                    reset_t = mb_masks[l].unsqueeze(1)
                     rhx = rhx * reset_t
                     rcx = rcx * reset_t
 
@@ -1343,12 +1399,14 @@ def train_selfplay_ppo():
                 new_values = torch.stack(new_values)
                 new_entropies = torch.stack(new_entropies)
 
-                mb_adv = adv_norm_seq[:, mb_env_t]
-                mb_ret = returns_seq[:, mb_env_t]
-                mb_old_logprobs = old_logprobs_seq[:, mb_env_t]
-                mb_old_values = values_seq[:, mb_env_t]
-                mb_valid = valid_seq[:, mb_env_t]
+                mb_adv = adv_norm_seq[tt, ee]
+                mb_ret = returns_seq[tt, ee]
+                mb_old_logprobs = old_logprobs_seq[tt, ee]
+                mb_old_values = values_seq[tt, ee]
+                mb_valid = valid_seq[tt, ee]
+                mb_decision = decision_seq[tt, ee]
                 n_valid = mb_valid.sum().clamp(min=1.0)
+                n_decision = mb_decision.sum().clamp(min=1.0)
 
                 ratios = torch.exp(new_logprobs - mb_old_logprobs)
                 surr1 = ratios * mb_adv
@@ -1359,9 +1417,11 @@ def train_selfplay_ppo():
                 critic_loss_clipped = F.mse_loss(value_clipped, mb_ret, reduction="none")
                 critic_loss_per_elem = torch.max(critic_loss_unclipped, critic_loss_clipped)
 
-                actor_loss = -(torch.min(surr1, surr2) * mb_valid).sum() / n_valid
+                # Actor/entropy normalized by decision steps, critic by all real
+                # steps -- see train.py identical comment for why.
+                actor_loss = -(torch.min(surr1, surr2) * mb_decision).sum() / n_decision
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
-                entropy_bonus = (new_entropies * mb_valid).sum() / n_valid
+                entropy_bonus = (new_entropies * mb_decision).sum() / n_decision
                 loss = actor_loss + 0.5 * critic_loss - (current_entropy_coef * entropy_bonus)
 
                 optimizer.zero_grad()
@@ -1374,7 +1434,7 @@ def train_selfplay_ppo():
                 entropy_bonuses.append(entropy_bonus.item())
                 total_losses.append(loss.item())
                 clipped = ((ratios - 1.0).abs() > eps_clip).float()
-                clip_fracs.append(((clipped * mb_valid).sum() / n_valid).item())
+                clip_fracs.append(((clipped * mb_decision).sum() / n_decision).item())
 
         mean_actor_loss = np.mean(actor_losses)
         mean_critic_loss = np.mean(critic_losses)
@@ -1393,8 +1453,9 @@ def train_selfplay_ppo():
         obs_buffer.clear()
         card_actions_buffer.clear()
         placement_actions_buffer.clear()
-        ability1_actions_buffer.clear()
-        ability2_actions_buffer.clear()
+        decision_buffer.clear()
+        hx_in_buffer.clear()
+        cx_in_buffer.clear()
         logprobs_buffer.clear()
         values_buffer.clear()
         rewards_buffer.clear()
@@ -1443,7 +1504,7 @@ def train_selfplay_ppo():
                 print(f"Evaluating current policy (greedy) against {len(reference_roster)} fixed "
                       f"reference opponent(s), {EVAL_GAMES_PER_OPPONENT} games each...")
                 agent_elo, per_opponent = evaluate_against_roster(
-                    net, device, reference_roster, MAX_X, MAX_Y, n_games=EVAL_GAMES_PER_OPPONENT)
+                    net, device, reference_roster, n_games=EVAL_GAMES_PER_OPPONENT)
                 writer.add_scalar("Eval/Elo", agent_elo, episodes_completed)
                 for i, entry in enumerate(reference_roster):
                     stats_i = per_opponent[entry["path"]]
@@ -1469,22 +1530,23 @@ def train_selfplay_ppo():
             REPLAY_SKIP_FRAMES = 10
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
+                t_mask = net.affordability_mask(t_obs_tensor)
                 t_features, t_card_embeds = net.extract_features(t_obs_tensor)
-                (t_logits, t_ability1_logits, t_ability2_logits, t_value,
-                 (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx))
+                (t_logits, _, _, t_value,
+                 (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx), t_mask)
                 t_idx = Categorical(logits=t_logits).sample()
-                t_norm, _ = net.placement_given_card(t_hx, t_card_embeds, t_idx)
+                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx)
+                t_cell = Categorical(logits=t_place_logits).sample()
+                t_x, t_y = net.cell_to_xy(t_cell)
                 t_card_idx = t_idx.item()
-                t_ability1_action = Categorical(logits=t_ability1_logits).sample().item()
-                t_ability2_action = Categorical(logits=t_ability2_logits).sample().item()
                 t_hand = test_env.game.get_hand()
                 t_card_id = t_hand[t_card_idx] if t_card_idx < len(t_hand) else -1
                 t_action = {
                     "card_index": np.array([t_card_idx]),
-                    "target_x": np.array([torch.clamp(t_norm[0, 0] * MAX_X, 0.0, MAX_X).item()]),
-                    "target_y": np.array([torch.clamp(t_norm[0, 1] * MAX_Y, 0.0, MAX_Y).item()]),
-                    "activate_ability_slot1": np.array([t_ability1_action]),
-                    "activate_ability_slot2": np.array([t_ability2_action]),
+                    "target_x": np.array([t_x.item()]),
+                    "target_y": np.array([t_y.item()]),
+                    "activate_ability_slot1": np.array([0]),
+                    "activate_ability_slot2": np.array([0]),
                 }
                 t_decisions.append({
                     "stateValue": t_value.item(),

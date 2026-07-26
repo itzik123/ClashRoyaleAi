@@ -10,9 +10,21 @@ import clash_royale_env
 # האסטרטגית המלאה של קלף; ה-CNN/scalar MLP כבר נותנים ל-LSTM את כל השאר.
 CARD_EMBED_DIM = 16
 
+# מספר שורות המיקום החוקיות בחצי שלנו, נשלף חי מהמנוע (כמו כל שאר הקבועים
+# כאן) במקום עותק hardcoded. get_own_half_max_y() מחזיר 15.5, כלומר שורות
+# שלמות 0..15 -- 16 שורות. נדרש instance (לא static attr) אז נבנית פה
+# פעם אחת בטעינת המודול, בדיוק כמו ה-_dim_probe ש-train.py כבר בונה.
+_probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
+OWN_HALF_MAX_Y = _probe.get_own_half_max_y()
+MAX_PLACEMENT_X = _probe.get_max_placement_x()
+del _probe
+PLACEMENT_ROWS = int(OWN_HALF_MAX_Y) + 1
+
+
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
-    def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None):
+    def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None,
+                 placement_rows=None, num_ability_slots=0):
         super(MicroRoyaleNet, self).__init__()
 
         # ברירות מחדל נשלפות חי מהמנוע המקומפל (לא hardcoded) -- כל שינוי גודל
@@ -30,6 +42,20 @@ class MicroRoyaleNet(nn.Module):
         self.board_height = board_height
         self.hand_size = hand_size
         self.num_card_ids = num_card_ids
+
+        # רשת המיקום היא קטגוריאלית על תאי לוח שלמים (ראה placement_head
+        # למטה). placement_rows = כמה שורות בחצי שלנו חוקיות למיקום.
+        self.placement_rows = placement_rows if placement_rows is not None else PLACEMENT_ROWS
+        self.placement_cells = self.placement_rows * board_width
+
+        # 0 = לחפיסה אין צ'מפיון, ולכן אין בכלל ראשי הפעלת יכולת. זה לא
+        # אופטימיזציה קוסמטית: כשאין צ'מפיון, שני הראשים האלה דגמו רעש טהור
+        # בכל טיק -- הוסיפו שונות ליחס ה-PPO (total_logprob) ותרמו עד
+        # 2*log(2)=1.386 לבונוס האנטרופיה, כלומר המאמן *השקיע* מאמץ בשמירה
+        # על מטבע אקראי הפוך. נמדד בפועל: DEFAULT_DECK לא מכילה צ'מפיון,
+        # ו-is_champion_ability_ready החזיר False בשתי המשבצות לכל אורך
+        # המשחק. הערך מועבר מפורשות מהמאמן לפי החפיסה בשימוש.
+        self.num_ability_slots = num_ability_slots
 
         # גודל המטריצה השטוחה המגיעה מ-ClashEnv
         self.spatial_size = channels * board_height * board_width
@@ -102,13 +128,22 @@ class MicroRoyaleNet(nn.Module):
         # המנוע מתעלם מ-cardIndex מחוץ ל-[0,hand_size) כך שאין צורך בשינוי C++.
         self.card_head = nn.Linear(256, hand_size + 1)
 
-        # ב. ראש המיקום במרחב (התפלגות גאוסיאנית / תחימה) -- אוטורגרסיבי:
-        # מותנה ב-hx *וגם* ב-embedding של הקלף שכבר נבחר (ראה
-        # placement_given_card). קלט גדל מ-256 (רק hx) ל-256+CARD_EMBED_DIM.
-        self.placement_head = nn.Linear(256 + CARD_EMBED_DIM, 2)
-        # סטיית התקן של ההתפלגות הגאוסיאנית - פרמטר נלמד (state-independent), נדרש כדי
-        # שיהיה ניתן לחשב log_prob ולתת gradient אמיתי לראש המיקום
-        self.placement_log_std = nn.Parameter(torch.ones(2) * -2.0)
+        # ב. ראש המיקום במרחב -- קטגוריאלי על תאי לוח שלמים, לא גאוסיאן.
+        # אוטורגרסיבי כמו קודם: מותנה ב-hx *וגם* ב-embedding של הקלף שנבחר.
+        #
+        # למה זה הוחלף: הגרסה הקודמת דגמה מ-Normal עם placement_log_std
+        # נלמד. האנטרופיה של גאוסיאן היא log(sigma) + const, ולכן הנגזרת של
+        # בונוס האנטרופיה לפי log_std היא *בדיוק 1, קבועה*, ללא תלות בנתונים
+        # -- כוח קבוע שדוחף את sigma למעלה, שה-policy gradient הרועש מפסיד
+        # לו. נמדד בפועל על הצ'קפוינטים: log_std התחיל ב--2.0 וטיפס
+        # ל--1.86 אחרי 68,515 אפיזודות (סיגמא *גדלה* במקום להצטמצם), כלומר
+        # sigma=0.156 ביחידות מנורמלות = 2.66 משבצות סטיית תקן ב-x ו-2.46
+        # ב-y. שני הגשרים מרוחקים 10 משבצות זה מזה, אז הרעש העצמי של הסוכן
+        # היה חצי מהמרחק שהוא אמור להבחין בו -- הוא פשוט לא היה מסוגל לכוון
+        # לנתיב. התפלגות קטגוריאלית פותרת את זה משורש: האנטרופיה שלה חסומה
+        # מלמעלה ב-log(placement_cells) ויורדת באופן טבעי ככל שהמדיניות
+        # מתחדדת, המיקום מדויק עד משבצת, וניתן למסוך תאים לא חוקיים.
+        self.placement_head = nn.Linear(256 + CARD_EMBED_DIM, self.placement_cells)
 
         # ==========================================
         # 5. ראש הערכת המצב - Critic Head -- תלוי רק ב-hx.
@@ -119,11 +154,15 @@ class MicroRoyaleNet(nn.Module):
         # 6. ראשי הפעלת יכולת צ'מפיון (עד 2 צ'מפיונים בו-זמנית -- ראו
         # activate_ability_slot1/2 ב-gym_wrapper.py, ו-
         # CardRegistry::validateDeckSlots בצד ה-C++). כל אחד: 2 לוגיטים
-        # (0=אל תפעיל, 1=הפעל), בדיוק כמו activate_ability הישן היה אמור
-        # להיות אילו נדגם אי-פעם (לא נדגם בפועל -- ראה ההערה ב-train.py).
+        # (0=אל תפעיל, 1=הפעל).
+        #
+        # נוצרים *רק* אם num_ability_slots > 0 -- ראה ההערה על השדה הזה
+        # למעלה. עם חפיסה בלי צ'מפיון הם היו רעש בלבד, ועכשיו הם פשוט לא
+        # קיימים (גם לא ב-state_dict), אז אין פרמטרים מתים ואין תרומה
+        # ל-logprob/entropy.
         # ==========================================
-        self.ability_slot1_head = nn.Linear(256, 2)
-        self.ability_slot2_head = nn.Linear(256, 2)
+        self.ability_slot1_head = nn.Linear(256, 2) if num_ability_slots >= 1 else None
+        self.ability_slot2_head = nn.Linear(256, 2) if num_ability_slots >= 2 else None
 
     def extract_features(self, obs):
         """
@@ -161,21 +200,69 @@ class MicroRoyaleNet(nn.Module):
 
         return combined, card_embeds
 
-    def step_lstm_and_card(self, features, hidden_state):
+    def affordability_mask(self, obs):
+        """
+        מסכת פעולות: אילו משבצות יד באמת ניתנות לשחק *עכשיו*, לפי האליקסיר
+        הנוכחי והעלויות -- שניהם כבר נמצאים בתוך וקטור התצפית עצמו, אז זה
+        מחושב בפייתון בלבד בלי שום קריאה נוספת למנוע.
+
+        זה התיקון המשמעותי ביותר בצינור כולו. GameManager::playCard מחזירה
+        false בשקט כשאין מספיק אליקסיר -- בלי חריגה, בלי תגמול שלילי, בלי
+        שום סימן לסוכן. נמדד על המדיניות המאומנת (243 צעדי החלטה אמיתיים):
+        74.9% מכלל הצעדים היו ניסיון לשחק קלף שאין עליו אליקסיר, ורק 11.5%
+        מהצעדים באמת הניחו קלף. כלומר ב-~87% מהדגימות בכל rollout הפעולה
+        השמורה בבאפר לא השפיעה על העולם בכלל -- אותו next_state היה מתקבל
+        מכל פעולה אחרת -- וה-advantage שיוחס להן היה רעש טהור שנכנס ישר
+        לגרדיאנט. הסיבה מבנית ולא זמנית: התחדשות אליקסיר היא 0.035 לטיק
+        ו-skip_frames=10, כלומר 0.35 אליקסיר לצעד החלטה מול קלף שעולה 3-5,
+        אז בממוצע רק 0.55 מתוך 4 משבצות ניתנות לשחק ורק ב-27.2% מהצעדים יש
+        ולו אפשרות חוקית אחת.
+
+        המסכה חייבת להיות מיושמת *זהה* באיסוף ה-rollout ובעדכון ה-PPO,
+        אחרת יחס ה-old/new logprob נשבר -- ולכן היא מחושבת מהתצפית עצמה
+        (שנשמרת בבאפר ממילא) ולא נשמרת בנפרד: אותו obs מייצר בהכרח אותה
+        מסכה בשתי הקריאות.
+
+        obs: (Batch, obs_dim). מחזיר bool tensor (Batch, hand_size+1);
+        העמודה האחרונה (no-op) תמיד True -- המתנה היא תמיד פעולה חוקית.
+        """
+        scalar_obs = obs[:, self.spatial_size:]
+        # אותו layout שבו ClashEnv::extractObservationForTeam בונה את
+        # scalar_obs: [elixir(1), costs(hand_size), onehots(...)]. שניהם
+        # מחולקים ב-10 שם, אז היחס ביניהם נכון בלי להכפיל בחזרה.
+        elixir = scalar_obs[:, 0:1]
+        costs = scalar_obs[:, 1:1 + self.hand_size]
+        # cost <= 0 מסמן משבצת ריקה/לא חוקית (ראה ClashEnv: card ? cost/10 : 0)
+        # -- אף פעם לא קלף אמיתי בחינם.
+        playable = (costs > 0.0) & (costs <= elixir + 1e-6)
+        noop = torch.ones(obs.shape[0], 1, dtype=torch.bool, device=obs.device)
+        return torch.cat([playable, noop], dim=1)
+
+    def step_lstm_and_card(self, features, hidden_state, card_mask=None):
         """
         חצי ראשון של הצעד הרקורנטי: מקדם את ה-LSTM ומחשב בחירת קלף + הערכת
         מצב -- שניהם תלויים רק ב-hx, לא בקלף שעוד ייבחר. מופרד מהמיקום כדי
         שקריאת ה-bootstrap value-only (ל-GAE) לעולם לא תצטרך לחשב מיקום
         שהיא סתם תזרוק.
         features: (Batch, lstm_input_dim)
+        card_mask: (Batch, hand_size+1) bool מ-affordability_mask, או None
+          (ללא מיסוך -- ההתנהגות הישנה, לשימוש רק היכן שאין תצפית זמינה).
         """
         hx, cx = self.lstm(features, hidden_state)
         card_logits = self.card_head(hx)
+        if card_mask is not None:
+            # -inf ולא ערך שלילי גדול-אך-סופי: Categorical מנרמל דרך
+            # log_softmax, וערך סופי היה עדיין משאיר הסתברות זעירה אך אי-
+            # אפסית לפעולה בלתי-חוקית, כלומר גם דגימה נדירה שלה וגם תרומה
+            # לאנטרופיה. -inf נותן בדיוק אפס בשניהם. ה-no-op תמיד חוקי
+            # (ראה affordability_mask) אז אף שורה לא יכולה לצאת כולה -inf.
+            card_logits = card_logits.masked_fill(~card_mask, float("-inf"))
         state_value = self.value_head(hx)
-        # שני ראשי הפעלת הצ'מפיון תלויים רק ב-hx, בדיוק כמו card_logits/
-        # state_value -- לכן מחושבים כאן, לא ב-placement_given_card.
-        ability_slot1_logits = self.ability_slot1_head(hx)
-        ability_slot2_logits = self.ability_slot2_head(hx)
+        # ראשי הצ'מפיון תלויים רק ב-hx, בדיוק כמו card_logits/state_value --
+        # לכן מחושבים כאן, לא ב-placement_given_card. None כשאין צ'מפיון
+        # בחפיסה (ראה num_ability_slots), והמאמן מדלג עליהם לגמרי.
+        ability_slot1_logits = self.ability_slot1_head(hx) if self.ability_slot1_head is not None else None
+        ability_slot2_logits = self.ability_slot2_head(hx) if self.ability_slot2_head is not None else None
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
     def placement_given_card(self, hx, card_embeds, card_idx):
@@ -184,15 +271,37 @@ class MicroRoyaleNet(nn.Module):
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
         hx: (Batch, 256). card_embeds: (Batch, hand_size+1, CARD_EMBED_DIM).
         card_idx: (Batch,) טנזור long, ערכים ב-[0, hand_size] כולל.
+
+        מחזיר לוגיטים (Batch, placement_cells) על תאי לוח שלמים. ההמרה
+        לקואורדינטות אמיתיות היא cell_to_xy() למטה.
+
+        מפורק *כמפרק אחד* על כל התאים (ולא כמכפלה נפרדת של x ו-y): התפלגות
+        מפורקת p(x)*p(y) לא יכולה לייצג "או ליד הגשר השמאלי או בפינה
+        האחורית הימנית" בלי לפזר מסה גם על שתי הקומבינציות המעורבות, וזה
+        בדיוק סוג ההחלטה הדו-מודאלית שהמשחק דורש. placement_cells קטן
+        (18*16=288) אז השכבה זולה.
         """
         batch_idx = torch.arange(card_embeds.shape[0], device=card_embeds.device)
         chosen_embed = card_embeds[batch_idx, card_idx]  # (Batch, CARD_EMBED_DIM)
         placement_input = torch.cat((hx, chosen_embed), dim=-1)
-        placement_normalized = torch.sigmoid(self.placement_head(placement_input))
-        placement_log_std = torch.clamp(self.placement_log_std, -4.0, 0.0).expand_as(placement_normalized)
-        return placement_normalized, placement_log_std
+        return self.placement_head(placement_input)
 
-    def forward_from_features(self, features, card_embeds, hidden_state, card_idx):
+    def cell_to_xy(self, cell_idx):
+        """
+        אינדקס תא -> קואורדינטות לוח אמיתיות שהמנוע מקבל.
+        cell_idx: טנזור long כלשהו. מחזיר (x, y) טנזורי float באותה צורה.
+
+        row-major, זהה לפריסה של placement_head. x=עמודה ו-y=שורה כערכים
+        שלמים בדיוק: העמודה המקסימלית היא board_width-1 = get_max_placement_x()
+        והשורה המקסימלית היא placement_rows-1 = 15 <= get_own_half_max_y()
+        (15.5), כלומר כל תא נופל בתוך התחום שהמנוע אוכף -- אין צורך ב-clamp
+        ואף תא לא "מתגלגל" בשקט לגבול.
+        """
+        row = torch.div(cell_idx, self.board_width, rounding_mode="floor")
+        col = cell_idx % self.board_width
+        return col.float(), row.float()
+
+    def forward_from_features(self, features, card_embeds, hidden_state, card_idx, card_mask=None):
         """
         עוטף את שני החצאים ביחד, לשימוש כש-card_idx כבר ידוע מראש (עדכון PPO,
         עם הפעולה השמורה מהבאפר -- קריטי: תמיד להעביר את card_idx *השמור*
@@ -200,9 +309,12 @@ class MicroRoyaleNet(nn.Module):
         מתקלקל). לא שימושי בזמן איסוף rollout (שם card_idx עוד לא ידוע לפני
         שדוגמים אותו מ-card_logits) -- שם קוראים ל-step_lstm_and_card ואז
         ל-placement_given_card בנפרד, ראה train.py/train_selfplay.py.
+
+        card_mask חייבת להיות אותה מסכה שהופעלה בזמן ה-rollout (בפועל:
+        מחושבת מחדש מאותו obs שנשמר בבאפר -- ראה affordability_mask).
         """
         (card_logits, ability_slot1_logits, ability_slot2_logits, state_value,
-         (hx, cx)) = self.step_lstm_and_card(features, hidden_state)
-        placement_normalized, placement_log_std = self.placement_given_card(hx, card_embeds, card_idx)
-        return (card_logits, placement_normalized, placement_log_std, state_value,
+         (hx, cx)) = self.step_lstm_and_card(features, hidden_state, card_mask)
+        placement_logits = self.placement_given_card(hx, card_embeds, card_idx)
+        return (card_logits, placement_logits, state_value,
                 ability_slot1_logits, ability_slot2_logits, (hx, cx))
