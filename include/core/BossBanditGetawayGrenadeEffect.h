@@ -10,9 +10,15 @@
 // (invisible for 1s, THEN teleports), but this engine applies both at
 // once -- the end state (briefly untargetable, now further back) is the
 // same, and this engine has no sub-tick animation timing to sequence them
-// within anyway. Clamped to the board via Board::clampToBoard, the same
-// bounds/river rule normal movement already respects, since this bypasses
-// the usual move-then-clamp pipeline.
+// within anyway. Clamped to the board via Board::clampToBoard with
+// ignoresRiver=true -- a "getaway" retreating from enemy territory back to
+// her own side routinely needs to cross back over the river, and clamping
+// her to the near bank instead would frequently defeat the entire point of
+// the escape. Matches Boss Bandit's own CardStats::withIgnoresRiver
+// (same river-crossing approximation as the regular Bandit), but this
+// bypasses the usual move-then-clamp pipeline (CombatEntity has no
+// riverIgnores field of its own to read -- that lives on Troop), so it's
+// hardcoded here rather than derived from `self`.
 class BossBanditGetawayGrenadeEffect : public IAbilityEffect {
     int invisibilityTicks;
     float teleportDistance;
@@ -26,6 +32,6 @@ public:
 
         Vector2D newPos = self.position;
         newPos.y += (self.team == 0) ? -teleportDistance : teleportDistance;
-        self.position = board.clampToBoard(newPos, false);
+        self.position = board.clampToBoard(newPos, true);
     }
 };

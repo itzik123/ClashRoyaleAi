@@ -291,3 +291,21 @@ TEST_CASE("BossBanditGetawayGrenadeEffect teleports the opposite direction for t
 
     REQUIRE(bandit->position.y == Catch::Approx(26.0f)); // 20 + 6, toward team 1's own side (higher y)
 }
+
+TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river band itself, not snapped to an edge",
+        "[boss_bandit]") {
+    // A "getaway" landing spot doesn't always clear the whole river in one
+    // jump -- if it lands INSIDE the river band (16-18, see Board's own
+    // defaults), a normal (river-respecting) troop would get shoved back to
+    // the near edge by Board::clampToBoard. Boss Bandit's retreat must
+    // cross the river on the way back to her own side, so this specifically
+    // must NOT happen -- see BossBanditGetawayGrenadeEffect's own comment
+    // on why clampToBoard is called with ignoresRiver=true.
+    Board board;
+    auto bandit = std::make_shared<StationaryCombatant>(1, 9.0f, 23.0f, 2624, 0, 0.8f, 245, 11); // team 0, deep in enemy territory
+
+    BossBanditGetawayGrenadeEffect effect(10, 6.0f);
+    effect.apply(board, *bandit);
+
+    REQUIRE(bandit->position.y == Catch::Approx(17.0f)); // 23 - 6, squarely inside the river band -- not clamped to 16 or 18
+}

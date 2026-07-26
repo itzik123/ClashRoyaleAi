@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "CardRegistry.h"
+#include "Troop.h"
 #include "MeleeTroop.h"
 #include "RangedTroop.h"
 #include "BuildingTargeter.h"
@@ -286,7 +287,7 @@ TEST_CASE("MeleeBuildingTargeter archetype (Giant)", "[card_registry][archetype]
     REQUIRE_FALSE(targeter->riverIgnores);
 }
 
-TEST_CASE("MeleeBuildingTargeter archetype wires ignoresRiver for Hog Rider only", "[card_registry][archetype]") {
+TEST_CASE("MeleeBuildingTargeter archetype wires ignoresRiver for Hog Rider", "[card_registry][archetype]") {
     Board board;
     const CardDefinition* hogRider = CardRegistry::getInstance().getCard(15);
     hogRider->spawnEntity(5.0f, 5.0f, 0, board);
@@ -295,6 +296,56 @@ TEST_CASE("MeleeBuildingTargeter archetype wires ignoresRiver for Hog Rider only
     auto targeter = std::dynamic_pointer_cast<BuildingTargeter>(board.getEntities()[0]);
     REQUIRE(targeter != nullptr);
     REQUIRE(targeter->riverIgnores);
+}
+
+// Real-game river-crossing troops (confirmed): Hog Rider (covered above),
+// Ram Rider, Royal Hogs, Prince, Dark Prince (the "jumpers"), plus Royal
+// Ghost and Battle Healer -- all cross the river directly rather than
+// routing to a bridge. Boss Bandit, the regular Bandit, and Mega Knight are
+// a documented approximation of the same idea (their real river-crossing is
+// tied to a specific ability -- dash for the Bandits, the periodic jump for
+// Mega Knight -- but this engine has no discrete "currently mid-ability"
+// movement state to gate that more precisely on -- see Bandit's own
+// registry comment).
+TEST_CASE("River-crossing troops all spawn with riverIgnores set", "[card_registry][river]") {
+    Board board;
+    for (int id : { 87, 82, 14, 46, 47, 49, 50, 122, 48 }) { // Ram Rider, Royal Hogs, Prince, Dark Prince, Royal Ghost, Battle Healer, Bandit, Boss Bandit, Mega Knight
+        const CardDefinition* def = CardRegistry::getInstance().getCard(id);
+        REQUIRE(def != nullptr);
+        def->spawnEntity(5.0f, 5.0f, 0, board);
+    }
+    board.commitPendingEntities();
+
+    int checked = 0;
+    for (const auto& e : board.getEntities()) {
+        auto troop = std::dynamic_pointer_cast<Troop>(e);
+        if (!troop) continue;
+        REQUIRE(troop->riverIgnores);
+        checked++;
+    }
+    // 8 of the 9 cards spawn a single entity each, +1 for Ram Rider's
+    // independently-spawned crossbow secondary unit (must ALSO ignore the
+    // river -- see ramRiderCrossbowStats' own comment -- or it desyncs from
+    // the ram at the riverbank), +3 more for Royal Hogs' own 4-unit squad
+    // (its offsets carry 4 members, not 1) = 8 + 1 + 1 + 3 = 13.
+    REQUIRE(checked == 13);
+}
+
+// Battle Ram (81) also charges (see CardStats::withCharge) but was NOT
+// confirmed as a river-crosser -- must stay river-respecting so this
+// engine doesn't silently over-generalize "has a charge mechanic" into
+// "crosses the river" for a card that was never confirmed to.
+TEST_CASE("Battle Ram (has a charge mechanic, but wasn't confirmed as a river-crosser) still respects the river",
+        "[card_registry][river]") {
+    Board board;
+    const CardDefinition* battleRam = CardRegistry::getInstance().getCard(81);
+    REQUIRE(battleRam != nullptr);
+    battleRam->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto troop = std::dynamic_pointer_cast<Troop>(board.getEntities()[0]);
+    REQUIRE(troop != nullptr);
+    REQUIRE_FALSE(troop->riverIgnores);
 }
 
 TEST_CASE("Golem splits into two Golemites on death", "[card_registry][death]") {
