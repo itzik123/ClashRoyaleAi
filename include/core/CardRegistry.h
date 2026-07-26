@@ -32,6 +32,14 @@
 #include "PoisonOnHit.h"
 #include "PeriodicFreezeNearestEffect.h"
 #include "DarkGuardOnDamageEffect.h"
+#include "HeroMiniPekkaBoostEffect.h"
+#include "HeroKnightTauntEffect.h"
+#include "HeroWizardFieryFlightEffect.h"
+#include "HeroGiantHurlEffect.h"
+#include "HeroMegaMinionWarpEffect.h"
+#include "HeroMagicArcherTripleThreatEffect.h"
+#include "HeroIceGolemSnowstormEffect.h"
+#include "HeroBarbarianBarrelRerollEffect.h"
 
 // External-facing shape is unchanged on purpose: GameManager, ClashEnv,
 // GameLogger, TerminalRenderer and main.cpp all consume CardDefinition as
@@ -61,6 +69,22 @@ struct CardDefinition {
     // here (not just on the spawned entity) so deck contents can be
     // inspected before anything is placed, e.g. by countChampions() below.
     bool isChampion;
+    // Mirrors CombatEntity::isHero/CardStats::isHero -- see that field's own
+    // comment. validateDeckSlots/PlayerState::seedSlotState/GameManager::
+    // playCard's tracking hook all check `isChampion || isHero` uniformly.
+    bool isHero = false;
+    // Mirrors CardStats::abilityElixirCost/abilityUsableAfterDeathTicks/
+    // postDeathAbilityEffect -- surfaced at the REGISTRY level (not just on
+    // the spawned entity) because Hero Goblins' post-death reactivation
+    // (see PlayerState::ChampionSlotState::lastSquadWipeTick) fires when
+    // NOTHING is alive to read these off of, so GameManager::
+    // activateChampionAbility looks them up here instead. 0/nullptr (the
+    // defaults) are every card without a post-death ability -- including
+    // every OTHER Hero/Champion, which read cost off their own live entity
+    // instead.
+    float abilityElixirCost = 0.0f;
+    int abilityUsableAfterDeathTicks = 0;
+    std::shared_ptr<IPeriodicEffect> postDeathAbilityEffect;
     // Display/rendering metadata -- NOT used by any gameplay logic (that all
     // goes through the CardStats captured in spawnEntity's closure below).
     // Exists purely so GameLogger can embed an authoritative, per-replay
@@ -223,6 +247,14 @@ private:
     static CardStats barbarianBarrelBarbarianStats() {
         return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B');
     }
+    // Hero Barbarian Barrel Hero-ifies the SPAWNED Barbarian himself, not
+    // the ephemeral one-tick barrel spell (which has no persistent entity
+    // to carry an ability at all) -- same base stats as
+    // barbarianBarrelBarbarianStats above, plus "Rowdy Reroll".
+    static CardStats heroBarbarianBarrelBarbarianStats() {
+        return troop(-47, "Hero Barbarian Barrel", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+            .withHeroAbility(1.0f, 0, std::make_shared<HeroBarbarianBarrelRerollEffect>(3.0f, 0.7f, 233), 1);
+    }
     // Compound-card secondary units (Goblin Machine's rocket turret, Ram
     // Rider's crossbow, Goblin Giant's carried Spear Goblins, Goblin
     // Gang's ranged half, Rascals' ranged half) -- spawned via
@@ -337,6 +369,32 @@ private:
         return troop(-39, "Guardienne", 0.0f, Archetype::MeleeSquad, 1600, 0.5f, 1.2f, 217, 12, 'u')
             .withCharge(3.0f, 2.0f);
     }
+    // Hero Musketeer's "Trusty Turret": a short-range auto-turret spawned
+    // in front of her, self-destructing after a fixed 10s (100-tick)
+    // lifetime -- see withHpTransform(1.0f, ...)'s own comment for how a
+    // fraction of EXACTLY 1.0 turns that HP-threshold mechanism into a
+    // pure fixed-lifetime timer with zero hp loss required.
+    // becomesStationary stays false: the turret is already stationary via
+    // its own DefensiveBuilding archetype, and that branch's
+    // applyFreeze(ticks, 0.0f) would additionally zero the turret's own
+    // attack-cooldown drain rate, permanently silencing it. hp/damage
+    // aren't part of any sourced data -- reasonable engine-internal
+    // constants for a small, short-lived defensive structure, same
+    // caveat as splashRadius/shieldHp elsewhere in this file.
+    static CardStats heroMusketeerTurretStats() {
+        return building(-45, "Trusty Turret", 0.0f, 200, 't', 4.0f, 90, 5)
+            .withTargetsAir()
+            .withHpTransform(1.0f, 100, false);
+    }
+    // Hero Magic Archer's Triple Threat: the decoy left behind at his old
+    // position. Real card's decoy soaks hits/draws aggro but deals none of
+    // its own -- modeled as a zero-damage, modest-hp stationary (speed 0)
+    // unit. hp/archetype/lifetime aren't part of the sourced data --
+    // reasonable engine-internal constants, same caveat as splashRadius/
+    // shieldHp elsewhere in this file.
+    static CardStats heroMagicArcherDecoyStats() {
+        return troop(-46, "Decoy", 0.0f, Archetype::MeleeSquad, 100, 0.0f, 1.0f, 0, 100, 'd');
+    }
     // Wall Breakers Evolution's "Runner": spawned on death (see
     // evolvedWallBreakersStats below). Only Level-6 data was found (103hp/
     // 113dmg) -- scaled to this file's level-11 convention via the ~10%/
@@ -421,6 +479,10 @@ private:
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
         def.deployAnywhere = stats.deployAnywhere;
         def.isChampion = stats.isChampion;
+        def.isHero = stats.isHero;
+        def.abilityElixirCost = stats.abilityElixirCost;
+        def.abilityUsableAfterDeathTicks = stats.abilityUsableAfterDeathTicks;
+        def.postDeathAbilityEffect = stats.postDeathAbilityEffect;
         def.hp = stats.hp;
         def.symbol = stats.symbol;
         def.isFlying = stats.isFlying;
@@ -455,6 +517,10 @@ private:
         def.placementRadius = CardFactories::placementRadius(baseStats.archetype);
         def.deployAnywhere = baseStats.deployAnywhere;
         def.isChampion = baseStats.isChampion;
+        def.isHero = baseStats.isHero;
+        def.abilityElixirCost = baseStats.abilityElixirCost;
+        def.abilityUsableAfterDeathTicks = baseStats.abilityUsableAfterDeathTicks;
+        def.postDeathAbilityEffect = baseStats.postDeathAbilityEffect;
         def.hp = baseStats.hp;
         def.symbol = baseStats.symbol;
         def.isFlying = baseStats.isFlying;
@@ -1975,6 +2041,153 @@ private:
         // SpiritEmpressForms.h for the full mechanic and its caveats.
         add(troop(165, "Spirit Empress", 3.0f, Archetype::MeleeSquad, 926, 0.85f, 1.2f, 249, 12, '<'));
 
+        // === Heroes ===
+        // Clash Royale's "Hero" mechanic (added ~Dec 2025/2026 real-game
+        // updates, researched from public sources -- no in-repo sourced
+        // text for this one). A Hero takes an EXISTING ordinary troop and
+        // gives it a second, ability-carrying form -- mechanically the
+        // same isChampion-style machinery as the 8 Champions above (see
+        // CardStats::isHero/withHeroAbility's own comments for why this is
+        // a parallel flag, not a rename), just layered onto an
+        // already-registered base card instead of a wholly new character.
+        // Base combat stats below are copied VERBATIM from this engine's
+        // own existing base-card registration (never the possibly-
+        // different real-game numbers found online) -- only the new
+        // ability layer is added on top. Staged implementation (see this
+        // project's own plan file): this pilot pair (Hero Mini P.E.K.K.A,
+        // Hero Musketeer) uses zero new engine primitives, proving the
+        // generalized isHero/championSlots path end-to-end before later
+        // Heroes introduce genuinely new mechanics (taunt, flight, etc.).
+
+        // Hero Mini P.E.K.K.A. Base stats copied from card id 5 (Mini
+        // PEKKA), see that registration above. "Breakfast Boost":
+        // simplified per this feature's own plan (no meter-fills-via-
+        // attacking simulation) to a flat, one-time (usesLimit=1, no
+        // repeating cooldown) hp+damage boost -- see
+        // HeroMiniPekkaBoostEffect.
+        add(troop(170, "Hero Mini P.E.K.K.A.", 4.0f, Archetype::MeleeSquad, 1390, 0.8f, 0.8f, 755, 16, 'M')
+            .withHeroAbility(1.0f, 0, std::make_shared<HeroMiniPekkaBoostEffect>(210, 1.15f), 1));
+
+        // Hero Musketeer. Base stats copied from card id 6 (Musketeer), see
+        // that registration above. "Trusty Turret": spawns a short-range
+        // auto-turret in front of her (see heroMusketeerTurretStats above)
+        // with a fixed 10s lifetime, targeting air+ground.
+        add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+            .withSightRange(6.0f)
+            .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
+
+        // Hero Goblins. Base stats copied from card id 4 (Goblins), see
+        // that registration above -- including the 4-unit squad offsets.
+        // "Banner Brigade" (1 elixir, ONE USE, only activatable within a
+        // 70-tick/7s window after the LAST goblin of the squad dies):
+        // reactivates a fresh 4-unit squad at the death position. Uses
+        // withPostDeathAbility (not withHeroAbility) since this card has no
+        // alive-path ability at all -- see GameManager::
+        // syncChampionCooldowns/isPostDeathAbilityReady/
+        // activateChampionAbility for how the window is tracked and
+        // consumed. The reactivated squad spawns via the PLAIN (non-Hero)
+        // base Goblins CardStats, not this Hero variant, so a second Banner
+        // Brigade can never chain off a reactivated squad.
+        add(troop(172, "Hero Goblins", 2.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+            .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
+            .withPostDeathAbility(1.0f, 70, std::make_shared<PeriodicSpawnEffect>(
+                troop(-48, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+                    .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }))));
+
+        // Hero Knight. Base stats copied from card id 0 (Knight), see that
+        // registration above. "Triumphant Taunt" (2 elixir, 250-tick/25s
+        // cooldown): gains a shield and forces enemies within 6.5 tiles to
+        // attack him for 50 ticks/5s -- see HeroKnightTauntEffect,
+        // CombatEntity::forcedTargetEntityId/shieldExpiresTicksRemaining.
+        // Shield amount isn't part of the sourced data -- a reasonable
+        // engine-internal constant (roughly half his own hp), same caveat
+        // as splashRadius/shieldHp elsewhere in this file.
+        add(troop(166, "Hero Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
+            .withHeroAbility(2.0f, 250, std::make_shared<HeroKnightTauntEffect>(880, 50, 6.5f)));
+
+        // Hero Wizard. Base stats copied from card id 11 (Wizard), see that
+        // registration above. "Fiery Flight" (1 elixir, 200-tick/20s
+        // cooldown): takes flight for 50 ticks/5s, during which every
+        // landed attack also pulses a damaging, pulling tornado on the
+        // target -- see HeroWizardFieryFlightEffect. Pulse pull distance
+        // (0.5 tiles) approximates the sourced "~50% pull strength" --
+        // not an exact sourced tile value, same caveat category as
+        // splashRadius/shieldHp elsewhere in this file.
+        add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+            .withSplash(1.5f)
+            .withHeroAbility(1.0f, 200, std::make_shared<HeroWizardFieryFlightEffect>(50, 4.0f, 20, 0.5f)));
+
+        // Hero Giant. Base stats copied from card id 2 (Giant), see that
+        // registration above. "Heroic Hurl" (2 elixir, 140-tick/14s
+        // cooldown): grabs the highest-HP enemy troop within short range
+        // (3.0 tiles -- not part of the sourced data, a reasonable
+        // engine-internal constant) and throws it to the opposite lane,
+        // stunning it 20 ticks/2s on landing -- see HeroGiantHurlEffect.
+        add(troop(169, "Hero Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G')
+            .withSightRange(7.5f)
+            .withHeroAbility(2.0f, 140, std::make_shared<HeroGiantHurlEffect>(3.0f, 20)));
+
+        // Hero Mega Minion. Base stats copied from card id 43 (Mega
+        // Minion), see that registration above. "Wounding Warp" (2 elixir,
+        // ONE USE per deployment, unusable for the first 15 ticks/1.5s
+        // after spawn -- see CardStats::withInitialAbilityCooldown):
+        // teleports (infinite range) to the lowest-HP enemy on the board
+        // and deals bonus damage on arrival -- see HeroMegaMinionWarpEffect.
+        // Bonus damage isn't part of the sourced data -- a reasonable
+        // engine-internal constant roughly matching her own per-hit
+        // damage, same caveat as splashRadius/shieldHp elsewhere.
+        add(troop(173, "Hero Mega Minion", 3.0f, Archetype::MeleeSquad, 837, 0.5f, 1.6f, 312, 15, 'F')
+            .withFlying().withTargetsAir()
+            .withHeroAbility(2.0f, 0, std::make_shared<HeroMegaMinionWarpEffect>(300), 1)
+            .withInitialAbilityCooldown(15));
+
+        // Hero Magic Archer. Base stats copied from card id 63 (Magic
+        // Archer), see that registration above. "Triple Threat" (2 elixir,
+        // 250-tick/25s cooldown): dashes back 5 tiles, spawns a decoy at
+        // his old position (see heroMagicArcherDecoyStats above), and gains
+        // a 70-tick/7s multi-shot window -- see
+        // HeroMagicArcherTripleThreatEffect.
+        add(troop(171, "Hero Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
+            .withTargetsAir()
+            .withSplash(0.25f).withLineSplash(11.0f).withSightRange(7.5f)
+            .withHeroAbility(2.0f, 250, std::make_shared<HeroMagicArcherTripleThreatEffect>(
+                5.0f, heroMagicArcherDecoyStats(), 70)));
+
+        // Hero Ice Golem. Base stats copied from card id 40 (Ice Golem),
+        // see that registration above. "Snowstorm" (2 elixir, 170-tick/17s
+        // cooldown): 3 staggered blasts in a 4-tile radius -- the first two
+        // push+damage+slow, the third a full 15-tick/1.5s freeze -- damage
+        // to Crown Towers reduced via AreaSpell's new
+        // spellTowerDamageMultiplier. See HeroIceGolemSnowstormEffect.
+        // Per-blast damage/knockback/slow strength aren't part of the
+        // sourced data -- reasonable engine-internal constants, same
+        // caveat as splashRadius/shieldHp elsewhere in this file.
+        add(troop(175, "Hero Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, 0.4f, 0.75f, 84, 25, 'c')
+            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f)
+            .withHeroAbility(2.0f, 170, std::make_shared<HeroIceGolemSnowstormEffect>(4.0f, 80, 1.0f, 20, 0.6f, 15)));
+
+        // Hero Barbarian Barrel. Base stats copied from card id 101
+        // (Barbarian Barrel), see that registration above -- but the
+        // ability itself lives on the SPAWNED Barbarian's own CardStats
+        // (heroBarbarianBarrelBarbarianStats above), not this ephemeral
+        // one-tick spell's, since the spell entity dies the same tick it
+        // spawns and never has a live turn to activate anything. isHero is
+        // set directly on this spell's own CardStats (not via
+        // withHeroAbility, which would also wire up ability fields this
+        // entity never uses) purely so validateDeckSlots/seedSlotState
+        // recognize deck id 174 itself as Hero-eligible --
+        // CardFactories::spawnSpell never reads isHero at all, so this has
+        // no runtime effect on the spawned AreaSpell. "Rowdy Reroll" (1
+        // elixir, ONE USE): see HeroBarbarianBarrelRerollEffect.
+        {
+            CardStats heroBarbarianBarrelSpellStats = spell(174, "Hero Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
+                .withGroundOnly()
+                .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(heroBarbarianBarrelBarbarianStats()));
+            heroBarbarianBarrelSpellStats.isHero = true;
+            add(heroBarbarianBarrelSpellStats);
+        }
+
         // === Status of the full-refactor initiative (Champions/Evolutions/
         // === Tower Troops/Mirror/Spirit Empress) ===
         // All 8 Champions, all 4 Tower Troops, Mirror, and Spirit Empress
@@ -2025,16 +2238,33 @@ inline int countChampions(const std::vector<int>& deck) {
     return count;
 }
 
+// Same shape as countChampions above, but for Heroes (Clash Royale's
+// separate "Hero" card mechanic -- see CardDefinition::isHero's own
+// comment). Kept as its own function rather than folded into
+// countChampions so each stays an accurate count of exactly what its name
+// says.
+inline int countHeroes(const std::vector<int>& deck) {
+    int count = 0;
+    for (int cardId : deck) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (def && def->isHero) count++;
+    }
+    return count;
+}
+
 // Deck slot-position legality: slot 0 (Evolution slot) may hold an
 // Evolution-flagged card or a plain card; slot 1 (Heroic slot) may hold a
-// Champion or a plain card; slot 2 (Wild Card slot) may hold a Champion, an
-// Evolution, or a plain card; slots 3-7 must be plain (no Champion, no
-// Evolution). This gives "at most 2 Champions" for free -- only slots 1/2
-// can ever accept one. Unlike countChampions above, this IS meant to be
-// called as a real gate -- see GameManager::reset()/setOpponentDeck(),
-// which throw std::invalid_argument on a non-empty result. Returns "" for
-// a legal deck, otherwise a human-readable reason naming the offending
-// slot/card.
+// Champion, a Hero, or a plain card; slot 2 (Wild Card slot) may hold a
+// Champion, a Hero, an Evolution, or a plain card; slots 3-7 must be plain
+// (no Champion, no Hero, no Evolution). Champion and Hero share the same
+// two slots -- Clash Royale's real "Heroes and Champions now share deck
+// slots" rule -- so this gives "at most 2 special units total (Champion or
+// Hero, one per slot)" for free, same as the pre-Hero "at most 2
+// Champions" rule did. Unlike countChampions/countHeroes above, this IS
+// meant to be called as a real gate -- see GameManager::reset()/
+// setOpponentDeck(), which throw std::invalid_argument on a non-empty
+// result. Returns "" for a legal deck, otherwise a human-readable reason
+// naming the offending slot/card.
 inline std::string validateDeckSlots(const std::vector<int>& deck) {
     if (deck.size() != 8) {
         return "deck must have exactly 8 cards (got " + std::to_string(deck.size()) + ")";
@@ -2044,11 +2274,11 @@ inline std::string validateDeckSlots(const std::vector<int>& deck) {
         if (!def) {
             return "slot " + std::to_string(i) + ": card id " + std::to_string(deck[i]) + " is not a registered card";
         }
-        bool championAllowed = (i == 1 || i == 2);  // Heroic / Wild Card
-        bool evolutionAllowed = (i == 0 || i == 2); // Evolution slot / Wild Card
-        if (def->isChampion && !championAllowed) {
+        bool specialUnitAllowed = (i == 1 || i == 2); // Heroic / Wild Card -- Champion OR Hero
+        bool evolutionAllowed = (i == 0 || i == 2);   // Evolution slot / Wild Card
+        if ((def->isChampion || def->isHero) && !specialUnitAllowed) {
             return "slot " + std::to_string(i) + ": " + def->name +
-                " is a Champion, only allowed in slot 1 (Heroic) or slot 2 (Wild Card)";
+                " is a Champion/Hero, only allowed in slot 1 (Heroic) or slot 2 (Wild Card)";
         }
         if (def->isEvolution && !evolutionAllowed) {
             return "slot " + std::to_string(i) + ": " + def->name +

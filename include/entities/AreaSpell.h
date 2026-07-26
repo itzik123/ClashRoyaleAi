@@ -85,6 +85,14 @@ private:
     int tierFewDamage;
     int tierManyDamage;
 
+    // Hero Ice Golem's Snowstorm: damage to Crown Towers reduced to 5% of
+    // the normal amount (this engine has no existing "reduced damage vs
+    // buildings" spell mechanism -- confirmed by reading Earthquake's own
+    // comment, which explicitly documents its real "3.5x vs buildings" as
+    // NOT modeled here, so this is a genuinely new primitive, not a reuse).
+    // 1.0f (the default) is every other spell, unaffected.
+    float spellTowerDamageMultiplier;
+
 public:
     AreaSpell(int id, float x, float y, int team, float radius, int damage, int delayTicks, char symbol = '*',
         std::shared_ptr<IOnHitEffect> onHit = nullptr, bool groundOnly = false,
@@ -92,13 +100,15 @@ public:
         bool buffsAllies = false, float buffMultiplier = 1.0f, int buffDurationTicks = 0,
         float knockback = 0.0f, std::shared_ptr<IPeriodicEffect> spawnOnDetonate = nullptr,
         bool clonesAllies = false, int targetTopHpCount = 0,
-        bool tieredDamage = false, int tierSingleDamage = 0, int tierFewDamage = 0, int tierManyDamage = 0)
+        bool tieredDamage = false, int tierSingleDamage = 0, int tierFewDamage = 0, int tierManyDamage = 0,
+        float spellTowerDamageMultiplier = 1.0f)
         : CardEntity(id, x, y, 1, team, symbol), radius(radius), damage(damage), delayTicks(delayTicks),
         onHit(std::move(onHit)), groundOnly(groundOnly), remainingHits(remainingHits), tickInterval(tickInterval),
         buffsAllies(buffsAllies), buffMultiplier(buffMultiplier), buffDurationTicks(buffDurationTicks),
         knockback(knockback), spawnOnDetonate(std::move(spawnOnDetonate)), clonesAllies(clonesAllies),
         targetTopHpCount(targetTopHpCount), tieredDamage(tieredDamage), tierSingleDamage(tierSingleDamage),
-        tierFewDamage(tierFewDamage), tierManyDamage(tierManyDamage) {}
+        tierFewDamage(tierFewDamage), tierManyDamage(tierManyDamage),
+        spellTowerDamageMultiplier(spellTowerDamageMultiplier) {}
 
     bool isTargetable() const override { return false; }
 
@@ -152,7 +162,14 @@ public:
                 toClone.push_back(entity);
                 continue;
             }
-            entity->takeDamage(effectiveDamage);
+            // Hero Ice Golem's Snowstorm: Crown Towers take only 5% of the
+            // normal amount -- entity->isTower() (Entity.h) instead of a
+            // cast, matching how exemptFromForcedMovement already queries
+            // building-ness cheaply elsewhere in this engine.
+            int dealt = entity->isTower()
+                ? static_cast<int>(effectiveDamage * spellTowerDamageMultiplier)
+                : effectiveDamage;
+            entity->takeDamage(dealt);
             if (knockback != 0.0f) {
                 if (knockback > 0.0f) {
                     pushAway(*entity, position, knockback);
@@ -165,7 +182,7 @@ public:
             // played the card is already gone by the time this
             // fires, for spawn-effect zaps like Electro Wizard's).
             board.statsEvents.notifyDamageDealt(
-                { id, team, cardId, entity->id, entity->cardId, entity->team, effectiveDamage, board.currentTick });
+                { id, team, cardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
             // Same surgical cast as CombatEntity::applyOnHitEffects and
             // Projectile's arrival handler -- on-hit effects only ever
             // mean something against a CombatEntity, so this is the one

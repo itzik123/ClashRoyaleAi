@@ -134,6 +134,12 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {163, "Inferno Dragon", 4.0f, false}, // Evolution slot -- same name/cost as base id 56
         {164, "Mirror", 3.0f, true},
         {165, "Spirit Empress", 3.0f, false},
+        {168, "Hero Musketeer", 4.0f, false}, {170, "Hero Mini P.E.K.K.A.", 4.0f, false},
+        {166, "Hero Knight", 3.0f, false}, {167, "Hero Wizard", 5.0f, false},
+        {169, "Hero Giant", 5.0f, false}, {173, "Hero Mega Minion", 3.0f, false},
+        {171, "Hero Magic Archer", 4.0f, false}, {175, "Hero Ice Golem", 2.0f, false},
+        {174, "Hero Barbarian Barrel", 2.0f, true},
+        {172, "Hero Goblins", 2.0f, false},
     };
 
     const auto& registry = CardRegistry::getInstance();

@@ -27,22 +27,27 @@ TEST_CASE("PlayerState::playCard resolves an Evolution slot: 2 un-evolved cycles
     REQUIRE_FALSE(r1.useEvolvedForm);
 
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto r2 = player.playCard(0);
     REQUIRE_FALSE(r2.useEvolvedForm); // 2nd un-evolved cycle
 
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto r3 = player.playCard(0);
     REQUIRE(r3.useEvolvedForm); // 3rd play: evolved
 
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto r4 = player.playCard(0);
     REQUIRE_FALSE(r4.useEvolvedForm); // NOT a one-time charge -- back to un-evolved
 
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto r5 = player.playCard(0);
     REQUIRE_FALSE(r5.useEvolvedForm);
 
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto r6 = player.playCard(0);
     REQUIRE(r6.useEvolvedForm); // evolves again, confirming the repeat
 }
@@ -64,8 +69,10 @@ TEST_CASE("initializeDeck resets Evolution progress -- no cross-match state leak
 
     player.playCard(0);
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     player.playCard(0);
     player.hand[0] = 123;
+    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     auto evolved = player.playCard(0);
     REQUIRE(evolved.useEvolvedForm); // fully cycled once
 
@@ -77,13 +84,16 @@ TEST_CASE("initializeDeck resets Evolution progress -- no cross-match state leak
 TEST_CASE("GameManager::playCard spawns the evolved entity only on an evolved play", "[game_manager][evolution]") {
     GameManager game({ 123, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[0] = 123; // force into hand -- opening hand is now randomized
 
     game.playCard(0, 123, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
@@ -111,13 +121,16 @@ TEST_CASE("Inferno Dragon Evolution's evolved spawn carries the ramp grace perio
         "[game_manager][evolution][inferno_dragon]") {
     GameManager game({ 163, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[0] = 163; // force into hand -- opening hand is now randomized
 
     game.playCard(0, 163, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 163;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 163, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 163;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 163, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
@@ -147,13 +160,16 @@ TEST_CASE("Minion Horde Evolution's Dark Guard turns a member untargetable after
         "[game_manager][evolution][minion_horde]") {
     GameManager game({ 149, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[0] = 149; // force into hand -- opening hand is now randomized
 
     game.playCard(0, 149, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 149;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 149, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 149;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 149, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
@@ -175,6 +191,7 @@ TEST_CASE("Skeleton Army Evolution's evolved play deploys 16 skeletons (+1, the 
         "[game_manager][evolution][skeleton_army]") {
     GameManager game({ 133, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[0] = 133; // force into hand -- opening hand is now randomized
 
     game.playCard(0, 133, 9.0f, 10.0f); // 1st play: un-evolved (15)
     game.step();
@@ -185,9 +202,11 @@ TEST_CASE("Skeleton Army Evolution's evolved play deploys 16 skeletons (+1, the 
     REQUIRE(unevolvedCount == 15);
 
     game.playerAI.hand[0] = 133;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 133, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 133;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 133, 9.0f, 10.0f); // 3rd play: evolved (16)
     game.step();
 
@@ -202,13 +221,16 @@ TEST_CASE("Wall Breakers Evolution's death effect both explodes (moderate AoE) a
         "[game_manager][evolution][wall_breakers]") {
     GameManager game({ 123, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
+    game.playerAI.hand[0] = 123; // force into hand -- opening hand is now randomized
 
     game.playCard(0, 123, 9.0f, 10.0f); // 1st: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 2nd: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
+    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 3rd: evolved
     game.step();
 

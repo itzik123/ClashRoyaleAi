@@ -36,6 +36,11 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
 // (see update() below) calls this directly from inside the class body.
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
     int excludeId, int attackerTeam);
+// Forward-declared for the same reason: Hero Knight's Triumphant Taunt
+// (see HeroKnightTauntEffect) calls this directly, and it's defined later
+// in this file alongside applyPullNearby/applySplashDamage.
+inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
+    int taunterId, int taunterTeam);
 
 class CombatEntity : public CardEntity {
 protected:
@@ -132,6 +137,18 @@ public:
     // full damage if only one target is in range, matching the real card.
     // 1 (the default) is the normal single-target case every other card uses.
     int maxSplitTargets = 1;
+    // Temporary split-target window (Hero Magic Archer's Triple Threat):
+    // bumps maxSplitTargets up for a fixed duration, then restores it --
+    // reuses the Electro Wizard machinery above as a documented
+    // approximation of "fires 2 extra arrows" (this engine divides damage
+    // across split targets rather than firing genuinely independent
+    // projectiles). baseMaxSplitTargets captures whatever maxSplitTargets
+    // was at the moment the window opened (always 1 for every card that
+    // uses this, since no card both split-targets permanently AND has this
+    // ability), restored once temporarySplitTargetsTicksRemaining reaches 0.
+    // 0 (the default) is every card without an active window.
+    int temporarySplitTargetsTicksRemaining = 0;
+    int baseMaxSplitTargets = 1;
 
     // Electro Dragon's chain: unlike Electro Wizard's split (which divides
     // `damage` across however many targets it hit), each chained target
@@ -157,6 +174,22 @@ public:
     // per-attacker. Doesn't regenerate. 0 (the default) is every card
     // without one.
     int shieldHp = 0;
+    // Fixed-duration shield expiry (Hero Knight's Triumphant Taunt: the
+    // shield lasts exactly 5s even if never fully depleted by damage) --
+    // distinct from shieldHp's own permanent variant above, which never
+    // expires on its own. 0 (the default) is every card using the
+    // permanent shieldHp above unaffected -- update() only zeroes shieldHp
+    // once this counts down to 0, never touching it otherwise.
+    int shieldExpiresTicksRemaining = 0;
+
+    // Forced retarget (Hero Knight's Triumphant Taunt): while > 0, this
+    // entity's update() is forced onto forcedTargetEntityId instead of its
+    // own normal resolveCurrentTarget()/findTarget() resolution -- see
+    // applyTauntNearby below and update()'s own targeting block. 0 (the
+    // default) is every card without one, whose targeting is entirely
+    // unaffected.
+    int forcedTargetEntityId = -1;
+    int forcedTargetTicksRemaining = 0;
 
     // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
     // Bandit): once this attacker has moved at least chargeThreshold tiles
@@ -464,6 +497,13 @@ public:
     // instead of a fragile cardId allowlist. false (the default) is every
     // non-Champion card.
     bool isChampion = false;
+    // Hero marker (see CardStats::isHero's own comment) -- every existing
+    // Champion-slot consumer (PlayerState::seedSlotState, GameManager::
+    // playCard's tracking hook/Mirror-block) checks `isChampion || isHero`,
+    // so a Hero shares the exact same per-slot ability-tracking/activation
+    // path as a Champion without any of that machinery needing to change.
+    // false (the default) is every non-Hero card, including all 8 Champions.
+    bool isHero = false;
     // In-battle elixir cost of activating this ability -- separate from
     // CardStats::cost (the up-front deploy cost already spent placing this
     // entity on the board), charged again on every activation by
@@ -524,6 +564,28 @@ public:
     int selfHasteDurationTicks = 0;
     float selfHasteCooldownMultiplier = 1.0f;
     int selfHasteTicksRemaining = 0;
+
+    // Temporary flight (Hero Wizard's Fiery Flight): isFlying itself lives
+    // on Entity (see its own comment there) and is already read live every
+    // tick by isValidTarget/Troop::moveTowards/Board's collision grouping,
+    // so toggling it at runtime needs no new field of its own -- this timer
+    // just reverts isFlying=false once the window ends. Does NOT also
+    // toggle ignoresRiver (fixed at spawn, CardFactories::
+    // shouldIgnoreRiver) -- an accepted gap, same as the real ability not
+    // relocating her across the map either. 0 (the default) is every card
+    // without a temporary flight window.
+    int temporaryFlightTicksRemaining = 0;
+    // On-hit tornado pulse while the flight window is active (Hero
+    // Wizard's Fiery Flight: fireballs gain their own damaging, pulling
+    // tornado) -- see update()'s attack-landing block. Centered on the
+    // TARGET's position, unlike Evolved Valkyrie's onHitPullRadius above
+    // (centered on self) -- this accompanies a ranged hit landing on the
+    // target, not a melee spin around the caster. 0 (the default) is every
+    // card without one.
+    int flightPulseTicksRemaining = 0;
+    float flightPulseRadius = 0.0f;
+    int flightPulseDamage = 0;
+    float flightPulsePullDistance = 0.0f;
 
     // Hit-speed ramp while locked onto the same target (Little Prince):
     // unlike rampMidTick/rampFullTick above (which ramp DAMAGE while
@@ -700,6 +762,20 @@ public:
         if (abilityCooldownRemaining > 0) abilityCooldownRemaining--;
         if (temporaryInvisibilityTicksRemaining > 0) temporaryInvisibilityTicksRemaining--;
         if (selfHasteTicksRemaining > 0) selfHasteTicksRemaining--;
+        if (temporaryFlightTicksRemaining > 0) {
+            temporaryFlightTicksRemaining--;
+            if (temporaryFlightTicksRemaining == 0) isFlying = false;
+        }
+        if (flightPulseTicksRemaining > 0) flightPulseTicksRemaining--;
+        if (temporarySplitTargetsTicksRemaining > 0) {
+            temporarySplitTargetsTicksRemaining--;
+            if (temporarySplitTargetsTicksRemaining == 0) maxSplitTargets = baseMaxSplitTargets;
+        }
+        if (forcedTargetTicksRemaining > 0) forcedTargetTicksRemaining--;
+        if (shieldExpiresTicksRemaining > 0) {
+            shieldExpiresTicksRemaining--;
+            if (shieldExpiresTicksRemaining == 0) shieldHp = 0;
+        }
 
         // Poison-style damage-over-time mark from PoisonOnHit (Dart
         // Goblin/Firecracker Evolutions) -- independent of freeze/curse,
@@ -749,12 +825,28 @@ public:
         // "stun resets the charge" rule (below) being a full reset, not
         // just a number going back to 0 while the old fight continues
         // uninterrupted.
-        auto target = wasFrozen ? nullptr : resolveCurrentTarget(board);
-        if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
-            target = nullptr;
+        // Forced retarget (Hero Knight's Triumphant Taunt) overrides the
+        // whole normal lock/findTarget chain below outright -- resolved
+        // first, same linear id-scan idiom as resolveCurrentTarget itself.
+        // Once forced, this becomes THE target for every purpose below
+        // (movement, lock bookkeeping, attack) exactly like any normally-
+        // resolved one; forcedTargetTicksRemaining <= 0 (every card without
+        // an active taunt on it) leaves this whole block a no-op, falling
+        // straight through to the unchanged original resolution.
+        std::shared_ptr<Entity> target;
+        if (forcedTargetTicksRemaining > 0) {
+            for (const auto& e : board.getEntities()) {
+                if (e->id == forcedTargetEntityId && e->isAlive() && e->isTargetable()) { target = e; break; }
+            }
         }
         if (!target) {
-            target = findTarget(board);
+            target = wasFrozen ? nullptr : resolveCurrentTarget(board);
+            if (target && position.distanceTo(target->position) > effectiveRangeTo(target)) {
+                target = nullptr;
+            }
+            if (!target) {
+                target = findTarget(board);
+            }
         }
 
         if (target) {
@@ -892,6 +984,19 @@ public:
                             applySplashDamage(board, position, onHitPullRadius, -1, id, team, cardId, onHitPullDamage);
                         }
                         applyPullNearby(board, position, onHitPullRadius, onHitPullDistance, id, team);
+                    }
+                    // Tornado pulse while flying (Hero Wizard's Fiery
+                    // Flight) -- centered on the TARGET, not self (see
+                    // flightPulseTicksRemaining's own comment for why this
+                    // differs from onHitPullRadius above). excludeId -1
+                    // (nothing skipped), same as Valkyrie's own onHitPullRadius
+                    // splash above -- "does its own damage" reads as
+                    // additive on top of the main hit, not a replacement,
+                    // so the primary target isn't exempted from the pulse
+                    // just because it was already hit this same attack.
+                    if (flightPulseTicksRemaining > 0 && flightPulseRadius > 0.0f) {
+                        applySplashDamage(board, target->position, flightPulseRadius, -1, id, team, cardId, flightPulseDamage);
+                        applyPullNearby(board, target->position, flightPulseRadius, flightPulsePullDistance, -1, team);
                     }
                     if (dieAfterFirstHit) hp = 0;
                 }
@@ -1132,6 +1237,24 @@ inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, 
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
         pullToward(*entity, origin, distance);
+    }
+}
+
+// Taunt (Hero Knight's Triumphant Taunt): forces every valid enemy within
+// `radius` of `origin` onto `taunterId` as their target for `ticks` --
+// see CombatEntity::forcedTargetEntityId/forcedTargetTicksRemaining and
+// update()'s own targeting block for how this actually overrides normal
+// targeting. No-op when radius or ticks <= 0.
+inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
+        int taunterId, int taunterTeam) {
+    if (radius <= 0.0f || ticks <= 0) return;
+    for (const auto& entity : board.getEntities()) {
+        if (entity->team == taunterTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+        if (origin.distanceTo(entity->position) > radius) continue;
+        if (auto ce = std::dynamic_pointer_cast<CombatEntity>(entity)) {
+            ce->forcedTargetEntityId = taunterId;
+            ce->forcedTargetTicksRemaining = ticks;
+        }
     }
 }
 

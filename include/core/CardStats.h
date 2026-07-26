@@ -281,12 +281,43 @@ struct CardStats {
     // on the board. false/0/nullptr (the defaults) are every non-Champion
     // card.
     bool isChampion = false;
+    // Hero marker (Clash Royale's separate "Hero" mechanic -- an ordinary
+    // troop given its own registered id + activated ability, e.g. Hero
+    // Musketeer's "Trusty Turret") -- see withHeroAbility. Kept as its own
+    // flag rather than folded into isChampion: every existing Champion-slot
+    // consumer (PlayerState::seedSlotState, GameManager::playCard's tracking
+    // hook/Mirror-block, CardRegistry::validateDeckSlots) checks
+    // `isChampion || isHero` instead, so a Hero is deck-slot- and
+    // ability-activation-compatible with a Champion without renaming any of
+    // that existing Champion-era machinery. false (the default) is every
+    // non-Hero card, including all 8 Champions.
+    bool isHero = false;
     float abilityElixirCost = 0.0f;
     int abilityCooldownTicks = 0;
     std::shared_ptr<IAbilityEffect> abilityEffect;
     // -1 (the default) is unlimited activations -- see
     // CombatEntity::abilityUsesRemaining. Only Boss Bandit sets this.
     int abilityUsesLimit = -1;
+    // Post-spawn ability lockout (Hero Mega Minion's Wounding Warp: unusable
+    // for its first 1.5s) -- distinct from abilityCooldownTicks (the
+    // between-uses cooldown); this only ever affects the FIRST use. 0 (the
+    // default) means ready immediately, matching every Champion and every
+    // other Hero.
+    int initialAbilityCooldownTicks = 0;
+    // Post-death squad reactivation (Hero Goblins' "Banner Brigade"): once
+    // every live entity sharing this slot's own cardId+team has died,
+    // GameManager::activateChampionAbility gains a window of this many
+    // ticks to fire postDeathAbilityEffect (see PlayerState::
+    // ChampionSlotState::lastSquadWipeTick for how the window is tracked).
+    // This is a wholly separate activation path from abilityEffect above --
+    // a card with a post-death ability has NO alive-path ability at all
+    // (see CardStats::withPostDeathAbility, which deliberately doesn't set
+    // abilityEffect/abilityCooldownTicks the way withHeroAbility does --
+    // but DOES reuse abilityElixirCost above, since a card only ever uses
+    // one of the two activation paths, never both). 0 (the default,
+    // alongside postDeathAbilityEffect == nullptr) is every card without one.
+    int abilityUsableAfterDeathTicks = 0;
+    std::shared_ptr<IPeriodicEffect> postDeathAbilityEffect;
 
     // Soul collection (Skeleton King) -- see CombatEntity::
     // soulCollectionRadius/maxSouls. 0.0f/0 (the defaults) are every
@@ -576,6 +607,35 @@ struct CardStats {
         abilityCooldownTicks = cooldownTicks;
         abilityEffect = std::move(effect);
         abilityUsesLimit = usesLimit;
+        return *this;
+    }
+    // Byte-identical to withChampionAbility above except it sets isHero
+    // instead of isChampion -- kept as its own setter (not a shared bool
+    // param bolted onto withChampionAbility) so every existing
+    // withChampionAbility call site is untouched.
+    CardStats& withHeroAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect,
+            int usesLimit = -1) {
+        isHero = true;
+        abilityElixirCost = elixirCost;
+        abilityCooldownTicks = cooldownTicks;
+        abilityEffect = std::move(effect);
+        abilityUsesLimit = usesLimit;
+        return *this;
+    }
+    CardStats& withInitialAbilityCooldown(int ticks) {
+        initialAbilityCooldownTicks = ticks;
+        return *this;
+    }
+    // Post-death squad reactivation (Hero Goblins) -- see
+    // abilityUsableAfterDeathTicks/postDeathAbilityEffect's own comment for
+    // why this is a separate setter from withHeroAbility, not an overload:
+    // no abilityEffect/abilityCooldownTicks are set here, since this card
+    // has no alive-path ability at all.
+    CardStats& withPostDeathAbility(float elixirCost, int windowTicks, std::shared_ptr<IPeriodicEffect> effect) {
+        isHero = true;
+        abilityElixirCost = elixirCost;
+        abilityUsableAfterDeathTicks = windowTicks;
+        postDeathAbilityEffect = std::move(effect);
         return *this;
     }
     CardStats& withSoulCollection(float radius, int maxSoulCount) {

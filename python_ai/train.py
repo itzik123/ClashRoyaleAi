@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import random
 import subprocess
 import time
 import torch
@@ -349,11 +348,6 @@ def train_ppo():
     # explicitly fine for a deck that's hard-but-learnable; this only cuts in
     # for the rare deck that isn't converging at all.
     MAX_EPISODES_PER_RANDOM_DECK = 5000
-    # Derived live from CardRegistry rather than a hardcoded range+exclusion
-    # list -- see gym_wrapper.get_all_card_ids's comment for why that drifts
-    # stale (already happened once when the roster grew past the old range(46)).
-    RANDOM_DECK_POOL = gym_wrapper.get_all_card_ids()
-
     # Unlike phase 1 (which naturally terminates via the stage-5 + PHASE2_
     # WIN_RATE_GATE transition into phase 2), phase 2 itself has no completion
     # condition of its own -- it just keeps rotating random decks forever
@@ -367,7 +361,11 @@ def train_ppo():
     PHASE2_TOTAL_EPISODE_CAP = 150000
 
     def sample_random_deck():
-        return random.sample(RANDOM_DECK_POOL, 8)
+        # Correct-by-construction (not a raw random.sample over every
+        # registered card id, which would routinely violate CardRegistry::
+        # validateDeckSlots since Champions/Evolutions only fit some deck
+        # slots) -- see sampleRandomDeck's own comment in ClashEnv.h.
+        return clash_royale_env.sample_random_deck()
 
     # Defaults for a fresh run; overwritten below if resuming from a checkpoint.
     curriculum_stage = 0

@@ -108,8 +108,12 @@ class MicroRoyaleEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if self.randomize_opp_deck:
-            import random
-            self.game.set_opponent_deck(random.sample(get_all_card_ids(), 8))
+            # Correct-by-construction (not random.sample(get_all_card_ids(), 8)
+            # + hope): that naive draw includes Champions/Evolutions, which
+            # only some deck slots accept, so it would routinely violate
+            # CardRegistry::validateDeckSlots -- see sampleRandomDeck's own
+            # comment in ClashEnv.h.
+            self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
         else:
             self.game.set_opponent_deck(self.opp_deck)
 

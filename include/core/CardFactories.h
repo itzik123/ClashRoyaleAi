@@ -83,10 +83,17 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->rangeBandMaxDist = stats.rangeBandMaxDist;
     entity->rangeBandDamageMultiplier = stats.rangeBandDamageMultiplier;
     entity->isChampion = stats.isChampion;
+    entity->isHero = stats.isHero;
     entity->abilityElixirCost = stats.abilityElixirCost;
     entity->abilityCooldownTicks = stats.abilityCooldownTicks;
     entity->abilityEffect = stats.abilityEffect;
     entity->abilityUsesRemaining = stats.abilityUsesLimit;
+    // Post-spawn ability lockout (Hero Mega Minion's Wounding Warp) -- seeds
+    // abilityCooldownRemaining directly rather than adding a separate
+    // "ticks since spawn" field, same opt-in-seam idiom as X-Bow's deploy
+    // delay. 0 (the default) leaves abilityCooldownRemaining at its own
+    // already-0 default, ready immediately like every Champion/other Hero.
+    if (stats.initialAbilityCooldownTicks > 0) entity->abilityCooldownRemaining = stats.initialAbilityCooldownTicks;
     entity->soulCollectionRadius = stats.soulCollectionRadius;
     entity->maxSouls = stats.maxSouls;
     entity->hitSpeedRampMidTick = stats.hitSpeedRampMidTick;
