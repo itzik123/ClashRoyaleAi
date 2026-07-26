@@ -125,7 +125,9 @@ private:
     // "redeploying while on cooldown just continues the timer" for free.
     void syncChampionCooldowns(int team) {
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
         for (auto& entry : player.championSlots) {
+            int slot = entry.first;
             PlayerState::ChampionSlotState& state = entry.second;
             if (state.trackedEntityId == -1) continue;
             for (const auto& entity : board.getEntities()) {
@@ -137,7 +139,57 @@ private:
                 }
                 break;
             }
+
+            // Post-death squad reactivation (Hero Goblins' "Banner
+            // Brigade"): independent of the single tracked-instance scan
+            // above -- a multi-unit squad has several live entities
+            // sharing this slot's own cardId+team, only one of which is
+            // ever "tracked", so this scans for ANY of them, opening the
+            // window only once the WHOLE squad is confirmed gone. Called
+            // BEFORE board.cleanDeadEntities() (see step()'s own comment),
+            // so an entity that died THIS tick is still present here with
+            // isAlive()==false and its death position intact.
+            const CardDefinition* slotDef = CardRegistry::getInstance().getCard(deckConfig[slot]);
+            if (!slotDef || slotDef->abilityUsableAfterDeathTicks <= 0) continue;
+            bool anyFound = false; // at least one entity matching this slot's cardId+team seen THIS tick
+            bool anyAlive = false;
+            Vector2D deathPosition = state.lastSquadWipePosition;
+            for (const auto& entity : board.getEntities()) {
+                if (entity->cardId != deckConfig[slot] || entity->team != team) continue;
+                anyFound = true;
+                if (entity->isAlive()) { anyAlive = true; break; }
+                deathPosition = entity->position;
+            }
+            if (anyAlive) {
+                state.lastSquadWipeTick = -1; // a fresh deploy invalidates any earlier, unconsumed window
+            } else if (anyFound && state.lastSquadWipeTick < 0) {
+                // anyFound guards against re-arming the window forever: once
+                // the dead squad's own entities are erased by this same
+                // step()'s later cleanDeadEntities() call, later ticks see
+                // NO entity of this cardId+team at all (anyFound == false)
+                // -- without this guard, that "nothing found" state would
+                // be indistinguishable from "just wiped" and would keep
+                // resetting lastSquadWipeTick to the current tick forever,
+                // letting Banner Brigade be spammed indefinitely for 1
+                // elixir a pop instead of firing exactly once per real wipe.
+                state.lastSquadWipeTick = currentTick; // first tick nothing's left alive
+                state.lastSquadWipePosition = deathPosition;
+            }
         }
+    }
+
+    // Post-death squad reactivation readiness (Hero Goblins-style) -- shared
+    // by isChampionAbilityReady/activateChampionAbility, both of which fall
+    // back to this once findChampionInSlot finds nothing alive in the slot.
+    bool isPostDeathAbilityReady(int team, int slot) const {
+        const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        auto it = player.championSlots.find(slot);
+        if (it == player.championSlots.end() || it->second.lastSquadWipeTick < 0) return false;
+        const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
+        const CardDefinition* slotDef = CardRegistry::getInstance().getCard(deckConfig[slot]);
+        if (!slotDef || slotDef->abilityUsableAfterDeathTicks <= 0 || !slotDef->postDeathAbilityEffect) return false;
+        if (currentTick - it->second.lastSquadWipeTick > slotDef->abilityUsableAfterDeathTicks) return false;
+        return player.elixir >= slotDef->abilityElixirCost;
     }
 
 public:
@@ -349,11 +401,16 @@ public:
     // cooldown or elixir cost.
     bool isChampionAbilityReady(int team, int slot = 1) const {
         auto champion = findChampionInSlot(team, slot);
-        if (!champion || !champion->abilityEffect) return false;
-        if (champion->abilityCooldownRemaining > 0) return false;
-        if (champion->abilityUsesRemaining == 0) return false;
-        const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
-        return player.elixir >= champion->abilityElixirCost;
+        if (champion && champion->abilityEffect) {
+            if (champion->abilityCooldownRemaining > 0) return false;
+            if (champion->abilityUsesRemaining == 0) return false;
+            const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+            return player.elixir >= champion->abilityElixirCost;
+        }
+        // Nothing alive in this slot -- fall back to the post-death path
+        // (Hero Goblins-style; a no-op false for every other card, since
+        // isPostDeathAbilityReady itself requires abilityUsableAfterDeathTicks > 0).
+        return isPostDeathAbilityReady(team, slot);
     }
 
     // Activates `team`'s deployed Champion's ability in the given slot
@@ -367,24 +424,43 @@ public:
         if (gameOver) return false;
 
         auto champion = findChampionInSlot(team, slot);
-        if (!champion || !champion->abilityEffect) return false;
-        if (champion->abilityCooldownRemaining > 0) return false;
-        // Matches isChampionAbilityReady's own check -- without this, a
-        // uses-limited ability (Boss Bandit; now also Hero Mini P.E.K.K.A's
-        // one-use Breakfast Boost) whose abilityCooldownTicks happens to be
-        // 0 would deduct elixir and return true on every call even after
-        // CombatEntity::activateAbility's own internal uses check makes the
-        // activation itself a no-op -- previously masked for Boss Bandit
-        // only because his cooldown (30 ticks) is nonzero, so a repeat call
-        // was always caught by the cooldown check above first.
-        if (champion->abilityUsesRemaining == 0) return false;
+        if (champion && champion->abilityEffect) {
+            if (champion->abilityCooldownRemaining > 0) return false;
+            // Matches isChampionAbilityReady's own check -- without this, a
+            // uses-limited ability (Boss Bandit; now also Hero Mini P.E.K.K.A's
+            // one-use Breakfast Boost) whose abilityCooldownTicks happens to be
+            // 0 would deduct elixir and return true on every call even after
+            // CombatEntity::activateAbility's own internal uses check makes the
+            // activation itself a no-op -- previously masked for Boss Bandit
+            // only because his cooldown (30 ticks) is nonzero, so a repeat call
+            // was always caught by the cooldown check above first.
+            if (champion->abilityUsesRemaining == 0) return false;
+
+            PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+            if (player.elixir < champion->abilityElixirCost) return false;
+
+            player.elixir -= champion->abilityElixirCost;
+            champion->activateAbility(board);
+            board.statsEvents.notifyChampionAbilityActivated({ team, champion->cardId, champion->abilityElixirCost, currentTick });
+            return true;
+        }
+
+        // Post-death squad reactivation (Hero Goblins-style): only
+        // reachable when nothing is currently alive in this slot. Mirrors
+        // the alive-path's own shape -- confirm readiness fully (via the
+        // shared isPostDeathAbilityReady helper) BEFORE deducting anything,
+        // so a failed call never partially spends resources.
+        if (!isPostDeathAbilityReady(team, slot)) return false;
 
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
-        if (player.elixir < champion->abilityElixirCost) return false;
+        PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
+        const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
+        const CardDefinition* slotDef = CardRegistry::getInstance().getCard(deckConfig[slot]);
 
-        player.elixir -= champion->abilityElixirCost;
-        champion->activateAbility(board);
-        board.statsEvents.notifyChampionAbilityActivated({ team, champion->cardId, champion->abilityElixirCost, currentTick });
+        player.elixir -= slotDef->abilityElixirCost;
+        slotDef->postDeathAbilityEffect->apply(board, slotState.lastSquadWipePosition, team);
+        slotState.lastSquadWipeTick = -1; // consumed -- until redeployed and wiped again
+        board.statsEvents.notifyChampionAbilityActivated({ team, deckConfig[slot], slotDef->abilityElixirCost, currentTick });
         return true;
     }
 

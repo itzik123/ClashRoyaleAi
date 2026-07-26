@@ -51,6 +51,16 @@ public:
     struct ChampionSlotState {
         int trackedEntityId = -1;
         int persistedCooldownRemaining = 0;
+        // Post-death squad reactivation (Hero Goblins' "Banner Brigade"):
+        // the tick this slot's squad (all live entities sharing this
+        // slot's own cardId+team) was last observed to fully die out, or
+        // -1 if that hasn't happened (yet, or already consumed) -- see
+        // GameManager::syncChampionCooldowns for how this gets set, and
+        // CardDefinition::abilityUsableAfterDeathTicks/postDeathAbilityEffect
+        // for how it's consumed. Every card without a post-death ability
+        // never touches these two fields at all.
+        int lastSquadWipeTick = -1;
+        Vector2D lastSquadWipePosition{ 0.0f, 0.0f };
     };
 
     float elixir;

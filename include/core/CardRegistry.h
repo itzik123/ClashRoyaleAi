@@ -73,6 +73,18 @@ struct CardDefinition {
     // comment. validateDeckSlots/PlayerState::seedSlotState/GameManager::
     // playCard's tracking hook all check `isChampion || isHero` uniformly.
     bool isHero = false;
+    // Mirrors CardStats::abilityElixirCost/abilityUsableAfterDeathTicks/
+    // postDeathAbilityEffect -- surfaced at the REGISTRY level (not just on
+    // the spawned entity) because Hero Goblins' post-death reactivation
+    // (see PlayerState::ChampionSlotState::lastSquadWipeTick) fires when
+    // NOTHING is alive to read these off of, so GameManager::
+    // activateChampionAbility looks them up here instead. 0/nullptr (the
+    // defaults) are every card without a post-death ability -- including
+    // every OTHER Hero/Champion, which read cost off their own live entity
+    // instead.
+    float abilityElixirCost = 0.0f;
+    int abilityUsableAfterDeathTicks = 0;
+    std::shared_ptr<IPeriodicEffect> postDeathAbilityEffect;
     // Display/rendering metadata -- NOT used by any gameplay logic (that all
     // goes through the CardStats captured in spawnEntity's closure below).
     // Exists purely so GameLogger can embed an authoritative, per-replay
@@ -468,6 +480,9 @@ private:
         def.deployAnywhere = stats.deployAnywhere;
         def.isChampion = stats.isChampion;
         def.isHero = stats.isHero;
+        def.abilityElixirCost = stats.abilityElixirCost;
+        def.abilityUsableAfterDeathTicks = stats.abilityUsableAfterDeathTicks;
+        def.postDeathAbilityEffect = stats.postDeathAbilityEffect;
         def.hp = stats.hp;
         def.symbol = stats.symbol;
         def.isFlying = stats.isFlying;
@@ -503,6 +518,9 @@ private:
         def.deployAnywhere = baseStats.deployAnywhere;
         def.isChampion = baseStats.isChampion;
         def.isHero = baseStats.isHero;
+        def.abilityElixirCost = baseStats.abilityElixirCost;
+        def.abilityUsableAfterDeathTicks = baseStats.abilityUsableAfterDeathTicks;
+        def.postDeathAbilityEffect = baseStats.postDeathAbilityEffect;
         def.hp = baseStats.hp;
         def.symbol = baseStats.symbol;
         def.isFlying = baseStats.isFlying;
@@ -2057,6 +2075,24 @@ private:
         add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
             .withSightRange(6.0f)
             .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
+
+        // Hero Goblins. Base stats copied from card id 4 (Goblins), see
+        // that registration above -- including the 4-unit squad offsets.
+        // "Banner Brigade" (1 elixir, ONE USE, only activatable within a
+        // 70-tick/7s window after the LAST goblin of the squad dies):
+        // reactivates a fresh 4-unit squad at the death position. Uses
+        // withPostDeathAbility (not withHeroAbility) since this card has no
+        // alive-path ability at all -- see GameManager::
+        // syncChampionCooldowns/isPostDeathAbilityReady/
+        // activateChampionAbility for how the window is tracked and
+        // consumed. The reactivated squad spawns via the PLAIN (non-Hero)
+        // base Goblins CardStats, not this Hero variant, so a second Banner
+        // Brigade can never chain off a reactivated squad.
+        add(troop(172, "Hero Goblins", 2.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+            .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
+            .withPostDeathAbility(1.0f, 70, std::make_shared<PeriodicSpawnEffect>(
+                troop(-48, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+                    .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }))));
 
         // Hero Knight. Base stats copied from card id 0 (Knight), see that
         // registration above. "Triumphant Taunt" (2 elixir, 250-tick/25s

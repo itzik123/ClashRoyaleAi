@@ -588,6 +588,217 @@ TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Her
     REQUIRE(barbarian->abilityUsesRemaining == 1);
 }
 
+// ---------------- Hero Goblins (172) -- post-death squad reactivation ----------------
+// Unlike every other Hero, Hero Goblins has no alive-path ability at all --
+// "Banner Brigade" only becomes activatable once the whole 4-unit squad is
+// dead, within a window, via GameManager::isPostDeathAbilityReady/
+// activateChampionAbility's post-death branch (see PlayerState::
+// ChampionSlotState::lastSquadWipeTick, GameManager::syncChampionCooldowns).
+
+TEST_CASE("Hero Goblins (172) is registered with base Goblins' stats and no alive-path ability",
+        "[card_registry][hero]") {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(172);
+    REQUIRE(def != nullptr);
+    REQUIRE(def->isHero);
+    REQUIRE_FALSE(def->isChampion);
+    REQUIRE(def->abilityElixirCost == Catch::Approx(1.0f));
+    REQUIRE(def->abilityUsableAfterDeathTicks == 70);
+    REQUIRE(def->postDeathAbilityEffect != nullptr);
+
+    def->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+
+    int squadCount = 0;
+    for (const auto& e : board.getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (!ce) continue;
+        squadCount++;
+        REQUIRE(ce->hp == 202); // base Goblins' own hp, copied verbatim -- see CardRegistry.h id 4
+        REQUIRE(ce->isHero); // deck-slot-legality flag
+        REQUIRE(ce->abilityEffect == nullptr); // no alive-path ability -- reactivation only, post-death
+    }
+    REQUIRE(squadCount == 4); // 4-unit squad, same offsets as base Goblins
+}
+
+TEST_CASE("Hero Goblins' Banner Brigade is unavailable while any squad member is still alive",
+        "[game_manager][hero][goblins]") {
+    GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 172;
+    game.playCard(0, 172, 9.0f, 10.0f);
+    game.step(); // commits the pending squad and runs syncChampionCooldowns once
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1));
+    REQUIRE_FALSE(game.activateChampionAbility(0, 1));
+
+    // Kill 3 of the 4 -- one survivor is enough to keep the ability locked.
+    int killed = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->cardId == 172 && ce->team == 0 && killed < 3) {
+            ce->takeDamage(ce->hp);
+            killed++;
+        }
+    }
+    game.step();
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1));
+}
+
+TEST_CASE("Hero Goblins' Banner Brigade activates within the window after the last goblin dies, spawning a fresh plain squad",
+        "[game_manager][hero][goblins]") {
+    GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 172;
+    game.playCard(0, 172, 9.0f, 10.0f);
+    game.step();
+
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->cardId == 172 && ce->team == 0) ce->takeDamage(ce->hp);
+    }
+    game.step(); // detects the full wipe -- lastSquadWipeTick set this tick
+
+    game.playerAI.elixir = 10.0f;
+    REQUIRE(game.isChampionAbilityReady(0, 1));
+    float elixirBefore = game.getElixirAI();
+
+    REQUIRE(game.activateChampionAbility(0, 1));
+    REQUIRE(game.getElixirAI() == Catch::Approx(elixirBefore - 1.0f));
+    game.step(); // commits the freshly-spawned squad
+
+    // The reactivated squad spawns via a sentinel internal cardId (-48, see
+    // CardRegistry.h's Hero Goblins registration), never the Hero's own
+    // deck id (172) -- distinguishing it from a (nonexistent, here) live
+    // remnant of the original squad.
+    int freshCount = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (!ce || ce->cardId != -48) continue;
+        REQUIRE(ce->isAlive());
+        REQUIRE(ce->hp == 202);
+        // Reactivated squad is plain (non-Hero) Goblins -- no ability at
+        // all, so a second Banner Brigade can never chain off of it.
+        REQUIRE_FALSE(ce->isHero);
+        freshCount++;
+    }
+    REQUIRE(freshCount == 4);
+}
+
+TEST_CASE("Hero Goblins' Banner Brigade reactivates the squad at the last-known death position, not the original deploy point",
+        "[game_manager][hero][goblins]") {
+    GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 172;
+    game.playCard(0, 172, 9.0f, 10.0f);
+    game.step(); // one tick of movement away from the exact deploy point (9.0, 10.0)
+
+    // Death position capture uses whichever squad member the internal scan
+    // happens to observe last (see syncChampionCooldowns), which isn't
+    // necessarily any particular one of the 4 -- each carries its own
+    // +-0.5-tile squad offset from the group's shared center, so this
+    // compares against the CENTROID of all 4 (the group's actual shared
+    // position) rather than any single member's own offset position.
+    Vector2D centroidBefore{ 0.0f, 0.0f };
+    int countBefore = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->cardId == 172 && ce->team == 0) {
+            centroidBefore.x += ce->position.x;
+            centroidBefore.y += ce->position.y;
+            countBefore++;
+            ce->takeDamage(ce->hp);
+        }
+    }
+    REQUIRE(countBefore == 4);
+    centroidBefore.x /= countBefore;
+    centroidBefore.y /= countBefore;
+    // Confirms this scenario actually exercises movement, not a no-op --
+    // otherwise this test couldn't distinguish death position from deploy.
+    REQUIRE_FALSE((centroidBefore.x == Catch::Approx(9.0f) && centroidBefore.y == Catch::Approx(10.0f)));
+    game.step(); // wipe detected this tick, position captured off this same array
+
+    game.playerAI.elixir = 10.0f;
+    REQUIRE(game.activateChampionAbility(0, 1));
+    game.step(); // commits the freshly-spawned squad
+
+    Vector2D centroidAfter{ 0.0f, 0.0f };
+    int countAfter = 0;
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (!ce || ce->cardId != -48) continue;
+        centroidAfter.x += ce->position.x;
+        centroidAfter.y += ce->position.y;
+        countAfter++;
+    }
+    REQUIRE(countAfter == 4);
+    centroidAfter.x /= countAfter;
+    centroidAfter.y /= countAfter;
+    // Reactivated near the death position, not the original (9.0, 10.0)
+    // deploy point -- syncChampionCooldowns' scan intentionally captures
+    // whichever single squad member it happens to observe last, not a true
+    // centroid (a documented approximation, same category as this file's
+    // other engine-internal constants), so this tolerance covers that
+    // member's own +-0.5-tile squad offset in both axes (up to the full
+    // diagonal, ~1.41 tiles) rather than asserting exact centroid equality.
+    REQUIRE(std::abs(centroidAfter.x - centroidBefore.x) < 2.0f);
+    REQUIRE(std::abs(centroidAfter.y - centroidBefore.y) < 2.0f);
+}
+
+TEST_CASE("Hero Goblins' Banner Brigade is unavailable once the reactivation window elapses",
+        "[game_manager][hero][goblins]") {
+    GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 172;
+    game.playCard(0, 172, 9.0f, 10.0f);
+    game.step();
+
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->cardId == 172 && ce->team == 0) ce->takeDamage(ce->hp);
+    }
+    game.step(); // wipe detected this tick
+
+    game.playerAI.elixir = 10.0f;
+    for (int i = 0; i < 71; ++i) { // window is 70 ticks -- this overshoots it
+        game.step();
+        game.playerAI.elixir = 10.0f;
+    }
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1));
+    REQUIRE_FALSE(game.activateChampionAbility(0, 1));
+}
+
+TEST_CASE("Hero Goblins' Banner Brigade cannot chain a second reactivation off the reactivated squad's own death",
+        "[game_manager][hero][goblins]") {
+    GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
+    game.playerAI.hand[1] = 172;
+    game.playCard(0, 172, 9.0f, 10.0f);
+    game.step();
+
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->cardId == 172 && ce->team == 0) ce->takeDamage(ce->hp);
+    }
+    game.step();
+    game.playerAI.elixir = 10.0f;
+    REQUIRE(game.activateChampionAbility(0, 1));
+    game.step(); // commits the reactivated (plain, non-Hero) squad
+
+    // Kill the reactivated squad too -- its cardId (-48, the internal
+    // sentinel, see CardRegistry.h) doesn't match deck slot 1's own id
+    // (172), so syncChampionCooldowns' squad-wipe scan (keyed on
+    // deckConfig[slot]) never observes this death at all, and
+    // lastSquadWipeTick (already consumed to -1 by the first activation)
+    // stays exactly there.
+    for (const auto& e : game.getBoard().getEntities()) {
+        auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (ce && ce->isAlive() && ce->cardId == -48) ce->takeDamage(ce->hp);
+    }
+    game.step();
+    game.playerAI.elixir = 10.0f;
+
+    REQUIRE_FALSE(game.isChampionAbilityReady(0, 1));
+    REQUIRE_FALSE(game.activateChampionAbility(0, 1));
+}
+
 TEST_CASE("HeroBarbarianBarrelRerollEffect rolls forward, damages enemies in the line, and halves damage against Towers",
         "[hero_barbarian_barrel]") {
     Board board;
