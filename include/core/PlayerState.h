@@ -40,9 +40,15 @@ public:
     // is unconditionally overwritten every time GameManager::playCard
     // deploys a fresh instance of that slot's Champion, regardless of
     // whether an older instance is somehow still alive -- this is what
-    // gives "the ability belongs to whoever was created last" for free, and
-    // (since a Clone-spell duplicate is never created via playCard) is also
-    // what makes a clone permanently unable to activate the ability.
+    // gives "the ability belongs to whoever was created last" for free.
+    // Mirror DOES go through playCard (see GameManager::playCard's own
+    // tracking hook, resolved off the spawned entity's own cardId), so a
+    // Mirror-duplicated Champion/Hero becomes trackable exactly the same
+    // way -- real-game fidelity, the ability always belongs to whichever
+    // copy (original or mirrored) was deployed most recently. A
+    // Clone-spell duplicate, by contrast, is never created via playCard at
+    // all, which is what makes THAT kind of clone permanently unable to
+    // activate the ability.
     // persistedCooldownRemaining is synced from the tracked entity's own
     // abilityCooldownRemaining every tick it's alive (see
     // GameManager::syncChampionCooldowns) and left untouched once that

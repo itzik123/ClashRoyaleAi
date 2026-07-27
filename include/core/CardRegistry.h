@@ -272,10 +272,14 @@ private:
     // Confirmed real split: crossbow deals less per-shot (104) but fires
     // faster (DPS 94 -> ~1.1s/11-tick cooldown) than the Ram's own 250/
     // 17-tick melee hit -- corrected from an unsourced 50/50 guess (125
-    // damage @ 17 ticks).
+    // damage @ 17 ticks). withIgnoresRiver matches the main Ram body's own
+    // flag (see Ram Rider's registration) -- without it, this
+    // independently-spawned secondary unit would desync from the ram at
+    // the river, left stuck on the near bank while the ram itself crosses.
     static CardStats ramRiderCrossbowStats() {
         return troop(-25, "Ram Rider", 0.0f, Archetype::RangedSquad, 1766, 0.5f, 5.0f, 104, 11, '"')
-            .withTargetsAir();
+            .withTargetsAir()
+            .withIgnoresRiver();
     }
     static CardStats goblinGiantSpearGoblinsStats() {
         return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 0.5f, 5.0f, 81, 17, 'S')
@@ -571,9 +575,12 @@ private:
 
         // Charge threshold/multiplier below aren't part of the sourced
         // stats data -- reasonable engine-internal constants, same caveat
-        // as splashRadius/shieldHp.
+        // as splashRadius/shieldHp. Prince crosses the river directly
+        // (confirmed real-game river-crossing troop, one of the "jumpers"),
+        // not routed through a bridge -- see withIgnoresRiver.
         add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, 0.6f, 1.6f, 391, 14, 'p')
-            .withCharge(3.0f, 2.0f));
+            .withCharge(3.0f, 2.0f)
+            .withIgnoresRiver());
 
         add(troop(17, "Elite Barbarians", 6.0f, Archetype::MeleeSquad, 1341, 0.7f, 1.2f, 384, 14, 'e')
             .withOffsets({ {-0.5f, 0.0f}, {0.5f, 0.0f} }));
@@ -776,34 +783,63 @@ private:
         // a harmless display-only overlap, not a data collision.
 
         // === New Melee Troops ===
+        // Dark Prince crosses the river directly (one of the "jumpers"),
+        // not routed through a bridge -- see withIgnoresRiver.
         add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, 0.5f, 1.2f, 266, 14, 'N')
             .withShield(240) // corrected from an unsourced 200 guess
-            .withCharge(3.0f, 2.0f)); // confirmed: +100% (double) damage on a charging hit
+            .withCharge(3.0f, 2.0f) // confirmed: +100% (double) damage on a charging hit
+            .withIgnoresRiver());
+        // Royal Ghost crosses the river directly, not routed through a
+        // bridge -- see withIgnoresRiver.
         add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
-            .withInvisibility(5)); // brief reveal window after attacking
+            .withInvisibility(5) // brief reveal window after attacking
+            .withIgnoresRiver());
         // Deploy slam via the existing one-time spawn-effect burst (radius
         // 1.3, damage 430). Periodic jump now modeled too, reusing
         // Fisherman's pullToward primitive to instantly close from
         // 3.5-5 tiles away instead of walking in, landing a ~2x-damage,
         // 2.2-radius splash hit (537 confirmed vs. 268 normal -- ratio
         // ~2.003, rounds to the same 2.0 multiplier convention already
-        // used for every other charge card).
+        // used for every other charge card). Confirmed: the jump can carry
+        // him over the river onto a target on the other side. The jump
+        // itself only travels dist-minus-effectiveAttackRange (stopping
+        // just inside melee range of the target, not landing exactly on
+        // it) -- close to but not always past the river's own 2-tile
+        // width, and this engine's own end-of-update clamp would otherwise
+        // shove him back to the near edge if he lands short of fully
+        // clearing it. Same river-crossing approximation as Bandit/Boss
+        // Bandit (this engine has no discrete "currently jumping" movement
+        // state to gate river-ignoring on more precisely than "always") --
+        // see Bandit's own registry comment.
         add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
             .withSplash(1.5f)
             .withSpawnEffect(1.3f, 430)
-            .withJump(3.5f, 5.0f, 2.0f, 2.2f));
+            .withJump(3.5f, 5.0f, 2.0f, 2.2f)
+            .withIgnoresRiver());
         // Confirmed: real heal lands as 4 pulses of 25.5 (102 total) per
         // attack cycle -- collapsed here into this engine's single
         // heal-on-landed-hit model as one 102 lump, corrected from an
         // unsourced 60 guess. A separate, larger heal burst on deployment
         // (202 total) isn't modeled -- no heal-on-spawn primitive exists
         // (spawnEffect is damage-only).
+        // Battle Healer crosses the river directly, not routed through a
+        // bridge -- see withIgnoresRiver.
         add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, 0.5f, 1.2f, 148, 15, 'f')
-            .withHealAura(3.0f, 102));
+            .withHealAura(3.0f, 102)
+            .withIgnoresRiver());
+        // Bandit's river-crossing is only via her dash (confirmed: she
+        // isn't a permanent river-crosser like Prince/Hog Rider -- her
+        // charge can carry her straight across it toward a target, instead
+        // of routing to a bridge). This engine has no separate "currently
+        // mid-dash" movement state to gate that precisely on (charge here
+        // only tracks bonus-damage progress, not a discrete dash phase),
+        // so this collapses to always-ignoring the river as a documented
+        // approximation -- same caveat category as splashRadius/shieldHp.
         add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, 0.8f, 1.0f, 194, 10, 'u')
             .withCharge(3.0f, 2.0f)
             .withChargeInvulnerability() // confirmed: fully invulnerable while charging in
-            .withSightRange(6.0f));
+            .withSightRange(6.0f)
+            .withIgnoresRiver());
         // Confirmed: the base card has no self-heal at all -- "heal on
         // attack" only exists as an optional Epic modifier card, not part
         // of standard Berserker. enrageHealPerHit 0 keeps the attack-speed
@@ -983,9 +1019,12 @@ private:
         add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
             .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
             .withCharge(3.0f, 2.0f));
+        // Royal Hogs cross the river directly (one of the "jumpers"), not
+        // routed through a bridge -- see withIgnoresRiver.
         add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
             .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
-            .withCharge(3.0f, 2.0f).withSightRange(9.5f));
+            .withCharge(3.0f, 2.0f).withSightRange(9.5f)
+            .withIgnoresRiver());
         add(troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
             .withSplash(1.5f)
@@ -998,10 +1037,13 @@ private:
             .withDeathEffect(std::make_shared<SpawnOnDeath>(suspiciousBushGoblinStats())));
         add(troop(86, "Rune Giant", 4.0f, Archetype::MeleeBuildingTargeter, 2662, 0.5f, 1.2f, 153, 15, '~')
             .withAllyBuffAura(3.0f, 3, 1.5f, 50, 2));
+        // Ram Rider crosses the river directly (one of the "jumpers"), not
+        // routed through a bridge -- see withIgnoresRiver.
         add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, 0.5f, 1.0f, 250, 17, '"')
             .withCharge(3.0f, 2.0f)
             .withSecondaryUnit(ramRiderCrossbowStats()) // rider's independently-targeting crossbow (5.5 sight, its own default)
-            .withSightRange(7.5f)); // the "ram" component itself
+            .withSightRange(7.5f) // the "ram" component itself
+            .withIgnoresRiver());
         add(troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
             .withSecondaryUnit(goblinGiantSpearGoblinsStats()).withSightRange(7.5f)); // carried Spear Goblins, independently-targeting
         // Skeleton Barrel: releases 2 Skeletons on death (reuses the
@@ -1285,14 +1327,19 @@ private:
         // Boss Bandit: same charge mechanism as the regular Bandit (double
         // damage, 3-6 tile trigger window) -- dash invulnerability
         // inferred from the base Bandit's own confirmed mechanic, not
-        // independently sourced for this card. "Getaway Grenade": brief
-        // invisibility + an unconditional 6-tile teleport back toward her
-        // own side, limited to 2 total uses per deployment (not an
-        // infinitely-repeating cooldown like every other Champion here --
-        // see CombatEntity::abilityUsesRemaining).
+        // independently sourced for this card. Same river-crossing
+        // approximation as the regular Bandit -- see that card's own
+        // withIgnoresRiver comment. "Getaway Grenade": brief invisibility +
+        // an unconditional 6-tile teleport back toward her own side,
+        // limited to 2 total uses per deployment (not an infinitely-
+        // repeating cooldown like every other Champion here -- see
+        // CombatEntity::abilityUsesRemaining); also crosses the river (see
+        // BossBanditGetawayGrenadeEffect), since a "getaway" retreating
+        // from enemy territory back to her own side routinely needs to.
         add(troop(122, "Boss Bandit", 6.0f, Archetype::MeleeSquad, 2624, 0.7f, 0.8f, 245, 11, 'x')
             .withCharge(3.0f, 2.0f)
             .withChargeInvulnerability()
+            .withIgnoresRiver()
             .withChampionAbility(1.0f, 30, std::make_shared<BossBanditGetawayGrenadeEffect>(10, 6.0f), 2));
 
         // === Evolutions ===
@@ -1535,11 +1582,12 @@ private:
         // invisibility check.
         addEvolution(136,
             troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
-                .withInvisibility(5),
+                .withInvisibility(5).withIgnoresRiver(),
             troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
                 .withInvisibility(18)
                 .withOnHitSpawn(std::make_shared<PeriodicSpawnEffect>(royalGhostSouldierStats()
-                    .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }))),
+                    .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })))
+                .withIgnoresRiver(),
             2, 1);
 
         // Baby Dragon Evolution: 2 cycles (standard pattern). Real aura
@@ -1932,9 +1980,9 @@ private:
         // enemy tower's position" board query to aim it at).
         addEvolution(160,
             troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
-                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
+                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f).withIgnoresRiver(),
             troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
-                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f),
+                .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f).withIgnoresRiver(),
             2, 1);
 
         // Battle Ram Evolution: 2 cycles (standard pattern). Real card is
@@ -1978,10 +2026,10 @@ private:
         addEvolution(162,
             troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
-                .withCharge(3.0f, 2.0f).withSightRange(9.5f),
+                .withCharge(3.0f, 2.0f).withSightRange(9.5f).withIgnoresRiver(),
             troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
-                .withCharge(3.0f, 2.0f).withSightRange(9.5f),
+                .withCharge(3.0f, 2.0f).withSightRange(9.5f).withIgnoresRiver(),
             2, 1);
 
         // Inferno Dragon Evolution: 2 cycles, 12 shards, 4 elixir (matches

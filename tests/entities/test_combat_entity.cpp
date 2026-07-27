@@ -1068,6 +1068,23 @@ TEST_CASE("A card without hook configured (hookRange 0, the default) never pulls
     REQUIRE(target->hp == 10000);
 }
 
+TEST_CASE("Hook can pull a target across the river in one motion (Fisherman) -- pullToward has no river check of its own",
+        "[combat_entity][hook][river]") {
+    // Board's default river band is y 16-18 (see Board.h). Target sits just
+    // past the far edge, attacker on the near side -- a single hook pull
+    // (unclamped, unlike normal Troop movement) carries it clean across.
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 19.0f, 10000, 1);
+    spawn(board, target);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 14.0f, 100, 0, 1.0f, 100, 1);
+    attacker->hookRange = 6.5f;
+
+    attacker->update(board); // dist 5.0, within hookRange -- hooks across the river band
+
+    REQUIRE(target->position.y == Catch::Approx(15.7f)); // 19 - 3.3 (5.0 - 1.8 + 0.1) -- now past the river, on the attacker's side
+}
+
 // ---------------- invisibility ----------------
 
 TEST_CASE("An invisible unit is untargetable from the moment it spawns", "[combat_entity][invisibility]") {
@@ -1777,6 +1794,33 @@ TEST_CASE("A target outside the jump window is walked toward normally, not jumpe
 
     REQUIRE(tooFar->hp == 10000);             // no jump damage landed
     REQUIRE(attacker->position.y == Catch::Approx(1.0f)); // just walked its normal `speed` (1.0) instead
+}
+
+TEST_CASE("Jump can land inside the river band without being clamped back, when riverIgnores is set (Mega Knight)",
+        "[combat_entity][jump][river]") {
+    // The jump only travels dist-minus-effectiveAttackRange (stopping just
+    // inside melee range, not landing exactly on the target) -- close to,
+    // but not always past, the river's own 2-tile width (y 16-18, Board's
+    // default). Uses a real Troop (not a test-only CombatEntity) so this
+    // exercises the actual end-of-update() clampPosition() call, the same
+    // one that would otherwise shove a plain river-respecting troop back to
+    // the near edge -- see CardRegistry.h's Mega Knight registration for
+    // why riverIgnores is set at all (a documented approximation, since
+    // this engine can't gate river-ignoring on "only during the jump").
+    Board board;
+    auto target = std::make_shared<DummyEntity>(1, 0.0f, 18.5f, 10000, 1); // enemy side, dist 4.5 from the attacker
+    spawn(board, target);
+
+    auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 14.0f, 100, 0, 1.0f, 1.2f, 268, 17, 'X');
+    attacker->setIgnoresRiver(true);
+    attacker->jumpMinRange = 3.5f;
+    attacker->jumpMaxRange = 5.0f;
+    attacker->jumpDamageMultiplier = 2.0f;
+    attacker->jumpSplashRadius = 2.2f;
+
+    attacker->update(board); // jumps 2.6 (4.5 - 2.0 + 0.1) toward the target, landing at y=16.6 -- inside the river band
+
+    REQUIRE(attacker->position.y == Catch::Approx(16.6f)); // NOT clamped back to 16.0 (riverY_start)
 }
 
 // ---------------- piercing-line splash (Bowler, Magic Archer) ----------------
