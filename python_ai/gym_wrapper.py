@@ -41,28 +41,61 @@ import clash_royale_env
 # tower and chain onto the next one the way Inferno Dragon's ramping damage
 # did -- see the replay autopsy this responds to), and gives real cheap
 # defensive tools (Cannon, Minions) that the old deck had none of at all.
-DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
+# Hog cycle: Hog Rider (win condition), Cannon, Musketeer, Archers, Knight,
+# Minions, Fireball, Valkyrie. Replaces the Giant beatdown deck for one measured
+# reason: with the old deck the bot NEVER played Giant (5 elixir) in any probe
+# across four full training runs -- only 5-7 of the 8 cards were ever used.
+#
+# The cause is an interaction between cost and the affordability action mask.
+# Elixir regenerates 0.35 per decision step, so a 5-cost card is only legal
+# after ~14 consecutive steps of not spending; the policy almost always spends
+# on something cheaper first, so the expensive card's slot is masked out nearly
+# every time it is checked and never accumulates gradient. The fix is not a
+# bigger entropy bonus, it is a curve where no card is systematically starved:
+#
+#   old deck: costs 3-5, avg 3.75, spread 2   -> Giant effectively unreachable
+#   this one: costs 3-4, avg 3.50, spread 1   -> worst case ~11 steps, and every
+#                                                card competes on equal footing
+#
+# Hog Rider is a genuine building-targeter win condition (same archetype class
+# train_selfplay.py's _WIN_CONDITION_IDS treats as "the real threat"), so the
+# deck still has a way to actually close games. Fireball is kept and is finally
+# usable: spells can now be aimed past the river (see MicroRoyaleNet's placement
+# mask and the get_card_info binding added for it).
+#
+# Verified against the live registry: all 8 ids exist, no Champions, and
+# validate_deck_slots returns "" (legal).
+DEFAULT_DECK = [15, 25, 6, 1, 0, 41, 7, 10]
 
 # How many Champion ability slots this deck actually has (0, 1 or 2 -- see
-# CardRegistry::validateDeckSlots). Deliberately declared right next to the
-# deck literal itself so the two can't drift apart unnoticed: it must be
-# updated together with DEFAULT_DECK, never independently.
+# CardRegistry::validateDeckSlots).
 #
-# Why it exists at all: MicroRoyaleNet used to unconditionally create two
-# ability heads and both trainers unconditionally sampled from them every
-# tick. With a Champion-less deck (this one -- none of Valkyrie/Archers/
-# Minions/Cannon/Fireball/Giant/Musketeer/Mini PEKKA is a Champion) those
-# were pure noise: they widened the PPO ratio's variance via total_logprob
-# and contributed up to 2*log(2)=1.386 to the entropy bonus, so the entropy
-# coefficient was actively spending its budget keeping two irrelevant coin
-# flips maximally random. Now the heads simply aren't built (see
-# MicroRoyaleNet's num_ability_slots).
+# Now DERIVED from the engine rather than hand-maintained: get_card_info was
+# added to bindings.cpp precisely so this (and the spell flag below) stops
+# being a constant somebody has to remember to update in lockstep with
+# DEFAULT_DECK. Change the deck and this follows automatically.
 #
-# NOTE: this is a hand-maintained value only because the engine currently
-# exposes no isChampion query to Python -- CardRegistry has the flag
-# (CardDefinition::isChampion) but bindings.cpp doesn't surface it. If a
-# card-info binding is ever added, derive this from the deck instead.
-DEFAULT_DECK_ABILITY_SLOTS = 0
+# Why it matters: MicroRoyaleNet only builds its two Champion-ability heads
+# when this is > 0. With a Champion-less deck those heads were pure noise --
+# they widened the PPO ratio's variance via total_logprob and contributed up
+# to 2*log(2)=1.386 to the entropy bonus, so the entropy budget was being
+# spent keeping two irrelevant coin flips maximally random.
+DEFAULT_DECK_ABILITY_SLOTS = sum(
+    1 for _cid in DEFAULT_DECK
+    if clash_royale_env.get_card_info(_cid)["is_champion"]
+    or clash_royale_env.get_card_info(_cid)["is_hero"]
+)
+
+# Per-hand-slot spell flags are what let the placement mask open the enemy half
+# for spells only -- see MicroRoyaleNet.placement_mask. Spells are exempt from
+# GameManager::isValidPlacement's own-half restriction, but the action space
+# used to cap target_y at getOwnHalfMaxY() for EVERY card, so a Fireball could
+# physically never be thrown past the river. That made one of the deck's eight
+# cards unusable for its actual purpose no matter how long training ran.
+SPELL_BY_CARD_ID = {
+    _cid: clash_royale_env.get_card_info(_cid)["is_spell"]
+    for _cid in clash_royale_env.get_all_card_ids()
+}
 
 
 def get_all_card_ids():
@@ -112,7 +145,15 @@ class MicroRoyaleEnv(gym.Env):
             # צורך לסנכרן ידנית אם גודל הלוח/היד ישתנה בצד ה-C++.
             "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
             "target_x": spaces.Box(low=0.0, high=self.game.get_max_placement_x(), shape=(1,), dtype=np.float32),
-            "target_y": spaces.Box(low=0.0, high=self.game.get_own_half_max_y(), shape=(1,), dtype=np.float32),
+            # Full board height, not get_own_half_max_y(). Spells are exempt
+            # from isValidPlacement's own-half restriction, so capping the
+            # DECLARED space at the own half made Fireball unable to cross the
+            # river at all. Per-card legality is enforced by
+            # MicroRoyaleNet.placement_mask instead -- the space describes what
+            # the engine will accept from SOME card, the mask decides which
+            # cells are legal for the card actually chosen this step.
+            "target_y": spaces.Box(low=0.0, high=float(clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT - 1),
+                                   shape=(1,), dtype=np.float32),
             # הפעלת יכולת צ'מפיון -- שתי משבצות עצמאיות (1=Heroic, 2=Wild Card,
             # ראו CardRegistry::validateDeckSlots), כי דק יכול להכיל עד 2
             # צ'מפיונים בו-זמנית. כל אחת: 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש

@@ -18,7 +18,24 @@ _probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
 OWN_HALF_MAX_Y = _probe.get_own_half_max_y()
 MAX_PLACEMENT_X = _probe.get_max_placement_x()
 del _probe
-PLACEMENT_ROWS = int(OWN_HALF_MAX_Y) + 1
+# השורה האחרונה בחצי שלנו שמותרת לכוחות (get_own_half_max_y = 15.5 -> שורה 15)
+OWN_HALF_ROWS = int(OWN_HALF_MAX_Y) + 1
+# ראש המיקום פורש עכשיו את **כל** הלוח, לא רק את החצי שלנו. הסיבה: המנוע
+# פוטר לחשים ממגבלת החצי (GameManager::isValidPlacement בודק ללחש רק גבולות
+# לוח + אזור מת), אבל מרחב הפעולות חסם את target_y ב-15.5 לכל קלף -- כלומר
+# Fireball פיזית לא יכול היה לחצות את הנהר, ורבע מהחפיסה לא היה שמיש למטרתו
+# בשום כמות אימון. עכשיו הראש מייצר את כל הלוח והחוקיות נאכפת ע"י מסכה
+# מותנית-קלף (ראה placement_mask), לא ע"י כיווץ המרחב.
+PLACEMENT_ROWS = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
+
+# is_spell לכל card_id, נשלף חי מהמנוע (binding get_card_info) במקום רשימה
+# קשיחה בפייתון -- בדיוק סוג ה-drift שהפרויקט הזה כבר נכווה ממנו.
+_ALL_IDS = clash_royale_env.get_all_card_ids()
+NUM_CARD_IDS_LIVE = clash_royale_env.ClashRoyaleEnv.NUM_CARD_IDS
+_spell_flags = torch.zeros(NUM_CARD_IDS_LIVE)
+for _cid in _ALL_IDS:
+    if clash_royale_env.get_card_info(_cid)["is_spell"]:
+        _spell_flags[_cid] = 1.0
 
 
 class MicroRoyaleNet(nn.Module):
@@ -44,9 +61,15 @@ class MicroRoyaleNet(nn.Module):
         self.num_card_ids = num_card_ids
 
         # רשת המיקום היא קטגוריאלית על תאי לוח שלמים (ראה placement_head
-        # למטה). placement_rows = כמה שורות בחצי שלנו חוקיות למיקום.
+        # למטה). placement_rows = כל גובה הלוח; החוקיות בפועל נאכפת במסכה
+        # מותנית-קלף (placement_mask), כי היא שונה בין כוח ללחש.
         self.placement_rows = placement_rows if placement_rows is not None else PLACEMENT_ROWS
         self.placement_cells = self.placement_rows * board_width
+        # שורות מותרות לכוח רגיל (לא לחש, לא deploy-anywhere) -- החצי שלנו בלבד.
+        self.own_half_rows = min(OWN_HALF_ROWS, self.placement_rows)
+        # (num_card_ids,) -- 1.0 אם הקלף הוא לחש. buffer ולא פרמטר: זו עובדה
+        # על המנוע, לא משהו שנלמד, אבל היא חייבת לנוע יחד עם הרשת ל-device.
+        self.register_buffer("spell_flags", _spell_flags[:num_card_ids].clone())
 
         # 0 = לחפיסה אין צ'מפיון, ולכן אין בכלל ראשי הפעלת יכולת. זה לא
         # אופטימיזציה קוסמטית: כשאין צ'מפיון, שני הראשים האלה דגמו רעש טהור
@@ -265,7 +288,7 @@ class MicroRoyaleNet(nn.Module):
         ability_slot2_logits = self.ability_slot2_head(hx) if self.ability_slot2_head is not None else None
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
-    def placement_given_card(self, hx, card_embeds, card_idx):
+    def placement_given_card(self, hx, card_embeds, card_idx, obs=None):
         """
         חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
@@ -284,7 +307,52 @@ class MicroRoyaleNet(nn.Module):
         batch_idx = torch.arange(card_embeds.shape[0], device=card_embeds.device)
         chosen_embed = card_embeds[batch_idx, card_idx]  # (Batch, CARD_EMBED_DIM)
         placement_input = torch.cat((hx, chosen_embed), dim=-1)
-        return self.placement_head(placement_input)
+        logits = self.placement_head(placement_input)
+        if obs is not None:
+            # מיסוך חוקיות מותנה-קלף. -inf ולא ערך סופי, מאותה סיבה בדיוק
+            # כמו ב-step_lstm_and_card: Categorical מנרמל דרך log_softmax,
+            # אז ערך סופי היה משאיר הסתברות זעירה לתא לא חוקי ותרומה
+            # לאנטרופיה. תמיד יש לפחות שורה חוקית אחת, אז אף שורה לא יוצאת
+            # כולה -inf.
+            logits = logits.masked_fill(~self.placement_mask(obs, card_idx), float("-inf"))
+        return logits
+
+    def placement_mask(self, obs, card_idx):
+        """
+        אילו תאי לוח חוקיים לקלף שנבחר. (Batch, placement_cells) bool.
+
+        המנוע (GameManager::isValidPlacement) מבחין בין שניים:
+          * כוח רגיל -- רק החצי שלנו, y <= get_own_half_max_y().
+          * לחש      -- כל הלוח; מגבלת החצי מדולגת לגמרי.
+        עד עכשיו הפייתון כפה את המקרה המחמיר על שניהם (target_y נחסם ב-15.5
+        תמיד), ולכן Fireball לא יכול היה לחצות את הנהר אף פעם. המסכה הזו
+        מחזירה את ההבחנה למקום שבו היא שייכת.
+
+        זהות הלחש נגזרת מה-one-hot שכבר יושב ב-obs כפול spell_flags, בלי
+        קריאה למנוע ובלי argmax -- כלומר עובד על באצ' שלם ומשחזר בדיוק את
+        אותה מסכה בעדכון ה-PPO כמו ב-rollout.
+
+        no-op (card_idx == hand_size): המנוע מתעלם מהמיקום לגמרי, אז מחזירים
+        את מסכת החצי שלנו רק כדי שההתפלגות תישאר מוגדרת-היטב ולא ריקה.
+        """
+        batch = obs.shape[0]
+        scalar_obs = obs[:, self.spatial_size:]
+        onehot_start = 1 + self.hand_size
+        onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
+        onehots = onehots.view(batch, self.hand_size, self.num_card_ids)
+        # (Batch, hand_size) -- 1.0 היכן שהמשבצת מחזיקה לחש
+        slot_is_spell = (onehots * self.spell_flags.view(1, 1, -1)).sum(dim=-1)
+        # הרחבה למשבצת ה-no-op (אף פעם לא לחש)
+        slot_is_spell = torch.cat(
+            [slot_is_spell, torch.zeros(batch, 1, device=obs.device, dtype=slot_is_spell.dtype)], dim=1)
+        chosen_is_spell = slot_is_spell.gather(1, card_idx.view(-1, 1)).squeeze(1) > 0.5  # (Batch,)
+
+        rows = torch.arange(self.placement_rows, device=obs.device).view(1, -1, 1)
+        own_half = rows < self.own_half_rows                       # (1, rows, 1)
+        full_board = torch.ones_like(own_half)
+        allowed_rows = torch.where(chosen_is_spell.view(-1, 1, 1), full_board, own_half)
+        mask = allowed_rows.expand(batch, self.placement_rows, self.board_width)
+        return mask.reshape(batch, self.placement_cells)
 
     def cell_to_xy(self, cell_idx):
         """
@@ -301,7 +369,8 @@ class MicroRoyaleNet(nn.Module):
         col = cell_idx % self.board_width
         return col.float(), row.float()
 
-    def forward_from_features(self, features, card_embeds, hidden_state, card_idx, card_mask=None):
+    def forward_from_features(self, features, card_embeds, hidden_state, card_idx,
+                              card_mask=None, obs=None):
         """
         עוטף את שני החצאים ביחד, לשימוש כש-card_idx כבר ידוע מראש (עדכון PPO,
         עם הפעולה השמורה מהבאפר -- קריטי: תמיד להעביר את card_idx *השמור*
@@ -315,6 +384,6 @@ class MicroRoyaleNet(nn.Module):
         """
         (card_logits, ability_slot1_logits, ability_slot2_logits, state_value,
          (hx, cx)) = self.step_lstm_and_card(features, hidden_state, card_mask)
-        placement_logits = self.placement_given_card(hx, card_embeds, card_idx)
+        placement_logits = self.placement_given_card(hx, card_embeds, card_idx, obs)
         return (card_logits, placement_logits, state_value,
                 ability_slot1_logits, ability_slot2_logits, (hx, cx))

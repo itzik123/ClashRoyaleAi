@@ -1,4 +1,5 @@
 import os
+import math
 import sys
 import json
 import subprocess
@@ -76,6 +77,48 @@ DRAW_PENALTY = 1.0
 # those two runs' episode counters aren't on the same scale.
 HISTORICAL_CHECKPOINT_DIR = "historical_checkpoints"
 HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
+
+# Diagnostic-only snapshots, one per curriculum-stage transition: the exact
+# policy that just cleared a stage's 80%-over-100-episodes gate, captured
+# BEFORE the opponent gets harder.
+#
+# Deliberately a SEPARATE directory from HISTORICAL_CHECKPOINT_DIR, not extra
+# files in it: that one is pipeline #2's PFSP opponent pool, ordered by mtime
+# as a weakest->strongest ladder, so dropping additional checkpoints in would
+# silently change which opponents self-play samples and how often. These are
+# for offline analysis only and nothing ever trains against them.
+#
+# The motivating question, which could not be answered on the previous run
+# because the checkpoints had already been deleted: the narrow policy measured
+# at stage 4 (8 of 288 placement cells, 5 of 8 deck cards, one lane) was
+# measured ONLY against that stage's 1.4x-elixir opponent. Whether that
+# narrowness is a pathological collapse or a rational response to being
+# out-elixired is decidable -- but only by replaying ONE fixed policy against
+# SEVERAL stages' opponents, which requires having kept the per-stage weights.
+STAGE_CHECKPOINT_DIR = "stage_checkpoints"
+
+
+def save_stage_snapshot(net, directory, stage, episodes_completed, opp_elixir_multiplier, reason):
+    """Weights-only snapshot tagged with the curriculum state it was taken at.
+
+    Weights only (no optimizer/training state) on purpose -- these are never
+    resumed from, only loaded for offline behavioral probes, so carrying Adam's
+    buffers would triple the file size for nothing. The metadata is what makes
+    a probe reproducible: it records which opponent strength this policy was
+    actually trained against, so a later comparison can replay it against a
+    DIFFERENT multiplier and attribute the difference correctly.
+    """
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"stage{stage}_ep{episodes_completed:08d}.pth")
+    torch.save({
+        "model": net.state_dict(),
+        "curriculum_stage": stage,
+        "episodes_completed": episodes_completed,
+        "opp_elixir_multiplier": opp_elixir_multiplier,
+        "reason": reason,
+    }, path)
+    print(f">>> Stage snapshot saved to {path} ({reason}, opp_elixir_multiplier={opp_elixir_multiplier})")
+    return path
 
 # Spatial layout of the observation (must match ClashEnv.h):
 # channels 0-2 ally troops (melee/ranged/tank), 3 ally buildings,
@@ -305,14 +348,14 @@ def train_ppo():
     max_grad_norm = 0.5    # Gradient clipping (stabilizes BPTT)
     assert update_timestep % bptt_chunk == 0,         "update_timestep must be divisible by bptt_chunk so every chunk is full-length"
 
-    initial_entropy_coef = 0.02
+    initial_entropy_coef = 0.05
     # Raised from 0.001: stage 2 (opp 1.2x) sat with entropy pinned at the old floor
     # for 6000+ episodes (confirmed in the log) while oscillating in a stable
     # 0.50-0.68 win-rate band that stopped trending toward the 0.80 gate -- i.e. zero
     # exploration pressure for a very long stretch while stuck. A small persistent
     # floor keeps a little exploration alive instead of fully exploiting a plateaued
     # policy forever.
-    min_entropy_coef = 0.006
+    min_entropy_coef = 0.02
     # 0.9995 decays over EPISODES (not updates), and at that rate reaching the floor
     # takes ~9200 episodes (0.1 * 0.9995^9200 ~= 0.001) -- far beyond any training
     # budget actually run so far. Confirmed by measurement: at episode 458 the coef
@@ -323,6 +366,138 @@ def train_ppo():
     # reaches the floor by ~episode 1000 and is already down to ~2% of initial by
     # episode 300, matching realistic training budgets instead of a 9000-episode one.
     entropy_decay_rate = 0.9997
+    # --- Per-head entropy (normalized) ------------------------------------
+    # The entropy bonus used to be a SINGLE coefficient on the raw SUM
+    # H_card + H_placement. Those two heads have very different scales --
+    # log(5)=1.61 vs log(288)=5.66 -- so the optimizer could satisfy almost the
+    # whole entropy term through placement alone and let card selection collapse
+    # for free. Measured at episode 20,245 of the run this replaces:
+    #
+    #   placement entropy 1.472 / 5.663  (26% of max)
+    #   card      entropy 0.007 / 1.609  (0.4% of max -- effectively a constant)
+    #
+    # and behaviorally: hand slot 3 never chosen once, and only 5 of the deck's
+    # 8 cards ever played across 456 decisions -- never Giant (the win
+    # condition), Cannon (the only defensive building), or Fireball.
+    #
+    # Note what the real asymmetry was: the raw sum already applied the SAME
+    # weight to both heads (d(bonus)/dH = 1 for each). Card selection did not
+    # collapse because it was under-weighted in the loss -- it collapsed
+    # because WHICH CARD you play moves the return far more than which exact
+    # cell you drop it on, so the policy gradient drives the card head toward
+    # determinism much harder, and equal counter-pressure simply lost.
+    #
+    # Fix: divide each head's entropy by its OWN maximum, so both terms live in
+    # [0,1] and a coefficient means the same thing for each, THEN weight them
+    # explicitly by how badly each head actually collapsed. Normalizing alone
+    # would be a regression for placement -- it multiplies the absolute
+    # placement pressure by 1/log(288)=0.18 -- which is why the scales below
+    # are not both 1.0.
+    #
+    # Normalization is by the head's FULL action count, not by the per-step
+    # legal-action count (which the affordability mask makes vary between 2 and
+    # 5). Per-step normalization would divide by log(2)=0.69 on the tightest
+    # steps and blow those samples up; the point here is rebalancing the two
+    # heads against each other, which the fixed divisor already achieves.
+    #
+    # Scales chosen so that BOTH heads end up with more absolute entropy
+    # pressure than the 0.006 floor that measurably failed, weighted by how far
+    # each had actually collapsed (card to 0.4% of its maximum, placement to
+    # 26%). Effective per-head coefficient at the floor is
+    # min_entropy_coef * SCALE / log(n):
+    #
+    #   card:      0.02 * 4.0 / 1.609 = 0.0497   (8.3x the 0.006 that failed)
+    # Raised 2.0 -> 4.0 after measurement: at 2.0 the card head settled at
+    # Policy/Entropy_Card_Frac ~= 0.10 while placement sat at ~0.75, still a
+    # 7.5x imbalance and only ~1.2 effective card choices. Cross-stage probes
+    # confirmed the card head keeps narrowing (H_card 0.448 -> 0.202 -> 0.121
+    # over stages 0/1/2 measured against a FIXED 1.0x opponent, so it is not
+    # an artifact of the opponent getting harder).
+    #   placement: 0.02 * 3.0 / 5.663 = 0.0106   (1.8x)
+    #
+    # i.e. card gets roughly twice the pressure placement does, rather than the
+    # equal weighting that let it collapse. These are the two knobs to turn if
+    # Policy/Entropy_Card_Frac or Policy/Entropy_Placement_Frac (logged below)
+    # heads toward zero again -- raise the corresponding scale.
+    LOG_N_CARD = math.log(net.hand_size + 1)
+    LOG_N_PLACEMENT = math.log(net.placement_cells)
+    # Seeded at the last hand-tuned effective values so the controller starts
+    # from a known-reasonable point rather than hunting from zero.
+    ent_coef_card = 0.05
+    ent_coef_place = 0.06
+    # --- Adaptive per-head entropy coefficients ---------------------------
+    # Replaces a hand-tuned fixed coefficient per head. Two runs showed why
+    # fixed values do not work here: the heads are COUPLED, so correcting one
+    # breaks the other.
+    #
+    #   card scale 2.0 -> card head collapsed to 10% of its max entropy
+    #   card scale 4.0 -> card recovered to ~35%, but placement fell from
+    #                     H=4.38 to H=2.63 at the same stage (40 -> 20 cells,
+    #                     top-5 share 36% -> 70%, left lane 33% -> 13%)
+    #
+    # Instead of picking coefficients, pick the ENTROPY LEVEL each head should
+    # hold and let a controller find the coefficient. Same idea as SAC's
+    # automatic temperature tuning: the coefficient is not a hyperparameter to
+    # guess, it is whatever value happens to sustain the target.
+    #
+    # Multiplicative control on the normalized entropy fraction:
+    #     coef *= exp(rate * (target - measured))
+    # measured below target -> coefficient rises -> more exploration pressure.
+    # Updated once per PPO update (~27s of wall clock), so it moves far slower
+    # than training and cannot fight the policy gradient step-for-step.
+    #
+    # Targets come from the measured healthy/unhealthy bands across runs D/E:
+    #   card      0.10 collapsed (5/8 cards), 0.35 kept 6/8 -> target 0.35
+    #   placement 0.46 too narrow (20 cells), 0.77 was wide  -> target 0.65
+    ENTROPY_TARGET_CARD = 0.35
+    ENTROPY_TARGET_PLACEMENT = 0.65
+    # Reverted 0.15 -> 0.5 after a matched-depth measurement contradicted the
+    # earlier reasoning. Lowering the gain DID smooth the controller (mean
+    # |entropy - target| fell, placement no longer free-fell), but the resulting
+    # policy measured WORSE at stage 3: 81.7% [74-88] vs scripted opponents
+    # against 96.7% [92-99] for the high-gain run, CIs not overlapping.
+    #
+    # The likely mechanism, though unproven: the large swings the high gain
+    # produces act as periodic exploration re-boosts that shake the policy out
+    # of local optima, and smoothing them away removes that. Note also that the
+    # high-gain run had the WORST mid-training placement spread and still the
+    # best final strength -- i.e. placement spread is a poor proxy for skill and
+    # should not be optimized directly.
+    #
+    # CAVEAT: one run per configuration. RL run-to-run variance is large, so
+    # this ordering may not survive replication with multiple seeds.
+    ENTROPY_ADAPT_RATE = 0.5
+    # Bounds keep a runaway controller from either silencing the entropy term
+    # or drowning the policy gradient if a target is briefly unreachable.
+    # Raised 0.002 -> 0.01. Healthy measured coefficients are 0.05-0.22, so
+    # 0.002 was not a floor but an off switch: once there, the entropy term
+    # stopped opposing the policy gradient at all and the head was free to
+    # collapse until the controller noticed. 0.01 keeps real pressure at all
+    # times, so the controller corrects from a slowed slide rather than a
+    # free-fall.
+    ENTROPY_COEF_FLOOR = 0.01
+    ENTROPY_COEF_CEIL = 0.5
+
+    # --- Value-clip range, scaled to the RETURN distribution ---------------
+    # This used to reuse eps_clip (0.2) directly. That number is a bound on the
+    # POLICY's probability RATIO -- a dimensionless quantity -- and reusing it
+    # as an ABSOLUTE bound on how far the critic may move is a unit mismatch:
+    # it only makes sense relative to how large returns actually are.
+    #
+    # Measured on a live 500-step rollout at episode 14,666 (stage 3):
+    #   GAE return   std 0.530
+    #   |return - V| median 0.181, p90 0.539
+    #   46.1% of samples needed the critic to move MORE than 0.2
+    #
+    # i.e. on nearly half the batch the critic was forbidden from correcting its
+    # own error in one update, no matter how many optimizer steps it got.
+    #
+    # Expressed as a fraction of the batch's own return spread instead, so it
+    # stays correctly scaled if the reward shaping is ever retuned (which would
+    # otherwise silently make this either crippling or a no-op). 1.0 std covers
+    # roughly the p85 correction. Floored at eps_clip so it can never become
+    # TIGHTER than the old behavior.
+    VF_CLIP_STD_FRAC = 1.0
     
     # Pulled live from the engine's own enforced placement bounds (a throwaway
     # instance is enough -- these don't depend on which deck is used) instead
@@ -363,7 +538,19 @@ def train_ppo():
     # Raw win rate (not decisive), matching the CURRICULUM_STAGES gate above.
     # Also doubles as "deck mastered" gate at the per-deck curriculum's final
     # stage, below.
-    PHASE2_WIN_RATE_GATE = 0.90
+    # Lowered 0.90 -> 0.80 to match the per-stage gate every other transition
+    # uses. 0.90 was measurably a dead end: the final stage's opponent gets 1.5x
+    # elixir, and the strongest policy produced so far tops out around 0.79 raw
+    # win rate there after ~76k episodes of dedicated stage-5 training. So the
+    # bot would have sat at stage 5 indefinitely and NEVER reached phase 2
+    # (random opponent decks) or, past it, pipeline #2 self-play -- the only two
+    # sources of genuinely harder opposition left, and the only path to skill
+    # that transfers to a human.
+    #
+    # Using the same 0.80 the stage gates use is also the internally consistent
+    # choice: there is no principled reason the phase transition should demand a
+    # strictly higher bar than the stage transitions leading up to it.
+    PHASE2_WIN_RATE_GATE = 0.80
     # Phase 2 replays the SAME CURRICULUM_STAGES gated progression (win rate
     # threshold -> escalate elixir multiplier) against each random deck, from
     # stage 0 (1.0x, normal speed), instead of a flat elixir speed for a flat
@@ -454,6 +641,10 @@ def train_ppo():
                 phase_deck_episode_start = checkpoint.get("phase_deck_episode_start", 0)
                 current_random_deck = checkpoint.get("current_random_deck", None)
                 deck_curriculum_stage = checkpoint.get("deck_curriculum_stage", 0)
+                # Controller state; falls back to the seed values for
+                # checkpoints written before the controller existed.
+                ent_coef_card = checkpoint.get("ent_coef_card", ent_coef_card)
+                ent_coef_place = checkpoint.get("ent_coef_place", ent_coef_place)
                 full_resume = True
                 # Phase 2 runs its OWN CURRICULUM_STAGES progression (deck_curriculum_stage)
                 # per random deck, independent of phase 1's curriculum_stage -- overrides
@@ -549,6 +740,12 @@ def train_ppo():
         # stage resets the clock (stage_start_episode) so exploration is boosted again
         # for the new, harder opponent instead of staying collapsed (improvement #5).
         episodes_in_stage = episodes_completed - stage_start_episode
+        # NOTE: the old decaying entropy schedule no longer drives anything --
+        # the per-head coefficients are set by the controller in the update step
+        # below (see ENTROPY_TARGET_*). It is kept computed ONLY so the resume
+        # path and the stage bookkeeping that reference stage_start_episode keep
+        # working unchanged; nothing reads it into the loss. The console and
+        # TensorBoard readouts report the real adaptive coefficients instead.
         current_entropy_coef = max(min_entropy_coef, initial_entropy_coef * (entropy_decay_rate ** episodes_in_stage))
 
         # NOTE: the rollout-start hidden state used to be snapshotted here, as
@@ -591,7 +788,7 @@ def train_ppo():
                 # Discrete placement over whole board cells, no Gaussian and no
                 # clamping -- every cell index maps to coordinates the engine
                 # already accepts (see model.cell_to_xy).
-                placement_logits = net.placement_given_card(hx, card_embeds, card_idx)
+                placement_logits = net.placement_given_card(hx, card_embeds, card_idx, obs_tensor)
                 placement_dist = Categorical(logits=placement_logits)
                 placement_cell = placement_dist.sample()
 
@@ -726,7 +923,7 @@ def train_ppo():
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
                         deck_stage_str = f"/{deck_curriculum_stage}" if phase == "random_opponent" else ""
-                        print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | Stage: {curriculum_stage}{deck_stage_str} | Phase: {phase} | Entropy: {current_entropy_coef:.4f}")
+                        print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | Stage: {curriculum_stage}{deck_stage_str} | Phase: {phase} | EntCoef c/p: {ent_coef_card:.4f}/{ent_coef_place:.4f}")
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
@@ -757,7 +954,8 @@ def train_ppo():
                         writer.add_scalar("Progress/Enemy_Building_HP_End_50", np.mean(enemy_bldg_end_history), episodes_completed)
                         writer.add_scalar("Progress/Ally_Building_HP_End_50", np.mean(ally_bldg_end_history), episodes_completed)
                         writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
-                        writer.add_scalar("Training/Entropy_Coef", current_entropy_coef, episodes_completed)
+                        writer.add_scalar("Training/Entropy_Coef_Card", ent_coef_card, episodes_completed)
+                        writer.add_scalar("Training/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
 
                     # --- Curriculum advancement: escalate the opponent once the agent
                     # actually WINS most games -- raw win rate (wins / all 100 games in
@@ -773,12 +971,21 @@ def train_ppo():
                         wins = int((outcomes == 1).sum())
                         win_rate = wins / len(outcomes)
                         if win_rate >= stage_threshold:
+                            # Snapshot BEFORE incrementing: this captures the
+                            # policy that actually cleared THIS stage, still
+                            # labeled with the multiplier it was trained
+                            # against, which is exactly what a later
+                            # cross-stage comparison needs.
+                            save_stage_snapshot(
+                                net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
+                                CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
+                                f"cleared stage {curriculum_stage} gate at win_rate={win_rate:.2f}")
                             curriculum_stage += 1
                             new_multiplier = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
                             envs.call("set_opponent_elixir_multiplier", new_multiplier)
                             outcome_history.clear()
                             stage_start_episode = episodes_completed   # Reset entropy decay clock -> re-boost exploration (improvement #5)
-                            print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier}) - entropy re-boosted")
+                            print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier})")
                             writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
 
                     # --- Phase transition: once the final curriculum stage's win rate
@@ -792,6 +999,12 @@ def train_ppo():
                         wins = int((outcomes == 1).sum())
                         win_rate = wins / len(outcomes)
                         if win_rate >= PHASE2_WIN_RATE_GATE:
+                            # The end of phase 1: strongest mirror-deck policy,
+                            # before random opponent decks change the problem.
+                            save_stage_snapshot(
+                                net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
+                                CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
+                                f"cleared the phase-2 gate at win_rate={win_rate:.2f} (end of mirror phase)")
                             phase = "random_opponent"
                             current_random_deck = sample_random_deck()
                             envs.call("set_opponent_deck", current_random_deck)
@@ -895,6 +1108,26 @@ def train_ppo():
         returns_seq = advantages_seq + values_seq
         adv_norm_seq = (advantages_seq - advantages_seq.mean()) / (advantages_seq.std() + 1e-8)
 
+        # Critic diagnostics. Raw MSE is uninterpretable on its own -- it is
+        # bounded below by the irreducible noise in the returns, so a "flat"
+        # critic loss says nothing about whether the critic is any good.
+        # Explained variance does: 1 - Var(return - V)/Var(return), where ~1 is
+        # a good critic, 0 is no better than predicting the mean, and <0 is
+        # worse than the mean. Measured at +0.64 when this was added, i.e. the
+        # critic was healthy all along and the flat Loss/Critic curve had been
+        # misread as a failure to learn.
+        with torch.no_grad():
+            _vm = valid_seq > 0.5
+            _r = returns_seq[_vm]
+            _v = values_seq[_vm]
+            _rv = _r.var()
+            explained_variance = (1.0 - (_r - _v).var() / _rv.clamp(min=1e-8)) if _rv > 0 else torch.tensor(0.0)
+            # See VF_CLIP_STD_FRAC: scaled to this batch's own return spread,
+            # never tighter than eps_clip.
+            vf_clip_range = torch.clamp(VF_CLIP_STD_FRAC * _r.std(), min=eps_clip).item()
+        writer.add_scalar("Loss/Critic_Explained_Variance", explained_variance.item(), episodes_completed)
+        writer.add_scalar("Loss/Value_Clip_Range", vf_clip_range, episodes_completed)
+
         # Every (chunk-start, env) pair is one independent training segment of
         # bptt_chunk timesteps -- see the bptt_chunk comment above.
         chunk_starts = np.arange(0, update_timestep, bptt_chunk)
@@ -909,6 +1142,9 @@ def train_ppo():
         # critic loss, non-collapsing clip fraction) instead of inferring it indirectly
         # from noisy episode-outcome stats.
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
+        # Logged separately so a collapsing head is visible in TensorBoard
+        # directly, instead of only showing up in an offline behavioral probe.
+        ent_card_log, ent_place_log = [], []
 
         for epoch in range(ppo_epochs):
             seg_perm = np.random.permutation(n_segments)
@@ -929,6 +1165,9 @@ def train_ppo():
                 mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
                 feats_seq, card_embeds_seq = net.extract_features(mb_obs_flat)
                 feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                # Same observations the rollout acted on, reshaped per timestep so
+                # placement legality is recomputed identically (see placement_mask).
+                mb_obs_seq = mb_obs_flat.view(bptt_chunk, B, -1)
                 card_embeds_seq = card_embeds_seq.view(bptt_chunk, B, net.hand_size + 1, -1)
                 # Recomputed from the SAME stored observations the rollout acted
                 # on, so it is bit-identical to the mask applied when the action
@@ -947,9 +1186,8 @@ def train_ppo():
                 # start of the whole rollout.
                 rhx = hx_in_seq[t0, ev]
                 rcx = cx_in_seq[t0, ev]
-                new_logprobs = []
-                new_values = []
-                new_entropies = []
+                new_logprobs, new_values = [], []
+                new_ent_card, new_ent_place = [], []
                 for l in range(bptt_chunk):
                     # mb_card_actions[l] -- the STORED action from rollout, not a
                     # fresh sample -- conditions placement here exactly like the
@@ -960,22 +1198,23 @@ def train_ppo():
                     (logits_t, place_logits_t, value_t, _, _,
                      (rhx, rcx)) = net.forward_from_features(
                         feats_seq[l], card_embeds_seq[l], (rhx, rcx),
-                        mb_card_actions[l], card_mask_seq[l])
+                        mb_card_actions[l], card_mask_seq[l], mb_obs_seq[l])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Categorical(logits=place_logits_t)
                     lp_t = card_dist_t.log_prob(mb_card_actions[l]) \
                         + place_dist_t.log_prob(mb_place_actions[l])
-                    ent_t = card_dist_t.entropy() + place_dist_t.entropy()
                     new_logprobs.append(lp_t)
                     new_values.append(value_t.squeeze(-1))
-                    new_entropies.append(ent_t)
+                    new_ent_card.append(card_dist_t.entropy())
+                    new_ent_place.append(place_dist_t.entropy())
                     reset_t = mb_masks[l].unsqueeze(1)
                     rhx = rhx * reset_t
                     rcx = rcx * reset_t
 
                 new_logprobs = torch.stack(new_logprobs)   # (L, B)
                 new_values = torch.stack(new_values)       # (L, B)
-                new_entropies = torch.stack(new_entropies)
+                new_ent_card = torch.stack(new_ent_card)
+                new_ent_place = torch.stack(new_ent_place)
 
                 mb_adv = adv_norm_seq[tt, ee]
                 mb_ret = returns_seq[tt, ee]
@@ -996,7 +1235,8 @@ def train_ppo():
                 # unclipped loss so the critic can't dodge the penalty by jumping back
                 # and forth outside the trust region -- this is what actually stabilizes
                 # a noisy critic instead of just producing a smoother-looking loss curve.
-                value_clipped = mb_old_values + torch.clamp(new_values - mb_old_values, -eps_clip, eps_clip)
+                value_clipped = mb_old_values + torch.clamp(
+                    new_values - mb_old_values, -vf_clip_range, vf_clip_range)
                 critic_loss_unclipped = F.mse_loss(new_values, mb_ret, reduction="none")
                 critic_loss_clipped = F.mse_loss(value_clipped, mb_ret, reduction="none")
                 critic_loss_per_elem = torch.max(critic_loss_unclipped, critic_loss_clipped)
@@ -1012,8 +1252,14 @@ def train_ppo():
                 # effective step size by the ~3.7x all-steps/decision-steps ratio.
                 actor_loss = -(torch.min(surr1, surr2) * mb_decision).sum() / n_decision
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
-                entropy_bonus = (new_entropies * mb_decision).sum() / n_decision
-                loss = actor_loss + 0.5 * critic_loss - (current_entropy_coef * entropy_bonus)
+                ent_card_mean = (new_ent_card * mb_decision).sum() / n_decision
+                ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
+                # Each head normalized by its own maximum, then weighted -- see
+                # the LOG_N_CARD comment above for why the raw sum was wrong.
+                entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
+                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
+                # entropy_bonus already carries its per-head coefficients.
+                loss = actor_loss + 0.5 * critic_loss - entropy_bonus
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -1022,7 +1268,9 @@ def train_ppo():
 
                 actor_losses.append(actor_loss.item())
                 critic_losses.append(critic_loss.item())
-                entropy_bonuses.append(entropy_bonus.item())
+                entropy_bonuses.append((ent_card_mean + ent_place_mean).item())
+                ent_card_log.append(ent_card_mean.item())
+                ent_place_log.append(ent_place_mean.item())
                 total_losses.append(loss.item())
                 # Fraction of (real) samples where the PPO ratio hit the clip range --
                 # near 0 means the policy barely moved this update (possible plateau/too
@@ -1041,6 +1289,26 @@ def train_ppo():
         writer.add_scalar("Loss/Actor", mean_actor_loss, episodes_completed)
         writer.add_scalar("Loss/Critic", mean_critic_loss, episodes_completed)
         writer.add_scalar("Loss/Entropy", mean_entropy, episodes_completed)
+        # Per-head, both raw and as a fraction of that head's own maximum --
+        # the fraction is what makes "is this head collapsing" readable at a
+        # glance regardless of how many actions the head has.
+        mean_ent_card = np.mean(ent_card_log)
+        mean_ent_place = np.mean(ent_place_log)
+        # --- entropy controller step (see ENTROPY_TARGET_* above) ---
+        card_frac = mean_ent_card / LOG_N_CARD
+        place_frac = mean_ent_place / LOG_N_PLACEMENT
+        ent_coef_card = float(np.clip(
+            ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
+            ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
+        ent_coef_place = float(np.clip(
+            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_PLACEMENT - place_frac)),
+            ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
+        writer.add_scalar("Policy/Entropy_Coef_Card", ent_coef_card, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
+        writer.add_scalar("Loss/Entropy_Card", mean_ent_card, episodes_completed)
+        writer.add_scalar("Loss/Entropy_Placement", mean_ent_place, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card / LOG_N_CARD, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place / LOG_N_PLACEMENT, episodes_completed)
         writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         # Printed (not just logged to TensorBoard) so progress can be monitored from
@@ -1076,6 +1344,8 @@ def train_ppo():
                 "phase_deck_episode_start": phase_deck_episode_start,
                 "current_random_deck": current_random_deck,
                 "deck_curriculum_stage": deck_curriculum_stage,
+                "ent_coef_card": ent_coef_card,
+                "ent_coef_place": ent_coef_place,
             }, weight_path)
             print(f">>> Checkpoint saved to {weight_path} (episode {episodes_completed}, stage {curriculum_stage})")
             last_save_ep = episodes_completed
@@ -1117,7 +1387,7 @@ def train_ppo():
                 (t_logits, _, _, t_value,
                  (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx), t_mask)
                 t_idx = Categorical(logits=t_logits).sample()
-                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx)
+                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx, t_obs_tensor)
                 t_cell = Categorical(logits=t_place_logits).sample()
                 t_x, t_y = net.cell_to_xy(t_cell)
                 t_card_idx = t_idx.item()

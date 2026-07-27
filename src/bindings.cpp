@@ -77,6 +77,43 @@ PYBIND11_MODULE(clash_royale_env, m) {
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");
 
+    // Per-card registry facts the Python side cannot otherwise see. Added
+    // because three separate Python-side problems all reduced to "the trainer
+    // has no way to ask what a card IS":
+    //
+    //  * is_spell: the action space caps target_y at getOwnHalfMaxY() for every
+    //    card, but isValidPlacement deliberately exempts spells from the
+    //    own-half restriction. Without this flag the agent could never aim a
+    //    Fireball past the river -- an entire card in the deck was unusable for
+    //    its actual purpose, and no amount of training could fix it.
+    //  * cost: lets the affordability action mask use the registry's own number
+    //    instead of re-deriving it from the observation's scaled copy.
+    //  * is_champion: python_ai/gym_wrapper.py had to hand-maintain a
+    //    DEFAULT_DECK_ABILITY_SLOTS constant next to the deck literal purely
+    //    because this was not queryable; it can now be derived.
+    //
+    // Read-only accessor over data CardRegistry already holds -- no engine
+    // behavior changes.
+    m.def("get_card_info", [](int cardId) {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (!def) {
+            throw std::invalid_argument("get_card_info: unknown card id " + std::to_string(cardId));
+        }
+        py::dict info;
+        info["id"] = def->id;
+        info["name"] = def->name;
+        info["cost"] = def->cost;
+        info["is_spell"] = def->isSpell;
+        info["is_building"] = def->isBuilding;
+        info["placement_radius"] = def->placementRadius;
+        info["deploy_anywhere"] = def->deployAnywhere;
+        info["is_champion"] = def->isChampion;
+        info["is_hero"] = def->isHero;
+        return info;
+    }, py::arg("card_id"),
+        "Registry facts for one card id: name, cost, is_spell, is_building, "
+        "placement_radius, deploy_anywhere, is_champion, is_hero.");
+
     // Exposes the exact same slot-legality check GameManager::reset()/
     // setOpponentDeck() already enforce (throwing on a non-empty result) --
     // lets a caller pre-validate (or rejection-sample) a random 8-card deck
