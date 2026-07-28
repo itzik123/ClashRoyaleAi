@@ -224,6 +224,10 @@ class MicroRoyaleEnv(gym.Env):
             # enemy spend more than we do, independent of the damage itself).
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
+            # Surviving tower counts, for the discrete crown term in
+            # compute_shaping() -- see W_TOWER_DESTROYED.
+            "team0_towers_alive": self.game.get_towers_alive(0),
+            "team1_towers_alive": self.game.get_towers_alive(1),
             # Not part of observation_space -- see ClashEnv.h's own comment
             # on why champion-ability state stays out of the flat
             # observation vector (would break model.py's fixed scalar_size

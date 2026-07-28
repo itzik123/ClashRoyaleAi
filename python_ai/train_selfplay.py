@@ -878,6 +878,10 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team1_building_damage": self.game.get_building_damage_dealt(1),
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
+            # Surviving tower counts, for the discrete crown term in
+            # compute_shaping() -- see W_TOWER_DESTROYED.
+            "team0_towers_alive": self.game.get_towers_alive(0),
+            "team1_towers_alive": self.game.get_towers_alive(1),
             "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
             # 1.0 while the current episode started from an injected scenario --
@@ -1332,6 +1336,11 @@ def train_selfplay_ppo():
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
                 "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),
                 "team0_elixir_current": infos.get("elixir", zeros_f),
+                # Default 3 (a full set) so the rare all-envs-reset step, where
+                # gymnasium omits the key entirely, yields a zero delta rather
+                # than a phantom three-crown swing.
+                "team0_towers_alive": infos.get("team0_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
+                "team1_towers_alive": infos.get("team1_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
             }
 
             # Which envs ACTUALLY got a card down this step. The engine silently

@@ -55,6 +55,9 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("get_troop_damage_dealt", &ClashEnv::getTroopDamageDealt, py::arg("team"))
         .def("get_building_damage_dealt", &ClashEnv::getBuildingDamageDealt, py::arg("team"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
+        // Surviving TOWER count (King + Princesses) for one team -- see
+        // ClashEnv::getTowersAlive for why the Python reward needs this.
+        .def("get_towers_alive", &ClashEnv::getTowersAlive, py::arg("team"))
         // Real enforced placement bounds -- see GameManager::getMaxPlacementX/
         // getOwnHalfMaxY's own comments. Lets the Python side scale its action
         // space from the engine's actual numbers instead of a hardcoded copy.

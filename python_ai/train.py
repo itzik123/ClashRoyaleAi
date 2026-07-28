@@ -54,6 +54,25 @@ W_TROOPS = 0.1   # weight on troop HP swings
 # winning. Kept non-zero (not deleted) because punishing bad spends is still
 # useful; it just must not dominate.
 W_ELIXIR_TRADE = 0.03
+
+# DELIBERATE BIAS, and the only term here that is intentionally NOT
+# potential-based. Fires once, undiscounted, each time a tower changes hands.
+#
+# Why it has to exist: making the tower term potential-based was mathematically
+# right and strategically wrong. Potential-based shaping is policy-invariant BY
+# CONSTRUCTION -- it cannot change which policy is optimal, only how fast the
+# agent finds it. Measured consequence over 8,300 episodes: win-condition usage
+# rose to 7.3% early and then decayed back to 0.7%, with Episode_Shaping_Sum
+# hovering at ~0.0 exactly as the telescoping property predicts. Removing the
+# bias revealed that against this engine's opponent, pure defence genuinely WAS
+# optimal, so the agent correctly converged to it.
+#
+# The fix is not to un-do the PBRS term (it still gives unbiased dense guidance)
+# but to add an explicit, honest bias next to it: destroying a tower is the
+# thing we actually want and it should be paid for directly. Set above the
+# discounted value of a win (~0.28 at these episode lengths) so taking a crown
+# is never worth less than the trade that led to it.
+W_TOWER_DESTROYED = 0.6
 # Continuous (not one-time) pressure against sitting on a full elixir bar --
 # a real player never intentionally caps out (it wastes ongoing regen), and
 # unlike DRAW_PENALTY below this is felt every single step it's true, not
@@ -171,7 +190,8 @@ def tower_potential(stats, w_bldg=W_BLDG):
 
 
 def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
-                     w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW):
+                     w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW,
+                     w_tower=W_TOWER_DESTROYED):
     """
     Vectorized dense-reward shaping term based on per-step damage-dealt and
     elixir-spent deltas, read from the engine's authoritative MatchStatistics
@@ -220,7 +240,16 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     # without ever paying it to prolong a game for extra shaping.
     tower_shaping = gamma * tower_potential(stats, w_bldg) - tower_potential(prev_stats, w_bldg)
 
+    # Discrete crown events. Counts only ever go DOWN within an episode, so a
+    # negative delta is a tower falling; np.maximum(0, ...) also makes the
+    # phantom post-autoreset step (counts jump back to 3) contribute nothing,
+    # the same guard delta() applies to the cumulative counters above.
+    towers_taken = np.maximum(0, prev_stats["team1_towers_alive"] - stats["team1_towers_alive"])
+    towers_lost = np.maximum(0, prev_stats["team0_towers_alive"] - stats["team0_towers_alive"])
+    tower_events = w_tower * (towers_taken - towers_lost)
+
     shaping = (tower_shaping
+               + tower_events
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
                - w_overflow * overflow)
@@ -923,6 +952,11 @@ def train_ppo():
                 # overflow-penalty term in compute_shaping(). infos["elixir"]
                 # is a scalar per env from gym_wrapper.MicroRoyaleEnv.step().
                 "team0_elixir_current": infos.get("elixir", zeros_f),
+                # Default 3 (a full set) so the rare all-envs-reset step, where
+                # gymnasium omits the key entirely, yields a zero delta rather
+                # than a phantom three-crown swing.
+                "team0_towers_alive": infos.get("team0_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
+                "team1_towers_alive": infos.get("team1_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
             }
 
             # Dense shaping term. On the step right after an episode ended, the vector env

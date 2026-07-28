@@ -1,6 +1,7 @@
 #pragma once
 #include "GameManager.h"
 #include "TimeoutRules.h"
+#include "HeuristicOpponent.h"
 #include "Building.h"
 #include "BuildingTargeter.h"
 #include "RangedTroop.h"
@@ -69,6 +70,7 @@ private:
     int maxTicks;
     int currentTick;
     std::mt19937 rng;
+    HeuristicOpponent heuristicOpponent;
     GameLogger logger;
 
     // Generalized over which team the observation is FOR, so the same
@@ -172,34 +174,11 @@ private:
         return 0.0f;
     }
 
+    // Delegates to HeuristicOpponent -- see that header for what the previous
+    // inline implementation was and the measurements that motivated replacing
+    // it. Kept as a method so every existing call site in step() is unchanged.
     void opponentTurn() {
-        auto& hand = game.playerOpponent.hand;
-        float elixir = game.playerOpponent.elixir;
-
-        if (elixir < 4.0f) return;
-
-        std::vector<int> playableIndices;
-        for (int i = 0; i < static_cast<int>(hand.size()); ++i) {
-            const auto* card = CardRegistry::getInstance().getCard(hand[i]);
-            if (card && elixir >= card->cost) {
-                playableIndices.push_back(i);
-            }
-        }
-
-        if (playableIndices.empty()) return;
-
-        std::uniform_int_distribution<int> indexDist(0, static_cast<int>(playableIndices.size()) - 1);
-        int chosen = playableIndices[indexDist(rng)];
-        int cardId = hand[chosen];
-
-        const auto* card = CardRegistry::getInstance().getCard(cardId);
-        if (!card) return;
-
-        std::uniform_real_distribution<float> xDist(2.0f, 15.0f);
-        float spawnX = xDist(rng);
-        float spawnY = card->isSpell ? 10.0f : 25.0f;
-
-        game.playCard(1, cardId, spawnX, spawnY);
+        heuristicOpponent.act(game, rng);
     }
 
 public:
@@ -207,7 +186,7 @@ public:
             TowerTroopType aiTowerTroop = TowerTroopType::None,
             TowerTroopType oppTowerTroop = TowerTroopType::None)
         : game(aiDeck, oppDeck, aiTowerTroop, oppTowerTroop), maxTicks(maxTicks), currentTick(0),
-          rng(std::random_device{}()) {}
+          rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
 
     int observationSize() const {
         return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP channels
@@ -221,12 +200,30 @@ public:
     // what's actually bound to Python. Lets the training scripts scale their
     // action space from the engine's real enforced bounds instead of a
     // hardcoded copy of the same numbers.
+    // How many of `team`'s TOWERS are still standing (King + Princesses only --
+    // Cannon/Tombstone and other placed buildings are not crowns). Exposed so
+    // the Python reward can put a deliberate, NON-potential-based bonus on the
+    // discrete act of destroying a tower. That bias is the point: the
+    // potential-based tower term is policy-invariant by construction, which
+    // measurably left "pure defence" as the true optimum against this engine's
+    // opponent -- the agent stopped playing its win condition entirely.
+    int getTowersAlive(int team) const {
+        int count = 0;
+        for (const auto& entity : game.getBoard().getEntities()) {
+            if (!entity->isAlive() || entity->team != team) continue;
+            if (dynamic_cast<const Tower*>(entity.get()) != nullptr) ++count;
+        }
+        return count;
+    }
+
     float getMaxPlacementX() const { return game.getMaxPlacementX(); }
     float getOwnHalfMaxY() const { return game.getOwnHalfMaxY(); }
 
     std::vector<float> reset() {
         logger.clear();
         game.reset();
+        // New lane choice per match -- see HeuristicOpponent::reset.
+        heuristicOpponent.reset(rng);
         logger.logTick(0, game);
         currentTick = 0;
         return extractObservation();
