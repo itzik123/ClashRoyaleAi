@@ -261,6 +261,29 @@ class MicroRoyaleNet(nn.Module):
         noop = torch.ones(obs.shape[0], 1, dtype=torch.bool, device=obs.device)
         return torch.cat([playable, noop], dim=1)
 
+    def hand_card_ids(self, obs):
+        """
+        איזה card_id יושב בכל משבצת יד, לפי ה-one-hot שכבר נמצא ב-obs.
+        (Batch, hand_size) long. משבצת ריקה -> -1.
+
+        נדרש למדדי האבחון החיים (כמה קלפים שונים הבוט באמת משחק): את זהות
+        הקלף חייבים לקרוא מה-obs שעליו התקבלה ההחלטה, לא מ-game.get_hand()
+        אחרי הצעד -- היד מסתובבת ברגע ששוחק קלף, אז קריאה מאוחרת מחזירה
+        את הקלף *הבא* ולא את זה שנבחר.
+        """
+        scalar_obs = obs[:, self.spatial_size:]
+        onehot_start = 1 + self.hand_size
+        onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
+        onehots = onehots.view(-1, self.hand_size, self.num_card_ids)
+        ids = onehots.argmax(dim=-1)
+        # שורת one-hot ריקה (סכום 0) היא משבצת בלי קלף -- argmax היה מחזיר 0
+        # שהוא card_id חוקי (Knight), אז מסמנים אותה מפורשות.
+        return torch.where(onehots.sum(dim=-1) > 0.5, ids, torch.full_like(ids, -1))
+
+    def elixir_from_obs(self, obs):
+        """אליקסיר נוכחי (0..10) מתוך ה-obs. ClashEnv מחלק ב-10 בבנייה."""
+        return obs[:, self.spatial_size] * 10.0
+
     def step_lstm_and_card(self, features, hidden_state, card_mask=None):
         """
         חצי ראשון של הצעד הרקורנטי: מקדם את ה-LSTM ומחשב בחירת קלף + הערכת

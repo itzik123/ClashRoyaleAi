@@ -40,7 +40,20 @@ W_TROOPS = 0.1   # weight on troop HP swings
 # never acting, running out the clock into a draw every game. Bad spends are
 # still punished via the ally_troops_damage/ally_bldg_damage terms below (and
 # the terminal loss) -- this term no longer ALSO taxes acting itself.
-W_ELIXIR_TRADE = 0.15
+# MEASURED, then cut 0.15 -> 0.03. A reward decomposition over 12 real games
+# (12 wins/2 losses, mean 112 steps) put this term at +0.3585 of the DISCOUNTED
+# episode return -- larger than the +0.2781 the agent got for actually winning.
+# It is also the one term that rewards something orthogonal to winning: it pays
+# out whenever the OPPONENT spends elixir, which efficient defence maximises
+# perfectly without ever threatening a tower.
+#
+# That single fact explains the behaviour every other lever failed to move: the
+# greedy policy never played its win condition or its spell across 47,000
+# self-play episodes, and beat an ATTACKING scripted opponent 13-0-2 without one.
+# The bot was optimising correctly -- for an objective that valued trading over
+# winning. Kept non-zero (not deleted) because punishing bad spends is still
+# useful; it just must not dominate.
+W_ELIXIR_TRADE = 0.03
 # Continuous (not one-time) pressure against sitting on a full elixir bar --
 # a real player never intentionally caps out (it wastes ongoing regen), and
 # unlike DRAW_PENALTY below this is felt every single step it's true, not
@@ -146,8 +159,19 @@ MAX_BUILDING_HP = clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP
 # term's per-step magnitude comparable to the HP-normalized damage terms above.
 MAX_ELIXIR_PER_STEP = 10.0
 
-def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixir=W_ELIXIR_TRADE,
-                     w_overflow=W_ELIXIR_OVERFLOW):
+def tower_potential(stats, w_bldg=W_BLDG):
+    """Phi(s): the building-damage differential, normalized.
+
+    This is the quantity that actually tracks progress toward winning -- towers
+    only ever lose HP, and the match ends when a King Tower dies, so a rising
+    differential IS the game being won. Used as the potential for the
+    potential-based shaping in compute_shaping() below.
+    """
+    return w_bldg * (stats["team0_building_damage"] - stats["team1_building_damage"]) / MAX_BUILDING_HP
+
+
+def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
+                     w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW):
     """
     Vectorized dense-reward shaping term based on per-step damage-dealt and
     elixir-spent deltas, read from the engine's authoritative MatchStatistics
@@ -177,14 +201,26 @@ def compute_shaping(stats, prev_stats, w_bldg=W_BLDG, w_troops=W_TROOPS, w_elixi
 
     enemy_troops_damage = delta("team0_troop_damage") / MAX_TROOP_HP
     ally_troops_damage = delta("team1_troop_damage") / MAX_TROOP_HP
-    enemy_bldg_damage = delta("team0_building_damage") / MAX_BUILDING_HP
-    ally_bldg_damage = delta("team1_building_damage") / MAX_BUILDING_HP
     enemy_elixir_spent = delta("team1_elixir_spent") / MAX_ELIXIR_PER_STEP
 
     ally_elixir_current = stats["team0_elixir_current"]
     overflow = np.maximum(0.0, ally_elixir_current - ELIXIR_OVERFLOW_THRESHOLD) / (10.0 - ELIXIR_OVERFLOW_THRESHOLD)
 
-    shaping = (w_bldg * (enemy_bldg_damage - ally_bldg_damage)
+    # POTENTIAL-BASED shaping for the tower term: F = gamma*Phi(s') - Phi(s).
+    #
+    # The previous form was w_bldg * (Phi(s') - Phi(s)) -- the same difference
+    # WITHOUT the gamma. That looks almost identical and is not: Ng et al.'s
+    # policy-invariance result requires the discounted form, and with gamma<1 the
+    # undiscounted difference does change which policy is optimal. It was
+    # therefore free to trade "win the game" against "accumulate shaping", which
+    # is exactly what the measured behaviour showed.
+    #
+    # In the discounted form the whole episode's tower shaping telescopes to
+    # gamma^T*Phi(s_T) - Phi(s_0), so it can guide the agent toward tower damage
+    # without ever paying it to prolong a game for extra shaping.
+    tower_shaping = gamma * tower_potential(stats, w_bldg) - tower_potential(prev_stats, w_bldg)
+
+    shaping = (tower_shaping
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
                - w_overflow * overflow)
@@ -551,6 +587,41 @@ def train_ppo():
     # choice: there is no principled reason the phase transition should demand a
     # strictly higher bar than the stage transitions leading up to it.
     PHASE2_WIN_RATE_GATE = 0.80
+
+    # Which curriculum stage is enough to leave the mirror phase. Was implicitly
+    # the FINAL stage (5, opponent at 1.5x elixir); now 4.
+    #
+    # The reasoning is about what each remaining obstacle actually teaches. A
+    # 1.5x-elixir opponent is a resource handicap that does not exist in the real
+    # game -- clearing it trains "survive being out-resourced", not "play Clash
+    # Royale". Random opponent decks and, past them, pipeline #2 self-play are
+    # the things that teach transferable skill, and the stage-5 requirement was
+    # holding the bot behind the obstacle that teaches least.
+    #
+    # It was also close to unreachable in practice: two 0.80 windows were needed
+    # (stage 4 -> 5, then stage 5 -> phase 2), the second against a HARDER
+    # opponent, while measurement put the strongest policy so far at ~0.79 peak
+    # at stage 5 after ~76k episodes. Run I sat at stage 4 for 13k episodes with
+    # Win_Rate_100 climbing 0.555 -> 0.624 (max 0.73) -- real progress, but on a
+    # trajectory that would spend many more hours to clear a gate whose reward
+    # is a harder version of an artificial handicap.
+    PHASE2_MIN_CURRICULUM_STAGE = 4
+
+    # Win rate required to LEAVE the mirror phase. Split out from
+    # PHASE2_WIN_RATE_GATE, which one constant was doing two unrelated jobs for:
+    # this decides "stop training against a resource-handicapped clone", while
+    # PHASE2_WIN_RATE_GATE also decides "this random deck is mastered, rotate to
+    # the next one" inside phase 2. Lowering one should not silently change the
+    # other, and it did.
+    #
+    # Set to 0.60 deliberately, which the policy already clears (measured
+    # 0.62-0.69 at stage 4), so the transition happens on the next full window
+    # rather than after hours of grinding. That is not a lowered standard, it is
+    # the recognition that this gate was never measuring the right thing:
+    # beating a bot that gets 1.4x elixir and plays random cards at random
+    # positions is not a prerequisite for learning from varied decks, it is a
+    # different and less useful skill. The real tests come after it.
+    PHASE2_ENTRY_WIN_RATE = 0.60
     # Phase 2 replays the SAME CURRICULUM_STAGES gated progression (win rate
     # threshold -> escalate elixir multiplier) against each random deck, from
     # stage 0 (1.0x, normal speed), instead of a flat elixir speed for a flat
@@ -582,7 +653,19 @@ def train_ppo():
     # exposure to hand off to pipeline #2 (self-play/PFSP) -- at that point
     # training stops itself and automatically launches train_selfplay.py, so
     # this doesn't depend on anyone watching for the right moment.
-    PHASE2_TOTAL_EPISODE_CAP = 150000
+    # Lowered 150000 -> 40000. Phase 2's job here is narrow: confirm the policy
+    # is not overfitted to the mirror matchup. That question is already answered
+    # -- the greedy policy took 95% against randomly drawn opponent decks on
+    # FIRST contact, before any phase-2 training, and 97.5%/93.8% against the
+    # scripted opponents with randomized decks in earlier runs. There is no
+    # overfitting to grind out.
+    #
+    # Spending the remaining ~113k episodes here would buy very little: random
+    # decks vary WHAT the opponent plays but it still plays randomly at random
+    # positions, so it cannot punish the degenerate no-win-condition strategy
+    # the policy has settled into. Pipeline #2 self-play can, because there the
+    # opponent is a frozen copy of the bot itself and actually defends.
+    PHASE2_TOTAL_EPISODE_CAP = 40000
 
     def sample_random_deck():
         # Correct-by-construction (not a raw random.sample over every
@@ -847,7 +930,10 @@ def train_ppo():
             # damage-dealt delta would be a huge spurious negative spike (fresh all-zero
             # counters vs the finished episode's accumulated totals). Zero the shaping
             # there so only the real +/-0 reset reward remains.
-            shaping = compute_shaping(stats, prev_stats)
+            # gamma passed explicitly: the tower term is potential-based
+            # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
+            # holds if this is the SAME gamma the GAE/returns use below.
+            shaping = compute_shaping(stats, prev_stats, gamma=gamma)
             shaping = shaping * (1.0 - prev_dones)
             shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards
@@ -957,54 +1043,30 @@ def train_ppo():
                         writer.add_scalar("Training/Entropy_Coef_Card", ent_coef_card, episodes_completed)
                         writer.add_scalar("Training/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
 
-                    # --- Curriculum advancement: escalate the opponent once the agent
-                    # actually WINS most games -- raw win rate (wins / all 100 games in
-                    # the window), not decisive rate (wins / decided). Decisive rate lets
-                    # a high draw rate hide a mediocre bot (e.g. 40% win / 13% loss / 47%
-                    # draw reads as 75% decisive while only actually winning 40% of games)
-                    # ---
-                    stage_threshold = CURRICULUM_STAGES[curriculum_stage]["win_rate_threshold"]
-                    if (stage_threshold is not None
-                            and len(outcome_history) == outcome_history.maxlen
-                            and curriculum_stage + 1 < len(CURRICULUM_STAGES)):
-                        outcomes = np.array(outcome_history)
-                        wins = int((outcomes == 1).sum())
-                        win_rate = wins / len(outcomes)
-                        if win_rate >= stage_threshold:
-                            # Snapshot BEFORE incrementing: this captures the
-                            # policy that actually cleared THIS stage, still
-                            # labeled with the multiplier it was trained
-                            # against, which is exactly what a later
-                            # cross-stage comparison needs.
-                            save_stage_snapshot(
-                                net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
-                                CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
-                                f"cleared stage {curriculum_stage} gate at win_rate={win_rate:.2f}")
-                            curriculum_stage += 1
-                            new_multiplier = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
-                            envs.call("set_opponent_elixir_multiplier", new_multiplier)
-                            outcome_history.clear()
-                            stage_start_episode = episodes_completed   # Reset entropy decay clock -> re-boost exploration (improvement #5)
-                            print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier})")
-                            writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
-
-                    # --- Phase transition: once the final curriculum stage's win rate
-                    # is consistently strong against the mirror-deck opponent, move to
-                    # phase 2 (random opponent decks) -- see PHASE2_WIN_RATE_GATE's
-                    # comment above for why. Raw win rate, matching the curriculum gate.
+                    # --- Phase transition. Deliberately checked BEFORE curriculum
+                    # advancement, and that ordering is load-bearing: the stage gate
+                    # calls outcome_history.clear() when it fires, so if it ran first
+                    # a window that satisfies BOTH gates would always be consumed by
+                    # the stage advance and the phase transition could never see it.
+                    # Reaching phase 2 would then still require an extra full window
+                    # at the harder stage -- exactly the behavior this change exists
+                    # to remove.
+                    #
+                    # Raw win rate, matching the curriculum gate.
+                    phase_just_advanced = False
                     if (phase == "mirror"
-                            and curriculum_stage == len(CURRICULUM_STAGES) - 1
+                            and curriculum_stage >= PHASE2_MIN_CURRICULUM_STAGE
                             and len(outcome_history) == outcome_history.maxlen):
                         outcomes = np.array(outcome_history)
                         wins = int((outcomes == 1).sum())
                         win_rate = wins / len(outcomes)
-                        if win_rate >= PHASE2_WIN_RATE_GATE:
+                        if win_rate >= PHASE2_ENTRY_WIN_RATE:
                             # The end of phase 1: strongest mirror-deck policy,
                             # before random opponent decks change the problem.
                             save_stage_snapshot(
                                 net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
                                 CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
-                                f"cleared the phase-2 gate at win_rate={win_rate:.2f} (end of mirror phase)")
+                                f"entered phase 2 at win_rate={win_rate:.2f} (end of mirror phase)")
                             phase = "random_opponent"
                             current_random_deck = sample_random_deck()
                             envs.call("set_opponent_deck", current_random_deck)
@@ -1013,9 +1075,49 @@ def train_ppo():
                             outcome_history.clear()
                             phase_deck_episode_start = episodes_completed
                             stage_start_episode = episodes_completed  # re-boost exploration for the new opponent variety
-                            print(f">>> Phase advanced to random_opponent (deck={current_random_deck}) "
-                                  f"- mirror win rate {win_rate:.2f} reached the {PHASE2_WIN_RATE_GATE} gate")
+                            phase_just_advanced = True
+                            print(f">>> Phase advanced to random_opponent from stage {curriculum_stage} "
+                                  f"(deck={current_random_deck}) - mirror win rate {win_rate:.2f} "
+                                  f"reached the {PHASE2_ENTRY_WIN_RATE} entry threshold")
                             writer.add_scalar("Training/Phase", 1, episodes_completed)
+
+                    # --- Curriculum advancement: escalate the opponent once the agent
+                    # actually WINS most games -- raw win rate (wins / all 100 games in
+                    # the window), not decisive rate (wins / decided). Decisive rate lets
+                    # a high draw rate hide a mediocre bot (e.g. 40% win / 13% loss / 47%
+                    # draw reads as 75% decisive while only actually winning 40% of games)
+                    #
+                    # Guarded on phase == "mirror": this block used to run in BOTH
+                    # phases, which was harmless only because phase 2 previously
+                    # required the final stage, making `curriculum_stage + 1 <
+                    # len(CURRICULUM_STAGES)` permanently false once there. Now that
+                    # phase 2 can start from an earlier stage, an unguarded block
+                    # would keep escalating curriculum_stage DURING phase 2 and fight
+                    # the per-deck curriculum below for control of the opponent's
+                    # elixir multiplier.
+                    if phase == "mirror" and not phase_just_advanced:
+                        stage_threshold = CURRICULUM_STAGES[curriculum_stage]["win_rate_threshold"]
+                        if (stage_threshold is not None
+                                and len(outcome_history) == outcome_history.maxlen
+                                and curriculum_stage + 1 < len(CURRICULUM_STAGES)):
+                            outcomes = np.array(outcome_history)
+                            wins = int((outcomes == 1).sum())
+                            win_rate = wins / len(outcomes)
+                            if win_rate >= stage_threshold:
+                                # Snapshot BEFORE incrementing: captures the policy
+                                # that actually cleared THIS stage, still labeled with
+                                # the multiplier it trained against.
+                                save_stage_snapshot(
+                                    net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
+                                    CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
+                                    f"cleared stage {curriculum_stage} gate at win_rate={win_rate:.2f}")
+                                curriculum_stage += 1
+                                new_multiplier = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
+                                envs.call("set_opponent_elixir_multiplier", new_multiplier)
+                                outcome_history.clear()
+                                stage_start_episode = episodes_completed
+                                print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier})")
+                                writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
 
                     # --- Phase 2 per-deck curriculum: the SAME gated stage progression
                     # as phase 1 (win-rate threshold -> escalate elixir multiplier),
@@ -1440,7 +1542,13 @@ def train_ppo():
     # venv interpreter this script itself is running under.
     selfplay_out = open("training_selfplay_pfsp.log", "w")
     selfplay_err = open("training_selfplay_pfsp_err.log", "w")
-    subprocess.Popen([sys.executable, "train_selfplay.py"], stdout=selfplay_out, stderr=selfplay_err)
+    # -u (unbuffered) is not optional here. Python block-buffers stdout when it
+    # is redirected to a file, so without it the handoff produces a 0-byte log
+    # for a long stretch and the live strategy readout (Cards/Game, Elixir@Play)
+    # -- whose entire purpose is watching the run as it happens -- is invisible
+    # until a buffer happens to flush.
+    subprocess.Popen([sys.executable, "-u", "train_selfplay.py"],
+                     stdout=selfplay_out, stderr=selfplay_err)
     print(">>> Launched train_selfplay.py (pipeline #2) -- see training_selfplay_pfsp.log / "
           "training_selfplay_pfsp_err.log")
 

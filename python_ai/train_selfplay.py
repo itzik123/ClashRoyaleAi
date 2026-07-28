@@ -129,7 +129,14 @@ MIN_OPPONENT_AGE_EPISODES = 15000
 # "is this getting better" instead of "did this window's sampled mix happen
 # to be easy or hard."
 EVAL_INTERVAL_EPISODES = 5000
-EVAL_GAMES_PER_OPPONENT = 10
+# Raised 10 -> 50. At 10 games the Elo readout was unusable. Elo is derived via
+# 400*log10(1/score - 1), which explodes near a score of 1.0: flipping ONE game
+# on an anchor sitting at 0.9 moved that anchor's implied Elo by 141 points and
+# the reported average by ~28. Measured across 8 evaluations spanning 35,000
+# episodes: mean 1755, std 53, range 164 -- no resolvable trend, so the metric
+# could neither confirm nor rule out improvement. 50 games cuts the per-anchor
+# standard error roughly in half.
+EVAL_GAMES_PER_OPPONENT = 50
 # Reference roster grows (see update_reference_roster()) as new age-eligible
 # checkpoints appear, capped here -- once full, it's permanently frozen so
 # the Elo scale stays comparable for the rest of the run.
@@ -355,20 +362,37 @@ def discover_historical_checkpoints(current_episode=None):
 
 
 def update_reference_roster(reference_roster, historical_pool):
-    """Grows the FIXED evaluation roster (in place) as new age-eligible
-    checkpoints become available in historical_pool, up to
+    """Grows the FIXED evaluation roster (in place), up to
     REFERENCE_ROSTER_MAX_SIZE. Entries already in the roster are NEVER
-    reordered or replaced -- see REFERENCE_ROSTER_ELO_STEP's comment on why
-    the roster has to stay fixed for the Elo trend to mean anything. Iterates
-    historical_pool oldest-first (its own sort order), so anchors get added
-    weakest-first as the pool grows, same "weakest known so far" assumption
-    used everywhere else in this file."""
+    reordered or replaced -- see REFERENCE_ROSTER_ELO_STEP's comment on why the
+    roster has to stay fixed for the Elo trend to mean anything.
+
+    Anchors are now sampled EVENLY ACROSS the pool (weakest to strongest)
+    instead of taking the first N oldest. The old behaviour filled the roster
+    with the weakest checkpoints available at the time, and measurement showed
+    what that costs: across 8 evaluations, 4 of the 5 anchors sat permanently at
+    a score of 0.90-1.00. A saturated anchor contributes no information about
+    whether the trainee improved -- it can only ever move DOWN, and near score
+    1.0 the Elo formula turns a single lost game into a ~222-point swing. The
+    roster was simultaneously blind to progress and extremely noisy.
+
+    Spreading the picks means the roster spans a real difficulty range, so at
+    least some anchors sit in the informative 0.3-0.7 band where score changes
+    actually track skill."""
     known_paths = {entry["path"] for entry in reference_roster}
-    for path in historical_pool:
+    room = REFERENCE_ROSTER_MAX_SIZE - len(reference_roster)
+    if room <= 0:
+        return reference_roster
+    candidates = [p for p in historical_pool if p not in known_paths]
+    if not candidates:
+        return reference_roster
+    # Evenly spaced indices across the pool, oldest(weakest) -> newest(strongest).
+    n = min(room, len(candidates))
+    picks = [candidates[round(i * (len(candidates) - 1) / max(1, n - 1))] for i in range(n)] if n > 1 \
+        else [candidates[-1]]
+    for path in dict.fromkeys(picks):          # dedupe, preserve order
         if len(reference_roster) >= REFERENCE_ROSTER_MAX_SIZE:
             break
-        if path in known_paths:
-            continue
         next_elo = REFERENCE_ROSTER_BASE_ELO + REFERENCE_ROSTER_ELO_STEP * len(reference_roster)
         reference_roster.append({"path": path, "elo": next_elo})
         known_paths.add(path)
@@ -1175,6 +1199,22 @@ def train_selfplay_ppo():
     # = the injected episode did NOT end in a tower/game loss (survived the
     # threat, or truncated out of the focused window still alive).
     scenario_success_history = deque(maxlen=200)
+    # --- Live strategy diagnostics -------------------------------------
+    # These track the two specific degenerate behaviours measured in phase 1,
+    # which win/loss alone cannot see:
+    #   * the greedy policy had abandoned 2 of its 8 cards entirely (never the
+    #     win condition, never the spell) and won purely by cheap defence
+    #   * it never accumulated elixir -- mean 3.6/10 at the moment it acted --
+    #     so it could never afford a real push
+    # Both are fatal against a competent opponent and invisible in the win rate
+    # against a weak one, so they need their own live readout.
+    cards_per_game_history = deque(maxlen=50)     # distinct cards actually played per game
+    elixir_at_play_history = deque(maxlen=50)     # mean elixir held at the moment of a play
+    plays_per_game_history = deque(maxlen=50)     # how many cards get played at all
+    # Per-env accumulators for the episode currently in flight.
+    ep_card_ids = [set() for _ in range(num_envs)]
+    ep_elixir_at_play = [[] for _ in range(num_envs)]
+    ep_play_count = np.zeros(num_envs, dtype=np.int64)
 
     obs, _ = envs.reset()
     prev_stats = None
@@ -1294,7 +1334,34 @@ def train_selfplay_ppo():
                 "team0_elixir_current": infos.get("elixir", zeros_f),
             }
 
-            shaping = compute_shaping(stats, prev_stats)
+            # Which envs ACTUALLY got a card down this step. The engine silently
+            # refuses illegal/unaffordable plays, so "the policy chose a card" is
+            # not the same as "a card was played" -- only a rise in cumulative
+            # elixir_spent proves it. prev_dones masks the phantom post-autoreset
+            # step, where the counter restarts at 0 and the delta is meaningless.
+            if prev_stats is not None:
+                spent_delta = stats["team0_elixir_spent"] - prev_stats["team0_elixir_spent"]
+                really_played = (spent_delta > 1e-6) & (~prev_dones)
+                if really_played.any():
+                    # Card identity and elixir must come from the observation the
+                    # action was taken on -- the hand rotates the instant a card is
+                    # played, so reading it afterwards returns the wrong card.
+                    hand_ids_np = net.hand_card_ids(obs_tensor).cpu().numpy()
+                    elixir_np = net.elixir_from_obs(obs_tensor).cpu().numpy()
+                    card_idx_np = card_idx.cpu().numpy()
+                    for i in np.nonzero(really_played)[0]:
+                        slot = int(card_idx_np[i])
+                        if slot < net.hand_size:
+                            cid = int(hand_ids_np[i, slot])
+                            if cid >= 0:
+                                ep_card_ids[i].add(cid)
+                        ep_elixir_at_play[i].append(float(elixir_np[i]))
+                        ep_play_count[i] += 1
+
+            # gamma passed explicitly: the tower term is potential-based
+            # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
+            # holds if this is the SAME gamma the GAE/returns use below.
+            shaping = compute_shaping(stats, prev_stats, gamma=gamma)
             shaping = shaping * (1.0 - prev_dones)
             shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards
@@ -1353,6 +1420,16 @@ def train_selfplay_ppo():
                             outcome_value = 0
                         outcome_history.append(outcome_value)
                         outcome_history_long.append(outcome_value)
+                    # Strategy diagnostics close out with the episode, on the same
+                    # normal-game/scenario split as everything else above.
+                    if is_scenario_arr[i] <= 0.5:
+                        cards_per_game_history.append(len(ep_card_ids[i]))
+                        plays_per_game_history.append(int(ep_play_count[i]))
+                        if ep_elixir_at_play[i]:
+                            elixir_at_play_history.append(float(np.mean(ep_elixir_at_play[i])))
+                    ep_card_ids[i] = set()
+                    ep_elixir_at_play[i] = []
+                    ep_play_count[i] = 0
                     ep_rewards[i] = 0
                     ep_shaping[i] = 0
                     ep_steps[i] = 0
@@ -1376,10 +1453,22 @@ def train_selfplay_ppo():
                         # decisive, well-played games or a degenerate/exploited shortcut,
                         # not just inferring it from the win-rate number alone.
                         avg_ticks_50 = np.mean(ep_len_history) * 10 if ep_len_history else float("nan")
+                        # Strategy readout. Cards/Game is the headline: 8.0 means the
+                        # bot is using its whole deck, ~6.0 was the phase-1 failure
+                        # mode (win condition and spell abandoned). Elixir is the
+                        # average bar level when it actually commits a card --
+                        # phase 1 sat at ~3.6, i.e. spending the instant it could.
+                        cards_pg = np.mean(cards_per_game_history) if cards_per_game_history else float("nan")
+                        plays_pg = np.mean(plays_per_game_history) if plays_per_game_history else float("nan")
+                        elix_pl = np.mean(elixir_at_play_history) if elixir_at_play_history else float("nan")
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
                               f"ScenDef: {scenario_sr:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
+                              f"Cards/Game: {cards_pg:.2f}/8 | Plays: {plays_pg:.1f} | Elixir@Play: {elix_pl:.2f} | "
                               f"Pool: {len(historical_pool)} | EntCoef c/p: {ent_coef_card:.4f}/{ent_coef_place:.4f}")
+                        writer.add_scalar("Strategy/Distinct_Cards_Per_Game", cards_pg, episodes_completed)
+                        writer.add_scalar("Strategy/Plays_Per_Game", plays_pg, episodes_completed)
+                        writer.add_scalar("Strategy/Elixir_At_Play", elix_pl, episodes_completed)
                         writer.add_scalar("Progress/Episode_Length_Ticks_50", avg_ticks_50, episodes_completed)
                         if scenario_success_history:
                             writer.add_scalar("Scenario/Defense_Success_Rate", scenario_sr, episodes_completed)

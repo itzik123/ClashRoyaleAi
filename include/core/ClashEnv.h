@@ -1,5 +1,6 @@
 #pragma once
 #include "GameManager.h"
+#include "TimeoutRules.h"
 #include "Building.h"
 #include "BuildingTargeter.h"
 #include "RangedTroop.h"
@@ -150,7 +151,21 @@ private:
     std::vector<float> extractObservation() { return extractObservationForTeam(0); }
 
     float calculateReward() {
-        if (!game.isGameOver()) return 0.0f;
+        if (!game.isGameOver()) {
+            // Reaching the tick limit is NOT a draw. Both Kings are still up
+            // (or GameManager would have flagged game-over), so the match is
+            // decided on towers -- see TimeoutRules for the exact ordering.
+            // Before this, every timed-out match scored 0.0, which taught the
+            // agent that running the clock out was a neutral outcome rather
+            // than a loss it should have been trying to avoid.
+            if (currentTick >= maxTicks) {
+                MatchRules::Outcome timeoutOutcome = TimeoutRules::resolve(game.getBoard());
+                if (timeoutOutcome.loserTeam == 1) return 1.0f;
+                if (timeoutOutcome.loserTeam == 0) return -1.0f;
+                return 0.0f;   // exact tie on towers AND weakest-tower HP
+            }
+            return 0.0f;
+        }
         int loser = game.getLoserTeam();
         if (loser == 1) return 1.0f;
         if (loser == 0) return -1.0f;
