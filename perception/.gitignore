@@ -1,0 +1,26 @@
+# Scoped to perception/ so the repo root's .gitignore is untouched.
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Recordings. Large binaries; they are inputs, not source.
+assets/recordings/
+*.mp4
+*.mkv
+*.mov
+*.avi
+
+# Templates cropped from a specific recording at a specific resolution --
+# regenerable from the recording, and meaningless without it.
+config/templates/
+
+# Generated reports.
+out/
+*.divergence.json
+
+# Replay fixtures ARE committed (tests/assets/*.json) -- they are small and
+# the tests depend on them. Not ignored here on purpose: python_ai/replays/ is
+# rewritten continuously by the training run, so a test bound to it passes or
+# fails depending on when it runs.

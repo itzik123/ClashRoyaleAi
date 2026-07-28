@@ -1,0 +1,16 @@
+# Perception module dependencies. SEPARATE from python_ai/requirements.txt on
+# purpose -- that environment has a training run using it and must not be
+# touched. Install into perception/.venv:
+#
+#   py -3.11 -m venv perception/.venv
+#   perception/.venv/Scripts/python.exe -m pip install -r perception/requirements.txt
+#
+# Python 3.11 specifically, not 3.13/3.14: bridge/sim_driver.py imports
+# python_ai/clash_royale_env.pyd, which is built against 3.11 and fails with
+# "DLL load failed" on any other version.
+
+numpy>=2.0
+# Headless: this module never opens a window. The GUI build pulls in Qt and a
+# large dependency tree for functionality nothing here uses.
+opencv-python-headless>=4.10
+pytest>=8.0
