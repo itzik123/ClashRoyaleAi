@@ -1,167 +1,150 @@
-# Requests and findings for the C++ core
+# Simulator changes requested from `perception/`
 
-Written from `perception/`, which changes nothing outside itself. Nothing here
-has been applied.
+Written from `perception/`, which modifies nothing outside itself. **Nothing
+in this document has been applied by me.**
 
-Three items. **Item 1 is a bug in the engine that affects the training run
-right now and has nothing to do with perception** — it should be read first.
-Items 2 and 3 are a fidelity gap and a convenience request, neither blocking.
+Last updated 2026-07-29, after the river fix landed.
+
+| # | Request | Severity | Status |
+|---|---|---|---|
+| 0 | River band `[16,18)` → `[15.5,17.5)` | was blocking training | **DONE — verified** |
+| 1 | Left Princess towers `x = 3.0` → `4.0` | blocks a stage-0 acceptance target | **open — the only thing actually being asked for** |
+| 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | open, low value, see the numbers |
+| 3 | King Tower has no activation condition | fidelity gap | open, **already worked around, no change needed** |
+| 4 | `inject(..., team)` + `get_hand(team)` | convenience | open, **not blocking, would delete ~150 lines here** |
+
+If only one thing gets done, it is **item 1**, and it is two characters in two
+lines.
 
 ---
 
-## 1. Board geometry does not match the real arena
+## 0. DONE — the river band (verified 2026-07-29)
 
-**Severity: affects self-play training AND perception. Now measured against
-the real game, not just against the engine's own internal symmetry.**
+`Board.h` now reads:
 
-### The measurement
+```cpp
+float riverY_start = 15.5f;
+float riverY_end   = 17.5f;
+Vector2D leftBridge { 4.0f, 16.5f };
+Vector2D rightBridge{ 14.0f, 16.5f };
+```
 
-Calibrating a screen-to-tile homography from a real recording, fitting all
-eight landmarks by least squares and reading off the residual:
+The band is centred on 16.5, which is the axis the tower layout already
+mirrored about (King 2.5 ↔ 30.5, Princess 6.0 ↔ 27.0 under `y → 33 - y`).
 
-| landmark | engine's coordinates | corrected |
-|---|---|---|
-| left_bridge | 0.66 | 0.16 |
-| right_bridge | 0.34 | 0.17 |
-| own_princess_left | 0.42 | 0.23 |
-| own_princess_right | 0.43 | 0.31 |
-| opp_princess_left | 0.43 | 0.03 |
-| opp_princess_right | 0.17 | 0.04 |
-| own_king | 0.39 | 0.34 |
-| opp_king | 0.01 | 0.13 |
-| **max / rms** | **0.66 / 0.40** | **0.34 / 0.21** |
+**Verified two ways, both independent of the change itself.**
 
-Identical pixel measurements, identical solver, identical frame. Only the
-target tile coordinates differ. The real arena fits a homography cleanly; the
-engine's stated layout does not, and misses perception's 0.5-tile calibration
-budget before any detection error is added.
+The placement asymmetry is gone. Same test that found it — 20 trials per row,
+cheap cards only so affordability never limits, each team in **its own
+mirrored frame**:
 
-Three offsets, all half or one tile:
+| row (own frame) | team 0 | team 1 | before the fix |
+|---|---|---|---|
+| 14 | 15/20 | 16/20 | 17/20 vs 15/20 |
+| **15** | **14/20** | **17/20** | **15/20 vs 0/20** |
+| 16 | 0/20 | 0/20 | 0/20 vs 0/20 |
 
-1. **The left Princess tower is a full tile left of its own bridge.** Measured
-   centres: left tower x=819 px, left bridge x=821 px — the same lane, as in
-   the real game where troops crossing a bridge walk straight into the tower.
-   The engine puts the tower at x=3.0 and the bridge at x=4.0.
-2. **The Kings are half a tile off the board centre.** Board `[0,18)` has
-   centre 9.0; `addTower` puts them at 8.5. Measured king x=955.75 px sits at
-   8.79 in bridge-calibrated coordinates.
-3. **The river band is half a tile off the towers' symmetry axis.** Towers
-   mirror about 16.5, the band `[16,18)` is centred on 17.0.
+Both teams now reach row 15 and stop at 16. `get_own_half_max_y()` returns
+15.0, and the rebuilt `.pyd` carries it.
 
-### The consequence that is already costing training
+And the calibration residual against real footage improved: **rms 0.40 →
+0.32**.
 
-Offset 3 above is why **team 1 has one row less placeable ground than team
-0**. 20 trials per row, cheap cards only so affordability is never the
-limiting factor, each team placing in **its own mirrored frame** — the frame
-its own observation and its own policy use:
+This one mattered beyond geometry: `model.py` computes `own_half_rows` once
+and applies the same placement mask to both sides, so team 1's policy was
+proposing row-15 placements that `playCard` silently rejected — gradient
+spent on an action that could never do anything, and only when playing team 1.
 
-| row (own frame) | team 0 | team 1 |
-|---|---|---|
-| 13 | 17/20 | 13/20 |
-| 14 | 17/20 | 15/20 |
-| **15** | **15/20** | **0/20** |
-| 16 | 0/20 | 0/20 |
+---
 
-(The sub-20 rates at rows 13–14 are the building-overlap check against units
-already on the board, not the half boundary.)
+## 1. OPEN — left Princess towers, `x = 3.0` → `4.0`
 
-Team 0 can place on row 15. Team 1 cannot. Ever.
+**This is the request.** Two lines in `GameManager.h`:
+
+```cpp
+addTower(3.0f,  6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));   // -> 4.0f
+addTower(3.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));  // -> 4.0f
+```
 
 ### Why
 
-`Board.h`:
+In the real arena a Princess tower sits directly behind its own bridge —
+troops crossing walk straight into it. Measured from the recordings: left
+tower centre **x = 819 px**, left bridge centre **x = 821 px**. The same lane,
+within measurement error.
 
-```cpp
-float riverY_start = 16.0f;
-float riverY_end   = 18.0f;
-```
+The engine puts the left bridge at `x = 4.0` and the left Princess at
+`x = 3.0`. A full tile apart. The right side is already correct (both at
+14.0), so the left lane is the only one that disagrees with itself.
 
-The river band is `[16, 18)`, centred on **17.0**. But the tower layout is
-symmetric about **16.5** — King 2.5 ↔ 30.5, Princess 6.0 ↔ 27.0, mirrored by
-`y → 33 - y` exactly as `ClashEnv::extractObservationForTeam` does it.
+### What it is worth, measured
 
-The river is half a tile off-centre relative to everything else, and
-`GameManager::isValidPlacement` gates the two teams on *different edges* of
-that band:
+Screen→tile homography fitted to the eight arena landmarks, aggregated over
+the opening frames of all 8 recordings. Identical pixels, identical solver;
+only the target tile coordinates differ:
 
-```cpp
-if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;  // y <= 15.5
-if (team == 1 && y < board.getRiverEnd()   + OWN_HALF_RIVER_BUFFER) return false;  // y >= 18.5
-```
+| target geometry | max error | rms |
+|---|---|---|
+| engine as-is (river already fixed) | **0.63** | 0.33 |
+| **+ left Princess `x` 3.0 → 4.0** | **0.40** ✅ | 0.27 |
+| + Kings `x` 8.5 → 9.0 (alone) | 0.51 | 0.37 |
+| + both | 0.31 | 0.21 |
 
-Mirrored into team 1's own frame, `y >= 18.5` becomes `y' <= 14.5`, against
-team 0's `y <= 15.5`.
+**Stage 0's acceptance target is < 0.5 tiles, and this change alone reaches
+it.** Without it, every placement perception reports starts with 0.63 tiles
+of systematic error before any detection error is added — 42% of stage 3's
+1.5-tile budget, spent on nothing.
 
-### Why it matters beyond aesthetics
+### Blast radius
 
-`python_ai/model.py` computes `own_half_rows` **once**, from
-`get_own_half_max_y()` (15.5 → 16 rows), and applies the same placement mask
-to both sides. `train_selfplay.py` drives team 1 with that same network.
-
-So a policy playing team 1 has row 15 marked legal in its mask, proposes
-placements there, and the engine silently rejects them — `playCard` returns
-`false` and the step proceeds as a no-op. The agent spends gradient on an
-action that can never do anything, and only when it is playing team 1.
-
-This is the same class of problem as the Giant-never-played incident already
-documented in `gym_wrapper.py`: an action that is nominally available and
-never actually works.
-
-### Options (my preference first)
-
-1. **Align the layout with the real arena**: left Princess towers to x=4.0,
-   Kings to x=9.0, river to `[15.5, 17.5)`. This is what the 0.34-tile column
-   above was fitted with, so it is the version the real game agrees with. It
-   fixes the team-1 row asymmetry, the lane misalignment and the calibration
-   budget in one change. Largest blast radius — pathing and placement both
-   move — so it needs a full `ClashRoyaleTests` run.
-1b. **River only, `[15.5, 17.5)`**, leaving the towers where they are. Fixes
-   the team-1 asymmetry, leaves the lane misalignment and about 0.5 tiles of
-   calibration error.
-2. **Gate both teams on the same distance from their own side**, leaving the
-   band alone — e.g. team 1 rejects `y < (BOARD_HEIGHT - 1) - getOwnHalfMaxY()`.
-   Smaller blast radius; leaves the river visually off-centre.
-3. **Leave it and make `model.py` use a per-team row count.** Cheapest, but
-   it encodes the asymmetry into the training code permanently.
-
-I have not applied any of these. Note that option 1 or 2 changes the legal
-action set, which may invalidate `model_weights.pth`'s win-rate history.
+Small, but not zero. It moves a tower, so pathing and aggro around the left
+lane change slightly, and `isValidPlacement`'s building-overlap check moves
+with it. Needs a full `ClashRoyaleTests` run. It changes gameplay, so treat
+`model_weights.pth`'s win-rate history as suspect afterwards — the same
+caveat as the river fix.
 
 ---
 
-## 2. The King Tower has no activation condition
+## 2. OPEN, LOW VALUE — Kings `x = 8.5` → `9.0`
 
-**Severity: fidelity gap. Already worked around.**
+Board `[0, 18)` has centre 9.0. `addTower` puts both Kings at 8.5, so a
+4-tile-wide King spans `[6.5, 10.5)` instead of `[7, 11)`. Measured king
+centre 955.75 px sits at 8.79 in bridge-calibrated coordinates — between the
+two, closer to 9.0.
 
-`Tower.h` builds the King like any other tower and `GameManager::reset()`
-gives it range 7.0 and a 10-tick cooldown. Nothing anywhere makes it dormant,
-so it fires from tick 0. In the real game the King is inert until activated.
+**Worth doing only alongside item 1, not instead of it.** On its own it
+reaches max 0.51 (still failing) and makes rms *worse* (0.33 → 0.37),
+because it corrects one landmark while leaving the left lane wrong. Combined
+with item 1 it takes max 0.63 → 0.31.
 
-For perception this means predicted King HP diverges systematically from
-observed King HP from the first second of every match, no matter how good the
-event stream is.
-
-**Already handled here, no change requested.** `SimDriver.divergence` excludes
-the King towers and `readers/towers.king_divergence` reports them separately,
-so the quality metric measures perception rather than this known gap.
-
-Flagging it only because it is a real behavioural difference that will also
-affect any policy trained against this engine — an agent learns that chip
-damage to the King is punished immediately, which is not true of the real game.
+Low priority. I would not spend a test cycle on this alone.
 
 ---
 
-## 3. Requested: `inject(cardId, x, y, team)` and `get_hand(team)`
+## 3. OPEN — King Tower has no activation condition. **No change requested.**
 
-**Severity: convenience. NOT blocking — a workaround is implemented and
-tested.**
+`Tower.h` builds the King like any other tower; `GameManager::reset()` gives
+it range 7.0 and a 10-tick cooldown. Nothing makes it dormant, so it fires
+from tick 0. The real King is inert until activated.
 
-I want to be clear that this is no longer needed for correctness. I asked
-about it before measuring; having measured, the pure-Python workaround works
-and the control experiment passes with divergence identically zero. This is a
-request to delete complexity, not to unblock anything.
+**Already handled on this side and no change is being asked for.**
+`SimDriver.divergence` excludes both Kings and `readers/towers.king_divergence`
+reports them separately, so the pipeline's quality metric measures perception
+rather than this known gap.
 
-### What is awkward today
+Recorded here only because it is a real behavioural difference that also
+affects training: an agent learns that chip damage to the King is punished
+immediately, which is not true of the real game.
+
+---
+
+## 4. OPEN — `inject(cardId, x, y, team)` and `get_hand(team)`. Not blocking.
+
+**A workaround is implemented, tested, and passes with divergence identically
+zero.** This is a request to delete complexity, not to unblock anything. If
+the answer is no, nothing breaks.
+
+### What is awkward
 
 `ClashEnv::injectEnemy` hardcodes team 1:
 
@@ -179,27 +162,26 @@ and the queue behind it cannot be read (`getHand()` is team 0 only).
 
 ### The workaround, and what it costs
 
-`bridge/sim_driver.py` searches for the right shuffle: draw ~20,000 resets
-(0.135 ms each), keep the ~200 whose hand-set matches our real opening hand,
-carry them all forward, and eliminate those that could not have dealt what
-reality dealt. After four confirmed deals the survivors have our exact cycle.
+`bridge/sim_driver.py` reverse-engineers the shuffle: draw ~20,000 resets
+(0.135 ms each, measured), keep the ~200 whose hand-set matches the real
+opening hand, carry them all forward, and eliminate the ones that could not
+have dealt what reality dealt. After four confirmed deals every survivor has
+our exact cycle, and from there the two FIFOs cannot diverge.
 
-It works. It costs:
+It works — 0 refusals, 0 desyncs, divergence 0 on the control. It costs:
 
-- ~2.7 s of startup per match, and ~1.4 s of redundant simulation
-  (200 environments stepping in lockstep until the pool narrows);
-- ~150 lines of machinery whose only purpose is to reverse-engineer a shuffle;
-- residual play refusals, because `playCard` still checks elixir and placement
-  legality against a board the estimate may have slightly wrong. Zero on the
-  control, non-zero on approximate input.
+- ~2.7 s of startup per match and ~1.4 s of redundant simulation (200
+  environments stepping in lockstep until the pool narrows);
+- ~150 lines whose only purpose is to undo a shuffle;
+- a residual failure mode: `playCard` still checks elixir and placement
+  legality against a board the estimate may have slightly wrong.
 
 ### The change
 
-Two small additions, both purely additive:
+Purely additive. Nothing existing changes behaviour:
 
 ```cpp
-// ClashEnv.h -- keep injectEnemy exactly as it is, so no existing caller
-// changes. This is the general form.
+// ClashEnv.h -- injectEnemy stays exactly as it is, so no caller changes.
 void inject(int cardId, float x, float y, int team) {
     const auto* card = CardRegistry::getInstance().getCard(cardId);
     if (card) card->spawnEntity(x, y, team, game.getBoard());
@@ -212,42 +194,26 @@ std::vector<int> getHandForTeam(int team) const { return game.getHand(team); }
 // bindings.cpp
 .def("inject", &ClashEnv::inject,
      py::arg("card_id"), py::arg("x"), py::arg("y"), py::arg("team"))
-.def("get_hand_for_team", &ClashEnv::getHandForTeam, py::arg("team"))
+.def("get_hand_for_team", &ClashEnv::getHandForTeam, py::arg("team"));
 ```
 
-No behaviour change to any existing path. `injectEnemy` untouched.
-`get_hand()` untouched. No effect on the observation vector, the action
-space, or any checkpoint — a rebuilt `.pyd` stays compatible with
-`model_weights.pth`.
-
 `game.getHand(int)` and `GameManager::playCard(team, ...)` already exist and
-are already public; this only exposes them.
-
-### What it buys
-
-The entire candidate pool deletes. Own placements become one `inject` call,
-exactly like opponent placements, bypassing hand/elixir/legality — which is
-correct for an estimator, since the real game already validated the play and
-elixir is derived independently. Startup drops to zero and the residual
-refusal class disappears entirely.
-
-**If the answer is no, nothing breaks.** The workaround stays and this
-document records why it exists.
+are already public. No effect on the observation vector, the action space, or
+any checkpoint — a rebuilt `.pyd` stays compatible with current weights.
 
 ---
 
-## Not requested
+## Explicitly NOT requested
 
-- **Game phases / overtime.** The brief asked for a clock that knows
-  single/double/triple/overtime. `ELIXIR_REGEN_RATE` is a single `const float`
-  applied to both players with no phase concept, and `oppElixirMultiplier` is
-  a training-curriculum knob, not a game phase. The phase is carried as a
-  field in `ClockState`, marked not-consumed, and deliberately left
-  unconnected. **Not asking for the engine to grow phases.**
-- **The 2% elixir gap.** `0.035/tick × 10 ticks/s` = 2.857 s per elixir
-  against the real 2.8. Changing it would be a gameplay change mid-training
-  run. `perception/` uses the real rate for the real opponent and the engine's
+- **Game phases / overtime.** `ELIXIR_REGEN_RATE` is one `const float`
+  applied to both players with no phase concept. The phase is carried as a
+  field in `ClockState`, marked not-consumed, and left unconnected on
+  purpose. Not asking the engine to grow phases.
+- **The ~2% elixir gap.** `0.035/tick × 10 ticks/s` = 2.857 s per elixir
+  against the real 2.8 — and 2.80 s is now *measured* off the recordings, not
+  assumed. Changing it would be a gameplay change mid-training-run.
+  `perception/` uses the real rate for the real opponent and the engine's
   rate when reasoning about the engine, and keeps them explicitly separate.
-- **Card levels.** The registry has none. Recorded matches will have them,
-  which is why `readers/towers.py` takes max-HP as a caller input rather than
-  assuming the engine's values.
+- **Card levels.** The registry has none; recorded matches do. That is why
+  `readers/towers.py` takes max-HP as a caller input instead of assuming the
+  engine's values.
