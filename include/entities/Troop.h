@@ -8,6 +8,14 @@ protected:
 public:
     bool riverIgnores = false;
 
+    // Read-only view of the protected movement speed, for the observation
+    // encoder's attribute channels -- same rationale as CombatEntity's
+    // getAttackRange/getAttackCooldown. Note this returns the BASE speed, not
+    // the frozen-adjusted one used in update(): what the observation should
+    // describe is what kind of unit this is, and freeze is already visible
+    // through the unit simply not moving between consecutive frames.
+    float getSpeed() const { return speed; }
+
     Troop(int id, float x, float y, int hp, int team, char symbol,
         float speed, float attackRange, int damage, int attackCooldown)
         : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown),

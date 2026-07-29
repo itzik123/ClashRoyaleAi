@@ -228,6 +228,14 @@ class MicroRoyaleEnv(gym.Env):
             # compute_shaping() -- see W_TOWER_DESTROYED.
             "team0_towers_alive": self.game.get_towers_alive(0),
             "team1_towers_alive": self.game.get_towers_alive(1),
+            # SUPERVISION TARGET for the network's auxiliary elixir head, and
+            # nothing else. Deliberately delivered through info -- NOT through
+            # the observation -- because the opponent's current elixir is
+            # hidden information a human cannot read off the screen. Putting
+            # it in the observation would train a policy that silently depends
+            # on something perception/ can never supply from a real match.
+            # See MicroRoyaleNet.predict_opp_elixir.
+            "opp_elixir": self.game.get_elixir_for_team(1),
             # Not part of observation_space -- see ClashEnv.h's own comment
             # on why champion-ability state stays out of the flat
             # observation vector (would break model.py's fixed scalar_size

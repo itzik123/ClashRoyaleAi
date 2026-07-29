@@ -1149,6 +1149,31 @@ protected:
     // (rampFullTick == 0, chargeThreshold == 0.0f, currentHitCount == 1),
     // so this returns `damage` unchanged for every card that doesn't opt
     // into any of them.
+// Read-only views of protected combat stats. Added purely so the observation
+// encoder (ClashEnv::extractObservationForTeam's attribute channels) can
+// describe what a unit on the board actually does, without being granted
+// write access to it and without a friend declaration.
+//
+// This opens a short public: block and closes it again immediately below, so
+// getCurrentDamage() and everything after it keep the exact access they had
+// before. That is why damage is exposed as a derived per-tick rate here
+// rather than by making getCurrentDamage() itself public -- widening an
+// existing member's access is a bigger change than adding a new one.
+public:
+    float getAttackRange() const { return attackRange; }
+    int getAttackCooldown() const { return attackCooldown; }
+
+    // Damage per TICK, the comparable quantity: a 755-damage Mini PEKKA
+    // swinging every 16 ticks is not 3.7x a 202-damage Knight swinging every
+    // 12. Built on getCurrentDamage() rather than raw `damage` so ramp,
+    // charge and buff state are all reflected.
+    float getDamagePerTick() const {
+        int cooldown = attackCooldown > 0 ? attackCooldown : 1;
+        return static_cast<float>(getCurrentDamage()) / static_cast<float>(cooldown);
+    }
+
+protected:
+
     int getCurrentDamage() const {
         int base = damage;
         if (rampFullTick > 0) {

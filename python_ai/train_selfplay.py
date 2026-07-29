@@ -16,6 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 
 import clash_royale_env
+import gym_wrapper
 from gym_wrapper import DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS
 from model import MicroRoyaleNet
 from train import (
@@ -23,6 +24,7 @@ from train import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
     DRAW_PENALTY, load_state_dict_flexible,
 )
+import exploiter as exploiter_mod
 
 # --- Pipeline #2: Historical Self-Play (League / PFSP) ---
 # Pipeline #1 (train.py) teaches the bot to beat a random-but-unskilled
@@ -140,7 +142,34 @@ EVAL_GAMES_PER_OPPONENT = 50
 # Reference roster grows (see update_reference_roster()) as new age-eligible
 # checkpoints appear, capped here -- once full, it's permanently frozen so
 # the Elo scale stays comparable for the rest of the run.
-REFERENCE_ROSTER_MAX_SIZE = 5
+REFERENCE_ROSTER_MAX_SIZE = 6
+
+# PERMANENT, non-self-referential anchors: the C++ HeuristicOpponent at three
+# elixir multipliers.
+#
+# Why these have to exist. Every anchor used to be a snapshot of the trainee's
+# own past, which makes the whole Elo scale self-referential -- it measures
+# "better than I used to be", not "good at the game". That failure was measured
+# twice over: 4 of 5 historical anchors sat pinned at a score of 0.90-1.00 for
+# 8 straight evaluations (no resolution left), and separately the heuristic
+# opponent -- roughly 100 lines of hand-written rules -- beat a policy trained
+# for 47,000 episodes 71% of the time. A scale built only from self-copies
+# cannot see either problem.
+#
+# Multipliers chosen from measurement, not guessed: the current policy scores
+# 100% vs 1.0x and 97% vs 1.2x, so 1.0x is already saturated and only useful as
+# a floor/regression tripwire. 1.35x and 1.5x are where there is real
+# resolution. Elos are hand-assigned and ordered by measured difficulty -- as
+# with the historical anchors these are a comparable TREND, not a calibrated
+# rating (see REFERENCE_ROSTER_ELO_STEP).
+#
+# The "builtin:" prefix is what evaluate_against_roster dispatches on; it is
+# never a real file path, so torch.load is never attempted on it.
+BUILTIN_ANCHORS = [
+    ("builtin:heuristic@1.00", 1200),
+    ("builtin:heuristic@1.35", 1500),
+    ("builtin:heuristic@1.50", 1700),
+]
 # Anchor Elo values are HAND-ASSIGNED, evenly spaced by pool position at the
 # time each anchor is added -- NOT empirically cross-calibrated against each
 # other. This means the absolute number this produces is not a "real"
@@ -150,6 +179,29 @@ REFERENCE_ROSTER_MAX_SIZE = 5
 # missing before.
 REFERENCE_ROSTER_BASE_ELO = 1000
 REFERENCE_ROSTER_ELO_STEP = 150
+
+# --- Auxiliary task: opponent elixir estimation ------------------------------
+# Weight on the auxiliary loss that trains MicroRoyaleNet.predict_opp_elixir
+# (see that method for why the head exists at all). The head predicts the
+# opponent's CURRENT elixir, which is hidden information and deliberately
+# absent from the observation; the net has to infer it from elapsed time and
+# both sides' cumulative spend, which ARE in the observation.
+#
+# Its gradient flows back into the shared LSTM/CNN trunk -- that is the entire
+# point. This is representation shaping, not an extra output: the sparse
+# win/loss signal gives the recurrent state almost no reason to integrate
+# opponent spending over a whole match, and "how much elixir do they have
+# right now" is the single most load-bearing latent variable in the game.
+#
+# 0.5 chosen so the term is a real but minority contributor: the target is in
+# elixir units (0-10) and a well-fit head sits around 1.0-1.5 MAE, i.e. an MSE
+# of ~1-2, versus an actor loss of order 0.1. Scaled by 0.02 below to bring
+# the two into the same range before weighting.
+AUX_ELIXIR_COEF = 0.5
+# Converts the elixir-unit MSE into the same numeric range as the other loss
+# terms. Kept explicit (rather than folded into AUX_ELIXIR_COEF) so the LOGGED
+# diagnostic stays in interpretable elixir units.
+AUX_ELIXIR_SCALE = 0.02
 
 WEIGHT_PATH = "model_weights_selfplay.pth"
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
@@ -380,6 +432,13 @@ def update_reference_roster(reference_roster, historical_pool):
     least some anchors sit in the informative 0.3-0.7 band where score changes
     actually track skill."""
     known_paths = {entry["path"] for entry in reference_roster}
+    # Built-in anchors go in FIRST and stay forever -- they are the only part of
+    # the scale that is not a copy of the trainee, and they never saturate away
+    # the way a beaten historical snapshot does.
+    for descriptor, elo in BUILTIN_ANCHORS:
+        if descriptor not in known_paths:
+            reference_roster.append({"path": descriptor, "elo": elo})
+            known_paths.add(descriptor)
     room = REFERENCE_ROSTER_MAX_SIZE - len(reference_roster)
     if room <= 0:
         return reference_roster
@@ -424,10 +483,21 @@ def evaluate_against_roster(net, device, roster, n_games=10):
     try:
         for entry in roster:
             path, ref_elo = entry["path"], entry["elo"]
-            # Scenarios OFF for evaluation: Elo must measure clean-game strength,
-            # not defense of an injected handicap.
-            env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
-            env.set_historical_opponent(path)
+            # Two kinds of anchor need two different envs, and the distinction is
+            # load-bearing: MicroRoyaleSelfPlayEnv drives team 1 through
+            # ClashEnv::stepSelfPlay, which deliberately does NOT call
+            # opponentTurn() -- so the C++ HeuristicOpponent never runs there.
+            # Evaluating against it requires the ordinary MicroRoyaleEnv, whose
+            # step() goes through game.step() and therefore does.
+            if path.startswith("builtin:"):
+                multiplier = float(path.split("@")[1])
+                env = gym_wrapper.MicroRoyaleEnv()
+                env.set_opponent_elixir_multiplier(multiplier)
+            else:
+                # Scenarios OFF for evaluation: Elo must measure clean-game
+                # strength, not defense of an injected handicap.
+                env = MicroRoyaleSelfPlayEnv({"scenarios_enabled": False})
+                env.set_historical_opponent(path)
             wins = losses = draws = 0
             for _ in range(n_games):
                 obs, _ = env.reset()
@@ -439,7 +509,7 @@ def evaluate_against_roster(net, device, roster, n_games=10):
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
                     with torch.no_grad():
                         card_mask = net.affordability_mask(obs_t)
-                        features, card_embeds = net.extract_features(obs_t)
+                        features, card_embeds, spatial_map = net.extract_features(obs_t)
                         (card_logits, _, _, _,
                          (hx, cx)) = net.step_lstm_and_card(features, (hx, cx), card_mask)
                         # argmax over MASKED logits -- an unaffordable card can
@@ -447,7 +517,7 @@ def evaluate_against_roster(net, device, roster, n_games=10):
                         # the policy best LEGAL move rather than a play the
                         # engine would silently drop.
                         card_idx_t = card_logits.argmax(dim=-1)
-                        place_logits = net.placement_given_card(hx, card_embeds, card_idx_t, obs_t)
+                        place_logits = net.placement_given_card(hx, card_embeds, card_idx_t, obs_t, spatial_map)
                         cell = place_logits.argmax(dim=-1)
                         x_t, y_t = net.cell_to_xy(cell)
                     card_idx = int(card_idx_t.item())
@@ -686,13 +756,13 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # would be a far weaker (and differently-behaved) opponent than the
             # checkpoint it is supposed to be reproducing.
             card_mask1 = self.opponent_net.affordability_mask(obs1_t)
-            features1, card_embeds1 = self.opponent_net.extract_features(obs1_t)
+            features1, card_embeds1, spatial_map1 = self.opponent_net.extract_features(obs1_t)
             (logits1, _, _, _,
              (self.opponent_hx, self.opponent_cx)) = self.opponent_net.step_lstm_and_card(
                 features1, (self.opponent_hx, self.opponent_cx), card_mask1)
             card_idx1_t = Categorical(logits=logits1).sample()
             place_logits1 = self.opponent_net.placement_given_card(
-                self.opponent_hx, card_embeds1, card_idx1_t, obs1_t)
+                self.opponent_hx, card_embeds1, card_idx1_t, obs1_t, spatial_map1)
             cell1 = Categorical(logits=place_logits1).sample()
             x1_t, y1_t = self.opponent_net.cell_to_xy(cell1)
             card_idx1 = card_idx1_t.item()
@@ -882,6 +952,11 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # compute_shaping() -- see W_TOWER_DESTROYED.
             "team0_towers_alive": self.game.get_towers_alive(0),
             "team1_towers_alive": self.game.get_towers_alive(1),
+            # Supervision target for the auxiliary elixir head -- see the
+            # identical key in gym_wrapper.MicroRoyaleEnv.step()'s info dict
+            # and MicroRoyaleNet.predict_opp_elixir. Hidden information, so it
+            # travels through info and never through the observation.
+            "opp_elixir": self.game.get_elixir_for_team(1),
             "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
             # 1.0 while the current episode started from an injected scenario --
@@ -1030,8 +1105,40 @@ def train_selfplay_ppo():
     # Targets come from the measured healthy/unhealthy bands across runs D/E:
     #   card      0.10 collapsed (5/8 cards), 0.35 kept 6/8 -> target 0.35
     #   placement 0.46 too narrow (20 cells), 0.77 was wide  -> target 0.65
+    # ANNEALED, not fixed. Measured pathology this replaces: with the target
+    # pinned at 0.65 for the whole run, the placement entropy coefficient rose
+    # monotonically (0.1286 -> 0.1476 across 50,000 self-play episodes) --
+    # i.e. the policy was trying to sharpen its placement the entire time and
+    # the controller kept forcing it back open. 0.65 * log(612) = 4.17 nats is
+    # a spread over ~65 board cells; a strong player commits to a tile.
+    #
+    # Note the existing comment on ENTROPY_ADAPT_RATE below already concluded
+    # "placement spread is a poor proxy for skill and should not be optimized
+    # directly" -- and yet a fixed target optimizes exactly that, forever.
+    # Annealing resolves that contradiction: wide while the policy is still
+    # discovering where things go, tight once it is refining.
+    #
+    # 0.25 * log(612) = 1.60 nats ~= 5 effective cells: committed, but not a
+    # collapsed point mass. Deliberately NOT annealed to 0 -- some placement
+    # noise is genuinely correct in a game with a live opponent.
+    #
+    # The CARD target is deliberately left FIXED. The measured failure mode
+    # there is the opposite one: card entropy 0.10 collapsed the policy to
+    # 5 of 8 cards. Narrowing card choice is the known danger, so only the
+    # placement head -- where the evidence says the controller is fighting the
+    # policy -- gets annealed.
     ENTROPY_TARGET_CARD = 0.35
-    ENTROPY_TARGET_PLACEMENT = 0.65
+    ENTROPY_TARGET_PLACEMENT_START = 0.50
+    ENTROPY_TARGET_PLACEMENT_FINAL = 0.25
+    # Sized to one long run on this machine: the last full pipeline reached
+    # ~60k episodes in phase 1 and ~50k in phase 2. Past the horizon the
+    # target simply stays at FINAL.
+    ENTROPY_ANNEAL_EPISODES = 60000
+
+    def placement_entropy_target(eps_done):
+        frac = min(1.0, max(0.0, eps_done / ENTROPY_ANNEAL_EPISODES))
+        return (ENTROPY_TARGET_PLACEMENT_START
+                + frac * (ENTROPY_TARGET_PLACEMENT_FINAL - ENTROPY_TARGET_PLACEMENT_START))
     # Reverted 0.15 -> 0.5 after a matched-depth measurement contradicted the
     # earlier reasoning. Lowering the gain DID smooth the controller (mean
     # |entropy - target| fell, placement no longer free-fell), but the resulting
@@ -1181,6 +1288,9 @@ def train_selfplay_ppo():
     obs_buffer, card_actions_buffer, placement_actions_buffer = [], [], []
     logprobs_buffer, values_buffer, rewards_buffer = [], [], []
     masks_buffer, valid_buffer = [], []
+    # Ground-truth opponent elixir per step -- supervision for the auxiliary
+    # head only, never an input. See AUX_ELIXIR_COEF.
+    aux_elixir_buffer = []
     # See train.py identical decision_buffer comment: 1 only where the
     # affordability mask left a real choice, used to normalize the actor and
     # entropy terms so forced no-ops do not shrink the effective step size.
@@ -1228,6 +1338,12 @@ def train_selfplay_ppo():
 
     last_save_ep = episodes_completed
     last_historical_save_ep = episodes_completed
+    # League exploiter state -- see exploiter.py. Kept across bursts so a burst
+    # can continue the previous exploiter rather than always restarting, and
+    # reset on the module's own re-seed cadence.
+    exploiter_state = None
+    exploiter_burst_index = 0
+    last_exploiter_burst_ep = None
     last_replay_ep = episodes_completed
     ep_rewards = np.zeros(num_envs)
     ep_shaping = np.zeros(num_envs)
@@ -1266,12 +1382,12 @@ def train_selfplay_ppo():
                 # before placement can be conditioned on it -- see model.py
                 # own comment on why forward_from_features (card_idx already
                 # known) does not fit the rollout case.
-                features, card_embeds = net.extract_features(obs_tensor)
+                features, card_embeds, spatial_map = net.extract_features(obs_tensor)
                 card_logits, _, _, state_value, (hx, cx) = net.step_lstm_and_card(
                     features, (hx, cx), card_mask)
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
-                placement_logits = net.placement_given_card(hx, card_embeds, card_idx, obs_tensor)
+                placement_logits = net.placement_given_card(hx, card_embeds, card_idx, obs_tensor, spatial_map)
                 placement_dist = Categorical(logits=placement_logits)
                 placement_cell = placement_dist.sample()
                 total_logprob = card_dist.log_prob(card_idx) + placement_dist.log_prob(placement_cell)
@@ -1312,7 +1428,7 @@ def train_selfplay_ppo():
                 # state that would process it (post this step's forward, pre the
                 # done-mask reset below) -- so this is exactly V(final_obs).
                 with torch.no_grad():
-                    boot_feats, _ = net.extract_features(torch.tensor(next_obs, dtype=torch.float32).to(device))
+                    boot_feats, _, _ = net.extract_features(torch.tensor(next_obs, dtype=torch.float32).to(device))
                     _, _, _, boot_v, _ = net.step_lstm_and_card(boot_feats, (hx, cx))
                     boot_v = boot_v.squeeze(-1)
                 needs_boot_t = torch.as_tensor(needs_boot, dtype=torch.bool, device=device)
@@ -1396,6 +1512,9 @@ def train_selfplay_ppo():
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(mask)
             valid_buffer.append(valid)
+            aux_elixir_buffer.append(
+                torch.tensor(np.asarray(infos.get("opp_elixir", np.zeros(num_envs, dtype=np.float32)),
+                                        dtype=np.float32)).to(device))
             boot_nonterminal_buffer.append(boot_nonterminal)
             trunc_flag_buffer.append(trunc_flag)
             trunc_boot_buffer.append(trunc_boot_val)
@@ -1546,6 +1665,7 @@ def train_selfplay_ppo():
         rewards_seq = torch.stack(rewards_buffer)
         masks_seq = torch.stack(masks_buffer)
         valid_seq = torch.stack(valid_buffer)
+        aux_elixir_seq = torch.stack(aux_elixir_buffer)                # (T, N) -- opponent elixir ground truth
         boot_nonterminal_seq = torch.stack(boot_nonterminal_buffer)
         trunc_flag_seq = torch.stack(trunc_flag_buffer)
         trunc_boot_seq = torch.stack(trunc_boot_buffer)
@@ -1555,7 +1675,7 @@ def train_selfplay_ppo():
             # Value only depends on hx, never needs a card/placement -- skips
             # straight past card_logits and never touches placement (see
             # model.py's own comment on why this split exists).
-            next_features, _ = net.extract_features(next_obs_tensor)
+            next_features, _, _ = net.extract_features(next_obs_tensor)
             _, _, _, next_value, _ = net.step_lstm_and_card(next_features, (hx, cx))
             next_value = next_value.squeeze(-1)
 
@@ -1605,6 +1725,7 @@ def train_selfplay_ppo():
         seg_mb_size = max(1, n_segments // num_minibatches)
         chunk_offsets = torch.arange(bptt_chunk, dtype=torch.long, device=device).unsqueeze(1)
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
+        aux_losses, aux_maes = [], []
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
@@ -1622,8 +1743,15 @@ def train_selfplay_ppo():
                 ee = ev.unsqueeze(0).expand(bptt_chunk, B)    # (L, B)
 
                 mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
-                feats_seq, card_embeds_seq = net.extract_features(mb_obs_flat)
+                feats_seq, card_embeds_seq, spatial_seq = net.extract_features(mb_obs_flat)
                 feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                # Same (T,B,...) split for the CNN's spatial map, which the
+                # convolutional placement head consumes. Recomputed here from
+                # the SAME stored observations rather than buffered, for the
+                # identical reason card_mask_seq is: anything that can drift
+                # apart from what the rollout used silently corrupts the PPO
+                # ratio, and deriving it makes drift impossible.
+                spatial_seq = spatial_seq.view(bptt_chunk, B, *spatial_seq.shape[1:])
                 # Same observations the rollout acted on, reshaped per timestep so
                 # placement legality is recomputed identically (see placement_mask).
                 mb_obs_seq = mb_obs_flat.view(bptt_chunk, B, -1)
@@ -1642,6 +1770,7 @@ def train_selfplay_ppo():
                 rcx = cx_in_seq[t0, ev]
                 new_logprobs, new_values = [], []
                 new_ent_card, new_ent_place = [], []
+                new_aux_elixir = []
                 for l in range(bptt_chunk):
                     # mb_card_actions[l] -- the STORED action from rollout, not
                     # a fresh sample -- conditions placement here exactly like
@@ -1652,7 +1781,8 @@ def train_selfplay_ppo():
                     (logits_t, place_logits_t, value_t, _, _,
                      (rhx, rcx)) = net.forward_from_features(
                         feats_seq[l], card_embeds_seq[l], (rhx, rcx),
-                        mb_card_actions[l], card_mask_seq[l], mb_obs_seq[l])
+                        mb_card_actions[l], card_mask_seq[l], mb_obs_seq[l],
+                        spatial_seq[l])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Categorical(logits=place_logits_t)
                     lp_t = card_dist_t.log_prob(mb_card_actions[l]) \
@@ -1661,6 +1791,10 @@ def train_selfplay_ppo():
                     new_values.append(value_t.squeeze(-1))
                     new_ent_card.append(card_dist_t.entropy())
                     new_ent_place.append(place_dist_t.entropy())
+                    # Auxiliary prediction from the SAME post-step hidden state
+                    # that produced the action logits above, so the gradient
+                    # lands on the representation the policy actually used.
+                    new_aux_elixir.append(net.predict_opp_elixir(rhx))
                     reset_t = mb_masks[l].unsqueeze(1)
                     rhx = rhx * reset_t
                     rcx = rcx * reset_t
@@ -1669,6 +1803,7 @@ def train_selfplay_ppo():
                 new_values = torch.stack(new_values)       # (L, B)
                 new_ent_card = torch.stack(new_ent_card)
                 new_ent_place = torch.stack(new_ent_place)
+                new_aux_elixir = torch.stack(new_aux_elixir)   # (L, B), elixir units
 
                 mb_adv = adv_norm_seq[tt, ee]
                 mb_ret = returns_seq[tt, ee]
@@ -1700,7 +1835,18 @@ def train_selfplay_ppo():
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
                                  + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
                 # entropy_bonus already carries its per-head coefficients.
-                loss = actor_loss + 0.5 * critic_loss - entropy_bonus
+                # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
+                # reason the critic loss is: phantom auto-reset steps carry an
+                # observation from the NEXT episode paired with stale
+                # bookkeeping, and regressing on those teaches noise.
+                aux_err = (new_aux_elixir - aux_elixir_seq[tt, ee])
+                aux_loss = ((aux_err ** 2) * mb_valid).sum() / n_valid
+                aux_mae = ((aux_err.abs()) * mb_valid).sum() / n_valid
+                aux_losses.append(aux_loss.item())
+                aux_maes.append(aux_mae.item())
+
+                loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
+                        + AUX_ELIXIR_COEF * AUX_ELIXIR_SCALE * aux_loss)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -1732,11 +1878,12 @@ def train_selfplay_ppo():
         # --- entropy controller step (see ENTROPY_TARGET_* above) ---
         card_frac = mean_ent_card / LOG_N_CARD
         place_frac = mean_ent_place / LOG_N_PLACEMENT
+        ent_target_place = placement_entropy_target(episodes_completed)
         ent_coef_card = float(np.clip(
             ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
             ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
         ent_coef_place = float(np.clip(
-            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_PLACEMENT - place_frac)),
+            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ent_target_place - place_frac)),
             ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
         writer.add_scalar("Policy/Entropy_Coef_Card", ent_coef_card, episodes_completed)
         writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
@@ -1745,10 +1892,22 @@ def train_selfplay_ppo():
         writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card / LOG_N_CARD, episodes_completed)
         writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place / LOG_N_PLACEMENT, episodes_completed)
         writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
+        # Auxiliary elixir head, reported in ELIXIR UNITS so it is directly
+        # interpretable: MAE is "how many elixir off is our estimate of what
+        # the opponent is holding". A always-guess-the-mean baseline sits near
+        # the spread of opponent elixir (~2.5); anything meaningfully below
+        # that means the recurrent state genuinely learned to count.
+        writer.add_scalar("Aux/OppElixir_MAE", float(np.mean(aux_maes)), episodes_completed)
+        # The annealed target next to the measured value, so "is the controller
+        # fighting the policy" stays answerable at a glance -- that comparison
+        # is exactly what diagnosed the fixed-target pathology in the first place.
+        writer.add_scalar("Entropy/Placement_Target", ent_target_place, episodes_completed)
+        writer.add_scalar("Entropy/Placement_Measured", place_frac, episodes_completed)
+        writer.add_scalar("Aux/OppElixir_MSE", float(np.mean(aux_losses)), episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         print(f"  >> Update @ ep {episodes_completed} | Actor: {mean_actor_loss:.5f} | "
               f"Critic: {mean_critic_loss:.5f} | Entropy: {mean_entropy:.4f} | "
-              f"ClipFrac: {mean_clip_frac:.4f}")
+              f"ClipFrac: {mean_clip_frac:.4f} | OppElixirMAE: {float(np.mean(aux_maes)):.2f}")
 
         obs_buffer.clear()
         card_actions_buffer.clear()
@@ -1761,6 +1920,7 @@ def train_selfplay_ppo():
         rewards_buffer.clear()
         masks_buffer.clear()
         valid_buffer.clear()
+        aux_elixir_buffer.clear()
         boot_nonterminal_buffer.clear()
         trunc_flag_buffer.clear()
         trunc_boot_buffer.clear()
@@ -1798,6 +1958,36 @@ def train_selfplay_ppo():
             historical_pool = discover_historical_checkpoints(episodes_completed)
             envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
 
+        # --- League exploiter burst ------------------------------------
+        # Trains a SEPARATE agent whose only job is to beat the main agent as
+        # it is right now, then drops its snapshot into the same pool the main
+        # agent samples from. See exploiter.py for why the existing pool could
+        # not produce this pressure on its own: every neural opponent in it is
+        # a past self, so self-play was free to cycle rather than improve --
+        # which is what the flat behavioural diagnostics of the previous run
+        # actually showed.
+        #
+        # Note the exploiter's snapshot is deliberately eligible IMMEDIATELY:
+        # discover_historical_checkpoints only age-gates filenames matching
+        # _pipeline2_ep<N>, and an exploiter snapshot is named differently on
+        # purpose. Age-gating it would defeat the point -- its whole value is
+        # that it targets the CURRENT main agent, and it goes stale as the
+        # main agent patches the hole, not as it gets older.
+        if exploiter_mod.should_run_burst(episodes_completed, last_exploiter_burst_ep):
+            print(f">>> Starting exploiter burst #{exploiter_burst_index} "
+                  f"at episode {episodes_completed}...")
+            exploiter_state, ex_stats = exploiter_mod.run_exploiter_burst(
+                net, device, episodes_completed, DEFAULT_DECK_ABILITY_SLOTS,
+                exploiter_state=exploiter_state,
+                burst_index=exploiter_burst_index, writer=writer)
+            exploiter_burst_index += 1
+            last_exploiter_burst_ep = episodes_completed
+            # Refresh so the brand-new exploiter snapshot actually enters
+            # rotation; without this it would sit unused until the next
+            # historical save happened to refresh the pool anyway.
+            historical_pool = discover_historical_checkpoints(episodes_completed)
+            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+
         if episodes_completed - last_eval_ep >= EVAL_INTERVAL_EPISODES:
             update_reference_roster(reference_roster, historical_pool)
             if reference_roster:
@@ -1831,11 +2021,11 @@ def train_selfplay_ppo():
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
                 t_mask = net.affordability_mask(t_obs_tensor)
-                t_features, t_card_embeds = net.extract_features(t_obs_tensor)
+                t_features, t_card_embeds, t_spatial = net.extract_features(t_obs_tensor)
                 (t_logits, _, _, t_value,
                  (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx), t_mask)
                 t_idx = Categorical(logits=t_logits).sample()
-                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx, t_obs_tensor)
+                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx, t_obs_tensor, t_spatial)
                 t_cell = Categorical(logits=t_place_logits).sample()
                 t_x, t_y = net.cell_to_xy(t_cell)
                 t_card_idx = t_idx.item()

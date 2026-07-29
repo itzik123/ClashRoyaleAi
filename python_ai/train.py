@@ -22,6 +22,29 @@ from model import MicroRoyaleNet
 # Kept intentionally small so the cumulative shaping over an episode stays comparable
 # to - not larger than - the terminal +1/-1. Watch Reward/Episode_Shaping_Sum against
 # the win-rate in TensorBoard: if the shaping sum dwarfs +/-1, lower these.
+# --- Auxiliary task: opponent elixir estimation ------------------------------
+# Weight on the auxiliary loss that trains MicroRoyaleNet.predict_opp_elixir
+# (see that method for why the head exists at all). The head predicts the
+# opponent's CURRENT elixir, which is hidden information and deliberately
+# absent from the observation; the net has to infer it from elapsed time and
+# both sides' cumulative spend, which ARE in the observation.
+#
+# Its gradient flows back into the shared LSTM/CNN trunk -- that is the entire
+# point. This is representation shaping, not an extra output: the sparse
+# win/loss signal gives the recurrent state almost no reason to integrate
+# opponent spending over a whole match, and "how much elixir do they have
+# right now" is the single most load-bearing latent variable in the game.
+#
+# 0.5 chosen so the term is a real but minority contributor: the target is in
+# elixir units (0-10) and a well-fit head sits around 1.0-1.5 MAE, i.e. an MSE
+# of ~1-2, versus an actor loss of order 0.1. Scaled by 0.02 below to bring
+# the two into the same range before weighting.
+AUX_ELIXIR_COEF = 0.5
+# Converts the elixir-unit MSE into the same numeric range as the other loss
+# terms. Kept explicit (rather than folded into AUX_ELIXIR_COEF) so the LOGGED
+# diagnostic stays in interpretable elixir units.
+AUX_ELIXIR_SCALE = 0.02
+
 W_BLDG = 0.5     # weight on building (tower) HP swings
 W_TROOPS = 0.1   # weight on troop HP swings
 # Reward forcing the ENEMY to spend elixir -- the classic CR "won the trade"
@@ -514,8 +537,40 @@ def train_ppo():
     # Targets come from the measured healthy/unhealthy bands across runs D/E:
     #   card      0.10 collapsed (5/8 cards), 0.35 kept 6/8 -> target 0.35
     #   placement 0.46 too narrow (20 cells), 0.77 was wide  -> target 0.65
+    # ANNEALED, not fixed. Measured pathology this replaces: with the target
+    # pinned at 0.65 for the whole run, the placement entropy coefficient rose
+    # monotonically (0.1286 -> 0.1476 across 50,000 self-play episodes) --
+    # i.e. the policy was trying to sharpen its placement the entire time and
+    # the controller kept forcing it back open. 0.65 * log(612) = 4.17 nats is
+    # a spread over ~65 board cells; a strong player commits to a tile.
+    #
+    # Note the existing comment on ENTROPY_ADAPT_RATE below already concluded
+    # "placement spread is a poor proxy for skill and should not be optimized
+    # directly" -- and yet a fixed target optimizes exactly that, forever.
+    # Annealing resolves that contradiction: wide while the policy is still
+    # discovering where things go, tight once it is refining.
+    #
+    # 0.25 * log(612) = 1.60 nats ~= 5 effective cells: committed, but not a
+    # collapsed point mass. Deliberately NOT annealed to 0 -- some placement
+    # noise is genuinely correct in a game with a live opponent.
+    #
+    # The CARD target is deliberately left FIXED. The measured failure mode
+    # there is the opposite one: card entropy 0.10 collapsed the policy to
+    # 5 of 8 cards. Narrowing card choice is the known danger, so only the
+    # placement head -- where the evidence says the controller is fighting the
+    # policy -- gets annealed.
     ENTROPY_TARGET_CARD = 0.35
-    ENTROPY_TARGET_PLACEMENT = 0.65
+    ENTROPY_TARGET_PLACEMENT_START = 0.65
+    ENTROPY_TARGET_PLACEMENT_FINAL = 0.25
+    # Sized to one long run on this machine: the last full pipeline reached
+    # ~60k episodes in phase 1 and ~50k in phase 2. Past the horizon the
+    # target simply stays at FINAL.
+    ENTROPY_ANNEAL_EPISODES = 60000
+
+    def placement_entropy_target(eps_done):
+        frac = min(1.0, max(0.0, eps_done / ENTROPY_ANNEAL_EPISODES))
+        return (ENTROPY_TARGET_PLACEMENT_START
+                + frac * (ENTROPY_TARGET_PLACEMENT_FINAL - ENTROPY_TARGET_PLACEMENT_START))
     # Reverted 0.15 -> 0.5 after a matched-depth measurement contradicted the
     # earlier reasoning. Lowering the gain DID smooth the controller (mean
     # |entropy - target| fell, placement no longer free-fell), but the resulting
@@ -813,6 +868,9 @@ def train_ppo():
     rewards_buffer = []
     masks_buffer = []
     valid_buffer = []   # 0 on phantom auto-reset steps (see below), 1 on real transitions
+    # Ground-truth opponent elixir per step -- supervision for the auxiliary
+    # head only, never an input. See AUX_ELIXIR_COEF.
+    aux_elixir_buffer = []
 
     reward_history = deque(maxlen=50)
     shaping_history = deque(maxlen=50)   # Per-episode shaping sum, to watch it vs the +/-1 terminal (improvement #6)
@@ -890,7 +948,7 @@ def train_ppo():
                 # net(...) call -- see model.py's own comment on why
                 # forward_from_features (which takes card_idx already known)
                 # doesn't fit the rollout case.
-                features, card_embeds = net.extract_features(obs_tensor)
+                features, card_embeds, spatial_map = net.extract_features(obs_tensor)
                 card_logits, _, _, state_value, (hx, cx) = net.step_lstm_and_card(
                     features, (hx, cx), card_mask)
 
@@ -900,7 +958,7 @@ def train_ppo():
                 # Discrete placement over whole board cells, no Gaussian and no
                 # clamping -- every cell index maps to coordinates the engine
                 # already accepts (see model.cell_to_xy).
-                placement_logits = net.placement_given_card(hx, card_embeds, card_idx, obs_tensor)
+                placement_logits = net.placement_given_card(hx, card_embeds, card_idx, obs_tensor, spatial_map)
                 placement_dist = Categorical(logits=placement_logits)
                 placement_cell = placement_dist.sample()
 
@@ -999,6 +1057,9 @@ def train_ppo():
             rewards_buffer.append(torch.tensor(shaped_rewards, dtype=torch.float32).to(device))
             masks_buffer.append(mask)
             valid_buffer.append(valid)
+            aux_elixir_buffer.append(
+                torch.tensor(np.asarray(infos.get("opp_elixir", np.zeros(num_envs, dtype=np.float32)),
+                                        dtype=np.float32)).to(device))
 
             # Reset hidden states for environments whose episode just ended
             mask_tensor = mask.unsqueeze(1)
@@ -1203,6 +1264,7 @@ def train_ppo():
         rewards_seq = torch.stack(rewards_buffer)                      # (T, N)
         masks_seq = torch.stack(masks_buffer)                          # (T, N)
         valid_seq = torch.stack(valid_buffer)                          # (T, N) -- 0 on phantom auto-reset steps
+        aux_elixir_seq = torch.stack(aux_elixir_buffer)                # (T, N) -- opponent elixir ground truth
         decision_seq = torch.stack(decision_buffer)                    # (T, N) -- 1 only where a real choice existed
         hx_in_seq = torch.stack(hx_in_buffer)                          # (T, N, 256) -- chunk resume states
         cx_in_seq = torch.stack(cx_in_buffer)
@@ -1227,7 +1289,7 @@ def train_ppo():
         # exists).
         with torch.no_grad():
             next_obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device)
-            next_features, _ = net.extract_features(next_obs_tensor)
+            next_features, _, _ = net.extract_features(next_obs_tensor)
             _, _, _, next_value, _ = net.step_lstm_and_card(next_features, (hx, cx))
             next_value = next_value.squeeze(-1)
 
@@ -1278,6 +1340,7 @@ def train_ppo():
         # critic loss, non-collapsing clip fraction) instead of inferring it indirectly
         # from noisy episode-outcome stats.
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
+        aux_losses, aux_maes = [], []
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
@@ -1299,8 +1362,15 @@ def train_ppo():
                 # Batch the (non-recurrent) CNN + scalar feature extraction over the
                 # whole chunk at once, then loop only the cheap LSTMCell.
                 mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
-                feats_seq, card_embeds_seq = net.extract_features(mb_obs_flat)
+                feats_seq, card_embeds_seq, spatial_seq = net.extract_features(mb_obs_flat)
                 feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                # Same (T,B,...) split for the CNN's spatial map, which the
+                # convolutional placement head consumes. Recomputed here from
+                # the SAME stored observations rather than buffered, for the
+                # identical reason card_mask_seq is: anything that can drift
+                # apart from what the rollout used silently corrupts the PPO
+                # ratio, and deriving it makes drift impossible.
+                spatial_seq = spatial_seq.view(bptt_chunk, B, *spatial_seq.shape[1:])
                 # Same observations the rollout acted on, reshaped per timestep so
                 # placement legality is recomputed identically (see placement_mask).
                 mb_obs_seq = mb_obs_flat.view(bptt_chunk, B, -1)
@@ -1324,6 +1394,7 @@ def train_ppo():
                 rcx = cx_in_seq[t0, ev]
                 new_logprobs, new_values = [], []
                 new_ent_card, new_ent_place = [], []
+                new_aux_elixir = []
                 for l in range(bptt_chunk):
                     # mb_card_actions[l] -- the STORED action from rollout, not a
                     # fresh sample -- conditions placement here exactly like the
@@ -1334,7 +1405,8 @@ def train_ppo():
                     (logits_t, place_logits_t, value_t, _, _,
                      (rhx, rcx)) = net.forward_from_features(
                         feats_seq[l], card_embeds_seq[l], (rhx, rcx),
-                        mb_card_actions[l], card_mask_seq[l], mb_obs_seq[l])
+                        mb_card_actions[l], card_mask_seq[l], mb_obs_seq[l],
+                        spatial_seq[l])
                     card_dist_t = Categorical(logits=logits_t)
                     place_dist_t = Categorical(logits=place_logits_t)
                     lp_t = card_dist_t.log_prob(mb_card_actions[l]) \
@@ -1343,6 +1415,10 @@ def train_ppo():
                     new_values.append(value_t.squeeze(-1))
                     new_ent_card.append(card_dist_t.entropy())
                     new_ent_place.append(place_dist_t.entropy())
+                    # Auxiliary prediction from the SAME post-step hidden state
+                    # that produced the action logits above, so the gradient
+                    # lands on the representation the policy actually used.
+                    new_aux_elixir.append(net.predict_opp_elixir(rhx))
                     reset_t = mb_masks[l].unsqueeze(1)
                     rhx = rhx * reset_t
                     rcx = rcx * reset_t
@@ -1351,6 +1427,7 @@ def train_ppo():
                 new_values = torch.stack(new_values)       # (L, B)
                 new_ent_card = torch.stack(new_ent_card)
                 new_ent_place = torch.stack(new_ent_place)
+                new_aux_elixir = torch.stack(new_aux_elixir)   # (L, B), elixir units
 
                 mb_adv = adv_norm_seq[tt, ee]
                 mb_ret = returns_seq[tt, ee]
@@ -1395,7 +1472,18 @@ def train_ppo():
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
                                  + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
                 # entropy_bonus already carries its per-head coefficients.
-                loss = actor_loss + 0.5 * critic_loss - entropy_bonus
+                # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
+                # reason the critic loss is: phantom auto-reset steps carry an
+                # observation from the NEXT episode paired with stale
+                # bookkeeping, and regressing on those teaches noise.
+                aux_err = (new_aux_elixir - aux_elixir_seq[tt, ee])
+                aux_loss = ((aux_err ** 2) * mb_valid).sum() / n_valid
+                aux_mae = ((aux_err.abs()) * mb_valid).sum() / n_valid
+                aux_losses.append(aux_loss.item())
+                aux_maes.append(aux_mae.item())
+
+                loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
+                        + AUX_ELIXIR_COEF * AUX_ELIXIR_SCALE * aux_loss)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -1433,11 +1521,12 @@ def train_ppo():
         # --- entropy controller step (see ENTROPY_TARGET_* above) ---
         card_frac = mean_ent_card / LOG_N_CARD
         place_frac = mean_ent_place / LOG_N_PLACEMENT
+        ent_target_place = placement_entropy_target(episodes_completed)
         ent_coef_card = float(np.clip(
             ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
             ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
         ent_coef_place = float(np.clip(
-            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_PLACEMENT - place_frac)),
+            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ent_target_place - place_frac)),
             ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
         writer.add_scalar("Policy/Entropy_Coef_Card", ent_coef_card, episodes_completed)
         writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
@@ -1446,12 +1535,24 @@ def train_ppo():
         writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card / LOG_N_CARD, episodes_completed)
         writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place / LOG_N_PLACEMENT, episodes_completed)
         writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
+        # Auxiliary elixir head, reported in ELIXIR UNITS so it is directly
+        # interpretable: MAE is "how many elixir off is our estimate of what
+        # the opponent is holding". A always-guess-the-mean baseline sits near
+        # the spread of opponent elixir (~2.5); anything meaningfully below
+        # that means the recurrent state genuinely learned to count.
+        writer.add_scalar("Aux/OppElixir_MAE", float(np.mean(aux_maes)), episodes_completed)
+        # The annealed target next to the measured value, so "is the controller
+        # fighting the policy" stays answerable at a glance -- that comparison
+        # is exactly what diagnosed the fixed-target pathology in the first place.
+        writer.add_scalar("Entropy/Placement_Target", ent_target_place, episodes_completed)
+        writer.add_scalar("Entropy/Placement_Measured", place_frac, episodes_completed)
+        writer.add_scalar("Aux/OppElixir_MSE", float(np.mean(aux_losses)), episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         # Printed (not just logged to TensorBoard) so progress can be monitored from
         # the console/log file alone, without needing the TensorBoard UI open.
         print(f"  >> Update @ ep {episodes_completed} | Actor: {mean_actor_loss:.5f} | "
               f"Critic: {mean_critic_loss:.5f} | Entropy: {mean_entropy:.4f} | "
-              f"ClipFrac: {mean_clip_frac:.4f}")
+              f"ClipFrac: {mean_clip_frac:.4f} | OppElixirMAE: {float(np.mean(aux_maes)):.2f}")
 
         obs_buffer.clear()
         card_actions_buffer.clear()
@@ -1464,6 +1565,7 @@ def train_ppo():
         rewards_buffer.clear()
         masks_buffer.clear()
         valid_buffer.clear()
+        aux_elixir_buffer.clear()
 
         hx, cx = hx.detach(), cx.detach()
 
@@ -1519,11 +1621,11 @@ def train_ppo():
             while not t_done:
                 t_obs_tensor = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(0).to(device)
                 t_mask = net.affordability_mask(t_obs_tensor)
-                t_features, t_card_embeds = net.extract_features(t_obs_tensor)
+                t_features, t_card_embeds, t_spatial = net.extract_features(t_obs_tensor)
                 (t_logits, _, _, t_value,
                  (t_hx, t_cx)) = net.step_lstm_and_card(t_features, (t_hx, t_cx), t_mask)
                 t_idx = Categorical(logits=t_logits).sample()
-                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx, t_obs_tensor)
+                t_place_logits = net.placement_given_card(t_hx, t_card_embeds, t_idx, t_obs_tensor, t_spatial)
                 t_cell = Categorical(logits=t_place_logits).sample()
                 t_x, t_y = net.cell_to_xy(t_cell)
                 t_card_idx = t_idx.item()

@@ -5,6 +5,11 @@
 #include "Building.h"
 #include "BuildingTargeter.h"
 #include "RangedTroop.h"
+// Explicit, not relied on transitively through RangedTroop.h: the attribute
+// channels read Troop::speed and CombatEntity::damage/attackRange/targetsAir
+// directly.
+#include "Troop.h"
+#include "CombatEntity.h"
 #include "GameLogger.h"
 #include <vector>
 #include <random>
@@ -51,8 +56,37 @@ public:
     // Unit-TYPE visibility is what lets the net answer "what is attacking me and
     // with what should I respond" -- with HP-only channels a wounded PEKKA and a
     // Skeleton looked identical.
+    //
     // 0-3: ally melee, ranged, tank, buildings | 4-7: enemy same | 8: river/bridges
-    static constexpr int NUM_CHANNELS = 9;
+    //
+    // 9-20 are ATTRIBUTE channels, added because 0-8 could not express three
+    // things the game is actually decided by:
+    //
+    //  (a) AIR vs GROUND. isFlying/targetsAir have existed on Entity/
+    //      CombatEntity since flying cards were added, and were visible
+    //      NOWHERE in the observation. A Balloon and a Hog Rider were both
+    //      just "building-targeter"; a Minion and a Knight were both just
+    //      "melee". "Can the thing I am about to play even hit that" was
+    //      unanswerable from the observation, so no air/ground counterplay
+    //      could ever be learned no matter how long training ran.
+    //  (b) HOW MANY units are in a cell. Channels 0-7 store an HP fraction by
+    //      ASSIGNMENT, so a Skeleton Army collapsed to a handful of cells
+    //      indistinguishable from a handful of single skeletons.
+    //  (c) WHAT a unit does. Two ranged units with equal HP fractions were
+    //      identical regardless of damage, reach or speed.
+    //
+    // Encoded as per-cell attributes rather than a NUM_CARD_IDS-deep one-hot
+    // stack: identity per se is not what the decision needs, the attributes
+    // are, and a 185-channel board would be ~113k floats per observation.
+    // ALLY channel first, ENEMY second, so every pair is (base + isAlly?0:1)
+    // exactly like the 0-3/4-7 blocks above.
+    static constexpr int CH_COUNT = 9;    // 9 ally / 10 enemy -- units per cell
+    static constexpr int CH_FLYING = 11;  // 11 ally / 12 enemy -- any flyer here
+    static constexpr int CH_ANTIAIR = 13; // 13 ally / 14 enemy -- can hit air
+    static constexpr int CH_DPS = 15;     // 15 ally / 16 enemy -- damage per tick
+    static constexpr int CH_RANGE = 17;   // 17 ally / 18 enemy -- attack range
+    static constexpr int CH_SPEED = 19;   // 19 ally / 20 enemy -- move speed
+    static constexpr int NUM_CHANNELS = 21;
     static constexpr int HAND_SIZE = 4;
     // One-hot size for card identity in hand. Registered ids currently run up
     // to 175 (Evolutions 123-163, Mirror 164, Spirit Empress 165, Heroes
@@ -64,6 +98,31 @@ public:
     static constexpr int NUM_CARD_IDS = 185;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
+
+    // Normalizers for the attribute channels above. Picked from the real
+    // spread in CardRegistry rather than guessed: troop speeds run 0.5
+    // (Knight/Musketeer/Valkyrie) to 1.0+ (Goblins/Skeletons); attack ranges
+    // run 0.5 (Skeletons) to 6.0 (Musketeer) for troops and up to ~9 for
+    // Princess Towers; damage/attackCooldown runs ~7/tick (Skeletons) to
+    // ~47/tick (Mini PEKKA). Every attribute channel is clamped to 1.0, so a
+    // future outlier card saturates instead of blowing the input scale.
+    static constexpr float MAX_UNIT_DPS = 60.0f;
+    static constexpr float MAX_ATTACK_RANGE = 12.0f;
+    static constexpr float MAX_UNIT_SPEED = 1.5f;
+    static constexpr float MAX_CELL_UNITS = 5.0f;
+
+    // Scalars appended AFTER the existing [elixir, costs, one-hots] block --
+    // see extractObservationForTeam's tail. Appended, never inserted, so
+    // every existing offset into the scalar section (model.py's onehot_start,
+    // train_selfplay.py's scripted opponents) stays valid unchanged.
+    //   0 time fraction | 1 own elixir spent | 2 opp elixir spent
+    //   3-5 own king/left/right tower HP | 6-8 enemy king/left/right tower HP
+    static constexpr int NUM_EXTRA_SCALARS = 9;
+    // Ceiling on cumulative per-match elixir spend used to normalize scalars
+    // 1-2: maxTicks(3600) * ELIXIR_REGEN_RATE(0.035) + 5 starting = 131, so
+    // 140 leaves headroom for the curriculum's opponent elixir multiplier
+    // without ever exceeding 1.0 in practice. Clamped anyway.
+    static constexpr float MAX_MATCH_ELIXIR = 140.0f;
 
 private:
     GameManager game;
@@ -129,6 +188,41 @@ private:
             int channel = (isAlly ? 0 : 4) + typeOffset;
 
             obs[getIndex(channel, y, x)] = normalizedHp;
+
+            // --- attribute channels (9-20) ---------------------------------
+            // Side offset is 0 for ally / 1 for enemy, matching the 0-3 vs
+            // 4-7 split above.
+            int side = isAlly ? 0 : 1;
+
+            // COUNT accumulates (+=) where the HP channels assign (=). This
+            // is the whole point of the channel: it is the only place a
+            // 15-skeleton Skeleton Army stops looking like one skeleton.
+            float& cell = obs[getIndex(CH_COUNT + side, y, x)];
+            cell = std::min(cell + 1.0f / MAX_CELL_UNITS, 1.0f);
+
+            // The remaining attributes take the MAX over units sharing a
+            // cell, not the last writer and not the sum: the decision these
+            // feed is "what is the most dangerous thing standing here and can
+            // I hit it", so the strongest occupant is the right summary. A
+            // sum would make three skeletons read like a PEKKA.
+            auto putMax = [&](int channelBase, float value) {
+                float& slot = obs[getIndex(channelBase + side, y, x)];
+                slot = std::max(slot, std::min(value, 1.0f));
+            };
+
+            if (entity->isFlying) putMax(CH_FLYING, 1.0f);
+
+            if (const auto* combat = dynamic_cast<const CombatEntity*>(entity.get())) {
+                if (combat->targetsAir) putMax(CH_ANTIAIR, 1.0f);
+                // Per-TICK damage, not per-attack: attackCooldown is in ticks
+                // and a 755-damage Mini PEKKA swinging every 16 ticks is not
+                // 3.7x a 202-damage Knight swinging every 12.
+                putMax(CH_DPS, combat->getDamagePerTick() / MAX_UNIT_DPS);
+                putMax(CH_RANGE, combat->getAttackRange() / MAX_ATTACK_RANGE);
+            }
+            if (const auto* troop = dynamic_cast<const Troop*>(entity.get())) {
+                putMax(CH_SPEED, troop->getSpeed() / MAX_UNIT_SPEED);
+            }
         }
 
         obs.push_back(game.getElixir(team) / 10.0f);
@@ -146,6 +240,55 @@ private:
                 obs.push_back(k == cardId ? 1.0f : 0.0f);
             }
         }
+
+        // --- appended scalars (NUM_EXTRA_SCALARS) --------------------------
+        // TIME. Until this was added the observation had NO temporal
+        // component at all: tick 100 and tick 3500 with the same board were
+        // literally the same input vector. That is not a missing convenience,
+        // it made the state non-Markovian for two decisions that now exist --
+        // TimeoutRules decides a timed-out match on towers (so "I am ahead,
+        // run the clock down" is a real strategy the agent could not even
+        // represent), and the critic was being asked to predict a
+        // time-dependent return from a time-free input, making part of its
+        // residual variance structurally unlearnable rather than undertrained.
+        obs.push_back(static_cast<float>(currentTick) / static_cast<float>(maxTicks));
+
+        // ELIXIR SPENT, both sides, cumulative this match. Deliberately the
+        // SPEND and not the opponent's current elixir: spend is what a human
+        // can actually observe (you see every card they play and you know
+        // what it costs), current elixir is hidden information. Handing the
+        // agent the hidden value would train a policy that cannot be deployed
+        // against a real opponent through perception/. Estimating the hidden
+        // value from these is exactly what the network's auxiliary elixir
+        // head is asked to learn instead.
+        obs.push_back(std::min(game.getStatistics().elixirSpent(team) / MAX_MATCH_ELIXIR, 1.0f));
+        obs.push_back(std::min(game.getStatistics().elixirSpent(1 - team) / MAX_MATCH_ELIXIR, 1.0f));
+
+        // TOWER HP as explicit scalars. It is technically present in the
+        // building channel already, but only as one cell's value that has to
+        // survive two MaxPools -- while being the single number the win
+        // condition is defined on. A destroyed tower reads 0.0 (it is no
+        // longer a live entity), which is exactly the right encoding.
+        // Left/right are by x, and x is NOT mirrored for team 1 -- same
+        // convention the spatial channels above already use (team 1's view is
+        // a y-flip, not a 180-degree rotation), so this stays consistent with
+        // them rather than inventing a second frame.
+        auto towerHp = [&](int forTeam, int which) {   // which: 0=king, 1=left, 2=right
+            for (const auto& entity : game.getBoard().getEntities()) {
+                if (!entity->isAlive() || entity->team != forTeam) continue;
+                if (dynamic_cast<const Tower*>(entity.get()) == nullptr) continue;
+                bool isKing = (entity->cardId == GameManager::TOWER_KING_ID);
+                if (which == 0) {
+                    if (isKing) return entity->hp / MAX_BUILDING_HP;
+                } else if (!isKing) {
+                    bool isLeft = entity->position.x < BOARD_WIDTH / 2.0f;
+                    if ((which == 1) == isLeft) return entity->hp / MAX_BUILDING_HP;
+                }
+            }
+            return 0.0f;
+        };
+        for (int which = 0; which < 3; ++which) obs.push_back(towerHp(team, which));
+        for (int which = 0; which < 3; ++which) obs.push_back(towerHp(1 - team, which));
 
         return obs;
     }
@@ -189,10 +332,11 @@ public:
           rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
 
     int observationSize() const {
-        return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP channels
+        return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP/attribute channels
              + 1                                            // elixir
              + HAND_SIZE                                    // card costs
-             + HAND_SIZE * NUM_CARD_IDS;                    // card identity one-hots
+             + HAND_SIZE * NUM_CARD_IDS                     // card identity one-hots
+             + NUM_EXTRA_SCALARS;                           // time, elixir spent, tower HP
     }
 
     // Thin delegates to GameManager's own placement-bound queries (see that
@@ -235,6 +379,18 @@ public:
 
     float getElixir() const {
         return game.getElixir(0);
+    }
+
+    // Either team's CURRENT elixir. Deliberately NOT part of the observation
+    // vector -- the opponent's elixir is hidden information a human cannot
+    // read off the screen, so a policy conditioned on it could never be
+    // deployed through perception/. It is exposed here only as the SUPERVISION
+    // TARGET for the network's auxiliary elixir-estimation head: the net sees
+    // elapsed time and both sides' cumulative spend (see the appended scalars
+    // in extractObservationForTeam) and is trained to infer this from them,
+    // which is exactly the elixir counting strong human players do by hand.
+    float getElixirForTeam(int team) const {
+        return game.getElixir(team);
     }
 
     bool isGameOver() const {

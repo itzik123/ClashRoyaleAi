@@ -45,6 +45,7 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("activate_champion_ability", &ClashEnv::activateChampionAbility, py::arg("team"), py::arg("slot") = 1)
         .def("get_hand", &ClashEnv::getHand)
         .def("get_elixir", &ClashEnv::getElixir)
+        .def("get_elixir_for_team", &ClashEnv::getElixirForTeam, py::arg("team"))
         .def("get_observation_for_team", &ClashEnv::getObservationForTeam, py::arg("team"))
         .def("is_game_over", &ClashEnv::isGameOver)
         .def("observation_size", &ClashEnv::observationSize)
@@ -75,7 +76,20 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly_static("HAND_SIZE", &ClashEnv::HAND_SIZE)
         .def_readonly_static("NUM_CARD_IDS", &ClashEnv::NUM_CARD_IDS)
         .def_readonly_static("MAX_TROOP_HP", &ClashEnv::MAX_TROOP_HP)
-        .def_readonly_static("MAX_BUILDING_HP", &ClashEnv::MAX_BUILDING_HP);
+        .def_readonly_static("MAX_BUILDING_HP", &ClashEnv::MAX_BUILDING_HP)
+        // Attribute-channel indices and the appended-scalar count, bound for
+        // the same reason every other structural constant here is: the Python
+        // side derives its layout math from the engine instead of keeping a
+        // hand-synced copy. model.py and train_selfplay.py's scripted
+        // opponents both index the raw observation directly.
+        .def_readonly_static("CH_COUNT", &ClashEnv::CH_COUNT)
+        .def_readonly_static("CH_FLYING", &ClashEnv::CH_FLYING)
+        .def_readonly_static("CH_ANTIAIR", &ClashEnv::CH_ANTIAIR)
+        .def_readonly_static("CH_DPS", &ClashEnv::CH_DPS)
+        .def_readonly_static("CH_RANGE", &ClashEnv::CH_RANGE)
+        .def_readonly_static("CH_SPEED", &ClashEnv::CH_SPEED)
+        .def_readonly_static("NUM_EXTRA_SCALARS", &ClashEnv::NUM_EXTRA_SCALARS)
+        .def_readonly_static("MAX_MATCH_ELIXIR", &ClashEnv::MAX_MATCH_ELIXIR);
 
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");

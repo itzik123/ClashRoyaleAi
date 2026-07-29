@@ -82,8 +82,21 @@ class MicroRoyaleNet(nn.Module):
 
         # גודל המטריצה השטוחה המגיעה מ-ClashEnv
         self.spatial_size = channels * board_height * board_width
-        # החלק הסקלרי: אליקסיר + hand_size עלויות + hand_size one-hot של זהות קלף (num_card_ids ערכים כל אחד)
-        self.scalar_size = 1 + hand_size + hand_size * num_card_ids
+        # החלק הסקלרי: אליקסיר + hand_size עלויות + hand_size one-hot של זהות
+        # קלף (num_card_ids ערכים כל אחד) + הזנב שנוסף ב-ClashEnv
+        # (NUM_EXTRA_SCALARS): שבר הזמן, אליקסיר שהוצא ע"י שני הצדדים, ו-6
+        # ערכי HP של מגדלים.
+        #
+        # הזנב **מתווסף בסוף** ולא נדחף באמצע, וזה לא שרירותי: כל הקוד שקורא
+        # את הווקטור הזה לפי היסטים (affordability_mask, hand_card_ids,
+        # placement_mask כאן, והיריבים הסקריפטיים ב-train_selfplay.py) מודד
+        # מתחילת הקטע הסקלרי. הוספה בסוף משאירה כל אחד מההיסטים האלה תקף
+        # בלי שינוי; הוספה באמצע הייתה שוברת את כולם בשקט -- בלי חריגה, רק
+        # מדיניות שמסתכלת על מספרים לא נכונים.
+        self.num_extra_scalars = clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS
+        self.scalar_size = 1 + hand_size + hand_size * num_card_ids + self.num_extra_scalars
+        # ההיסט (בתוך scalar_obs) שבו מתחיל הזנב -- נחוץ לראש העזר ולאבחון.
+        self.extra_start = 1 + hand_size + hand_size * num_card_ids
 
         # ==========================================
         # 1. חילוץ תכונות מרחבי (CNN)
@@ -93,7 +106,11 @@ class MicroRoyaleNet(nn.Module):
         # (34 -> 17 -> 8 עם floor רגיל, מה שהיה מוחק שורה שלמה -- בדיוק השורה
         # האחורית החדשה ליד מגדל המלך, שזה כל הטעם בשינוי הזה). עם ceil_mode
         # שום שורה/עמודה לא נופלת בשקט, רק התמונה המרחבית קצת יותר גדולה.
-        self.cnn = nn.Sequential(
+        # מפוצל ל-trunk + flatten (במקום Sequential אחד שנגמר ב-Flatten):
+        # מפת המאפיינים המרחבית *לפני* ההשטחה היא הקלט של ראש המיקום
+        # הקונבולוציוני (ראה placement_given_card). זה אותו טנזור בדיוק, לא
+        # חישוב נוסף -- ה-CNN עדיין רץ פעם אחת בלבד.
+        self.cnn_trunk = nn.Sequential(
             nn.Conv2d(channels, 16, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
@@ -101,13 +118,13 @@ class MicroRoyaleNet(nn.Module):
             nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
-
-            nn.Flatten()
         )
+        self.cnn_flatten = nn.Flatten()
 
         # חישוב ממד הפלט של ה-CNN לאחר הפולינג (ceil פעמיים, תואם ceil_mode=True למעלה)
         pooled_h = math.ceil(math.ceil(board_height / 2) / 2)
         pooled_w = math.ceil(math.ceil(board_width / 2) / 2)
+        self.pooled_h, self.pooled_w = pooled_h, pooled_w
         self.cnn_out_dim = 32 * pooled_h * pooled_w
 
         # ==========================================
@@ -166,7 +183,37 @@ class MicroRoyaleNet(nn.Module):
         # לנתיב. התפלגות קטגוריאלית פותרת את זה משורש: האנטרופיה שלה חסומה
         # מלמעלה ב-log(placement_cells) ויורדת באופן טבעי ככל שהמדיניות
         # מתחדדת, המיקום מדויק עד משבצת, וניתן למסוך תאים לא חוקיים.
-        self.placement_head = nn.Linear(256 + CARD_EMBED_DIM, self.placement_cells)
+        #
+        # ומה שהוחלף *עכשיו*: הגרסה הקודמת הייתה
+        #     nn.Linear(256 + CARD_EMBED_DIM, placement_cells)   # 272 -> 612
+        # כלומר שכבה צפופה אחת שמייצרת מפת לוגיטים על הלוח מתוך וקטור שכבר
+        # עבר שני MaxPool והושטח. לשכבה כזו אין שום מבנה מרחבי: היא חייבת
+        # *לשנן* בנפרד, במשקל נפרד, מה המשמעות של כל אחת מ-612 המשבצות, ואין
+        # שום שיתוף בין משבצת (5,7) לשכנתה (5,8) -- גם אחרי שהרשת למדה
+        # "להניח ליד הגשר השמאלי", שום דבר מזה לא מתפשט למשבצת הסמוכה.
+        #
+        # במקום זה: לוקחים את מפת המאפיינים המרחבית מה-CNN (B,32,9,5),
+        # מוסיפים לה הקשר (hx + זהות הקלף) בשידור על כל התאים, ומרחיבים
+        # בחזרה ל-34x18 עם ConvTranspose. הלוגיט של כל תא מחושב אז ע"י אותם
+        # משקלים משותפים שפועלים על המאפיינים המקומיים *של אותו אזור לוח* --
+        # וזו בדיוק ההטיה האינדוקטיבית הנכונה למשחק שבו ההחלטה היא "איפה".
+        # אותו דפוס שבו AlphaStar מייצר ארגומנטים מרחביים.
+        self.place_ctx = nn.Linear(256 + CARD_EMBED_DIM, 32)
+        self.place_up = nn.Sequential(
+            nn.ConvTranspose2d(32, 32, kernel_size=2, stride=2),   # 9x5 -> 18x10
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2),   # 18x10 -> 36x20
+            nn.ReLU(),
+            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),  # -> (B,1,36,20)
+        )
+        # ה-deconv מייצר 4*pooled_h x 4*pooled_w, שהוא >= גודל הלוח כי הפולינג
+        # השתמש ב-ceil_mode. חותכים בחזרה לפינה השמאלית-עליונה: מכיוון ששני
+        # הפולינגים הם stride 2 עם ceil, תא ממוזג i מכסה את המקוריים 2i,2i+1
+        # בכל רמה, ולכן אינדקס j במפה המורחבת מתיישר בדיוק עם שורה/עמודה j
+        # בלוח המקורי. החיתוך הוא יישור, לא קירוב.
+        assert self.placement_rows == board_height, (
+            "ראש המיקום הקונבולוציוני מייצר מפה בגודל הלוח וחותך אותה; "
+            "placement_rows שונה מ-board_height יישבור את היישור הזה")
 
         # ==========================================
         # 5. ראש הערכת המצב - Critic Head -- תלוי רק ב-hx.
@@ -187,6 +234,30 @@ class MicroRoyaleNet(nn.Module):
         self.ability_slot1_head = nn.Linear(256, 2) if num_ability_slots >= 1 else None
         self.ability_slot2_head = nn.Linear(256, 2) if num_ability_slots >= 2 else None
 
+        # ==========================================
+        # 7. ראש עזר: הערכת האליקסיר של היריב (auxiliary prediction head)
+        # ==========================================
+        # מנבא את האליקסיר הנוכחי של היריב (0..10, מנורמל ל-0..1) מתוך hx.
+        #
+        # למה זה קיים: ספירת אליקסיר היא הכישור המרכזי של שחקני קלאש חזקים,
+        # והמידע הזה **מוסתר** -- אי אפשר לקרוא אותו מהמסך. לכן הוא בכוונה
+        # לא נמצא בתצפית (ראה ClashEnv::getElixirForTeam): מדיניות שמותנית בו
+        # לא הייתה ניתנת להפעלה מול יריב אמיתי דרך perception/. במקום זה
+        # הרשת מקבלת בתצפית רק את מה ששחקן אנושי באמת רואה -- זמן שחלף
+        # וההוצאה המצטברת של שני הצדדים -- ומתבקשת להסיק מהם את הערך המוסתר.
+        #
+        # הראש הזה לא משתתף בבחירת הפעולה בכלל. כל תפקידו הוא ה-loss: הוא
+        # מכריח את מצב ה-LSTM לשמור בפועל את האינטגרל של ההוצאה לאורך המשחק,
+        # במקום לקוות שהאות הדליל של ניצחון/הפסד ילמד את זה לבד. זה בדיוק
+        # התפקיד של auxiliary tasks ב-UNREAL/IMPALA: לעצב את הייצוג, לא את
+        # המדיניות.
+        #
+        # מכוון בכוונה כמתודה נפרדת ולא כפלט נוסף של step_lstm_and_card:
+        # הוא נחוץ **רק בזמן אימון**, אף פעם לא בבחירת פעולה, אז אין סיבה
+        # לשלם עליו בכל טיק של rollout ואין סיבה לשנות את החתימה של מסלול
+        # הפעולה החם (ולסכן את כל מי שקורא לו).
+        self.aux_elixir_head = nn.Linear(256, 1)
+
     def extract_features(self, obs):
         """
         חילוץ מאפיינים (CNN + MLP סקלרי + embeddings של זהות קלף) - החלק
@@ -195,19 +266,23 @@ class MicroRoyaleNet(nn.Module):
         פעם לכל טיק - זהו הזירוז המרכזי של עדכון ה-PPO.
 
         obs: (Batch, obs_dim)
-        מחזיר (combined, card_embeds):
+        מחזיר (combined, card_embeds, spatial_map):
           combined: (Batch, lstm_input_dim) -- בדיוק כמו קודם, מוזן ל-LSTM.
           card_embeds: (Batch, hand_size+1, CARD_EMBED_DIM) -- embedding לכל
             משבצת יד ממשית + אחד נוסף (no-op), נדגם לפי card_idx רק אחרי
             שנבחר -- ראה placement_given_card. הפיצול מ-combined הוא בדיוק מה
             שמאפשר את המיקום האוטורגרסיבי: אי אפשר "לערבב" את זהות הקלף לתוך
             ה-LSTM before הבחירה בלי לאבד את היכולת להתנות אחריה.
+          spatial_map: (Batch, 32, pooled_h, pooled_w) -- מפת המאפיינים של
+            ה-CNN *לפני* ההשטחה, הקלט של ראש המיקום הקונבולוציוני. זהו אותו
+            טנזור שממנו נגזר combined, לא חישוב נוסף.
         """
         # פיצול הווקטור השטוח לחלק המרחבי ולחלק הסקלרי בהתאם לפונקציית observationSize() ב-C++
         spatial_obs = obs[:, :self.spatial_size].view(-1, self.channels, self.board_height, self.board_width)
         scalar_obs = obs[:, self.spatial_size:]
 
-        cnn_features = self.cnn(spatial_obs)
+        spatial_map = self.cnn_trunk(spatial_obs)
+        cnn_features = self.cnn_flatten(spatial_map)
         scalar_features = self.scalar_mlp(scalar_obs)
         combined = torch.cat((cnn_features, scalar_features), dim=1)
 
@@ -221,7 +296,7 @@ class MicroRoyaleNet(nn.Module):
         noop = self.noop_embed.view(1, 1, -1).expand(card_embeds.shape[0], 1, -1)
         card_embeds = torch.cat([card_embeds, noop], dim=1)  # (Batch, hand_size+1, CARD_EMBED_DIM)
 
-        return combined, card_embeds
+        return combined, card_embeds, spatial_map
 
     def affordability_mask(self, obs):
         """
@@ -311,7 +386,7 @@ class MicroRoyaleNet(nn.Module):
         ability_slot2_logits = self.ability_slot2_head(hx) if self.ability_slot2_head is not None else None
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
-    def placement_given_card(self, hx, card_embeds, card_idx, obs=None):
+    def placement_given_card(self, hx, card_embeds, card_idx, obs=None, spatial_map=None):
         """
         חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
@@ -327,10 +402,22 @@ class MicroRoyaleNet(nn.Module):
         בדיוק סוג ההחלטה הדו-מודאלית שהמשחק דורש. placement_cells קטן
         (18*16=288) אז השכבה זולה.
         """
+        if spatial_map is None:
+            raise ValueError(
+                "placement_given_card דורש את spatial_map מ-extract_features. "
+                "העברת None כאן הייתה מייצרת לוגיטים שונים מאלה שנוצרו ב-rollout, "
+                "ויחס ה-PPO היה נשבר בשקט -- לכן זו שגיאה ולא ברירת מחדל.")
+
         batch_idx = torch.arange(card_embeds.shape[0], device=card_embeds.device)
         chosen_embed = card_embeds[batch_idx, card_idx]  # (Batch, CARD_EMBED_DIM)
-        placement_input = torch.cat((hx, chosen_embed), dim=-1)
-        logits = self.placement_head(placement_input)
+        # הקשר -> 32 ערוצים, משודר על כל תא במפה המרחבית. חיבור ולא שרשור:
+        # כך "מה המצב הכללי ואיזה קלף" מזיז את כל מפת הלוגיטים, בעוד המבנה
+        # המקומי של הלוח נשאר במפה עצמה.
+        ctx = self.place_ctx(torch.cat((hx, chosen_embed), dim=-1))     # (B, 32)
+        h = spatial_map + ctx.view(-1, 32, 1, 1)
+        logit_map = self.place_up(h)                                    # (B, 1, 4*ph, 4*pw)
+        logits = logit_map[:, 0, :self.placement_rows, :self.board_width].reshape(
+            -1, self.placement_cells)
         if obs is not None:
             # מיסוך חוקיות מותנה-קלף. -inf ולא ערך סופי, מאותה סיבה בדיוק
             # כמו ב-step_lstm_and_card: Categorical מנרמל דרך log_softmax,
@@ -339,6 +426,17 @@ class MicroRoyaleNet(nn.Module):
             # כולה -inf.
             logits = logits.masked_fill(~self.placement_mask(obs, card_idx), float("-inf"))
         return logits
+
+    def predict_opp_elixir(self, hx):
+        """
+        הערכת האליקסיר של היריב מתוך מצב ה-LSTM. (Batch,) בסקאלה 0..10 --
+        אותן יחידות כמו get_elixir_for_team, כדי שהשגיאה תהיה קריאה ישירות
+        ביחידות אליקסיר ולא בסקאלה מנורמלת חסרת משמעות.
+
+        נקרא רק מלולאת עדכון ה-PPO (ראה AUX_ELIXIR_COEF במאמנים). הגרדיאנט
+        שלו זורם אחורה לתוך ה-LSTM וה-CNN -- זו כל המטרה.
+        """
+        return self.aux_elixir_head(hx).squeeze(-1) * 10.0
 
     def placement_mask(self, obs, card_idx):
         """
@@ -393,7 +491,7 @@ class MicroRoyaleNet(nn.Module):
         return col.float(), row.float()
 
     def forward_from_features(self, features, card_embeds, hidden_state, card_idx,
-                              card_mask=None, obs=None):
+                              card_mask=None, obs=None, spatial_map=None):
         """
         עוטף את שני החצאים ביחד, לשימוש כש-card_idx כבר ידוע מראש (עדכון PPO,
         עם הפעולה השמורה מהבאפר -- קריטי: תמיד להעביר את card_idx *השמור*
@@ -407,6 +505,6 @@ class MicroRoyaleNet(nn.Module):
         """
         (card_logits, ability_slot1_logits, ability_slot2_logits, state_value,
          (hx, cx)) = self.step_lstm_and_card(features, hidden_state, card_mask)
-        placement_logits = self.placement_given_card(hx, card_embeds, card_idx, obs)
+        placement_logits = self.placement_given_card(hx, card_embeds, card_idx, obs, spatial_map)
         return (card_logits, placement_logits, state_value,
                 ability_slot1_logits, ability_slot2_logits, (hx, cx))
