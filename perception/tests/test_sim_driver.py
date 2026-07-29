@@ -121,12 +121,14 @@ def _tower_hp_from_env(env, engine):
     def read(ch, x, y):
         return int(round(obs[ch * plane + int(y) * W + int(x)] * mx))
 
+    # Tower x's match GameManager::reset() post 2026-07-30 (King 8.5->9.0,
+    # left Princess 3.0->4.0 -- see geometry.py's module docstring).
     return {
-        "own_king": read(3, 8.5, 2.5),
-        "own_princess_left": read(3, 3.0, 6.0),
+        "own_king": read(3, 9.0, 2.5),
+        "own_princess_left": read(3, 4.0, 6.0),
         "own_princess_right": read(3, 14.0, 6.0),
-        "opp_king": read(7, 8.5, 30.5),
-        "opp_princess_left": read(7, 3.0, 27.0),
+        "opp_king": read(7, 9.0, 30.5),
+        "opp_princess_left": read(7, 4.0, 27.0),
         "opp_princess_right": read(7, 14.0, 27.0),
     }
 

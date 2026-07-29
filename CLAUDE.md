@@ -93,9 +93,11 @@ which is what makes the perception bridge's zero-divergence control possible.
 
 **Board geometry.** River `[15.5, 17.5)`, bridges at `(4, 16.5)` and
 `(14, 16.5)` — re-centred on 2026-07-29 to fix an asymmetry where team 1 had
-one row less placeable ground than team 0. **Still open:** the left Princess
-towers sit at `x = 3.0` while their bridge is at `x = 4.0`; the real arena
-aligns them. See `perception/UPSTREAM_REQUESTS.md` item 1 for the measurement.
+one row less placeable ground than team 0. Towers corrected 2026-07-30 per
+`perception/UPSTREAM_REQUESTS.md` items 1-2: left Princess `x` 3.0 → 4.0 (now
+flush with its own bridge, like the right side already was), Kings `x` 8.5 →
+9.0 (the board's measured true centre). Combined held-out calibration error
+dropped max 0.63 → 0.31 tiles.
 
 **The King Tower never sleeps.** `Tower.h` gives it no activation condition, so
 it fires from tick 0 while the real King is dormant until activated. Any

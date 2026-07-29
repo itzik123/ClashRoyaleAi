@@ -484,34 +484,37 @@ public:
         playerAI.initializeDeck(aiDeckConfig, rng);
         playerOpponent.initializeDeck(oppDeckConfig, rng);
 
-        // King Tower is rendered as a 4x4-tile footprint (see web/viewer.html's
-        // sizeInTiles), which only sits flush on whole tile boundaries when
-        // centered on a half-integer coordinate (a 4-wide span covering tiles
-        // i..i+3 runs from i-0.5 to i+3.5, so its center is always X.5) --
-        // these were previously on whole-integer coordinates, straddling
-        // tile boundaries. Corrected per-team by the actual visual offset
-        // needed (the two sides weren't symmetric to begin with), not a
-        // shared mirror formula. Princess Tower positions are unaffected by
-        // the alignment fix (3-wide footprint, already correctly aligned);
-        // the Red-side princesses moved slightly only to match the King's
-        // corrected position, preserving the two teams' visual symmetry.
+        // X-coordinates below corrected 2026-07-30 per perception/'s
+        // UPSTREAM_REQUESTS.md items 1-2, fitted from real-recording
+        // homography (screen->tile, 8 landmarks, aggregated over 8 matches):
         //
-        // Real-map sync: the board grew by one back row per side (see
-        // Board.h's BACK_ROW_OPENING_HALF_WIDTH), and the King Tower moved
-        // back exactly one tile into that new space -- Blue's Y is
-        // numerically unchanged (2.5) only because the board's own new row
-        // 0 already accounts for the other tile of growth; Red mirrors it
-        // via (height-1) - y = 33 - 2.5 = 30.5, same convention as every
-        // other team-mirroring formula in this engine (e.g.
-        // ClashEnv::extractObservationForTeam). Princess Towers didn't move
-        // independently -- their Y values below are just the same +1 board-
-        // growth carry-along every pre-existing coordinate got.
-        addTower(8.5f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
-        addTower(8.5f, 30.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
+        //   - Left Princess x: 3.0 -> 4.0. It was a full tile off its own
+        //     bridge (also x=4.0) while the right side already agreed with
+        //     ITS bridge (both 14.0) -- an internal asymmetry, not a
+        //     convention choice. Measured: left tower centre 819px, left
+        //     bridge centre 821px, same lane.
+        //   - King x: 8.5 -> 9.0. Supersedes this engine's own previous
+        //     flush-footprint reasoning (a 4-wide footprint centered on a
+        //     half-integer lands on whole tile-boundary lines) now that real
+        //     footage gives a directly measured value instead: king centre
+        //     955.75px resolves to 8.79 in bridge-calibrated tile
+        //     coordinates, closer to 9.0. Moving the King alone is a wash
+        //     (it fixes one landmark while the left Princess is still wrong);
+        //     combined with the Princess fix above, held-out calibration
+        //     error dropped max 0.63 -> 0.31 tiles, rms 0.33 -> 0.21.
+        //   - Right side (14.0/14.0) was already correct and is unchanged.
+        //
+        // Y-coordinates are untouched here (separate history -- see the
+        // river re-centring commit): King 2.5<->30.5, Princess 6.0<->27.0,
+        // still symmetric under (height-1) - y = 33 - y, same convention as
+        // every other team-mirroring formula in this engine (e.g.
+        // ClashEnv::extractObservationForTeam).
+        addTower(9.0f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
+        addTower(9.0f, 30.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        addTower(3.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+        addTower(4.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
         addTower(14.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
-        addTower(3.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
+        addTower(4.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
         addTower(14.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
 
         board.commitPendingEntities(currentTick);

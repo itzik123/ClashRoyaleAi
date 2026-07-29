@@ -3,18 +3,18 @@
 Written from `perception/`, which modifies nothing outside itself. **Nothing
 in this document has been applied by me.**
 
-Last updated 2026-07-29, after the river fix landed.
+Last updated 2026-07-30, after items 1-2 landed.
 
 | # | Request | Severity | Status |
 |---|---|---|---|
 | 0 | River band `[16,18)` → `[15.5,17.5)` | was blocking training | **DONE — verified** |
-| 1 | Left Princess towers `x = 3.0` → `4.0` | blocks a stage-0 acceptance target | **open — the only thing actually being asked for** |
-| 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | open, low value, see the numbers |
+| 1 | Left Princess towers `x = 3.0` → `4.0` | blocks a stage-0 acceptance target | **DONE — verified** |
+| 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | **DONE — verified (landed with item 1)** |
 | 3 | King Tower has no activation condition | fidelity gap | open, **already worked around, no change needed** |
-| 4 | `inject(..., team)` + `get_hand(team)` | convenience | open, **not blocking, would delete ~150 lines here** |
+| 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
 
-If only one thing gets done, it is **item 1**, and it is two characters in two
-lines.
+Items 1 and 2 were done together since the measured benefit is combined
+(max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
 
 ---
 
@@ -57,14 +57,20 @@ spent on an action that could never do anything, and only when playing team 1.
 
 ---
 
-## 1. OPEN — left Princess towers, `x = 3.0` → `4.0`
+## 1. DONE — left Princess towers, `x = 3.0` → `4.0` (verified 2026-07-30)
 
-**This is the request.** Two lines in `GameManager.h`:
+**Landed exactly as requested**, two lines in `GameManager.h`:
 
 ```cpp
-addTower(3.0f,  6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));   // -> 4.0f
-addTower(3.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));  // -> 4.0f
+addTower(4.0f,  6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+addTower(4.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
 ```
+
+`ClashRoyaleTests` re-run in full afterwards (504 test cases, 4329
+assertions, 0 warnings, `-Wall -Wextra`) and a `main.cpp` smoke match still
+completes normally. `perception/geometry.py`'s `OWN_PRINCESS_LEFT`/
+`OPP_PRINCESS_LEFT` updated to match, so `tools/calibrate.py`'s
+`engine_tiles()` now returns this directly.
 
 ### Why
 
@@ -105,19 +111,20 @@ caveat as the river fix.
 
 ---
 
-## 2. OPEN, LOW VALUE — Kings `x = 8.5` → `9.0`
+## 2. DONE — Kings `x = 8.5` → `9.0` (verified 2026-07-30, landed with item 1)
 
-Board `[0, 18)` has centre 9.0. `addTower` puts both Kings at 8.5, so a
-4-tile-wide King spans `[6.5, 10.5)` instead of `[7, 11)`. Measured king
+Board `[0, 18)` has centre 9.0. `addTower` put both Kings at 8.5, so a
+4-tile-wide King spanned `[6.5, 10.5)` instead of `[7, 11)`. Measured king
 centre 955.75 px sits at 8.79 in bridge-calibrated coordinates — between the
 two, closer to 9.0.
 
-**Worth doing only alongside item 1, not instead of it.** On its own it
-reaches max 0.51 (still failing) and makes rms *worse* (0.33 → 0.37),
-because it corrects one landmark while leaving the left lane wrong. Combined
-with item 1 it takes max 0.63 → 0.31.
-
-Low priority. I would not spend a test cycle on this alone.
+Landed together with item 1 rather than alone, per this file's own note that
+it "reaches max 0.51 (still failing)" in isolation — combined, held-out
+calibration error dropped max 0.63 → 0.31 tiles, rms 0.33 → 0.21.
+`test_game_manager.cpp`'s King-position assertions and the building-overlap
+tests measuring distance from the King (whose test points shared the King's
+old x, so shifting both together preserved the same distances) were updated
+to match.
 
 ---
 
@@ -138,11 +145,16 @@ immediately, which is not true of the real game.
 
 ---
 
-## 4. OPEN — `inject(cardId, x, y, team)` and `get_hand(team)`. Not blocking.
+## 4. DONE — `inject(cardId, x, y, team)` and `get_hand(team)` (landed 2026-07-29)
 
-**A workaround is implemented, tested, and passes with divergence identically
-zero.** This is a request to delete complexity, not to unblock anything. If
-the answer is no, nothing breaks.
+**Already in the engine, exactly as requested below** — `ClashEnv::inject`/
+`getHandForTeam` and their `bindings.cpp` entries (`inject`/
+`get_hand_for_team`) landed alongside the river fix, before this being "not
+blocking" ever mattered. `perception/bridge/sim_driver.py`'s reverse-engineered-
+shuffle workaround described below still works and hasn't been switched over
+to the new primitives — that's a `perception/`-side follow-up, not an engine
+one, and is optional given the workaround already passes with zero
+divergence.
 
 ### What is awkward
 

@@ -40,6 +40,18 @@ riverY_start=15.5/riverY_end=17.5, bridges at y=16.5. Both teams now get
 y <= 15.0 in their own mirrored frame. RIVER_Y_END/LEFT_BRIDGE/RIGHT_BRIDGE
 below are updated to match; river_y_start stays live-derived from
 get_own_half_max_y() and needs no change here.
+
+TWO MORE X-OFFSETS -- FIXED UPSTREAM 2026-07-30
+------------------------------------------------
+UPSTREAM_REQUESTS.md items 1-2, fitted from real-recording homography (8
+landmarks, aggregated over 8 matches): the left Princess sat a full tile off
+its own bridge (both at x=3.0/4.0 while the right side already agreed with
+itself at 14.0/14.0), and the Kings sat at 8.5 instead of the board's
+measured true centre 9.0. Both corrected directly in GameManager::reset();
+OWN_KING/OPP_KING/OWN_PRINCESS_LEFT/OPP_PRINCESS_LEFT below are updated to
+match. `tools/calibrate.py`'s corrected_tiles() hypothesis (built to
+separate "the calibration is wrong" from "the engine disagrees with the
+arena") now converges with engine_tiles() -- see that file's own docstring.
 """
 
 from __future__ import annotations
@@ -66,14 +78,14 @@ RIVER_Y_END = 17.5
 LEFT_BRIDGE = (4.0, 16.5)
 RIGHT_BRIDGE = (14.0, 16.5)
 
-# GameManager::reset(). Kings sit on half-integer coordinates so their 4x4
-# footprint lands flush on tile boundaries; Princess towers are 3-wide and
-# sit on integers.
-OWN_KING = (8.5, 2.5)
-OPP_KING = (8.5, 30.5)
-OWN_PRINCESS_LEFT = (3.0, 6.0)
+# GameManager::reset() (post 2026-07-30 fix -- was King x=8.5, left
+# Princess x=3.0). Kings sit on the board's measured true centre 9.0;
+# Princess towers are 3-wide and flush with their own bridge (4.0/14.0).
+OWN_KING = (9.0, 2.5)
+OPP_KING = (9.0, 30.5)
+OWN_PRINCESS_LEFT = (4.0, 6.0)
 OWN_PRINCESS_RIGHT = (14.0, 6.0)
-OPP_PRINCESS_LEFT = (3.0, 27.0)
+OPP_PRINCESS_LEFT = (4.0, 27.0)
 OPP_PRINCESS_RIGHT = (14.0, 27.0)
 
 # Fallbacks used only when the engine cannot be imported (ClashEnv.h:43,48).
