@@ -127,20 +127,47 @@ class VideoSource(FrameSource):
             self._timing = result
             return result
 
-        deltas = np.diff(np.array(stamps, dtype=np.float64))
-        deltas = deltas[deltas > 0]
-        if len(deltas) < 2:
+        array = np.array(stamps, dtype=np.float64)
+        deltas = np.diff(array)
+        positive = deltas[deltas > 0]
+        if len(positive) < 2:
             result["reason"] = "decoder reported no usable presentation timestamps"
             self._timing = result
             return result
 
-        median = float(np.median(deltas))
+        median = float(np.median(positive))
         # Median absolute deviation, not standard deviation: a single dropped
         # frame produces one huge delta, and a mean-based statistic would let
         # that one outlier swamp the measurement in either direction.
-        jitter = float(np.median(np.abs(deltas - median)) / median) if median > 0 else float("inf")
+        jitter = float(np.median(np.abs(positive - median)) / median) if median > 0 else float("inf")
 
-        result["measured_fps"] = 1000.0 / median if median > 0 else float("nan")
+        # RATE COMES FROM THE TOTAL SPAN, NOT THE MEDIAN DELTA.
+        #
+        # Decoders report presentation time quantised to whole milliseconds,
+        # so a true 33.333ms interval arrives as an alternating 33/33/34
+        # pattern. Its MEDIAN is 33, which reads as 30.303 fps -- 1% fast, and
+        # consistently so. On a 176-second match that is a 1.8-second error at
+        # the end, or 18 simulator ticks, applied to every placement. Measured
+        # directly on this batch: median gives 30.303, span gives 29.999.
+        #
+        # The span estimator divides one quantisation error by the whole
+        # sample instead of by a single interval, so it is accurate to about
+        # 0.01% over a few hundred frames. Jitter still comes from the deltas,
+        # which is what they are actually good for.
+        span_per_frame = float((array[-1] - array[0]) / (len(array) - 1))
+        measured = 1000.0 / span_per_frame if span_per_frame > 0 else float("nan")
+
+        # Prefer the container's declared rate when the measurement confirms
+        # it. The declared value is the exact number the encoder intended
+        # (30.0, or 30000/1001 for NTSC); the measurement is an estimate of
+        # the same thing. Agreement means the estimate has nothing to add.
+        nominal = self._nominal_fps
+        if nominal > 0 and abs(measured - nominal) / nominal < 0.005:
+            measured = nominal
+
+        result["measured_fps"] = measured
+        result["span_fps"] = 1000.0 / span_per_frame if span_per_frame > 0 else float("nan")
+        result["median_delta_ms"] = median
         result["jitter"] = jitter
         result["is_cfr"] = jitter <= self._max_timing_jitter
         if not result["is_cfr"]:

@@ -9,15 +9,51 @@ Items 2 and 3 are a fidelity gap and a convenience request, neither blocking.
 
 ---
 
-## 1. Team 1 has one row less placeable ground than team 0
+## 1. Board geometry does not match the real arena
 
-**Severity: affects self-play training. Not a perception issue.**
+**Severity: affects self-play training AND perception. Now measured against
+the real game, not just against the engine's own internal symmetry.**
 
-### What was measured
+### The measurement
 
-20 trials per row, cheap cards only so affordability is never the limiting
-factor, each team placing in **its own mirrored frame** — the frame its own
-observation and its own policy use:
+Calibrating a screen-to-tile homography from a real recording, fitting all
+eight landmarks by least squares and reading off the residual:
+
+| landmark | engine's coordinates | corrected |
+|---|---|---|
+| left_bridge | 0.66 | 0.16 |
+| right_bridge | 0.34 | 0.17 |
+| own_princess_left | 0.42 | 0.23 |
+| own_princess_right | 0.43 | 0.31 |
+| opp_princess_left | 0.43 | 0.03 |
+| opp_princess_right | 0.17 | 0.04 |
+| own_king | 0.39 | 0.34 |
+| opp_king | 0.01 | 0.13 |
+| **max / rms** | **0.66 / 0.40** | **0.34 / 0.21** |
+
+Identical pixel measurements, identical solver, identical frame. Only the
+target tile coordinates differ. The real arena fits a homography cleanly; the
+engine's stated layout does not, and misses perception's 0.5-tile calibration
+budget before any detection error is added.
+
+Three offsets, all half or one tile:
+
+1. **The left Princess tower is a full tile left of its own bridge.** Measured
+   centres: left tower x=819 px, left bridge x=821 px — the same lane, as in
+   the real game where troops crossing a bridge walk straight into the tower.
+   The engine puts the tower at x=3.0 and the bridge at x=4.0.
+2. **The Kings are half a tile off the board centre.** Board `[0,18)` has
+   centre 9.0; `addTower` puts them at 8.5. Measured king x=955.75 px sits at
+   8.79 in bridge-calibrated coordinates.
+3. **The river band is half a tile off the towers' symmetry axis.** Towers
+   mirror about 16.5, the band `[16,18)` is centred on 17.0.
+
+### The consequence that is already costing training
+
+Offset 3 above is why **team 1 has one row less placeable ground than team
+0**. 20 trials per row, cheap cards only so affordability is never the
+limiting factor, each team placing in **its own mirrored frame** — the frame
+its own observation and its own policy use:
 
 | row (own frame) | team 0 | team 1 |
 |---|---|---|
@@ -73,10 +109,15 @@ never actually works.
 
 ### Options (my preference first)
 
-1. **Move the river to `[15.5, 17.5)`** so it is centred on 16.5 like
-   everything else. Both teams then get `y <= 15.5` in their own frame.
-   Fixes the asymmetry at its source. Changes pathing geometry slightly, so it
-   needs a full `ClashRoyaleTests` run.
+1. **Align the layout with the real arena**: left Princess towers to x=4.0,
+   Kings to x=9.0, river to `[15.5, 17.5)`. This is what the 0.34-tile column
+   above was fitted with, so it is the version the real game agrees with. It
+   fixes the team-1 row asymmetry, the lane misalignment and the calibration
+   budget in one change. Largest blast radius — pathing and placement both
+   move — so it needs a full `ClashRoyaleTests` run.
+1b. **River only, `[15.5, 17.5)`**, leaving the towers where they are. Fixes
+   the team-1 asymmetry, leaves the lane misalignment and about 0.5 tiles of
+   calibration error.
 2. **Gate both teams on the same distance from their own side**, leaving the
    band alone — e.g. team 1 rejects `y < (BOARD_HEIGHT - 1) - getOwnHalfMaxY()`.
    Smaller blast radius; leaves the river visually off-centre.

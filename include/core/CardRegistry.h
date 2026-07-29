@@ -645,10 +645,13 @@ private:
             .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} })
             .withTargetsAir());
 
-        add(troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U').withSightRange(6.0f));
+        add(troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+            .withTargetsAir().withSightRange(6.0f));
+        // Bomber deliberately has NO withTargetsAir: the real card is
+        // ground-only. Same for Bowler/Sparky/Cannon Cart below.
         add(troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, 0.5f, 4.5f, 225, 18, 'b'));
         add(troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
-            .withSplash(1.5f));
+            .withTargetsAir().withSplash(1.5f));
         add(troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
             .withTargetsAir().withSightRange(7.5f));
         // Now modeled as a real piercing line (applyLineSplashDamage) --
@@ -661,6 +664,7 @@ private:
             .withSplash(1.8f).withLineSplash(11.5f).withSightRange(4.0f));
 
         add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
+            .withTargetsAir()
             .withOffsets({ {0.0f, 0.0f}, {0.7f, 0.0f}, {-0.7f, 0.0f} }));
 
         // Ice Wizard: genuinely ranged -- fires a projectile that applies the
@@ -669,6 +673,7 @@ private:
         // bypassing the projectile entirely. Fixed now that on-hit effects
         // can ride along with a projectile instead of firing at launch.)
         add(troop(34, "Ice Wizard", 3.0f, Archetype::RangedSquad, 689, 0.5f, 5.5f, 90, 17, 'i')
+            .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f)));
 
         // Executioner's axe hits on arrival, then again 1.5s (15 ticks)
@@ -1501,10 +1506,17 @@ private:
         // delay. The real card's "poison persists even if the Dart
         // Goblin dies" already falls out for free here -- the mark lives
         // on the victim, independent of the attacker's lifetime.
+        // withTargetsAir on BOTH stat blocks: addEvolution inherits nothing
+        // from the base card's registration (it copies isFlying explicitly and
+        // nothing else -- targetsAir only reaches the entity via
+        // CardFactories::spawn on whichever CardStats is passed here). Without
+        // it the base Dart Goblin could hit air and its EVOLVED form could
+        // not, i.e. evolving strictly downgraded the card.
         addEvolution(131,
             troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
-                .withSightRange(7.5f),
+                .withTargetsAir().withSightRange(7.5f),
             troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
+                .withTargetsAir()
                 .withOnHit(std::make_shared<PoisonOnHit>(51, 40, 10)).withSightRange(7.5f),
             2, 1);
 
@@ -1648,9 +1660,9 @@ private:
         // either (burst only affects damage, not targeting).
         addEvolution(140,
             troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
-                .withSightRange(6.0f),
+                .withTargetsAir().withSightRange(6.0f),
             troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
-                .withBurstAttack(3, 1.8f).withSightRange(6.0f),
+                .withTargetsAir().withBurstAttack(3, 1.8f).withSightRange(6.0f),
             2, 1);
 
         // Wizard Evolution: 2 cycles (standard pattern). "Fire Shield" is
@@ -1661,9 +1673,9 @@ private:
         // engine).
         addEvolution(141,
             troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
-                .withSplash(1.5f),
+                .withTargetsAir().withSplash(1.5f),
             troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
-                .withSplash(1.5f).withShield(189),
+                .withTargetsAir().withSplash(1.5f).withShield(189),
             2, 1);
 
         // Witch Evolution: 2 cycles (standard pattern). Real mechanic
@@ -2121,7 +2133,7 @@ private:
         // auto-turret in front of her (see heroMusketeerTurretStats above)
         // with a fixed 10s lifetime, targeting air+ground.
         add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
-            .withSightRange(6.0f)
+            .withTargetsAir().withSightRange(6.0f)
             .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
 
         // Hero Goblins. Base stats copied from card id 4 (Goblins), see
@@ -2162,7 +2174,7 @@ private:
         // not an exact sourced tile value, same caveat category as
         // splashRadius/shieldHp elsewhere in this file.
         add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
-            .withSplash(1.5f)
+            .withTargetsAir().withSplash(1.5f)
             .withHeroAbility(1.0f, 200, std::make_shared<HeroWizardFieryFlightEffect>(50, 4.0f, 20, 0.5f)));
 
         // Hero Giant. Base stats copied from card id 2 (Giant), see that

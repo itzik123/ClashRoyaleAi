@@ -7,17 +7,30 @@ would be slower, would fail on the fractional part entirely (the number is
 integer-valued while the true value is continuous), and would introduce a
 model where none is needed.
 
-HOW A SEGMENT IS SCORED
------------------------
-Each segment is sampled along a horizontal line through the middle of the
-bar, and its fill is judged by colour rather than brightness. Elixir pink is
-strongly saturated in a narrow hue band; the empty slot behind it is dark and
-desaturated. Working in HSV and thresholding on saturation-and-value makes
-the test robust to the bar's own animated shimmer, which changes brightness
-noticeably without changing hue.
+THE VALUE COMES FROM THE FILL EDGE, NOT FROM COUNTING SEGMENTS
+--------------------------------------------------------------
+The ten segments are dividers drawn over one continuous bar, so the position
+where the fill ends already encodes the value to sub-segment precision.
+Locating that edge is both more accurate than counting full segments and far
+more robust, because counting breaks the moment anything punches a hole in
+the fill.
 
-The partial segment gives the fraction: the proportion of its sampled columns
-that read as filled is the fractional part of the elixir value.
+Which is exactly what happens here. The elixir NUMBER and the "Max: 10"
+caption are drawn ON TOP of the bar, and they blank whole columns of it. A
+segment-counting reader treats the first blanked column as the end of the
+fill and reports ~0.5 elixir for the rest of the match. Measured on this
+recording before the fix: 450 of 589 samples flagged low-confidence, with
+values pinned near 0.5 while the real value ranged over 1-10.
+
+The fix is twofold: read the edge rather than count, and read it from a row
+band the text does not reach. Only y-rows 16-21 of the bar are clean in every
+frame sampled; the ROI in the calibration profile is set to that band and
+nothing else.
+
+Colour, not brightness: elixir pink is strongly saturated in a narrow hue
+band while the empty trough behind it is dark blue. Thresholding hue and
+saturation in HSV survives the bar's animated shimmer, which moves value a
+long way and hue almost not at all.
 
 CALIBRATION IS REQUIRED, NOT GUESSED
 ------------------------------------
@@ -52,9 +65,19 @@ DEFAULT_HUE_RANGE = (135, 175)
 DEFAULT_MIN_SATURATION = 90
 DEFAULT_MIN_VALUE = 70
 
-# Fraction of a segment's sampled columns that must read as filled before the
-# segment counts as full.
+# Fraction of a segment's columns that must read as filled before the segment
+# counts as full. Diagnostic only -- the value comes from the fill edge.
 SEGMENT_FULL_THRESHOLD = 0.75
+
+# Fraction of a COLUMN's rows that must be pink for the column to count as
+# filled. The ROI is a narrow band chosen to be free of the overlaid text, so
+# a filled column is filled almost all the way through.
+COLUMN_FILL_RATIO = 0.5
+
+# Consecutive filled columns required to accept a fill edge. Rejects the
+# bar's outer glow and antialiased rim, which are a few columns wide and
+# would otherwise inflate every reading.
+EDGE_RUN_COLUMNS = 3
 
 
 class ElixirCalibrationMissing(NotImplementedError):
@@ -111,43 +134,48 @@ class ElixirBarReader:
         lo = np.array([self.hue_range[0], self.min_saturation, self.min_value], np.uint8)
         hi = np.array([self.hue_range[1], 255, 255], np.uint8)
         mask = cv2.inRange(hsv, lo, hi) > 0
+        column_filled = mask.mean(axis=0) >= COLUMN_FILL_RATIO
 
-        # Column occupancy over the middle band of the bar's height. The
-        # outer rows are where the border and any rounded corners live, and
-        # including them drags every segment's ratio down by a constant that
-        # varies with the ROI's vertical alignment.
-        band = mask[h // 4: max(h // 4 + 1, 3 * h // 4), :]
-        column_filled = band.mean(axis=0) > 0.5
+        # Fill edge = the last column that is filled, ignoring isolated
+        # specks past it. Scanning from the RIGHT and stopping at the first
+        # run of consecutive filled columns rejects the glow and the
+        # antialiased rim, which would otherwise add a few tenths of an
+        # elixir at every reading.
+        edge = 0
+        run = 0
+        for index in range(w - 1, -1, -1):
+            if column_filled[index]:
+                run += 1
+                if run >= EDGE_RUN_COLUMNS:
+                    edge = index + EDGE_RUN_COLUMNS
+                    break
+            else:
+                run = 0
+
+        value = min(MAX_ELIXIR_SEGMENTS * edge / float(w), float(MAX_ELIXIR_SEGMENTS))
 
         edges = np.linspace(0, w, MAX_ELIXIR_SEGMENTS + 1).astype(int)
-        fills = []
-        for i in range(MAX_ELIXIR_SEGMENTS):
-            segment = column_filled[edges[i]:edges[i + 1]]
-            fills.append(float(segment.mean()) if segment.size else 0.0)
+        fills = [
+            float(column_filled[edges[i]:edges[i + 1]].mean()) if edges[i + 1] > edges[i] else 0.0
+            for i in range(MAX_ELIXIR_SEGMENTS)
+        ]
 
-        full = 0
-        partial = 0.0
-        for fill in fills:
-            if fill >= SEGMENT_FULL_THRESHOLD:
-                full += 1
-            else:
-                partial = fill
-                break
+        # Consistency, not the measurement: everything left of the edge should
+        # be filled and everything right of it empty. A violation means the
+        # ROI is misaligned, an overlay is covering the bar, or the hue window
+        # is wrong -- all of which still yield a perfectly reasonable-looking
+        # number, which is why this is checked rather than assumed.
+        left = column_filled[:edge]
+        right = column_filled[edge:]
+        left_ok = float(left.mean()) if left.size else 1.0
+        right_ok = 1.0 - (float(right.mean()) if right.size else 0.0)
+        confidence = round(min(1.0, left_ok * right_ok), 4)
 
-        value = min(float(full) + partial, float(MAX_ELIXIR_SEGMENTS))
-
-        # A correct reading is monotone: every segment after the partial one
-        # must be empty. Violations mean the ROI is misaligned, an overlay is
-        # covering part of the bar, or the hue window is wrong -- all of which
-        # produce a number that looks perfectly reasonable.
-        tail = fills[full + 1:]
-        monotone = all(f < SEGMENT_FULL_THRESHOLD for f in tail)
-        confidence = 1.0 if monotone else 0.3
-
+        full = sum(1 for f in fills if f >= SEGMENT_FULL_THRESHOLD)
         return ElixirReading(
             value=value,
             full_segments=full,
-            partial_fraction=partial,
+            partial_fraction=value - int(value),
             confidence=confidence,
             per_segment_fill=tuple(round(f, 3) for f in fills),
         )

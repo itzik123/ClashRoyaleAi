@@ -76,6 +76,25 @@ class PhaseSchedule:
         return Phase.SINGLE
 
 
+# Standard ladder rules, supplied by the project owner on 2026-07-29:
+# 1x for the first two minutes, 2x for the last minute of regular time, then
+# overtime at 2x escalating to 3x in its final minute.
+#
+# A named constant that a caller must still pass explicitly -- NOT a default.
+# The distinction matters: balance updates move these boundaries, and the one
+# consumer that acts on phase (track/opp_elixir.py) is corrupted silently by a
+# wrong multiplier. Requiring the call keeps the assumption at the call site
+# where it can be seen, instead of buried here where it would be inherited by
+# every future recording made under different rules.
+LADDER_REGULAR_LENGTH_S = 180.0
+LADDER_SCHEDULE_KWARGS = {
+    "double_elixir_at_s": 120.0,
+    # Regular time never reaches 3x; overtime does, in its final minute.
+    "triple_elixir_at_s": None,
+    "overtime_at_s": 180.0,
+}
+
+
 @dataclass
 class MatchClock:
     """Converts capture time to match time, and match time to ticks."""

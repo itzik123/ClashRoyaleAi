@@ -18,12 +18,20 @@ the C++ core are read-only from here.
 
 | Stage | State | Evidence |
 |---|---|---|
-| 0 — skeleton, capture, homography | **done, video pending** | solver verified against a known synthetic camera; held-out landmark error `< 0.01` tiles. Picking anchors on a real frame still needs a recording. |
-| 1 — elixir + clock readers | **algorithms written, uncalibrated** | both raise `NotImplementedError` without ROIs. No recording to calibrate against. |
-| 2 — our hand and cycle | **logic done, reader uncalibrated** | cycle model reproduces the engine's FIFO exactly across a real replay, 0 desyncs. |
-| 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs recorded matches; see *What to record*. |
+| 0 — capture, calibration | **calibrated; acceptance blocked upstream** | held-out landmark error **0.66 tiles** against the engine's geometry vs **0.34** against corrected geometry — same pixels, same solver. See *Findings*. |
+| 1 — elixir reader | **PASSES** | 587 samples over a full match, mean confidence **0.990**, 13 low-confidence. Regen interval measures **2.80 s**, matching the real game exactly. |
+| 1 — clock reader | **PASSES with confidence gating** | **97.1%** of readings correct at confidence ≥ 0.7 (207 of 295 samples). Free-running drift over the match is **~0.6 ms** (CFR measured at 30.0001 fps). |
+| 2 — our hand and cycle | **logic done, icon templates pending** | cycle model reproduces the engine's FIFO exactly across a real replay, 0 desyncs. |
+| 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs the next batch. |
 | 4 — opponent deck, cycle, elixir | **done and tested** | deck discovery, exact elixir derivation, negative-balance alarm. |
 | 5 — bridge + divergence | **done and tested** | zero-error control: divergence identically **0**. |
+
+### Recordings
+
+Three matches, 1920×1080 desktop capture (the emulator window occupies
+686–1236 × 40–1012 of it), H.264, **constant frame rate confirmed by
+measurement — jitter 0.0000**. Calibration profile:
+`config/profile_gpg_1920x1080.json`.
 
 `capture/window.py` (live capture) is deliberately not built. Nothing here
 sends input to the game.
@@ -80,13 +88,18 @@ Three things this cost, all documented in `bridge/sim_driver.py`:
 
 Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
 
-1. **Team 1 has one row less placeable ground than team 0.** Confirmed
-   empirically (20 trials/row): in each team's own mirrored frame, team 0 can
-   place up to row 15, team 1 only to row 14. The river band is `[16, 18)`,
-   centred on 17.0, while the tower layout mirrors about 16.5. This affects
-   **self-play training**, not just perception — `model.py` applies
-   `own_half_rows = 16` to both sides, so a policy driving team 1 proposes
-   row-15 placements the engine silently rejects.
+1. **The engine's board geometry does not match the real arena, and now there
+   is a measurement of it.** Calibrating against the real game puts held-out
+   landmarks at **0.66 tiles** using the engine's stated coordinates and
+   **0.34 tiles** using corrected ones — identical pixels, identical solver,
+   only the target coordinates differ. Three separate offsets:
+   the left Princess tower sits a full tile left of its own bridge (reality
+   aligns them), the Kings sit half a tile off the board centre, and the river
+   band is half a tile off the towers' symmetry axis. The last of these is
+   also why **team 1 has one row less placeable ground than team 0**
+   (confirmed separately, 20 trials/row) — which affects **self-play
+   training**, since `model.py` applies `own_half_rows = 16` to both sides and
+   team 1's row-15 placements are silently rejected.
 2. **The King Tower never sleeps.** `Tower.h` has no activation condition, so
    it fires from tick 0 while the real King is dormant until activated. King
    HP therefore diverges systematically from the first second regardless of

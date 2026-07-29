@@ -1,0 +1,96 @@
+{
+  "name": "gpg_emulator_1920x1080",
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "homography": [
+    0.03601891817180693,
+    -0.0012563494187221448,
+    -25.75196372354935,
+    0.00024116232052532463,
+    -0.05241285570881167,
+    40.0546483129821,
+    2.4873369509780023e-05,
+    -0.00015386896551058122,
+    1.0
+  ],
+  "anchors_screen": {
+    "left_bridge": [
+      821.0,
+      465.5
+    ],
+    "right_bridge": [
+      1102.5,
+      465.5
+    ],
+    "opp_king": [
+      956.0,
+      190.0
+    ],
+    "own_king": [
+      955.5,
+      732.0
+    ],
+    "opp_princess_left": [
+      817.0,
+      261.0
+    ],
+    "opp_princess_right": [
+      1105.0,
+      258.0
+    ],
+    "own_princess_left": [
+      819.0,
+      656.0
+    ],
+    "own_princess_right": [
+      1101.0,
+      656.0
+    ]
+  },
+  "rois": {
+    "elixir_bar": [
+      835,
+      1000,
+      381,
+      6
+    ],
+    "clock": [
+      1156,
+      69,
+      66,
+      28
+    ],
+    "hand_slot_0": [
+      809,
+      854,
+      98,
+      118
+    ],
+    "hand_slot_1": [
+      913,
+      854,
+      98,
+      118
+    ],
+    "hand_slot_2": [
+      1017,
+      854,
+      98,
+      118
+    ],
+    "hand_slot_3": [
+      1117,
+      854,
+      98,
+      118
+    ],
+    "next_card": [
+      717,
+      955,
+      42,
+      52
+    ]
+  },
+  "reprojection_error_tiles": 0.6579942100401986,
+  "_comment": "Calibration for ONE capture resolution. Every pixel constant here is invalidated by a resolution change, which is why frame_width/frame_height are part of the profile and asserted on load."
+}

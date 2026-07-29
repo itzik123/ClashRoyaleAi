@@ -10,21 +10,44 @@
 // is fixed, independent of observation_size(), and would break on the very
 // next forward pass if this vector grew). These tests lock that in.
 //
-// The vector grew twice since, though: NUM_CARD_IDS 120->175 (Evolutions/
-// Mirror/Spirit Empress needed ids up to 165), then 175->185 (Heroes need
-// ids up to 175 -- see ClashEnv.h). Both are deliberate, lockstep changes
-// (python_ai/model.py now pulls NUM_CARD_IDS live from the compiled binding,
-// no manual bump needed there anymore), not a regression --
-// 18*34*9 + 1 + 4 + 4*185 = 6253.
+// The vector has grown several times since: NUM_CARD_IDS 120->175
+// (Evolutions/Mirror/Spirit Empress needed ids up to 165), then 175->185
+// (Heroes need ids up to 175), and most recently NUM_CHANNELS 9->21 plus
+// NUM_EXTRA_SCALARS appended scalars (per-cell unit attributes, elapsed time,
+// both sides' cumulative elixir spend, tower HPs -- see ClashEnv.h). All are
+// deliberate, lockstep changes, not regressions: python_ai/model.py derives
+// its layout live from the compiled binding.
+//
+// Asserted against the FORMULA rather than a hardcoded literal. The literal
+// (6253, before the channel/scalar growth) is exactly what made this test fail
+// on an intended change while telling you nothing about WHICH term moved. The
+// formula still fails loudly if observationSize() and the constants disagree,
+// which is the actual invariant worth locking: model.py splits the flat vector
+// at spatial_size and would silently misread every scalar if they drifted.
 
-TEST_CASE("ClashEnv::observationSize matches NUM_CARD_IDS=185", "[clash_env]") {
+TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]") {
     std::vector<int> deck = { 0, 1, 2, 3, 4, 5, 6, 7 };
     ClashEnv env(deck, deck, 100);
 
-    REQUIRE(env.observationSize() == 6253);
+    const int expected =
+        ClashEnv::BOARD_WIDTH * ClashEnv::BOARD_HEIGHT * ClashEnv::NUM_CHANNELS
+        + 1                                              // own elixir
+        + ClashEnv::HAND_SIZE                            // hand costs
+        + ClashEnv::HAND_SIZE * ClashEnv::NUM_CARD_IDS   // hand identity one-hots
+        + ClashEnv::NUM_EXTRA_SCALARS;                   // time, elixir spent, tower HP
+
+    REQUIRE(env.observationSize() == expected);
 
     auto obs = env.reset();
-    REQUIRE(obs.size() == 6253);
+    REQUIRE(obs.size() == static_cast<size_t>(expected));
+
+    // Guards the split point model.py actually uses. If the spatial block and
+    // the scalar tail ever disagree with observationSize(), every scalar the
+    // network reads shifts by the difference -- with no exception anywhere.
+    const int spatial = ClashEnv::BOARD_WIDTH * ClashEnv::BOARD_HEIGHT * ClashEnv::NUM_CHANNELS;
+    REQUIRE(env.observationSize() - spatial
+            == 1 + ClashEnv::HAND_SIZE + ClashEnv::HAND_SIZE * ClashEnv::NUM_CARD_IDS
+               + ClashEnv::NUM_EXTRA_SCALARS);
 }
 
 TEST_CASE("isChampionAbilityReady/activateChampionAbility return false with nothing deployed", "[clash_env][champion]") {
