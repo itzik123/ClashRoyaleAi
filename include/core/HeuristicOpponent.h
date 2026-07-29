@@ -45,6 +45,7 @@ public:
     }
 
     void act(GameManager& game, std::mt19937& rng) {
+        (void)rng; // not currently used by this heuristic's decision logic
         ++ticksSincePlay;
         if (ticksSincePlay < ACTION_COOLDOWN_TICKS) return;
 

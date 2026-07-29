@@ -536,6 +536,26 @@ public:
         }
     }
 
+    // General form of injectEnemy above -- kept as a separate method (not a
+    // refactor of injectEnemy into a team=1 call) so no existing caller
+    // changes. Requested by perception/ (see its own UPSTREAM_REQUESTS.md)
+    // as a state-estimator primitive: spawns directly, bypassing hand/
+    // elixir/placement legality entirely, which is correct for an
+    // estimator replaying placements the real game already validated.
+    void inject(int cardId, float x, float y, int team) {
+        const auto* card = CardRegistry::getInstance().getCard(cardId);
+        if (card) {
+            card->spawnEntity(x, y, team, game.getBoard());
+        }
+    }
+
+    // getHand() above is team-0-only; this is the general form, requested
+    // alongside inject() so an estimator can read either side's hand
+    // without a second, parallel accessor per team.
+    std::vector<int> getHandForTeam(int team) const {
+        return game.getHand(team);
+    }
+
     void setOpponentDeck(const std::vector<int>& deck) {
         game.setOpponentDeck(deck);
     }

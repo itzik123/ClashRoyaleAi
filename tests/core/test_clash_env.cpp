@@ -10,21 +10,26 @@
 // is fixed, independent of observation_size(), and would break on the very
 // next forward pass if this vector grew). These tests lock that in.
 //
-// The vector grew twice since, though: NUM_CARD_IDS 120->175 (Evolutions/
-// Mirror/Spirit Empress needed ids up to 165), then 175->185 (Heroes need
-// ids up to 175 -- see ClashEnv.h). Both are deliberate, lockstep changes
-// (python_ai/model.py now pulls NUM_CARD_IDS live from the compiled binding,
-// no manual bump needed there anymore), not a regression --
-// 18*34*9 + 1 + 4 + 4*185 = 6253.
+// The vector grew several times since, though, all deliberate, lockstep
+// changes (python_ai/model.py pulls these constants live from the compiled
+// binding, no manual bump needed there), not a regression:
+//   - NUM_CARD_IDS 120->175 (Evolutions/Mirror/Spirit Empress needed ids up
+//     to 165), then 175->185 (Heroes need ids up to 175 -- see ClashEnv.h).
+//   - NUM_CHANNELS 9->21: added 12 per-cell ATTRIBUTE channels (unit count,
+//     flying, anti-air, DPS, range, speed -- ally+enemy each) so air/ground
+//     counterplay and unit identity beyond raw HP fraction are actually
+//     visible in the observation (see NUM_CHANNELS's own comment).
+//   - NUM_EXTRA_SCALARS 0->9: appended scalars (time, elixir spent, tower HP).
+// 18*34*21 + 1 + 4 + 4*185 + 9 = 13606.
 
 TEST_CASE("ClashEnv::observationSize matches NUM_CARD_IDS=185", "[clash_env]") {
     std::vector<int> deck = { 0, 1, 2, 3, 4, 5, 6, 7 };
     ClashEnv env(deck, deck, 100);
 
-    REQUIRE(env.observationSize() == 6253);
+    REQUIRE(env.observationSize() == 13606);
 
     auto obs = env.reset();
-    REQUIRE(obs.size() == 6253);
+    REQUIRE(obs.size() == 13606);
 }
 
 TEST_CASE("isChampionAbilityReady/activateChampionAbility return false with nothing deployed", "[clash_env][champion]") {

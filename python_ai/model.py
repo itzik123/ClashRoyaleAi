@@ -11,14 +11,16 @@ import clash_royale_env
 CARD_EMBED_DIM = 16
 
 # מספר שורות המיקום החוקיות בחצי שלנו, נשלף חי מהמנוע (כמו כל שאר הקבועים
-# כאן) במקום עותק hardcoded. get_own_half_max_y() מחזיר 15.5, כלומר שורות
-# שלמות 0..15 -- 16 שורות. נדרש instance (לא static attr) אז נבנית פה
-# פעם אחת בטעינת המודול, בדיוק כמו ה-_dim_probe ש-train.py כבר בונה.
+# כאן) במקום עותק hardcoded. get_own_half_max_y() מחזיר 15.0 (לאחר תיקון
+# מירכוז הנהר סביב 16.5, ראה Board.h -- קודם היה 15.5 עם נהר לא-ממורכז
+# שנתן ל-team 0 שורה אחת יותר מ-team 1), כלומר שורות שלמות 0..15 -- 16
+# שורות בכל מקרה. נדרש instance (לא static attr) אז נבנית פה פעם אחת
+# בטעינת המודול, בדיוק כמו ה-_dim_probe ש-train.py כבר בונה.
 _probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
 OWN_HALF_MAX_Y = _probe.get_own_half_max_y()
 MAX_PLACEMENT_X = _probe.get_max_placement_x()
 del _probe
-# השורה האחרונה בחצי שלנו שמותרת לכוחות (get_own_half_max_y = 15.5 -> שורה 15)
+# השורה האחרונה בחצי שלנו שמותרת לכוחות (get_own_half_max_y = 15.0 -> שורה 15)
 OWN_HALF_ROWS = int(OWN_HALF_MAX_Y) + 1
 # ראש המיקום פורש עכשיו את **כל** הלוח, לא רק את החצי שלנו. הסיבה: המנוע
 # פוטר לחשים ממגבלת החצי (GameManager::isValidPlacement בודק ללחש רק גבולות

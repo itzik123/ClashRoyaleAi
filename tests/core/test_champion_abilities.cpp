@@ -295,7 +295,7 @@ TEST_CASE("BossBanditGetawayGrenadeEffect teleports the opposite direction for t
 TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river band itself, not snapped to an edge",
         "[boss_bandit]") {
     // A "getaway" landing spot doesn't always clear the whole river in one
-    // jump -- if it lands INSIDE the river band (16-18, see Board's own
+    // jump -- if it lands INSIDE the river band (15.5-17.5, see Board's own
     // defaults), a normal (river-respecting) troop would get shoved back to
     // the near edge by Board::clampToBoard. Boss Bandit's retreat must
     // cross the river on the way back to her own side, so this specifically
@@ -307,5 +307,5 @@ TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river 
     BossBanditGetawayGrenadeEffect effect(10, 6.0f);
     effect.apply(board, *bandit);
 
-    REQUIRE(bandit->position.y == Catch::Approx(17.0f)); // 23 - 6, squarely inside the river band -- not clamped to 16 or 18
+    REQUIRE(bandit->position.y == Catch::Approx(17.0f)); // 23 - 6, squarely inside the river band -- not clamped to 15.5 or 17.5
 }
