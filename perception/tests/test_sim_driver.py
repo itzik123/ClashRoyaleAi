@@ -40,7 +40,8 @@ from contracts import UNKNOWN_CARD_SIM_ID, EventSource, PlacementEvent
 DECK = [15, 25, 6, 1, 0, 41, 7, 10]
 
 # Own-half tile rows only. GameManager::isValidPlacement rejects a non-spell
-# above getOwnHalfMaxY() == 15.5, so 15 is the last legal row.
+# above getOwnHalfMaxY() == 15.0 (river re-centred on 16.5, see geometry.py's
+# own docstring), so 15 is the last legal row.
 OWN_ROWS = (5, 8, 11, 14)
 # Opponent placements are injected raw, but the events carry mirrored y (see
 # contracts.PlacementEvent), so these are in the mirrored frame too.

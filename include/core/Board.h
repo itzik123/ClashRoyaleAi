@@ -12,10 +12,20 @@ private:
     std::vector<std::shared_ptr<Entity>> pendingEntities;
     int idCounter = 1000;
 
-    float riverY_start = 16.0f;
-    float riverY_end = 18.0f;
-    Vector2D leftBridge{ 4.0f, 17.0f };
-    Vector2D rightBridge{ 14.0f, 17.0f };
+    // Centered on 16.5 to match the tower layout's own symmetry (King
+    // 2.5<->30.5, Princess 6.0<->27.0, mirrored by y -> 33-y exactly as
+    // ClashEnv::extractObservationForTeam does it) -- NOT 17.0, which was
+    // half a tile off-centre and gave team 0 one more placeable row than
+    // team 1 in each side's own mirrored frame (team 0 could reach row 15,
+    // team 1 could not, confirmed empirically: 15/20 vs 0/20 placements).
+    // Both teams' GameManager::isValidPlacement bound now sits at the same
+    // mirrored row (15.0), and python_ai/model.py's single shared
+    // own_half_rows mask (already computed once and applied to both sides)
+    // becomes correct for both instead of encoding the old asymmetry.
+    float riverY_start = 15.5f;
+    float riverY_end = 17.5f;
+    Vector2D leftBridge{ 4.0f, 16.5f };
+    Vector2D rightBridge{ 14.0f, 16.5f };
 
     // Real-map sync: the arena is 18x34, not 18x32 -- there's one extra row
     // behind each King Tower that this engine used to just not have. Most of

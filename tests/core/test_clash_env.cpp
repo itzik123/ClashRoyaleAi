@@ -10,20 +10,27 @@
 // is fixed, independent of observation_size(), and would break on the very
 // next forward pass if this vector grew). These tests lock that in.
 //
-// The vector has grown several times since: NUM_CARD_IDS 120->175
-// (Evolutions/Mirror/Spirit Empress needed ids up to 165), then 175->185
-// (Heroes need ids up to 175), and most recently NUM_CHANNELS 9->21 plus
-// NUM_EXTRA_SCALARS appended scalars (per-cell unit attributes, elapsed time,
-// both sides' cumulative elixir spend, tower HPs -- see ClashEnv.h). All are
-// deliberate, lockstep changes, not regressions: python_ai/model.py derives
-// its layout live from the compiled binding.
+// The vector grew several times since, though, all deliberate, lockstep
+// changes (python_ai/model.py pulls these constants live from the compiled
+// binding, no manual bump needed there), not a regression:
+//   - NUM_CARD_IDS 120->175 (Evolutions/Mirror/Spirit Empress needed ids up
+//     to 165), then 175->185 (Heroes need ids up to 175 -- see ClashEnv.h).
+//   - NUM_CHANNELS 9->21: added 12 per-cell ATTRIBUTE channels (unit count,
+//     flying, anti-air, DPS, range, speed -- ally+enemy each) so air/ground
+//     counterplay and unit identity beyond raw HP fraction are actually
+//     visible in the observation (see NUM_CHANNELS's own comment).
+//   - NUM_EXTRA_SCALARS 0->9: appended scalars (time, elixir spent, tower HP).
+// 18*34*21 + 1 + 4 + 4*185 + 9 = 13606.
 //
-// Asserted against the FORMULA rather than a hardcoded literal. The literal
-// (6253, before the channel/scalar growth) is exactly what made this test fail
-// on an intended change while telling you nothing about WHICH term moved. The
-// formula still fails loudly if observationSize() and the constants disagree,
-// which is the actual invariant worth locking: model.py splits the flat vector
-// at spatial_size and would silently misread every scalar if they drifted.
+// Asserted BOTH ways on purpose, because the two catch different faults:
+//   * the FORMULA catches observationSize() disagreeing with the constants it
+//     is supposed to be built from -- an internal inconsistency that would
+//     make model.py split the flat vector at the wrong offset and silently
+//     misread every scalar, with no exception anywhere.
+//   * the LITERAL catches the size changing at all. That is a real tripwire:
+//     every checkpoint ever trained is invalidated by an observation resize,
+//     so it should never happen by accident. When it IS intended, update the
+//     literal deliberately -- that edit is the acknowledgement.
 
 TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]") {
     std::vector<int> deck = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -37,6 +44,7 @@ TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]"
         + ClashEnv::NUM_EXTRA_SCALARS;                   // time, elixir spent, tower HP
 
     REQUIRE(env.observationSize() == expected);
+    REQUIRE(env.observationSize() == 13606);
 
     auto obs = env.reset();
     REQUIRE(obs.size() == static_cast<size_t>(expected));

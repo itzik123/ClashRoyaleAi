@@ -36,11 +36,11 @@ TEST_CASE("Troop routes through the nearest bridge when crossing the river", "[t
 
     // Right bridge (x=14) is closer than left (x=4) from (10,10), so the
     // troop must have drifted toward x=14, not stayed at x=10. Waypoint is
-    // (14, riverY_start=16.0); direction (4,6) normalized, one `speed` (1.0)
-    // step from (10,10).
+    // (14, riverY_start=15.5); direction (4,5.5) normalized, one `speed`
+    // (1.0) step from (10,10).
     REQUIRE(troop->position.x > 10.0f);
-    REQUIRE(troop->position.x == Catch::Approx(10.554700f).margin(0.001f));
-    REQUIRE(troop->position.y == Catch::Approx(10.832050f).margin(0.001f));
+    REQUIRE(troop->position.x == Catch::Approx(10.588172f).margin(0.001f));
+    REQUIRE(troop->position.y == Catch::Approx(10.808736f).margin(0.001f));
 }
 
 TEST_CASE("Troop with ignoresRiver set walks straight through the river band", "[troop][movement][river]") {
@@ -97,16 +97,16 @@ TEST_CASE("Troop::clampPosition keeps troops within board bounds", "[troop][clam
 TEST_CASE("Troop::clampPosition pushes non-bridge river-band positions out to the nearest bank", "[troop][clamp][river]") {
     Board board;
 
-    SECTION("y below the 17.0 midpoint snaps down to the river start (16.0)") {
-        auto troop = std::make_shared<MeleeTroop>(1, 10.0f, 16.5f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    SECTION("y below the 16.5 midpoint snaps down to the river start (15.5)") {
+        auto troop = std::make_shared<MeleeTroop>(1, 10.0f, 16.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
         troop->update(board);
-        REQUIRE(troop->position.y == Catch::Approx(16.0f));
+        REQUIRE(troop->position.y == Catch::Approx(15.5f));
     }
 
-    SECTION("y at or above the 17.0 midpoint snaps up to the river end (18.0)") {
+    SECTION("y at or above the 16.5 midpoint snaps up to the river end (17.5)") {
         auto troop = std::make_shared<MeleeTroop>(1, 10.0f, 17.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
         troop->update(board);
-        REQUIRE(troop->position.y == Catch::Approx(18.0f));
+        REQUIRE(troop->position.y == Catch::Approx(17.5f));
     }
 }
 

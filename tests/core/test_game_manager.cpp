@@ -113,11 +113,15 @@ TEST_CASE("isValidPlacement rejects the back-row dead-zone corners but allows it
 TEST_CASE("isValidPlacement restricts troop/building placement to the caller's own half", "[game_manager][placement]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
 
-    REQUIRE(game.isValidPlacement(0, 9.0f, 15.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    // River re-centred on 16.5 (see Board.h): team 0's own-half boundary is
+    // now y<=15.0, team 1's is y>=18.0 -- symmetric in each side's own
+    // mirrored frame (33-18=15), unlike the old off-centre river which gave
+    // team 0 one more placeable row than team 1.
+    REQUIRE(game.isValidPlacement(0, 9.0f, 14.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
     REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 16.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 
     REQUIRE(game.isValidPlacement(1, 9.0f, 19.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
-    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 18.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 17.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
 TEST_CASE("isValidPlacement lets spells ignore the half restriction", "[game_manager][placement]") {
@@ -320,15 +324,15 @@ TEST_CASE("step()'s post-collision re-clamp respects riverIgnores (regression te
     // river-clamp pass even though its own clampPosition() call (inside
     // update()) correctly left it alone. Now both calls go through the same
     // Board::clampToBoard(), so the second call is a no-op for it too.
-    auto hog = std::make_shared<BuildingTargeter>(board.allocateId(), 8.0f, 17.0f, 1408, 0, 0.8f, 1.0f, 264, 15, 'H');
+    auto hog = std::make_shared<BuildingTargeter>(board.allocateId(), 8.0f, 16.5f, 1408, 0, 0.8f, 1.0f, 264, 15, 'H');
     hog->setIgnoresRiver(true);
     board.addEntity(hog);
     board.commitPendingEntities();
 
     game.step();
 
-    REQUIRE(hog->position.y > 16.0f);
-    REQUIRE(hog->position.y < 18.0f);
+    REQUIRE(hog->position.y > 15.5f);
+    REQUIRE(hog->position.y < 17.5f);
 }
 
 // ---------------- statistics ----------------

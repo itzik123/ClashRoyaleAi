@@ -22,24 +22,24 @@ WHAT IS DERIVABLE, AND HOW
                             or their positions. Hardcoded from Board.h:17-18
                             and GameManager::reset().
 
-THE RIVER IS NOT CENTRED ON THE BOARD
--------------------------------------
-Worth knowing before trusting any mirrored coordinate. The towers are
-perfectly symmetric under the engine's own mirror (y -> 33 - y): King 2.5
-<-> 30.5, Princess 6.0 <-> 27.0. The river is not. Board.h puts it at
-[16.0, 18.0), whose centre is 17.0, while the tower layout's centre is 16.5.
+THE RIVER WAS NOT CENTRED ON THE BOARD -- FIXED UPSTREAM
+---------------------------------------------------------
+Previously worth knowing before trusting any mirrored coordinate, now fixed
+at the source. The towers are perfectly symmetric under the engine's own
+mirror (y -> 33 - y): King 2.5 <-> 30.5, Princess 6.0 <-> 27.0. The river
+used to NOT be -- Board.h put it at [16.0, 18.0), whose centre is 17.0,
+against the tower layout's 16.5.
 
-The consequence is in GameManager::isValidPlacement, which gates the two
-teams on different edges of that band:
+That gave GameManager::isValidPlacement two different edges for the two
+teams (team 0 playable y <= 15.5, team 1 playable y >= 18.5, which mirrors
+to y' <= 14.5 -- team 1 had one full row less placeable ground). See
+perception/README.md, "Findings reported upstream", item 1.
 
-    team 0 invalid when  y > getRiverStart() - 0.5   ->  playable y <= 15.5
-    team 1 invalid when  y < getRiverEnd()   + 0.5   ->  playable y >= 18.5
-
-Mirrored into team 1's own frame that is y' <= 14.5, against team 0's 15.5.
-Team 1 has one full row less placeable ground than team 0, in a game the
-engine otherwise treats as symmetric. See perception/README.md, "Findings
-reported upstream" -- flagged, not worked around, and not this module's to
-fix.
+Fixed by re-centring the river on 16.5: Board.h now has
+riverY_start=15.5/riverY_end=17.5, bridges at y=16.5. Both teams now get
+y <= 15.0 in their own mirrored frame. RIVER_Y_END/LEFT_BRIDGE/RIGHT_BRIDGE
+below are updated to match; river_y_start stays live-derived from
+get_own_half_max_y() and needs no change here.
 """
 
 from __future__ import annotations
@@ -52,17 +52,19 @@ from contracts import BoardGeometry
 # GameManager.h: OWN_HALF_RIVER_BUFFER.
 OWN_HALF_RIVER_BUFFER = 0.5
 
-# Board.h:17. Not reachable through any binding -- see module docstring.
-RIVER_Y_END = 18.0
+# Board.h:17 (post river-recentring fix -- was 18.0). Not reachable through
+# any binding -- see module docstring.
+RIVER_Y_END = 17.5
 
-# Board.h:17-18. leftBridge{4.0, 17.0}, rightBridge{14.0, 17.0}. These are
-# the single points river-crossing pathing actually uses. NOT to be confused
-# with the x in {3,4} and {13,14} band that ClashEnv::extractObservationForTeam
-# paints into observation channel 8 -- that is a wider visual hint for the
+# Board.h:17-18 (post river-recentring fix -- was {4.0,17.0}/{14.0,17.0}).
+# leftBridge{4.0, 16.5}, rightBridge{14.0, 16.5}. These are the single points
+# river-crossing pathing actually uses. NOT to be confused with the x in
+# {3,4} and {13,14} band that ClashEnv::extractObservationForTeam paints
+# into observation channel 8 -- that is a wider visual hint for the
 # network, not the geometry, and using it as a calibration anchor would put
 # every bridge landmark half a tile off.
-LEFT_BRIDGE = (4.0, 17.0)
-RIGHT_BRIDGE = (14.0, 17.0)
+LEFT_BRIDGE = (4.0, 16.5)
+RIGHT_BRIDGE = (14.0, 16.5)
 
 # GameManager::reset(). Kings sit on half-integer coordinates so their 4x4
 # footprint lands flush on tile boundaries; Princess towers are 3-wide and
@@ -79,7 +81,7 @@ OPP_PRINCESS_RIGHT = (14.0, 27.0)
 # calibration and its tests run on a machine with no built .pyd.
 _FALLBACK_WIDTH = 18
 _FALLBACK_HEIGHT = 34
-_FALLBACK_OWN_HALF_MAX_Y = 15.5
+_FALLBACK_OWN_HALF_MAX_Y = 15.0
 
 
 def _engine_module():
