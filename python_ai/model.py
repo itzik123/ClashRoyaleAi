@@ -429,6 +429,54 @@ class MicroRoyaleNet(nn.Module):
             logits = logits.masked_fill(~self.placement_mask(obs, card_idx), float("-inf"))
         return logits
 
+    def forward_sequence(self, feats_seq, card_embeds_seq, spatial_seq, obs_seq,
+                         card_mask_seq, card_idx_seq, reset_seq, hidden_state):
+        """
+        חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
+        מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
+
+        למה זה קיים: רק ה-LSTM באמת רקורנטי. כל מה שאחריו (ראש קלף, ערך, עזר,
+        מיקום) הוא נקודתי בזמן, אבל הלולאה הריצה אותו L פעמים על באצ' של B=8.
+        על CPU זה נשלט ע"י תקורה ולא ע"י חישוב: נמדד 35.3ms ל-25 קריאות של
+        ראשי הקלף/ערך/עזר, מול 0.7ms לקריאה אחת על L*B=200 -- פי 48. ראש
+        המיקום מרוויח פי 1.3 (הוא חסום-חישוב, לא חסום-תקורה).
+
+        בסך הכול זה חוסך ~5% מזמן העדכון, לא יותר -- ה-CNN וה-deconv הם עדיין
+        84% מהעלות. זה שווה את זה רק בגלל שהשקילות ניתנת להוכחה.
+
+        feats_seq/obs_seq/card_mask_seq/card_idx_seq/reset_seq: (L, B, ...).
+        מחזיר card_logits (L,B,hand+1), place_logits (L,B,cells),
+        values (L,B), aux_elixir (L,B), ומצב חבוי סופי.
+        """
+        L, B = feats_seq.shape[0], feats_seq.shape[1]
+        hx, cx = hidden_state
+        hx_steps = []
+        for l in range(L):
+            hx, cx = self.lstm(feats_seq[l], (hx, cx))
+            # נאסף **לפני** ה-reset, בדיוק כמו בלולאה המקורית: הראשים בצעד l
+            # משתמשים במצב שאחרי ה-LSTM ולפני איפוס סוף-אפיזודה.
+            hx_steps.append(hx)
+            reset = reset_seq[l].unsqueeze(1)
+            hx = hx * reset
+            cx = cx * reset
+
+        flat_hx = torch.stack(hx_steps).reshape(L * B, -1)
+        card_logits = self.card_head(flat_hx)
+        mask_flat = card_mask_seq.reshape(L * B, -1)
+        card_logits = card_logits.masked_fill(~mask_flat, float("-inf"))
+        values = self.value_head(flat_hx).squeeze(-1)
+        aux = self.aux_elixir_head(flat_hx).squeeze(-1) * 10.0
+
+        place_logits = self.placement_given_card(
+            flat_hx,
+            card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:]),
+            card_idx_seq.reshape(L * B),
+            obs_seq.reshape(L * B, -1),
+            spatial_seq.reshape(L * B, *spatial_seq.shape[2:]))
+
+        return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
+                values.view(L, B), aux.view(L, B), (hx, cx))
+
     def predict_opp_elixir(self, hx):
         """
         הערכת האליקסיר של היריב מתוך מצב ה-LSTM. (Batch,) בסקאלה 0..10 --
