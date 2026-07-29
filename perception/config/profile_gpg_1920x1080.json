@@ -3,14 +3,14 @@
   "frame_width": 1920,
   "frame_height": 1080,
   "homography": [
-    0.03601891817180693,
-    -0.0012563494187221448,
-    -25.75196372354935,
-    0.00024116232052532463,
-    -0.05241285570881167,
-    40.0546483129821,
-    2.4873369509780023e-05,
-    -0.00015386896551058122,
+    0.037933424052976485,
+    -4.335846401074438e-05,
+    -27.72724634468924,
+    0.00011027619892113905,
+    -0.053350053542122654,
+    41.14087310790395,
+    1.816052082164993e-05,
+    -2.7595124155209065e-05,
     1.0
   ],
   "anchors_screen": {
@@ -23,20 +23,20 @@
       465.5
     ],
     "opp_king": [
-      956.0,
-      190.0
+      960.0,
+      197.0
     ],
-    "own_king": [
-      955.5,
-      732.0
+    "opp_princess_right": [
+      1105.0,
+      258.0
     ],
     "opp_princess_left": [
       817.0,
       261.0
     ],
-    "opp_princess_right": [
-      1105.0,
-      258.0
+    "own_king": [
+      956.0,
+      732.0
     ],
     "own_princess_left": [
       819.0,
@@ -91,6 +91,6 @@
       52
     ]
   },
-  "reprojection_error_tiles": 0.6579942100401986,
+  "reprojection_error_tiles": 0.626213204223727,
   "_comment": "Calibration for ONE capture resolution. Every pixel constant here is invalidated by a resolution change, which is why frame_width/frame_height are part of the profile and asserted on load."
 }

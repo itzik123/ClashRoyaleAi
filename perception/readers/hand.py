@@ -38,8 +38,23 @@ import numpy as np
 # value); 0.75 sits well clear of compression noise and shimmer.
 DIM_RATIO_THRESHOLD = 0.75
 
-MIN_ICON_SCORE = 0.55
-MIN_ICON_MARGIN = 0.04
+# Correlation of contrast-normalised crops: 1.0 is a perfect match, 0.0 is
+# unrelated. Calibrated against measured scores on this batch.
+MIN_ICON_SCORE = 0.30
+MIN_ICON_MARGIN = 0.05
+
+# Icon crops are normalised to this (h, w) before matching. Must match the
+# shape tools/build_icon_templates.py clusters at, or the two representations
+# are not comparable.
+ICON_SHAPE = (48, 40)
+
+
+def _normalise_icon(image: np.ndarray) -> np.ndarray:
+    """Grey, resized, contrast-normalised. See HandReader._read_slot."""
+    grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(grey, (ICON_SHAPE[1], ICON_SHAPE[0]),
+                       interpolation=cv2.INTER_AREA).astype(np.float32)
+    return (small - small.mean()) / (small.std() + 1e-6)
 
 
 class HandCalibrationMissing(NotImplementedError):
@@ -83,6 +98,7 @@ class HandReader:
     icons: dict[int, np.ndarray]
 
     _peak_brightness: dict[int, float] = field(default_factory=dict)
+    _normalised: dict[int, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.slot_rois or len(self.slot_rois) != 4:
@@ -110,13 +126,29 @@ class HandReader:
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         brightness = float(gray.mean())
 
+        # Matched on contrast-normalised greyscale, not raw BGR.
+        #
+        # The same representation the icon templates were CLUSTERED with, and
+        # that is the point: clustering separated all eight cards perfectly,
+        # so it is demonstrably sufficient, while raw-BGR matching on the same
+        # icons flickered badly -- 0.790 mean confidence, 14% of hands
+        # containing a duplicate or an off-deck card, and phantom "plays"
+        # 0.8s apart in one slot, which the engine's own 20-tick slot cooldown
+        # makes impossible.
+        #
+        # The reason is the affordability dimming: an unaffordable slot is
+        # rendered darker AND lower contrast, which moves raw pixel values a
+        # long way. Subtracting the mean and dividing by the standard
+        # deviation removes exactly that, which is why the clusters were clean.
+        probe = _normalise_icon(patch)
         scores: dict[int, float] = {}
         for card_id, template in self.icons.items():
-            if template.shape[:2] != patch.shape[:2]:
-                template = cv2.resize(template, (patch.shape[1], patch.shape[0]))
-            scores[card_id] = float(
-                cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED).max()
-            )
+            key = id(template)
+            cached = self._normalised.get(key)
+            if cached is None:
+                cached = _normalise_icon(template)
+                self._normalised[key] = cached
+            scores[card_id] = float((probe * cached).mean())
 
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best, best_score = ranked[0]
@@ -127,9 +159,9 @@ class HandReader:
         dimmed = brightness < peak * DIM_RATIO_THRESHOLD
 
         if best_score < MIN_ICON_SCORE or margin < MIN_ICON_MARGIN:
-            confidence = max(0.0, margin / MIN_ICON_MARGIN) * 0.5
+            confidence = max(0.0, min(1.0, margin / MIN_ICON_MARGIN)) * 0.5
         else:
-            confidence = min(1.0, 0.5 + margin * 2.0)
+            confidence = min(1.0, 0.5 + margin)
 
         return SlotReading(
             card_sim_id=best,
@@ -137,6 +169,58 @@ class HandReader:
             dimmed=dimmed,
             brightness=round(brightness, 2),
         )
+
+
+@dataclass
+class HandStabiliser:
+    """Debounces hand readings, and emits a play only on a settled change.
+
+    WITHOUT THIS THE PLAY STREAM IS MOSTLY FICTION. Playing a card is an
+    animation: the icon lifts out of the slot, the next card slides in, and
+    for a few frames the slot holds a blend of the two. Every one of those
+    intermediate frames matches SOME template, so a naive
+    before/after comparison reports a chain of plays where there was one.
+
+    Measured on a 326-second recording at 6fps: 69 "plays", of which 32 were
+    closer together than the engine's own 20-tick (2s) hand-slot cooldown
+    makes possible -- three changes in one slot inside 1.5s, in one case.
+
+    A hand state has to be observed `hold` times in a row before it is
+    believed. Transients never survive that; a real play does, because the
+    new hand persists until the next play.
+    """
+
+    hold: int = 2
+    deck: frozenset[int] | None = None
+    """If given, readings containing an off-deck card or a duplicate are
+    discarded outright. Our own deck is known in advance, so a hand that
+    cannot exist is a misread, not information."""
+
+    stable: tuple[int, ...] | None = None
+    _pending: tuple[int, ...] | None = None
+    _count: int = 0
+    rejected: int = 0
+
+    def push(self, hand: tuple[int, ...]) -> tuple[int, int, int] | None:
+        """Feed one reading. Returns a play when the hand settles on a change."""
+        if len(set(hand)) != len(hand):
+            self.rejected += 1
+            return None
+        if self.deck is not None and not set(hand) <= self.deck:
+            self.rejected += 1
+            return None
+
+        if hand != self._pending:
+            self._pending, self._count = hand, 1
+            return None
+        self._count += 1
+        if self._count < self.hold or hand == self.stable:
+            return None
+
+        previous, self.stable = self.stable, hand
+        if previous is None:
+            return None
+        return infer_play_from_hand_change(previous, hand)
 
 
 def infer_play_from_hand_change(
