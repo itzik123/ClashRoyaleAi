@@ -125,8 +125,14 @@ own plays** (the heuristic opponent's are logged nowhere), and **the training
 run rewrites that directory continuously** — observed dropping from 8 files to
 1 within minutes. Frozen fixtures live in `perception/tests/assets/`.
 
-`DEFAULT_DECK = [15, 25, 6, 1, 0, 41, 7, 10]` (`python_ai/gym_wrapper.py`) —
-Hog Rider, Cannon, Musketeer, Archers, Knight, Minions, Fireball, Valkyrie.
+`DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]` (`python_ai/gym_wrapper.py`) —
+Valkyrie, Archers, Minions, Cannon, Fireball, Giant, Musketeer, Mini PEKKA.
+Costs 3-5, avg 3.75, spread 2. Win condition Giant (5); only 3 of 8 cards hit
+air (Archers, Minions, Musketeer); one spell (Fireball).
+
+**This deck is chosen to match the recordings**, deliberately overriding the
+cost-curve argument — see the block comment above the literal, and "Open
+problems" for the risk it re-introduces.
 
 ---
 
@@ -339,13 +345,23 @@ so Fireball could not cross the river — 1/8 of the deck unusable for its purpo
 at any amount of training. Fixed by the `get_card_info` binding plus a
 card-conditional mask, not by widening the space unconditionally.
 
-**Deck choice is a learnability constraint, not flavour.** With the old
-5-cost-heavy deck the agent **never played Giant once** across four full runs;
-only 5–7 of 8 cards were ever used. Cause: at 0.35 elixir/decision a 5-cost card
-is legal only after ~14 consecutive non-spending steps, so its slot is masked
-out nearly every time it is checked and never accumulates gradient. The fix is a
-curve where no card is systematically starved — `DEFAULT_DECK` is 3–4 cost,
-avg 3.50, spread 1 — not a bigger entropy bonus.
+**Deck choice is a learnability constraint, not flavour.** With the
+5-cost-heavy Giant deck the agent **never played Giant once** across four full
+runs; only 5–7 of 8 cards were ever used. Cause: at 0.35 elixir/decision a
+5-cost card is legal only after ~14 consecutive non-spending steps, so its slot
+is masked out nearly every time it is checked and never accumulates gradient.
+It was replaced by a 3–4 cost / avg 3.50 / spread 1 Hog cycle where no card is
+systematically starved — the fix is the cost curve, **not** a bigger entropy
+bonus (that was tried and measured to fail).
+
+**...and then deliberately reverted, 2026-07-30.** `DEFAULT_DECK` is the Giant
+deck again, because it is the deck in the 8 real recordings and matching them is
+worth more than the cost curve — human demonstrations are the highest-value
+unblocked item and unusable against a different deck. The risk above is
+knowingly re-accepted. Two things differ from when it was measured: the
+affordability mask makes "cannot afford Giant" observable rather than a silent
+`playCard` failure, and card entropy is now adaptively held near 0.35 of max.
+**Open question, not a settled one** — watch whether Giant is ever played.
 
 **Adaptive per-head entropy** (`coef *= exp(rate·(target − measured))`),
 replacing hand-tuned coefficients. Motivated by measurement at episode 20,245 of

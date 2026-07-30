@@ -63,9 +63,34 @@ import clash_royale_env
 # usable: spells can now be aimed past the river (see MicroRoyaleNet's placement
 # mask and the get_card_info binding added for it).
 #
+# ---------------------------------------------------------------------------
+# 2026-07-30: SWITCHED BACK to the Giant-beatdown deck above, on purpose, for a
+# reason that outranks the cost-curve argument: it is the deck actually played
+# in the 8 real matches recorded in perception/assets/recordings/. Training on
+# a different deck than the demonstrations would make the human data unusable
+# for behaviour cloning (bc_pretrain.py), and human demonstrations are the
+# highest-value unblocked item on the roadmap -- AlphaStar's supervised stage
+# was load-bearing, not optional.
+#
+# The known risk is real and documented above, not hand-waved: costs 3-5, avg
+# 3.75, spread 2, and Giant (5) was never played once across four full runs.
+# Two things changed since that measurement, so the outcome is genuinely open:
+#   * the affordability mask now makes "cannot afford Giant" an explicit,
+#     observable fact rather than a silent playCard failure, so the no-op that
+#     banks toward it is a representable choice instead of wasted motion;
+#   * card-head entropy is now adaptively controlled toward 0.35 of maximum
+#     (ENTROPY_TARGET_CARD), which exists specifically to fight the card-head
+#     collapse that starves an expensive slot.
+#
+# WATCH: whether Giant (id 2) is ever played. If phase 2's Cards/Game sticks
+# near 6/8 and a probe shows Giant at ~0 usage, the cost curve won again and
+# the honest fix is a cheaper win condition, NOT more entropy (already tried,
+# already measured to fail).
+# ---------------------------------------------------------------------------
+#
 # Verified against the live registry: all 8 ids exist, no Champions, and
 # validate_deck_slots returns "" (legal).
-DEFAULT_DECK = [15, 25, 6, 1, 0, 41, 7, 10]
+DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
 
 # How many Champion ability slots this deck actually has (0, 1 or 2 -- see
 # CardRegistry::validateDeckSlots).
