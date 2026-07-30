@@ -200,8 +200,35 @@ vector"; under a sensor architecture it is a primary output. Two changes:
   corrupted by the white digits — the identical failure already documented for
   the elixir bar. The numeral also removes the `max_hp` caller input entirely.
 
-Bonus: the engine's tower HP scale matches the real game (princess 2534, king
-4008), so OCR'd absolute HP ÷ `MAX_BUILDING_HP` feeds the scalars directly.
+**Correction (measured 2026-07-30): the engine's tower HP does NOT match the
+recordings, and an earlier claim in this document that it did was wrong.** Read
+off a clean frame at t=20s, before anything has been damaged, so the numbers on
+screen are the true maxima:
+
+| | recordings | engine |
+|---|---|---|
+| our Princess (level badge 4) | **1750** | 2534 |
+| opponent Princess (level badge 5) | **1890** | 2534 |
+
+1750 and 1890 are exactly the real game's level-4 and level-5 Princess values,
+and 2534 is its **level 9**. So absolute HP ÷ `MAX_BUILDING_HP` would be wrong
+by ~30%, and worse, wrong by a *different* factor per player, since the two
+sides carry different tower levels.
+
+Two consequences:
+
+- **`GameState` reports tower `hp_fraction`, not absolute HP** — consistent with
+  the same decision for units in §2. The consumer scales by whatever maximum the
+  engine uses.
+- **The maximum is measurable from the recording itself**, so nothing has to be
+  supplied by hand: the first undamaged reading at match start *is* the max.
+  That resolves `readers/towers.py`'s standing "max HP must be supplied by the
+  caller" requirement without a level lookup table.
+
+One more asymmetry to handle: **King HP is not rendered until the King is
+activated.** At match start the King shows only its level crown; the numeral
+appears once it takes damage. So an absent King numeral means full HP — the same
+convention as an absent unit HP bar.
 
 **Phase is observable, so the phase schedule is unnecessary.** The clock ROI
 reads `Overtime` and a large `x2` badge is drawn on screen. This closes
@@ -345,12 +372,45 @@ kings         (9.0, 2.5) (9.0, 30.5)      was x = 8.5
 river / bridges unchanged: [15.5, 17.5), (4.0, 16.5) and (14.0, 16.5)
 ```
 
-**This creates a new work item that did not exist before: re-solve the
-calibration profile.** `config/profile_gpg_1920x1080.json` carries
-`reprojection_error_tiles = 0.626`, fitted against the *old* tower coordinates.
-Per `UPSTREAM_REQUESTS`' own measured table, re-solving against both fixes
-should give max **0.31** / rms **0.21** — passing the stage-0 target of < 0.5
-for the first time. Cheap: `tools/calibrate.py`. Add to M1.
+**DONE 2026-07-30: the profile has been re-solved, and stage 0 now passes.**
+Landmark residual went 0.626 → **0.31** in-sample, matching
+`UPSTREAM_REQUESTS`' measured table exactly.
+
+The investigation changed which number to trust. Every landmark metric is
+self-referential, and they disagree sharply on this batch:
+
+| metric | value | verdict vs < 0.5 |
+|---|---|---|
+| in-sample (fit 8, score 8) | 0.31 | pass, but optimistic |
+| documented split (fit 4 Princesses, score bridges+Kings) | 0.64 | fail |
+| leave-one-out | 0.78 | fail |
+| **rendered tile seams, independent** | **0.105–0.224** | **pass** |
+
+The last row is the acceptance number, and it is the only one the fit could not
+have flattered: the arena floor is rendered with visible tile seams and the
+homography was never fitted to them. Warping a frame into tile space — where a
+correct mapping puts every seam on an integer — gives an error already in the
+unit that matters. Measured across all 8 recordings, with `dy` identical to
+three decimals on 8 of 8, which also confirms the emulator window never moved.
+
+Two plausible improvements were tested and **disproved**:
+
+- anchoring on the tower **base** instead of the blob centroid, which
+  `calib/homography.py`'s docstring advises in general: leave-one-out went
+  0.54 → **4.68**. The detector finds the flat stone *platform*, already a
+  ground-plane feature, so its centroid is the footprint centre.
+- **dropping** the two hardcoded `own_princess` constants, which score worst on
+  every landmark metric and were never detected in any recording: improves every
+  landmark metric (in-sample 0.31 → 0.17, LOO 0.78 → 0.54) and makes the mapping
+  **3.4× worse** in our own half (mean |dy| 0.105 → 0.357). They are the only
+  near-side `y` constraint in the fit.
+
+Shipped from this: `tools/validate_grid.py`, the independent acceptance check;
+`tools/calibrate.py` now reports all three landmark metrics, stores the
+leave-one-out max rather than the in-sample max (both `contracts.py` and
+`config/README.md` describe the field as held-out, and it was storing the
+flattering number), and its dead engine-vs-corrected comparison is deleted since
+the two are now verified identical.
 
 `DEFAULT_DECK` is now `[10, 1, 41, 25, 7, 2, 6, 5]` — Valkyrie, Archers,
 Minions, Cannon, Fireball, Giant, Musketeer, Mini P.E.K.K.A, i.e. exactly the

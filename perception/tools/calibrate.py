@@ -20,11 +20,36 @@ constants of the emulator window, which is fixed across every recording in
 this batch. They were measured once, are recorded here, and are asserted
 against the frame size on load.
 
-WHY THE SCORE IS COMPUTED TWICE
--------------------------------
-Against the simulator's stated geometry, and against a corrected geometry.
-The difference is the finding, not a debugging aid -- see the note printed at
-the end and UPSTREAM_REQUESTS.md item 1.
+THE SCORE USED TO BE COMPUTED TWICE. IT NO LONGER IS.
+-----------------------------------------------------
+Until 2026-07-30 this scored against the engine's stated geometry AND against a
+hypothetically corrected one, because the two disagreed and the difference was
+the finding (UPSTREAM_REQUESTS.md items 1-2). Both fixes have since landed in
+the engine, `engine_tiles()` and the old `corrected_tiles()` were verified
+identical, and the comparison was deleted exactly as its own comment said it
+should be once they converged.
+
+WHICH NUMBER IS THE ACCEPTANCE NUMBER
+-------------------------------------
+Not the one printed largest, and not any of the landmark residuals below. Every
+landmark metric is self-referential -- the homography is fitted to those points.
+Three are reported because they disagree and the disagreement is informative:
+
+  in-sample      fit 8, score 8. Optimistic; this is what the tool used to
+                 report as if it were held out.
+  documented     fit the 4 Princesses, score the bridges and Kings.
+  leave-one-out  the least biased landmark estimate, and pessimistic, because
+                 each landmark carries its own definitional bias which the
+                 full fit partially absorbs.
+
+The real acceptance test is `tools/validate_grid.py`, which scores the mapping
+against the arena's own rendered tile seams -- independent of the landmark set,
+because the fit never saw them. Measured 2026-07-30: 0.105-0.224 tiles, PASS.
+
+Do NOT "improve" the landmark set by whatever lowers the residuals here. That
+was tried: dropping the two hardcoded `own_princess` constants improves every
+landmark metric and makes the actual mapping 3.4x worse in our own half. See
+validate_grid.py's docstring.
 """
 
 from __future__ import annotations
@@ -86,23 +111,35 @@ def engine_tiles() -> dict[str, tuple[float, float]]:
     }
 
 
-# The remaining two offsets of UPSTREAM_REQUESTS.md item 1, as they would be if
-# also corrected: the left Princess aligned with its own bridge (as the real
-# arena has it) and the Kings on the board's true centre 9.0 rather than 8.5.
-# The river offset -- the third -- was FIXED in the engine on 2026-07-29 and is
-# therefore no longer part of this hypothesis; it now comes from the engine
-# like everything else.
-#
-# Fitted purely to separate "the calibration is wrong" from "the engine's
-# layout disagrees with the arena". If the two columns ever converge, this
-# whole comparison can be deleted.
-def corrected_tiles() -> dict[str, tuple[float, float]]:
-    tiles = dict(engine_tiles())
-    tiles["own_princess_left"] = (4.0, tiles["own_princess_left"][1])
-    tiles["opp_princess_left"] = (4.0, tiles["opp_princess_left"][1])
-    tiles["own_king"] = (9.0, tiles["own_king"][1])
-    tiles["opp_king"] = (9.0, tiles["opp_king"][1])
-    return tiles
+def landmark_metrics(screen: dict, tiles: dict) -> dict:
+    """The three landmark residuals, which deliberately disagree.
+
+    See the module docstring for why all three are reported and why none of
+    them is the acceptance number.
+    """
+    shared = {k: v for k, v in screen.items() if k in tiles}
+    names = sorted(shared)
+
+    full = Homography.solve(shared, tiles)
+    in_sample = full.measure_error(shared, tiles)
+
+    princesses = {k: v for k, v in shared.items() if "princess" in k}
+    documented = None
+    if len(princesses) == 4:
+        held = {k: v for k, v in shared.items() if "princess" not in k}
+        # Exactly four points is a closed-form solve, so its fit residual is
+        # zero by construction -- only the held-out four carry information.
+        documented = Homography.solve(princesses, tiles).measure_error(held, tiles)
+
+    loo = {}
+    for name in names:
+        rest = {k: v for k, v in shared.items() if k != name}
+        if len(rest) < 4:
+            continue
+        loo[name] = Homography.solve(rest, tiles).measure_error(
+            {name: shared[name]}, tiles)[name]
+
+    return {"full": full, "in_sample": in_sample, "documented": documented, "loo": loo}
 
 
 def find_river_and_bridges(img: np.ndarray) -> dict:
@@ -352,23 +389,32 @@ def build(videos: list[Path], out_path: Path) -> CalibrationProfile:
     if len(anchors) < 4:
         raise SystemExit(f"only found {len(anchors)} anchors: {sorted(anchors)}")
 
-    results = {}
-    for label, tiles in (("engine", engine_tiles()), ("corrected", corrected_tiles())):
-        shared = {k: v for k, v in screen.items() if k in tiles}
-        homography = Homography.solve(shared, tiles)
-        results[label] = (homography, homography.measure_error(shared, tiles))
+    tiles = engine_tiles()
+    metrics = landmark_metrics(screen, tiles)
+    homography = metrics["full"]
+    in_sample, loo = metrics["in_sample"], metrics["loo"]
 
-    print("\nfit residual over all 8 landmarks, in TILES:")
-    print(f"   {'landmark':20s} {'engine':>9s} {'corrected':>11s}")
+    print("\nlandmark residuals, in TILES (all three; none is the acceptance number):")
+    print(f"   {'landmark':20s} {'in-sample':>10s} {'leave-1-out':>12s}")
     for name in sorted(screen):
-        e = results["engine"][1].get(name, float("nan"))
-        c = results["corrected"][1].get(name, float("nan"))
-        print(f"   {name:20s} {e:9.2f} {c:11.2f}")
-    for stat in ("max", "rms"):
-        print(f"   {stat:20s} {results['engine'][1][stat]:9.2f} "
-              f"{results['corrected'][1][stat]:11.2f}")
+        if name not in tiles:
+            continue
+        print(f"   {name:20s} {in_sample.get(name, float('nan')):10.2f} "
+              f"{loo.get(name, float('nan')):12.2f}")
+    loo_max = max(loo.values()) if loo else float("nan")
+    loo_rms = float(np.sqrt(np.mean(np.square(list(loo.values()))))) if loo else float("nan")
+    print(f"   {'max':20s} {in_sample['max']:10.2f} {loo_max:12.2f}")
+    print(f"   {'rms':20s} {in_sample['rms']:10.2f} {loo_rms:12.2f}")
+    if metrics["documented"] is not None:
+        print(f"\n   documented split (fit 4 Princesses, score bridges+Kings): "
+              f"max {metrics['documented']['max']:.2f} "
+              f"rms {metrics['documented']['rms']:.2f}")
 
-    homography, errors = results["engine"]
+    # Stored value is the LEAVE-ONE-OUT max, because contracts.py and
+    # config/README.md both describe this field as measured on held-out
+    # landmarks. It used to store the in-sample max, which is a different and
+    # more flattering quantity -- 0.31 rather than 0.78 on this batch.
+    errors = {"max": loo_max}
     profile = CalibrationProfile(
         name=f"gpg_emulator_{width}x{height}",
         frame_width=width,
@@ -381,17 +427,12 @@ def build(videos: list[Path], out_path: Path) -> CalibrationProfile:
     save_profile(profile, out_path)
     print(f"\nwrote {out_path}")
 
-    if errors["max"] >= 0.5:
-        print(
-            "\nSTAGE 0 ACCEPTANCE (< 0.5 tiles) IS NOT MET AGAINST THE ENGINE'S\n"
-            "GEOMETRY, AND THE CALIBRATION IS NOT THE REASON.\n"
-            f"  engine geometry:    max {results['engine'][1]['max']:.2f} tiles\n"
-            f"  corrected geometry: max {results['corrected'][1]['max']:.2f} tiles\n"
-            "The same pixel measurements, the same solver, the same frame --\n"
-            "only the target tile coordinates differ. The residual is the\n"
-            "engine's own landmarks disagreeing with each other, not error in\n"
-            "the recording or the fit. See UPSTREAM_REQUESTS.md item 1."
-        )
+    print(
+        "\nThese are LANDMARK residuals and none of them decides acceptance.\n"
+        "Run the independent check, which scores the mapping against the\n"
+        "arena's own rendered tile seams:\n"
+        "  perception/.venv/Scripts/python.exe perception/tools/validate_grid.py"
+    )
     return profile
 
 

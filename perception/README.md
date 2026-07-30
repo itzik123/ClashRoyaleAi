@@ -18,10 +18,10 @@ the C++ core are read-only from here.
 
 | Stage | State | Evidence |
 |---|---|---|
-| 0 — capture, calibration | **calibrated; acceptance blocked upstream** | held-out landmark error **0.66 tiles** against the engine's geometry vs **0.34** against corrected geometry — same pixels, same solver. See *Findings*. |
+| 0 — capture, calibration | **PASSES** (2026-07-30) | independent check against the arena's **own rendered tile seams**: **0.105–0.224 tiles** across all 8 recordings — `tools/validate_grid.py`. Landmark residuals, for reference only: in-sample 0.31, leave-one-out 0.78. See *Findings* 1. |
 | 1 — elixir reader | **PASSES** | 587 samples over a full match, mean confidence **0.990**, 13 low-confidence. Regen interval measures **2.80 s**, matching the real game exactly. |
 | 1 — clock reader | **PASSES with confidence gating** | **97.1%** of readings correct at confidence ≥ 0.7 (207 of 295 samples). Free-running drift over the match is **~0.6 ms** (CFR measured at 30.0001 fps). |
-| 2 — our hand and cycle | **logic done, icon templates pending** | cycle model reproduces the engine's FIFO exactly across a real replay, 0 desyncs. |
+| 2 — our hand and cycle | **templates exist; identity measurably WRONG** | cycle model reproduces the engine's FIFO exactly across a real replay, 0 desyncs — but on real video the icon template agrees with the elixir ledger on card cost only **33.8%** of the time (328 in-match plays, 8 recordings) and over-predicts Giant at 35% against a 12.5% prior. See *Findings* 5. |
 | 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs the next batch. |
 | 4 — opponent deck, cycle, elixir | **done and tested** | deck discovery, exact elixir derivation, negative-balance alarm. |
 | 5 — bridge + divergence | **done and tested** | zero-error control: divergence identically **0**. |
@@ -88,18 +88,36 @@ Three things this cost, all documented in `bridge/sim_driver.py`:
 
 Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
 
-1. **The engine's board geometry does not match the real arena, and now there
-   is a measurement of it.** Calibrating against the real game puts held-out
-   landmarks at **0.66 tiles** using the engine's stated coordinates and
-   **0.34 tiles** using corrected ones — identical pixels, identical solver,
-   only the target coordinates differ. Three separate offsets:
-   the left Princess tower sits a full tile left of its own bridge (reality
-   aligns them), the Kings sit half a tile off the board centre, and the river
-   band is half a tile off the towers' symmetry axis. The last of these is
-   also why **team 1 has one row less placeable ground than team 0**
-   (confirmed separately, 20 trials/row) — which affects **self-play
-   training**, since `model.py` applies `own_half_rows = 16` to both sides and
-   team 1's row-15 placements are silently rejected.
+1. **RESOLVED 2026-07-30 — the engine's board geometry now matches the real
+   arena.** All three offsets have been fixed upstream: the river band
+   (2026-07-29), and the left Princess towers `x = 3.0 → 4.0` plus the Kings
+   `x = 8.5 → 9.0` (commit `dd99991`, `.pyd` rebuilt after it). `engine_tiles()`
+   and the old hypothetical `corrected_tiles()` were verified identical, so the
+   two-column comparison in `tools/calibrate.py` was deleted as that code's own
+   comment said it should be.
+
+   The profile was re-solved against the corrected geometry. Landmark residual
+   went **0.63 → 0.31** in-sample, matching the prediction in
+   `UPSTREAM_REQUESTS.md`'s measured table exactly.
+
+   **What the investigation actually changed is which number to trust.** All
+   landmark metrics are self-referential, and two plausible "improvements"
+   were tested and disproved:
+
+   - anchoring on the tower **base** rather than the blob centroid, as
+     `calib/homography.py`'s docstring advises in general — leave-one-out went
+     0.54 → **4.68**. The detector finds the flat stone *platform*, which is
+     already a ground-plane feature, so its centroid is the footprint centre;
+     the bottom edge is half a platform too far forward.
+   - **dropping** the two hardcoded `own_princess` constants, which score worst
+     on every landmark metric and were never detected in any recording —
+     improves every landmark metric (in-sample 0.31 → 0.17, LOO 0.78 → 0.54)
+     and makes the mapping **3.4× worse** in our own half (mean |dy| 0.105 →
+     0.357). They are the only near-side `y` constraint in the fit.
+
+   Acceptance is therefore read off `tools/validate_grid.py`, which scores the
+   mapping against the arena's **own rendered tile seams** — independent of the
+   landmark set, because the fit never saw them. **0.105–0.224 tiles, PASS.**
 2. **The King Tower never sleeps.** `Tower.h` has no activation condition, so
    it fires from tick 0 while the real King is dormant until activated. King
    HP therefore diverges systematically from the first second regardless of
@@ -110,7 +128,37 @@ Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
    the *real* rate because it models the real opponent.
 4. **Requested (not blocking):** generalise `injectEnemy` to take a `team`,
    and bind `get_hand(team)`. Would remove the whole candidate-pool
-   machinery. Everything works without it.
+   machinery. Everything works without it. **Partly landed** — `inject()` and
+   `getHandForTeam()` appear in commit `0ab809b`.
+5. **Our own hand identity is measurably wrong on real video** — a perception
+   bug, not an engine one, recorded here because it invalidates the stage-2
+   "logic done" claim. Over 8 recordings and 328 in-match candidate plays the
+   icon template agrees with the elixir ledger on card cost only **33.8%** of
+   the time, while the observed elixir drop lands within 0.6 of a real cost
+   **74.7%** of the time. The template over-predicts Giant at 35% against a
+   12.5% prior. Direct proof: Giant is played out of slot 1 at t=21.0s and one
+   second later reads as present in slot 2, holding for 10 seconds — a played
+   card goes to the back of an 8-card queue, so this is impossible, and no
+   debouncer can catch a *stably* wrong classifier (raising `hold` from 2 to 8
+   leaves 7 flip-flops per match in two recordings).
+
+   Two prerequisites surfaced with it. The **first ~18 s of every recording has
+   no match**: the elixir bar is not yet drawn so its ROI reads a *confident*
+   0.00, and the hand slots read garbage like `[2,2,2,2]`. There is no
+   match-state machine anywhere in the module, and its absence poisoned every
+   measurement taken before it was gated. And **phase is directly observable** —
+   the clock ROI reads `Overtime` and a large `x2` badge is drawn on screen — so
+   the phase schedule in "Open questions" 1 below is no longer needed.
+6. **Tower HP: the engine models level 9, the recordings are levels 4-5.** Read
+   off a clean frame at t=20 s, before anything is damaged, so the on-screen
+   numbers are the true maxima: our Princess **1750** (badge 4), the opponent's
+   **1890** (badge 5), against the engine's 2534 for both. Those are exactly the
+   real game's level-4 and level-5 values, and 2534 is its level 9. So absolute
+   HP is not comparable and `hp / MAX_BUILDING_HP` would be wrong by ~30% and by
+   a *different* factor per player. Handled entirely on this side: report a
+   **fraction**, and take the maximum from the first undamaged reading rather
+   than a supplied table. Also note **King HP is not rendered until the King is
+   activated** — an absent numeral means full HP.
 
 Corrections to the original brief:
 

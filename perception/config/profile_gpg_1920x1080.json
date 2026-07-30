@@ -3,14 +3,14 @@
   "frame_width": 1920,
   "frame_height": 1080,
   "homography": [
-    0.037933424052976485,
-    -4.335846401074438e-05,
-    -27.72724634468924,
-    0.00011027619892113905,
-    -0.053350053542122654,
-    41.14087310790395,
-    1.816052082164993e-05,
-    -2.7595124155209065e-05,
+    0.036271921711440655,
+    -8.020108274548317e-05,
+    -25.586839067441765,
+    0.00039056845693547084,
+    -0.05419920030056878,
+    41.527388902891104,
+    3.5112366418464376e-05,
+    -2.8457458982637676e-05,
     1.0
   ],
   "anchors_screen": {
@@ -91,6 +91,6 @@
       52
     ]
   },
-  "reprojection_error_tiles": 0.626213204223727,
+  "reprojection_error_tiles": 0.7831523914544639,
   "_comment": "Calibration for ONE capture resolution. Every pixel constant here is invalidated by a resolution change, which is why frame_width/frame_height are part of the profile and asserted on load."
 }

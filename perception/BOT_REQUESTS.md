@@ -142,11 +142,28 @@ Measured from the recordings, the two players' towers carry **different level
 badges** — ours level 4, the opponent's level 5 in
 `2026-07-29 20-58-14` — and therefore different max HP.
 
-The engine's absolute values happen to match the real game closely enough that
-OCR'd HP divided by `MAX_BUILDING_HP` feeds the scalars directly, so this is
-**not** a blocker and no change is requested. Noted because a policy trained
-on perfectly symmetric towers has never seen "my towers are weaker than
-theirs" as a starting condition, which is the normal case on ladder.
+**Corrected 2026-07-30 — an earlier version of this item claimed the engine's
+absolute values match the real game closely enough to feed the scalars
+directly. That was wrong.** Measured off a clean frame at t=20s, before anything
+is damaged, so the on-screen numbers are the true maxima:
+
+| | recordings | engine |
+|---|---|---|
+| our Princess (badge 4) | **1750** | 2534 |
+| opponent Princess (badge 5) | **1890** | 2534 |
+
+1750 and 1890 are exactly the real game's level-4 and level-5 Princess values;
+2534 is its **level 9**. The gap is ~30%, and it differs per player because the
+two sides are at different levels.
+
+Handled entirely on the perception side — `GameState` reports tower
+`hp_fraction` rather than absolute HP, and the maximum is measured from the
+first undamaged reading rather than supplied. **No engine or training change is
+requested.**
+
+Still worth knowing on the training side: a policy trained on perfectly
+symmetric towers has never seen "my towers are weaker than theirs" as a
+starting condition, which is the normal case on ladder.
 
 ---
 
