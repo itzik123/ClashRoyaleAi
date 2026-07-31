@@ -223,6 +223,39 @@ BOOTSTRAP_FROM_PATH = "model_weights.pth"
 # _set_opponent's prefix check.
 SCRIPTED_OPPONENTS = ["scripted:Rusher", "scripted:Defender", "scripted:Cycler", "scripted:Counter"]
 
+# The C++ HeuristicOpponent, as a TRAINING opponent rather than only an
+# evaluation anchor. Added 2026-07-31 after 13 evals over 65,000 phase-2
+# episodes showed no measurable movement against it.
+#
+# The diagnosis those evals support: phase 2 never trains against the opponent
+# it is measured on. stepSelfPlay deliberately never calls opponentTurn(), so
+# the entire phase-2 pool is neural past-selves plus deck-agnostic Python bots,
+# and the agent got correspondingly good at exactly that -- 0.84 against the
+# pool, 0.92-1.00 against the neural anchors -- while its score against the
+# heuristic stayed flat (chi2 13.1 on 12 df for @1.50, 17.4 on 12 df for @1.35,
+# both well under the 21.03 critical value). Phase 1 DID train against it, and
+# phase 1 is where the current strength came from. An exploiter of a mirror
+# specialist is just another mirror specialist, which is why three bursts found
+# nothing either.
+#
+# Only the two multipliers with headroom. The agent scores 1.00 against
+# @1.00, so episodes there would teach nothing; the measured gap is 0.83 at
+# @1.35 and 0.60 at @1.50.
+BUILTIN_TRAINING_OPPONENTS = ["builtin:heuristic@1.35", "builtin:heuristic@1.50"]
+
+# Same reasoning as DEFENSIVE_SCRIPTED_MIN_WEIGHT below, and the same override
+# of PFSP's own criterion: the reason to keep facing these is not "the trainee
+# is currently losing to them" but that they are the measurement target, and
+# PFSP would taper them off exactly as the agent improved.
+#
+# Sized so they stay a meaningful minority rather than taking the run over. At
+# the current pool of ~20, with the other members at PFSP_MIN_WEIGHT except
+# Defender/Counter at 0.8: 2*0.5 / (16*0.05 + 2*0.8 + 2*0.5) = ~29%. The pool
+# only grows, so this share decays on its own -- ~23% at 40 members. Setting it
+# to 0.8 like the defensive bots would have made it ~64% and effectively
+# reverted phase 2 into phase 1.
+BUILTIN_MIN_WEIGHT = 0.5
+
 # Defender/Counter specifically model defensive play. PFSP's own win-rate-
 # based weighting works AGAINST deliberately seeing more of them: once the
 # trainee reliably beats a given opponent, (1-winrate)^PFSP_EXPONENT pushes
@@ -651,6 +684,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # a neural opponent sampled right after a scripted one would
         # silently keep playing that random deck instead of self.deck.
         self.game.set_opponent_deck(self.deck)
+        self._reset_opponent_elixir()
 
     def set_scripted_opponent(self, name):
         """Team 1 becomes a hand-written heuristic bot instead of a frozen
@@ -666,15 +700,50 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # validate_deck_slots) -- see sampleRandomDeck's own comment in
         # ClashEnv.h.
         self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
+        self._reset_opponent_elixir()
         if name in ("Rusher", "Counter"):
             self.opponent_lane = random.choice(["left", "right"])
 
+    def _reset_opponent_elixir(self):
+        """Undo any elixir multiplier a previous builtin opponent left behind.
+
+        Exactly the same hazard the set_opponent_deck() re-apply above guards
+        against, and worse if missed: set_opponent_elixir_multiplier() has no
+        auto-reset, so a 1.5x heuristic episode would silently hand the NEXT
+        sampled opponent -- a frozen snapshot, in a supposedly fair mirror
+        matchup -- 50% extra elixir. That would corrupt both the trainee's
+        gradient and the pfsp_stats win rate that drives sampling, and would
+        look like nothing more than a sudden unexplained dip in win rate."""
+        self.game.set_opponent_elixir_multiplier(1.0)
+
+    def set_builtin_opponent(self, descriptor):
+        """Team 1 becomes the C++ HeuristicOpponent at a given elixir
+        multiplier -- see BUILTIN_TRAINING_OPPONENTS.
+
+        Unlike every other opponent kind, this one is not driven from Python at
+        all: it runs inside game.step(), which step_self_play() deliberately
+        never calls. step() below dispatches on opponent_kind for that reason.
+
+        Deck stays self.deck on both sides, matching how evaluate_against_roster
+        builds these anchors (gym_wrapper.MicroRoyaleEnv defaults opp_deck to
+        ai_deck) -- so what is trained against here is exactly what is measured
+        against, which is the entire point of adding them."""
+        self.opponent_kind = "builtin"
+        self.opponent_checkpoint_path = descriptor
+        self.game.set_opponent_deck(self.deck)
+        self.game.set_opponent_elixir_multiplier(float(descriptor.split("@")[1]))
+
     def _set_opponent(self, descriptor):
         """Dispatch for whatever _sample_pfsp_opponent() (or a direct
-        override) picked -- a real checkpoint path, or one of SCRIPTED_
-        OPPONENTS' "scripted:<name>" tags."""
+        override) picked -- a real checkpoint path, one of SCRIPTED_OPPONENTS'
+        "scripted:<name>" tags, or a "builtin:heuristic@<mult>" tag. The
+        "builtin:" spelling is deliberately the same one
+        evaluate_against_roster already dispatches on, and is never a real
+        file path, so torch.load is never attempted on it."""
         if descriptor.startswith("scripted:"):
             self.set_scripted_opponent(descriptor[len("scripted:"):])
+        elif descriptor.startswith("builtin:"):
+            self.set_builtin_opponent(descriptor)
         else:
             self.set_historical_opponent(descriptor)
 
@@ -694,11 +763,15 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
     def _sample_pfsp_opponent(self):
         if not self.pfsp_pool:
             return
+        def floor_for(p):
+            if p in DEFENSIVE_SCRIPTED_OPPONENTS:
+                return DEFENSIVE_SCRIPTED_MIN_WEIGHT
+            if p.startswith("builtin:"):
+                return BUILTIN_MIN_WEIGHT
+            return PFSP_MIN_WEIGHT
+
         weights = np.array([
-            max(
-                DEFENSIVE_SCRIPTED_MIN_WEIGHT if p in DEFENSIVE_SCRIPTED_OPPONENTS else PFSP_MIN_WEIGHT,
-                (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT
-            )
+            max(floor_for(p), (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
             for p in self.pfsp_pool
         ], dtype=np.float64)
         weights /= weights.sum()
@@ -903,14 +976,23 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         y0 = float(_to_scalar(action["target_y"]))
         activate_ability0_slot1 = bool(_to_scalar(action.get("activate_ability_slot1", 0)))
         activate_ability0_slot2 = bool(_to_scalar(action.get("activate_ability_slot2", 0)))
-        card_idx1, x1, y1, activate_ability1_slot1, activate_ability1_slot2 = self._opponent_action()
 
-        result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames,
-                                           activate_ability0_slot1, activate_ability0_slot2,
-                                           activate_ability1_slot1, activate_ability1_slot2)
-
-        obs = np.array(result.observation0, dtype=np.float32)
-        reward = float(result.reward0)
+        if self.opponent_kind == "builtin":
+            # The C++ HeuristicOpponent lives inside game.step()'s
+            # opponentTurn(), which step_self_play() never calls -- so this is
+            # the phase-1 code path, byte-for-byte what gym_wrapper's step()
+            # does. No Python-side opponent action exists to compute.
+            result = self.game.step(card_idx0, x0, y0, skip_frames,
+                                    activate_ability0_slot1, activate_ability0_slot2)
+            obs = np.array(result.observation, dtype=np.float32)
+            reward = float(result.reward)
+        else:
+            card_idx1, x1, y1, activate_ability1_slot1, activate_ability1_slot2 = self._opponent_action()
+            result = self.game.step_self_play(card_idx0, x0, y0, card_idx1, x1, y1, skip_frames,
+                                               activate_ability0_slot1, activate_ability0_slot2,
+                                               activate_ability1_slot1, activate_ability1_slot2)
+            obs = np.array(result.observation0, dtype=np.float32)
+            reward = float(result.reward0)
         terminated = bool(result.done)
 
         # Scenario truncation: end the focused defensive window WITHOUT marking
@@ -1271,8 +1353,10 @@ def train_selfplay_ppo():
         print(f"Resumed pipeline #2 (PFSP) from {WEIGHT_PATH}: episode {episodes_completed}, "
               f"reference roster size {len(reference_roster)}, "
               f"ent coef c/p {ent_coef_card:.4f}/{ent_coef_place:.4f}, "
-              f"next exploiter burst at ep "
-              f"{resumed_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}")
+              + (f"next exploiter burst at ep "
+                 f"{resumed_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}"
+                 if exploiter_mod.EXPLOITER_ENABLED
+                 else "exploiter disabled (see EXPLOITER_ENABLED)"))
     elif os.path.exists(BOOTSTRAP_FROM_PATH):
         bootstrap = torch.load(BOOTSTRAP_FROM_PATH, map_location=device, weights_only=False)
         state_dict = bootstrap["model"] if isinstance(bootstrap, dict) and "model" in bootstrap else bootstrap
@@ -1300,9 +1384,11 @@ def train_selfplay_ppo():
     # historical_pool alone also feeds update_reference_roster/evaluate_
     # against_roster below, both of which torch.load() every entry they're
     # given (a "scripted:X" tag would crash there, not just misbehave).
-    envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+    envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS + BUILTIN_TRAINING_OPPONENTS)
     print(f"PFSP pool initialized with {len(historical_pool)} historical + "
-          f"{len(SCRIPTED_OPPONENTS)} scripted opponent(s).")
+          f"{len(SCRIPTED_OPPONENTS)} scripted + "
+          f"{len(BUILTIN_TRAINING_OPPONENTS)} builtin-heuristic opponent(s) "
+          f"[{', '.join(BUILTIN_TRAINING_OPPONENTS)} at min weight {BUILTIN_MIN_WEIGHT}].")
 
     if not full_resume and os.path.exists(log_dir):
         import shutil
@@ -1978,7 +2064,7 @@ def train_selfplay_ppo():
             print(f">>> Historical snapshot saved to {hist_path}")
             last_historical_save_ep = episodes_completed
             historical_pool = discover_historical_checkpoints(episodes_completed)
-            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS + BUILTIN_TRAINING_OPPONENTS)
 
         # --- League exploiter burst ------------------------------------
         # Trains a SEPARATE agent whose only job is to beat the main agent as
@@ -2008,7 +2094,7 @@ def train_selfplay_ppo():
             # rotation; without this it would sit unused until the next
             # historical save happened to refresh the pool anyway.
             historical_pool = discover_historical_checkpoints(episodes_completed)
-            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS)
+            envs.call("refresh_pfsp_pool", historical_pool + SCRIPTED_OPPONENTS + BUILTIN_TRAINING_OPPONENTS)
 
         if episodes_completed - last_eval_ep >= EVAL_INTERVAL_EPISODES:
             update_reference_roster(reference_roster, historical_pool)
