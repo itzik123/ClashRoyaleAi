@@ -298,6 +298,36 @@ class GameState:
     opp_princess_left: TowerObservation
     opp_princess_right: TowerObservation
 
+    my_elixir_spent: float = 0.0
+    """Cumulative elixir WE have spent this match. Feeds extra scalar 1.
+
+    Measured from the elixir bar rather than the hand: over one live match this
+    recovered 27 cards against an affordable ceiling of 28, with a conservation
+    residual of +14% that is one-sided and explained (regen while the bar sits
+    at its 10 cap is invisible). Reading it from hand transitions instead
+    scored 1/76 -- the card-icon template is the weakest reader in the pipeline
+    and cannot carry a ledger."""
+
+    opp_elixir_spent: float | None = None
+    """Cumulative elixir the OPPONENT has spent, or None when not measured.
+
+    None, never 0.0. A zero is indistinguishable from "they have spent
+    nothing", and the consumer has to be able to tell those apart -- the engine
+    has no representation of uncertainty, so it lives here. Same convention as
+    `hp_measured` and `team_from_badge`.
+
+    Currently always None. There is no opponent elixir bar, so spend can only
+    be inferred from units appearing, and that over-counts 2.1x -- 64 detected
+    placements against ~31 affordable, with implied elixir below zero for 98%
+    of a match (BOT_REQUESTS.md item 8). Measured on a frozen checkpoint,
+    zeroing this field costs the policy nothing: 450 episodes per arm against
+    heuristic@1.35 gave a delta of +0.031 with 95% CI [-0.018, +0.080],
+    excluding any degradation worse than 1.8 points.
+
+    What the ENCODER writes into the observation slot when this is None is the
+    training side's decision, not perception's. Perception reports that it
+    could not measure it and stops."""
+
     frame_index: int = 0
     wall_time_ms: float = 0.0
     """Capture-time wall clock. For actuation-latency calibration; never fed to

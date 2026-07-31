@@ -20,7 +20,7 @@ longer true.**
 | 4 | `elixirSpent` is the one unrecoverable field | medium | structural | **MEASURED — void as stated, real risk is elsewhere** |
 | 5 | Tower levels are asymmetric in reality | low | measured | agreed, no action |
 | 7 | Princess HP must be read from the numeral, not the bar | **high** | measured, 101/101 | perception-side; adapter no longer reports 0.0 as destroyed |
-| 8 | Opponent cumulative spend over-counts 2.1x — do not emit it yet | **high** | measured on a live match | needs a decision from the training side |
+| 8 | Opponent cumulative spend over-counts 2.1x — do not emit it | **high** | measured on a live match + 900-episode A/B | **RESOLVED 2026-07-31** — option 1 adopted, measured free |
 
 ---
 
@@ -386,6 +386,47 @@ zero.
 Note also that any such test measures the cost of **removing an input from a
 network that learned with it**. A policy trained with the field zeroed from the
 start could adapt; that is a different and more expensive question.
+
+### RESOLVED 2026-07-31 — zeroing costs nothing, measured
+
+900 episodes against `heuristic@1.35`, arms interleaved so machine load (the
+phase-2 run was training throughout) falls on both equally, actions sampled
+rather than greedy to match deployment:
+
+| arm | W / L | score |
+|---|---|---|
+| scalar 2 correct | 368 / 82 | 0.8178 |
+| scalar 2 zeroed | 382 / 68 | 0.8489 |
+
+**delta +0.031, 95% CI [−0.018, +0.080], p = 0.21.** The interval excludes any
+degradation worse than **1.8 points** against a 5-point threshold. The nominal
++3.1 favouring zeroing is not significant and should not be read as a benefit;
+there is no mechanism by which deleting an input helps.
+
+**Option 1 adopted.** `GameState.opp_elixir_spent` is `None` — never `0.0`,
+since a zero cannot be told apart from "they have spent nothing". What the
+encoder writes into observation slot 13599 for a `None` is the training side's
+call, not perception's.
+
+Our own spend is emitted and is tracked in `live/elixir_ledger.py`, which is a
+separate module from the adapter on purpose: the adapter is stateless per
+frame, and a cumulative total is the opposite. Replayed over the same match it
+gives **29 cards and a +12% residual**, against the offline analysis's 27 and
++14% — the small gap is the live version's causal 3-median, which cannot see
+the future and therefore lags one sample.
+
+Three limits on this result, none of which change the decision:
+
+- It is one anchor. `heuristic@1.35` is out of distribution for a self-play
+  trained net, which is the leading explanation for why the zeroed arm led
+  nominally. A self-play version of the test (null exactly 0.500, so the
+  control arm self-validates) is written and unrun — it costs ~1568 per arm
+  because variance peaks at p=0.5.
+- It measures **removing an input from a network trained with it**. A retrain
+  without the field could do better or worse.
+- Arms could not be paired: the engine's RNG has no setter, which is
+  `UPSTREAM_REQUESTS.md` item 7 and is why this needed 900 episodes instead of
+  a tenth of that.
 
 ---
 

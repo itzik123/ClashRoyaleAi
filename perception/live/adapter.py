@@ -120,6 +120,8 @@ def build_game_state(
     phase: Phase = Phase.SINGLE,
     frame_index: int = 0,
     wall_time_ms: float = 0.0,
+    my_elixir_spent: float = 0.0,
+    opp_elixir_spent: float | None = None,
 ) -> tuple[GameState, AdapterReport]:
     """One CRBAB `State` plus its two frames -> one `GameState`.
 
@@ -220,6 +222,10 @@ def build_game_state(
         phase=phase,
         frame_index=frame_index,
         wall_time_ms=wall_time_ms,
+        my_elixir_spent=my_elixir_spent,
+        # Stays None unless a caller has something better than the 2.1x
+        # over-count units-appearing gives. See GameState.opp_elixir_spent.
+        opp_elixir_spent=opp_elixir_spent,
         flags=tuple(flags),
         **towers,
     )
