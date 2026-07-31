@@ -12,6 +12,11 @@ assets/recordings/
 *.mov
 *.avi
 
+# Live captures from tools/record_match.py. A 4-minute match at 10 fps is
+# ~2,400 lossless PNGs, ~1.5 GB -- same reasoning as assets/recordings/, but
+# the rule has to exist BEFORE the first recording, not after.
+assets/live/
+
 # Templates cropped from a specific recording at a specific resolution --
 # regenerable from the recording, and meaningless without it.
 config/templates/

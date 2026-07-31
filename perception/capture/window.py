@@ -82,6 +82,19 @@ NATIVE_WIDTH, NATIVE_HEIGHT = 720, 1280
 # slower than it acts is making decisions about the past.
 DEFAULT_MIN_FPS = 2.0
 
+# Rows are subsampled when scanning for the pillarbox. The bars are uniform
+# black over hundreds of rows, so every 4th row decides the same columns for a
+# quarter of the work -- and this scan runs on the hot path.
+RECT_ROW_STEP = 4
+
+# How often to re-derive the game rect even when the surface size has not
+# changed. Measured at 75 ms on a 1920x1020 buffer, which is far too expensive
+# per frame -- it was 74.7 of the 85 ms `read()` cost, and 29% of a recorder
+# frame. A resize changes the surface shape and is caught immediately; this
+# interval only covers a letterbox change at constant size, which needs the
+# Android app itself to change aspect.
+RECT_REVALIDATE_S = 5.0
+
 
 class GameRectError(RuntimeError):
     """The game area could not be located inside the captured surface."""
@@ -99,7 +112,7 @@ def find_game_rect(buffer: np.ndarray) -> tuple[int, int, int, int]:
     if buffer.ndim != 3 or buffer.shape[2] < 3:
         raise GameRectError(f"expected an HxWx3 image, got {buffer.shape}")
     height, width = buffer.shape[:2]
-    band = buffer[int(height * 0.25):int(height * 0.75), :, :3]
+    band = buffer[int(height * 0.25):int(height * 0.75):RECT_ROW_STEP, :, :3]
     if band.size == 0:
         raise GameRectError(f"surface too small to sample: {buffer.shape}")
 
@@ -154,6 +167,15 @@ class WindowSource(FrameSource):
         self._index = 0
         self._closed = False
         self._t0 = time.perf_counter()
+        self._rect: tuple[int, int, int, int] | None = None
+        self._rect_shape: tuple[int, ...] | None = None
+        self._rect_at = 0.0
+        # Counts CAPTURED surfaces, not reads. WGC delivers on window updates,
+        # so a caller polling faster than that will otherwise be handed the
+        # same surface twice -- which reads downstream as two observations of
+        # one instant, and as "nothing changed" to anything diffing frames.
+        self._seq = 0
+        self._last_seq = -1
 
         capture = WindowsCapture(cursor_capture=False, draw_border=False,
                                  window_name=window_name)
@@ -164,6 +186,7 @@ class WindowSource(FrameSource):
             with self._lock:
                 # BGRA surface; drop alpha. Copy because the buffer is reused.
                 self._latest = (now, frame.frame_buffer[:, :, :3].copy())
+                self._seq += 1
                 self._stamps.append(now)
                 if len(self._stamps) > 240:
                     del self._stamps[:120]
@@ -231,12 +254,35 @@ class WindowSource(FrameSource):
             self._index += 1
 
     def read(self) -> Frame:
-        """The current board, once. For a control loop that paces itself."""
+        """The current board, once. For a control loop that paces itself.
+
+        May return the same surface twice if called faster than the window
+        updates -- use `read_new` when duplicates would be misread as evidence.
+        """
         stamp, image = self._grab()
+        with self._lock:
+            self._last_seq = self._seq
         frame = Frame(index=self._index,
                       wall_time_ms=(stamp - self._t0) * 1000.0, image=image)
         self._index += 1
         return frame
+
+    def read_new(self, timeout_s: float = 1.0) -> Frame | None:
+        """The next surface the window actually painted, or None on timeout.
+
+        A recorder wants this rather than `read`: a duplicated frame is two
+        entries in the timeline for one instant, which biases any rate measured
+        from it and makes a frame-difference test report "no change" for a
+        moment that was never observed twice.
+        """
+        deadline = time.perf_counter() + timeout_s
+        while time.perf_counter() < deadline:
+            with self._lock:
+                fresh = self._seq != self._last_seq and self._latest is not None
+            if fresh:
+                return self.read()
+            time.sleep(0.002)
+        return None
 
     def close(self) -> None:
         if getattr(self, "_control", None) is not None and not self._closed:
@@ -253,5 +299,22 @@ class WindowSource(FrameSource):
             if self._latest is None:
                 raise RuntimeError("no frame captured yet")
             stamp, buffer = self._latest
-        x, y, w, h = find_game_rect(buffer)
+        x, y, w, h = self._game_rect(buffer)
         return stamp, np.ascontiguousarray(buffer[y:y + h, x:x + w])
+
+    def _game_rect(self, buffer: np.ndarray) -> tuple[int, int, int, int]:
+        """The cached game rect, re-derived only when it can have changed.
+
+        Deriving it costs ~75 ms on a 1920x1020 surface, which dominated
+        everything else on the hot path. It is a property of the window
+        geometry, not of the frame, so it is cached against the surface shape
+        (a resize changes that) with a slow revalidation behind it.
+        """
+        now = time.perf_counter()
+        if (self._rect is None
+                or self._rect_shape != buffer.shape
+                or now - self._rect_at > RECT_REVALIDATE_S):
+            self._rect = find_game_rect(buffer)
+            self._rect_shape = buffer.shape
+            self._rect_at = now
+        return self._rect
