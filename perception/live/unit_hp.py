@@ -1,42 +1,34 @@
-"""Per-unit HP, read from the bar above a detected unit.
+"""Per-unit HP and per-unit TEAM, read from the bar above a detected unit.
 
-STATUS: CALIBRATED, STILL UNDER-MATCHING. NOT WIRED IN.
--------------------------------------------------------
-Thresholds are now measured rather than guessed -- see ALLY_HUE / ENEMY_HUE_*,
-set from 179 badges harvested across 71 in-game ladder frames. Progress by
-approach, on the same footage:
+STATUS: FITTED AND MEASURED AGAINST 60 HAND-LABELLED CROPS.
+-----------------------------------------------------------
+Ground truth now exists: 60 crops sampled across the three outcomes the code
+can produce, labelled damaged / undamaged / not-a-unit by hand. Scored as an
+"is this unit damaged" detector over 226 detections from 71 in-game ladder
+frames, reweighted from the stratified sample back to the population:
 
-    search for the bar directly      44% found, widths mean 32 (true 38-56),
-                                     fractions mostly pinned at 0.00
-    badge anchor, 1 sample calibr.   widths right, 11% found
-    badge anchor, measured thresh.   21% found, widths mean 39
-    frame scan + match to units      37% matched, widths 30-54, fractions
-                                     mean 0.60 spread 0.25-0.92
+                          precision   recall    F1
+    before                    0.79      0.34    0.48
+    after                     0.98      0.56    0.72
 
-The remaining gap is ASSOCIATION, not detection. A frame yields ~2.5 badges and
-~1.8 on-board units, yet only 0.67 units get a badge attached -- so the badges
-are being found and then not matched. `match_badge`'s geometry is the suspect:
-it requires the badge centre above `top + 12` and scores on a hand-weighted
-distance, neither of which was fitted to anything.
+Three separate faults were behind the old numbers, and they were found in this
+order -- each one had to be fixed before the next became visible:
 
-WHAT IT STILL NEEDS
--------------------
-Ground truth, which does not exist yet. King bars could be validated against
-the HP NUMERAL printed beside them; units have no numeral, only the bar. So
-"no bar found" stays ambiguous between *undamaged* -- correct, Clash Royale
-draws no bar on a healthy unit -- and *missed*. Labelled crops of units known
-to be damaged are needed before any threshold moves again, or the tuning is
-fitted to a metric nobody can see.
+  1. the ASSOCIATION window was inverted (see below), which was most of it;
+  2. the FILL test was a brightness threshold, i.e. an accidental ally
+     detector, so every enemy unit measured 0%;
+  3. two units could claim the SAME badge, and two stacked widgets merged into
+     one blob that the size filter discarded whole.
 
-A SIDE-EFFECT WORTH MORE THAN THE HP
-------------------------------------
-The badge hue gives the unit's TEAM directly, and it disagrees with CRBAB's
-learned `side.onnx` on **31% of matched units** (11/16 agreed). Three
-disagreements were checked by eye and the badge was right every time: our own
-Valkyrie and our own Cannon were both reported as enemies. A side error is
-worse than a miss -- it writes the unit into the opponent's channels 4-7
-instead of ours 0-3 -- so `find_badges` is likely to be more valuable as a
-side oracle than as an HP source.
+The remaining recall gap is badge DETECTION, not association: 8 of the 10
+surviving misses have no badge found anywhere near the unit. That is the next
+lever, and one concrete case is recorded -- crop #64 has a plainly visible bar
+that `_bar_beside` reports as not-found.
+
+Note what recall does NOT mean here. Clash Royale draws no widget at all over
+an undamaged unit, confirmed by eye on the labels, so most unmatched units are
+correctly undamaged; 12 of the 20 sampled "no badge" crops were labelled
+undamaged. Recall is over units that are genuinely damaged.
 
 WHY THIS EXISTS
 ---------------
@@ -50,32 +42,70 @@ later evaluation ambiguous, so they are read instead.
 The detector supplies the hard part -- where each unit is. This only has to
 look just above that box.
 
-WHAT THE PIXELS ACTUALLY LOOK LIKE
-----------------------------------
-Sampled off a native 720x1280 ladder frame, an ally unit's bar is:
+THE WIDGET AND WHERE IT SITS
+----------------------------
+Clash Royale draws one widget per live unit: a square level BADGE with a white
+digit, and an HP BAR extending to its right.
 
-    border   (0, 44, 98)      dark navy, one row above and below
-    fill     (255,255,255)    near-WHITE -- not ALLY_HP_LHS_COLOUR (111,208,252)
-    track    (65, 80, 113)    the unfilled remainder; matches ALLY_HP_RHS_COLOUR
+    [BADGE 5][=====fill=====|-----track-----]
 
-Two consequences. Matching the fill against CRBAB's `*_LHS_COLOUR` constants
-finds nothing, because at this size the fill saturates to white. And the TRACK
-is the team-tinted part -- navy for ally, dark maroon for enemy -- so the track
-is what identifies the bar, while brightness identifies the fill.
+The pair is centred over the unit, so the badge -- being the left end -- sits
+LEFT of the unit's own centre, and low enough to overlap the top of the
+detector's box. Measured over 15 units whose badge was confirmed by eye:
 
-THE OFFSET IS SEARCHED, NOT ASSUMED
------------------------------------
-Measured on one frame: the bar sits ~12 px above the bbox top for a Valkyrie
-and ~30-45 px above it for a Cannon. It scales with sprite height, so a fixed
-offset is wrong for most units. A bounded window above the box is searched
-instead, and when several bars fall inside it -- normal in a crowd -- the one
-whose centre is nearest the unit's own centre wins.
+    dx = badge centre x - bbox centre x     mean -19.6, range [-24.5, -10.0]
+    dy = bbox top       - badge centre y    mean  -6.0, range [-14.5,  +1.5]
+
+Negative `dy` means the badge centre is BELOW the box top. That is the normal
+case, not an anomaly, and getting it backwards is what broke the first version:
+it rejected any badge more than 12 px below the top -- which threw away correct
+matches at dy -13 to -15 -- while accepting badges up to 104 px ABOVE, which
+belong to other units entirely. Every false positive in the labelled set came
+in that way. The window below is the measured cluster widened to ~2.5 sigma.
+
+THE FILL TEST IS PER-TEAM, NOT BRIGHTNESS
+-----------------------------------------
+An earlier version called a pixel "fill" if its mean channel value was >= 185.
+That is very nearly a test for "is this the ALLY bar":
+
+    ALLY_HP_LHS_COLOUR  (111, 208, 252)   mean 190.3  -- passes, barely
+    ENEMY_HP_LHS_COLOUR (224,  35,  93)   mean 117.3  -- fails, always
+
+So every enemy unit measured 0% fill, and enemy bars came back either 0.00 or
+not-found. Fill and track are now decided by nearest colour against CRBAB's own
+four constants, which is symmetric across teams by construction.
+
+THE SIDE ORACLE DID NOT SURVIVE MEASUREMENT
+-------------------------------------------
+The badge hue states the team in the game's own UI, so the plan was to let it
+override CRBAB's learned `side.onnx`. An earlier reading put the disagreement
+at 31% with the badge right in every case checked. That figure does not hold:
+it was measured with the broken matcher, so it was largely counting bad
+ASSOCIATION rather than bad `side.onnx`.
+
+Re-measured after the fixes above, over 67 associated detections, the two
+disagree on **10%** (7 cases). Five were checked by eye:
+
+    #64, #225   badge RIGHT -- our own Valkyrie reported as an enemy
+    #108        badge WRONG -- an undamaged Mini P.E.K.K.A has no widget of
+                its own, so the matcher took the neighbouring enemy badge
+    #194        badge WRONG -- a false badge on a Giant's foot
+    #42         junk either way -- the detection is not a unit
+
+Two right, two wrong. Neither source dominates, so nothing is overridden:
+`side_from_badge` is exposed and `adapter.py` carries its answer beside the
+detector's in `team_from_badge`, lowering confidence and raising a flag when
+they differ. A side error is worse than a missing HP -- it writes the unit into
+the opponent's channels 4-7 instead of ours 0-3 -- which is the reason to
+surface the disagreement rather than pick a winner on this evidence.
 
 AN ABSENT BAR MEANS FULL HP
 ---------------------------
 Clash Royale draws no bar over an undamaged unit. Same convention as the King
 Tower (see king_hp.py) and the opposite of a Princess tower, where an absent
-bar means destroyed.
+bar means destroyed. `UnitHp.bar_found` keeps "certainly full" distinguishable
+from "measured full", so a miss in a crowd stays visible rather than silently
+becoming 1.0.
 """
 from __future__ import annotations
 
@@ -83,20 +113,22 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Search window above the bbox top, in units of the bbox's own height. Scaled
-# rather than absolute because the offset grows with sprite size.
-SEARCH_ABOVE_FRACTION = 0.85
-SEARCH_ABOVE_MIN_PX = 26
-SEARCH_ABOVE_MAX_PX = 64
+# The bar's two colours per team, taken from CRBAB rather than copied. These
+# are the single source; re-typing them here is how the fill test drifted.
+from clashroyalebuildabot.constants import (
+    ALLY_HP_LHS_COLOUR,
+    ALLY_HP_RHS_COLOUR,
+    ENEMY_HP_LHS_COLOUR,
+    ENEMY_HP_RHS_COLOUR,
+)
 
-# Horizontal slack either side of the bbox. The badge sits left of the unit's
-# centre and the bar extends right, so the pair is not centred on the box.
-SEARCH_PAD_X = 26
+# Every pixel constant below was measured at this frame width. `scale` in
+# `find_badges` / `match_badge` converts to whatever the live frame is.
+CALIBRATION_WIDTH = 720
 
-# A bar must fall in this width range, in native pixels at 720x1280. Measured
-# spans were 38-56; the bounds are loose around that. The MAXIMUM matters as
-# much as the minimum -- without it, two adjacent units' bars merge into one
-# 89-px run and the fill of one is divided by the width of both.
+# A bar must fall in this width range. The MAXIMUM matters as much as the
+# minimum -- without it, two adjacent units' bars merge into one 89-px run and
+# the fill of one is divided by the width of both.
 MIN_BAR_WIDTH = 20
 MAX_BAR_WIDTH = 72
 
@@ -105,67 +137,79 @@ BADGE_MIN_SIDE, BADGE_MAX_SIDE = 9, 26
 BADGE_MIN_AREA = 70
 BADGE_MIN_DIGIT_PIXELS = 8
 
-# A pixel counts as fill if this bright. The fill saturates to white; nothing
-# else in the bar's row band is anywhere near it.
-FILL_BRIGHTNESS = 185
+# Shortest vertical run that can only be a badge. The badge is ~21 px tall in a
+# single column; the bar beside it is ~7. Used to pull two stacked widgets
+# apart -- see _split_tall_blob.
+BADGE_MIN_RUN = 15
+# Width of the white level digit, i.e. how far apart the badge's two surviving
+# stripes are after that run filter.
+BADGE_DIGIT_GAP = 21
 
-
-@dataclass(frozen=True)
-class UnitHp:
-    fraction: float
-    bar_found: bool
-    """False means no bar was drawn, i.e. the unit is undamaged. Kept separate
-    from `fraction` so a caller can tell 'certainly full' from 'measured full'
-    -- and so a missed bar in a crowd is visible rather than silently 1.0."""
-
-    width: int = 0
-
-
-def _is_track(rgb: np.ndarray, ally: bool) -> np.ndarray:
-    """The bar's unfilled remainder: dark, tinted to the team, NOT the border.
-
-    Excluding the border is load-bearing. The bar is outlined in a much darker
-    navy -- (0,44,98) against a track of (65,80,113) -- which passes every hue
-    test the track passes, spans the bar's FULL width, and contains no fill at
-    all. Scoring rows without excluding it selects the border row every time
-    and reports a healthy unit as 0.00. Measured: that produced 0.00 for six of
-    eight units, including one whose bar was over half full.
-
-    Total intensity separates them cleanly: 258 for the track, 142 for the
-    border.
-    """
-    rgb = rgb.astype(np.int16)
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    dark = (r < 170) & (g < 170) & (b < 190)
-    not_border = rgb.sum(axis=-1) > 190
-    if ally:
-        # navy, e.g. (65,80,113)
-        return dark & not_border & (b > r + 20) & (b > g + 15)
-    # maroon, e.g. (90,49,68)
-    return dark & not_border & (r > g + 20) & (r > b + 10)
-
-
-def _is_fill(rgb: np.ndarray) -> np.ndarray:
-    return rgb.astype(np.int16).mean(axis=-1) >= FILL_BRIGHTNESS
-
-
-# Badge hue in OpenCV's 0-179 scale, MEASURED over 179 badges harvested from
-# 71 in-game ladder frames (79 ally, 100 enemy):
+# Badge hue in OpenCV's 0-179 scale, measured over those same 179 badges
+# (79 ally, 100 enemy):
 #
 #   ally    hue median 101, p5 100, p95 105     sat median 173
 #   enemy   hue median 171, wrapping past 179   sat median 150
 #
-# The bounds below are those distributions widened, not guesses. An earlier
-# version of this function was calibrated against a SINGLE ally badge with the
-# enemy values invented, and scored 11% recall.
+# An earlier version of this was calibrated against a SINGLE ally badge with
+# the enemy values invented, and scored 11% recall.
 ALLY_HUE = (94, 113)
 ENEMY_HUE_LOW = (158, 179)
 ENEMY_HUE_HIGH = (0, 8)      # magenta wraps around 0
 BADGE_MIN_SAT = 110
 BADGE_MIN_VAL = 100
 
+# Association window, fitted to 15 confirmed badge/unit pairs (see the module
+# docstring). Offsets are badge centre relative to the bbox.
+MATCH_DX = (-32.0, -7.0)     # badge centre x - bbox centre x
+MATCH_DY = (-28.0, +8.0)     # bbox top - badge centre y
+MATCH_DX_CENTRE = -19.6
+MATCH_DY_CENTRE = -6.0
 
-def _badge_mask(bgr_window: np.ndarray, ally: bool) -> np.ndarray:
+# How far a pixel may sit from a bar colour, in RGB euclidean distance, and
+# still count as that colour. The two colours of a team are 200+ apart, so this
+# is nowhere near tight enough to confuse them; it exists to reject grass.
+COLOUR_TOLERANCE = 70
+
+
+@dataclass(frozen=True)
+class UnitHp:
+    fraction: float
+    bar_found: bool
+    """False means no bar was drawn, i.e. the unit is undamaged."""
+
+    width: int = 0
+    ally: bool | None = None
+    """Team as read from the badge hue, or None when no badge was matched.
+    Authoritative when present -- see the module docstring."""
+
+
+def _bar_colours(ally: bool) -> tuple[np.ndarray, np.ndarray]:
+    fill = ALLY_HP_LHS_COLOUR if ally else ENEMY_HP_LHS_COLOUR
+    track = ALLY_HP_RHS_COLOUR if ally else ENEMY_HP_RHS_COLOUR
+    return np.array(fill, np.int32), np.array(track, np.int32)
+
+
+def _bar_classes(rgb: np.ndarray, ally: bool) -> tuple[np.ndarray, np.ndarray]:
+    """(track, fill) masks, by nearest bar colour.
+
+    Nearest-colour rather than a threshold per channel, because the two states
+    differ per team in opposite directions -- the ally bar fills BRIGHTER than
+    its track, the enemy bar fills more SATURATED but no brighter. Any single
+    brightness rule is therefore a team detector, which is what the previous
+    version accidentally was.
+    """
+    fill_c, track_c = _bar_colours(ally)
+    px = rgb.astype(np.int32)
+    d_fill = ((px - fill_c) ** 2).sum(axis=-1)
+    d_track = ((px - track_c) ** 2).sum(axis=-1)
+    tol = COLOUR_TOLERANCE ** 2
+    fill = (d_fill <= tol) & (d_fill < d_track)
+    track = (d_track <= tol) & (d_track <= d_fill)
+    return track, fill
+
+
+def _badge_mask(rgb_window: np.ndarray, ally: bool) -> np.ndarray:
     """The LEVEL BADGE beside the bar -- the reliable anchor.
 
     Searching for the bar directly does not work. It is a ~40x6 strip of low
@@ -176,12 +220,11 @@ def _badge_mask(bgr_window: np.ndarray, ally: bool) -> np.ndarray:
 
     The badge has none of those problems. It is a saturated rounded rect with a
     white level digit, the same size for every unit, and it stayed legible even
-    in the most crowded frame examined -- where the sprites underneath were an
-    unrecognisable pile.
+    in the most crowded frame examined.
     """
     import cv2  # noqa: PLC0415
 
-    hsv = cv2.cvtColor(bgr_window, cv2.COLOR_RGB2HSV)
+    hsv = cv2.cvtColor(rgb_window, cv2.COLOR_RGB2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     if ally:
         hue = (h >= ALLY_HUE[0]) & (h <= ALLY_HUE[1])
@@ -205,144 +248,206 @@ class Badge:
 
     @property
     def anchor(self) -> tuple[float, float]:
-        """Badge centre. A unit's badge sits above and slightly left of it."""
+        """Badge centre. The unit it belongs to is below and to the right."""
         return self.x + self.w / 2.0, self.y + self.h / 2.0
 
 
 def find_badges(frame) -> list[Badge]:
     """Every level badge in a frame, scanned once.
 
-    Scanning the frame and MATCHING to units beats searching a window per unit,
-    which is what the per-unit version did. Measured: harvesting found 2.5
-    badges per frame while the per-unit search associated only 0.67, so the
-    badge test was never the problem -- the window was. One scan is also
-    cheaper than N windows.
+    Scanning the frame and MATCHING to units beats searching a window per unit.
+    Measured: harvesting found 2.5 badges per frame while a per-unit search
+    associated only 0.67, so the badge test was never the problem -- the window
+    was. One scan is also cheaper than N windows.
+
+    `frame` is the NATIVE-resolution RGB frame, not the 368x652 detector frame:
+    the bar is only ~6 px tall there, and throwing away resolution on the one
+    measurement that needs it would be perverse.
     """
     import cv2  # noqa: PLC0415
 
     arr = np.asarray(frame)[..., :3]
+    scale = arr.shape[1] / CALIBRATION_WIDTH
     out: list[Badge] = []
     for ally in (True, False):
         mask = _badge_mask(arr, ally).astype(np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-        count, _lab, stats, _cent = cv2.connectedComponentsWithStats(mask, 8)
+        # Pixels belonging to a vertical run at least BADGE_MIN_RUN long.
+        # Opening with a vertical line is exactly that test. Used only to
+        # rescue oversized blobs below -- see _split_tall_blob.
+        tall = cv2.morphologyEx(
+            mask, cv2.MORPH_OPEN,
+            np.ones((max(3, int(BADGE_MIN_RUN * scale)), 1), np.uint8))
+        count, labels, stats, _cent = cv2.connectedComponentsWithStats(mask, 8)
         for i in range(1, count):
             x, y, w, h, area = stats[i]
-            if area < BADGE_MIN_AREA or not (BADGE_MIN_SIDE <= h <= BADGE_MAX_SIDE):
+            if area < BADGE_MIN_AREA * scale ** 2:
                 continue
-            # An enemy badge merges with its pink bar into one wide blob; the
-            # badge is the left end. The ally badge stays square because its
-            # bar fill is white, not cyan.
-            bw = min(int(w), int(h) + 4)
-            patch = arr[y:y + h, x:x + bw]
-            grey = patch.astype(np.int16).mean(axis=-1)
-            if int((grey >= 225).sum()) < BADGE_MIN_DIGIT_PIXELS:
-                continue          # no white level digit -> not a badge
-            hp, found = _bar_beside(arr, int(x + bw), int(y), int(h), ally)
-            out.append(Badge(int(x), int(y), bw, int(h), ally, hp, found))
+            if BADGE_MIN_SIDE * scale <= h <= BADGE_MAX_SIDE * scale:
+                boxes = [(int(x), int(y), int(w), int(h))]
+            else:
+                boxes = _split_tall_blob(tall, labels, i, x, y, w, h, scale)
+            for bx, by, bw_full, bh in boxes:
+                # An enemy badge merges with its pink bar into one wide blob;
+                # the badge is the left end. The ally badge merges too -- its
+                # bar's track converts to a hue just inside the ally band.
+                bw = min(bw_full, bh + int(4 * scale))
+                patch = arr[by:by + bh, bx:bx + bw]
+                if patch.size == 0:
+                    continue
+                grey = patch.astype(np.int16).mean(axis=-1)
+                if int((grey >= 225).sum()) < BADGE_MIN_DIGIT_PIXELS:
+                    continue      # no white level digit -> not a badge
+                hp, found = _bar_beside(arr, bx + bw, by, bh, ally, scale)
+                out.append(Badge(bx, by, bw, bh, ally, hp, found))
     return out
 
 
-def _bar_beside(arr, x_from: int, y: int, h: int, ally: bool) -> tuple[float, bool]:
+def _split_tall_blob(tall, labels, blob_id: int, x: int, y: int, w: int,
+                     h: int, scale: float) -> list[tuple[int, int, int, int]]:
+    """Badge boxes inside a blob too tall to be a single badge.
+
+    Two units' widgets that stack within ~15 px merge into one component, and
+    rejecting it whole was throwing away both badges -- 8 of the 12 units still
+    missed after the match window was fixed failed exactly this way, including
+    a Valkyrie whose badge is plainly visible in its crop.
+
+    Neither blob size nor a per-column pixel count can separate them: stacked,
+    a column holds a badge's 21 px AND a bar's 7. The longest vertical RUN can,
+    because it stays 21 for the badge and 7 for the bar however they overlap.
+    """
+    import cv2  # noqa: PLC0415
+
+    sub = ((labels[y:y + h, x:x + w] == blob_id) &
+           (tall[y:y + h, x:x + w] > 0)).astype(np.uint8)
+    if not sub.any():
+        return []
+    # The white level digit splits a badge into a left and a right stripe;
+    # close horizontally to rejoin them into one box per badge.
+    sub = cv2.morphologyEx(
+        sub, cv2.MORPH_CLOSE,
+        np.ones((1, max(3, int(BADGE_DIGIT_GAP * scale))), np.uint8))
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(sub, 8)
+    boxes = []
+    for j in range(1, n):
+        sx, sy, sw, sh, sa = st[j]
+        if sa < BADGE_MIN_AREA * scale ** 2 * 0.5:
+            continue
+        if not (BADGE_MIN_SIDE * scale <= sh <= BADGE_MAX_SIDE * scale):
+            continue
+        boxes.append((int(x + sx), int(y + sy), int(sw), int(sh)))
+    return boxes
+
+
+def _bar_beside(arr, x_from: int, y: int, h: int, ally: bool,
+                scale: float = 1.0) -> tuple[float, bool]:
     """Read the HP bar immediately right of a badge, on the badge's own rows."""
-    band = arr[y:y + h, x_from + 1:x_from + 1 + MAX_BAR_WIDTH + 6]
-    if band.shape[1] < MIN_BAR_WIDTH:
+    max_w = int(MAX_BAR_WIDTH * scale)
+    min_w = int(MIN_BAR_WIDTH * scale)
+    band = arr[y:y + h, x_from + 1:x_from + 1 + max_w + 6]
+    if band.shape[1] < min_w:
         return 1.0, False
-    track, fill = _is_track(band, ally), _is_fill(band)
-    scores = (track | fill).sum(axis=1)
-    row = int(np.argmax(scores))
-    runs = [r for r in _runs((track | fill)[row]) if r[0] <= 3]
-    runs = [r for r in runs if MIN_BAR_WIDTH <= r[1] - r[0] <= MAX_BAR_WIDTH]
+    track, fill = _bar_classes(band, ally)
+    bar = track | fill
+    # Best row of the bar: most bar-like pixels, counting both states. The
+    # bright highlight along the bar's top edge scores low here and is skipped.
+    row = int(np.argmax(bar.sum(axis=1)))
+    runs = [r for r in _runs(bar[row]) if r[0] <= 3]
+    runs = [r for r in runs if min_w <= r[1] - r[0] <= max_w]
     if not runs:
         return 1.0, False
     start, end = runs[0]
-    segment = band[row, start:end]
-    return min(1.0, int(_is_fill(segment).sum()) / (end - start)), True
+    filled = int(fill[row, start:end].sum())
+    return min(1.0, filled / (end - start)), True
 
 
-def match_badge(badges: list[Badge], bbox, max_distance: float = 70.0) -> Badge | None:
+def match_badge(badges: list[Badge], bbox, scale: float = 1.0) -> Badge | None:
     """The badge belonging to a detected unit, or None.
 
-    Matched on the badge sitting ABOVE the unit -- Clash Royale draws it over
-    the sprite's head -- and nearest horizontally. Returns None rather than a
-    far-away badge, because in a crowd a wrong association gives a confident
-    HP and side for the wrong unit, which is worse than admitting ignorance.
+    Matched inside the measured offset window rather than by nearest-anything.
+    A crowd puts several badges within any generous radius, and a wrong
+    association gives a confident HP and a confident TEAM for the wrong unit --
+    worse than admitting ignorance, so this returns None instead of a
+    best-effort guess.
     """
-    left, top, right, _bottom = (int(v) for v in bbox)
+    left, top, right, _bottom = (float(v) for v in bbox)
     centre_x = (left + right) / 2.0
-    best, best_d = None, max_distance
+    best, best_cost = None, float("inf")
     for badge in badges:
         bx, by = badge.anchor
-        if by > top + 12:                 # must be above the sprite
+        dx = (bx - centre_x) / scale
+        dy = (top - by) / scale
+        if not (MATCH_DX[0] <= dx <= MATCH_DX[1]):
             continue
-        d = abs(bx - centre_x) + 0.6 * max(0.0, top - by)
-        if d < best_d:
-            best, best_d = badge, d
+        if not (MATCH_DY[0] <= dy <= MATCH_DY[1]):
+            continue
+        cost = abs(dx - MATCH_DX_CENTRE) + abs(dy - MATCH_DY_CENTRE)
+        if cost < best_cost:
+            best, best_cost = badge, cost
     return best
 
 
-def read_unit_hp(frame, bbox, ally: bool) -> UnitHp:
-    """HP fraction for one detected unit.
+def match_badges(badges: list[Badge], bboxes, scale: float = 1.0) -> list[Badge | None]:
+    """Assign badges to a whole frame's units at once, each badge used once.
 
-    `frame` is the NATIVE-resolution RGB frame (not the 368x652 detector
-    frame -- the bar is only ~6 px tall there, and throwing away resolution on
-    the one measurement that needs it would be perverse). `bbox` must be in the
-    same coordinate space as `frame`.
+    Prefer this over calling `match_badge` per unit. Independently, two units
+    can both pick the same badge -- two Giants stacked in a lane did exactly
+    that, and the second one then reported the first one's HP and the first
+    one's TEAM. Assigning greedily by cost, cheapest pair first, makes that
+    impossible and costs nothing: the loser falls through to its own badge if
+    it has one, or to None if it does not.
     """
-    arr = np.asarray(frame)
-    if arr.ndim != 3 or arr.shape[2] < 3:
-        raise ValueError(f"expected an HxWx3 RGB frame, got shape {arr.shape}")
-    arr = arr[..., :3]
-    height, width = arr.shape[:2]
+    pairs = []
+    for ui, bbox in enumerate(bboxes):
+        left, top, right, _bottom = (float(v) for v in bbox)
+        centre_x = (left + right) / 2.0
+        for bi, badge in enumerate(badges):
+            bx, by = badge.anchor
+            dx, dy = (bx - centre_x) / scale, (top - by) / scale
+            if not (MATCH_DX[0] <= dx <= MATCH_DX[1]):
+                continue
+            if not (MATCH_DY[0] <= dy <= MATCH_DY[1]):
+                continue
+            cost = abs(dx - MATCH_DX_CENTRE) + abs(dy - MATCH_DY_CENTRE)
+            pairs.append((cost, ui, bi))
+    pairs.sort()
+    out: list[Badge | None] = [None] * len(list(bboxes))
+    used_u: set[int] = set()
+    used_b: set[int] = set()
+    for _cost, ui, bi in pairs:
+        if ui in used_u or bi in used_b:
+            continue
+        out[ui] = badges[bi]
+        used_u.add(ui)
+        used_b.add(bi)
+    return out
 
-    left, top, right, bottom = (int(v) for v in bbox)
-    box_h = max(1, bottom - top)
-    above = int(np.clip(box_h * SEARCH_ABOVE_FRACTION,
-                        SEARCH_ABOVE_MIN_PX, SEARCH_ABOVE_MAX_PX))
 
-    y0, y1 = max(0, top - above), min(height, top + 6)
-    x0, x1 = max(0, left - SEARCH_PAD_X), min(width, right + SEARCH_PAD_X)
-    if y1 - y0 < 3 or x1 - x0 < MIN_BAR_WIDTH:
-        return UnitHp(1.0, bar_found=False)
+def read_unit_hp(frame_badges: list[Badge], bbox, scale: float = 1.0) -> UnitHp:
+    """HP and team for one detected unit, from a frame's pre-scanned badges.
 
-    window = arr[y0:y1, x0:x1]
-    badge = _badge_mask(window, ally)
-    if badge.sum() < 8:
-        # No badge, so no unit UI here at all. Every live unit carries one, so
-        # this means the window missed -- not that the unit is undamaged.
-        return UnitHp(1.0, bar_found=False)
+    Takes the badge list rather than the frame so a caller scans once per frame
+    and matches N times, which is the ordering that made this work at all. For
+    a whole frame prefer `match_badges`, which additionally stops two units
+    claiming the same badge.
+    """
+    badge = match_badge(frame_badges, bbox, scale)
+    if badge is None:
+        return UnitHp(1.0, bar_found=False, ally=None)
+    return UnitHp(fraction=badge.hp, bar_found=badge.bar_found, ally=badge.ally)
 
-    # Badge column: the one nearest this unit's centre, so a neighbour's badge
-    # in the same window does not capture us.
-    unit_centre = (left + right) / 2.0 - x0
-    cols = np.flatnonzero(badge.any(axis=0))
-    anchor = int(cols[np.argmin(np.abs(cols - unit_centre))])
-    # Widen to the whole badge blob around that column.
-    keep = cols[np.abs(cols - anchor) <= 18]
-    badge_right = int(keep.max())
-    rows = np.flatnonzero(badge[:, keep].any(axis=1))
-    row_lo, row_hi = int(rows.min()), int(rows.max())
 
-    # The bar occupies the badge's own rows, starting just past its right edge.
-    band = window[row_lo:row_hi + 1, badge_right + 1:]
-    if band.shape[1] < MIN_BAR_WIDTH:
-        return UnitHp(1.0, bar_found=False)
+def side_from_badge(frame_badges: list[Badge], bbox,
+                    scale: float = 1.0) -> bool | None:
+    """True for ally, False for enemy, None when no badge could be matched.
 
-    track = _is_track(band, ally)
-    fill = _is_fill(band)
-    # Best row of the bar: most bar-like pixels, counting both states.
-    scores = (track | fill).sum(axis=1)
-    row = int(np.argmax(scores))
-    runs = [r for r in _runs((track | fill)[row]) if r[0] <= 3]
-    runs = [r for r in runs if MIN_BAR_WIDTH <= r[1] - r[0] <= MAX_BAR_WIDTH]
-    if not runs:
-        return UnitHp(1.0, bar_found=False)
-
-    start, end = runs[0]
-    segment = band[row, start:end]
-    total = end - start
-    filled = int(_is_fill(segment).sum())
-    return UnitHp(fraction=min(1.0, filled / total), bar_found=True, width=total)
+    Authoritative over CRBAB's `side.onnx` when it returns a value -- the badge
+    is the game's own UI stating the team, while `side.onnx` is a 16x16 learned
+    guess off the sprite crop. See the module docstring for the measured
+    disagreement rate.
+    """
+    badge = match_badge(frame_badges, bbox, scale)
+    return None if badge is None else badge.ally
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:

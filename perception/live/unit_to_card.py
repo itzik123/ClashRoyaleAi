@@ -36,6 +36,8 @@ import dataclasses
 import re
 from functools import lru_cache
 
+from contracts import UNKNOWN_CARD_SIM_ID
+
 # One unit, several possible parent cards. Chosen as the card that spawns the
 # unit as its PRIMARY payload rather than as a side effect, because that is the
 # commonest source in play and therefore the lowest-error default.
@@ -156,6 +158,45 @@ def unit_to_card_id() -> dict[str, int]:
             "dots and hyphens, nothing else."
         )
     return mapping
+
+
+@lru_cache(maxsize=1)
+def card_name_to_id() -> dict[str, int]:
+    """CRBAB CARD name -> engine card id.
+
+    Deliberately separate from `unit_to_card_id`. The hand holds CARDS, the
+    board holds UNITS, and most names coincide -- which is exactly why using
+    one table for the other fails quietly rather than loudly. Fireball spawns
+    no unit at all, so a Fireball in hand resolved to nothing and the slot
+    silently became UNKNOWN_CARD_SIM_ID; the three cards in the same hand that
+    do spawn same-named units looked fine.
+    """
+    import clash_royale_env as engine  # noqa: PLC0415
+
+    from clashroyalebuildabot.namespaces.cards import Cards  # noqa: PLC0415
+
+    by_norm = {_norm(engine.get_card_info(cid)["name"]): cid
+               for cid in engine.get_all_card_ids()}
+    mapping = {}
+    for field in dataclasses.fields(Cards):
+        card = getattr(Cards, field.name)
+        cid = by_norm.get(_norm(card.name))
+        if cid is not None:
+            mapping[card.name] = cid
+    return mapping
+
+
+def hand_card_id_for(card_name: str) -> int:
+    """Engine card id for a card in hand, or UNKNOWN_CARD_SIM_ID.
+
+    Returns the sentinel rather than raising, unlike `card_id_for`: an
+    unreadable hand slot is routine (the slot is mid-animation, or the card is
+    one the engine's registry does not carry), while an unmappable unit ON THE
+    BOARD means the detector saw something the observation cannot represent.
+    """
+    if not card_name or card_name == "blank":
+        return UNKNOWN_CARD_SIM_ID
+    return card_name_to_id().get(card_name, UNKNOWN_CARD_SIM_ID)
 
 
 def card_id_for(unit_name: str) -> int:

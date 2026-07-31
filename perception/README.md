@@ -25,6 +25,12 @@ the C++ core are read-only from here.
 | 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs the next batch. |
 | 4 — opponent deck, cycle, elixir | **done and tested** | deck discovery, exact elixir derivation, negative-balance alarm. |
 | 5 — bridge + divergence | **done and tested** | zero-error control: divergence identically **0**. |
+| 6 — `State` → `GameState` adapter | **built, not live** (2026-07-31) | `live/adapter.py`. Runs end to end on real frames: card ids, per-unit HP, six towers, hand, elixir. Blocked on a frame source, the match clock, and cumulative elixir spend. |
+| 6 — per-unit HP | **fitted against 60 hand labels** | "is this unit damaged", population-weighted over 226 detections: precision **0.79 → 0.98**, recall **0.34 → 0.56**. See *Findings* 7. |
+
+The live sensor's output contract is `GameState` in `contracts.py` — **shared,
+neither side changes it alone**. Perception emits it and stops; encoding the
+13,606 floats belongs to the training side, which owns the layout.
 
 ### Recordings
 
@@ -42,8 +48,17 @@ sends input to the game.
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ```
 
-73 tests, no emulator required. Every test runs against a frozen replay
-fixture, a synthetic camera, or synthetic video generated at test time.
+**73 passed, 4 skipped** — no emulator required. Every test runs against a
+frozen replay fixture, a synthetic camera, or synthetic video generated at test
+time.
+
+The 4 skips are the ClashRoyaleBuildABot-dependent tests, which need onnxruntime
+and opencv. To run those too, use the CRBAB environment instead — **121 passed,
+1 skipped**:
+
+```bash
+perception/.venv-crbab/Scripts/python.exe -m pytest perception/tests -q
+```
 
 ---
 
@@ -209,6 +224,45 @@ Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
    **fraction**, and take the maximum from the first undamaged reading rather
    than a supplied table. Also note **King HP is not rendered until the King is
    activated** — an absent numeral means full HP.
+
+7. **Per-unit HP, fitted against 60 hand-labelled crops (2026-07-31).**
+   ClashRoyaleBuildABot reports no unit HP at all, but observation channels 0-7
+   store `hp / MAX` per cell — 4,896 of the 13,606 floats. Scored as an "is this
+   unit damaged" detector over 226 detections, reweighted from the stratified
+   sample to the population: precision **0.79 → 0.98**, recall **0.34 → 0.56**.
+
+   Three faults, found in this order because each hid the next:
+
+   - the **association window was inverted** — it rejected badges more than
+     12 px *below* the box top, which is where the correct ones are (measured
+     dy −14.5 to +1.5), while accepting badges up to 104 px *above*, which
+     belong to other units. Every false positive came in that way;
+   - the **fill test was a brightness threshold**, i.e. an accidental ally
+     detector: ally fill (111,208,252) means 190.3 and passed by 3 points,
+     enemy fill (224,35,93) means 117.3 and never could. Every enemy unit
+     measured 0% fill;
+   - **two units could claim the same badge**, and two vertically stacked
+     widgets merged into one blob the size filter discarded whole.
+
+   The remaining gap is badge **detection**, not association — 8 of the 10
+   surviving misses have no badge found near the unit at all.
+
+   **The badge-hue side oracle did not survive measurement.** An earlier
+   reading put its disagreement with CRBAB's `side.onnx` at 31% with the badge
+   right every time checked; that was measured with the broken matcher and was
+   largely counting bad association. Re-measured it is **10%** (7 of 67), and
+   of five checked by eye the badge was right twice and wrong twice. Neither
+   source dominates, so nothing is overridden — `adapter.py` carries both
+   readings and lowers confidence when they differ.
+
+8. **The detector misnames ~15% of the units it finds.** The same labels
+   returned a second finding: 9 of 60 carried the wrong card name (`knight` ×6,
+   `valkyrie` ×2, `archer`) and 3 were not units at all (`minipekka` ×3, one
+   confirmed to be the enemy Princess tower). `knight` is the same class that
+   produced all 102 off-board phantoms. Not fixable here — the model is
+   upstream's, vendored unchanged. Recorded in `BOT_REQUESTS.md` item 6,
+   because a wrong `card_sim_id` drives channels 11-20 with a confidently wrong
+   attribute row, which is worse than a dropped detection.
 
 Corrections to the original brief:
 

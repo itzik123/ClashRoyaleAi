@@ -201,6 +201,115 @@ class PerceptionFrame:
 
 
 @dataclass(frozen=True)
+class UnitObservation:
+    """One unit visible on the board, as the live sensor sees it.
+
+    `hp_fraction` is relative to THIS CARD'S OWN maximum, not to any global
+    constant. The bar on screen is a fraction of the unit's own health and
+    nothing on screen states the absolute number, so converting here would
+    require a max-HP table inside perception -- which is the consumer's, since
+    only it knows what normalisation the observation wants.
+    """
+
+    card_sim_id: int
+    """CardRegistry id. UNKNOWN_CARD_SIM_ID if the detector's class has no
+    counterpart in the simulator's roster."""
+
+    unit_name: str
+    """The detector's own class name, kept for diagnosis. A card id alone
+    cannot be traced back to what the model actually saw."""
+
+    team: int
+    """0 = us, 1 = opponent. Same convention as the engine."""
+
+    tile_x: int
+    tile_y: int
+    """Board tile in ENGINE coordinates (18 x 34), already converted from the
+    detector's 18 x 32 arena. See live/adapter.py for the conversion and why
+    it carries a row offset."""
+
+    hp_fraction: float
+    """[0,1] of this card's own maximum. 1.0 when no bar was drawn, which in
+    Clash Royale means undamaged."""
+
+    hp_measured: bool
+    """False means `hp_fraction` is the 1.0 default rather than a reading. Kept
+    separate so 'certainly full' stays distinguishable from 'could not see' --
+    the engine has no representation of uncertainty, so it has to live here."""
+
+    confidence: float = 1.0
+    """[0,1]. Lowered when independent signals disagree -- in particular when
+    the badge hue and the detector's own side model name different teams."""
+
+    team_from_badge: int | None = None
+    """Team as read from the level badge hue, or None if no badge was matched.
+    Carried ALONGSIDE `team` rather than replacing it: measured on 67
+    associated detections the two disagree on 10%, and spot-checking those
+    found the badge right twice and wrong twice. Neither source dominates, so
+    the disagreement is surfaced instead of silently resolved."""
+
+
+@dataclass(frozen=True)
+class TowerObservation:
+    """One of the six towers.
+
+    `hp_fraction`, not absolute HP, for the same reason as UnitObservation --
+    and additionally because tower maxima depend on the player's tower level,
+    which is not on screen. The engine's own towers are level 9 (2534 HP) while
+    the recordings are levels 4-5 (1750-1890), so an absolute number would be
+    wrong by ~30% and by a DIFFERENT factor per player.
+    """
+
+    hp_fraction: float
+    hp_measured: bool
+    destroyed: bool = False
+
+
+@dataclass
+class GameState:
+    """Everything the live sensor reads off one frame. Perception's only output.
+
+    Deliberately NOT the 13,606-float observation vector. Encoding belongs to
+    the training side, which owns the layout and has already changed it once
+    (6253 -> 13606 on 2026-07-29). A compact state survives that; an encoder on
+    this side of the boundary does not. A GameState can also be logged, diffed
+    and eyeballed, which a float vector cannot.
+
+    SHARED CONTRACT. Neither side changes it alone -- see the coordination
+    section of docs/superpowers/specs/2026-07-30-perception-live-sensor-design.md.
+    """
+
+    units: tuple[UnitObservation, ...]
+
+    my_elixir: float
+    """[0,10]. Read from the elixir bar, the strongest reader in the pipeline
+    (mean confidence 0.978-0.991)."""
+
+    my_hand: tuple[int, ...]
+    """Up to 4 simulator card ids, in on-screen slot order."""
+
+    seconds_elapsed: float
+    phase: Phase
+
+    own_king: TowerObservation
+    own_princess_left: TowerObservation
+    own_princess_right: TowerObservation
+    opp_king: TowerObservation
+    opp_princess_left: TowerObservation
+    opp_princess_right: TowerObservation
+
+    frame_index: int = 0
+    wall_time_ms: float = 0.0
+    """Capture-time wall clock. For actuation-latency calibration; never fed to
+    the engine. Same rationale as PlacementEvent.wall_time_ms."""
+
+    flags: tuple[str, ...] = ()
+    """Machine-readable anomaly markers raised for this frame, e.g.
+    "side_disagreement" or "off_board_detections". Consumers gate on these
+    rather than re-deriving the conditions from the numeric fields."""
+
+
+@dataclass(frozen=True)
 class BoardGeometry:
     """Board dimensions and landmarks, in simulator tile coordinates.
 

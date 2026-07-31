@@ -165,6 +165,40 @@ Still worth knowing on the training side: a policy trained on perfectly
 symmetric towers has never seen "my towers are weaker than theirs" as a
 starting condition, which is the normal case on ladder.
 
+## 6. The detector misnames ~15% of the units it finds
+
+Not a request for an engine or training change — a measurement the training
+side needs when reading any perception-derived number, because it bounds what
+the spatial channels can be worth today.
+
+60 detections were hand-labelled to fit the HP reader (2026-07-31). The labels
+came back with a second finding nobody asked for:
+
+| fault | count | detector classes |
+|---|---|---|
+| wrong card name | 9 / 60 (15%) | `knight` x6, `valkyrie` x2, `archer` |
+| not a unit at all | 3 / 60 (5%) | `minipekka` x3 |
+
+`knight` is the worst offender and this is the second time it has been: it also
+produced all 102 of the off-board phantoms that `board_filter.py` exists to
+reject (the two player avatar icons). On-board it is being applied to
+Barbarians and to a Mini P.E.K.K.A. The three "not a unit" cases are all
+`minipekka`, and one was confirmed by eye to be the enemy **Princess tower**.
+
+Two consequences that matter downstream:
+
+- A wrong card id is not a small error. `card_sim_id` drives channels 11-20
+  entirely — flying, anti-air, DPS, range, speed — so a misnamed unit writes a
+  confidently wrong attribute row, which is indistinguishable from a correct
+  one. It is worse than a dropped detection.
+- A tower detected as a unit is worse still, because towers are already
+  represented separately, so it double-counts.
+
+Neither is fixable in `perception/`: the model is upstream's, vendored
+unchanged so it stays updatable. Filing it here so the number is on record when
+item 1's corruption ablation is finally run — **unit identity error is measured
+at ~15%, not hypothetical**, and that is the corruption worth measuring first.
+
 ---
 
 # Training-side response, 2026-07-30
