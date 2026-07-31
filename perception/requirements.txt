@@ -14,3 +14,17 @@ numpy>=2.0
 # large dependency tree for functionality nothing here uses.
 opencv-python-headless>=4.10
 pytest>=8.0
+
+# LIVE CAPTURE ONLY -- Windows, and only for capture/window.py. Every recorded
+# source (video.py, frames.py) and the whole test suite run without it.
+#
+# Windows.Graphics.Capture, chosen against two measured alternatives:
+#   adb exec-out screencap   1414-4886 ms per frame -- an order of magnitude
+#                            over the ~200 ms budget a 1 Hz loop leaves after
+#                            the detector's ~640 ms
+#   CopyFromScreen           reads the composited desktop, so it returns
+#                            whatever covers the emulator; verified returning
+#                            an unrelated window
+# WGC reads the window's own surface: ~100 ms, and works while the window is
+# completely covered, so the machine stays usable during a run.
+windows-capture>=2.0 ; sys_platform == "win32"

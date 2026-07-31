@@ -25,7 +25,8 @@ the C++ core are read-only from here.
 | 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs the next batch. |
 | 4 — opponent deck, cycle, elixir | **done and tested** | deck discovery, exact elixir derivation, negative-balance alarm. |
 | 5 — bridge + divergence | **done and tested** | zero-error control: divergence identically **0**. |
-| 6 — `State` → `GameState` adapter | **built, not live** (2026-07-31) | `live/adapter.py`. Runs end to end on real frames: card ids, per-unit HP, six towers, hand, elixir. Blocked on a frame source, the match clock, and cumulative elixir spend. |
+| 6 — `State` → `GameState` adapter | **built, running live** (2026-07-31) | `live/adapter.py`. Closes the loop against the live emulator at **917 ms/iteration** inside a 1000 ms budget. Still missing: the match clock and cumulative elixir spend. |
+| 6 — live frame source | **built and measured** (2026-07-31) | `capture/window.py`, Windows.Graphics.Capture. ~100 ms/frame, works while the window is covered. See *Live capture*. |
 | 6 — per-unit HP | **fitted against 60 hand labels** | "is this unit damaged", population-weighted over 226 detections: precision **0.79 → 0.98**, recall **0.34 → 0.56**. See *Findings* 7. |
 
 The live sensor's output contract is `GameState` in `contracts.py` — **shared,
@@ -39,8 +40,35 @@ Three matches, 1920×1080 desktop capture (the emulator window occupies
 measurement — jitter 0.0000**. Calibration profile:
 `config/profile_gpg_1920x1080.json`.
 
-`capture/window.py` (live capture) is deliberately not built. Nothing here
-sends input to the game.
+### Live capture (2026-07-31)
+
+`capture/window.py` reads the emulator window through
+**Windows.Graphics.Capture**, chosen against two measured alternatives:
+
+| method | per frame | fails how |
+|---|---|---|
+| `adb exec-out screencap -p` | 2243–4886 ms | an order of magnitude over budget |
+| `adb exec-out screencap` (raw) | 1414–1885 ms | same |
+| `CopyFromScreen` | fast | reads the *composited desktop* — returns whatever covers the emulator |
+| **Windows.Graphics.Capture** | **~100 ms** | works while the window is fully covered |
+
+The budget is 1000 ms, because the policy acts at 1 Hz. Measured live loop —
+capture → resize → detect → `GameState`:
+
+```
+capture  74–127 ms | resize 40–102 | detect 514–818 | adapt 98–158
+mean total 917 ms — fits, detector is 70% of it
+```
+
+Two things the surface is not: it is the **whole window** (title bar, right
+toolbar, black pillarbox), so every frame is cropped to a per-frame-detected
+game rect — the detector already invents Knights from player avatars and must
+never see the chrome. And it is in **physical pixels**: `GetWindowRect` says
+1536×816 while the surface is 1920×1020, because the display runs at 125% DPI.
+Sizing anything from the window rect underestimates by 1.25×.
+
+Game area on this display is **549×976**, i.e. 0.76 of native 720×1280. That
+costs nothing measurable — see *Findings* 7.
 
 ### Test suite
 
