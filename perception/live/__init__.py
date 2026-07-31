@@ -4,6 +4,9 @@ Deliberately additive: nothing in `clashroyalebuildabot/` is edited, so it
 stays updatable from upstream. What lives here is what CRBAB does not provide
 and the engine's observation requires.
 
+  unit_to_card  detector unit name -> engine card id; CRBAB names units, the
+                engine names cards, and only 70 of 97 matched by name.
+  unit_hp       per-unit HP. NOT READY -- see its module docstring.
   king_hp       King Tower HP -- CRBAB reads only the four Princess towers,
                 while the observation needs six (extra scalars 3-8).
   board_filter  rejects detections outside the arena; measured at 31% of all
