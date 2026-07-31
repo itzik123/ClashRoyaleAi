@@ -12,6 +12,8 @@ Last updated 2026-07-30, after items 1-2 landed.
 | 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | **DONE — verified (landed with item 1)** |
 | 3 | King Tower has no activation condition | fidelity gap | open, **already worked around, no change needed** |
 | 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
+| 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | open, proposed 2026-07-31 |
+| 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | open, proposed 2026-07-31 |
 
 Items 1 and 2 were done together since the measured benefit is combined
 (max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
@@ -229,3 +231,101 @@ any checkpoint — a rebuilt `.pyd` stays compatible with current weights.
 - **Card levels.** The registry has none; recorded matches do. That is why
   `readers/towers.py` takes max-HP as a caller input instead of assuming the
   engine's values.
+
+---
+
+## 5. OPEN — team 1's observation is displaced one row (proposed 2026-07-31)
+
+`ClashEnv.h`, `extractObservationForTeam`:
+
+```cpp
+int rawY = static_cast<int>(entity->position.y);
+int y = (team == 0) ? rawY : (BOARD_HEIGHT - 1 - rawY);
+```
+
+It mirrors the **truncated row** instead of truncating the **mirrored
+position**. `33 - int(y)` and `int(33 - y)` agree only when `y` is an integer,
+and disagree by exactly 1 otherwise. Every troop in play sits at a fractional
+`y`, so this is a permanent, every-tick, every-entity error — and it applies to
+team 1 only. Team 0's path is `rawY`, untouched.
+
+This is why the two towers behave differently and why the bug survived the
+2026-07-30 geometry audit: Princesses are at `y = 27.0` (integer, mirrors
+correctly), Kings at `y = 30.5` (fractional, off by one). The positions
+themselves are symmetric — item 0 verified that — so a coordinate audit finds
+nothing. Only the encoder is wrong.
+
+### Measured
+
+Mirror-image Valkyrie pairs injected at `y` and `33 - y`, one tick to merge
+`pendingEntities`, then both observations read:
+
+| team 0 `y` | team 1 `y` | team 0 sees | team 1 sees |
+|---|---|---|---|
+| 8.0 | 25.0 | own row 8, enemy 24 | own row **9**, enemy **25** |
+| 8.5 | 24.5 | own row 8, enemy 24 | own row **9**, enemy **25** |
+| 10.3 | 22.7 | own row 10, enemy 22 | own row **11**, enemy **23** |
+| 12.5 | 20.5 | own row 12, enemy 20 | own row **13**, enemy **21** |
+
+At reset, with no entities at all, `get_observation_for_team(0)` and
+`(1)` differ in 56 cells — King towers at rows 2 vs 3 and 30 vs 31, plus their
+attribute channels.
+
+**Consequence, measured directly.** The frozen main agent played against an
+identical copy of itself, same policy both sides, no gradient, 400 episodes:
+
+```
+team 0 score 0.598   (238 W / 2 D / 160 L)   95% CI [0.548, 0.647]   z = +3.90
+```
+
+A policy beats *itself* 60/40 purely by being assigned team 0.
+
+### Blast radius — smaller than it looks
+
+**Team 0's observation is bit-identical before and after.** The `team == 0`
+branch is not touched, so the trainee's own inputs never change and
+`model_weights_selfplay.pth` stays valid — this is not a checkpoint-invalidating
+change in the usual sense.
+
+What does change: every neural and scripted opponent starts seeing the board
+correctly, so **opponents get stronger**. Expect measured win rates to fall.
+Specifically:
+
+- Self-play win rates vs the PFSP pool are currently inflated, and PFSP weights
+  opponents by `(1 - winrate)^2`, so the sampling distribution is distorted too.
+- The 3 *historical neural* Elo anchors get stronger; the 3 *builtin heuristic*
+  anchors are unaffected (`HeuristicOpponent` is C++ and never reads the
+  observation). Elo is therefore **not comparable across this fix**.
+- Pipeline 1 (`train.py` vs `HeuristicOpponent`) is entirely unaffected.
+- Both league-exploiter bursts to date measured this, not exploits: burst #1
+  scored 0.585 against what is really a 0.598 null, i.e. nothing.
+
+### Proposed edit
+
+```cpp
+int y = (team == 0)
+    ? static_cast<int>(entity->position.y)
+    : static_cast<int>(std::floor((BOARD_HEIGHT - 1) - entity->position.y));
+```
+
+`std::floor` rather than a bare cast so an entity behind the back row gives
+`-1` and is rejected by the existing bounds check, instead of truncating
+toward zero into row 0.
+
+## 6. OPEN — river marker row differs between perspectives
+
+Same function, the marker is drawn on one hardcoded row:
+
+```cpp
+int riverRow = (team == 0) ? 17 : (BOARD_HEIGHT - 1 - 17);   // = 16
+```
+
+Team 0 sees the river/bridge marker at row 17, team 1 at row 16 — 36 differing
+cells in channel 8 at reset. A network trained as team 0 expects the bridges one
+row further forward than team 1 shows it.
+
+**Proposed:** `int riverRow = 17;` for both. Each team's own frame is supposed to
+be identical, and keeping 17 leaves team 0's observation unchanged.
+
+Whether 17 is the *right* row for a band of `[15.5, 17.5)` is a separate
+fidelity question and deliberately not bundled here.

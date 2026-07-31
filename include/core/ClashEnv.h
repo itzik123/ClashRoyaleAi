@@ -15,6 +15,7 @@
 #include <random>
 #include <tuple>
 #include <unordered_set>
+#include <cmath>
 
 struct StepResult {
     std::vector<float> observation;
@@ -146,9 +147,18 @@ private:
         };
 
         // River/bridge marker row -- x is already left/right symmetric (both
-        // teams' towers and the bridge gaps sit at the same x coordinates),
-        // so only the row itself needs mirroring for team 1.
-        int riverRow = (team == 0) ? 17 : (BOARD_HEIGHT - 1 - 17);
+        // teams' towers and the bridge gaps sit at the same x coordinates).
+        //
+        // The SAME row for both teams, deliberately. Each team's observation is
+        // its own mirrored frame, so for the two to be interchangeable -- which
+        // is the whole premise of driving team 1 with a network trained as
+        // team 0 -- the marker has to land on the same row index in both. This
+        // used to be (team == 0) ? 17 : BOARD_HEIGHT - 1 - 17, i.e. row 17 for
+        // team 0 and row 16 for team 1, so a net that learned where the bridges
+        // are as team 0 saw them one row nearer when driving team 1: 36
+        // differing cells in this channel at reset, on an empty board.
+        // See perception/UPSTREAM_REQUESTS.md item 6.
+        constexpr int riverRow = 17;
         for (int x = 0; x < BOARD_WIDTH; ++x) {
             if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
                 obs[getIndex(8, riverRow, x)] = 1.0f;
@@ -163,11 +173,31 @@ private:
             if (!entity->isTargetable()) continue;
 
             int x = static_cast<int>(entity->position.x);
-            int rawY = static_cast<int>(entity->position.y);
             // Mirrored for team 1: physically team 1 sits near high y, but its
             // own network needs to see itself near low y (same layout it was
             // trained on as "team 0"), so flip before placing into the grid.
-            int y = (team == 0) ? rawY : (BOARD_HEIGHT - 1 - rawY);
+            //
+            // Mirror the POSITION, then truncate -- not the other way round.
+            // This was `BOARD_HEIGHT - 1 - static_cast<int>(position.y)`, and
+            // `33 - int(y)` equals `int(33 - y)` only when y is an integer.
+            // Every troop in play sits at a fractional y, so team 1's entire
+            // observation was displaced one row, every tick, for both its own
+            // and enemy units -- while team 0's was correct. Measured: a policy
+            // played against a bit-exact copy of itself scored 0.598 as team 0
+            // over 400 episodes (95% CI [0.548, 0.647]).
+            //
+            // It survived the 2026-07-30 geometry audit because the Princess
+            // towers sit at y = 27.0 (integer, mirrors correctly) while the
+            // Kings sit at y = 30.5 (fractional, off by one) -- the positions
+            // themselves are symmetric, so auditing coordinates finds nothing.
+            // See perception/UPSTREAM_REQUESTS.md item 5.
+            //
+            // std::floor rather than a bare cast so an entity behind the back
+            // row yields -1 and is rejected by the bounds check below, instead
+            // of truncating toward zero into row 0.
+            int y = (team == 0)
+                ? static_cast<int>(entity->position.y)
+                : static_cast<int>(std::floor((BOARD_HEIGHT - 1) - entity->position.y));
 
             if (x < 0 || x >= BOARD_WIDTH || y < 0 || y >= BOARD_HEIGHT) continue;
 

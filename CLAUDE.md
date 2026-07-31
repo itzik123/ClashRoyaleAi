@@ -99,6 +99,25 @@ flush with its own bridge, like the right side already was), Kings `x` 8.5 →
 9.0 (the board's measured true centre). Combined held-out calibration error
 dropped max 0.63 → 0.31 tiles.
 
+**The team-1 observation was displaced one row until 2026-07-31.**
+`extractObservationForTeam` mirrored the *truncated row* rather than the
+*mirrored position* — `33 - int(y)` instead of `int(33 - y)`, which agree only
+when `y` is an integer. Every troop sits at a fractional `y`, so team 1's whole
+observation was off by one row, every tick, for its own and enemy units alike,
+while team 0's was correct. The river marker was separately on row 17 for team 0
+and row 16 for team 1. Both fixed; `UPSTREAM_REQUESTS.md` items 5-6 carry the
+evidence.
+
+Two things make this worth remembering. **It hid from a coordinate audit**: the
+positions were symmetric the whole time (King 2.5 ↔ 30.5, Princess 6.0 ↔ 27.0),
+and the Princesses mirrored *correctly* because 27.0 is an integer — only the
+fractional-`y` King looked wrong, which reads like a tower bug rather than an
+encoder bug. **And it was invisible in every training metric**, because the
+trainee is always team 0: everything looked healthy while every opponent played
+blind. The test that found it is worth keeping — run a policy against a
+bit-exact copy of itself and check the score is 0.50. It measured **0.598**
+before the fix and **0.520** after (n=400, 95% CI [0.471, 0.569]).
+
 **The King Tower never sleeps.** `Tower.h` gives it no activation condition, so
 it fires from tick 0 while the real King is dormant until activated. Any
 comparison against real footage must exclude the Kings.
@@ -276,9 +295,40 @@ improve. A separate net trains **only** against a frozen copy of the current
 main agent, is free to find one specific hole, snapshots into the shared pool,
 and is re-seeded from the main agent every 2 bursts so it looks for a *new* hole.
 
-1000-episode bursts every 10,000 episodes of **pipeline 2's own** counter (which
-starts at 0 at handoff, not continuing phase 1's), first at its ep 10,000.
-Measured 3.4 s/episode → ~57 min per burst, a ~14% throughput tax.
+1000-episode bursts every **20,000** episodes of **pipeline 2's own** counter
+(which starts at 0 at handoff, not continuing phase 1's), first at its ep
+10,000.
+
+**The cost was badly underestimated at first.** The original ~14% tax divided a
+57-minute burst by an assumed 6.5-7 hours per 10,000 main episodes. Both halves
+were wrong: a real burst takes **4,512 s (75 min, 4.5 s/episode**, not the
+3.4 s/episode extrapolated from a 66-episode sample), and the main loop covers
+10,000 episodes in **~2.4 h** (4,185 ep/hour, measured between two pipeline-2
+snapshot timestamps with the intervening burst subtracted). That is a **~34%**
+tax at a 10,000 cycle, which is why the cycle is now 20,000 — about 17%, i.e.
+what the original figure was believed to cost.
+
+**Entropy coefficients here are fractions of each head's maximum**, divided by
+`log(N)` exactly as both trainers do. They were raw nats until 2026-07-31, which
+was harmless for the card head (`log 5 = 1.609`) and catastrophic for placement
+(`log 612 = 6.417`): the placement coefficient was effectively **73×** the main
+agent's, the entropy bonus reached ~0.96 against an actor loss of ~0.05, and the
+policy dissolved into uniform placement — 51.9% → **86.7%** of max entropy, 28 →
+260 effective cells, top-1 probability 0.260 → **0.018**. It went 166-839-2
+against the agent it was a bit-exact copy of. The card head, whose coefficient
+happened to be right, was untouched at 39.9% → 36.9%. Two heads, one network,
+one optimizer, one batch, and only the mis-scaled one collapsed. The burst now
+prints its placement-entropy drift and warns above 0.70 so this cannot recur
+silently.
+
+**Both bursts run so far found nothing**, and the reason is instructive: they
+predate the team-1 observation fix, so the true null was not 0.50 but **0.598**
+(see Board geometry). Burst #0 scored 0.536 — *below* null — and burst #1 scored
+0.585, i.e. on it. Roughly 2.5 hours of compute measured a board artifact. Burst
+#1's five-slice trend was flat (0.59 → 0.54 → 0.56 → 0.66 → 0.55, χ² ≈ 5.9 on
+4 df), which is the diagnostic the slices exist for: rising means the
+1000-episode budget binds, flat means there is no gradient to follow. **No burst
+has yet been read against a valid null.**
 
 Deliberately a **self-contained module with its own compact PPO loop**, not a
 mode switch inside the main loop. A mode switch would need guards scattered
@@ -436,16 +486,59 @@ Goblin regressing from its own base card). Musketeer is in `DEFAULT_DECK`. The
 new `CH_ANTIAIR` channel is what surfaced it. Also that day: the river was
 re-centred, which had been giving team 0 an extra placement row.
 
+**2026-07-31, the self-play opponent had been playing blind.** Chased from an
+odd number rather than a hypothesis, which is why it is worth recording as a
+method. Exploiter burst #1 came back 0.585 with a flat five-slice trend — but
+its *first* slice was already 0.59, and a re-seeded exploiter's first slice is
+played by a bit-exact copy of its opponent, so it should sit at the null.
+Either it learned a hole in ~490 gradient steps and then stopped, or the null
+was never 0.50. Running the frozen agent against a copy of itself gave
+**0.598** as team 0 (n=400, z = +3.90) — a policy beating *itself* 60/40 purely
+by side assignment. Root cause was a one-row displacement in team 1's
+observation (see Board geometry); after the fix the same test gives 0.520.
+
+Three lessons, all of which nearly hid it:
+
+- **The bug was invisible in every training metric.** The trainee is always
+  team 0, so win rate, reward, entropy, aux MAE and explained variance all
+  looked healthy while every opponent saw the board wrong.
+- **The dissociation was the evidence, not the aggregate.** In the earlier
+  entropy-collapse bug the card head was fine and only the mis-scaled placement
+  head blew up; here the integer-`y` Princesses mirrored correctly and only the
+  fractional-`y` King did not. In both cases the thing that *didn't* break
+  localized the cause faster than the thing that did.
+- **I over-read the Elo trend twice before this landed** — first predicting
+  saturation noise, then calling a single 2.1σ excursion a real gain that
+  "held". Six evals of `heuristic@1.50` test as flat (χ² = 7.4 on 5 df,
+  p ≈ 0.19). At n=50 per anchor that metric cannot resolve much; treat any
+  single-eval move as noise until it repeats.
+
 ---
 
 ## Measured baselines — use these, don't re-derive them
+
+**Every phase-2 win rate and Elo below predates the 2026-07-31 observation fix
+and is not comparable across pipeline-2 episode 31,753.** Before that fix the
+trainee was always on the favoured side (0.598 against a bit-exact copy of
+itself), so self-play win rates were inflated and PFSP's `(1 - winrate)^2`
+weighting was distorted with them. The 3 *historical neural* Elo anchors got
+stronger across the fix; the 3 *builtin heuristic* anchors did not, since
+`HeuristicOpponent` is C++ and never reads the observation. **Phase 1 is
+unaffected** for the same reason, and checkpoints are *not* invalidated — the
+`team == 0` branch was untouched, so the trainee's own inputs are bit-identical
+and `model_weights_selfplay.pth` resumed normally.
 
 **Throughput** (i5-13420H, CPU-only, `num_envs = 8`):
 
 | | ep/hour | updates/hour |
 |---|---|---|
 | before the batched update | 1,167 | 36 |
-| **current** | **2,873** | **92** |
+| **current, phase 1** | **2,873** | **92** |
+| **current, phase 2** | **4,185** | — |
+
+Phase 2 is the faster of the two and the ~2.4 h it takes to cover 10,000
+episodes is the number to divide by when sizing anything against it — assuming
+6.5-7 h there is what made the exploiter's cost estimate 2.5× too low.
 
 Where update time goes (87% of wall clock is the PPO update, 13% the rollout;
 within one BPTT chunk): **CNN trunk 43%, placement head 41%, LSTM loop 16%.**
@@ -536,7 +629,15 @@ training in every run; at matched episodes the old and new architectures are
 recurrent state genuinely counts), `Entropy/Placement_Target` vs
 `_Measured` (tracking, not fighting), and `Cards/Game` in phase 2 — it sat at
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,
-which is the plateau signature the exploiter is meant to break.
+which is the plateau signature the exploiter is meant to break. It has still
+never moved off ~5.3.
+
+**And check the side null before trusting any self-play number.** Run a policy
+against a bit-exact copy of itself and confirm team 0 scores ~0.50 over a few
+hundred episodes. It is cheap, it needs no training, and it is the only one of
+these that catches a fault the ordinary metrics cannot see at all — the 2026-07-31
+observation bug sat at 0.598 while every other diagnostic read healthy. Worth
+re-running after any change to the observation, the board, or `stepSelfPlay`.
 
 ---
 
