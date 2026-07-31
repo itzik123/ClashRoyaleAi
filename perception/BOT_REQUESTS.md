@@ -19,6 +19,8 @@ longer true.**
 | 3 | Channels 0-7 assign rather than accumulate | medium | measured upstream, worse under real perception | agreed; cheaper than stated; queued |
 | 4 | `elixirSpent` is the one unrecoverable field | medium | structural | **MEASURED — void as stated, real risk is elsewhere** |
 | 5 | Tower levels are asymmetric in reality | low | measured | agreed, no action |
+| 7 | Princess HP must be read from the numeral, not the bar | **high** | measured, 101/101 | perception-side; adapter no longer reports 0.0 as destroyed |
+| 8 | Opponent cumulative spend over-counts 2.1x — do not emit it yet | **high** | measured on a live match | needs a decision from the training side |
 
 ---
 
@@ -198,6 +200,118 @@ Neither is fixable in `perception/`: the model is upstream's, vendored
 unchanged so it stays updatable. Filing it here so the number is on record when
 item 1's corruption ablation is finally run — **unit identity error is measured
 at ~15%, not hypothetical**, and that is the corruption worth measuring first.
+
+---
+
+## 7. Princess HP should be read from the NUMERAL, not the bar
+
+**Perception-side work, not a training request.** Filed here so the tower-HP
+scalars (extra 3-8) are not trusted more than they deserve until it is done.
+
+CRBAB's `_calculate_hp` matches the bar's two colours and returns 0.0 when it
+can match neither. Measured on the first live 549×976 capture, over 101 frames
+of one match:
+
+| tower | 0.0 readings | truth |
+|---|---|---|
+| `right_ally_princess` | **101 / 101** | standing, **full** — its ROI reads 1890 |
+| `left_ally_princess` | 4 / 101 | standing, 1759 |
+| `left_enemy_princess` | 4 / 101 | standing |
+| `right_enemy_princess` | 4 / 101 | standing |
+
+The 4 shared zeros are pre-match frames. One tower in four therefore fails
+*completely and silently*, and the failure is the same value as "destroyed".
+
+The adapter previously resolved 0.0 → `destroyed=True`, justified on 71 ladder
+frames where a real decay to zero looked monotone and physical. That
+justification is now falsified — a full tower reads 0.0 — and the adapter
+reports `hp_measured=False` instead. A live tower reported dead tells the
+policy a lane is already lost.
+
+**The numeral is the better signal and it is right there.** 1759 and 1890 are
+legible at this resolution, give ABSOLUTE HP, need no colour match, survive
+occlusion of the bar, and remove the tower-level problem in item 5 entirely —
+no max-HP table, no per-account level. `readers/clock.py` already has a
+digit-template classifier built for glyphs of this kind.
+
+Same convention already proven on the King (`live/king_hp.py`), which reads its
+numeral region and validated 8/8.
+
+---
+
+## 8. Opponent cumulative spend over-counts 2.1× — do not emit it yet
+
+Measured on the first live match (204 s in-game, 943 detector frames).
+
+**Our own spend works.** It is read from the elixir bar, which is the strongest
+reader in the pipeline, with the hand used only to name the card afterwards:
+
+| | |
+|---|---|
+| cards implied | **27** |
+| affordable ceiling at the measured regen | **~28** |
+| conservation residual | **+14%**, one-sided |
+
+The residual is the right sign and size: `gained − spent − (final − initial)`
+is positive because regen while the bar sits at the 10 cap is invisible, and
+the bar was capped in 13% of samples.
+
+**The elixir reader also recovers the real game's schedule from pixels alone**,
+which is a strong independent validation:
+
+| window | measured | real |
+|---|---|---|
+| 0–60 s | 2.84 s/elixir | 1× = 2.8 |
+| 60–120 s | 2.76 s | 1× = 2.8 |
+| 120–180 s | 1.43 s | 2× = 1.4 |
+| 180–240 s | 1.45 s | 2× = 1.4 |
+
+Within 1.5%, with the 2× boundary landing exactly at t=120 s. One caveat: the
+reader emits **spurious single-frame drops to 0** (4.2% of samples), because
+`_calculate_elixir` takes the first window whose rolling std falls under a
+threshold. A double 3-median removes them; the physics is what makes that safe.
+
+**The opponent's spend does not work, and the failure is structural.** There is
+no opponent elixir bar, so spend can only come from units appearing:
+
+| | |
+|---|---|
+| placements detected | **64** (208 elixir) |
+| physically affordable | ~108 elixir → **~31 cards** |
+| implied opponent elixir | **−103**, below zero for **98%** of the match |
+
+The sign is the diagnostic: negative means placements were *invented*. Two
+rounds of fixes took it 141 → 64 (longer re-association, grouping multi-unit
+cards, tolerating the detector's renames) and it is still 2.1× over.
+
+**It cannot be tuned away.** Reaching ~34 placements needs grouping at 4 s and
+12 tiles — and 12 tiles is two-thirds of the board's 18, so a Giant at one
+bridge and Archers at the other three seconds later merge into one placement.
+The parameter that fixes the count destroys the distinction the count is for.
+
+Two by-products worth keeping:
+
+- **The opponent's deck falls out of the frequency histogram.** The 8 most
+  common cards are exactly 8 plausible ones; all 7 remaining are singletons and
+  all 7 are misclassifications. That is what `track/opp_deck.py` is for, and it
+  is a cheap, reliable signal even though the count is not.
+- 46 of 64 placements are single-unit, though the opponent's deck is full of
+  3-unit cards. The multi-unit groups are being split, which is the same
+  fragmentation seen from the other side.
+
+**Decision needed.** Options, in the order I would take them:
+
+1. **Emit our own spend, mark the opponent's unmeasured.** Costs one of nine
+   extra scalars and fabricates nothing. Needs the training side to say what an
+   unmeasured scalar should carry.
+2. Build a real tracker — Hungarian assignment with a motion model, constrained
+   by the recovered deck. This is the actual fix and is not a small job.
+3. Clamp the ledger to physics (spend cannot exceed elixir earned). Bounds the
+   error but biases it systematically high, and hides the failure.
+
+Recorded because item 4 already flagged `elixirSpent` as the one unrecoverable
+field. That was reasoning; this is the measurement, and it is worse than the
+reasoning assumed.
 
 ---
 

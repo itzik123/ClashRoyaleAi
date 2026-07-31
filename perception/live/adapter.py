@@ -250,15 +250,28 @@ def _read_towers(state, detector_frame) -> dict:
     2534 -- so an absolute number would be wrong by ~30% and by a different
     factor per player.
 
-    ONE AMBIGUITY IS PASSED THROUGH DELIBERATELY. `_calculate_hp` returns 0.0
-    both when the bar reads empty and when it cannot match the bar colours at
-    all (`avg_min_dist > threshold`), so a destroyed tower and an occluded one
-    are indistinguishable in a single frame. Checked over 71 frames of one
-    ladder match the readings are physically coherent -- the opponent's left
-    Princess runs 1.000, 0.744, 0.231, 0.077 and then holds 0.000 for the
-    remaining 41 frames, monotone throughout -- so 0.0 is reported as
-    destroyed. Disambiguating it properly needs the previous frame, which is
-    the caller's state to hold, not a per-frame adapter's.
+    A 0.0 READING IS NOT "DESTROYED". `_calculate_hp` returns 0.0 both when the
+    bar reads empty and when it cannot match the bar colours at all
+    (`avg_min_dist > threshold`), and this adapter used to resolve that in
+    favour of destroyed. Live capture at 549x976 falsified it: over 101 frames
+    of a real match `right_ally_princess_hp` read 0.0 in **101 of 101** while
+    the other three read 1.0, and the tower was verified standing at FULL
+    health -- its own ROI shows the numeral 1890, which is a level-5 Princess
+    at maximum. The earlier justification came from 71 ladder frames where the
+    failure happened not to occur, so a real reading and a total reader failure
+    looked alike.
+
+    So 0.0 is now reported as NOT MEASURED, and `destroyed` is left to a caller
+    that holds history. A tower wrongly marked destroyed is worse than one
+    marked unknown: extra scalars 3-8 are tower HP, and a live tower reported
+    dead tells the policy a lane is already lost.
+
+    THE REAL FIX IS TO READ THE NUMERAL, NOT THE BAR. The HP number is printed
+    beside every Princess bar and is plainly legible at this resolution --
+    1759, 1890 -- which gives absolute HP with no colour matching, no occlusion
+    ambiguity, and no need to know the tower's level. `readers/clock.py`
+    already carries a digit-template classifier built for exactly this kind of
+    glyph. Recorded in BOT_REQUESTS.md rather than done here.
     """
     nums = state.numbers
     out = {}
@@ -269,10 +282,11 @@ def _read_towers(state, detector_frame) -> dict:
         ("opp_princess_right", "right_enemy_princess_hp"),
     ):
         raw = float(getattr(nums, attr).number)
+        readable = raw > 0.0
         out[key] = TowerObservation(
-            hp_fraction=max(0.0, min(1.0, raw)),
-            hp_measured=True,
-            destroyed=raw <= 0.0,
+            hp_fraction=max(0.0, min(1.0, raw)) if readable else 1.0,
+            hp_measured=readable,
+            destroyed=False,
         )
 
     for key, ally in (("own_king", True), ("opp_king", False)):
