@@ -24,3 +24,14 @@ out/
 # the tests depend on them. Not ignored here on purpose: python_ai/replays/ is
 # rewritten continuously by the training run, so a test bound to it passes or
 # fails depending on when it runs.
+
+# Extra virtualenvs created for the ClashRoyaleBuildABot evaluation. The
+# existing ".venv/" rule does not match these -- it matches only that exact
+# name -- and they are ~2GB together.
+.venv-*/
+
+# ADB, downloaded on demand by clashroyalebuildabot/emulator/emulator.py from
+# Google's official platform-tools URL. ~25MB of redistributable binaries that
+# regenerate themselves on first run; no reason to carry them in git.
+clashroyalebuildabot/emulator/platform-tools/
+clashroyalebuildabot/emulator/*.zip

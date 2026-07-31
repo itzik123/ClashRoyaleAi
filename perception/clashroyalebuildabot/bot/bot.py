@@ -1,0 +1,255 @@
+import random
+import threading
+import time
+from typing import cast
+
+import keyboard
+from loguru import logger
+
+from clashroyalebuildabot.constants import (
+    ALL_TILES,
+    ALLY_TILES,
+    DISPLAY_CARD_DELTA_X,
+    DISPLAY_CARD_HEIGHT,
+    DISPLAY_CARD_INIT_X,
+    DISPLAY_CARD_WIDTH,
+    DISPLAY_CARD_Y,
+    DISPLAY_HEIGHT,
+    LEFT_PRINCESS_TILES,
+    RIGHT_PRINCESS_TILES,
+    TILE_HEIGHT,
+    TILE_INIT_X,
+    TILE_INIT_Y,
+    TILE_WIDTH,
+)
+from clashroyalebuildabot.detectors.detector import Detector
+from clashroyalebuildabot.emulator.emulator import Emulator
+from clashroyalebuildabot.namespaces import Screens
+from clashroyalebuildabot.namespaces.state import State
+from clashroyalebuildabot.visualizer import Visualizer
+from error_handling import WikifiedError
+
+pause_event = threading.Event()
+pause_event.set()
+is_paused_logged = False
+is_resumed_logged = True
+
+
+class Bot:
+    is_paused_logged = False
+    is_resumed_logged = True
+
+    def __init__(self, actions, config):
+        self.actions = actions
+        self.auto_start = config["bot"]["auto_start_game"]
+        self.end_of_game_clicked = False
+        self.bypass_end_of_game_clicked = False
+        self.should_run = True
+
+        cards = [action.CARD for action in actions]
+        if len(cards) != 8:
+            raise WikifiedError(
+                "005", f"Must provide 8 cards but {len(cards)} was given"
+            )
+        self.cards_to_actions = dict(zip(cards, actions, strict=False))
+
+        self.visualizer = Visualizer(**config["visuals"])
+        self.emulator = Emulator(**config["adb"])
+        self.detector = Detector(cards=cards)
+        self.play_action_delay = config.get("ingame", {}).get("play_action", 1)
+
+        keyboard_thread = threading.Thread(
+            target=self._handle_keyboard_shortcut, daemon=True
+        )
+        keyboard_thread.start()
+
+        if config["bot"]["load_deck"]:
+            self.emulator.load_deck(cards)
+
+    @staticmethod
+    def _log_and_wait(prefix, delay):
+        suffix = ""
+        if delay > 1:
+            suffix = "s"
+        message = f"{prefix}. Waiting for {delay} second{suffix}."
+        logger.info(message)
+        time.sleep(delay)
+
+    @staticmethod
+    def _handle_keyboard_shortcut():
+        while True:
+            keyboard.wait("ctrl+p")
+            Bot.pause_or_resume()
+
+    @staticmethod
+    def pause_or_resume():
+        if pause_event.is_set():
+            logger.info("Bot paused.")
+            pause_event.clear()
+            Bot.is_paused_logged = True
+            Bot.is_resumed_logged = False
+        else:
+            logger.info("Bot resumed.")
+            pause_event.set()
+            Bot.is_resumed_logged = True
+            Bot.is_paused_logged = False
+
+    @staticmethod
+    def _get_nearest_tile(x, y):
+        tile_x = round(((x - TILE_INIT_X) / TILE_WIDTH) - 0.5)
+        tile_y = round(
+            ((DISPLAY_HEIGHT - TILE_INIT_Y - y) / TILE_HEIGHT) - 0.5
+        )
+        return tile_x, tile_y
+
+    @staticmethod
+    def _get_tile_centre(tile_x, tile_y):
+        x = TILE_INIT_X + (tile_x + 0.5) * TILE_WIDTH
+        y = DISPLAY_HEIGHT - TILE_INIT_Y - (tile_y + 0.5) * TILE_HEIGHT
+        return x, y
+
+    @staticmethod
+    def _get_card_centre(card_n):
+        x = (
+            DISPLAY_CARD_INIT_X
+            + DISPLAY_CARD_WIDTH / 2
+            + card_n * DISPLAY_CARD_DELTA_X
+        )
+        y = DISPLAY_CARD_Y + DISPLAY_CARD_HEIGHT / 2
+        return x, y
+
+    @staticmethod
+    def _handle_play_pause_in_step():
+        if not pause_event.is_set():
+            if not Bot.is_paused_logged:
+                logger.info("Bot paused.")
+                Bot.is_paused_logged = True
+            time.sleep(0.2)
+            return
+        if not Bot.is_resumed_logged:
+            logger.info("Bot resumed.")
+            Bot.is_resumed_logged = True
+
+    @staticmethod
+    def _get_valid_tiles(state: State):
+        tiles = ALLY_TILES
+        if state.numbers.left_enemy_princess_hp.number == 0:
+            tiles += LEFT_PRINCESS_TILES
+        if state.numbers.right_enemy_princess_hp.number == 0:
+            tiles += RIGHT_PRINCESS_TILES
+        return tiles
+
+    def get_actions(self, state: State):
+        valid_tiles = self._get_valid_tiles(state)
+        actions = []
+        for i in state.ready:
+            card = state.cards[i + 1]
+            if state.numbers.elixir.number < card.cost:
+                continue
+
+            tiles = ALL_TILES if card.target_anywhere else valid_tiles
+            card_actions = [
+                self.cards_to_actions[card](i, x, y) for (x, y) in tiles
+            ]
+            actions.extend(card_actions)
+
+        return actions
+
+    def compute_state(self) -> State | None:
+        screenshot = self.emulator.take_screenshot()
+        state = self.detector.run(screenshot)
+        if state is not None:
+            self.visualizer.run(screenshot, state)
+        return state
+
+    def play_action(self, action):
+        card_centre = self._get_card_centre(action.index)
+        tile_centre = self._get_tile_centre(action.tile_x, action.tile_y)
+        self.emulator.click(*card_centre)
+        self.emulator.click(*tile_centre)
+
+    def step(self, state: State | None):
+        self._handle_play_pause_in_step()
+        old_screen = state.screen if state else None
+        state = self.compute_state()
+        if state is None:
+            return state
+
+        new_screen = state.screen
+        if new_screen != old_screen:
+            logger.info(f"New screen state: {new_screen}")
+
+        if new_screen == Screens.UNKNOWN:
+            self._log_and_wait("Unknown screen", 2)
+            return state
+
+        if new_screen == Screens.END_OF_GAME:
+            if not self.end_of_game_clicked:
+                self.emulator.click(
+                    *cast(tuple[int, int], Screens.END_OF_GAME.click_xy)
+                )
+                self.end_of_game_clicked = True
+                self._log_and_wait("Clicked END_OF_GAME screen", 2)
+            return state
+        self.end_of_game_clicked = False
+
+        if new_screen == Screens.BYPASS_END_OF_GAME:
+            if not self.bypass_end_of_game_clicked:
+                self.emulator.click(
+                    *cast(tuple[int, int], Screens.BYPASS_END_OF_GAME.click_xy)
+                )
+                self.bypass_end_of_game_clicked = True
+                self._log_and_wait("Clicked BYPASS_END_OF_GAME screen", 2)
+            return state
+        self.bypass_end_of_game_clicked = False
+
+        if self.auto_start and new_screen == Screens.LOBBY:
+            self.emulator.click(*cast(tuple[int, int], Screens.LOBBY.click_xy))
+            self._log_and_wait("Starting game", 2)
+            return state
+
+        self._handle_game_step(state)
+        return state
+
+    def _handle_game_step(self, state: State):
+        actions = self.get_actions(state)
+        if not actions:
+            self._log_and_wait("No actions available", self.play_action_delay)
+            return
+
+        random.shuffle(actions)
+        best_score = [0]
+        best_action = None
+        for action in actions:
+            score = action.calculate_score(state)
+            if score > best_score:
+                best_action = action
+                best_score = score
+
+        if best_score[0] == 0:
+            self._log_and_wait(
+                "No good actions available", self.play_action_delay
+            )
+            return
+
+        self.play_action(best_action)
+        self._log_and_wait(
+            f"Playing {best_action} with score {best_score}",
+            self.play_action_delay,
+        )
+
+    def run(self):
+        state = None
+        try:
+            while self.should_run:
+                if not pause_event.is_set():
+                    time.sleep(0.1)
+                    continue
+
+                state = self.step(state)
+            logger.info("Thanks for using CRBAB, see you next time!")
+        except KeyboardInterrupt:
+            logger.info("Thanks for using CRBAB, see you next time!")
+
+    def stop(self):
+        self.should_run = False

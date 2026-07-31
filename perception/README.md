@@ -42,8 +42,58 @@ sends input to the game.
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ```
 
-58 tests, no emulator required. Every test runs against a frozen replay
+73 tests, no emulator required. Every test runs against a frozen replay
 fixture, a synthetic camera, or synthetic video generated at test time.
+
+---
+
+## ClashRoyaleBuildABot, evaluated 2026-07-31
+
+`clashroyalebuildabot/` is a vendored copy of an open-source bot, kept for two
+things this module does not have: a **trained 97-class ONNX unit detector** and
+an **actuation path** (`adb shell input tap`). Everything measured below comes
+from a real BlueStacks device over ADB, not from the desktop recordings.
+
+**It coexists with the engine.** Its `requires-python = "==3.12.*"` is a soft
+pin — no 3.12-only syntax anywhere — and every dependency has a `cp311` wheel.
+One Python 3.11 process hosts CRBAB, `clash_royale_env.pyd` and torch together.
+The training venv is already on numpy 2.4.6, exactly CRBAB's pin.
+
+**What it reads correctly**, verified against frames read by eye:
+
+| signal | result |
+|---|---|
+| hand, 4 slots + next | exact on every ground-truth frame |
+| elixir | exact (integer only; `readers/elixir.py` is finer) |
+| screen state | correct — `in_game` / `bypass_end_of_game` / `lobby` |
+| Princess tower HP | correct, and already a **fraction** |
+| units, in-game | 4.6/frame, **0% impossible classes** over 71 ladder frames |
+
+**Three defects, two of them fixed here in `live/`:**
+
+1. **31% of in-game detections are off-board phantoms.** Over 71 ladder frames,
+   102 of 328 detections fell outside the 18x32 board and **every one was
+   `knight`** — the two player avatar icons at `(19,5)` x68 and `(-2,13)` x33.
+   `knight` drops from 111 to 9 once they are removed. Fixed by
+   `live/board_filter.py`; upstream tracks it as issue #244.
+2. **King HP is never read.** `Numbers` has only the four Princess fields, so
+   extra scalars 3 and 6 could not be filled. Fixed by `live/king_hp.py`.
+3. **Side classification can invert.** Confirmed on a ladder frame: our own
+   Valkyrie — blue badge, attacking the enemy King — was reported as
+   `enemy valkyrie`. Not fixed. `side.onnx` is a learned classifier where the
+   badge colour beside every unit is an exact answer; that is the obvious
+   repair and it reuses the badge work in *Findings* 5.
+
+**Latency is the binding constraint.** Full `Detector.run` is **812 ms** on an
+idle frame and **932 ms** on real battle frames, against a 1 Hz decision budget.
+The ONNX model is **86%** of it (`_infer` 692 ms vs 43 ms preprocess + 14 ms
+postprocess), so there is no Python overhead worth optimising. DirectML on the
+integrated GPU gives **438 ms vs 499 ms** on identical tensors — real, but only
+~12%, and ORT 1.24.4 and 1.26.0 measured equivalent.
+
+**UI overlays cross the playfield** at exactly the high-stakes moments — the
+"30 Seconds Left" stopwatch, the "You"+crown award, `x2`, the red tint on tower
+loss. Their effect on recall is not yet measured.
 
 ---
 
