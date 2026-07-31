@@ -40,6 +40,50 @@ Three matches, 1920×1080 desktop capture (the emulator window occupies
 measurement — jitter 0.0000**. Calibration profile:
 `config/profile_gpg_1920x1080.json`.
 
+### The clock reader does not transfer to 549×976 (2026-07-31)
+
+`readers/clock.py` scores 97.1% at confidence ≥ 0.7 **on the 1920×1080 desktop
+recordings**. On live capture, where the same glyphs are ~2× smaller, it does
+not work, and the cause is segmentation rather than the templates.
+
+Measured, in two steps:
+
+| ROI | verification |
+|---|---|
+| `(454, 0, 95, 54)` — whole panel | 5.65% correct |
+| `(469, 21, 68, 24)` — digits only | 37.54% correct |
+
+The first ROI included the "Time left:" caption, so the segmenter was chopping
+up letters. The digit rows were then measured properly — near-white pixels
+occupy rows 23–43 and the caption contributes **zero**, because it is cream
+rather than white — which is where the second ROI comes from.
+
+37.5% is still unusable, and `_split_mss_cells` is why: it returns widths of
+`[19, 19, 22]` for *every* clock value sampled, when a content-based split
+would vary (a `1` is narrower than a `0`), and it glues the colon into the
+first cell at values like `0:58`.
+
+**The templates themselves are fine.** Their sample counts are exactly the
+distribution a correct M:SS countdown produces — 131/140/133 for digits 0/1/2,
+which appear in the minutes, tens and units places; ~52-64 for 3-5, tens and
+units; ~21 for 6-9, units only. The auto-labelling works; the reader that
+consumes it does not, at this scale.
+
+Two things worth keeping from this:
+
+- **The verification is what caught it.** Every internal signal at build time
+  looked healthy. Only reading the whole recording back and checking against
+  independent arithmetic exposed it. Without that step the pipeline would have
+  gained a clock reader emitting confident, plausible, wrong timestamps — and
+  the clock anchors every timestamp downstream.
+- **The live loop is not blocked on it.** `clock/match_clock.py` free-runs from
+  frame timestamps and only *resyncs* against the screen, so the digit reader
+  is a corrector, not the source. Anchoring the free-run on CRBAB's
+  `screen == in_game` transition works today, with one measured caveat: that
+  transition fires at t≈29.5 s while the clock reaches 3:00 at t≈19.9 s, so the
+  anchor is **~10 s late** and needs the reader (or another landmark) to remove
+  that offset.
+
 ### Live capture (2026-07-31)
 
 `capture/window.py` reads the emulator window through

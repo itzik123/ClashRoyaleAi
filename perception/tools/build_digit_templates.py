@@ -63,14 +63,45 @@ def parse_clock(text: str) -> int:
     return int(minutes) * 60 + int(seconds)
 
 
-def build(video: Path, profile_path: Path, anchor_t: float, anchor_clock: int,
-          out_dir: Path, sample_fps: float = 3.0) -> DigitTemplates:
-    profile = load_profile(profile_path)
-    roi = profile.rois.get("clock")
-    if roi is None:
-        raise SystemExit("no 'clock' ROI in the profile -- run calibrate.py first")
+def open_source(video: Path | None, frames: Path | None):
+    """A recording, either a video file or a record_match.py directory.
 
-    source = VideoSource(video)
+    The directory form exists because live capture is variable-rate: WGC
+    delivers on window repaints, so a frame's real capture stamp is the only
+    honest time for it. Every label here is `anchor - (t - anchor_t)`, so a
+    synthesised timestamp would mislabel glyphs and bake the error into the
+    templates rather than surfacing it as a bad read.
+    """
+    if (video is None) == (frames is None):
+        raise SystemExit("pass exactly one of --video or --frames")
+    if video is not None:
+        return VideoSource(video)
+    from capture.frames import RecordingSource  # noqa: PLC0415
+    return RecordingSource(frames)
+
+
+def resolve_roi(profile_path: Path | None, roi: tuple[int, int, int, int] | None):
+    """The clock ROI, from an explicit rectangle or a calibration profile.
+
+    `--roi` is not a shortcut around calibration. The live path takes its tile
+    mapping from ClashRoyaleBuildABot's own constants, not from a homography,
+    so a profile built for this resolution would have to carry a fabricated one
+    -- and a fabricated homography sitting in `config/` is exactly the kind of
+    thing that later gets used for real. The ROI is a measured rectangle and is
+    passed as one.
+    """
+    if roi is not None:
+        return roi
+    if profile_path is None:
+        raise SystemExit("pass --roi or --profile")
+    found = load_profile(profile_path).rois.get("clock")
+    if found is None:
+        raise SystemExit("no 'clock' ROI in the profile -- run calibrate.py first")
+    return found
+
+
+def build(source, roi, anchor_t: float, anchor_clock: int,
+          out_dir: Path, sample_fps: float = 3.0) -> DigitTemplates:
     x, y, w, h = roi
     samples: dict[str, list[np.ndarray]] = {str(d): [] for d in range(10)}
 
@@ -119,14 +150,12 @@ def build(video: Path, profile_path: Path, anchor_t: float, anchor_clock: int,
     return result
 
 
-def verify(video: Path, profile_path: Path, templates: DigitTemplates,
+def verify(source, roi, templates: DigitTemplates,
            anchor_t: float, anchor_clock: int, sample_fps: float = 2.0) -> None:
     """Read the whole recording back and score against the arithmetic."""
-    from readers.clock import ClockReader
+    from readers.clock import ClockReader  # noqa: PLC0415
 
-    profile = load_profile(profile_path)
-    reader = ClockReader(profile.rois["clock"], templates)
-    source = VideoSource(video)
+    reader = ClockReader(roi, templates)
 
     samples: list[tuple[float, int, float]] = []
     for frame in source.sample_every(sample_fps):
@@ -174,9 +203,14 @@ def verify(video: Path, profile_path: Path, templates: DigitTemplates,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--video", type=Path, required=True)
-    parser.add_argument("--profile", type=Path,
-                        default=_ROOT / "config" / "profile_gpg_1920x1080.json")
+    parser.add_argument("--video", type=Path,
+                        help="a recorded video file")
+    parser.add_argument("--frames", type=Path,
+                        help="a tools/record_match.py output directory")
+    parser.add_argument("--profile", type=Path, default=None,
+                        help="calibration profile carrying a 'clock' ROI")
+    parser.add_argument("--roi", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
+                        help="clock ROI directly, instead of a profile")
     parser.add_argument("--anchor-at", type=float, required=True,
                         help="video timestamp, seconds, of a frame you read by eye")
     parser.add_argument("--anchor-clock", required=True,
@@ -186,8 +220,12 @@ def main() -> int:
     args = parser.parse_args()
 
     anchor = parse_clock(args.anchor_clock)
-    templates = build(args.video, args.profile, args.anchor_at, anchor, args.out)
-    verify(args.video, args.profile, templates, args.anchor_at, anchor)
+    roi = resolve_roi(args.profile, tuple(args.roi) if args.roi else None)
+    templates = build(open_source(args.video, args.frames), roi,
+                      args.anchor_at, anchor, args.out)
+    # Re-open: a FrameSource is forward-only, so the build pass consumed it.
+    verify(open_source(args.video, args.frames), roi, templates,
+           args.anchor_at, anchor)
     return 0
 
 
