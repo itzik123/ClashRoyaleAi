@@ -211,15 +211,37 @@ def test_kings_are_read_and_princesses_pass_through(engine, frames):
     assert gs.opp_princess_left.hp_fraction == pytest.approx(0.5)
 
 
-def test_a_zero_princess_reads_as_destroyed(engine, frames):
-    """0.0 is ambiguous in CRBAB between empty and unreadable, but measured
-    over 71 frames the trajectory is monotone and physically coherent
-    (1.000, 0.744, 0.231, 0.077, then 0.000 held for 41 frames)."""
+def test_a_zero_princess_is_unmeasured_not_destroyed(engine, frames):
+    """0.0 means "could not read the bar", NOT "destroyed".
+
+    This test asserted the opposite until 2026-07-31, justified on 71 ladder
+    frames where a real decay to zero looked monotone and physical
+    (1.000, 0.744, 0.231, 0.077, then 0.000 held). The first live capture
+    falsified it: `right_ally_princess_hp` read 0.0 in **101 of 101** frames
+    while the tower stood at FULL health -- its own ROI shows the numeral 1890,
+    a level-5 Princess at maximum.
+
+    A tower wrongly marked destroyed is worse than one marked unknown: extra
+    scalars 3-8 are tower HP, and a live tower reported dead tells the policy
+    a lane is already lost. See BOT_REQUESTS.md item 7 -- the real fix is to
+    read the numeral instead of the bar.
+    """
     st = state()
     st.numbers.left_enemy_princess_hp = FakeNumber(0.0)
     gs, _ = build_game_state(st, *frames)
-    assert gs.opp_princess_left.destroyed is True
-    assert gs.opp_princess_left.hp_fraction == 0.0
+    assert gs.opp_princess_left.hp_measured is False
+    assert gs.opp_princess_left.destroyed is False
+
+
+def test_a_readable_princess_is_measured(engine, frames):
+    """The contrast to the test above: a nonzero reading IS trusted, and is
+    already a fraction -- CRBAB's `_calculate_hp` returns change_point/39, not
+    absolute HP -- so nothing is rescaled here."""
+    st = state()
+    st.numbers.left_enemy_princess_hp = FakeNumber(0.5)
+    gs, _ = build_game_state(st, *frames)
+    assert gs.opp_princess_left.hp_measured is True
+    assert gs.opp_princess_left.hp_fraction == pytest.approx(0.5)
 
 
 def test_elixir_is_never_negative(engine, frames):
