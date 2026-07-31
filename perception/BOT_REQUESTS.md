@@ -259,17 +259,47 @@ the bar was capped in 13% of samples.
 **The elixir reader also recovers the real game's schedule from pixels alone**,
 which is a strong independent validation:
 
-| window | measured | real |
-|---|---|---|
-| 0–60 s | 2.84 s/elixir | 1× = 2.8 |
-| 60–120 s | 2.76 s | 1× = 2.8 |
-| 120–180 s | 1.43 s | 2× = 1.4 |
-| 180–240 s | 1.45 s | 2× = 1.4 |
+Binned against **match** time, whose origin comes from the on-screen clock
+rather than from the recording (see below):
 
-Within 1.5%, with the 2× boundary landing exactly at t=120 s. One caveat: the
-reader emits **spurious single-frame drops to 0** (4.2% of samples), because
-`_calculate_elixir` takes the first window whose rolling std falls under a
-threshold. A double 3-median removes them; the physics is what makes that safe.
+| match elapsed | median | phase |
+|---|---|---|
+| 20–100 s | 2.73, 2.77, 2.85, 2.81 s/elixir | **1× = 2.8** |
+| 100–120 s | *(n=2, too few to read)* | boundary |
+| 120–200 s | 1.42, 1.42, 1.50, 1.43 s | **2× = 1.4** |
+
+Within ~1.5% of both rates, and the 1×→2× transition localises to **[100, 120] s**
+against a real boundary at 120 s.
+
+**Correction to an earlier version of this entry**, which said the boundary
+"landed exactly at t=120 s". That was measured in 60-second bins against the
+first in-game FRAME, not against match start — it coincided numerically with
+the right answer from the wrong origin, and 60-second bins cannot localise a
+boundary to better than ±30 s anyway. The table above is binned at 20 s from
+the clock-derived origin.
+
+The clock origin is itself measured, not assumed. Reading the panel on five
+frames and adding the recording timestamp gives a constant:
+
+| wall t | clock | sum |
+|---|---|---|
+| 39.9 s | 2:40 | 199.9 |
+| 73.4 | 2:07 | 200.4 |
+| 107.2 | 1:33 | 200.2 |
+| 142.0 | 0:58 | 200.0 |
+| 173.5 | 0:27 | 200.5 |
+
+Constant to ±0.25 s, so `remaining = 199.9 − t` and match start is t = 19.9 s.
+The panel turns red with "Overtime" at t ≈ 200.2, i.e. **180.3 s elapsed**,
+which is 3:00 of regular time to within a second. Two useful consequences: the
+clock reader's digit templates can be auto-labelled from timestamps with no
+hand annotation, and the first 20 s of overtime measure **2×, not 3×** — stated
+as measured, since this recording is one match against one bot.
+
+One reader caveat: it emits **spurious single-frame drops to 0** (4.2% of
+samples), because `_calculate_elixir` takes the first window whose rolling std
+falls under a threshold. A double 3-median removes them; the physics is what
+makes that safe.
 
 **The opponent's spend does not work, and the failure is structural.** There is
 no opponent elixir bar, so spend can only come from units appearing:
