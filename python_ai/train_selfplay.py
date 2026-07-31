@@ -1081,6 +1081,10 @@ def train_selfplay_ppo():
     # from a known-reasonable point rather than hunting from zero.
     ent_coef_card = 0.05
     ent_coef_place = 0.06
+    # Overwritten from the checkpoint on a resume -- see the block below. These
+    # are the never-resumed defaults, used only on a genuinely fresh start.
+    resumed_exploiter_burst_ep = None
+    resumed_exploiter_burst_index = 0
     # --- Adaptive per-head entropy coefficients ---------------------------
     # Replaces a hand-tuned fixed coefficient per head. Two runs showed why
     # fixed values do not work here: the heads are COUPLED, so correcting one
@@ -1246,9 +1250,29 @@ def train_selfplay_ppo():
         last_eval_ep = checkpoint.get("last_eval_ep", episodes_completed)
         reference_roster = checkpoint.get("reference_roster", [])
         outcome_history = deque(checkpoint["outcome_history"], maxlen=100)
+        # The adaptive entropy controller's converged state. train.py has always
+        # persisted these; this file did not, so every phase-2 resume silently
+        # threw the controller back to 0.05/0.06 and spent thousands of episodes
+        # walking back. Observed on the 2026-07-30 restart: placement reset from
+        # a converged 0.0132 to 0.06, and took ~5,600 episodes to return to
+        # 0.0205. Nothing warned; the only visible trace was the EntCoef field
+        # in the console line jumping back to its initial value.
+        ent_coef_card = checkpoint.get("ent_coef_card", ent_coef_card)
+        ent_coef_place = checkpoint.get("ent_coef_place", ent_coef_place)
+        # Exploiter schedule. Falls back to episodes_completed rather than None,
+        # because None means "never burst" and, past
+        # EXPLOITER_FIRST_BURST_EPISODE, should_run_burst() reads that as "due
+        # now" -- so a legacy checkpoint would fire an unscheduled 75-minute
+        # burst immediately on every resume.
+        resumed_exploiter_burst_ep = checkpoint.get(
+            "last_exploiter_burst_episode", episodes_completed)
+        resumed_exploiter_burst_index = checkpoint.get("exploiter_burst_index", 0)
         full_resume = True
         print(f"Resumed pipeline #2 (PFSP) from {WEIGHT_PATH}: episode {episodes_completed}, "
-              f"reference roster size {len(reference_roster)}")
+              f"reference roster size {len(reference_roster)}, "
+              f"ent coef c/p {ent_coef_card:.4f}/{ent_coef_place:.4f}, "
+              f"next exploiter burst at ep "
+              f"{resumed_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}")
     elif os.path.exists(BOOTSTRAP_FROM_PATH):
         bootstrap = torch.load(BOOTSTRAP_FROM_PATH, map_location=device, weights_only=False)
         state_dict = bootstrap["model"] if isinstance(bootstrap, dict) and "model" in bootstrap else bootstrap
@@ -1341,9 +1365,16 @@ def train_selfplay_ppo():
     # League exploiter state -- see exploiter.py. Kept across bursts so a burst
     # can continue the previous exploiter rather than always restarting, and
     # reset on the module's own re-seed cadence.
+    #
+    # The schedule (index + last burst episode) now survives a restart; the
+    # exploiter's own WEIGHTS deliberately do not. Persisting them would double
+    # every checkpoint write for a marginal gain, and a resume that re-seeds
+    # from the current main agent is the more interpretable option anyway --
+    # a re-seeded exploiter starts as a bit-exact copy of its target, which is
+    # what makes 0.50 the exact null its win rate is read against.
     exploiter_state = None
-    exploiter_burst_index = 0
-    last_exploiter_burst_ep = None
+    exploiter_burst_index = resumed_exploiter_burst_index
+    last_exploiter_burst_ep = resumed_exploiter_burst_ep
     last_replay_ep = episodes_completed
     ep_rewards = np.zeros(num_envs)
     ep_shaping = np.zeros(num_envs)
@@ -1922,6 +1953,12 @@ def train_selfplay_ppo():
                 "last_eval_ep": last_eval_ep,
                 "reference_roster": reference_roster,
                 "outcome_history": list(outcome_history),
+                # Adaptive entropy controller + exploiter schedule. Without
+                # these a resume silently restarts both -- see the resume block.
+                "ent_coef_card": ent_coef_card,
+                "ent_coef_place": ent_coef_place,
+                "last_exploiter_burst_episode": last_exploiter_burst_ep,
+                "exploiter_burst_index": exploiter_burst_index,
             }, WEIGHT_PATH)
             print(f">>> Checkpoint saved to {WEIGHT_PATH} (episode {episodes_completed}, "
                   f"pool {len(historical_pool)})")
