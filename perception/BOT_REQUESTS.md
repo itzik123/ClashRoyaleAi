@@ -313,6 +313,50 @@ Recorded because item 4 already flagged `elixirSpent` as the one unrecoverable
 field. That was reasoning; this is the measurement, and it is worse than the
 reasoning assumed.
 
+### Update 2026-07-31 — the network needs this far less than I argued
+
+I claimed the aux elixir head depends on extra scalar 2, reasoning that current
+elixir is near-arithmetic on two supplied inputs
+(`now ~= start + regen(t) - spent`, with `t` scalar 0 and `spent` scalar 2).
+**Measured on the live phase-2 checkpoint at episode 75,045, that is wrong.**
+
+24 episodes collected once and replayed under each corruption, so trajectories
+are identical and the comparison is paired. The transform was verified to
+mutate exactly one column, index 13599:
+
+| condition | MAE | vs baseline | % of the way to predict-the-mean |
+|---|---|---|---|
+| baseline | 0.966 | — | — |
+| **scalar 2 zeroed** | **0.962** | **−0.005** | −1% |
+| scalar 2 × 2.1 (our measured error) | 0.972 | +0.005 | 2% |
+| scalar 2 saturated at 1.0 | 1.006 | +0.039 | 12% |
+| predict-the-mean | 1.299 | | 100% |
+
+Deleting the field costs nothing. Even pinning it at 1.0 costs 12% of the gap
+to the trivial baseline. The response is monotone in perturbation size, so the
+dependence is real but weak.
+
+Two consequences:
+
+- **Zeroing beats passing our inflated estimate** (−0.005 against +0.005), so
+  the option that fabricates nothing is also the empirically better one. Those
+  usually trade off.
+- The absolute level here (0.966) is worse than the 0.770 on record because
+  this is a phase-2 self-play checkpoint measured against the phase-1 heuristic
+  opponent, over episodes averaging 81 steps. The paired comparison is
+  unaffected.
+
+**This measures the aux head, not the policy.** Scalar 2 also feeds the card,
+placement and value heads through the same trunk, and any of those can degrade
+while a 257-parameter linear probe sits still. A win-rate test against
+`heuristic@1.35` is the deciding measurement; an n=20 pilot put the delta at
+−0.100 ± 0.183, i.e. pointing the wrong way but not yet distinguishable from
+zero.
+
+Note also that any such test measures the cost of **removing an input from a
+network that learned with it**. A policy trained with the field zeroed from the
+start could adapt; that is a different and more expensive question.
+
 ---
 
 # Training-side response, 2026-07-30

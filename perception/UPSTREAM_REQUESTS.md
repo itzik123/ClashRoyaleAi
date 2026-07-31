@@ -14,6 +14,7 @@ Last updated 2026-07-30, after items 1-2 landed.
 | 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
 | 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | open, proposed 2026-07-31 |
 | 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | open, proposed 2026-07-31 |
+| 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
 
 Items 1 and 2 were done together since the measured benefit is combined
 (max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
@@ -329,3 +330,78 @@ be identical, and keeping 17 leaves team 0's observation unchanged.
 
 Whether 17 is the *right* row for a band of `[15.5, 17.5)` is a separate
 fidelity question and deliberately not bundled here.
+
+---
+
+## 7. OPEN — the engine's RNG cannot be seeded (proposed 2026-07-31)
+
+**Not a correctness bug. A cost multiplier on every experiment this project
+runs**, including the ones `CLAUDE.md` already recommends re-running.
+
+### What is there now
+
+```cpp
+// ClashEnv.h:362
+rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
+```
+
+Seeded once at construction from `std::random_device`, with no setter.
+`MicroRoyaleEnv.reset(seed=...)` looks like it should help but only forwards to
+`gymnasium.Env.reset`, which seeds the *wrapper's* RNG, not the engine's.
+
+`CLAUDE.md` already records that the engine has exactly two sources of
+randomness — the opening-hand shuffle in `PlayerState::initializeDeck` and
+`HeuristicOpponent` — and that "identical inputs give identical outcomes". That
+determinism is currently unreachable from outside, because the one thing that
+varies cannot be pinned.
+
+### What it costs, measured on the experiment that prompted this
+
+Comparing two observation variants (extra scalar 2 correct vs zeroed) against
+`heuristic@1.35`. Because the arms cannot share a seed, the comparison is
+unpaired and needs
+
+```
+n = 2 * (1.96 + 0.84)^2 * 0.25 / 0.05^2  ~=  1568 episodes per arm
+```
+
+to resolve a 5-point win-rate difference at 80% power — **3,136 episodes**. With
+a shared seed the same episodes become matched pairs, most of the variance is
+the shared opening hand and opponent rolls rather than the treatment, and the
+same resolution needs roughly an order of magnitude fewer games.
+
+This is not a one-off. The same shape applies to every question already on the
+project's own list: the entropy-rate ordering that `CLAUDE.md` flags as "one run
+per configuration, so this ordering may not survive replication", the deck
+choice re-opened on 2026-07-30, and the corruption ablation in
+`BOT_REQUESTS.md` item 1.
+
+### Second benefit: reproducible failures
+
+A self-play regression currently cannot be replayed. The 2026-07-31 team-1
+observation bug was found by running a policy against a bit-exact copy of
+itself and noticing 0.598 where 0.500 was expected — a test `CLAUDE.md` now
+recommends after any change to the observation, the board, or `stepSelfPlay`.
+That test is a coin-flip null measured over hundreds of games precisely because
+individual games cannot be reproduced.
+
+### The change
+
+```cpp
+void seed(unsigned int s) { rng.seed(s); heuristicOpponent.reset(rng); }
+```
+
+plus a `.def("seed", &ClashEnv::seed)` binding, and an optional forward from
+`MicroRoyaleEnv.reset(seed=...)` — which is where a caller already expects it.
+
+**Blast radius:** additive. Nothing existing calls it, so unseeded behaviour is
+byte-identical and no checkpoint is affected. It is not gameplay-affecting, so
+`model_weights.pth`'s win-rate history stands.
+
+**Note the one subtlety:** `rng` is seeded in the constructor and
+`heuristicOpponent.reset(rng)` is called there too, so a seed applied after
+construction must re-reset the opponent or the two fall out of step. Hence the
+second line above.
+
+**Confidence:** the cost is measured; the fix is proposed but the exact edit is
+the simulator owner's to make. Filed rather than done, per `CLAUDE.md`.
