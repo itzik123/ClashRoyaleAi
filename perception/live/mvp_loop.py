@@ -247,6 +247,8 @@ def main() -> int:
     print(f"execution provider: "
           f"{detector.unit_detector.sess.get_providers()[0]}")
     actuator = AdbActuator(dry_run=not args.act)
+    if args.act:
+        print(f"actuator backend: {actuator.backend}")
     if args.policy == "neural":
         # Copied first: the live phase-2 run rewrites this file periodically
         # and reading it mid-write loads a truncated checkpoint.

@@ -231,3 +231,82 @@ def test_taps_are_recorded_at_intent_not_at_send(monkeypatch, tmp_path):
     finally:
         release.set()
         actuator.close()
+
+
+# --- raw evdev touch ---------------------------------------------------------
+
+def test_the_panel_is_landscape_and_the_app_is_rotated_onto_it():
+    """`wm size` reports 1280x720 while the app renders 720x1280. The touch
+    device's axes are the PANEL's, and assuming the app's frame sent a tap
+    meant for the top-right hamburger to the top-left profile banner."""
+    from live.actuator import RawTouch
+
+    assert RawTouch(1280, 720).rotated is True
+    assert RawTouch(720, 1280).rotated is False
+
+
+def test_raw_coordinates_match_the_two_verified_live_taps():
+    """Both of these were confirmed against real buttons: (655,135) opened the
+    hamburger menu, (430,418) opened the Training Camp dialog."""
+    from live.actuator import RawTouch
+
+    raw = RawTouch(1280, 720)
+    assert raw.to_device(655, 135) == (29311, 29809)
+    assert raw.to_device(430, 418) == (22067, 19569)
+
+
+def test_the_screen_centre_maps_to_the_axis_centre():
+    from live.actuator import RawTouch
+
+    assert RawTouch(1280, 720).to_device(360, 640) == (16384, 16384)
+
+
+def test_raw_coordinates_stay_inside_the_axis_range():
+    from live.actuator import ABS_MAX, RawTouch
+
+    raw = RawTouch(1280, 720)
+    for x, y in ((0, 0), (719, 1279), (0, 1279), (719, 0)):
+        ex, ey = raw.to_device(x, y)
+        assert 0 <= ex <= ABS_MAX and 0 <= ey <= ABS_MAX
+
+
+def test_a_placement_holds_each_contact_and_releases_it():
+    """A contact needs duration. Press and release in one write is a
+    zero-length touch: it dismissed a menu instead of pressing the button
+    under it."""
+    from live.actuator import RawTouch, Tap
+
+    script = RawTouch(1280, 720).placement_script(Tap(100, 200), Tap(300, 400))
+    assert script.count("sleep") == 3          # hold, gap, hold
+    assert script.count("base64 -d") == 4      # press+release, twice
+
+
+def test_raw_touch_is_one_round_trip_for_the_whole_placement(monkeypatch, tmp_path):
+    """The holds and the gap run on-device, inside a trip being made anyway."""
+    sent = []
+    fake_adb = tmp_path / "adb.exe"
+    fake_adb.write_text("")
+    actuator = AdbActuator(dry_run=False, adb=fake_adb, raw_touch=False)
+    monkeypatch.setattr(actuator, "_shell", sent.append)
+    from live.actuator import RawTouch
+    actuator.raw = RawTouch(1280, 720)
+    try:
+        actuator.play(0, 9, 8)
+        actuator.flush()
+    finally:
+        actuator.close()
+    assert len(sent) == 1
+
+
+def test_it_falls_back_to_input_tap_without_the_device(tmp_path):
+    """The device path, axis ranges and rotation are all properties of this
+    emulator; being wrong about them taps the wrong place rather than
+    failing."""
+    fake_adb = tmp_path / "adb.exe"
+    fake_adb.write_text("")
+    actuator = AdbActuator(dry_run=False, adb=fake_adb, raw_touch=False)
+    try:
+        assert actuator.raw is None
+        assert actuator.backend == "input-tap"
+    finally:
+        actuator.close()
