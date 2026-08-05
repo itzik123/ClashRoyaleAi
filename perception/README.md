@@ -132,6 +132,40 @@ and opencv. To run those too, use the CRBAB environment instead — **121 passed
 perception/.venv-crbab/Scripts/python.exe -m pytest perception/tests -q
 ```
 
+**215 passed, 1 skipped** as of 2026-08-05.
+
+### Execution providers — `.venv-dml`
+
+A third environment, identical to `.venv-crbab` except that `onnxruntime` is
+replaced by `onnxruntime-directml`. The two cannot coexist: they install the
+same `onnxruntime` package.
+
+```bash
+perception/.venv-dml/Scripts/python.exe -u perception/live/mvp_loop.py --policy neural
+```
+
+`onnx_detector.choose_providers()` picks the best available in the order
+DirectML → CUDA → CPU, and `CRBAB_EP` forces one. The override matters for
+measurement: comparing providers by switching venv also switches the ONNX
+Runtime version (1.26.0 vs 1.24.4), which confounds the thing being compared.
+
+Measured on `units_M_480x352.onnx`, both sessions built in one process and
+**alternated frame by frame** — sequential runs are not comparable here,
+because BlueStacks' own load drifts by nearly 10× and already produced one
+bogus result:
+
+| condition | CPU EP | DirectML | ratio |
+|---|---|---|---|
+| idle, BlueStacks running | 536.1 ms | 77.0 ms | **6.97×** |
+| under 8 competing processes | 1430.1 ms | 205.4 ms | **6.96×** |
+
+The ratio is the least interesting part. DirectML **under heavy load beats the
+CPU provider idle**, and its p25 moves only 71 → 78 ms between the two
+conditions: the GPU path is largely immune to the CPU contention that inflates
+everything else on this box. That is why it is the right lever here — not
+because 7× is a large number, but because the live problem is contention and
+this is the only stage that can be removed from the contended resource.
+
 ---
 
 ## ClashRoyaleBuildABot, evaluated 2026-07-31

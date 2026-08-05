@@ -218,6 +218,10 @@ def main() -> int:
     else:
         source = WindowSource(args.window)
     detector = Detector(DECK)
+    # Recorded in the run's own output: a timing log that does not say which
+    # execution provider produced it cannot be compared against another.
+    print(f"execution provider: "
+          f"{detector.unit_detector.sess.get_providers()[0]}")
     actuator = AdbActuator(dry_run=not args.act)
     if args.policy == "neural":
         # Copied first: the live phase-2 run rewrites this file periodically

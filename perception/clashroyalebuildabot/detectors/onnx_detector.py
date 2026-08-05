@@ -1,18 +1,46 @@
+import os
+
 import numpy as np
 import onnxruntime as ort
+
+# Ordered by preference, and a LIST rather than a set on purpose. Provider
+# order is what ONNX Runtime uses to decide placement, and the original code
+# intersected two sets -- so the "preferred" provider was whatever the set
+# iteration order happened to put first, which is not a property anyone should
+# rely on. DirectML was also absent entirely, which silently pinned this to CPU
+# even in an environment installed specifically to use the GPU.
+PROVIDER_PREFERENCE = (
+    "DmlExecutionProvider",
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider",
+)
+
+
+def choose_providers():
+    """The best available provider, or the one CRBAB_EP names.
+
+    The override exists so the same build can be measured both ways. Comparing
+    execution providers by installing a different venv changes the runtime
+    version too, which confounds the thing being measured.
+    """
+    available = ort.get_available_providers()
+    forced = os.environ.get("CRBAB_EP")
+    if forced:
+        if forced not in available:
+            raise RuntimeError(
+                f"CRBAB_EP={forced} is not available here; "
+                f"this environment offers {available}")
+        return [forced]
+    return [p for p in PROVIDER_PREFERENCE if p in available] or ["CPUExecutionProvider"]
 
 
 class OnnxDetector:
     def __init__(self, model_path):
         self.model_path = model_path
 
-        providers = list(
-            set(ort.get_available_providers())
-            & {"CUDAExecutionProvider", "CPUExecutionProvider"}
-        )
         self.sess = ort.InferenceSession(
             self.model_path,
-            providers=providers,
+            providers=choose_providers(),
         )
         self.output_name = self.sess.get_outputs()[0].name
 
