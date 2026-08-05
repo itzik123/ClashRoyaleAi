@@ -267,7 +267,11 @@ def main() -> int:
         if state is None:
             return None, None
         if state.screen.name == "in_game":
-            ledger.update(state.numbers.elixir.number)
+            # The reading's own capture time, not now(): the ledger models how
+            # much elixir regenerated between samples, and at this rate a
+            # frame's worth of latency is a quarter of an elixir.
+            ledger.update(state.numbers.elixir.number,
+                          now=frame.wall_time_ms / 1000.0)
         gs, _report = build_game_state(
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,

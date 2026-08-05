@@ -9,12 +9,23 @@ make every GameState depend on every prior call.
 WHY THE ELIXIR BAR AND NOT THE HAND
 -----------------------------------
 The obvious way to spot our own placement is a hand slot changing. Measured over
-one live match that scored **1 of 76** against the elixir drop, which is not a
-surprise in hindsight: README already records the card-icon template agreeing
-with the elixir ledger on cost only 33.8% of the time and over-predicting Giant
-at 35% against a 12.5% prior. The elixir bar is the strongest reader in the
-pipeline (mean confidence 0.978-0.991), so the ledger is built on it and the
-hand is consulted only to NAME the card afterwards.
+one live match that scored **1 of 76** against the elixir drop, so the ledger
+was built on the bar -- the strongest reader in the pipeline (mean confidence
+0.978-0.991) -- and the hand consulted only to NAME the card afterwards.
+
+**That measurement is no longer trustworthy.** It predates the 2026-08-05 fix
+to `adapter._hand_ids`, which was reading `state.cards[:4]` when `cards[0]` is
+the "Next" preview box and only `[1:5]` are hand slots. So the hand it was
+scored against had a card the player did not hold in slot 0, every real card
+shifted one right, and slot 3 missing -- of course it did not track placements.
+Live runs since the fix show the hand cycling correctly (play slot 1, slot 1
+goes blank, the next card fills it), which is exactly the signal that scored
+1 of 76.
+
+Re-measure before treating "the bar, not the hand" as settled. It is not a
+tie-break either: we are now the one PLAYING, so our own placements are known
+exactly at the moment they are issued, and inferring them from pixels at all is
+a design left over from when perception was the only source.
 
 THE READER HAS ONE FAILURE MODE, AND PHYSICS REMOVES IT
 --------------------------------------------------------
@@ -42,16 +53,35 @@ glitches survive one pass.
 WHAT IT SCORED
 --------------
 On one live match, 204 s in-game: **27 cards implied against an affordable
-ceiling of 28**, and a conservation residual of +14%.
+ceiling of 28**, and a conservation residual of +14%. That was at ~10 fps, off
+a recording.
 
 Conservation is the check, and it needs no labels:
 
-    gained  ==  spent + (final - initial)  [+ whatever overflowed at the cap]
+    gained  ==  spent + (final - initial)
 
-The overflow term makes it one-sided -- elixir regenerated while the bar sits at
-10 is invisible, so `gained` under-counts and a small positive residual is
-expected. The bar was capped in 13% of samples. A large residual means missed
-placements.
+`gained` is MODELLED regeneration, clipped at the cap, rather than observed
+rises off the bar -- so time spent sitting at 10 is credited nothing instead of
+being invisible, and the old one-sided positive bias is gone. What remains is
+integer quantisation on the two endpoint readings. A large positive residual
+means missed placements; a negative one means spend was invented.
+
+RATE INDEPENDENCE IS THE PROPERTY THAT MATTERS
+----------------------------------------------
+Fed one reading per frame, this used to be a function of the FRAME RATE, which
+is not a property anyone intended it to have. `drop = last - value` assumed no
+regeneration between samples: true at 10 fps (0.036 elixir) and badly false at
+the 1.5 Hz the live producer runs at (0.24). Measured against a synthetic trace
+with known ground truth, recovered spend:
+
+              rate-blind    with regen + nearest-match
+    10 Hz        -9.8%          -0.1%
+     3 Hz       -27.8%          -1.0%
+   1.5 Hz       -64.2%          -3.6%      <- the live rate
+     1 Hz       -91.9%         -11.2%
+
+Two causes, both fixed: the missing regeneration term, and a COST_TOLERANCE of
+0.55 on a reader quantised to whole elixir, where a drop carries +/-1.0.
 
 THE OPPONENT IS NOT TRACKED HERE
 --------------------------------
@@ -62,8 +92,11 @@ which stays None.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from itertools import combinations_with_replacement
+
+from timebase import MAX_ELIXIR, elixir_regenerated
 
 # Deck costs are supplied by the caller rather than imported, so this module
 # does not need the engine binding and stays testable without the .pyd.
@@ -73,10 +106,21 @@ DEFAULT_COSTS = (3.0, 4.0, 5.0)
 # double-elixir scramble. Beyond that a "drop" is a reader glitch, not play.
 MAX_CARDS_PER_STEP = 3
 
-# How far a drop may sit from a legal cost sum and still be accepted. Slightly
-# over half an elixir: the reader is integer-quantised, and a regen tick can
-# land inside the same sample as a placement.
-COST_TOLERANCE = 0.55
+# How far a drop may sit from a legal cost sum and still be accepted.
+#
+# The reader returns an INTEGER 0..10, so each endpoint of a drop carries up to
+# +/-0.5 and the drop itself up to +/-1.0. 0.55 was fitted at 10 fps, where a
+# drop spans two samples 100 ms apart and the true elixir barely moves between
+# the rounding; it is far too tight once samples are two thirds of a second
+# apart. Measured: a real 3-cost play, true elixir 3.4 -> 0.4, reads 3 -> 1 and
+# presents as a drop of 2.24. Rejected at 0.55, accepted at 1.0.
+#
+# It cannot be widened without limit: costs are spaced 1 apart, so beyond ~1.0
+# a drop matches several decompositions and the choice becomes arbitrary. That
+# is a real information limit of an integer bar, not a tuning failure -- which
+# is why the matcher takes the NEAREST total and accepts ~0.5 of error per
+# card rather than pretending to resolve 3 from 4.
+COST_TOLERANCE = 1.0
 
 
 def decompositions(costs=DEFAULT_COSTS, max_cards=MAX_CARDS_PER_STEP):
@@ -105,6 +149,7 @@ class ElixirLedger:
     """
 
     costs: tuple[float, ...] = DEFAULT_COSTS
+    tolerance: float = COST_TOLERANCE
     spent: float = 0.0
     cards: int = 0
     gained: float = 0.0
@@ -121,68 +166,119 @@ class ElixirLedger:
     and the hand tracker's FIFO cannot recover from being advanced a different
     number of times than the ledger thinks."""
 
-    _recent: list[float] = field(default_factory=list)
+    _recent: list[tuple[float, float]] = field(default_factory=list)
     _last: float | None = None
+    _last_t: float | None = None
     _first: float | None = None
     _table: dict = field(default_factory=dict)
+    _min_cost: float = 0.0
 
     def __post_init__(self):
         self._table = decompositions(self.costs)
+        self._min_cost = min(self.costs)
 
-    def update(self, elixir: float | None) -> None:
-        """One elixir reading. None when the bar could not be read at all."""
+    def update(self, elixir: float | None, now: float | None = None,
+               multiplier: float = 1.0) -> None:
+        """One elixir reading. None when the bar could not be read at all.
+
+        `now` is the reading's own timestamp; without it the ledger cannot know
+        how much elixir REGENERATED between samples, and it silently becomes a
+        function of the sample rate. Measured against a synthetic trace with
+        known ground truth, spend recovered by the old rate-blind version:
+
+            10 Hz  -5%      the rate it was built and scored against
+             2 Hz  -32%
+           1.5 Hz  -48%     the live rate, once the producer became the
+             1 Hz  -82%     detector's rate
+
+        A card costs 3-5, so at 10 fps the 0.036 elixir of regen inside a
+        sample is invisible, while at 1.5 Hz it is 0.24 -- a quarter of the way
+        to the next legal cost, on a reader already quantised to whole elixir.
+
+        `multiplier` is 1/2/3 for single/double/triple elixir. It DEFAULTS TO 1
+        and the live loop has no phase source yet -- the clock reader does not
+        transfer to 549x976 -- so double elixir currently under-models regen and
+        re-introduces a milder version of the same under-count. Worth knowing
+        before trusting a late-match total.
+        """
         if elixir is None:
             return
-        self._recent.append(float(elixir))
+        now = time.monotonic() if now is None else now
+        self._recent.append((now, float(elixir)))
         if len(self._recent) > 3:
             self._recent.pop(0)
         if len(self._recent) < 3:
             return
 
         # Median of the last three, so the value acted on is one sample behind
-        # live. That lag is the cost of despiking without seeing the future,
-        # and it is 200 ms at the rate this runs.
-        a, b, c = self._recent
-        value = sorted((a, b, c))[1]
-        if value != b:
+        # live. That lag is the cost of despiking without seeing the future.
+        # The timestamp travels WITH the reading: pairing the median value with
+        # the newest time would overstate dt by one whole sample interval, and
+        # dt is now load-bearing.
+        # The value is the median of the three; the TIME it describes is the
+        # middle sample's, because a 3-median is centred on it. Taking the
+        # timestamp of whichever sample supplied the median value instead makes
+        # dt jump around by a whole sample interval on ties -- which was
+        # harmless when dt was unused and is not now.
+        stamp = self._recent[1][0]
+        value = sorted(v for _, v in self._recent)[1]
+        if value != self._recent[1][1]:
             self.glitches += 1
         if self._first is None:
             self._first = value
         if self._last is None:
-            self._last = value
+            self._last, self._last_t = value, stamp
             return
 
-        delta = value - self._last
-        self._last = value
-        if delta > 0:
-            self.gained += delta
-            return
-        if delta == 0:
-            return
+        dt = max(0.0, stamp - self._last_t)
+        # Regeneration is capped: the bar cannot climb past MAX_ELIXIR, so time
+        # spent sitting at the cap adds nothing and must not be credited.
+        regen = min(elixir_regenerated(dt, multiplier),
+                    max(0.0, MAX_ELIXIR - self._last))
+        self.gained += regen
+        expected = self._last + regen
+        self._last, self._last_t = value, stamp
 
-        drop = -delta
+        drop = expected - value
+        if drop < self._min_cost - self.tolerance:
+            # Ordinary regeneration, or noise below the cheapest card. Not a
+            # play, and not worth counting as unexplained -- at this sample
+            # rate that would fire on nearly every frame.
+            return
+        # NEAREST total, not the smallest qualifying one. The old rule biased
+        # every ambiguous drop downward, and with an integer reader most drops
+        # are ambiguous -- a systematic under-count on top of the missed cards.
+        # Ties go to the cheaper explanation, which is the conservative side.
         best = None
         for total, combo in self._table.items():
-            if abs(total - drop) <= COST_TOLERANCE:
-                if best is None or total < best[0]:
-                    best = (total, combo)
+            err = abs(total - drop)
+            if err <= self.tolerance and (best is None or err < best[0] - 1e-9
+                                          or (abs(err - best[0]) < 1e-9
+                                              and total < best[1])):
+                best = (err, total, combo)
         if best is None:
-            # Below the cheapest card, so it cannot be a placement. Almost
-            # always integer quantisation noise of 1-2 elixir.
+            # Large enough to be a placement but matching no legal combination
+            # of card costs. The below-cheapest case returned above, so this is
+            # a genuine oddity: a reader glitch that survived both medians, or
+            # more cards inside one sample than MAX_CARDS_PER_STEP allows.
             self.unexplained += 1
             return
-        total, combo = best
+        _err, total, combo = best
         self.spent += total
         self.cards += len(combo)
         self.plays.append(tuple(combo))
 
     @property
     def residual(self) -> float:
-        """gained - spent - (current - initial). Expected small and POSITIVE.
+        """gained - spent - (current - initial). Expected near zero.
 
-        Positive because regen while the bar sits at its 10 cap is invisible, so
-        `gained` under-counts. A large positive residual means placements were
-        missed; a negative one means spend was invented.
+        `gained` is now MODELLED regeneration, clipped at the 10 cap rather
+        than read off the bar, so the old one-sided bias is gone: time spent
+        capped is credited nothing instead of being invisible. What is left is
+        integer quantisation on the two endpoint readings.
+
+        A large positive residual still means placements were missed; a
+        negative one means spend was invented.
         """
         if self._first is None or self._last is None:
             return 0.0
