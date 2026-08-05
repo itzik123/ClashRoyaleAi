@@ -65,6 +65,7 @@ from clashroyalebuildabot.namespaces.cards import Cards  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
+from live.pipeline import PerceptionWorker  # noqa: E402
 
 DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
@@ -75,6 +76,11 @@ DEFAULT_TILE = (9, 8)
 
 # Below this the loop is acting on a board that has already changed.
 DECISION_HZ = 1.0
+
+# How old a board may be before a decision made on it is suspect. Two seconds
+# is roughly a Hog Rider crossing the bridge, so beyond this the agent is
+# deciding about a board that no longer exists.
+MAX_STALENESS_MS = 2000.0
 
 
 @dataclass
@@ -182,6 +188,11 @@ def main() -> int:
     ap.add_argument("--act", action="store_true",
                     help="actually tap. Without it the loop only watches.")
     ap.add_argument("--window", default="BlueStacks App Player")
+    ap.add_argument("--serial", action="store_true",
+                    help="run perception inline instead of on its own thread. "
+                         "The original design, kept for comparison: it pins "
+                         "the decision RATE to the detector's LATENCY, "
+                         "measured at 0.48 Hz on a quiet machine.")
     ap.add_argument("--policy", choices=("scripted", "neural"),
                     default="scripted",
                     help="scripted exercises the joints; neural is the agent")
@@ -227,14 +238,42 @@ def main() -> int:
     print("  t     screen     units  elix  spent  hand                    "
           "decision                 ms")
 
-    # Replay walks the recording at its own pace; live paces itself to
-    # DECISION_HZ. Everything downstream of `frame` is identical.
+    def perceive(frame):
+        """capture-frame -> (State, GameState). Runs on whichever thread owns
+        perception: the worker when pipelined, the loop when --serial."""
+        native = Image.fromarray(frame.image[:, :, ::-1])       # BGR -> RGB
+        small = native.resize((SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), Image.LANCZOS)
+        state = detector.run(small)
+        if state is None:
+            return None, None
+        if state.screen.name == "in_game":
+            ledger.update(state.numbers.elixir.number)
+        gs, _report = build_game_state(
+            state, np.array(native), np.array(small),
+            frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
+            my_elixir_spent=ledger.spent)
+        return state, gs
+
     replay = iter(source.sample_every(DECISION_HZ)) if args.frames else None
+    pipelined = replay is None and not args.serial
+    worker = None
+    if pipelined:
+        # Replay is never pipelined: it is the deterministic integration test,
+        # and a background thread racing a finite recording would reproduce
+        # differently every run.
+        worker = PerceptionWorker(source, detector, perceive)
+        worker.start()
+        print("perception: BACKGROUND THREAD (decisions use the newest board)")
+    else:
+        print("perception: inline" + (" [replay]" if replay else " [--serial]"))
+    print()
+    print("  t     screen     units  elix  spent  age   hand"
+          "                     decision               ms")
 
     t0 = time.perf_counter()
     next_due = t0
-    n = 0
-    slow = 0
+    n = slow = stale = 0
+    ages = []
     try:
         while time.perf_counter() - t0 < args.seconds:
             now = time.perf_counter()
@@ -245,29 +284,29 @@ def main() -> int:
                 next_due = now + 1.0 / DECISION_HZ
 
             step = time.perf_counter()
-            if replay is not None:
-                frame = next(replay, None)
-                if frame is None:
-                    print("  (recording exhausted)")
-                    break
-            else:
-                frame = source.read_new(timeout_s=1.0)
-                if frame is None:
-                    print("  (no new frame)")
+            age_ms = 0.0
+            if pipelined:
+                snap = worker.latest()
+                if snap is None:
+                    if not worker.alive:
+                        print(f"  perception thread DIED: {worker.last_error!r}")
+                        break
                     continue
-            native = Image.fromarray(frame.image[:, :, ::-1])   # BGR -> RGB
-            small = native.resize((SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), Image.LANCZOS)
-            state = detector.run(small)
+                state, gs = snap.state, snap.game_state
+                age_ms = snap.age_ms(step)
+            else:
+                frame = (next(replay, None) if replay is not None
+                         else source.read_new(timeout_s=1.0))
+                if frame is None:
+                    print("  (no frame)")
+                    if replay is not None:
+                        break
+                    continue
+                state, gs = perceive(frame)
+                if state is None:
+                    continue
 
-            in_game = state is not None and state.screen.name == "in_game"
-            if in_game:
-                ledger.update(state.numbers.elixir.number)
-            gs, report = build_game_state(
-                state, np.array(native), np.array(small),
-                seconds_elapsed=now - t0, frame_index=frame.index,
-                wall_time_ms=frame.wall_time_ms,
-                my_elixir_spent=ledger.spent)
-
+            in_game = state.screen.name == "in_game"
             if hasattr(policy, "on_screen_change"):
                 policy.on_screen_change(in_game)
             decision = (policy.decide(gs, state.ready, now) if in_game
@@ -276,22 +315,32 @@ def main() -> int:
                 actuator.play(decision.slot, *decision.tile)
 
             ms = (time.perf_counter() - step) * 1000.0
-            if ms > 1000.0:
-                slow += 1
-            hand = (",".join(c.name[:6] for c in state.cards[:4])
-                    if state else "-")
+            slow += ms > 1000.0
+            stale += age_ms > MAX_STALENESS_MS
+            ages.append(age_ms)
+            hand = ",".join(c.name[:6] for c in state.cards[:4])
             print(f"  {now - t0:5.1f} {state.screen.name[:10]:<10} "
                   f"{len(gs.units):>5}  {gs.my_elixir:>4.0f}  {ledger.spent:>5.0f}  "
-                  f"{hand:<30} {decision.why:<22} {ms:>5.0f}")
+                  f"{age_ms:>4.0f}  {hand:<30} {decision.why:<22} {ms:>5.0f}")
             n += 1
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
+        if worker is not None:
+            worker.stop()
         source.close()
 
     elapsed = time.perf_counter() - t0
-    print(f"\n{n} iterations in {elapsed:.0f}s   "
-          f"{n / max(elapsed, 1e-9):.2f} Hz   over budget on {slow}/{max(n,1)}")
+    print(f"\n" + f"{n} decisions in {elapsed:.0f}s   {n / max(elapsed, 1e-9):.2f} Hz"
+          f"   decision over 1000ms: {slow}/{max(n, 1)}")
+    if worker is not None:
+        print(f"perception thread: {worker.frames} boards "
+              f"({worker.frames / max(elapsed, 1e-9):.2f} Hz), errors {worker.errors}")
+        if ages:
+            a = np.array(ages)
+            print(f"board age: mean {a.mean():.0f} ms  median {np.median(a):.0f}"
+                  f"  p95 {np.percentile(a, 95):.0f}  max {a.max():.0f}"
+                  f"   over {MAX_STALENESS_MS:.0f} ms on {stale}/{max(n, 1)}")
     print(f"taps issued: {len(actuator.taps)}"
           f"{'' if args.act else ' (dry run - none sent)'}")
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "

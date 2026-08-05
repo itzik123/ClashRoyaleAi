@@ -24,6 +24,13 @@ against BlueStacks while it was fully covered: frames arrive with content,
 exactly the case where PrintWindow tends to return black, so this was tested
 rather than assumed.
 
+COVERED IS FINE; MINIMIZED IS NOT. WGC captures a window's own surface, so
+other windows on top of it change nothing -- that is the property this was
+chosen for. A minimized window is a different thing entirely: it is not being
+repainted, so there is no surface to read and no frames arrive at all. An
+earlier version of this docstring said the window "does NOT need to be
+visible", which conflated the two and is wrong.
+
 THE BUFFER IS NOT THE GAME
 --------------------------
 The captured surface is the whole emulator window: a title bar on top, a
@@ -208,7 +215,10 @@ class WindowSource(FrameSource):
         self.close()
         raise TimeoutError(
             f"no frame from {window_name!r} within {timeout_s}s. The window "
-            "must exist and be rendering; it does NOT need to be visible.")
+            "must be RENDERING. Being covered by other windows is fine -- "
+            "that is verified and is the whole point of using WGC -- but a "
+            "MINIMIZED window has no surface being repainted and delivers "
+            "nothing. Restore it and try again.")
 
     # -- FrameSource ---------------------------------------------------------
 
