@@ -238,8 +238,25 @@ def build_game_state(
 
 
 def _hand_ids(state) -> tuple[int, ...]:
-    """The four hand slots as simulator card ids, in on-screen order."""
-    return tuple(hand_card_id_for(getattr(card, "name", "")) for card in state.cards[:4])
+    """The four hand slots as simulator card ids, in on-screen order.
+
+    `state.cards` is FIVE entries, not four: `CARD_CONFIG[0]` is the small
+    bottom-left "Next" preview box (26x33 at x=21), and only `CARD_CONFIG[1:]`
+    are hand slots (61x73 at x>=84, y=543). So the hand is `[1:5]`.
+
+    Reading `[:4]` instead cost a whole match. It put the NEXT card -- one the
+    player does not hold and cannot play -- in observation slot 0, shifted every
+    real card one slot right, and dropped hand slot 3 entirely. The actuator
+    taps physical slot `i`, so the agent asked for the card it could see in slot
+    i and got the one beside it, every single placement.
+
+    CRBAB's own `_detect_if_ready` iterates `crops[1:]`, so `state.ready` was
+    already indexed to hand slots 0-3. `ready` and `cards` therefore disagreed
+    by one about what "slot 1" meant, which is the kind of internal
+    contradiction worth grepping for after finding one of these.
+    """
+    return tuple(hand_card_id_for(getattr(card, "name", ""))
+                 for card in state.cards[1:5])
 
 
 def _read_towers(state, detector_frame) -> dict:

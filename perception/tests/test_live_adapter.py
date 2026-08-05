@@ -78,11 +78,19 @@ def unit(name, tile_x, tile_y, conf=0.9, bbox=(100, 200, 130, 240)):
 
 
 def state(allies=(), enemies=(), elixir=5.0, cards=("giant", "fireball",
-                                                    "valkyrie", "archers")):
+                                                    "valkyrie", "archers"),
+          next_card="minions"):
+    """`cards` is the HAND, four slots, as the tests mean it.
+
+    The detector's own list is five entries -- CARD_CONFIG[0] is the bottom-left
+    "Next" preview box and only [1:] are hand slots -- so the preview is
+    prepended here rather than in every caller. Building the fake as four
+    entries is what let the off-by-one in `_hand_ids` pass a full suite.
+    """
     nums = FakeNumbers(FakeNumber(0.5), FakeNumber(0.5), FakeNumber(1.0),
                        FakeNumber(1.0), FakeNumber(elixir))
     return FakeState(list(allies), list(enemies), nums,
-                     tuple(FakeCard(c) for c in cards))
+                     tuple(FakeCard(c) for c in (next_card, *cards)))
 
 
 @pytest.fixture
@@ -166,6 +174,31 @@ def test_hand_uses_the_card_table_not_the_unit_table(engine, frames):
                                           "musketeer")), *frames)
     assert UNKNOWN_CARD_SIM_ID not in gs.my_hand
     assert engine.get_card_info(gs.my_hand[1])["name"] == "Fireball"
+
+
+def test_hand_skips_the_next_card_preview(engine, frames):
+    """CARD_CONFIG[0] is the bottom-left "Next" box, not a hand slot.
+
+    Reading `state.cards[:4]` put a card the player does not hold into
+    observation slot 0, shifted every real card one slot right, and dropped
+    hand slot 3. Since the actuator taps physical slot `i`, the agent asked for
+    what it saw in slot i and got the card beside it -- every placement, all
+    match. Verified live: on-screen Next=Giant with hand
+    [Archers, Valkyrie, MiniPEKKA, Cannon] was reported as
+    [giant, archers, valkyrie, minipekka].
+    """
+    gs, _ = build_game_state(
+        state(next_card="giant",
+              cards=("archers", "valkyrie", "minipekka", "cannon")), *frames)
+    names = [engine.get_card_info(c)["name"] for c in gs.my_hand]
+    assert names == ["Archers", "Valkyrie", "Mini PEKKA", "Cannon"]
+    assert "Giant" not in names, "the Next preview leaked into the hand"
+
+
+def test_hand_has_one_entry_per_playable_slot(engine, frames):
+    """Four, matching the engine's HAND_SIZE and the actuator's slots 0-3."""
+    gs, _ = build_game_state(state(), *frames)
+    assert len(gs.my_hand) == 4
 
 
 def test_unreadable_hand_slot_is_the_sentinel_not_an_error(engine, frames):

@@ -355,7 +355,9 @@ def main() -> int:
             slow += ms > 1000.0
             stale += age_ms > MAX_STALENESS_MS
             ages.append(age_ms)
-            hand = ",".join(c.name[:6] for c in state.cards[:4])
+            # [1:5], not [:4] -- cards[0] is the "Next" preview. See
+            # adapter._hand_ids.
+            hand = ",".join(c.name[:6] for c in state.cards[1:5])
             print(f"  {now - t0:5.1f} {state.screen.name[:10]:<10} "
                   f"{len(gs.units):>5}  {gs.my_elixir:>4.0f}  {ledger.spent:>5.0f}  "
                   f"{age_ms:>4.0f}  {hand:<30} {decision.why:<22} {ms:>5.0f}")
