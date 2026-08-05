@@ -62,6 +62,7 @@ from clashroyalebuildabot.constants import (  # noqa: E402
 )
 from clashroyalebuildabot.detectors.detector import Detector  # noqa: E402
 from clashroyalebuildabot.namespaces.cards import Cards  # noqa: E402
+from live.action_gate import MAX_STALENESS_MS, ActionGate  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
@@ -77,10 +78,9 @@ DEFAULT_TILE = (9, 8)
 # Below this the loop is acting on a board that has already changed.
 DECISION_HZ = 1.0
 
-# How old a board may be before a decision made on it is suspect. Two seconds
-# is roughly a Hog Rider crossing the bridge, so beyond this the agent is
-# deciding about a board that no longer exists.
-MAX_STALENESS_MS = 2000.0
+# MAX_STALENESS_MS is imported from action_gate rather than defined here, so the
+# threshold that REPORTS staleness and the one that REFUSES to act on it cannot
+# drift apart.
 
 
 @dataclass
@@ -193,6 +193,11 @@ def main() -> int:
                          "The original design, kept for comparison: it pins "
                          "the decision RATE to the detector's LATENCY, "
                          "measured at 0.48 Hz on a quiet machine.")
+    ap.add_argument("--ignore-staleness", action="store_true",
+                    help="act on a board older than the staleness budget. "
+                         "Idempotency still holds -- this only relaxes the age "
+                         "check, which is the one that stops the agent playing "
+                         "into a board the match has already moved past.")
     ap.add_argument("--policy", choices=("scripted", "neural"),
                     default="scripted",
                     help="scripted exercises the joints; neural is the agent")
@@ -236,6 +241,7 @@ def main() -> int:
         policy = ScriptedPolicy()
         print("policy: scripted placeholder")
     ledger = ElixirLedger()
+    gate = ActionGate(enforce_staleness=not args.ignore_staleness)
 
     print(f"capture {source.size[0]}x{source.size[1]}   "
           f"decision rate {DECISION_HZ} Hz   for {args.seconds:.0f}s\n")
@@ -300,6 +306,7 @@ def main() -> int:
 
             step = time.perf_counter()
             age_ms = 0.0
+            board_index = n
             if pipelined:
                 snap = worker.latest()
                 if snap is None:
@@ -309,6 +316,7 @@ def main() -> int:
                     continue
                 state, gs = snap.state, snap.game_state
                 age_ms = snap.age_ms(step)
+                board_index = snap.index
             else:
                 frame = (next(replay, None) if replay is not None
                          else source.read_new(timeout_s=1.0))
@@ -320,14 +328,28 @@ def main() -> int:
                 state, gs = perceive(frame)
                 if state is None:
                     continue
+                board_index = frame.index
 
             in_game = state.screen.name == "in_game"
             if hasattr(policy, "on_screen_change"):
                 policy.on_screen_change(in_game)
+            # The policy steps every tick whatever the gate decides: it is
+            # recurrent and was trained stepping once per second, so skipping
+            # steps to match the producer's rate would change the LSTM's
+            # cadence away from training. Only the TAP is gated.
             decision = (policy.decide(gs, state.ready, now) if in_game
                         else Decision(None, DEFAULT_TILE, "not in game"))
             if decision.slot is not None:
-                actuator.play(decision.slot, *decision.tile)
+                verdict = gate.check(board_index, age_ms)
+                if verdict:
+                    actuator.play(decision.slot, *decision.tile)
+                    # Recorded only after the tap returns, so an adb failure
+                    # leaves the board available to retry.
+                    gate.record(board_index)
+                else:
+                    gate.refuse(verdict.reason)
+                    decision = Decision(None, decision.tile,
+                                        f"[{verdict.reason}] {decision.why}")
 
             ms = (time.perf_counter() - step) * 1000.0
             slow += ms > 1000.0
@@ -360,6 +382,7 @@ def main() -> int:
         print(worker.stages.report())
     print("\nperceive, by stage (median):")
     print(stages.report(total_key=None))
+    print(f"\n{gate.summary()}")
     print(f"taps issued: {len(actuator.taps)}"
           f"{'' if args.act else ' (dry run - none sent)'}")
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "
