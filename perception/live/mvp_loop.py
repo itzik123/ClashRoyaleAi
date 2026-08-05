@@ -103,12 +103,91 @@ class ScriptedPolicy:
         return Decision(slot, self.tile, f"cheapest ready slot {slot}")
 
 
+class NeuralPolicy:
+    """The trained agent, reading a real screen.
+
+    Everything it needs already exists: `perception_encoder` turns a GameState
+    into the 13,606 floats it was trained on, and the masks it applies are its
+    own methods reading that same vector -- so affordability and placement
+    legality are computed exactly as they are in training rather than
+    reimplemented here, which is what keeps rollout and deployment from
+    drifting apart.
+
+    HIDDEN STATE IS THE PART THAT IS EASY TO GET WRONG. The LSTM carries the
+    match's history, so it must persist across frames and reset when a NEW
+    match begins. Resetting every frame would silently reduce a recurrent
+    policy to a reflex one, and every diagnostic would still look healthy --
+    the same shape of failure as the team-1 observation bug.
+    """
+
+    def __init__(self, checkpoint: Path, deck_ability_slots: int = 0):
+        import torch  # noqa: PLC0415
+
+        import perception_encoder  # noqa: PLC0415
+        from model import MicroRoyaleNet  # noqa: PLC0415
+
+        self.torch = torch
+        self.encoder = perception_encoder
+        self.net = MicroRoyaleNet(num_ability_slots=deck_ability_slots)
+        blob = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        self.net.load_state_dict(blob["model"] if "model" in blob else blob)
+        self.net.eval()
+        self.episodes = int(blob.get("episodes_completed", -1))
+        self._hx = None
+        self._cx = None
+        self._was_in_game = False
+
+    def reset_hidden(self) -> None:
+        self._hx = self.torch.zeros(1, 256)
+        self._cx = self.torch.zeros(1, 256)
+
+    def decide(self, gs, ready, now: float) -> Decision:
+        torch = self.torch
+        if self._hx is None:
+            self.reset_hidden()
+
+        obs = torch.as_tensor(self.encoder.encode(gs)).unsqueeze(0)
+        with torch.no_grad():
+            feats, embeds, smap = self.net.extract_features(obs)
+            logits, _a1, _a2, _v, (self._hx, self._cx) = self.net.step_lstm_and_card(
+                feats, (self._hx, self._cx), self.net.affordability_mask(obs))
+            card = torch.distributions.Categorical(logits=logits).sample()
+            slot = int(card.item())
+            if slot >= self.net.hand_size:
+                # The last column is the always-legal no-op. Deliberately not
+                # forced into a play: "hold elixir" is a real decision and the
+                # affordability mask guarantees this column is never masked.
+                return Decision(None, DEFAULT_TILE, "no-op")
+            placement = self.net.placement_given_card(
+                self._hx, embeds, card, obs, smap)
+            placement = placement.masked_fill(
+                ~self.net.placement_mask(obs, card), float("-inf"))
+            cell = torch.distributions.Categorical(logits=placement).sample()
+            x, y = self.net.cell_to_xy(cell)
+        # cell_to_xy returns ENGINE board coordinates, which is what the
+        # actuator's engine_tile_centre expects.
+        return Decision(slot, (int(x.item()), int(y.item())),
+                        f"net slot {slot} -> ({int(x.item())},{int(y.item())})")
+
+    def on_screen_change(self, in_game: bool) -> None:
+        """Reset the recurrent state when a match starts, never mid-match."""
+        if in_game and not self._was_in_game:
+            self.reset_hidden()
+        self._was_in_game = in_game
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--act", action="store_true",
                     help="actually tap. Without it the loop only watches.")
     ap.add_argument("--window", default="BlueStacks App Player")
+    ap.add_argument("--policy", choices=("scripted", "neural"),
+                    default="scripted",
+                    help="scripted exercises the joints; neural is the agent")
+    ap.add_argument("--checkpoint", type=Path,
+                    default=Path(__file__).resolve().parents[2] / "python_ai"
+                    / "model_weights_selfplay.pth")
     ap.add_argument("--frames", type=Path, default=None,
                     help="replay a tools/record_match.py directory instead of "
                          "capturing live. The rest of the chain is identical, "
@@ -129,7 +208,18 @@ def main() -> int:
         source = WindowSource(args.window)
     detector = Detector(DECK)
     actuator = AdbActuator(dry_run=not args.act)
-    policy = ScriptedPolicy()
+    if args.policy == "neural":
+        # Copied first: the live phase-2 run rewrites this file periodically
+        # and reading it mid-write loads a truncated checkpoint.
+        import shutil, tempfile  # noqa: PLC0415
+        frozen = Path(tempfile.gettempdir()) / "mvp_policy_snapshot.pth"
+        shutil.copy2(args.checkpoint, frozen)
+        policy = NeuralPolicy(frozen)
+        print(f"policy: TRAINED NET from {args.checkpoint.name} "
+              f"(episode {policy.episodes})")
+    else:
+        policy = ScriptedPolicy()
+        print("policy: scripted placeholder")
     ledger = ElixirLedger()
 
     print(f"capture {source.size[0]}x{source.size[1]}   "
@@ -178,6 +268,8 @@ def main() -> int:
                 wall_time_ms=frame.wall_time_ms,
                 my_elixir_spent=ledger.spent)
 
+            if hasattr(policy, "on_screen_change"):
+                policy.on_screen_change(in_game)
             decision = (policy.decide(gs, state.ready, now) if in_game
                         else Decision(None, DEFAULT_TILE, "not in game"))
             if decision.slot is not None:
