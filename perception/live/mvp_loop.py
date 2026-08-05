@@ -367,6 +367,7 @@ def main() -> int:
     finally:
         if worker is not None:
             worker.stop()
+        actuator.close()
         source.close()
 
     elapsed = time.perf_counter() - t0
@@ -387,6 +388,13 @@ def main() -> int:
     print(f"\n{gate.summary()}")
     print(f"taps issued: {len(actuator.taps)}"
           f"{'' if args.act else ' (dry run - none sent)'}")
+    if actuator.dropped or actuator.errors:
+        # Dropped means a placement was still being tapped when the next was
+        # chosen. Rare at 1 Hz against a ~900 ms placement, and a real signal
+        # if it is not: the actuator has become the bottleneck again.
+        print(f"actuator: {actuator.dropped} dropped (still tapping), "
+              f"{actuator.errors} errors"
+              + (f" - last {actuator.last_error!r}" if actuator.last_error else ""))
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "
           f"residual {ledger.residual:+.0f}")
     return 0

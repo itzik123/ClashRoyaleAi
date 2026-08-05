@@ -132,6 +132,9 @@ def main() -> int:
           f"({args.x},{args.y})")
     print(f"  -> detector tile ({args.x},{args.y - TILE_Y_OFFSET})")
     card_tap, tile_tap = actuator.play(args.slot, args.x, args.y)
+    # play() is non-blocking now, so without this the frame below would be
+    # photographed before the card had landed.
+    actuator.flush()
     print(f"  taps: card={card_tap} tile={tile_tap}")
 
     time.sleep(args.settle)
