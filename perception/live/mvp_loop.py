@@ -65,7 +65,7 @@ from clashroyalebuildabot.namespaces.cards import Cards  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
-from live.pipeline import PerceptionWorker  # noqa: E402
+from live.pipeline import PerceptionWorker, Stages  # noqa: E402
 
 DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
@@ -238,12 +238,22 @@ def main() -> int:
     print("  t     screen     units  elix  spent  hand                    "
           "decision                 ms")
 
+    # Offline this whole function medians 190 ms; the first live run implied
+    # ~2700 ms. Timing it by stage is the only way to tell which stage grew,
+    # and the answer decides whether the next lever is the execution provider,
+    # the capture, or the adapter. Guessing cost a DirectML venv build that
+    # would have addressed 4% of the budget.
+    stages = Stages()
+
     def perceive(frame):
         """capture-frame -> (State, GameState). Runs on whichever thread owns
         perception: the worker when pipelined, the loop when --serial."""
+        t = time.perf_counter()
         native = Image.fromarray(frame.image[:, :, ::-1])       # BGR -> RGB
         small = native.resize((SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), Image.LANCZOS)
+        t = stages.time("1 decode+resize", t)
         state = detector.run(small)
+        t = stages.time("2 detector.run", t)
         if state is None:
             return None, None
         if state.screen.name == "in_game":
@@ -252,6 +262,7 @@ def main() -> int:
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
             my_elixir_spent=ledger.spent)
+        stages.time("3 build_game_state", t)
         return state, gs
 
     replay = iter(source.sample_every(DECISION_HZ)) if args.frames else None
@@ -341,6 +352,10 @@ def main() -> int:
             print(f"board age: mean {a.mean():.0f} ms  median {np.median(a):.0f}"
                   f"  p95 {np.percentile(a, 95):.0f}  max {a.max():.0f}"
                   f"   over {MAX_STALENESS_MS:.0f} ms on {stale}/{max(n, 1)}")
+        print("\nproducer period, by stage (median):")
+        print(worker.stages.report())
+    print("\nperceive, by stage (median):")
+    print(stages.report(total_key=None))
     print(f"taps issued: {len(actuator.taps)}"
           f"{'' if args.act else ' (dry run - none sent)'}")
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "

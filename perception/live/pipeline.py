@@ -33,6 +33,16 @@ that ignores it is back to the original problem with extra steps, so the loop
 prints it every iteration and counts how often it exceeds a threshold. If age
 grows without bound the producer is not keeping up and that is visible
 immediately, rather than showing up as a policy that plays strangely.
+
+WAITING IS SEPARATED FROM WORKING
+---------------------------------
+The producer's period is `wait + work`, and the two have opposite fixes. Offline
+the whole chain measures 190 ms a frame (115 ms of it the ONNX forward pass);
+the first live run showed a ~2700 ms period. A 14x gap that size is not the
+model, so `work` is split by stage and `wait` -- time blocked in `read_new`
+waiting for the window to paint -- is counted separately. Without that split a
+capture starved of frames and a detector that is genuinely slow look identical
+from outside, and they lead to completely different work.
 """
 from __future__ import annotations
 
@@ -40,6 +50,49 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
+
+
+class Stages:
+    """Accumulates per-stage timings across frames, safely across threads.
+
+    Reports the MEDIAN. A per-frame mean is dominated by whichever frame the
+    scheduler happened to descheduled -- the live run's own totals ranged
+    1.9-9.3 s while the typical frame was nothing like either end.
+    """
+
+    def __init__(self):
+        self._t: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def time(self, name: str, t0: float) -> float:
+        """Record `now - t0` against `name`; return now, to chain calls."""
+        now = time.perf_counter()
+        with self._lock:
+            self._t.setdefault(name, []).append((now - t0) * 1000.0)
+        return now
+
+    def add(self, name: str, ms: float) -> None:
+        with self._lock:
+            self._t.setdefault(name, []).append(ms)
+
+    def report(self, total_key: str | None = None) -> str:
+        with self._lock:
+            snapshot = {k: np.array(v) for k, v in self._t.items()}
+        if not snapshot:
+            return "  (no stages recorded)"
+        total = (float(np.median(snapshot[total_key]))
+                 if total_key and total_key in snapshot
+                 else sum(float(np.median(v)) for v in snapshot.values()))
+        lines = []
+        for name in sorted(snapshot):
+            v = snapshot[name]
+            med = float(np.median(v))
+            share = 100.0 * med / total if total > 0 else 0.0
+            lines.append(f"    {name:<26} {med:8.1f} ms  ({share:5.1f}%)  "
+                         f"n={len(v)}")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -93,6 +146,10 @@ class PerceptionWorker:
         self.frames = 0
         self.errors = 0
         self.last_error: BaseException | None = None
+        # `wait` is time blocked on the window painting; `work` is time in
+        # perceive. Their sum is the producer's period, and which of the two
+        # dominates decides whether the next move is capture or compute.
+        self.stages = Stages()
 
     def start(self) -> None:
         self._thread.start()
@@ -112,12 +169,17 @@ class PerceptionWorker:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                waited = time.perf_counter()
                 frame = self._source.read_new(timeout_s=1.0)
                 if frame is None:
+                    # A timeout is not a wait worth averaging in: it means no
+                    # frame arrived at all, which is a different fault from a
+                    # slow one and would drag the median toward the timeout.
                     continue
-                captured_at = time.perf_counter()
+                captured_at = self.stages.time("0 wait for frame", waited)
                 started = captured_at
                 state, game_state = self._adapt(frame)
+                self.stages.time("9 perceive TOTAL", started)
                 if state is None:
                     continue
                 snapshot = Snapshot(

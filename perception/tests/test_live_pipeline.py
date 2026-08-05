@@ -12,9 +12,10 @@ import threading
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 
-from live.pipeline import PerceptionWorker, Snapshot
+from live.pipeline import PerceptionWorker, Snapshot, Stages
 
 
 @dataclass
@@ -185,6 +186,65 @@ def test_stop_is_clean():
     assert wait_for(lambda: w.frames > 0)
     w.stop()
     assert not w.alive
+
+
+def test_waiting_for_a_frame_is_counted_apart_from_perceiving():
+    """The producer's period is wait + work and the two have opposite fixes:
+    a starved capture and a slow detector are indistinguishable from the
+    outside, and the first live run's 2700 ms period was attributed to the
+    detector on no evidence -- offline the detector medians 130 ms."""
+    source = FakeSource(delay=0.2)          # slow to HAND OVER a frame
+
+    def quick(frame):
+        time.sleep(0.05)                    # quick to perceive one
+        return "state", "gs"
+
+    w = PerceptionWorker(source, None, quick)
+    w.start()
+    try:
+        assert wait_for(lambda: w.frames >= 3, timeout=5.0)
+    finally:
+        w.stop()
+    report = w.stages.report()
+    assert "0 wait for frame" in report
+    assert "9 perceive TOTAL" in report
+    waits = w.stages._t["0 wait for frame"]
+    works = w.stages._t["9 perceive TOTAL"]
+    # The point of the split: it attributes the cost to the right half.
+    assert np.median(waits) > np.median(works)
+
+
+def test_a_timed_out_read_is_not_recorded_as_a_wait():
+    """A timeout means NO frame arrived, which is a different fault from a slow
+    one. Averaging it in would drag the median toward the timeout and make a
+    dead capture look like a merely sluggish one."""
+    w = PerceptionWorker(FakeSource(limit=1), None, perceive_ok)
+    w.start()
+    try:
+        assert wait_for(lambda: w.frames >= 1)
+        time.sleep(0.3)                     # source now returns None each call
+    finally:
+        w.stop()
+    assert len(w.stages._t["0 wait for frame"]) == w.frames
+
+
+def test_stages_reports_shares_that_sum_to_the_whole():
+    s = Stages()
+    for _ in range(5):
+        s.add("a", 30.0)
+        s.add("b", 70.0)
+    report = s.report()
+    assert "30.0" in report and "70.0" in report
+    assert "( 30.0%)" in report and "( 70.0%)" in report
+
+
+def test_stages_reports_the_median_not_the_mean():
+    """One descheduled frame should not define the summary -- the live run's
+    own per-frame totals ranged 1.9-9.3 s."""
+    s = Stages()
+    for ms in (100.0, 100.0, 100.0, 9000.0):
+        s.add("x", ms)
+    assert "   100.0 ms" in s.report()
 
 
 def test_snapshot_age_accepts_an_explicit_now():
