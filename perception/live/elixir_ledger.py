@@ -92,11 +92,21 @@ which stays None.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
-from itertools import combinations_with_replacement
+from itertools import combinations, combinations_with_replacement
 
 from timebase import MAX_ELIXIR, elixir_regenerated
+
+# How long an ISSUED placement may go unconfirmed by the bar before it is
+# written off as never having landed.
+#
+# A tap takes ~900 ms to reach the game and the board it produces is seen
+# ~700 ms after that, so a confirmation legitimately arrives ~1.6 s late. Four
+# seconds leaves room for a slow frame without holding a rejected play so long
+# that the optimistic debit starves the agent of elixir it actually has.
+PLAY_CONFIRM_WINDOW_S = 4.0
 
 # Deck costs are supplied by the caller rather than imported, so this module
 # does not need the engine binding and stays testable without the .pyd.
@@ -166,16 +176,81 @@ class ElixirLedger:
     and the hand tracker's FIFO cannot recover from being advanced a different
     number of times than the ledger thinks."""
 
+    rejected: int = 0
+    """Placements we issued that the bar never confirmed. Almost always a tap
+    that arrived after the elixir it needed had already gone."""
+
     _recent: list[tuple[float, float]] = field(default_factory=list)
     _last: float | None = None
     _last_t: float | None = None
     _first: float | None = None
     _table: dict = field(default_factory=dict)
     _min_cost: float = 0.0
+    _pending: list[tuple[float, float]] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self):
         self._table = decompositions(self.costs)
         self._min_cost = min(self.costs)
+
+    # -- ground truth from our own play stream --------------------------------
+
+    def record_play(self, cost: float, now: float | None = None) -> None:
+        """A placement we ISSUED, with its cost known exactly.
+
+        Not spend yet. A tap can be rejected -- by the time it reaches the game
+        the elixir it needed may already have gone -- so this is a hypothesis
+        the bar still has to confirm.
+
+        What it buys is the end of guessing. Inferring spend from a drop alone
+        cannot separate a 3-cost from a 4-cost on a bar quantised to whole
+        elixir; knowing what we played turns that ambiguity into arithmetic.
+        Inference remains for the observer case (a recording of someone else
+        playing), and is used only when nothing is pending.
+
+        `now` DEFAULTS TO THE LEDGER'S OWN CLOCK -- the timestamp of the last
+        reading -- and must never be a different time base from the one
+        `update()` is fed. The live loop stamps readings with the frame's
+        capture time, which starts near zero, while `time.monotonic()` is a
+        number in the hundreds of thousands: mixing them makes every expiry
+        comparison true, nothing is ever written off, and `unconfirmed_cost`
+        grows without bound until the optimistic debit reports zero elixir
+        forever. Defaulting to the frame clock makes that unrepresentable.
+        """
+        with self._lock:
+            if now is None:
+                now = self._last_t if self._last_t is not None else 0.0
+            self._pending.append((float(cost), float(now)))
+
+    @property
+    def unconfirmed_cost(self) -> float:
+        """Elixir committed by taps the bar has not caught up with yet.
+
+        The agent decides at 1 Hz on a board ~1 s old and its tap lands ~0.9 s
+        later, so the bar it is reading still shows the elixir it has already
+        promised away. Subtracting this is what stops it spending the same
+        elixir three times -- the burst that fills the actuator queue.
+        """
+        with self._lock:
+            return sum(cost for cost, _ in self._pending)
+
+    def _expire(self, now: float) -> None:
+        """Drop issued plays the bar never accounted for."""
+        keep = [(c, t) for c, t in self._pending
+                if now - t <= PLAY_CONFIRM_WINDOW_S]
+        self.rejected += len(self._pending) - len(keep)
+        self._pending = keep
+
+    def _confirm(self, drop: float):
+        """The subset of pending plays whose costs best explain `drop`."""
+        best = None
+        for n in range(1, min(len(self._pending), MAX_CARDS_PER_STEP) + 1):
+            for idx in combinations(range(len(self._pending)), n):
+                total = sum(self._pending[i][0] for i in idx)
+                err = abs(total - drop)
+                if err <= self.tolerance and (best is None or err < best[0]):
+                    best = (err, total, idx)
+        return best
 
     def update(self, elixir: float | None, now: float | None = None,
                multiplier: float = 1.0) -> None:
@@ -240,11 +315,35 @@ class ElixirLedger:
         self._last, self._last_t = value, stamp
 
         drop = expected - value
+        with self._lock:
+            self._expire(stamp)
+            pending = list(self._pending)
+
         if drop < self._min_cost - self.tolerance:
             # Ordinary regeneration, or noise below the cheapest card. Not a
             # play, and not worth counting as unexplained -- at this sample
             # rate that would fire on nearly every frame.
             return
+
+        if pending:
+            # We know what we tried to play, so match the drop against THOSE
+            # costs rather than every combination the deck could produce. A
+            # 3 and a 4 are indistinguishable on an integer bar; a 3 we issued
+            # and a 4 we did not are not.
+            with self._lock:
+                hit = self._confirm(drop)
+                if hit is not None:
+                    _err, total, idx = hit
+                    combo = tuple(self._pending[i][0] for i in idx)
+                    for i in sorted(idx, reverse=True):
+                        self._pending.pop(i)
+                    self.spent += total
+                    self.cards += len(combo)
+                    self.plays.append(combo)
+                    return
+            # A drop with plays outstanding that matches none of them: someone
+            # else is spending on this account, or a reading is wrong. Fall
+            # through to inference rather than silently dropping it.
         # NEAREST total, not the smallest qualifying one. The old rule biased
         # every ambiguous drop downward, and with an integer reader most drops
         # are ambiguous -- a systematic under-count on top of the missed cards.

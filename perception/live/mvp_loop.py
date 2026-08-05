@@ -36,7 +36,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -81,6 +81,25 @@ DECISION_HZ = 1.0
 # MAX_STALENESS_MS is imported from action_gate rather than defined here, so the
 # threshold that REPORTS staleness and the one that REFUSES to act on it cannot
 # drift apart.
+
+
+def hand_cost(gs, slot: int) -> float | None:
+    """What the card in `slot` costs, from the engine's own registry.
+
+    Via the binding rather than a cost table copied into this file -- the
+    duplicated-constant drift CLAUDE.md names as having gone stale twice.
+    Returns None for an unreadable slot rather than guessing, so an unknown
+    card cannot silently debit the wrong amount.
+    """
+    try:
+        import clash_royale_env as engine  # noqa: PLC0415
+
+        card_id = gs.my_hand[slot]
+        if card_id is None or card_id < 0:
+            return None
+        return float(engine.get_card_info(card_id)["cost"])
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 @dataclass
@@ -276,6 +295,20 @@ def main() -> int:
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
             my_elixir_spent=ledger.spent)
+        # OPTIMISTIC DEBIT. The bar the agent is reading is ~1 s old and its
+        # last tap needs another ~0.9 s to land, so cards it has already
+        # committed are still shown as affordable -- and it spends the same
+        # elixir two and three times over. Measured: four placements against a
+        # single unchanged reading of 10, which is also what fills the
+        # actuator queue and gets taps dropped.
+        #
+        # Subtracting what we have promised but not yet seen leave the bar is
+        # not a fiction, it is the better estimate, and it is what a human does
+        # without thinking about it. `my_elixir` drives affordability_mask, so
+        # this is the value the policy is actually gated on.
+        owed = ledger.unconfirmed_cost
+        if owed:
+            gs = replace(gs, my_elixir=max(0.0, gs.my_elixir - owed))
         stages.time("3 build_game_state", t)
         return state, gs
 
@@ -350,6 +383,21 @@ def main() -> int:
                     # Recorded only after the tap returns, so an adb failure
                     # leaves the board available to retry.
                     gate.record(board_index)
+                    # Ground truth: we know exactly which card and what it
+                    # cost, which no amount of staring at the bar can recover
+                    # once 3 and 4 quantise to the same drop.
+                    # Only a tap that was actually SENT spends elixir. In dry
+                    # run nothing reaches the game, and on a replay the elixir
+                    # being read is a human's -- recording our imaginary plays
+                    # there would attribute their drops to us and corrupt the
+                    # very trace the ledger is validated against.
+                    cost = (None if actuator.dry_run
+                            else hand_cost(gs, decision.slot))
+                    if cost is not None:
+                        # No timestamp: the ledger stamps it with its own frame
+                        # clock. Passing a wall clock here would mix time bases
+                        # with the readings and nothing would ever expire.
+                        ledger.record_play(cost)
                 else:
                     gate.refuse(verdict.reason)
                     decision = Decision(None, decision.tile,
@@ -400,7 +448,8 @@ def main() -> int:
               f"{actuator.errors} errors"
               + (f" - last {actuator.last_error!r}" if actuator.last_error else ""))
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "
-          f"residual {ledger.residual:+.0f}")
+          f"residual {ledger.residual:+.0f}, "
+          f"{ledger.rejected} issued plays never confirmed")
     return 0
 
 

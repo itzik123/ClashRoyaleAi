@@ -206,3 +206,99 @@ def test_a_double_elixir_multiplier_changes_the_expected_regen():
         single.update(5.0, now=i * 1.0, multiplier=1.0)
         double.update(5.0, now=i * 1.0, multiplier=2.0)
     assert double.gained == pytest.approx(2 * single.gained, rel=1e-6)
+
+
+# --- ground truth from our own plays ----------------------------------------
+
+def test_a_confirmed_play_uses_the_cost_we_know_not_a_guess():
+    """The bar cannot separate 3 from 4 -- each endpoint of a drop is quantised
+    to whole elixir. Knowing what we issued turns that ambiguity into
+    arithmetic."""
+    ledger = ElixirLedger()
+    ledger.record_play(3.0, now=0.0)
+    for i, v in enumerate([9, 9, 9, 6, 6, 6]):
+        ledger.update(v, now=i * 0.1)
+    assert ledger.plays == [(3.0,)]
+    assert ledger.spent == pytest.approx(3.0)
+
+
+def test_an_issued_play_is_not_spend_until_the_bar_confirms_it():
+    """A tap can be rejected: by the time it reaches the game the elixir it
+    needed may already be gone. Counting it at issue would invent spend."""
+    ledger = ElixirLedger()
+    ledger.record_play(4.0, now=0.0)
+    assert ledger.spent == 0.0
+    assert ledger.cards == 0
+    assert ledger.unconfirmed_cost == pytest.approx(4.0)
+
+
+def test_an_unconfirmed_play_is_written_off_not_carried_forever():
+    """Otherwise a single rejected tap would debit the agent's elixir for the
+    rest of the match."""
+    ledger = ElixirLedger()
+    ledger.record_play(4.0, now=0.0)
+    for i, v in enumerate([7] * 6):
+        ledger.update(v, now=i * 2.0)          # well past the window
+    assert ledger.rejected == 1
+    assert ledger.unconfirmed_cost == 0.0
+    assert ledger.spent == 0.0
+
+
+def test_unconfirmed_cost_is_what_stops_the_double_spend():
+    """The burst: the agent commits, the bar has not moved yet, and it commits
+    again against the same visually stale elixir."""
+    ledger = ElixirLedger()
+    ledger.record_play(5.0, now=0.0)
+    ledger.record_play(4.0, now=0.5)
+    assert ledger.unconfirmed_cost == pytest.approx(9.0)
+
+
+def test_two_issued_plays_confirmed_by_one_drop():
+    """Both taps can land inside a single sample at this frame rate."""
+    ledger = ElixirLedger()
+    ledger.record_play(3.0, now=0.0)
+    ledger.record_play(4.0, now=0.0)
+    for i, v in enumerate([10, 10, 10, 3, 3, 3]):
+        ledger.update(v, now=i * 0.1)
+    assert ledger.cards == 2
+    assert ledger.spent == pytest.approx(7.0)
+    assert ledger.unconfirmed_cost == 0.0
+
+
+def test_inference_still_works_with_nothing_pending():
+    """The observer case -- a recording of someone else playing -- has no issue
+    stream at all, and is what the BC extraction will run on."""
+    ledger = ElixirLedger()
+    for i, v in enumerate([9, 9, 9, 5, 5, 5]):
+        ledger.update(v, now=i * 0.1)
+    assert ledger.cards == 1
+    assert ledger.spent == pytest.approx(4.0)
+
+
+def test_a_drop_matching_no_pending_play_falls_back_to_inference():
+    """Something spent elixir that we did not issue. Dropping it silently would
+    leave the residual demanding a placement nobody can find."""
+    ledger = ElixirLedger()
+    ledger.record_play(3.0, now=0.0)
+    for i, v in enumerate([10, 10, 10, 5, 5, 5]):   # a drop of 5, not 3
+        ledger.update(v, now=i * 0.1)
+    assert ledger.cards == 1
+    assert ledger.spent == pytest.approx(5.0)
+
+
+def test_record_play_defaults_to_the_ledgers_own_clock():
+    """Time bases must not mix. The live loop stamps readings with the frame's
+    capture time, which starts near zero; `time.monotonic()` is in the hundreds
+    of thousands. Mixed, every expiry comparison passes, nothing is ever
+    written off, and `unconfirmed_cost` grows without bound until the
+    optimistic debit reports zero elixir for the rest of the match."""
+    ledger = ElixirLedger()
+    for i, v in enumerate([7, 7, 7]):
+        ledger.update(v, now=i * 0.5)          # frame clock, near zero
+    ledger.record_play(4.0)                     # no timestamp
+    assert ledger.unconfirmed_cost == pytest.approx(4.0)
+    # Advance the frame clock past the window; it must expire.
+    for i, v in enumerate([7, 7, 7, 7]):
+        ledger.update(v, now=10.0 + i * 2.0)
+    assert ledger.rejected == 1
+    assert ledger.unconfirmed_cost == 0.0
