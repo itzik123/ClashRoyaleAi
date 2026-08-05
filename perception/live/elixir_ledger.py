@@ -111,6 +111,16 @@ class ElixirLedger:
     glitches: int = 0
     unexplained: int = 0
 
+    plays: list[tuple[float, ...]] = field(default_factory=list)
+    """One entry per detected placement step, holding the card costs that
+    explain the drop -- (4.0,) for one card, (3.0, 4.0) for two in one sample.
+
+    Published so the hand tracker consumes THESE rather than re-deriving drops
+    from the same elixir trace. Two independent drop detectors reading one
+    signal is two things that can disagree about whether a card was played,
+    and the hand tracker's FIFO cannot recover from being advanced a different
+    number of times than the ledger thinks."""
+
     _recent: list[float] = field(default_factory=list)
     _last: float | None = None
     _first: float | None = None
@@ -164,6 +174,7 @@ class ElixirLedger:
         total, combo = best
         self.spent += total
         self.cards += len(combo)
+        self.plays.append(tuple(combo))
 
     @property
     def residual(self) -> float:
