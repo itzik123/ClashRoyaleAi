@@ -59,6 +59,12 @@ DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
 # How long to wait for the placed unit to exist and be detectable. A card is
 # visible almost immediately but the deploy animation is not what the detector
 # was trained on.
+#
+# THIS IS A CONFOUND FOR TROOPS, and it is not small: a Mini P.E.K.K.A placed at
+# engine y=4 read back at y=5 after 1.2 s, which is exactly the distance it
+# walks in that time. Measuring a coordinate convention with a unit that moves
+# means measuring the settle time as well. Probe with the CANNON -- a building
+# does not move, so its reading is the placement and nothing else.
 SETTLE_S = 1.2
 
 
@@ -92,6 +98,9 @@ def main() -> int:
     ap.add_argument("--x", type=int, required=True, help="engine tile x")
     ap.add_argument("--y", type=int, required=True, help="engine tile y")
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--settle", type=float, default=SETTLE_S,
+                    help="seconds before reading the board back. Only "
+                         "meaningful for a building; a troop walks.")
     ap.add_argument("--adb", type=Path, default=ADB)
     ap.add_argument("--out", type=Path, default=Path.cwd())
     args = ap.parse_args()
@@ -125,7 +134,7 @@ def main() -> int:
     card_tap, tile_tap = actuator.play(args.slot, args.x, args.y)
     print(f"  taps: card={card_tap} tile={tile_tap}")
 
-    time.sleep(SETTLE_S)
+    time.sleep(args.settle)
     after_img = screencap(args.adb, args.out / f"probe_{tag}_after.png")
     after = detector.run(after_img.resize((SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT),
                                           Image.LANCZOS))
