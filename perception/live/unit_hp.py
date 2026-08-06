@@ -209,7 +209,8 @@ def _bar_classes(rgb: np.ndarray, ally: bool) -> tuple[np.ndarray, np.ndarray]:
     return track, fill
 
 
-def _badge_mask(rgb_window: np.ndarray, ally: bool) -> np.ndarray:
+def _badge_mask(rgb_window: np.ndarray, ally: bool,
+                hsv: np.ndarray | None = None) -> np.ndarray:
     """The LEVEL BADGE beside the bar -- the reliable anchor.
 
     Searching for the bar directly does not work. It is a ~40x6 strip of low
@@ -224,7 +225,12 @@ def _badge_mask(rgb_window: np.ndarray, ally: bool) -> np.ndarray:
     """
     import cv2  # noqa: PLC0415
 
-    hsv = cv2.cvtColor(rgb_window, cv2.COLOR_RGB2HSV)
+    # `hsv` is passed in when the caller already has it. The ally and enemy
+    # masks differ only in their hue band, so converting the frame twice was
+    # half this function's cost -- 32 ms of a 93 ms find_badges, on the
+    # producer thread, for a result identical either way.
+    if hsv is None:
+        hsv = cv2.cvtColor(rgb_window, cv2.COLOR_RGB2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     if ally:
         hue = (h >= ALLY_HUE[0]) & (h <= ALLY_HUE[1])
@@ -268,9 +274,11 @@ def find_badges(frame) -> list[Badge]:
 
     arr = np.asarray(frame)[..., :3]
     scale = arr.shape[1] / CALIBRATION_WIDTH
+    # Converted once and shared: the two passes differ only in hue band.
+    hsv = cv2.cvtColor(np.ascontiguousarray(arr), cv2.COLOR_RGB2HSV)
     out: list[Badge] = []
     for ally in (True, False):
-        mask = _badge_mask(arr, ally).astype(np.uint8)
+        mask = _badge_mask(arr, ally, hsv=hsv).astype(np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
         # Pixels belonging to a vertical run at least BADGE_MIN_RUN long.
         # Opening with a vertical line is exactly that test. Used only to

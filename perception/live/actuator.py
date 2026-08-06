@@ -32,8 +32,12 @@ Where the time goes, measured on this emulator:
 
 So it is NOT host-side process spawn. `input` is a Java program and Android
 starts an app_process for every invocation; a persistent host channel collapses
-trivial commands 107 -> 3 ms and does nothing at all for `input`. That is why
-this does not use one.
+trivial commands 107 -> 3 ms and does nothing at all for `input`.
+
+That last point stopped being true once the tap stopped being `input` -- see
+below. A persistent shell IS used now, because the raw path's cost is host-side
+connection setup and nothing else: 129 ms one-shot against 50 ms down an
+already-open shell.
 
 Taps therefore move OFF the decision thread. That fixed the cadence; the
 latency itself is fixed below.
@@ -93,6 +97,7 @@ import queue
 import struct
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,6 +132,9 @@ ABS_MAX = 32767
 # buttons. Cheap -- it is an on-device sleep inside a round trip we are making
 # anyway, not another round trip.
 TOUCH_HOLD_S = 0.06
+
+# Marks the end of a command down the persistent shell.
+_SENTINEL = "__ACT_DONE__"
 
 
 def _input_event(ev_type: int, code: int, value: int) -> bytes:
@@ -268,6 +276,7 @@ class AdbActuator:
         self.errors = 0
         self.last_error: BaseException | None = None
         self.raw: RawTouch | None = None
+        self._proc: subprocess.Popen | None = None
         if not dry_run and not self.adb.exists():
             raise ActuationError(f"adb not found at {self.adb}")
         if raw_touch and not dry_run:
@@ -331,6 +340,7 @@ class AdbActuator:
         self._q.join()
         self._stop.set()
         self._worker.join(timeout=timeout)
+        self._close_shell()
 
     @property
     def pending(self) -> int:
@@ -361,15 +371,66 @@ class AdbActuator:
     def backend(self) -> str:
         return "raw-evdev" if self.raw is not None else "input-tap"
 
-    def _shell(self, script: str) -> None:
+    def _adb(self, *args: str) -> list[str]:
         cmd = [str(self.adb)]
         if self.serial:
             cmd += ["-s", self.serial]
-        cmd += ["shell", script]
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        return cmd + list(args)
+
+    def _open_shell(self):
+        """One long-lived `adb shell`, so a placement pays no connection cost.
+
+        Measured on this box: the same command costs 129 ms as a one-shot
+        `adb shell` and 50 ms down an already-open one. That is pure host-side
+        connection setup, and it is ~80 ms off every placement without changing
+        a single timing constant on the device.
+        """
+        return subprocess.Popen(
+            self._adb("shell"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    def _shell(self, script: str) -> None:
+        try:
+            self._shell_persistent(script)
+            return
+        except Exception:                                   # noqa: BLE001
+            # A dead or wedged shell must not cost us the placement: drop it
+            # and fall back, and the next call reopens. Silently retrying
+            # forever down a broken pipe would look exactly like an actuator
+            # that had stopped working.
+            self._close_shell()
+        done = subprocess.run(self._adb("shell", script), capture_output=True,
+                              text=True, timeout=20)
         if done.returncode != 0:
             raise ActuationError(
                 f"adb failed ({done.returncode}): {done.stderr.strip()}")
+
+    def _shell_persistent(self, script: str) -> None:
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = self._open_shell()
+        # A sentinel rather than a fixed read: the script's own output is not
+        # something this can predict, and reading a fixed number of lines would
+        # desynchronise the stream the first time one of them printed anything.
+        self._proc.stdin.write(f"{script}; echo {_SENTINEL}\n")
+        self._proc.stdin.flush()
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            line = self._proc.stdout.readline()
+            if not line:
+                raise ActuationError("adb shell closed")
+            if _SENTINEL in line:
+                return
+        raise ActuationError("adb shell timed out")
+
+    def _close_shell(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+        proc.terminate()
 
     def _run(self) -> None:
         while not self._stop.is_set():
