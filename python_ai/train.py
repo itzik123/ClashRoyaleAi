@@ -243,6 +243,57 @@ def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
     return w * (in_range & actionable).astype(np.float32)
 
 
+# --- Value Fireball (heuristic 1) -------------------------------------------
+# NOT potential-based, deliberately, and therefore biasing by construction --
+# the same eyes-open trade as W_TOWER_DESTROYED. That is the point: PBRS cannot
+# change an optimum, and this term exists precisely to change one. It anneals to
+# zero so the policy finishes trained on the true objective.
+W_SPELL_VALUE_START = 0.08
+W_SPELL_VALUE_FINAL = 0.0
+SPELL_VALUE_ANNEAL_EPISODES = 40000
+# Elixir that must remain after a cast for its POSITIVE reward to count. Set to
+# Fireball's own cost: enough to answer with one more card.
+SPELL_SOLVENCY_RESERVE = 4.0
+
+
+def spell_value_weight(eps_done):
+    frac = min(1.0, max(0.0, eps_done / float(SPELL_VALUE_ANNEAL_EPISODES)))
+    return W_SPELL_VALUE_START + frac * (W_SPELL_VALUE_FINAL - W_SPELL_VALUE_START)
+
+
+def spell_value_shaping(stats, prev_stats, w):
+    """Pays for the elixir a Fireball actually destroys, charges for casting it.
+
+    The cast term is load-bearing and is the whole reason this is not simply
+    "reward value destroyed". Rewarding only successful hits makes a WHIFFED
+    Fireball cost exactly zero, and guaranteed-zero beats risky-positive -- the
+    identical failure that put the Cannon in a back corner (see
+    tower_potential). Charging one unit per cast makes the quantity a TRADE
+    RATIO centred on break-even:
+
+        killed 8 elixir with a 4-cost spell ->  8/4 - 1 = +1.00
+        killed 3 elixir (a Minions squad)   ->  3/4 - 1 = -0.25
+        killed nothing                      ->  0/4 - 1 = -1.00
+
+    So it agrees with the measured EV rather than fighting it: the -1 trade that
+    is Fireball's common case scores negative, and only genuine two-for-ones
+    pay. Nothing here has to detect "bad timing" -- a mistimed cast earns its
+    penalty automatically by killing nothing.
+
+    The solvency gate is asymmetric ON PURPOSE. A good trade made while broke
+    earns nothing; a bad trade costs regardless. That is what makes the
+    "Fireball at our own bridge with 4 elixir left and a push incoming" case
+    unprofitable at best rather than merely less profitable, which is the
+    spam-failure this whole term has to avoid.
+    """
+    killed = np.maximum(0.0, stats["fireball_value_killed"] - prev_stats["fireball_value_killed"])
+    spent = np.maximum(0.0, stats["fireball_elixir_spent"] - prev_stats["fireball_elixir_spent"])
+    casts = spent / FIREBALL_COST
+    traded = killed / FIREBALL_COST - casts
+    solvent = (stats["team0_elixir_current"] >= SPELL_SOLVENCY_RESERVE).astype(np.float32)
+    return (w * np.where(traded > 0.0, traded * solvent, traded)).astype(np.float32)
+
+
 def tower_potential(stats, w_bldg=W_BLDG):
     """Phi(s): the TOWER-damage differential, normalized.
 
@@ -271,7 +322,7 @@ def tower_potential(stats, w_bldg=W_BLDG):
 
 def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
                      w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW,
-                     w_tower=W_TOWER_DESTROYED):
+                     w_tower=W_TOWER_DESTROYED, w_spell=W_SPELL_VALUE_START):
     """
     Vectorized dense-reward shaping term based on per-step damage-dealt and
     elixir-spent deltas, read from the engine's authoritative MatchStatistics
@@ -347,6 +398,7 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
 
     shaping = (tower_shaping
                + lethal_shaping
+               + spell_value_shaping(stats, prev_stats, w_spell)
                + tower_events
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
@@ -1087,6 +1139,10 @@ def train_ppo():
                     dtype=np.float32).reshape(len(zeros), 3),
                 "fireball_in_hand": np.asarray(
                     infos.get("fireball_in_hand", zeros), dtype=np.float32),
+                "fireball_value_killed": np.asarray(
+                    infos.get("fireball_value_killed", zeros), dtype=np.float32),
+                "fireball_elixir_spent": np.asarray(
+                    infos.get("fireball_elixir_spent", zeros), dtype=np.float32),
                 "team1_tower_damage": infos.get("team1_tower_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),

@@ -136,6 +136,57 @@ public:
     }
 };
 
+// Elixir VALUE destroyed, per (team, killer's cardId). Same attribution
+// machinery as KillStatsCollector above -- last hitter, credited on death,
+// invalidated by decay -- but weighted by the VICTIM's elixir cost instead of
+// counted.
+//
+// Cost rather than HP on purpose. A trade is settled in elixir, and raw damage
+// is already rewarded via train.py's W_TROOPS term; paying again on damage
+// would double-count overkill, making a Fireball that deals 689 to a 230 HP
+// Minion look three times better than one that deals exactly 230. Cost is also
+// the only unit in which "did this spell earn its 4 elixir" is a well-posed
+// question, which is what the shaping term consuming this actually asks.
+//
+// Towers are skipped: getCard() returns nullptr for them (negative sentinel
+// id, never registered) and a tower has no elixir cost to credit. Tower value
+// is already carried by the tower potential and W_TOWER_DESTROYED.
+class ElixirValueKilledCollector : public IStatsObserver {
+    struct LastHit { int attackerTeam; int attackerCardId; };
+    std::unordered_map<int, LastHit> lastHitByEntityId;
+    std::unordered_map<int, float> valueByCardByTeam[2];
+    float valueByTeam[2] = { 0.0f, 0.0f };
+
+public:
+    void onDamageDealt(const DamageDealtEvent& e) override {
+        if (e.targetTeam == e.attackerTeam) return;
+        lastHitByEntityId[e.targetId] = { e.attackerTeam, e.attackerCardId };
+    }
+
+    void onAttributionCleared(const AttributionClearedEvent& e) override {
+        lastHitByEntityId.erase(e.entityId);
+    }
+
+    void onEntityDied(const EntityDiedEvent& e) override {
+        auto it = lastHitByEntityId.find(e.entityId);
+        if (it == lastHitByEntityId.end()) return;
+        const CardDefinition* victim = CardRegistry::getInstance().getCard(e.cardId);
+        if (victim != nullptr) {
+            int t = (it->second.attackerTeam == 0) ? 0 : 1;
+            valueByCardByTeam[t][it->second.attackerCardId] += victim->cost;
+            valueByTeam[t] += victim->cost;
+        }
+        lastHitByEntityId.erase(it);
+    }
+
+    float total(int team) const { return valueByTeam[(team == 0) ? 0 : 1]; }
+    float byCard(int cardId, int team) const {
+        const auto& m = valueByCardByTeam[(team == 0) ? 0 : 1];
+        auto it = m.find(cardId);
+        return (it != m.end()) ? it->second : 0.0f;
+    }
+};
+
 // Elixir spent per team, per (team, cardId) -- spent == the card's cost,
 // already on CardPlayedEvent.
 class ElixirStatsCollector : public IStatsObserver {

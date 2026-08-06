@@ -19,6 +19,7 @@ class MatchStatistics {
     std::shared_ptr<DamageStatsCollector> damage;
     std::shared_ptr<DamageByTargetTypeCollector> damageByTargetType;
     std::shared_ptr<KillStatsCollector> kill;
+    std::shared_ptr<ElixirValueKilledCollector> elixirValueKilled;
     std::shared_ptr<ElixirStatsCollector> elixir;
     std::shared_ptr<CardPlayStatsCollector> cardPlay;
     std::shared_ptr<ChampionAbilityStatsCollector> championAbility;
@@ -47,6 +48,7 @@ public:
         damage = std::make_shared<DamageStatsCollector>();
         damageByTargetType = std::make_shared<DamageByTargetTypeCollector>();
         kill = std::make_shared<KillStatsCollector>();
+        elixirValueKilled = std::make_shared<ElixirValueKilledCollector>();
         elixir = std::make_shared<ElixirStatsCollector>();
         cardPlay = std::make_shared<CardPlayStatsCollector>();
         championAbility = std::make_shared<ChampionAbilityStatsCollector>();
@@ -55,6 +57,7 @@ public:
         board.statsEvents.subscribe(damage);
         board.statsEvents.subscribe(damageByTargetType);
         board.statsEvents.subscribe(kill);
+        board.statsEvents.subscribe(elixirValueKilled);
         board.statsEvents.subscribe(elixir);
         board.statsEvents.subscribe(cardPlay);
         board.statsEvents.subscribe(championAbility);
@@ -76,6 +79,11 @@ public:
     int towerDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->towerDamageDealt(team) : 0; }
 
     int kills(int team) const { return kill ? kill->kills(team) : 0; }
+    // Elixir value of everything `cardId` has killed for `team` -- see
+    // ElixirValueKilledCollector for why this is priced in cost, not HP.
+    float elixirValueKilledBy(int cardId, int team) const {
+        return elixirValueKilled ? elixirValueKilled->byCard(cardId, team) : 0.0f;
+    }
     int killsByCard(int cardId, int team) const { return kill ? kill->killsByCard(cardId, team) : 0; }
 
     float elixirSpent(int team) const { return elixir ? elixir->total(team) : 0.0f; }

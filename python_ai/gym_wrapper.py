@@ -253,6 +253,11 @@ class MicroRoyaleEnv(gym.Env):
             # normalized in its appended scalar tail (indices 6-8 = enemy
             # king/left/right), so this is a re-scale of data the net already
             # sees rather than a new engine call.
+            # Heuristic-1 inputs (train.spell_value_shaping). BOTH are needed:
+            # value-destroyed alone makes a whiffed spell free, which is the
+            # guaranteed-zero trap that parked the Cannon in a back corner.
+            "fireball_value_killed": self.game.get_elixir_value_killed_by(train_FIREBALL_ID, 0),
+            "fireball_elixir_spent": self.game.get_elixir_spent_on_card(train_FIREBALL_ID, 0),
             "enemy_tower_hp": np.asarray(obs[-clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS:][6:9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
             "fireball_in_hand": float(train_FIREBALL_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),

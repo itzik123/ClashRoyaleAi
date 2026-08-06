@@ -605,6 +605,16 @@ public:
     int getTroopDamageDealt(int team) const { return game.getStatistics().troopDamageDealt(team); }
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
     int getTowerDamageDealt(int team) const { return game.getStatistics().towerDamageDealt(team); }
+    // Heuristic-1 inputs: elixir value a given card has destroyed, and the
+    // elixir it has been spent on (casts = spend / cost). Both are needed --
+    // rewarding only the value destroyed makes a whiffed spell FREE, which is
+    // the same guaranteed-zero trap that put the Cannon in a back corner.
+    float getElixirValueKilledBy(int cardId, int team) const {
+        return game.getStatistics().elixirValueKilledBy(cardId, team);
+    }
+    float getElixirSpentOnCard(int cardId, int team) const {
+        return game.getStatistics().elixirSpentByCard(cardId, team);
+    }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
 
