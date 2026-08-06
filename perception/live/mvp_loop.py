@@ -135,6 +135,59 @@ def wait_for_fresher(worker, snap):
     return snap, (time.perf_counter() - started) * 1000.0
 
 
+def deck_costs(deck) -> tuple[tuple[float, ...], list[str]]:
+    """The distinct elixir costs in `deck`, and anything worth complaining about.
+
+    The ledger explains an elixir drop by decomposing it into card costs, so its
+    cost table has to be the DECK's. Left at its default of (3, 4, 5) -- which
+    happens to be exactly this deck's profile -- a deck containing a 2 or a 6
+    would produce drops matching no legal combination, and those placements
+    would vanish from the ledger silently. Not an error, not a warning: simply
+    absent, with `my_elixir_spent` drifting further off for the rest of the
+    match. That is the whole reason this is derived rather than assumed.
+
+    Costs come from the ENGINE registry, because that is what fills the
+    observation's cost scalars and therefore what `affordability_mask` gates on.
+    A ledger disagreeing with the mask about what a card costs would be a second
+    source of truth for the same number.
+
+    CRBAB carries its own cost per card, so the two are cross-checked. They
+    describe the same real game and a disagreement means one of them is wrong
+    about it -- worth saying out loud rather than silently preferring either.
+    """
+    import clash_royale_env as engine  # noqa: PLC0415
+
+    from live.unit_to_card import (  # noqa: PLC0415
+        UNKNOWN_CARD_SIM_ID,
+        hand_card_id_for,
+    )
+
+    costs: set[float] = set()
+    warnings: list[str] = []
+    for card in deck:
+        crbab = float(card.cost)
+        sim_id = hand_card_id_for(card.name)
+        engine_cost = None
+        if sim_id != UNKNOWN_CARD_SIM_ID:
+            try:
+                engine_cost = float(engine.get_card_info(sim_id)["cost"])
+            except Exception:                               # noqa: BLE001
+                engine_cost = None
+        if engine_cost is None:
+            # Fall back rather than drop it: a missing cost removes a whole
+            # card's worth of explanations from the table, which is the exact
+            # silent loss this function exists to prevent.
+            costs.add(crbab)
+            warnings.append(f"{card.name}: not in the engine registry, "
+                            f"using CRBAB's cost {crbab:.0f}")
+        else:
+            costs.add(engine_cost)
+            if engine_cost != crbab:
+                warnings.append(f"{card.name}: engine says {engine_cost:.0f}, "
+                                f"CRBAB says {crbab:.0f}")
+    return tuple(sorted(costs)), warnings
+
+
 def hand_cost(gs, slot: int) -> float | None:
     """What the card in `slot` costs, from the engine's own registry.
 
@@ -313,7 +366,11 @@ def main() -> int:
     else:
         policy = ScriptedPolicy()
         print("policy: scripted placeholder")
-    ledger = ElixirLedger()
+    costs, cost_warnings = deck_costs(DECK)
+    for warning in cost_warnings:
+        print(f"  !! card cost: {warning}")
+    print(f"deck costs: {', '.join(f'{c:.0f}' for c in costs)}")
+    ledger = ElixirLedger(costs=costs)
     gate = ActionGate(enforce_staleness=not args.ignore_staleness)
 
     print(f"capture {source.size[0]}x{source.size[1]}   "
