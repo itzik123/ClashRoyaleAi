@@ -254,3 +254,72 @@ def test_snapshot_age_accepts_an_explicit_now():
                     captured_at=time.perf_counter() - 1.0, index=0,
                     detect_ms=0.0)
     assert snap.age_ms(time.perf_counter()) == pytest.approx(1000, abs=100)
+
+
+# --- producer period and the sampling residual ------------------------------
+
+def test_period_is_none_until_it_can_be_measured():
+    """A caller that waits on a guessed period waits for nothing."""
+    w = PerceptionWorker(FakeSource(limit=1), None, perceive_ok)
+    assert w.period is None
+    w.start()
+    try:
+        assert wait_for(lambda: w.frames >= 1)
+        assert w.period is None, "one publication cannot give an interval"
+    finally:
+        w.stop()
+
+
+def test_period_tracks_the_real_publication_rate():
+    delay = 0.08
+
+    def slow(frame):
+        time.sleep(delay)
+        return "state", "gs"
+
+    w = PerceptionWorker(FakeSource(), None, slow)
+    w.start()
+    try:
+        assert wait_for(lambda: w.frames > 6, timeout=5.0)
+        assert w.period == pytest.approx(delay, abs=delay * 0.6)
+    finally:
+        w.stop()
+
+
+def test_period_uses_the_median_not_the_mean():
+    """Perception occasionally takes several times its usual duration. A mean
+    dragged up by one of those tells the decision loop to wait for a board that
+    is not coming."""
+    w = PerceptionWorker(FakeSource(limit=0), None, perceive_ok)
+    with w._lock:
+        w._publishes.extend([0.0, 0.1, 0.2, 0.3, 2.0])   # one huge stall
+    assert w.period == pytest.approx(0.1, abs=0.01)
+
+
+def test_published_at_is_after_detection_and_age_exceeds_sat():
+    """`age` counts from capture, `sat` from publication. The difference is the
+    detection time, and the residual this whole mechanism removes is `sat`."""
+    delay = 0.2
+
+    def slow(frame):
+        time.sleep(delay)
+        return "state", "gs"
+
+    w = PerceptionWorker(FakeSource(limit=1), None, slow)
+    w.start()
+    try:
+        assert wait_for(lambda: w.latest() is not None, timeout=3.0)
+        snap = w.latest()
+        assert snap.published_at > snap.captured_at
+        now = time.perf_counter()
+        assert snap.age_ms(now) > snap.sat_ms(now) + delay * 1000 * 0.8
+    finally:
+        w.stop()
+
+
+def test_an_unset_published_at_reads_as_sitting_forever():
+    """The default has to fail SAFE: a missing value must make the freshness
+    wait decline, not fire on a board it knows nothing about."""
+    snap = Snapshot(state=None, game_state=None,
+                    captured_at=time.perf_counter(), index=0, detect_ms=0.0)
+    assert snap.sat_ms() > 1e6

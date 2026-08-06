@@ -48,10 +48,15 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
+# How many recent publications the period estimate is taken over. Long enough
+# to be robust to one slow frame, short enough to track a real change in load.
+PERIOD_WINDOW = 12
 
 
 class Stages:
@@ -119,9 +124,27 @@ class Snapshot:
     index: int
     detect_ms: float
 
+    published_at: float = 0.0
+    """perf_counter when this became the newest board -- AFTER detection.
+
+    `captured_at` says how old the board is; this says how long it has been
+    sitting available. The difference is the sampling residual: time the
+    decision loop held a finished board without acting on it, which is pure
+    waste and the only part of the latency that costs nothing to remove.
+
+    Defaults to 0 so an unset value reads as "sitting forever", which makes
+    `sat_ms` large and the freshness wait decline to trigger. Degrading to the
+    old always-act-now behaviour is the safe direction for a missing field.
+    """
+
     def age_ms(self, now: float | None = None) -> float:
         return ((time.perf_counter() if now is None else now)
                 - self.captured_at) * 1000.0
+
+    def sat_ms(self, now: float | None = None) -> float:
+        """How long this board has been published and unused."""
+        return ((time.perf_counter() if now is None else now)
+                - self.published_at) * 1000.0
 
 
 class PerceptionWorker:
@@ -150,6 +173,10 @@ class PerceptionWorker:
         # perceive. Their sum is the producer's period, and which of the two
         # dominates decides whether the next move is capture or compute.
         self.stages = Stages()
+        # Recent publication times, for the decision loop to predict when the
+        # next board lands. Bounded: the rate drifts with machine load, and an
+        # average over the whole run would describe neither now nor then.
+        self._publishes: deque[float] = deque(maxlen=PERIOD_WINDOW)
 
     def start(self) -> None:
         self._thread.start()
@@ -165,6 +192,25 @@ class PerceptionWorker:
     @property
     def alive(self) -> bool:
         return self._thread.is_alive()
+
+    @property
+    def period(self) -> float | None:
+        """Seconds between boards, or None until it can be measured.
+
+        The MEDIAN of recent intervals, not the mean: perception occasionally
+        takes several times its usual duration when the machine is busy, and a
+        mean dragged upward by one of those would tell the decision loop to
+        wait for a board that is not coming.
+
+        None rather than a guess when there is not enough history -- a caller
+        that waits on a made-up period waits for nothing.
+        """
+        with self._lock:
+            stamps = list(self._publishes)
+        if len(stamps) < 3:
+            return None
+        gaps = np.diff(stamps)
+        return float(np.median(gaps)) if len(gaps) else None
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -182,10 +228,14 @@ class PerceptionWorker:
                 self.stages.time("9 perceive TOTAL", started)
                 if state is None:
                     continue
+                published_at = time.perf_counter()
                 snapshot = Snapshot(
                     state=state, game_state=game_state,
                     captured_at=captured_at, index=frame.index,
-                    detect_ms=(time.perf_counter() - started) * 1000.0)
+                    detect_ms=(published_at - started) * 1000.0,
+                    published_at=published_at)
+                with self._lock:
+                    self._publishes.append(published_at)
                 if self._on_observation is not None:
                     self._on_observation(state, game_state)
                 with self._lock:

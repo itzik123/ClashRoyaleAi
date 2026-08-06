@@ -83,6 +83,58 @@ DECISION_HZ = 1.0
 # drift apart.
 
 
+# The longest the loop will hold a decision back to get a fresher board. Caps
+# the cadence jitter a wait introduces: 150 ms on a 1000 ms tick is 15%, and
+# the phase-lock means it only happens while converging, not every tick.
+FRESHNESS_WAIT_CAP_S = 0.15
+
+# Added to the predicted arrival so a board landing slightly late is still
+# caught. Without it the wait expires just before the thing it is waiting for.
+FRESHNESS_WAIT_SLACK_S = 0.03
+
+
+def wait_for_fresher(worker, snap):
+    """Hold the decision briefly if a newer board is about to land.
+
+    THE WASTE THIS REMOVES. The producer publishes at its own rate and the
+    decision loop samples at 1 Hz on an unrelated phase, so the board being
+    acted on has typically been sitting finished for part of a producer period.
+    That time is pure loss: it ages the world model without buying anything.
+
+    Waiting for the next board shrinks the gap between "when the board was
+    captured" and "when the card lands", because the newer board is captured
+    later while the card lands only slightly later. The gap is what decides
+    whether a counter meets the Battle Ram or arrives behind it.
+
+    WHY IT IS BOUNDED, AND CONDITIONAL. Waiting is not free -- the action does
+    land later in wall time -- so it is only worth it when the board in hand is
+    already stale and the next is imminent. If the board just arrived, the next
+    one is a whole period away and waiting would trade a lot of delay for
+    nothing. Hence: wait only when the predicted arrival is within
+    FRESHNESS_WAIT_CAP_S.
+
+    Returns (snapshot, waited_ms).
+    """
+    period = worker.period
+    if period is None:
+        # Not enough history to predict an arrival. Acting now is the safe
+        # default; waiting on a guessed period waits for nothing.
+        return snap, 0.0
+
+    started = time.perf_counter()
+    eta = period - snap.sat_ms(started) / 1000.0
+    if not 0.0 < eta <= FRESHNESS_WAIT_CAP_S:
+        return snap, 0.0
+
+    deadline = started + min(eta + FRESHNESS_WAIT_SLACK_S, FRESHNESS_WAIT_CAP_S)
+    while time.perf_counter() < deadline:
+        newer = worker.latest()
+        if newer is not None and newer.index != snap.index:
+            return newer, (time.perf_counter() - started) * 1000.0
+        time.sleep(0.004)
+    return snap, (time.perf_counter() - started) * 1000.0
+
+
 def hand_cost(gs, slot: int) -> float | None:
     """What the card in `slot` costs, from the engine's own registry.
 
@@ -334,6 +386,7 @@ def main() -> int:
     next_due = t0
     n = slow = stale = 0
     ages = []
+    waits: list[float] = []
     try:
         while time.perf_counter() - t0 < args.seconds:
             now = time.perf_counter()
@@ -341,7 +394,6 @@ def main() -> int:
                 if now < next_due:
                     time.sleep(min(0.02, next_due - now))
                     continue
-                next_due = now + 1.0 / DECISION_HZ
 
             step = time.perf_counter()
             age_ms = 0.0
@@ -353,6 +405,10 @@ def main() -> int:
                         print(f"  perception thread DIED: {worker.last_error!r}")
                         break
                     continue
+                snap, waited_ms = wait_for_fresher(worker, snap)
+                if waited_ms:
+                    waits.append(waited_ms)
+                step = time.perf_counter()
                 state, gs = snap.state, snap.game_state
                 age_ms = snap.age_ms(step)
                 board_index = snap.index
@@ -368,6 +424,14 @@ def main() -> int:
                 if state is None:
                     continue
                 board_index = frame.index
+
+            # Phase-locked, not on a fixed grid: the next tick is measured from
+            # the decision that actually happened, so a wait shifts the whole
+            # cadence rather than being repaid by a short interval afterwards.
+            # Once aligned to the producer, boards arrive just before each tick
+            # and the wait stops triggering by itself.
+            if replay is None:
+                next_due = time.perf_counter() + 1.0 / DECISION_HZ
 
             in_game = state.screen.name == "in_game"
             if hasattr(policy, "on_screen_change"):
@@ -435,6 +499,15 @@ def main() -> int:
             print(f"board age: mean {a.mean():.0f} ms  median {np.median(a):.0f}"
                   f"  p95 {np.percentile(a, 95):.0f}  max {a.max():.0f}"
                   f"   over {MAX_STALENESS_MS:.0f} ms on {stale}/{max(n, 1)}")
+        p = worker.period
+        print(f"producer period: {p * 1000:.0f} ms" if p else
+              "producer period: not measured")
+        if waits:
+            w = np.array(waits)
+            print(f"freshness waits: {len(waits)}/{max(n, 1)} decisions, "
+                  f"mean {w.mean():.0f} ms  max {w.max():.0f} ms")
+        else:
+            print("freshness waits: none (boards already arriving on phase)")
         print("\nproducer period, by stage (median):")
         print(worker.stages.report())
     print("\nperceive, by stage (median):")
