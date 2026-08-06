@@ -17,7 +17,7 @@ from collections import deque
 
 import clash_royale_env
 import gym_wrapper
-from gym_wrapper import DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS
+from gym_wrapper import DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS, train_FIREBALL_ID
 from model import MicroRoyaleNet
 from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
@@ -1030,6 +1030,13 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # Towers only. compute_shaping() needs tower damage and
             # deployed-building damage priced differently -- see
             # train.tower_potential.
+            # --- inputs for the lethal-spell PBRS term (train.lethal_spell_potential)
+            # Enemy tower HP in ABSOLUTE points. The observation carries these
+            # normalized in its appended scalar tail (indices 6-8 = enemy
+            # king/left/right), so this is a re-scale of data the net already
+            # sees rather than a new engine call.
+            "enemy_tower_hp": np.asarray(obs[-clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS:][6:9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
+            "fireball_in_hand": float(train_FIREBALL_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),
             "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),
@@ -1571,6 +1578,14 @@ def train_selfplay_ppo():
                 "team1_troop_damage": infos.get("team1_troop_damage", zeros),
                 "team0_building_damage": infos.get("team0_building_damage", zeros),
                 "team0_tower_damage": infos.get("team0_tower_damage", zeros),
+                # Lethal-spell PBRS inputs. Defaults are the "no opportunity"
+                # state, so a missing key can only ever zero the term, never
+                # fabricate one.
+                "enemy_tower_hp": np.asarray(infos.get(
+                    "enemy_tower_hp", np.zeros((len(zeros), 3), dtype=np.float32)),
+                    dtype=np.float32).reshape(len(zeros), 3),
+                "fireball_in_hand": np.asarray(
+                    infos.get("fireball_in_hand", zeros), dtype=np.float32),
                 "team1_tower_damage": infos.get("team1_tower_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),

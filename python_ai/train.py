@@ -201,6 +201,48 @@ MAX_BUILDING_HP = clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP
 # term's per-step magnitude comparable to the HP-normalized damage terms above.
 MAX_ELIXIR_PER_STEP = 10.0
 
+# --- Lethal spell cycling (heuristic 2) -------------------------------------
+# Fireball's damage, read from the registry rather than copied, so a balance
+# change can never leave this silently wrong. See CLAUDE.md's rule about second
+# copies of engine constants in Python.
+FIREBALL_CARD_ID = 7
+FIREBALL_DAMAGE = float(clash_royale_env.get_card_info(FIREBALL_CARD_ID)["damage"]) \
+    if "damage" in clash_royale_env.get_card_info(FIREBALL_CARD_ID) else 689.0
+FIREBALL_COST = float(clash_royale_env.get_card_info(FIREBALL_CARD_ID)["cost"])
+W_LETHAL_SPELL = 0.15
+
+
+def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
+    """Phi(s): 1 when a finishing spell is genuinely available AND an enemy
+    tower is inside its damage, 0 otherwise.
+
+    STRICTLY potential-based, and it is worth being explicit about what that
+    buys and what it does NOT. PBRS telescopes over an episode to
+    gamma^T*Phi(s_T) - Phi(s_0); both ends are 0 here (no tower is in Fireball
+    range at the start, and the game is over at the end), so this term's total
+    contribution to any episode's return is EXACTLY ZERO. By Ng et al. that
+    makes it policy-invariant: it cannot make the agent value Fireball more at
+    the optimum, and it cannot be farmed by cycling in and out of the state.
+
+    What it does is redistribute credit. The sparse signal for "cycle the spell
+    into hand while their tower is low, then finish" is otherwise buried at the
+    end of a long GAE trace; this puts a gradient on entering that state at the
+    moment it becomes reachable. If the win is genuinely there, this shortens
+    the path to finding it. If Fireball is genuinely negative-EV in this
+    matchup (see perception/UPSTREAM_REQUESTS.md item 8), this will correctly
+    change nothing -- which is the safety property, not a failure.
+
+    All three conditions matter. Tower-in-range alone would reward states the
+    agent cannot act on; requiring the card in hand and the elixir to cast it
+    makes the potential track an ACTIONABLE opportunity.
+    """
+    hp = stats["enemy_tower_hp"]                       # (num_envs, 3) absolute
+    in_range = np.any((hp > 0.0) & (hp <= FIREBALL_DAMAGE), axis=1)
+    actionable = (stats["fireball_in_hand"] > 0.5) & \
+                 (stats["team0_elixir_current"] >= FIREBALL_COST)
+    return w * (in_range & actionable).astype(np.float32)
+
+
 def tower_potential(stats, w_bldg=W_BLDG):
     """Phi(s): the TOWER-damage differential, normalized.
 
@@ -290,6 +332,11 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     # without ever paying it to prolong a game for extra shaping.
     tower_shaping = gamma * tower_potential(stats, w_bldg) - tower_potential(prev_stats, w_bldg)
 
+    # Heuristic 2, same discounted form and for the same reason -- see
+    # lethal_spell_potential's docstring for why this cannot bias the optimum.
+    lethal_shaping = (gamma * lethal_spell_potential(stats)
+                      - lethal_spell_potential(prev_stats))
+
     # Discrete crown events. Counts only ever go DOWN within an episode, so a
     # negative delta is a tower falling; np.maximum(0, ...) also makes the
     # phantom post-autoreset step (counts jump back to 3) contribute nothing,
@@ -299,6 +346,7 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     tower_events = w_tower * (towers_taken - towers_lost)
 
     shaping = (tower_shaping
+               + lethal_shaping
                + tower_events
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
@@ -1031,6 +1079,14 @@ def train_ppo():
                 "team1_troop_damage": infos.get("team1_troop_damage", zeros),
                 "team0_building_damage": infos.get("team0_building_damage", zeros),
                 "team0_tower_damage": infos.get("team0_tower_damage", zeros),
+                # Lethal-spell PBRS inputs. Defaults are the "no opportunity"
+                # state, so a missing key can only ever zero the term, never
+                # fabricate one.
+                "enemy_tower_hp": np.asarray(infos.get(
+                    "enemy_tower_hp", np.zeros((len(zeros), 3), dtype=np.float32)),
+                    dtype=np.float32).reshape(len(zeros), 3),
+                "fireball_in_hand": np.asarray(
+                    infos.get("fireball_in_hand", zeros), dtype=np.float32),
                 "team1_tower_damage": infos.get("team1_tower_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),

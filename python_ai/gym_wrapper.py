@@ -91,6 +91,8 @@ import clash_royale_env
 # Verified against the live registry: all 8 ids exist, no Champions, and
 # validate_deck_slots returns "" (legal).
 DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
+# Card id of the deck's only spell -- see train.lethal_spell_potential.
+train_FIREBALL_ID = 7
 
 # How many Champion ability slots this deck actually has (0, 1 or 2 -- see
 # CardRegistry::validateDeckSlots).
@@ -246,6 +248,13 @@ class MicroRoyaleEnv(gym.Env):
             # Towers only. compute_shaping() needs tower damage and
             # deployed-building damage priced differently -- see
             # train.tower_potential.
+            # --- inputs for the lethal-spell PBRS term (train.lethal_spell_potential)
+            # Enemy tower HP in ABSOLUTE points. The observation carries these
+            # normalized in its appended scalar tail (indices 6-8 = enemy
+            # king/left/right), so this is a re-scale of data the net already
+            # sees rather than a new engine call.
+            "enemy_tower_hp": np.asarray(obs[-clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS:][6:9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
+            "fireball_in_hand": float(train_FIREBALL_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),
             "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),

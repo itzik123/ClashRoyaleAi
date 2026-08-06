@@ -14,6 +14,7 @@ Last updated 2026-07-30, after items 1-2 landed.
 | 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
 | 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | open, proposed 2026-07-31 |
 | 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | open, proposed 2026-07-31 |
+| 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
 | 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
 
 Items 1 and 2 were done together since the measured benefit is combined
@@ -405,3 +406,67 @@ second line above.
 
 **Confidence:** the cost is measured; the fix is proposed but the exact edit is
 the simulator owner's to make. Filed rather than done, per `CLAUDE.md`.
+
+---
+
+## 8. OPEN — Fireball misses the Musketeer kill by 32 HP (proposed 2026-08-06)
+
+**This is filed as a decision to make, not a defect to fix.** It may well be
+correct as-is, and closing the gap would trade fidelity for learnability.
+
+### The measurement
+
+`CardRegistry.h` gives Fireball 689 damage at 4 elixir, radius 2.5. Against
+`DEFAULT_DECK`:
+
+| target | cost | HP | dies to 689? |
+|---|---|---|---|
+| Minions | 3 | 230 x3 | yes |
+| Archers | 3 | 304 x2 | yes |
+| **Musketeer** | **4** | **721** | **no — survives on 32 HP (4.4%)** |
+| Cannon | 3 | 824 | no |
+| Mini P.E.K.K.A | 4 | 1390 | no |
+| Valkyrie | 4 | 1907 | no |
+| Giant | 5 | 3968 | no |
+
+So **every clean Fireball kill in this matchup is a 4-elixir spell killing a
+3-elixir card** — a -1 elixir trade that also generates no board presence. The
+only target that would make it a clean 4-for-4 survives by 32 HP. Breaking even
+requires hitting two cards at once.
+
+That fully explains the behaviour recorded in CLAUDE.md: the policy plays
+Fireball on ~0% of steps, and forcing it dropped win rate 97% -> 23%. The low
+weighting was never a learning failure. It is a correct valuation of a card
+that is negative-EV in its common case.
+
+### Why this is not obviously a bug
+
+689 and 721 appear to be the real tournament-standard (level 11) Clash Royale
+values, in which Fireball genuinely does not one-shot a Musketeer — it needs any
+chip damage on top (a tower hit, a Zap, one arrow volley). **Needs confirming
+against current real-game data before anything is changed.** If it holds, the
+engine is right and the awkward EV is a real property of the card.
+
+That matters more here than in most engines, because `perception/` exists
+specifically to drive this simulator from real matches. A sim where Fireball
+one-shots Musketeers is a sim whose spell decisions do not transfer.
+
+### Options
+
+1. **Change nothing.** Correct if the values are faithful. Fireball stays a
+   situational two-for-one card, which is what it is in the real game, and the
+   agent's low usage is right rather than pathological.
+2. **Fireball 689 -> 725.** Makes it a clean 4-for-4. Cheapest edit, but it
+   diverges from the real game on the single most-used spell, and every
+   Fireball interaction in every future deck inherits the divergence.
+3. **Musketeer 721 -> 685.** Same effect, worse blast radius — it changes every
+   matchup the Musketeer appears in, not just the Fireball one.
+
+**Recommendation: option 1, and reach the behaviour through reward shaping
+instead** (see the lethal-spell PBRS term and the elixir-value term in
+`train.py`). Shaping changes what the agent *learns to value* without changing
+what the game *is*, which keeps the perception bridge honest.
+
+Blast radius if 2 or 3 is chosen: gameplay-affecting, so it invalidates the
+win-rate history, and a `ClashRoyaleTests` run is required. The observation
+layout is untouched, so checkpoints still load.
