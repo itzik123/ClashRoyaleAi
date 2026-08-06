@@ -604,6 +604,7 @@ public:
     // See MatchStatistics.h for what these actually measure.
     int getTroopDamageDealt(int team) const { return game.getStatistics().troopDamageDealt(team); }
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
+    int getTowerDamageDealt(int team) const { return game.getStatistics().towerDamageDealt(team); }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
 

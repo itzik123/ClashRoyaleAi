@@ -57,6 +57,7 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("save_log", &ClashEnv::saveLog, py::arg("filepath"))
         .def("get_troop_damage_dealt", &ClashEnv::getTroopDamageDealt, py::arg("team"))
         .def("get_building_damage_dealt", &ClashEnv::getBuildingDamageDealt, py::arg("team"))
+        .def("get_tower_damage_dealt", &ClashEnv::getTowerDamageDealt, py::arg("team"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
         // Surviving TOWER count (King + Princesses) for one team -- see
         // ClashEnv::getTowersAlive for why the Python reward needs this.

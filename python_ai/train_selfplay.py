@@ -1027,6 +1027,11 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             "team0_troop_damage": self.game.get_troop_damage_dealt(0),
             "team1_troop_damage": self.game.get_troop_damage_dealt(1),
             "team0_building_damage": self.game.get_building_damage_dealt(0),
+            # Towers only. compute_shaping() needs tower damage and
+            # deployed-building damage priced differently -- see
+            # train.tower_potential.
+            "team0_tower_damage": self.game.get_tower_damage_dealt(0),
+            "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),
             "team0_elixir_spent": self.game.get_elixir_spent(0),
             "team1_elixir_spent": self.game.get_elixir_spent(1),
@@ -1565,6 +1570,8 @@ def train_selfplay_ppo():
                 "team0_troop_damage": infos.get("team0_troop_damage", zeros),
                 "team1_troop_damage": infos.get("team1_troop_damage", zeros),
                 "team0_building_damage": infos.get("team0_building_damage", zeros),
+                "team0_tower_damage": infos.get("team0_tower_damage", zeros),
+                "team1_tower_damage": infos.get("team1_tower_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
                 "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),

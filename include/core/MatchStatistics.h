@@ -69,6 +69,11 @@ public:
     // breakdown python_ai/train.py's reward shaping actually consumes.
     int troopDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->troopDamageDealt(team) : 0; }
     int buildingDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->buildingDamageDealt(team) : 0; }
+    // Towers only -- buildingDamageDealt() minus this is damage to DEPLOYED
+    // buildings (Cannon, Tesla, ...). The shaping potential must use this one:
+    // see DamageByTargetTypeCollector's comment for why lumping them together
+    // taught the agent to hide its Cannon behind its own King.
+    int towerDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->towerDamageDealt(team) : 0; }
 
     int kills(int team) const { return kill ? kill->kills(team) : 0; }
     int killsByCard(int cardId, int team) const { return kill ? kill->killsByCard(cardId, team) : 0; }

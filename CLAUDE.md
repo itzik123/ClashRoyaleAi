@@ -222,7 +222,7 @@ Sparse `±1` on win/loss plus `compute_shaping()`:
 
 | term | weight | form |
 |---|---|---|
-| tower/building HP | `W_BLDG = 0.5` | **potential-based**: `γΦ(s′) − Φ(s)` |
+| **tower** HP | `W_BLDG = 0.5` | **potential-based**: `γΦ(s′) − Φ(s)` |
 | troop HP | `W_TROOPS = 0.1` | delta |
 | elixir trade | `W_ELIXIR_TRADE = 0.03` | delta |
 | tower destroyed | `W_TOWER_DESTROYED = 0.6` | **deliberately NOT** PBRS |
@@ -231,6 +231,28 @@ Sparse `±1` on win/loss plus `compute_shaping()`:
 
 The PBRS form keeps the `γ` — Ng et al.'s policy-invariance result requires it,
 and dropping it is a different (biased) shaping that looks almost identical.
+
+**Deployed buildings are priced with the troops, not with the towers**
+(2026-08-06). The potential used to read the engine's `buildingDamageDealt`,
+which is towers *plus* deployed buildings, so damage to the agent's own Cannon
+was charged at the Princess-Tower rate. That is the wrong price for a
+sacrificial card: losing the Cannon's 824 HP cost `0.5·824/4008 = 0.1028`, while
+killing with it paid only `0.1·hp/4256` — it had to kill **5.3× its own HP to
+break even**. Parking it in a back corner cost exactly **zero**, because decay
+emits no `DamageDealtEvent` at all (`Building::update`), so the engine never
+charged for it dying of old age. Guaranteed-zero beat probably-negative, and the
+measured policy did exactly what that asked: **27.9% of Cannons went to
+(11,2)/(11,3), behind its own King**, mean placement `y = 6.3` — behind its own
+Princess Towers. `DamageByTargetTypeCollector` now splits towers out, and the
+break-even is 1:1. Same failure shape as the old symmetric elixir term: *doing
+nothing was the safe, guaranteed-zero outcome.*
+
+A caution recorded with it: forcing the Cannon to a fixed "better" cell did
+**not** improve win rate (centre 0.605 vs baseline 0.610 over 200 episodes
+each). Forced-corner was the worst arm at 0.515, so the corner really is bad,
+but the learned state-dependent mix beats every fixed cell. A forced-placement
+A/B cannot tell you what a policy would learn under a corrected reward — those
+are different questions, and only the second one justified this change.
 
 `W_TOWER_DESTROYED` breaking policy-invariance **is the point**. Policy-invariant
 tower shaping measurably left *pure defence* as the true optimum against this

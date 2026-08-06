@@ -202,14 +202,29 @@ MAX_BUILDING_HP = clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP
 MAX_ELIXIR_PER_STEP = 10.0
 
 def tower_potential(stats, w_bldg=W_BLDG):
-    """Phi(s): the building-damage differential, normalized.
+    """Phi(s): the TOWER-damage differential, normalized.
 
     This is the quantity that actually tracks progress toward winning -- towers
     only ever lose HP, and the match ends when a King Tower dies, so a rising
     differential IS the game being won. Used as the potential for the
     potential-based shaping in compute_shaping() below.
+
+    Towers only, since 2026-08-06. This used to read team*_building_damage,
+    which the engine defines as towers PLUS deployed buildings, so damage to
+    the agent's own Cannon was charged at the Princess-Tower rate. That is the
+    wrong price for a sacrificial card: losing the Cannon's 824 HP cost
+    0.5 * 824/4008 = 0.1028, while killing a troop with it paid only
+    0.1 * hp/4256 -- it had to kill 5.3x its own HP to break even. Parking it in
+    a back corner cost exactly zero instead, because decay emits no damage event
+    at all (Building::update). Measured on the ep-130,306 checkpoint: 27.9% of
+    Cannons went behind its own King at (11,2)/(11,3), mean placement y = 6.3,
+    i.e. behind its own Princess Towers.
+
+    Deployed-building damage is not discarded -- compute_shaping() now folds it
+    into the troop term, where a building is priced like any other unit that
+    trades HP, making the break-even 1:1 instead of 5.3:1.
     """
-    return w_bldg * (stats["team0_building_damage"] - stats["team1_building_damage"]) / MAX_BUILDING_HP
+    return w_bldg * (stats["team0_tower_damage"] - stats["team1_tower_damage"]) / MAX_BUILDING_HP
 
 
 def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
@@ -242,8 +257,20 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     def delta(key):
         return np.maximum(0, stats[key] - prev_stats[key])
 
-    enemy_troops_damage = delta("team0_troop_damage") / MAX_TROOP_HP
-    ally_troops_damage = delta("team1_troop_damage") / MAX_TROOP_HP
+    # Deployed buildings (Cannon, Tesla, ...) are priced HERE, with the troops,
+    # not in the tower potential -- see tower_potential's docstring. A defensive
+    # building is a unit that trades HP, so it belongs on the same scale as one:
+    # this makes its break-even 1:1 (kill at least what you lose) instead of the
+    # 5.3:1 that the tower rate imposed. The engine's building counter is towers
+    # PLUS deployed buildings, so the deployed part is the difference.
+    def deployed_building(team):
+        return (stats[f"team{team}_building_damage"] - stats[f"team{team}_tower_damage"],
+                prev_stats[f"team{team}_building_damage"] - prev_stats[f"team{team}_tower_damage"])
+
+    e_now, e_prev = deployed_building(0)
+    a_now, a_prev = deployed_building(1)
+    enemy_troops_damage = (delta("team0_troop_damage") + np.maximum(0, e_now - e_prev)) / MAX_TROOP_HP
+    ally_troops_damage = (delta("team1_troop_damage") + np.maximum(0, a_now - a_prev)) / MAX_TROOP_HP
     enemy_elixir_spent = delta("team1_elixir_spent") / MAX_ELIXIR_PER_STEP
 
     ally_elixir_current = stats["team0_elixir_current"]
@@ -1003,6 +1030,8 @@ def train_ppo():
                 "team0_troop_damage": infos.get("team0_troop_damage", zeros),
                 "team1_troop_damage": infos.get("team1_troop_damage", zeros),
                 "team0_building_damage": infos.get("team0_building_damage", zeros),
+                "team0_tower_damage": infos.get("team0_tower_damage", zeros),
+                "team1_tower_damage": infos.get("team1_tower_damage", zeros),
                 "team1_building_damage": infos.get("team1_building_damage", zeros),
                 "team0_elixir_spent": infos.get("team0_elixir_spent", zeros_f),
                 "team1_elixir_spent": infos.get("team1_elixir_spent", zeros_f),

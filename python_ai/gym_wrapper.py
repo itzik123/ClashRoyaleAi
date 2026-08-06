@@ -243,6 +243,11 @@ class MicroRoyaleEnv(gym.Env):
             "team0_troop_damage": self.game.get_troop_damage_dealt(0),
             "team1_troop_damage": self.game.get_troop_damage_dealt(1),
             "team0_building_damage": self.game.get_building_damage_dealt(0),
+            # Towers only. compute_shaping() needs tower damage and
+            # deployed-building damage priced differently -- see
+            # train.tower_potential.
+            "team0_tower_damage": self.game.get_tower_damage_dealt(0),
+            "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),
             # Cumulative elixir spent this match (sum of played cards' cost) --
             # feeds train.py's elixir-trade shaping term (reward for making the

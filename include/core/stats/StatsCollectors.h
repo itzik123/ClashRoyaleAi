@@ -43,26 +43,53 @@ public:
 // built directly by GameManager with a negative sentinel id, never
 // registered) -- Towers are buildings, so that's the "not found" branch
 // below.
+// TOWERS are tracked separately from deployed buildings, added 2026-08-06.
+// Both are "buildings" and both used to land in one counter, which made
+// train.py's potential function charge the agent for damage to its own Cannon
+// at exactly the rate it charges damage to a Princess Tower. A Cannon is a
+// sacrificial card -- its job is to absorb a push and die -- and at
+// W_BLDG = 0.5 with MAX_BUILDING_HP = 4008, losing its 824 HP cost 0.1028 of
+// shaping return while killing a troop paid only 0.1 * hp / 4256. It therefore
+// had to kill 5.3x its own HP just to break even, so a Cannon placed anywhere
+// useful was negative in expectation, while one parked in a back corner where
+// nothing could reach it was exactly zero -- decay emits no DamageDealtEvent
+// (see Building::update), so the engine never charged for it dying of old age.
+// The measured policy did what that reward asked: 27.9% of its Cannons went to
+// (11,2)/(11,3), behind its own King, mean placement y = 6.3 -- behind its own
+// Princess Towers.
+//
+// buildingDamageDealt() deliberately still returns tower + deployed building,
+// so GameLogger and every existing test keep their previous meaning; the split
+// is exposed additively via towerDamageDealt().
 class DamageByTargetTypeCollector : public IStatsObserver {
     int troopDamageByTeam[2] = { 0, 0 };
     int buildingDamageByTeam[2] = { 0, 0 };
+    int towerDamageByTeam[2] = { 0, 0 };
 
 public:
     void onDamageDealt(const DamageDealtEvent& e) override {
         if (e.targetTeam == e.attackerTeam) return;
         int t = (e.attackerTeam == 0) ? 0 : 1;
-        if (isBuildingCardId(e.targetCardId)) buildingDamageByTeam[t] += e.amount;
-        else troopDamageByTeam[t] += e.amount;
+        // Resolved once. A targetCardId not in CardRegistry is a Tower, which
+        // GameManager builds directly with a negative sentinel id and never
+        // registers -- that absence IS the discriminator, no polymorphism or
+        // dynamic_cast needed here.
+        const CardDefinition* def = CardRegistry::getInstance().getCard(e.targetCardId);
+        if (def == nullptr) {
+            towerDamageByTeam[t] += e.amount;
+            buildingDamageByTeam[t] += e.amount;
+        } else if (def->isBuilding) {
+            buildingDamageByTeam[t] += e.amount;
+        } else {
+            troopDamageByTeam[t] += e.amount;
+        }
     }
 
     int troopDamageDealt(int team) const { return troopDamageByTeam[(team == 0) ? 0 : 1]; }
     int buildingDamageDealt(int team) const { return buildingDamageByTeam[(team == 0) ? 0 : 1]; }
-
-private:
-    static bool isBuildingCardId(int cardId) {
-        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
-        return (def == nullptr) ? true : def->isBuilding;
-    }
+    // Towers only. Deployed buildings (Cannon, Tesla, ...) are the difference
+    // between this and buildingDamageDealt().
+    int towerDamageDealt(int team) const { return towerDamageByTeam[(team == 0) ? 0 : 1]; }
 };
 
 // Kill count per team, per (team, killer's cardId). Attribution is "who
