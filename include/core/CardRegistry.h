@@ -122,7 +122,9 @@ private:
         int hp, float speed, float attackRange, int damage, int attackCooldown, char symbol) {
         CardStats s;
         s.id = id; s.name = std::move(name); s.cost = cost; s.archetype = archetype;
-        s.hp = hp; s.speed = speed; s.attackRange = attackRange;
+        // `speed` arrives in the engine's original tier units; MOVEMENT_SPEED_SCALE
+        // converts to real-game tiles/tick. See CardStats.h for the measurement.
+        s.hp = hp; s.speed = speed * MOVEMENT_SPEED_SCALE; s.attackRange = attackRange;
         s.damage = damage; s.attackCooldown = attackCooldown; s.symbol = symbol;
         return s;
     }

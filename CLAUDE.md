@@ -79,6 +79,41 @@ the recordings, not assumed. Don't "fix" one to match the other without
 revisiting `perception/track/opp_elixir.py`, whose missed-placement alarm
 depends on using the real rate.
 
+**Troop movement was 4-5× too fast until 2026-08-07.** `CardStats::speed` is
+tiles per *tick*, so the registry's Giant `0.3f` meant **3.0 tiles/s** against
+a real-game Slow of ~0.75 — a Giant crossed bridge-to-tower in ~3.5 s.
+`MOVEMENT_SPEED_SCALE = 0.2f` in `CardStats.h` now converts the registry's
+tier literals into real-game tiles/tick. It is applied at **three** sites:
+`CardRegistry.h:125` plus both `SpiritEmpressForms.h` assignments, which set
+`stats.speed` directly and so bypass `CardStats::troop()`.
+
+Measured three independent ways against the 8 recordings, all agreeing
+(`perception/UPSTREAM_REQUESTS.md` item 9 carries the evidence): per-card speed
+off real footage, the engine's own Slow:Medium tier ratio, and a time-scale
+sweep in `perception/tools/sim_fidelity.py` whose optimum moved from 0.2 to
+**1.0** across the fix — the end-to-end confirmation that the engine's clock
+and the real game's now agree.
+
+Three things worth carrying forward:
+
+- **The C++ suite did not catch this and cannot.** All 504 cases passed before
+  and after. `test_troop.cpp` builds `MeleeTroop` with a literal speed and
+  nothing anywhere asserts a registry speed constant — the suite covers the
+  movement *mechanism* and is blind to the *data registry*. 207 grep hits for
+  "speed" across 16 test files are not coverage. The guard lives on the
+  perception side instead.
+- **It is a rebalance, not an accuracy fix.** Cooldowns and elixir regen were
+  already right, so slowing movement alone means a troop absorbs ~5× more
+  shots crossing a defender's range, tanks take ~5× more tower damage for the
+  same ground, ~5× more elixir accrues per push, and timeouts get much more
+  common. Every win rate in "Measured baselines" predates it.
+- **`skip_frames = 10` hurts ~5× less now.** One second covers ~5× less board,
+  so open problem #4 shrank by that factor for free.
+
+**Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
+its own untouched `speed`, and the engine has **no deploy time** at all while
+the real game freezes a troop ~1 s after it lands.
+
 **Observation changed on 2026-07-29.** `NUM_CHANNELS` 9 → 21,
 `observation_size()` 6253 → **13606**, `NUM_EXTRA_SCALARS = 9` appended after
 the one-hots. Channels 0-8 keep their old meaning; 9-20 are per-team attribute
@@ -538,6 +573,15 @@ Three lessons, all of which nearly hid it:
 ---
 
 ## Measured baselines — use these, don't re-derive them
+
+**EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
+NO WIN RATE BELOW SURVIVES IT.** Troops now move at ~1/5 the speed every one
+of these numbers was earned at, which changes the relative value of every card
+in the deck (see "Engine facts"). Throughput figures still hold — they are
+wall-clock, not gameplay — and so do the *methodological* baselines
+(opponent-elixir MAE ≈ 1.35 for predict-the-mean, 0.273 for
+always-guess-the-modal-cell, the Elo formula's behaviour near 1.0). Treat
+every win rate, reward curve and stage number as historical.
 
 **Every phase-2 win rate and Elo below predates the 2026-07-31 observation fix
 and is not comparable across pipeline-2 episode 31,753.** Before that fix the
