@@ -577,8 +577,16 @@ Three lessons, all of which nearly hid it:
 **EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
 NO WIN RATE BELOW SURVIVES IT.** Troops now move at ~1/5 the speed every one
 of these numbers was earned at, which changes the relative value of every card
-in the deck (see "Engine facts"). Throughput figures still hold — they are
-wall-clock, not gameplay — and so do the *methodological* baselines
+in the deck (see "Engine facts"). **The episodes/hour figures do NOT hold
+either** — measured 1,301 ep/hour on the first post-fix run against the 2,873
+recorded below, a 2.2× drop. This was written here as "throughput still holds,
+it is wall-clock not gameplay", and that was wrong: a match whose troops move
+5× slower needs far more TICKS to reach a decision, so each episode now
+contains proportionally more transitions. It is not a timeout effect — the
+draw rate is 0.00, matches still finish inside `maxTicks`, they just use more
+of the clock. What *does* still hold is transitions and gradient steps per
+hour, which is the quantity this file already says to budget in. A phase 1 to
+~60k episodes is now ~46 h, not ~21 h. The *methodological* baselines hold
 (opponent-elixir MAE ≈ 1.35 for predict-the-mean, 0.273 for
 always-guess-the-modal-cell, the Elo formula's behaviour near 1.0). Treat
 every win rate, reward curve and stage number as historical.
