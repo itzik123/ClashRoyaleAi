@@ -382,3 +382,4 @@ build_test/
 # measured numbers live in archive_pre_speed_fix/README.md; these are the raw
 # files behind them, and follow the same no-replays-in-git rule as replays/.
 replays_sample/
+*.pth.bak
