@@ -850,10 +850,18 @@ def train_ppo():
     # MAX_EPISODES_PER_RANDOM_DECK is a safety valve, not the intended
     # rotation trigger: some random 8-card draws may be pathological (no real
     # win condition, or a genuinely overwhelming one) and could otherwise
-    # stall forever. Deliberately generous -- "a few thousand" episodes is
-    # explicitly fine for a deck that's hard-but-learnable; this only cuts in
-    # for the rare deck that isn't converging at all.
-    MAX_EPISODES_PER_RANDOM_DECK = 5000
+    # stall forever. This only cuts in for the rare deck that isn't converging.
+    #
+    # Lowered 5000 -> 1250 on 2026-08-09, when the phase's total budget became
+    # RANDOM_OPPONENT_EPISODE_BUDGET = 5000 (see below). At the old value the
+    # safety valve EQUALLED the whole phase budget, so a single pathological
+    # first draw could consume all of it and the agent would leave phase 1
+    # having faced exactly ONE random deck -- which is the precise opposite of
+    # what the phase is for. 1250 guarantees at least 4 distinct decks even in
+    # the worst case. It rarely binds: rotation is normally performance-gated,
+    # and mastering a deck takes ~600 episodes (6 stages x one 100-episode
+    # window each), so a comfortable budget still turns over ~8 decks.
+    MAX_EPISODES_PER_RANDOM_DECK = 1250
     # Unlike phase 1 (which naturally terminates via the stage-5 + PHASE2_
     # WIN_RATE_GATE transition into phase 2), phase 2 itself has no completion
     # condition of its own -- it just keeps rotating random decks forever
@@ -876,7 +884,37 @@ def train_ppo():
     # positions, so it cannot punish the degenerate no-win-condition strategy
     # the policy has settled into. Pipeline #2 self-play can, because there the
     # opponent is a frozen copy of the bot itself and actually defends.
-    PHASE2_TOTAL_EPISODE_CAP = 40000
+    #
+    # ---- 2026-08-09: replaced by a BUDGET measured inside the phase ----------
+    # A cap on TOTAL episodes was the wrong quantity, and it was arbitrary in a
+    # way that mattered: how long the agent spends against random decks depended
+    # entirely on how fast it cleared the mirror curriculum. Clear the stages in
+    # 3k episodes and you get 37k of random decks; take 35k and you get 5k. The
+    # phase's value has nothing to do with either number.
+    #
+    # Kept rather than deleted, at a deliberately small budget, because the
+    # measured case for deleting it does not currently hold:
+    #
+    #  * The "95% on first contact" evidence above predates BOTH the 2026-08-07
+    #    movement-speed fix and the 2026-08-09 placement-head fix. CLAUDE.md is
+    #    explicit that no win rate from before the speed fix survives it, so the
+    #    overfitting question is once again unanswered.
+    #  * This is the only overfitting check that runs BEFORE the handoff. The
+    #    league costs 30+ hours; finding out there that the policy memorized
+    #    DEFAULT_DECK is the expensive way to learn it.
+    #  * It is not substitutable by scenario injection, which is a pipeline-2
+    #    feature (train_selfplay.py) and never runs here. Scenario injection also
+    #    TELEPORTS 1-2 units from a hand-picked list of ~13 ids onto the bridge;
+    #    it never has an opponent play an unfamiliar deck through a real match,
+    #    so it exercises no elixir management, no cycle and no placement pattern.
+    #
+    # The counter-argument is real and is why the budget is 5000 and not more:
+    # pipeline 2's four scripted bots DO get randomized decks
+    # (set_scripted_opponent -> sample_random_deck), and two of them hold a 0.8
+    # PFSP weight floor, so random-deck exposure continues there at a far larger
+    # total volume than this phase can provide. This phase is a cheap pre-flight
+    # check, not the place generalization is actually learned.
+    RANDOM_OPPONENT_EPISODE_BUDGET = 5000
 
     def sample_random_deck():
         # Correct-by-construction (not a raw random.sample over every
@@ -894,6 +932,10 @@ def train_ppo():
     # PHASE2_WIN_RATE_GATE is cleared at the final curriculum stage.
     phase = "mirror"
     phase_deck_episode_start = 0   # episodes_completed value when the CURRENT random deck started (phase=="random_opponent" only)
+    # episodes_completed when the random_opponent PHASE began -- the budget in
+    # RANDOM_OPPONENT_EPISODE_BUDGET is measured from here, not from episode 0.
+    # Distinct from phase_deck_episode_start, which restarts on every new deck.
+    random_phase_episode_start = 0
     current_random_deck = None     # the random deck currently in play (phase=="random_opponent" only), kept for logging/resume
     deck_curriculum_stage = 0      # this deck's own progress through CURRICULUM_STAGES (phase=="random_opponent" only)
     # Per-episode outcome: +1 win, -1 loss, 0 draw (timeout). The curriculum gate uses
@@ -933,6 +975,12 @@ def train_ppo():
                 # fresh run would start.
                 phase = checkpoint.get("phase", "mirror")
                 phase_deck_episode_start = checkpoint.get("phase_deck_episode_start", 0)
+                # Fall back to phase_deck_episode_start, not 0: a checkpoint
+                # written before this key existed was already in the phase, and
+                # defaulting to 0 would make the elapsed budget look like the
+                # full episode count and hand off immediately on resume.
+                random_phase_episode_start = checkpoint.get(
+                    "random_phase_episode_start", phase_deck_episode_start)
                 current_random_deck = checkpoint.get("current_random_deck", None)
                 deck_curriculum_stage = checkpoint.get("deck_curriculum_stage", 0)
                 # Controller state; falls back to the seed values for
@@ -1029,10 +1077,17 @@ def train_ppo():
     # Raised from 50000: that cap was hit mid-session while training was still
     # working well (cleared the entire curriculum, stages 0-5, right around the old
     # cap) -- extending it so remaining time isn't wasted on an arbitrary limit.
-    # Second condition: see PHASE2_TOTAL_EPISODE_CAP's own comment -- phase 2
-    # has no natural stopping point, so this is what actually ends the run.
+    # Second condition: see RANDOM_OPPONENT_EPISODE_BUDGET's own comment -- the
+    # random-deck phase has no natural stopping point, so this is what ends
+    # pipeline 1 and triggers the handoff to train_selfplay.py.
+    #
+    # Counted from when the phase STARTED, not from episode 0: the budget is
+    # "how much random-deck exposure is enough", which has nothing to do with
+    # how many episodes the mirror curriculum happened to take.
     while episodes_completed < 1000000 and not (
-            phase == "random_opponent" and episodes_completed >= PHASE2_TOTAL_EPISODE_CAP):
+            phase == "random_opponent"
+            and episodes_completed - random_phase_episode_start
+                >= RANDOM_OPPONENT_EPISODE_BUDGET):
         # Entropy decays within each curriculum stage, not over all time: advancing a
         # stage resets the clock (stage_start_episode) so exploration is boosted again
         # for the new, harder opponent instead of staying collapsed (improvement #5).
@@ -1310,11 +1365,15 @@ def train_ppo():
                             envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[0]["opp_elixir_multiplier"])
                             outcome_history.clear()
                             phase_deck_episode_start = episodes_completed
+                            random_phase_episode_start = episodes_completed
                             stage_start_episode = episodes_completed  # re-boost exploration for the new opponent variety
                             phase_just_advanced = True
                             print(f">>> Phase advanced to random_opponent from stage {curriculum_stage} "
                                   f"(deck={current_random_deck}) - mirror win rate {win_rate:.2f} "
                                   f"reached the {PHASE2_ENTRY_WIN_RATE} entry threshold")
+                            print(f">>> Random-deck budget: {RANDOM_OPPONENT_EPISODE_BUDGET} episodes "
+                                  f"(handoff to train_selfplay.py at episode "
+                                  f"{episodes_completed + RANDOM_OPPONENT_EPISODE_BUDGET})")
                             writer.add_scalar("Training/Phase", 1, episodes_completed)
 
                     # --- Curriculum advancement: escalate the opponent once the agent
@@ -1706,6 +1765,7 @@ def train_ppo():
                 "outcome_history": list(outcome_history),
                 "phase": phase,
                 "phase_deck_episode_start": phase_deck_episode_start,
+                "random_phase_episode_start": random_phase_episode_start,
                 "current_random_deck": current_random_deck,
                 "deck_curriculum_stage": deck_curriculum_stage,
                 "ent_coef_card": ent_coef_card,
@@ -1790,6 +1850,7 @@ def train_ppo():
         "outcome_history": list(outcome_history),
         "phase": phase,
         "phase_deck_episode_start": phase_deck_episode_start,
+        "random_phase_episode_start": random_phase_episode_start,
         "current_random_deck": current_random_deck,
         "deck_curriculum_stage": deck_curriculum_stage,
     }, weight_path)
@@ -1799,9 +1860,9 @@ def train_ppo():
           f"final checkpoint saved to {weight_path}.")
 
     # Automatic handoff to pipeline #2 (self-play/PFSP) -- see
-    # PHASE2_TOTAL_EPISODE_CAP's comment for why this doesn't wait for anyone
-    # to notice and launch it manually. sys.executable guarantees the same
-    # venv interpreter this script itself is running under.
+    # RANDOM_OPPONENT_EPISODE_BUDGET's comment for why this doesn't wait for
+    # anyone to notice and launch it manually. sys.executable guarantees the
+    # same venv interpreter this script itself is running under.
     selfplay_out = open("training_selfplay_pfsp.log", "w")
     selfplay_err = open("training_selfplay_pfsp_err.log", "w")
     # -u (unbuffered) is not optional here. Python block-buffers stdout when it
