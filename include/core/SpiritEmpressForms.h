@@ -25,7 +25,11 @@ inline CardStats spiritEmpressGroundStats() {
     stats.cost = 3.0f;
     stats.archetype = Archetype::MeleeSquad;
     stats.hp = 926;
-    stats.speed = 0.85f; // Fast, matching this file's own established Fast convention (e.g. Dart Goblin, Ice Spirit)
+    // Fast, matching this file's own established Fast convention (e.g. Dart
+    // Goblin, Ice Spirit). Scaled here because this file assigns `speed`
+    // directly and so BYPASSES CardStats::troop() -- a scale applied only in
+    // the factory would silently miss both Spirit Empress forms.
+    stats.speed = 0.85f * MOVEMENT_SPEED_SCALE;
     stats.attackRange = 1.2f;
     stats.damage = 249;
     stats.attackCooldown = 12;
@@ -40,7 +44,10 @@ inline CardStats spiritEmpressFlyingStats() {
     stats.cost = 6.0f;
     stats.archetype = Archetype::RangedSquad;
     stats.hp = 926;
-    stats.speed = 0.5f; // Medium, matching this file's own established Medium convention
+    // Medium, matching this file's own established Medium convention. Scaled
+    // here for the same reason as the ground form above -- direct assignment
+    // bypasses CardStats::troop().
+    stats.speed = 0.5f * MOVEMENT_SPEED_SCALE;
     stats.attackRange = 5.0f;
     stats.damage = 249;
     stats.attackCooldown = 14;

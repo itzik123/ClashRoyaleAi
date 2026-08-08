@@ -16,6 +16,7 @@ Last updated 2026-07-30, after items 1-2 landed.
 | 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | open, proposed 2026-07-31 |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
 | 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
+| 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
 
 Items 1 and 2 were done together since the measured benefit is combined
 (max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
@@ -470,3 +471,228 @@ what the game *is*, which keeps the perception bridge honest.
 Blast radius if 2 or 3 is chosen: gameplay-affecting, so it invalidates the
 win-rate history, and a `ClashRoyaleTests` run is required. The observation
 layout is untouched, so checkpoints still load.
+
+---
+
+## 9. DONE — troop movement ran ~4-5x faster than the real game (applied and verified 2026-08-07)
+
+**Applied with explicit sign-off**, as `MOVEMENT_SPEED_SCALE = 0.2f` in
+`CardStats.h`, used at `CardRegistry.h:125` and both `SpiritEmpressForms.h`
+sites that assign `speed` directly and so bypass the factory.
+
+### Verified three ways after the change
+
+| check | before | after | target |
+|---|---|---|---|
+| reconstruction floor (IoU) | 0.519 | **0.685** | higher |
+| engine:real speed ratio (p90) | 3.8x | **0.8x** | 1.0 |
+| engine:real speed ratio (median) | 6.5x | **1.3x** | 1.0 |
+| time-scale optimum @1.0s horizon | 0.2 | **1.0** | 1.0 |
+
+The two speed statistics bracket 1.0 from opposite sides, which is the most
+this data can resolve -- the median under-reads real speed and the p90
+over-reads it.
+
+**The time-scale peak moving from 0.2 to 1.0 is the decisive end-to-end
+check**: it says the engine's clock and the real game's now agree, measured
+against footage rather than against a constant.
+
+Two predictions made before the change and confirmed after it: the
+reconstruction floor rose on its own (part of it was the single materialising
+tick, which at 5x speed displaced a unit by half a second of real movement),
+and the Giant -- the Slow tier -- came out at 0.7x against the other classes'
+0.8x, which is the documented flat-scale residual showing up exactly where it
+was predicted.
+
+### What the C++ test suite did and did NOT tell us
+
+All 504 cases / 4329 assertions pass unchanged. **This is not evidence the
+change is correct.** `test_troop.cpp` constructs `MeleeTroop` directly with a
+literal speed, and no test anywhere asserts a registry speed constant, so the
+suite covers the movement MECHANISM and has zero coverage of the DATA. The
+earlier estimate in this document -- that 207 speed/movement references across
+16 test files implied the suite would need review -- mistook grep hits for
+coverage. A guard now lives on the perception side
+(`test_forecast.test_the_engine_moves_at_roughly_real_game_speed`).
+
+### Still open, NOT addressed by this change
+
+  * **Projectile speed** (`Projectile.h:88`) is untouched and unmeasured. The
+    harness is blind to spells -- they are filtered out before reaching the
+    board -- and the value-Fireball and lethal-spell shaping both depend on
+    when a spell arrives relative to the troops it is aimed at.
+  * **Deploy time** is still absent; the real game freezes a troop ~1 s after
+    it lands. A second timing error in the same direction.
+  * The **flat-scale residual** on the Slow tier, ~20%, left deliberately.
+
+### Original evidence, kept for the record
+
+### How it was measured
+
+`perception/tools/sim_fidelity.py`, over all 8 recordings, 159 paired samples.
+Both sides of the comparison are measured, neither is read from a constant:
+
+  * **engine** — inject a card into open ground, step, measure the centroid's
+    displacement over a long enough baseline that cell quantisation is <10%
+    (`forecast.SimForecaster.measure_speed`).
+  * **real** — card classes showing exactly one body on one side in both
+    frames of a pair, so displacement is unambiguous without a tracker,
+    measured over the 3.0 s horizon.
+
+| card | engine tiles/s | real p90 | ratio | n |
+|---|---|---|---|---|
+| Minions | 8.02 | 1.03 | 7.8x | 6 |
+| Spear Goblins | 10.00 | 1.88 | 5.3x | 5 |
+| Musketeer | 5.04 | 1.33 | 3.8x | 33 |
+| Valkyrie | 5.04 | 1.33 | 3.8x | 23 |
+| Giant | 2.88 | 1.00 | 2.9x | 45 |
+| Mini P.E.K.K.A | 7.55 | 3.07 | 2.5x | 19 |
+| Archers | 5.09 | 3.50 | 1.5x | 17 |
+
+**The honest figure is a bracket, 3.8x-6.5x, not a point.** The two statistics
+have opposite biases: the median under-reads real speed because units that
+stop to fight contribute zeros, and the p90 over-reads it because a
+mis-associated detection looks like a large jump (Archers at 3.50 tiles/s is
+not a real Archer). Median ratio is 6.5x, p90 ratio 3.8x. Do not quote a
+tighter number than the bracket from this data.
+
+### An independent cross-check that the measurement is real
+
+The engine has an internal speed-tier convention, stated in its own comments
+(`SpiritEmpressForms.h:28,43` — "Fast" 0.85, "Medium" 0.5):
+
+| tier | engine/tick | engine tiles/s | real tiles/s |
+|---|---|---|---|
+| Slow (Giant) | 0.30 | 3.0 | ~0.75 |
+| Medium (Musketeer, Valkyrie, Knight) | 0.50 | 5.0 | ~1.0 |
+| Fast (Hog, Mini P.E.K.K.A, Minions) | 0.80-0.85 | 8.0 | ~1.5 |
+| Very Fast (Skeletons, Goblins) | 1.00 | 10.0 | ~2.0 |
+
+The engine's Slow:Medium ratio is 0.60 where the real game's is 0.75, so the
+Slow tier is *relatively* too slow and should need a divisor 0.8x the size of
+Medium's. Measured independently from the footage: Giant 2.9x against
+Musketeer/Valkyrie 3.8x, a ratio of **0.76**. Two unrelated sources agreeing
+to 5% is the reason to believe this is a scale error and not detector noise.
+
+It also means **a single flat divisor is close but not exact.** Correcting per
+tier is exact; a flat divisor leaves the Slow tier ~20-25% off.
+
+### What is NOT claimed
+
+  * That this explains "the whole sim-to-real gap". The gap in *performance*
+    has never been measured; only this discrepancy in *speed* has.
+  * Exact target values. The measurement supports "~4-5x too fast". It does
+    not support setting a specific constant to three digits.
+
+### Where the change would go
+
+| site | what it covers |
+|---|---|
+| `CardStats::troop()` — `CardRegistry.h:125` | every troop built through the factory (the great majority) |
+| `SpiritEmpressForms.h:28,43` | **bypasses the factory** and assigns `stats.speed` directly — a scale applied only in `troop()` would silently miss these two |
+| `Troop::update` — `Troop.h:36` | the single point of application; scaling here covers everything at once, including any future bypass |
+| `Projectile.h:88` | **separate `speed`, separate question — see below** |
+
+`Troop.h:36` is the smallest and most complete edit (one line, covers every
+mover, trivially reversible). Its downside is that `CardStats::speed` then
+means something other than what it says. Scaling at the two construction
+sites keeps the values honest but must touch both, and would be missed again
+by the next card that bypasses the factory.
+
+### Blast radius — this is not "the sim gets more accurate"
+
+Attack cooldowns are already correct against the real game (Musketeer 1.0 s,
+Valkyrie 1.5 s, Hog 1.6 s — 132 rows agreeing, see CLAUDE.md) and elixir regen
+is within 2%. Slowing movement while those stay fixed **rebalances every card
+relationship in the engine**:
+
+  * a troop crossing a defender's range takes ~5x longer, so it absorbs ~5x
+    more shots — **ranged units get much stronger relative to melee**;
+  * a tank takes ~5x more Princess Tower damage covering the same ground;
+  * ~5x more elixir accrues while a push develops, which changes the economy
+    the whole game is played on;
+  * far fewer engagements fit in a match, so **timeouts get much more common**
+    and `TimeoutRules`/`DRAW_PENALTY` become far more prominent;
+  * `HeuristicOpponent` and the four scripted bots have thresholds that were
+    only ever exercised against the fast physics;
+  * the curriculum's 0.80 stage gate and the 1.0-1.5 elixir ladder were
+    calibrated against the fast physics;
+  * 207 references to speed/position/movement across 16 C++ test files
+    (`test_troop.cpp` alone has 33) — the Catch2 suite will need review, and
+    whether each failure is "asserting the old physics" or a real problem
+    needs a human to read.
+
+One genuine upside: `skip_frames = 10` gives one decision per second, which
+CLAUDE.md lists as open problem #4 precisely because it caps tactical
+precision. At 5x slower movement, one second covers 5x less board, so that
+handicap shrinks by the same factor without any change to the action space.
+
+**Every checkpoint is invalidated and the win-rate history means nothing
+afterwards.** That is expected and accepted here — the plan is a fresh run.
+
+### Open questions, not answered by this measurement
+
+1. **Projectiles.** `Projectile.h:88` uses its own `speed` and this harness
+   cannot see them: spells in flight are filtered out before they reach the
+   board (`is_board_presence`). Whether projectile speed carries the same
+   error is **unmeasured**. It matters, because the value-Fireball shaping and
+   the lethal-spell PBRS term both landed recently and both depend on when a
+   spell arrives relative to the troops it is aimed at.
+2. **Deploy time.** The engine has none — `spawnEntity` makes an entity live
+   immediately, while the real game freezes a troop ~1 s after it lands. This
+   is a second, independent timing error in the same direction, and correcting
+   speed does not address it.
+
+### The time-scale sweep — a third, independent confirmation
+
+`--time-scale N` steps the engine by `horizon * N`, which is arithmetically
+what dividing every speed by `1/N` does to displacement. Sweeping it measures
+the divisor with **no engine change at all**. All scales share one pass, so
+every column is scored on identical boards and a difference between them
+cannot be sampling. n = 158 per cell.
+
+```
+ horizon   stale  rebuilt    x0.1   x0.15    x0.2   x0.25   x0.33    x0.5      x1
+    0.5s   0.341    0.258   0.258   0.258   0.258   0.258   0.253   0.253   0.172
+    1.0s   0.250    0.187   0.187   0.187   0.216   0.216   0.203   0.141   0.114
+    2.0s   0.178    0.135   0.138   0.134   0.143   0.152   0.122   0.111   0.091
+    3.0s   0.134    0.110   0.094   0.097   0.104   0.105   0.091   0.075   0.060
+```
+
+**`x1` is the worst column at every horizon, and the curve has an interior
+maximum at 0.2-0.25** on the two rows that can resolve it — i.e. a divisor of
+**4x-5x**, agreeing with both the speed table and the tier cross-check.
+
+Two rows cannot resolve it and must not be read as evidence. At `0.5s` every
+scale <= 0.25 rounds to a single tick, so those columns ARE the rebuilt board
+(hence the identical 0.258); at `3.0s` the differences are inside the noise.
+
+### What this does NOT show: forward prediction is not yet worth deploying
+
+`rebuilt` is the same reconstruction scored WITHOUT stepping. Against it,
+stepping at the right scale genuinely adds information — 0.216 vs 0.187 at
+1.0 s, 0.152 vs 0.135 at 2.0 s. So the dynamics do carry real signal.
+
+But **no scale beats `stale`**, which pays no reconstruction cost at all
+(perception at t vs perception at t+h). The reconstruction tax — floor 0.519 —
+is larger than everything stepping buys back. So the decision loop should keep
+acting on the freshest real board, and the lookahead idea stays parked.
+
+It is worth re-asking after this item lands: part of that floor is the one
+unavoidable materialising tick, which at 5x speed displaces a unit by half a
+second of real movement. Correcting speed should raise the floor on its own.
+
+### How to verify a fix, before spending any training compute
+
+`sim_fidelity.py` is the instrument, and it needs no engine change to predict
+what the fix will do: `--time-scale N` steps the engine by `horizon * N`,
+which is arithmetically what dividing speed by `1/N` does to displacement.
+
+  1. sweep `--time-scale` and find the scale that maximises occupancy
+     agreement — that scale IS the empirical divisor;
+  2. apply the change;
+  3. re-run with `--time-scale 1.0` and confirm the ratio column collapses
+     toward 1.0 and the reconstruction floor rises;
+  4. only then retrain.
+
+Step 1 costs one 20-minute pass and no engine change at all.

@@ -22,6 +22,27 @@ enum class Archetype {
     Spell                    // one-shot area effect (Fireball, Zap, ...)
 };
 
+// Troop movement was measured at 4-5x the real game's on 2026-08-07, against
+// 8 real recordings -- see perception/UPSTREAM_REQUESTS.md item 9 for the
+// evidence and the blast radius. Three independent measurements agreed:
+// per-card speed off real footage (3.8x-6.5x), a time-scale sweep whose
+// occupancy agreement peaks at 0.2-0.25, and the engine's own Slow:Medium
+// tier ratio (0.60 against the real 0.75).
+//
+// The `speed` literals in CardRegistry.h keep stating each card's tier in the
+// engine's ORIGINAL units, and this is the single point where they are scaled
+// into real-game tiles/tick. Applied at construction rather than in
+// Troop::update deliberately: Troop::getSpeed() feeds the observation's
+// CH_SPEED channel, so scaling at the point of movement would leave the
+// engine reporting a speed it does not actually move at.
+//
+// KNOWN RESIDUAL: a flat scale leaves the Slow tier ~20% slow (Giant 0.6
+// tiles/s against a real ~0.75), because the engine's Slow:Medium ratio is
+// 0.60 where the real game's is 0.75. Left uncorrected on purpose -- the
+// measurement bracket is too wide to justify per-tier constants, and
+// perception/tools/sim_fidelity.py can settle it after this lands.
+inline constexpr float MOVEMENT_SPEED_SCALE = 0.2f;
+
 struct CardStats {
     int id = 0;
     std::string name;

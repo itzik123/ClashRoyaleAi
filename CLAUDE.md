@@ -79,6 +79,41 @@ the recordings, not assumed. Don't "fix" one to match the other without
 revisiting `perception/track/opp_elixir.py`, whose missed-placement alarm
 depends on using the real rate.
 
+**Troop movement was 4-5× too fast until 2026-08-07.** `CardStats::speed` is
+tiles per *tick*, so the registry's Giant `0.3f` meant **3.0 tiles/s** against
+a real-game Slow of ~0.75 — a Giant crossed bridge-to-tower in ~3.5 s.
+`MOVEMENT_SPEED_SCALE = 0.2f` in `CardStats.h` now converts the registry's
+tier literals into real-game tiles/tick. It is applied at **three** sites:
+`CardRegistry.h:125` plus both `SpiritEmpressForms.h` assignments, which set
+`stats.speed` directly and so bypass `CardStats::troop()`.
+
+Measured three independent ways against the 8 recordings, all agreeing
+(`perception/UPSTREAM_REQUESTS.md` item 9 carries the evidence): per-card speed
+off real footage, the engine's own Slow:Medium tier ratio, and a time-scale
+sweep in `perception/tools/sim_fidelity.py` whose optimum moved from 0.2 to
+**1.0** across the fix — the end-to-end confirmation that the engine's clock
+and the real game's now agree.
+
+Three things worth carrying forward:
+
+- **The C++ suite did not catch this and cannot.** All 504 cases passed before
+  and after. `test_troop.cpp` builds `MeleeTroop` with a literal speed and
+  nothing anywhere asserts a registry speed constant — the suite covers the
+  movement *mechanism* and is blind to the *data registry*. 207 grep hits for
+  "speed" across 16 test files are not coverage. The guard lives on the
+  perception side instead.
+- **It is a rebalance, not an accuracy fix.** Cooldowns and elixir regen were
+  already right, so slowing movement alone means a troop absorbs ~5× more
+  shots crossing a defender's range, tanks take ~5× more tower damage for the
+  same ground, ~5× more elixir accrues per push, and timeouts get much more
+  common. Every win rate in "Measured baselines" predates it.
+- **`skip_frames = 10` hurts ~5× less now.** One second covers ~5× less board,
+  so open problem #4 shrank by that factor for free.
+
+**Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
+its own untouched `speed`, and the engine has **no deploy time** at all while
+the real game freezes a troop ~1 s after it lands.
+
 **Observation changed on 2026-07-29.** `NUM_CHANNELS` 9 → 21,
 `observation_size()` 6253 → **13606**, `NUM_EXTRA_SCALARS = 9` appended after
 the one-hots. Channels 0-8 keep their old meaning; 9-20 are per-team attribute
@@ -163,12 +198,27 @@ Two sequential pipelines. `train.py` hands off by `subprocess.Popen`-ing
 
 ```
 train.py            phase 1  "mirror"           vs the C++ HeuristicOpponent
+       |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60)   <-- gates THIS step only
+       v
                     phase 1  "random_opponent"  vs randomised decks
-       |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60) and stage >= 4
+       |  episodes_completed >= PHASE2_TOTAL_EPISODE_CAP (40,000)
        v
 train_selfplay.py   phase 2  PFSP league        vs frozen snapshots +
                                                4 scripted bots + exploiters
 ```
+
+**`PHASE2_ENTRY_WIN_RATE` does not gate the pipeline handoff**, despite its
+name. It gates `mirror` → `random_opponent` (`train.py:1299`). The handoff to
+pipeline 2 is a plain episode count (`train.py:1035`) with no win-rate
+condition at all — phase 2 has no natural stopping point, so the cap is what
+ends pipeline 1. An earlier version of this diagram put the 0.60 gate on the
+handoff arrow and cost a live run two wrong predictions about when it would
+transition.
+
+In `random_opponent` the console prints **two** stage numbers, `4/2`. The
+first is the frozen mirror stage; the second is the CURRENT random deck's own
+progress through the same six stages. It resets to 0 every time a new deck is
+sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 
 ### Network (`model.py`, 1.88 M params)
 
@@ -538,6 +588,23 @@ Three lessons, all of which nearly hid it:
 ---
 
 ## Measured baselines — use these, don't re-derive them
+
+**EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
+NO WIN RATE BELOW SURVIVES IT.** Troops now move at ~1/5 the speed every one
+of these numbers was earned at, which changes the relative value of every card
+in the deck (see "Engine facts"). **The episodes/hour figures do NOT hold
+either** — measured 1,301 ep/hour on the first post-fix run against the 2,873
+recorded below, a 2.2× drop. This was written here as "throughput still holds,
+it is wall-clock not gameplay", and that was wrong: a match whose troops move
+5× slower needs far more TICKS to reach a decision, so each episode now
+contains proportionally more transitions. It is not a timeout effect — the
+draw rate is 0.00, matches still finish inside `maxTicks`, they just use more
+of the clock. What *does* still hold is transitions and gradient steps per
+hour, which is the quantity this file already says to budget in. A phase 1 to
+~60k episodes is now ~46 h, not ~21 h. The *methodological* baselines hold
+(opponent-elixir MAE ≈ 1.35 for predict-the-mean, 0.273 for
+always-guess-the-modal-cell, the Elo formula's behaviour near 1.0). Treat
+every win rate, reward curve and stage number as historical.
 
 **Every phase-2 win rate and Elo below predates the 2026-07-31 observation fix
 and is not comparable across pipeline-2 episode 31,753.** Before that fix the
