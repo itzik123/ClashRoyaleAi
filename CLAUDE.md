@@ -230,7 +230,7 @@ sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 | `scalar_mlp` | 48,320 | 754 scalars → 64 |
 | `lstm` | **1,804,288** | `LSTMCell(1504, 256)`, stepped manually |
 | `card_head` | 1,285 | 256 → 5 (4 hand slots + no-op) |
-| `place_ctx` + `place_up` | 15,073 | ctx→32ch, broadcast-add, 2× deconv → 612 |
+| `place_ctx` + `place_up` | 14,593 | ctx→32ch, broadcast-add, 2× (upsample+conv) → 612 |
 | `value_head` | 257 | critic |
 | `aux_elixir_head` | 257 | opponent-elixir estimator |
 
@@ -558,6 +558,54 @@ Goblin regressing from its own base card). Musketeer is in `DEFAULT_DECK`. The
 new `CH_ANTIAIR` channel is what surfaced it. Also that day: the river was
 re-centred, which had been giving team 0 an extra placement row.
 
+**2026-08-09, the placement head had a fixed favourite cell and it was not a
+reward problem.** The "Cannon pathology" — 27.9% of Cannons parked behind the
+agent's own King — was attributed to the building-vs-tower reward price and
+partly fixed there on 2026-08-06. That diagnosis was wrong, or at least badly
+incomplete. Re-measured on the ep~129k checkpoint over 803 sampled placements:
+the concentration is **card-independent**. Giant 44.4%, Valkyrie 38.9%,
+Musketeer 35.1%, Cannon 27.1% — the Cannon was not even the worst card, and no
+asymmetry in how *deployed buildings* are priced can make a **Giant** walk
+behind its own King half the time.
+
+The cause was `place_up`. `placement_given_card` adds the card/state context as
+a **spatially uniform** vector, and a `ConvTranspose2d(k=2, s=2)` applies a
+different weight to each of the 4 positions in its output block — so a uniform
+input does *not* give a uniform output. Two stacked layers imprint a fixed
+period-4 `(x mod 4, y mod 4)` bias on the logit map that is identical for every
+card and every state; the card can only shift the whole map by a constant, never
+change which cell inside the period wins. Measured three ways, all agreeing:
+
+- **Weight space:** on a spatially constant input the old head's logit surface
+  is **100% explained by phase alone**, at every input magnitude tested.
+- **Behaviour:** **73.0%** of that agent's placements landed on `x ≡ 3 (mod 4)`
+  against a 22.2% null — χ² = 94.8 on 3 df — and it used only **91 of 288**
+  legal cells.
+- **A/B against the current agent** under identical conditions: 28.9% of all
+  placements on (11,2)/(11,3) versus **0.9%**, 91 cells versus **208**.
+
+Fixed by nearest-neighbour upsample + stride-1 conv (Odena, Dumoulin & Olah,
+*Deconvolution and Checkerboard Artifacts*). Verified: a spatially constant
+input now produces an **exactly** flat interior (range 0.000000), and the head
+is **1.8× faster** (136 ms vs 246 ms per fwd+bwd at batch 256) with slightly
+fewer parameters — `ConvTranspose2d` is poorly optimized on CPU and the 32→16→8
+channel taper cut real work. A FLOP count predicted a 2.6× *slowdown* and was
+simply wrong about wall clock. **This invalidates every checkpoint**: `place_up`
+no longer shape-matches, so `load_state_dict_flexible` will warm-start
+everything else and leave the placement head fresh.
+
+Two lessons worth carrying:
+
+- **The concentration was visible in the replays the whole time and nobody
+  looked at the marginal.** `Entropy/Placement_Measured` was tracking its target
+  throughout — a policy can put 30% on one cell and still hit a moderate entropy
+  target by spreading the rest, so the entropy metric **cannot** detect this.
+  The cheap detector is a histogram of `x mod 4` over `replays/*.json`.
+- **The thing that didn't break localized it again.** Same shape as the
+  team-1 observation bug: it was the cards that had *no* reason to be affected —
+  Giant, Valkyrie — that ruled out the reward explanation and pointed at the
+  head.
+
 **2026-07-31, the self-play opponent had been playing blind.** Chased from an
 odd number rather than a hypothesis, which is why it is worth recording as a
 method. Exploiter burst #1 came back 0.585 with a flat five-slice trend — but
@@ -720,6 +768,14 @@ recurrent state genuinely counts), `Entropy/Placement_Target` vs
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,
 which is the plateau signature the exploiter is meant to break. It has still
 never moved off ~5.3.
+
+**And add a fourth: the placement PHASE histogram.** Count `int(actionX) % 4`
+over `replays/*.json` and compare against the 27.8/27.8/22.2/22.2 null that 18
+columns imply. It is the only cheap detector for the checkerboard failure above,
+which `Entropy/Placement_Measured` provably cannot see. Collapse runs of
+identical decisions first — `annotate_replay_with_agent_info` stamps each
+decision onto 10 consecutive ticks, so a naive count is 10× too large and any
+χ² computed on it is meaningless.
 
 **And check the side null before trusting any self-play number.** Run a policy
 against a bit-exact copy of itself and confirm team 0 scores ~0.50 over a few
