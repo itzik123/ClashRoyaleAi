@@ -198,12 +198,27 @@ Two sequential pipelines. `train.py` hands off by `subprocess.Popen`-ing
 
 ```
 train.py            phase 1  "mirror"           vs the C++ HeuristicOpponent
+       |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60)   <-- gates THIS step only
+       v
                     phase 1  "random_opponent"  vs randomised decks
-       |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60) and stage >= 4
+       |  episodes_completed >= PHASE2_TOTAL_EPISODE_CAP (40,000)
        v
 train_selfplay.py   phase 2  PFSP league        vs frozen snapshots +
                                                4 scripted bots + exploiters
 ```
+
+**`PHASE2_ENTRY_WIN_RATE` does not gate the pipeline handoff**, despite its
+name. It gates `mirror` → `random_opponent` (`train.py:1299`). The handoff to
+pipeline 2 is a plain episode count (`train.py:1035`) with no win-rate
+condition at all — phase 2 has no natural stopping point, so the cap is what
+ends pipeline 1. An earlier version of this diagram put the 0.60 gate on the
+handoff arrow and cost a live run two wrong predictions about when it would
+transition.
+
+In `random_opponent` the console prints **two** stage numbers, `4/2`. The
+first is the frozen mirror stage; the second is the CURRENT random deck's own
+progress through the same six stages. It resets to 0 every time a new deck is
+sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 
 ### Network (`model.py`, 1.88 M params)
 
