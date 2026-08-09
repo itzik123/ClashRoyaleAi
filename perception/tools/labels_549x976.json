@@ -1,0 +1,40 @@
+{
+  "_": "cluster -> digit, read by eye off clusters_*.png. null means the cluster is not a clean single glyph and is dropped whole: c11 and c26 are background with no glyph, c21 is a clipped zero, c25 and c29 each mix two digits. Tied to the exact harvest parameters that produced the numbering -- 8 recordings, --every 1.0, --k 30, kmeans seed 0. Re-run `cluster` and re-read the sheets if any of those change.",
+  "_source": "perception/assets/recordings/*.mp4, 8 files, 1920x1080 CFR 30.0001 fps",
+  "_samples_per_digit": {
+    "0": 614, "1": 561, "2": 309, "3": 309, "4": 249,
+    "5": 224, "6": 377, "7": 614, "8": 530, "9": 138
+  },
+  "clusters": {
+    "0": "6",
+    "1": "7",
+    "2": "1",
+    "3": "0",
+    "4": "9",
+    "5": "6",
+    "6": "8",
+    "7": "3",
+    "8": "5",
+    "9": "4",
+    "10": "8",
+    "11": null,
+    "12": "3",
+    "13": "7",
+    "14": "0",
+    "15": "0",
+    "16": "3",
+    "17": "2",
+    "18": "2",
+    "19": "2",
+    "20": "9",
+    "21": null,
+    "22": "7",
+    "23": "7",
+    "24": "5",
+    "25": null,
+    "26": null,
+    "27": "6",
+    "28": "1",
+    "29": null
+  }
+}

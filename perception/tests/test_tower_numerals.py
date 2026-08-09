@@ -3,29 +3,42 @@
 Every one of these pins something that was measured wrong while building it,
 against a real captured frame where the answer is known by eye.
 
-Template MATCHING is deliberately not asserted here. The clock's digit
-templates were tried and measurably do not transfer -- confidence 0.08-0.18
-against a 0.35 threshold, with "3" read as "1" -- so a tower-specific set is
-still to be cut. Everything upstream of that is what these tests cover, and
-it is what the segmentation half of the reader is made of.
+The tower-specific digit templates now exist -- `config/templates/
+tower_549x976`, cut from the 8 ground-truth recordings -- so end-to-end
+matching IS asserted here, at the bottom. The clock's templates were tried
+first and measurably do not transfer: confidence 0.08-0.18 against a 0.35
+threshold, with "3" read as "1".
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
 
+from readers.clock import DigitTemplates
 from readers.tower_numerals import (
     NUMERAL_OFFSET,
     HP_RANGE,
+    TowerNumeralReader,
     ink_channel,
     numeral_roi,
     split_digits,
 )
 
 # CRBAB's bar bboxes in its own 368x652 detector space, from a live capture.
+# Derived there from NUMBER_CONFIG, which stores them as plain constants
+# rather than detector output: (LEFT/RIGHT_PRINCESS_HP_X, ENEMY/ALLY_
+# PRINCESS_HP_Y, +HP_WIDTH, +HP_HEIGHT).
+BAR_ENEMY_LEFT = (74, 95, 114, 105)
 BAR_ENEMY_RIGHT = (266, 95, 306, 105)
 DETECTOR = (368, 652)
 NATIVE = (549, 976)
+
+_ASSETS = Path(__file__).resolve().parent / "assets"
+_TEMPLATES = (Path(__file__).resolve().parent.parent
+              / "config" / "templates" / "tower_549x976")
 
 
 def test_the_roi_sits_above_the_bar_not_on_it():
@@ -150,3 +163,57 @@ def test_hp_range_excludes_implausible_readings():
 
 def test_the_numeral_offset_reaches_above_the_bar():
     assert NUMERAL_OFFSET[1] < NUMERAL_OFFSET[3] <= 0
+
+
+# --- end to end, against the frame the templates were accepted on ----------
+
+@pytest.fixture(scope="module")
+def reader():
+    if not (_TEMPLATES / "digits.json").exists():
+        pytest.skip(f"no tower digit templates at {_TEMPLATES}")
+    return TowerNumeralReader(DigitTemplates.load(_TEMPLATES))
+
+
+@pytest.fixture(scope="module")
+def frame_2030():
+    path = _ASSETS / "tower_numerals_2030_549x976.jpg"
+    if not path.exists():
+        pytest.skip(f"missing {path.name}")
+    return cv2.imread(str(path))
+
+
+@pytest.mark.parametrize("bar", [BAR_ENEMY_LEFT, BAR_ENEMY_RIGHT])
+def test_reads_the_known_frame(reader, frame_2030, bar):
+    """Both enemy Princess towers read 2030 on this frame, by eye.
+
+    The acceptance test the templates were cut for. It exercises the whole
+    reader -- ROI derivation, ink channel, segmentation, matching, the
+    plausibility range -- not just template matching, which is the point of
+    asserting it here rather than on a saved crop.
+    """
+    reading = reader.read(frame_2030, bar, DETECTOR)
+    assert reading.digits == "2030"
+    assert reading.value == 2030
+    assert reading.measured
+
+
+def test_a_blank_frame_is_reported_unmeasured_not_zero(reader):
+    """A tower whose HP is unknown must stay distinguishable from one that is
+    nearly dead: extra scalars 3-8 are tower HP, and a live tower reported as
+    empty tells the policy a lane is already lost."""
+    blank = np.full((976, 549, 3), 90, np.uint8)
+    reading = reader.read(blank, BAR_ENEMY_RIGHT, DETECTOR)
+    assert reading.value is None
+    assert not reading.measured
+
+
+def test_every_digit_has_a_template():
+    """A partial set silently misreads the digits it lacks as whichever glyph
+    it does have -- DigitTemplates raises on construction for exactly this,
+    and this pins that the shipped set is complete rather than merely
+    loadable."""
+    if not (_TEMPLATES / "digits.json").exists():
+        pytest.skip("no tower digit templates")
+    templates = DigitTemplates.load(_TEMPLATES)
+    assert set(templates.templates) == set("0123456789")
+    assert templates.shape == (26, 18)

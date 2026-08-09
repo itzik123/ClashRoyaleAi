@@ -370,6 +370,52 @@ Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
    because a wrong `card_sim_id` drives channels 11-20 with a confidently wrong
    attribute row, which is worse than a dropped detection.
 
+9. **Tower HP is now read as the ABSOLUTE printed numeral (2026-08-09).**
+   `readers/tower_numerals.py` plus a tower-specific digit set at
+   `config/templates/tower_549x976`. This replaces the bar fraction for the
+   timing work: CRBAB's `_calculate_hp` returns 0.0 both when a bar reads empty
+   and when it cannot match the colours at all, which over 77 consecutive
+   frames put both of our live Princess towers at 0.00 the whole time. A reader
+   that cannot tell a live tower from an unreadable one is unusable as a clock,
+   and it is what blocked measuring the real game's spell delay.
+
+   **The clock's templates measurably do not transfer** — confidence 0.08–0.18
+   against a 0.35 threshold, "3" read as "1" — so the set was cut fresh from the
+   8 recordings by `tools/build_tower_digit_templates.py`. 5,389 crops, 4,100
+   usable, clustered into 30 groups and labelled by cluster rather than by cell
+   (`tools/labels_549x976.json`); 138–614 samples per digit.
+
+   Two results:
+
+   - **Acceptance**: both enemy Princess towers on the known live frame read
+     **2030**, end to end through `TowerNumeralReader`. Pinned in
+     `tests/test_tower_numerals.py`.
+   - **Sequence**: read back over 4 full matches, **542 steps, 12 upward jumps,
+     97.8% consistent** with the fact that tower HP never rises. That is free
+     ground truth needing no labels, in the same spirit as the clock builder's
+     read-back-against-the-arithmetic check, and it exercises HP values no
+     labelled cluster ever showed as a whole number. The 12 failures are
+     0↔8 and 5↔6 confusions, mostly at confidence below 0.5.
+
+   **The key invariant, found by two failed attempts:** the numeral is drawn
+   near-white with a dark outline, and that is the only property that does not
+   vary with the arena skin. `ink_channel` + Otsu — which the reader still uses
+   — separates the glyph from *saturated* backgrounds like grass (65–75 against
+   the glyph's 218–230) but **not** from the light-tan floor all 8 recordings
+   are played on (116–185), where Otsu is forced to fit three levels with two
+   classes, puts the floor on the ink side, and merges adjacent digits: 588 of
+   2,711 cells came out as merged pairs, including every "90" in the batch.
+   Thresholding the per-channel minimum above 200 separates all of them.
+
+   **Two things are still open**, both measured and neither yet fixed:
+
+   - `split_digits` should segment on the near-white mask rather than Otsu.
+     The reader is currently correct on grass and unreliable on other skins.
+   - **`NUMERAL_OFFSET` is enemy-only.** The ally numeral is drawn *on* its
+     bar, not above it, so the derived ROI lands on the tower roof and returns
+     masonry. Only `BAR_ENEMY_*` was ever exercised. Ally and King towers need
+     their own offsets before all six tower scalars can be filled.
+
 Corrections to the original brief:
 
 - The river is a **two-row band `y ∈ [16,18)`**, and the bridges are the

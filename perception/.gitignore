@@ -19,7 +19,25 @@ assets/live/
 
 # Templates cropped from a specific recording at a specific resolution --
 # regenerable from the recording, and meaningless without it.
-config/templates/
+#
+# Written as `config/templates/*` rather than `config/templates/` so the
+# exception below can work at all: git does not descend into an excluded
+# DIRECTORY, so a negation for a path inside one is never even evaluated.
+config/templates/*
+
+# ...except the tower-HP digits, which are committed. Two reasons the rule
+# above does not hold for them:
+#
+#   "Regenerable from the recording" is not true on a fresh clone, because
+#   assets/recordings/ is itself ignored a few lines up. Nobody but this
+#   machine can rebuild them.
+#
+#   tests/test_tower_numerals.py asserts an end-to-end reading against them.
+#   Without the files that test SKIPS rather than fails, which is the kind of
+#   silent hole the rest of this package is written to avoid.
+#
+# 4.6 KB for the set. Rebuild with tools/build_tower_digit_templates.py.
+!config/templates/tower_549x976/
 
 # Generated reports.
 out/
