@@ -118,7 +118,21 @@ ENTROPY_STALE_REBOOST_EPISODES = 1500
 # Pipeline #1 snapshots are always eligible (wholly separate, earlier, much
 # weaker phase -- see discover_historical_checkpoints()'s docstring for why
 # their episode count isn't even comparable to this one).
-MIN_OPPONENT_AGE_EPISODES = 15000
+#
+# Lowered 15000 -> 6000 on 2026-08-09, together with
+# HISTORICAL_CHECKPOINT_INTERVAL_EPISODES (5000 -> 2000). These two are COUPLED
+# and must move together: this gate has always been exactly 3x the snapshot
+# interval, i.e. "exclude the three newest snapshots". Leaving it at 15000 while
+# the interval dropped to 2000 would have silently turned it into "exclude the
+# seven newest" -- a materially more conservative pool than was ever intended,
+# arrived at by changing a constant nobody edited.
+#
+# The re-denomination points the same way on its own merits. Since the
+# 2026-08-07 speed fix an episode carries ~2.2x more policy change, so 15,000
+# episodes now represents MORE divergence than when that number was picked --
+# the gate was becoming over-conservative, not under. 15000 / 2.2 ~= 6,800, and
+# 3 x 2000 = 6,000; both say the same thing.
+MIN_OPPONENT_AGE_EPISODES = 6000
 
 # --- Fixed-roster Elo-style evaluation ---
 # Win rate against "whichever opponent PFSP happened to sample this window"

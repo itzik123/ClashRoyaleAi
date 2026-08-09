@@ -131,7 +131,25 @@ DRAW_PENALTY = 1.0
 # much stronger) snapshots into the same folder as pipeline #2 progresses, and
 # those two runs' episode counters aren't on the same scale.
 HISTORICAL_CHECKPOINT_DIR = "historical_checkpoints"
-HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 5000
+# Lowered 5000 -> 2000 on 2026-08-09, as a RE-DENOMINATION rather than a change
+# of intent. The 2026-08-07 movement-speed fix left gradient steps per hour
+# unchanged but cut episodes per hour 2,873 -> 1,301, so one episode now carries
+# ~2.2x more transitions and ~2.2x more policy change. 5,000 episodes had come
+# to mean what ~11,000 used to; 5000 / 2.2 ~= 2,270, rounded to 2,000.
+#
+# Deliberately NOT 1,000, which was the other candidate: that would make the
+# pool ~5x denser than the original design, and 5,000 was itself a judgement
+# call rather than a measured optimum, so there is nothing to justify
+# overshooting it. Two costs bound this from above -- every extra pool member
+# dilutes the PFSP share of every other (which is what already forced
+# DEFENSIVE_SCRIPTED_MIN_WEIGHT up to 0.8), and each worker keeps its OWN local
+# per-opponent win-rate estimate, so more members means fewer games each and a
+# noisier (1 - winrate)^2 weighting.
+#
+# MIN_OPPONENT_AGE_EPISODES in train_selfplay.py is kept at 3x this value; see
+# its comment. The two are coupled and changing one alone silently changes
+# which snapshots are eligible.
+HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 2000
 
 # Diagnostic-only snapshots, one per curriculum-stage transition: the exact
 # policy that just cleared a stage's 80%-over-100-episodes gate, captured
