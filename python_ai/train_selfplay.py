@@ -487,6 +487,58 @@ def _scenario_fireball_tower_value(rng):
     return {"name": "fireball_tower_value", "spawns": spawns, "max_steps": 15}
 
 
+# --- Giant: unmasking the win condition -------------------------------------
+#
+# The Giant is not undervalued, it is UNAFFORDABLE. Measured on the ep-17k
+# checkpoint over 1,839 decision steps: the Giant is in hand on 80.6% of them
+# but legal on only 4.7% (5.9% of in-hand), and when it IS legal the policy
+# picks it at P = 0.157 against a uniform 0.200. It was sampled on 0.54% of
+# steps, and 1 of 900 logged placements across the run was a Giant.
+#
+# That is a masked-slot problem, and it is the exact mechanism already on
+# record for this deck: at 0.35 elixir per decision a 5-cost card is legal only
+# after ~14 consecutive non-spending steps, so its slot is masked nearly every
+# time it is checked and never accumulates gradient. No opponent, reward or
+# entropy change reaches an action that is never sampled -- which is why this
+# is a START-STATE change and not any of those.
+#
+# The elixir is banked by advancing no-op ticks rather than being set, because
+# there is no set_elixir binding and the C++ engine stays read-only. That is a
+# feature, not a workaround: 90 no-op ticks is an ordinary quiet mid-match
+# moment, and BOTH sides bank equally (measured 5.0 -> 8.15 for each), so the
+# scenario hands the agent an opportunity rather than an advantage.
+_GIANT_ID = 2
+
+# Ticks of quiet banked before the episode starts. 75-110 puts elixir at
+# 7.6-8.9: comfortably above the Giant's 5, and deliberately under the 9.0
+# W_ELIXIR_OVERFLOW threshold, so the scenario does not open with a standing
+# per-step penalty that would bias every Giant episode negative. Randomised so
+# "scenario" does not become a fixed elixir cue the net can key on.
+_GIANT_WARMUP_TICKS = (75, 111)
+
+
+def _scenario_giant_commit(rng):
+    """A quiet board and enough elixir to actually play the win condition.
+
+    Nothing is spawned. The whole point is the state the agent almost never
+    reaches on its own -- an unmasked Giant slot -- so that choosing it, and
+    the push that follows, can accumulate gradient at all.
+
+    The window is long because the SIGNAL is long: a Giant at ~0.75 tiles/s
+    needs roughly 20-30 decisions to walk from a back placement across the
+    bridge and reach a tower. Truncating sooner would show the commitment and
+    hide the payoff, which is the shape of credit assignment that produced the
+    0.7% win-condition usage this is meant to undo.
+    """
+    return {
+        "name": "giant_commit",
+        "spawns": [],
+        "warmup_ticks": int(rng.integers(*_GIANT_WARMUP_TICKS)),
+        "require_own_card": _GIANT_ID,
+        "max_steps": 40,
+    }
+
+
 # (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
 # drop in here with the same machinery. Set a scenario's "max_steps" to None
 # to run it to the natural end of the game instead of a focused window.
@@ -496,11 +548,19 @@ def _scenario_fireball_tower_value(rng):
 # the bridge-push scenarios are saturated and no longer teaching the reflex
 # they were added for. Their share drops from 100% to 50% of injected episodes
 # (SCENARIO_INJECTION_PROB itself is unchanged at 0.30).
+# giant_commit takes its share from the BRIDGE scenarios, not from the
+# Fireball ones. ScenDef is running at 0.97-0.98, so the bridge push is
+# saturated on both and no longer teaching the reflex it was added for, while
+# the Fireball scenarios are only ~13k episodes old and have not been read yet.
+# bridge_push 2.0 -> 1.0 and giant_commit at 1.0 leaves the total at 6.0, so
+# every other scenario's absolute share is unchanged: Fireball stays at 50%,
+# bridge falls 50% -> 33%, and giant_commit takes 17%.
 SCENARIOS = [
-    (_scenario_bridge_push, 2.0),
+    (_scenario_bridge_push, 1.0),
     (_scenario_bridge_push_supported, 1.0),
     (_scenario_fireball_swarm, 1.5),
     (_scenario_fireball_tower_value, 1.5),
+    (_scenario_giant_commit, 1.0),
 ]
 
 
@@ -880,6 +940,33 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.scenario_steps_taken = 0
         if self.scenarios_enabled and self.scenario_rng.random() < SCENARIO_INJECTION_PROB:
             scenario = sample_scenario(self.scenario_rng)
+
+            # A scenario may require a specific card in the trainee's opening
+            # hand -- giant_commit is pointless without the Giant in it. The
+            # opening shuffle is an unseeded mt19937 that cannot be set and
+            # whose queue cannot be read, so the supported way to control the
+            # hand is to re-roll until it comes up. reset() costs 0.135 ms and
+            # its shuffle is uniform over all 70 hand-sets, so a 4-of-8 card
+            # arrives in ~2 tries. Capped, and falling through on exhaustion
+            # rather than looping: a scenario that occasionally runs without
+            # its card is a diluted scenario, but a reset that can hang is a
+            # stalled worker.
+            want = scenario.get("require_own_card")
+            if want is not None:
+                for _ in range(24):
+                    if want in self.game.get_hand():
+                        break
+                    self.game.reset()
+
+            # Banked elixir, BEFORE the spawns so injected units do not walk
+            # during the warm-up. Both sides regenerate together here (no-op on
+            # both, and step_self_play never calls opponentTurn), so this is a
+            # quiet mid-match moment rather than a handout.
+            warmup = scenario.get("warmup_ticks", 0)
+            if warmup:
+                noop_w = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+                self.game.step_self_play(noop_w, 0.0, 0.0, noop_w, 0.0, 0.0, warmup)
+
             for card_id, x, y in scenario["spawns"]:
                 self.game.inject_enemy(card_id, x, y)
             # inject_enemy only QUEUES units into pendingEntities -- they aren't
@@ -1455,17 +1542,33 @@ def train_selfplay_ppo():
         # EXPLOITER_FIRST_BURST_EPISODE, should_run_burst() reads that as "due
         # now" -- so a legacy checkpoint would fire an unscheduled 75-minute
         # burst immediately on every resume.
+        # NOTE the fallback above does NOT fire for the checkpoints this run
+        # actually has. dict.get returns the default only when the key is
+        # ABSENT, and every checkpoint written while the exploiter was disabled
+        # carries the key PRESENT with value None -- verified by reading one.
+        # So resumed_exploiter_burst_ep is None here, and None is meaningful:
+        # should_run_burst reads it as "never bursted, due now", which is
+        # correct for an exploiter that has genuinely never run.
+        #
+        # It is only the MESSAGE that could not cope. Enabling the exploiter on
+        # 2026-08-09 took this branch for the first time and crashed the resume
+        # outright with `NoneType + int`, before a single episode ran -- a
+        # latent fault that was unreachable for as long as the feature was off.
         resumed_exploiter_burst_ep = checkpoint.get(
             "last_exploiter_burst_episode", episodes_completed)
         resumed_exploiter_burst_index = checkpoint.get("exploiter_burst_index", 0)
         full_resume = True
+        if not exploiter_mod.EXPLOITER_ENABLED:
+            burst_note = "exploiter disabled (see EXPLOITER_ENABLED)"
+        elif resumed_exploiter_burst_ep is None:
+            burst_note = "exploiter enabled, no burst on record -- first burst is due now"
+        else:
+            burst_note = ("next exploiter burst at ep "
+                          f"{resumed_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}")
         print(f"Resumed pipeline #2 (PFSP) from {WEIGHT_PATH}: episode {episodes_completed}, "
               f"reference roster size {len(reference_roster)}, "
               f"ent coef c/p {ent_coef_card:.4f}/{ent_coef_place:.4f}, "
-              + (f"next exploiter burst at ep "
-                 f"{resumed_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}"
-                 if exploiter_mod.EXPLOITER_ENABLED
-                 else "exploiter disabled (see EXPLOITER_ENABLED)"))
+              + burst_note)
     elif os.path.exists(BOOTSTRAP_FROM_PATH):
         bootstrap = torch.load(BOOTSTRAP_FROM_PATH, map_location=device, weights_only=False)
         state_dict = bootstrap["model"] if isinstance(bootstrap, dict) and "model" in bootstrap else bootstrap
