@@ -32,7 +32,13 @@ protected:
         float dy = waypoint.y - position.y;
         float distToWaypoint = position.distanceTo(waypoint);
 
-        if (distToWaypoint > 0.01f) {
+        // Board::WAYPOINT_ARRIVAL_EPS, not a second literal 0.01f. This dead
+        // zone and getNextWaypoint's notion of having reached a waypoint are
+        // the same fact, and when they were two independent numbers they
+        // disagreed at the bridge mouth and produced an absorbing state that
+        // froze troops mid-crossing for 10+ seconds -- see that constant's
+        // comment and the regression tests in tests/core/test_board.cpp.
+        if (distToWaypoint > Board::WAYPOINT_ARRIVAL_EPS) {
             float currentSpeed = (freezeTicks > 0) ? speed * freezeSlow : speed;
             Vector2D newPos;
             newPos.x = position.x + (dx / distToWaypoint) * currentSpeed;

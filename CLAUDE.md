@@ -110,6 +110,37 @@ Three things worth carrying forward:
 - **`skip_frames = 10` hurts ~5× less now.** One second covers ~5× less board,
   so open problem #4 shrank by that factor for free.
 
+**The speed fix exposed a latent deadlock at the bridge mouths, fixed
+2026-08-09.** Troops occasionally froze mid-crossing for 10+ seconds with no
+enemy within 10 tiles. Two pieces of code disagreed about what "arrived" means:
+
+- `Board::getNextWaypoint` classified sides with `currentPos.y <= riverY_start`
+  — **inclusive** — so a unit standing exactly on the near bank was still
+  "below" and was handed `{bridgeX, riverY_start}`, *the point it already
+  occupied*.
+- `Troop::moveTowards` refused to move when `distToWaypoint > 0.01f` was false.
+
+Position unchanged → identical waypoint next tick → **absorbing state**. A
+0.01-radius trap disc at each of the four bridge mouths, escapable only by
+retargeting, death or a collision nudge.
+
+It is a genuine *latent* bug, not something the speed change introduced: the
+chance a step ends inside the disc is ≈ `0.01 / step size`, so it went from
+~3% at the old 0.3 tiles/tick to ~17% at 0.06 — a 5× rise exactly tracking the
+5× slowdown. Measured 2 events in 4 post-fix replays (41,954 unit-ticks), 0 in
+3 pre-fix replays (7,512 unit-ticks), at `(4.00, 15.50)` and `(14.01, 15.49)`.
+
+Fixed by making the two sites share one `Board::WAYPOINT_ARRIVAL_EPS` and
+having `getNextWaypoint` hand back the *far* bank once a unit has arrived at
+the near one. **Gameplay-affecting** — win rates from before it are not
+comparable. Regression tests in `tests/core/test_board.cpp` sweep both bridge
+mouths at finer-than-epsilon resolution; they fail on the old code with
+`0.0f > 0.01f`.
+
+The general lesson: **two independent copies of "close enough" is a deadlock
+waiting for the right step size.** Anywhere a mover's stop-condition and a
+planner's arrival-condition are separate literals, they can disagree.
+
 **Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
 its own untouched `speed`, and the engine has **no deploy time** at all while
 the real game freezes a troop ~1 s after it lands.

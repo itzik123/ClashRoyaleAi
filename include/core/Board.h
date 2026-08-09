@@ -274,6 +274,16 @@ public:
         return pos;
     }
 
+    // One definition of "standing on the waypoint", shared with
+    // Troop::moveTowards, which refuses to move when it is closer than this to
+    // its waypoint. The two MUST agree: if getNextWaypoint can hand back a
+    // point the mover is already within this distance of while it still has
+    // further to go, that state is absorbing -- the position never changes, so
+    // the waypoint never changes, so the unit is stuck for the rest of the
+    // match. See the bridge-mouth regression tests in tests/core/test_board.cpp
+    // for the measured case this constant exists to prevent.
+    static constexpr float WAYPOINT_ARRIVAL_EPS = 0.01f;
+
     Vector2D getNextWaypoint(const Vector2D& currentPos, const Vector2D& targetPos) const {
         bool isCurrentBelow = currentPos.y <= riverY_start;
         bool isTargetBelow = targetPos.y <= riverY_start;
@@ -290,9 +300,22 @@ public:
         float bridgeX = (distToLeft < distToRight) ? leftBridge.x : rightBridge.x;
 
         if (isCurrentBelow) {
-            return Vector2D{bridgeX, riverY_start};
+            // The bank classifications above are INCLUSIVE (`y <= riverY_start`),
+            // so a unit that has already arrived at the near bank is still
+            // "below" and would be routed to the point it is already standing
+            // on. Hand it the FAR bank instead -- it has arrived at this leg and
+            // the next leg is the crossing itself.
+            Vector2D nearBank{bridgeX, riverY_start};
+            if (currentPos.distanceTo(nearBank) <= WAYPOINT_ARRIVAL_EPS) {
+                return Vector2D{bridgeX, riverY_end};
+            }
+            return nearBank;
         } else if (isCurrentAbove) {
-            return Vector2D{bridgeX, riverY_end};
+            Vector2D nearBank{bridgeX, riverY_end};
+            if (currentPos.distanceTo(nearBank) <= WAYPOINT_ARRIVAL_EPS) {
+                return Vector2D{bridgeX, riverY_start};
+            }
+            return nearBank;
         } else {
             if (isTargetAbove) {
                 return Vector2D{bridgeX, riverY_end};

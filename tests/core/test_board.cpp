@@ -324,6 +324,70 @@ TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][wa
     REQUIRE(wp.x == Catch::Approx(4.0f)); // leftBridge.x
 }
 
+// ---------------- the bridge-mouth absorbing state ----------------
+//
+// Measured 2026-08-09 off replay_ep1007 and replay_ep4029: a ground troop
+// stopped dead at (4.00, 15.50) and (14.01, 15.49) -- on a bridge, at the
+// river's near edge, with the nearest enemy 9-11 tiles away -- for 100 and 104
+// ticks. Zero occurrences across three pre-speed-fix replays.
+//
+// Cause is these two lines disagreeing about what "arrived" means:
+//   Board::getNextWaypoint  classifies with `currentPos.y <= riverY_start`,
+//                           INCLUSIVE, so a unit standing exactly on the near
+//                           bank is still "below" and is handed {bridgeX,
+//                           riverY_start} -- the point it already occupies.
+//   Troop::moveTowards      refuses to move when distToWaypoint <= 0.01.
+// Position unchanged -> identical waypoint next tick -> the state is absorbing
+// and the unit never crosses. It is a 0.01-radius trap disc at each bridge
+// mouth, which the movement-speed fix made ~5x more likely to land in
+// (chance of a step ending inside it is ~ 0.01 / step size; 0.3 -> 0.06).
+
+TEST_CASE("getNextWaypoint does not strand a unit standing on the near bank", "[board][waypoint][regression]") {
+    Board board;
+    // Exactly the measured ep1007 position: on the left bridge, at riverY_start.
+    Vector2D here{ 4.0f, 15.5f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 4.0f, 27.0f });
+    // The unit still has to cross, so the waypoint must be somewhere it is not
+    // already standing -- otherwise Troop::moveTowards has nothing to move to.
+    REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+    // Specifically: it should be sent to the FAR bank.
+    REQUIRE(wp.y == Catch::Approx(17.5f));
+}
+
+TEST_CASE("getNextWaypoint does not strand a unit standing on the far bank", "[board][waypoint][regression]") {
+    Board board;
+    // The same trap mirrored, for a unit heading back south.
+    Vector2D here{ 14.0f, 17.5f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 14.0f, 6.0f });
+    REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+    REQUIRE(wp.y == Catch::Approx(15.5f));
+}
+
+TEST_CASE("getNextWaypoint never returns the caller's own position while it still has to cross",
+          "[board][waypoint][regression]") {
+    Board board;
+    // Sweep the whole trap disc around both bridge mouths, at a resolution
+    // finer than the arrival epsilon, in both crossing directions. Any point
+    // that returns itself is an absorbing state.
+    const float bridges[] = { 4.0f, 14.0f };
+    const float banks[] = { 15.5f, 17.5f };
+    for (float bx : bridges) {
+        for (float by : banks) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                for (int dy = -2; dy <= 2; ++dy) {
+                    Vector2D here{ bx + dx * 0.005f, by + dy * 0.005f };
+                    // Target on the opposite side of the river from this bank.
+                    Vector2D target = (by < 16.5f) ? Vector2D{ bx, 27.0f }
+                                                   : Vector2D{ bx, 6.0f };
+                    Vector2D wp = board.getNextWaypoint(here, target);
+                    INFO("stuck at x=" << here.x << " y=" << here.y);
+                    REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge toward the target's side", "[board][waypoint]") {
     Board board;
 
