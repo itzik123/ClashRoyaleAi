@@ -417,12 +417,90 @@ def _scenario_bridge_push_supported(rng):
     }
 
 
+# --- Fireball target practice ----------------------------------------------
+# Added 2026-08-09 after measuring WHY the agent almost never casts Fireball.
+# Over 120 trials per constructed situation, with Fireball affordable in 100%
+# of them, the policy put only 0.03-0.11 probability on it against a 0.20
+# uniform baseline -- and, critically, when it DID cast, the mean distance from
+# the target centroid was 2.8 tiles in its own half and 7.7-11.5 tiles at an
+# enemy tower, against a blast radius of 2.5.
+#
+# So the low usage is not timidity and not an exploration failure: it is an
+# ACCURATE valuation of the agent's own aim. spell_value_shaping charges a full
+# -1.00 * w for a cast that kills nothing, and a policy that cannot aim is
+# correctly declining to pay it. Raising the cast incentive without fixing the
+# aim would make it cast more and miss more -- which is the mechanism behind
+# the recorded 97% -> 23% win-rate collapse when Fireball use was forced.
+#
+# Scenario injection is the right lever because it changes the START-STATE
+# DISTRIBUTION, not the reward: it buys dense practice at the aiming problem
+# without biasing the optimum. Exactly the argument that justified the
+# bridge-push scenarios -- a high-value Fireball moment is rare and its credit
+# is buried in a long GAE trace.
+#
+# Low-HP bodies only. Fireball does 689, so these die to one well-placed cast
+# and a whiff is genuinely punished; Barbarians (691 HP) are deliberately NOT
+# here, since surviving by 2 HP would teach that a perfect cast still failed.
+_FIREBALL_SWARM_IDS = [
+    41,  # Minions        (3 bodies)
+    1,   # Archers        (2 bodies)
+    64,  # Firecracker    (304 hp)
+    6,   # Musketeer
+]
+
+
+def _scenario_fireball_swarm(rng):
+    """A cheap swarm already inside our half -- the defensive value cast.
+
+    Placed past the river and short of the Princess Towers, so it is a live
+    threat the agent must answer THIS second rather than a distant one it can
+    ignore. Several separate cards so the cluster is many bodies, which is what
+    makes one Fireball a large positive elixir trade.
+    """
+    lane = rng.choice(_BRIDGE_LANES)
+    n = int(rng.integers(3, 6))
+    cx, cy = lane, 12.0
+    spawns = []
+    for _ in range(n):
+        spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
+                       float(cx + rng.uniform(-1.1, 1.1)),
+                       float(cy + rng.uniform(-1.1, 1.1))))
+    return {"name": "fireball_swarm", "spawns": spawns, "max_steps": 12}
+
+
+def _scenario_fireball_tower_value(rng):
+    """Enemy troops hugging their OWN princess tower -- the two-for-one cast.
+
+    One Fireball centred here hits the troops and the tower together, which is
+    the case spell_value_shaping was written to pay for and the one the agent
+    currently misses by 7.7-11.5 tiles. Spawned just in front of the tower so
+    both fall inside a single 2.5 radius.
+    """
+    tower_x = 4.0 if rng.random() < 0.5 else 14.0
+    n = int(rng.integers(2, 5))
+    cx, cy = tower_x, 25.6
+    spawns = []
+    for _ in range(n):
+        spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
+                       float(cx + rng.uniform(-0.9, 0.9)),
+                       float(cy + rng.uniform(-0.9, 0.9))))
+    return {"name": "fireball_tower_value", "spawns": spawns, "max_steps": 15}
+
+
 # (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
 # drop in here with the same machinery. Set a scenario's "max_steps" to None
 # to run it to the natural end of the game instead of a focused window.
+#
+# The two Fireball scenarios take half the injection budget, which is a
+# REALLOCATION rather than an addition: ScenDef has been running at 0.99, so
+# the bridge-push scenarios are saturated and no longer teaching the reflex
+# they were added for. Their share drops from 100% to 50% of injected episodes
+# (SCENARIO_INJECTION_PROB itself is unchanged at 0.30).
 SCENARIOS = [
     (_scenario_bridge_push, 2.0),
     (_scenario_bridge_push_supported, 1.0),
+    (_scenario_fireball_swarm, 1.5),
+    (_scenario_fireball_tower_value, 1.5),
 ]
 
 
