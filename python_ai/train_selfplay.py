@@ -2103,7 +2103,31 @@ def train_selfplay_ppo():
         # --- entropy controller step (see ENTROPY_TARGET_* above) ---
         card_frac = mean_ent_card / LOG_N_CARD
         place_frac = mean_ent_place / LOG_N_PLACEMENT
-        ent_target_place = placement_entropy_target(episodes_completed)
+        # Measured on the anneal clock SINCE THE LAST STALL RE-BOOST, not on
+        # the raw episode counter. Until 2026-08-09 this read
+        # episodes_completed, which made the stall re-boost dead code: the
+        # only state it updates is entropy_reboost_episode, and the only thing
+        # that reads THAT is current_entropy_coef -- which the note at the top
+        # of the loop already records as feeding nothing into the loss. So the
+        # re-boost printed ">>> ... re-boosting exploration" and changed
+        # nothing. It fired twice in the pipeline-2 run to ep 17,530, at a
+        # measured pool win rate of 0.49 both times, and the placement entropy
+        # target carried on annealing straight through both.
+        #
+        # Backward compatible: entropy_reboost_episode is 0 on a fresh run, so
+        # this is identical to the old expression until a re-boost fires.
+        #
+        # Deliberately NOT paired with a change to ENTROPY_COEF_FLOOR or
+        # ENTROPY_ADAPT_RATE. Measured over 478 updates of that same run,
+        # placement entropy sat ABOVE its target in 99.4% of them, mean +0.127
+        # -- 42 effective cells of 612. The coefficient is pinned at the floor
+        # because the controller is trying to REDUCE exploration and 0.01 is
+        # the least it may apply, so raising the floor would push against the
+        # anneal schedule rather than rescue a collapsed head. What a re-boost
+        # should do is stop the target sharpening during a stall, which is
+        # exactly what this restores.
+        ent_target_place = placement_entropy_target(
+            episodes_completed - entropy_reboost_episode)
         ent_coef_card = float(np.clip(
             ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
             ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
