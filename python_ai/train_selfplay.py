@@ -397,6 +397,7 @@ def _scenario_bridge_push(rng):
     lane = rng.choice(_BRIDGE_LANES)
     return {
         "name": "bridge_push",
+        "defensive": True,
         "spawns": [(int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y)],
         "max_steps": 15,
     }
@@ -409,6 +410,7 @@ def _scenario_bridge_push_supported(rng):
     lane = rng.choice(_BRIDGE_LANES)
     return {
         "name": "bridge_push_supported",
+        "defensive": True,
         "spawns": [
             (int(rng.choice(_WIN_CONDITION_IDS)), lane, _RIVER_Y),
             (int(rng.choice(_SUPPORT_IDS)), lane, _RIVER_Y + 3.0),
@@ -465,7 +467,10 @@ def _scenario_fireball_swarm(rng):
         spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
                        float(cx + rng.uniform(-1.1, 1.1)),
                        float(cy + rng.uniform(-1.1, 1.1))))
-    return {"name": "fireball_swarm", "spawns": spawns, "max_steps": 12}
+    # Defensive: the swarm is inside OUR half, so "did not take a big hit"
+    # is a real question with a real answer.
+    return {"name": "fireball_swarm", "spawns": spawns, "max_steps": 12,
+            "defensive": True}
 
 
 def _scenario_fireball_tower_value(rng):
@@ -484,7 +489,12 @@ def _scenario_fireball_tower_value(rng):
         spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
                        float(cx + rng.uniform(-0.9, 0.9)),
                        float(cy + rng.uniform(-0.9, 0.9))))
-    return {"name": "fireball_tower_value", "spawns": spawns, "max_steps": 15}
+    # NOT defensive: the troops are at THEIR tower, nothing threatens us, so
+    # "did not take a big hit" is true whatever the agent does -- including
+    # doing nothing. Scoring it on that axis inflates ScenDef toward 1.0 and
+    # says nothing about whether the cast was made or aimed.
+    return {"name": "fireball_tower_value", "spawns": spawns, "max_steps": 15,
+            "defensive": False}
 
 
 # --- Giant: unmasking the win condition -------------------------------------
@@ -532,6 +542,7 @@ def _scenario_giant_commit(rng):
     """
     return {
         "name": "giant_commit",
+        "defensive": False,
         "spawns": [],
         "warmup_ticks": int(rng.integers(*_GIANT_WARMUP_TICKS)),
         "require_own_card": _GIANT_ID,
@@ -797,6 +808,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.scenarios_enabled = env_config.get("scenarios_enabled", True)
         self.scenario_rng = np.random.default_rng()
         self.scenario_active = None       # name of the current episode's scenario, or None
+        self.scenario_defensive = False   # is ScenDef a meaningful test for it?
         self.scenario_max_steps = None    # truncation window in bot-steps, or None for full game
         self.scenario_steps_taken = 0
 
@@ -938,6 +950,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.scenario_active = None
         self.scenario_max_steps = None
         self.scenario_steps_taken = 0
+        self.scenario_defensive = False
         if self.scenarios_enabled and self.scenario_rng.random() < SCENARIO_INJECTION_PROB:
             scenario = sample_scenario(self.scenario_rng)
 
@@ -980,6 +993,11 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             self.game.step_self_play(noop, 0.0, 0.0, noop, 0.0, 0.0, 1)
             self.scenario_active = scenario["name"]
             self.scenario_max_steps = scenario["max_steps"]
+            # Whether "the episode did not end in a big loss" is a meaningful
+            # success test for THIS scenario. It is for the ones that put a
+            # threat in our half; it is vacuous for the ones that do not, and
+            # mixing them makes ScenDef unreadable -- see the info dict below.
+            self.scenario_defensive = bool(scenario.get("defensive", False))
 
         # get_observation_for_team(0) == game.reset()'s own return for a normal
         # reset, but re-read here so it reflects any just-injected units.
@@ -1241,6 +1259,13 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # lets the training loop score scenario defenses separately from
             # normal-matchup win/loss (see Scenario/Defense_Success_Rate).
             "is_scenario": 1.0 if self.scenario_active is not None else 0.0,
+            # Split out because ScenDef means "did the agent survive a threat",
+            # and two scenarios put no threat in our half at all:
+            # fireball_tower_value spawns at the ENEMY tower and giant_commit
+            # spawns nothing. In those, "did not take a big hit" is true no
+            # matter what the agent does -- including nothing -- so counting
+            # them drags ScenDef toward 1.0 and hides real defensive failures.
+            "scenario_defensive": 1.0 if getattr(self, "scenario_defensive", False) else 0.0,
         }
         return obs, reward, terminated, truncated, info
 
@@ -1635,6 +1660,11 @@ def train_selfplay_ppo():
     # = the injected episode did NOT end in a tower/game loss (survived the
     # threat, or truncated out of the focused window still alive).
     scenario_success_history = deque(maxlen=200)
+    # Non-defensive scenarios (fireball_tower_value, giant_commit) tracked
+    # separately rather than discarded: 'did this episode avoid a big
+    # negative' is still worth watching there, it just is not DEFENCE and
+    # must not be averaged into ScenDef.
+    scenario_other_history = deque(maxlen=200)
     # --- Live strategy diagnostics -------------------------------------
     # These track the two specific degenerate behaviours measured in phase 1,
     # which win/loss alone cannot see:
@@ -1867,15 +1897,31 @@ def train_selfplay_ppo():
             cx = cx * mask_tensor
 
             is_scenario_arr = infos.get("is_scenario", np.zeros(num_envs, dtype=np.float32))
+            scenario_def_arr = infos.get("scenario_defensive",
+                                         np.zeros(num_envs, dtype=np.float32))
             for i, done in enumerate(dones):
                 if done:
                     episodes_completed += 1
                     if is_scenario_arr[i] > 0.5:
-                        # Scenario defense scored on its own axis, kept OUT of the
-                        # matchup histories so the headline W/L/D and the length/
-                        # building-HP progress curves stay pure normal-game signals.
-                        # Success = the episode did not end in a tower/game loss.
-                        scenario_success_history.append(1.0 if step_rewards[i] > -0.5 else 0.0)
+                        # Scenario episodes are kept OUT of the matchup histories
+                        # so the headline W/L/D and the length/building-HP curves
+                        # stay pure normal-game signals.
+                        #
+                        # Only DEFENSIVE scenarios reach ScenDef. Success there
+                        # means "the episode did not end in a tower/game loss",
+                        # which is only a question worth asking when something
+                        # was threatening us. fireball_tower_value spawns at the
+                        # ENEMY tower and giant_commit spawns nothing, so both
+                        # pass that test by default -- including when the agent
+                        # does nothing at all. Counting them pushed ScenDef
+                        # toward 1.0 and would have masked a genuine collapse in
+                        # the defensive reflex the metric exists to watch.
+                        if scenario_def_arr[i] > 0.5:
+                            scenario_success_history.append(
+                                1.0 if step_rewards[i] > -0.5 else 0.0)
+                        else:
+                            scenario_other_history.append(
+                                1.0 if step_rewards[i] > -0.5 else 0.0)
                     else:
                         reward_history.append(ep_rewards[i])
                         shaping_history.append(ep_shaping[i])
@@ -1916,6 +1962,8 @@ def train_selfplay_ppo():
                         avg_reward = np.mean(reward_history)
                         avg_shaping = np.mean(shaping_history)
                         scenario_sr = np.mean(scenario_success_history) if scenario_success_history else float("nan")
+                        scenario_or = (np.mean(scenario_other_history)
+                                       if scenario_other_history else float("nan"))
                         # ep_len_history is in bot-steps (each step == skip_frames ticks,
                         # 10 by default -- see envs.step(action) above, which never
                         # overrides it), so *10 converts to real engine ticks. A short
@@ -1934,7 +1982,7 @@ def train_selfplay_ppo():
                         elix_pl = np.mean(elixir_at_play_history) if elixir_at_play_history else float("nan")
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
-                              f"ScenDef: {scenario_sr:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
+                              f"ScenDef: {scenario_sr:.2f} | ScenOff: {scenario_or:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
                               f"Cards/Game: {cards_pg:.2f}/8 | Plays: {plays_pg:.1f} | Elixir@Play: {elix_pl:.2f} | "
                               f"Pool: {len(historical_pool)} | EntCoef c/p: {ent_coef_card:.4f}/{ent_coef_place:.4f}")
                         writer.add_scalar("Strategy/Distinct_Cards_Per_Game", cards_pg, episodes_completed)
@@ -1944,6 +1992,11 @@ def train_selfplay_ppo():
                         if scenario_success_history:
                             writer.add_scalar("Scenario/Defense_Success_Rate", scenario_sr, episodes_completed)
                             writer.add_scalar("Scenario/Sample_Count", len(scenario_success_history), episodes_completed)
+                        if scenario_other_history:
+                            writer.add_scalar("Scenario/Offensive_No_Loss_Rate",
+                                              scenario_or, episodes_completed)
+                            writer.add_scalar("Scenario/Offensive_Sample_Count",
+                                              len(scenario_other_history), episodes_completed)
                         writer.add_scalar("Training/Avg_Reward_50", avg_reward, episodes_completed)
                         writer.add_scalar("Reward/Episode_Shaping_Sum", avg_shaping, episodes_completed)
                         writer.add_scalar("Training/Win_Rate_100", wins / n, episodes_completed)
