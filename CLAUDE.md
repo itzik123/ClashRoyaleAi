@@ -388,7 +388,24 @@ the reflex never accumulated gradient. The opponent is *not* frozen during a
 scenario, and truncation uses a value bootstrap, never a terminal.
 
 **Live strategy diagnostics** in the console line: `Cards/Game`, `Plays`,
-`Elixir@Play`, `AvgTicks`, `ScenDef`.
+`Elixir@Play`, `AvgTicks`, `ScenDef`, `ScenOff`, plus the return-side block
+added 2026-08-11 — `ROI`, `Worst`, `Fwd`, `TwrDmg/1k`. Every PPO update also
+prints `H(place|card)` per deck card and the no-op arm.
+
+`ROI` is `get_elixir_value_killed_by / get_elixir_spent_on_card`, summed over
+the deck. It exists because **spread is not evidence of improvement**: raising
+placement entropy spreads placements whether or not the policy got better, so
+`Fwd` and the entropy series can all rise from noise alone. ROI is the half
+that noise pushes the *other* way. Read them as a pair — spread up with ROI up
+or flat is learning; spread up with ROI down is randomness.
+
+Definitions that are load-bearing: ROI is a ratio of **sums** over the window,
+not a mean of per-episode ratios (an unplayed card contributes 0/0, and
+averaging those moves the number for reasons unrelated to the card). `TwrDmg`
+is per 1000 **ticks**, because `AvgTicks` moved 24% in one hour after the
+placement-mask fix and unnormalized damage would have read as more pressure
+when it was only longer matches. `Fwd` is confounded with entropy by
+construction and is only interpretable next to ROI.
 
 ### Exploiter (`exploiter.py`)
 
@@ -637,6 +654,50 @@ Two lessons worth carrying:
   Giant, Valkyrie — that ruled out the reward explanation and pointed at the
   head.
 
+**2026-08-11, the entropy controller was regulating the noise of non-actions.**
+`train_selfplay.py` averaged placement entropy over `mb_decision`, which is
+`card_mask.sum() > 1` — **"a card was AFFORDABLE", not "a card was PLAYED"**.
+The placement head is sampled on every such step, including the ones where the
+policy chose the no-op and the sampled cell never reaches the board. Measured
+over 549 decision steps at ep~62,200:
+
+| | of max |
+|---|---|
+| reported `Entropy/Placement_Measured` | 0.462 |
+| ...on no-op steps (cell never used) | **0.850** |
+| ...on real placements | **0.090** |
+
+Target was 0.25. So the controller saw a surplus, concluded there was too much
+exploration, and pinned the coefficient to its 0.01 floor — **57% of updates in
+the hour before the fix** — while the policy that actually places cards sat ~3×
+*below* target. Conditioned on a card, Cannon was at 0.017 of max, Fireball
+0.048 and Giant 0.074, all three pinned to the same cell `(11,0)`. Fixed by
+masking the entropy term to real placements; verified the bonus's gradient is
+now exactly zero on no-op steps. The coefficient left the floor within one
+update and quadrupled in 30 minutes. **Gameplay-affecting** — it changes the
+loss.
+
+Three things worth carrying:
+
+- **A pre-fix control checkpoint measured Cannon at 0.012 / 94% on `(11,0)`**,
+  identical. That ruled out the placement-mask fix from two days earlier as the
+  cause and localized it to the metric. Running the *older* checkpoint under
+  the *current* code is what made that a one-command test.
+- **The cost was real and the obvious fix was inert.** Over 40 episodes the
+  Cannon took 369 elixir and returned 20 (ROI 0.05) against Musketeer's 1.27;
+  100% of 123 Cannons were placed at y=0, 82.9% expired by decay rather than
+  dying, and **93.5% never had an enemy inside their 5.5-tile range for a
+  single tick**. The proposal on the table was to penalise back-row structures
+  and structures that "fire ≤3 times" — but P(shots ≤ 3) was **100.0%**, so
+  both predicates have zero variance, carry no spatial gradient, and reduce to
+  a constant added to the card's cost. The only thing they could move is
+  P(play Cannon), i.e. the guaranteed-zero trap this file already documents
+  twice. **A penalty cannot move a distribution with no mass to move.**
+- **Same blind spot as the checkerboard bias and the team-1 observation bug**,
+  now three for three: an aggregate that cannot see a conditional collapse.
+  `Entropy/Placement_ByCard_Min` is the detector, and it is cheap — it is
+  computed from tensors the update already has.
+
 **2026-07-31, the self-play opponent had been playing blind.** Chased from an
 odd number rather than a hypothesis, which is why it is worth recording as a
 method. Exploiter burst #1 came back 0.585 with a flat five-slice trend — but
@@ -799,6 +860,20 @@ recurrent state genuinely counts), `Entropy/Placement_Target` vs
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,
 which is the plateau signature the exploiter is meant to break. It has still
 never moved off ~5.3.
+
+**`Entropy/Placement_Measured` changed meaning on 2026-08-11** and is not
+comparable across that date — it now averages over steps that actually placed
+a card, and reads roughly 0.37 lower than the same series before it. Watch it
+against `Entropy/Placement_Measured_NoOp`: the no-op arm sits near 0.97 of max
+and is what the old definition was mostly measuring.
+
+**And watch `Entropy/Placement_ByCard_Min`** — the conditional collapse
+detector. The aggregate provably cannot see a per-card collapse, because a
+mixture of eight sharp, well-separated modes has high entropy even when every
+component is a delta. That is not hypothetical: on 2026-08-11 the aggregate
+read a healthy 0.462 while Cannon sat at **0.017 of max with 96.4% of its mass
+on one cell**, and Fireball and Giant were pinned to that same cell. Any card
+near 0 here is placing at a fixed point regardless of the board.
 
 **And add a fourth: the placement PHASE histogram.** Count `int(actionX) % 4`
 over `replays/*.json` and compare against the 27.8/27.8/22.2/22.2 null that 18
