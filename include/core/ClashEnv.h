@@ -393,6 +393,28 @@ public:
     float getMaxPlacementX() const { return game.getMaxPlacementX(); }
     float getOwnHalfMaxY() const { return game.getOwnHalfMaxY(); }
 
+    // Would playCard accept this card here? READ-ONLY: a pure query that
+    // touches no state and changes no gameplay path.
+    //
+    // Exposed because the Python action space was building its placement mask
+    // from its own idea of the legal area -- the 16 own-half rows -- while the
+    // engine additionally rejects Board::isBackRowDeadZone and the tower
+    // footprints. Measured on the ep~45,800 checkpoint over 1,340 decision
+    // steps, 58.7% of the policy's card choices were refused here and returned
+    // false silently, which is indistinguishable from a no-op and puts pure
+    // noise into the gradient. See perception/UPSTREAM_REQUESTS.md item 12.
+    //
+    // Deliberately not re-derived on the Python side: this predicate combines
+    // board bounds, the back-row dead zone, per-card placementRadius/isSpell/
+    // deployAnywhere and the tower footprint clearance. A second copy of that
+    // geometry is exactly the drift this project has already paid for twice.
+    bool isValidPlacementForCard(int cardId, float x, float y, int team) const {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (!def) return false;
+        return game.isValidPlacement(team, x, y, def->isSpell,
+                                     def->placementRadius, def->deployAnywhere);
+    }
+
     std::vector<float> reset() {
         logger.clear();
         game.reset();

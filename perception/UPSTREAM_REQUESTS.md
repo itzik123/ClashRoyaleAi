@@ -696,3 +696,119 @@ which is arithmetically what dividing speed by `1/N` does to displacement.
   4. only then retrain.
 
 Step 1 costs one 20-minute pass and no engine change at all.
+
+---
+
+## 12. OPEN — bind `isValidPlacement`, so the action-space mask can stop disagreeing with the engine (proposed 2026-08-11)
+
+**The ask is one read-only accessor.** No gameplay change, no checkpoint
+invalidation, no behavioural difference to any existing caller. Everything
+else in this item is Python-side and is not being asked for here.
+
+### The measurement
+
+`model.py`'s `placement_mask` grants a troop every one of the 16 own-half
+rows. `GameManager::isValidPlacement` does not. Measured on the live
+pipeline-2 checkpoint at ep ~45,800, over 1,340 decision steps:
+
+| | |
+|---|---|
+| chose no-op | 72.9% |
+| chose a card | 27.1% (363) |
+| ...**accepted by the engine** | **41.3%** (150) |
+| ...**silently rejected** | **58.7%** (213) |
+| of those, affordability leaks | **0** |
+
+`playCard` returns `false` with no exception and no signal, so a rejected
+action is indistinguishable from a no-op in its effect and its advantage is
+pure noise entering the gradient. This is the same failure class the
+affordability mask was introduced to close, still open on the placement axis.
+The affordability half is airtight -- zero leaks in 363 draws.
+
+**94.8% of the rejections are on row y=0**, which is `Board::isBackRowDeadZone`
+and is deliberate engine design, not a bug. The remaining 5.2% are the tower
+footprints.
+
+### It is entirely static, and per card class
+
+Probed cell by cell over the own half:
+
+| | legal cells | row-0 columns |
+|---|---|---|
+| Cannon (building) | 208/288 | 6, 7, 11 |
+| Archers / Giant (troop) | 242/288 | 6-11 |
+| Fireball (spell) | 276/288 | 6-11 |
+
+and legality does **not** depend on board state:
+
+| | legal cells |
+|---|---|
+| empty board | 208/288 |
+| six troops deployed | **208/288** |
+| cells lost to units | **0** |
+
+So the correct mask is three constant tables, built once at startup. There is
+no runtime query and no per-step cost -- which is why this needs an accessor
+and not a fast path.
+
+### Why Python cannot just compute it
+
+`isValidPlacement` combines `board.isBackRowDeadZone`, the board bounds, the
+per-card `placementRadius`, `isSpell` and `deployAnywhere`, and the tower
+footprint clearance in `CardFactories.h`. Reproducing that in Python is a
+second copy of engine geometry, which this file already carries two incidents
+about (items 1-2, 5-6) and which CLAUDE.md explicitly forbids. `get_card_info`
+already exposes the per-card half; the predicate itself is the missing piece.
+
+### The exact edit
+
+`include/core/ClashEnv.h`, beside the existing forwarders at line 393:
+
+```cpp
+    // Read-only. Exposed so the Python action space can be built from the
+    // ENGINE's legality rule rather than a second copy of it -- see
+    // UPSTREAM_REQUESTS item 12. Pure query: no state is touched.
+    bool isValidPlacementForCard(int cardId, float x, float y, int team) const {
+        const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+        if (!def) return false;
+        return game.isValidPlacement(team, x, y, def->isSpell,
+                                     def->placementRadius, def->deployAnywhere);
+    }
+```
+
+`src/bindings.cpp`, beside the existing accessors at line 73:
+
+```cpp
+        .def("is_valid_placement", &ClashEnv::isValidPlacementForCard,
+             py::arg("card_id"), py::arg("x"), py::arg("y"), py::arg("team") = 0,
+             "Would playCard accept this card at this point? The exact "
+             "predicate playCard uses, exposed so the Python placement mask "
+             "is derived from it instead of re-deriving board geometry.")
+```
+
+`isValidPlacement` is already public and already `const`. Nothing else moves.
+
+### Blast radius
+
+Additive only. No existing symbol changes signature or behaviour, no
+gameplay path is touched, and `model_weights.pth`'s win-rate history is
+unaffected by the binding itself.
+
+**The Python mask fix that consumes it is a different matter and is
+gameplay-affecting**: removing 58.7% of the policy's card choices from the
+action space redistributes probability mass onto real plays, so the play rate
+and the elixir economy will both shift. Win rates are not comparable across
+it. That is expected and is the point, but it should be stated when it lands.
+
+**Not yet established:** that this defect is *why* the agent turtles or why
+the Giant is starved. It is a large real defect that was invisible; the causal
+claim needs re-measuring after the fix, not before. An earlier diagnosis of
+the same behaviour as a reward-hacking elixir dump was measured and refuted --
+a rejected placement spends no elixir at all -- and that mistake is the reason
+this item leads with the measurement rather than the story.
+
+### Rebuild note
+
+The `.pyd` post-build copy into `python_ai/` fails with MSB3073 while any
+Python process has the module loaded, so the live trainer must be stopped for
+the copy step. Compilation itself can be verified without stopping it.

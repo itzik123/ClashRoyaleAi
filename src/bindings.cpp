@@ -71,6 +71,14 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // space from the engine's actual numbers instead of a hardcoded copy.
         .def("get_max_placement_x", &ClashEnv::getMaxPlacementX)
         .def("get_own_half_max_y", &ClashEnv::getOwnHalfMaxY)
+        .def("is_valid_placement", &ClashEnv::isValidPlacementForCard,
+             py::arg("card_id"), py::arg("x"), py::arg("y"), py::arg("team") = 0,
+             "Would playCard accept this card at this point? The exact "
+             "predicate playCard uses, exposed so the Python placement mask is "
+             "derived from the engine's legality rule instead of a second copy "
+             "of the board geometry. Read-only. See "
+             "perception/UPSTREAM_REQUESTS.md item 12 -- 58.7% of the policy's "
+             "card choices were being refused here, silently.")
         // Structural constants the observation/action encoding is built from --
         // read-only class attributes (ClashRoyaleEnv.NUM_CARD_IDS etc, no
         // instance needed) so model.py/train.py/train_selfplay.py/
