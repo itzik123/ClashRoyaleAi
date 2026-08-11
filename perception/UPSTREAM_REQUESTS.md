@@ -920,10 +920,49 @@ original.
 - if any effect carries mutable per-instance state, stepping the snapshot
   mutates the original, and the corruption is silent
 
-**This needs verifying before anything is built.** I have not read every effect
-implementation and will not assert it either way. The same question applies to
-whether any entity caches a pointer to its current target across ticks; if so, a
-deep copy must remap those or it will alias into the original board.
+**VERIFIED 2026-08-11 — effects are safe to share, and one real aliasing case
+exists elsewhere.**
+
+*Effects: cleared, and by the type system rather than by inspection.* All five
+effect interfaces declare their entry point `const`:
+
+```cpp
+IOnHitEffect::apply(std::shared_ptr<CombatEntity>) const = 0;
+IDeathEffect::apply(Board&, const Vector2D&, int) const = 0;
+IPeriodicEffect::apply(Board&, const Vector2D&, int) const = 0;
+IOnDamageTakenEffect::apply(CombatEntity&) const = 0;
+IAbilityEffect::apply(Board&, CombatEntity&) const = 0;
+```
+
+and a search across every file defining or using those interfaces finds **zero
+occurrences of `mutable` and zero of `const_cast`**. Concrete effects
+(`FreezeOnHit`, `PoisonOnHit`, `CurseOnHit`, and the ~20 in `include/core/`)
+carry only construction-time parameters — `ticks`, `slowFactor`,
+`damagePerTick`. They are stateless strategy objects, so sharing them across a
+snapshot is correct, and a deep copy of them would be wasted work.
+
+*Target caching: one real case, and it is the dangerous kind.*
+`Projectile.h:16` holds
+
+```cpp
+std::weak_ptr<Entity> target;      // a MEMBER, persists across ticks
+```
+
+Every other `shared_ptr<Entity>` in the hierarchy — `CombatEntity.h:836`,
+`CombatEntity.h:1108/1110`, `BuildingTargeter.h:31/33` — is a **local** inside
+`findTarget`/`resolveCurrentTarget`, recomputed per tick, and therefore harmless.
+
+`Projectile::target` is not. An implicit copy carries the pointer verbatim, so a
+projectile in flight inside a snapshot would home on, and deal damage to, an
+entity in the **original live board**. That is silent cross-simulation
+corruption of exactly the kind this section was written to catch — the search
+would be quietly damaging the real game it is supposed to be reasoning about.
+
+So the deep copy must build an `old entity id -> new entity` map and remap
+`Projectile::target` through it. Scope: one member, one class, plus the map the
+board copy already has to build. Being a `weak_ptr` it will not keep the
+original alive, so the failure would be wrong damage rather than a leak — which
+is worse, because it is invisible.
 
 ### The Catch-22, stated plainly rather than papered over
 
