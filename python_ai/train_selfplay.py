@@ -1511,6 +1511,32 @@ def train_selfplay_ppo():
     # CAVEAT: one run per configuration. RL run-to-run variance is large, so
     # this ordering may not survive replication with multiple seeds.
     ENTROPY_ADAPT_RATE = 0.5
+    # ...and the placement head gets its OWN, much lower gain, because on
+    # 2026-08-11 the 0.5 above drove it into windup and dissolved the policy.
+    #
+    # The reversion argument recorded above is void for THIS head. It was
+    # measured against a placement-entropy signal that was ~85% no-op steps
+    # (see mb_placed) -- a smooth, nearly-constant quantity sitting at 0.85-0.97
+    # that the controller barely had to act on. Correcting the signal made it
+    # far more responsive, and a gain tuned on the numbed version overreacted:
+    # from measured 0.09 against target 0.25, each update multiplied the
+    # coefficient by exp(0.5 * 0.16) = 1.083, compounding ~55x over 50 updates.
+    # It went 0.0100 -> 0.433, blew measured entropy past target to 0.671, and
+    # six of eight cards reached 0.93-1.00 of MAXIMUM placement entropy -- i.e.
+    # uniform over every legal cell. ROI fell 0.96 -> 0.87 (r = -0.70 over 2,620
+    # episodes) and win rate 0.67 -> 0.51 (r = -0.68). Same dissolution the
+    # exploiter suffered at 86.7% of max; this reached ~95%.
+    #
+    # The general lesson, worth more than the number: FIXING A SENSOR
+    # INVALIDATES ANY GAIN TUNED AGAINST THE BROKEN ONE. The two changes have
+    # to ship together.
+    ENTROPY_ADAPT_RATE_PLACEMENT = 0.10
+    # Hard cap on how far one update may move a coefficient, independent of
+    # gain or error size. The gain change above addresses the cause; this
+    # addresses the failure MODE, so no future retune of a target or a
+    # measurement can compound into a 40x excursion again. Binds only on large
+    # excursions -- exactly when it should.
+    ENTROPY_COEF_STEP_MAX = 0.10
     # Bounds keep a runaway controller from either silencing the entropy term
     # or drowning the policy gradient if a target is briefly unreachable.
     # Raised 0.002 -> 0.01. Healthy measured coefficients are 0.05-0.22, so
@@ -1521,6 +1547,16 @@ def train_selfplay_ppo():
     # free-fall.
     ENTROPY_COEF_FLOOR = 0.01
     ENTROPY_COEF_CEIL = 0.5
+    # Separate, much lower ceiling for the placement head only. 0.433 already
+    # dissolved the policy, so 0.5 was never a safety net for this head.
+    #
+    # Deliberately NOT applied to the card head, which shares the name above.
+    # That controller is doing the right thing: card entropy measured 0.084 of
+    # max against a 0.35 target -- a real collapse to ~5 of 8 cards -- and it
+    # was operating at 0.24-0.43 to fight it. A global cut to 0.20 would
+    # throttle the one controller that is working. The dissolution was
+    # placement-only, so the cap is placement-only.
+    ENTROPY_COEF_CEIL_PLACEMENT = 0.20
 
     # --- Value-clip range, scaled to the RETURN distribution ---------------
     # This used to reuse eps_clip (0.2) directly. That number is a bound on the
@@ -2471,14 +2507,35 @@ def train_selfplay_ppo():
         # anneal schedule rather than rescue a collapsed head. What a re-boost
         # should do is stop the target sharpening during a stall, which is
         # exactly what this restores.
+        #
+        # NOTE (2026-08-11): that "99.4% above target" measurement is itself a
+        # reading of the BROKEN metric -- it was mostly no-op steps. It is left
+        # here because the re-boost reasoning it supports still stands, but it
+        # is not evidence about the real placement policy.
         ent_target_place = placement_entropy_target(
             episodes_completed - entropy_reboost_episode)
-        ent_coef_card = float(np.clip(
-            ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
-            ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
-        ent_coef_place = float(np.clip(
-            ent_coef_place * math.exp(ENTROPY_ADAPT_RATE * (ent_target_place - place_frac)),
-            ENTROPY_COEF_FLOOR, ENTROPY_COEF_CEIL))
+        def _adapt_coef(coef, rate, target, measured, ceil):
+            """One controller step: gain, then a hard per-update step limit,
+            then the absolute bounds.
+
+            The step limit is what makes this safe against a future change to
+            the target or the measurement. Gain alone is not: any multiplicative
+            controller compounds, so a signal that suddenly reads far from
+            target walks the coefficient exponentially before the policy can
+            respond. Capping the RATIO bounds that walk at
+            (1 +/- STEP_MAX)^n_updates regardless of how wrong the error is.
+            """
+            step = math.exp(rate * (target - measured))
+            step = min(1.0 + ENTROPY_COEF_STEP_MAX,
+                       max(1.0 - ENTROPY_COEF_STEP_MAX, step))
+            return float(np.clip(coef * step, ENTROPY_COEF_FLOOR, ceil))
+
+        ent_coef_card = _adapt_coef(ent_coef_card, ENTROPY_ADAPT_RATE,
+                                    ENTROPY_TARGET_CARD, card_frac,
+                                    ENTROPY_COEF_CEIL)
+        ent_coef_place = _adapt_coef(ent_coef_place, ENTROPY_ADAPT_RATE_PLACEMENT,
+                                     ent_target_place, place_frac,
+                                     ENTROPY_COEF_CEIL_PLACEMENT)
         writer.add_scalar("Policy/Entropy_Coef_Card", ent_coef_card, episodes_completed)
         writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
         writer.add_scalar("Loss/Entropy_Card", mean_ent_card, episodes_completed)
