@@ -1,4 +1,6 @@
 import math
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,6 +42,63 @@ for _cid in _ALL_IDS:
         _spell_flags[_cid] = 1.0
 
 
+
+def _build_placement_legality(num_card_ids, placement_rows, board_width):
+    """(num_card_ids + 1, rows*width) bool -- what the ENGINE will accept.
+
+    Derived from ClashRoyaleEnv.is_valid_placement, never recomputed here. The
+    predicate combines board bounds, Board::isBackRowDeadZone, the per-card
+    placementRadius / isSpell / deployAnywhere, and the tower footprint
+    clearance; a second copy of that geometry in Python is exactly the drift
+    this project has already paid for twice (map geometry, NUM_CARD_IDS).
+
+    Returns None when the binding is absent, and placement_mask then falls
+    back to the row-only mask -- i.e. the old, leaky behaviour. That is
+    deliberate and LOUD: it warns, because a silent fallback would let a stale
+    .pyd quietly restore a defect that was costing 58.7% of the policy's card
+    choices.
+
+    Cost is one-off: ~113k pure predicate calls at construction, no per-step
+    work at all, because legality does not depend on board state (measured:
+    208/288 legal cells on an empty board and 208/288 with six troops down,
+    zero cells changed).
+    """
+    try:
+        import clash_royale_env as _env
+        if not hasattr(_env.ClashRoyaleEnv, "is_valid_placement"):
+            raise AttributeError("is_valid_placement")
+    except Exception as exc:  # noqa: BLE001 -- any import/attr failure is the same story
+        warnings.warn(
+            f"clash_royale_env.is_valid_placement unavailable ({exc}); the "
+            "placement mask falls back to own-half rows only. Measured on the "
+            "ep~45,800 checkpoint, that let 58.7% of the policy's card choices "
+            "be silently rejected by playCard, whose advantages are then pure "
+            "noise in the gradient. Rebuild the .pyd -- see "
+            "perception/UPSTREAM_REQUESTS.md item 12.",
+            RuntimeWarning, stacklevel=2)
+        return None
+
+    deck = [10, 1, 41, 25, 7, 2, 6, 5]
+    probe = _env.ClashRoyaleEnv(deck, deck, 20000)
+    probe.reset()
+
+    cells = placement_rows * board_width
+    table = torch.zeros(num_card_ids + 1, cells, dtype=torch.bool)
+    known = set(_env.get_all_card_ids())
+    for cid in range(num_card_ids):
+        if cid not in known:
+            # Unknown id: leave the row all-False. It can never be the chosen
+            # card (it is not in any hand), and an all-True row would be a
+            # silent claim about a card the registry does not have.
+            continue
+        for cell in range(cells):
+            y, x = divmod(cell, board_width)
+            if probe.is_valid_placement(cid, float(x), float(y), 0):
+                table[cid, cell] = True
+    table[num_card_ids] = True          # the permissive no-op fallback row
+    return table
+
+
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
     def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None,
@@ -72,6 +131,22 @@ class MicroRoyaleNet(nn.Module):
         # (num_card_ids,) -- 1.0 אם הקלף הוא לחש. buffer ולא פרמטר: זו עובדה
         # על המנוע, לא משהו שנלמד, אבל היא חייבת לנוע יחד עם הרשת ל-device.
         self.register_buffer("spell_flags", _spell_flags[:num_card_ids].clone())
+
+        # (num_card_ids + 1, placement_cells) bool -- אילו תאים המנוע באמת
+        # מקבל לכל קלף. השורה האחרונה היא fallback מתירני ל-no-op.
+        #
+        # נבנה פעם אחת, כי הוא סטטי: נמדד 208/288 תאים חוקיים ללוח ריק ו-
+        # 208/288 בדיוק עם שישה כוחות על הלוח, אפס תאים שהשתנו. לכן זו טבלה
+        # קבועה ולא שאילתה בזמן ריצה, ואין לה עלות פר-צעד.
+        #
+        # buffer ולא פרמטר, ומסומן persistent=False: זו עובדה על המנוע ולא
+        # משקל נלמד, ושמירתו בצ'קפוינט הייתה הופכת אותו לעותק שני שיכול
+        # להתיישן מול המנוע -- בדיוק הסחיפה שהטבלה נועדה למנוע.
+        self.register_buffer("_placement_legal",
+                             _build_placement_legality(num_card_ids,
+                                                       self.placement_rows,
+                                                       board_width),
+                             persistent=False)
 
         # 0 = לחפיסה אין צ'מפיון, ולכן אין בכלל ראשי הפעלת יכולת. זה לא
         # אופטימיזציה קוסמטית: כשאין צ'מפיון, שני הראשים האלה דגמו רעש טהור
@@ -556,7 +631,41 @@ class MicroRoyaleNet(nn.Module):
         full_board = torch.ones_like(own_half)
         allowed_rows = torch.where(chosen_is_spell.view(-1, 1, 1), full_board, own_half)
         mask = allowed_rows.expand(batch, self.placement_rows, self.board_width)
-        return mask.reshape(batch, self.placement_cells)
+        mask = mask.reshape(batch, self.placement_cells)
+
+        # ...ועכשיו גם מה שהמנוע באמת מקבל, ולא רק חצי-הלוח.
+        #
+        # המסכה למעלה מתירה כל שורה בחצי שלנו. GameManager::isValidPlacement
+        # לא: הוא דוחה גם את Board::isBackRowDeadZone וגם את טביעת-הרגל של
+        # המגדלים. playCard מחזיר false בשקט, בלי חריגה ובלי סיגנל, ולכן
+        # פעולה כזו זהה ל-no-op בהשפעתה וה-advantage שלה הוא רעש טהור
+        # שנכנס לגרדיאנט. זו בדיוק המחלה שמסכת-האפשרות (affordability) נבנתה
+        # כדי לסגור, שנשארה פתוחה בציר המיקום.
+        #
+        # נמדד על צ'קפוינט ep~45,800, 1,340 צעדי החלטה: 58.7% מבחירות הקלף
+        # נדחו כאן. 94.8% מהדחיות בשורה y=0. אפס דליפות באפשרות.
+        #
+        # הטבלה נגזרת מ-is_valid_placement של המנוע, לא מחושבת מחדש בפייתון:
+        # הפרדיקט מרכיב גבולות לוח, dead-zone, placementRadius/isSpell/
+        # deployAnywhere וטביעת-רגל של מגדלים. עותק שני של הגיאומטריה הזו הוא
+        # בדיוק הסחיפה שהפרויקט כבר שילם עליה פעמיים.
+        if self._placement_legal is not None:
+            table = self._placement_legal.to(obs.device)
+            slot_ids = onehots.argmax(dim=-1)                       # (B, hand)
+            # משבצת ריקה: ה-one-hot כולו אפס ו-argmax מחזיר 0, שהוא מזהה קלף
+            # חוקי. מסמנים אותה במפורש כדי שלא תיקרא בטעות כקלף 0.
+            slot_empty = onehots.sum(dim=-1) <= 0.0                 # (B, hand)
+            slot_ids = torch.where(slot_empty, torch.full_like(slot_ids, -1), slot_ids)
+            noop = torch.full((batch, 1), -1, device=obs.device, dtype=slot_ids.dtype)
+            slot_ids = torch.cat([slot_ids, noop], dim=1)
+            chosen_id = slot_ids.gather(1, card_idx.view(-1, 1)).squeeze(1)
+            # שורה אחרונה בטבלה = fallback מתירני ל-no-op/משבצת ריקה, כדי
+            # שההתפלגות תישאר מוגדרת-היטב (אף שורה לא כולה -inf).
+            chosen_id = torch.where(chosen_id < 0,
+                                    torch.full_like(chosen_id, table.shape[0] - 1),
+                                    chosen_id)
+            mask = mask & table[chosen_id]
+        return mask
 
     def cell_to_xy(self, cell_idx):
         """
