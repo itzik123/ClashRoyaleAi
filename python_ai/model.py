@@ -596,6 +596,25 @@ class MicroRoyaleNet(nn.Module):
         """
         return self.aux_elixir_head(hx).squeeze(-1) * 10.0
 
+    def hand_card_ids(self, obs):
+        """
+        (Batch, hand_size) long -- מזהה הקלף בכל משבצת יד. משבצת ריקה -> -1.
+
+        נגזר מה-one-hot שכבר יושב בתצפית, בדיוק כמו placement_mask. קיים כאן
+        ולא בצד המאמן מאותה סיבה שכל ידע פריסת-התצפית חי בקובץ הזה: עותק שני
+        של האופסטים אצל המאמן הוא בדיוק הסחיפה שכבר שילמנו עליה פעמיים.
+
+        השימוש הוא דיאגנוסטי בלבד (פילוח אנטרופיית מיקום לפי קלף), ולכן אין
+        כאן שום דבר שנכנס ללוס.
+        """
+        batch = obs.shape[0]
+        scalar_obs = obs[:, self.spatial_size:]
+        onehot_start = 1 + self.hand_size
+        onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
+        onehots = onehots.view(batch, self.hand_size, self.num_card_ids)
+        ids = onehots.argmax(dim=-1)
+        return torch.where(onehots.sum(dim=-1) > 0.0, ids, torch.full_like(ids, -1))
+
     def placement_mask(self, obs, card_idx):
         """
         אילו תאי לוח חוקיים לקלף שנבחר. (Batch, placement_cells) bool.

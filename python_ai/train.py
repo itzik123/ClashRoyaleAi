@@ -1669,7 +1669,26 @@ def train_ppo():
                 actor_loss = -(torch.min(surr1, surr2) * mb_decision).sum() / n_decision
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
                 ent_card_mean = (new_ent_card * mb_decision).sum() / n_decision
-                ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
+                # Placement entropy is measured and rewarded ONLY on steps that
+                # actually placed a card -- mb_decision means "a card was
+                # AFFORDABLE", and the placement head is also sampled on the
+                # steps where the policy chose the no-op, where the sampled cell
+                # never reaches the board. Averaging those in let the head earn
+                # the bonus for free while the distribution that places cards
+                # collapsed underneath it. Measured in pipeline 2 at ep~62,200:
+                # 0.462 reported = 0.850 on no-op steps vs 0.090 on real
+                # placements, against a 0.25 target, which pinned the
+                # coefficient to its floor. Full evidence in train_selfplay.py's
+                # copy of this block; the defect and the fix are identical here.
+                mb_placed = mb_decision * (mb_card_actions != net.hand_size).float()
+                n_placed = float(mb_placed.sum())
+                if n_placed > 0.0:
+                    ent_place_mean = (new_ent_place * mb_placed).sum() / n_placed
+                else:
+                    # No placement anywhere in the chunk: keep the old
+                    # denominator rather than feed the controller a 0, which it
+                    # would chase as a total collapse.
+                    ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD

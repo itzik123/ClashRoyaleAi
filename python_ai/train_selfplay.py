@@ -13,7 +13,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
-from collections import deque
+from collections import deque, defaultdict
 
 import clash_royale_env
 import gym_wrapper
@@ -316,6 +316,28 @@ _BOARD_H = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
 _BOARD_W = clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
 _SPATIAL_SIZE = _N_CH * _BOARD_H * _BOARD_W
 _HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+# The card head's extra column: "play nothing this step". Named because the
+# placement entropy term has to be able to exclude it -- see mb_placed in the
+# PPO update.
+_NOOP_ACTION = _HAND_SIZE
+
+_CARD_NAME_CACHE = {}
+
+
+def _card_name(card_id):
+    """Registry name for a card id, for diagnostic labels only.
+
+    Evolutions share their base card's name verbatim (id 1 and id 128 are both
+    "Archers"), so the id is appended -- a TensorBoard series that silently
+    merged two cards would be worse than no series at all.
+    """
+    if card_id not in _CARD_NAME_CACHE:
+        try:
+            name = clash_royale_env.get_card_info(card_id)["name"]
+        except Exception:  # noqa: BLE001 -- unknown id is a label problem, not fatal
+            name = "card"
+        _CARD_NAME_CACHE[card_id] = f"{name.replace(' ', '_')}_{card_id}"
+    return _CARD_NAME_CACHE[card_id]
 
 # --- Scenario injection (start-state distribution design) ------------------
 # Industry precedent: reshaping the START-STATE distribution is how rare-but-
@@ -2125,6 +2147,14 @@ def train_selfplay_ppo():
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
+        # H(placement | card) as a fraction of that card's own maximum, per card
+        # id, plus the no-op arm for contrast. The aggregate provably cannot see
+        # a per-card collapse -- a mixture of eight sharp, well-separated modes
+        # has high entropy even when every component is a delta, which is
+        # exactly the state this run was in. Accumulated on epoch 0 only, from
+        # tensors the update already computed, so it costs no extra simulation.
+        percard_place_ent = defaultdict(list)
+        ent_place_noop_log = []
 
         for epoch in range(ppo_epochs):
             seg_perm = np.random.permutation(n_segments)
@@ -2210,7 +2240,65 @@ def train_selfplay_ppo():
                 actor_loss = -(torch.min(surr1, surr2) * mb_decision).sum() / n_decision
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
                 ent_card_mean = (new_ent_card * mb_decision).sum() / n_decision
-                ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
+                # Placement entropy is measured and rewarded ONLY on steps that
+                # actually placed a card. mb_decision means "a card was
+                # AFFORDABLE", not "a card was PLAYED", and the placement head
+                # is sampled on every decision step -- including the ones where
+                # the policy chose the no-op and the sampled cell never reaches
+                # the board. Averaging over those let the head earn the entropy
+                # bonus for free on steps that cost nothing, while the
+                # distribution that actually places cards collapsed underneath.
+                #
+                # Measured on the ep~62,200 checkpoint, 549 decision steps:
+                # reported 0.462 of max, decomposing into 0.850 on no-op steps
+                # against 0.090 on real placements -- with the target at 0.25.
+                # So the controller read "too much exploration" and drove the
+                # coefficient to its 0.01 floor (57% of updates in the hour
+                # before this change) while the policy that places cards sat
+                # ~3x BELOW target. Conditioned on a card, Cannon was at 0.017
+                # of max with 96.4% of its mass on one cell, and Fireball and
+                # Giant were pinned to that same cell -- unchanged from a
+                # pre-mask-fix control, so it is this metric and not the action
+                # space. Same blind spot as the checkerboard bias and the
+                # team-1 observation bug: an aggregate cannot see a conditional
+                # collapse, and the per-card breakdown below is the detector.
+                mb_placed = mb_decision * (mb_card_actions != _NOOP_ACTION).float()
+                n_placed = float(mb_placed.sum())
+                if n_placed > 0.0:
+                    ent_place_mean = (new_ent_place * mb_placed).sum() / n_placed
+                else:
+                    # A chunk with no placement at all: fall back to the old
+                    # denominator rather than feed the controller a 0, which it
+                    # would chase as a total collapse.
+                    ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
+
+                if epoch == 0:
+                    with torch.no_grad():
+                        # Normalize each sample by ITS OWN legal-cell count: a
+                        # spell sees 588 cells, a plain troop 242, the Cannon
+                        # 208 (placementRadius clearance), so a raw nat count is
+                        # not comparable across cards.
+                        n_legal = torch.isfinite(pl_seq).sum(dim=-1).clamp(min=2)
+                        place_frac_elem = new_ent_place / torch.log(n_legal.float())
+                        slot_ids = net.hand_card_ids(mb_obs_flat).view(
+                            bptt_chunk, B, net.hand_size)
+                        slot_ids = torch.cat(
+                            [slot_ids, torch.full((bptt_chunk, B, 1), -1,
+                                                  dtype=slot_ids.dtype,
+                                                  device=slot_ids.device)], dim=2)
+                        played_id = slot_ids.gather(
+                            2, mb_card_actions.unsqueeze(-1)).squeeze(-1)
+                        sel = mb_placed > 0
+                        for cid, frac in zip(played_id[sel].tolist(),
+                                             place_frac_elem[sel].tolist()):
+                            if cid >= 0:
+                                percard_place_ent[cid].append(frac)
+                        mb_noop = mb_decision * (mb_card_actions == _NOOP_ACTION).float()
+                        n_noop = float(mb_noop.sum())
+                        if n_noop > 0.0:
+                            ent_place_noop_log.append(
+                                float((place_frac_elem * mb_noop).sum() / n_noop))
+
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
@@ -2307,7 +2395,32 @@ def train_selfplay_ppo():
         # fighting the policy" stays answerable at a glance -- that comparison
         # is exactly what diagnosed the fixed-target pathology in the first place.
         writer.add_scalar("Entropy/Placement_Target", ent_target_place, episodes_completed)
+        # NOTE: since 2026-08-11 this is measured over REAL placements only (see
+        # mb_placed). It is not comparable to the same series before that date,
+        # which averaged in no-op steps and read roughly 0.37 higher.
         writer.add_scalar("Entropy/Placement_Measured", place_frac, episodes_completed)
+        if ent_place_noop_log:
+            # Kept purely as the contrast that makes the fix legible: if these
+            # two ever converge, the no-op arm stopped being a free ride.
+            writer.add_scalar("Entropy/Placement_Measured_NoOp",
+                              float(np.mean(ent_place_noop_log)), episodes_completed)
+        # Per-card conditional placement entropy -- the detector the aggregate
+        # cannot be. A card sitting near 0 here is pinned to one cell no matter
+        # how healthy Entropy/Placement_Measured looks.
+        if percard_place_ent:
+            per_card = {cid: float(np.mean(v)) for cid, v in percard_place_ent.items()}
+            for cid, val in per_card.items():
+                writer.add_scalar(f"Entropy/Placement_ByCard/{_card_name(cid)}",
+                                  val, episodes_completed)
+            worst_id = min(per_card, key=per_card.get)
+            writer.add_scalar("Entropy/Placement_ByCard_Min", per_card[worst_id],
+                              episodes_completed)
+            shown = sorted(per_card.items(), key=lambda kv: kv[1])
+            line = ("     H(place|card): "
+                    + "  ".join(f"{_card_name(c)[:9]} {v:.3f}" for c, v in shown))
+            if ent_place_noop_log:
+                line += f"  | no-op arm {float(np.mean(ent_place_noop_log)):.3f}"
+            print(line)
         writer.add_scalar("Aux/OppElixir_MSE", float(np.mean(aux_losses)), episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         print(f"  >> Update @ ep {episodes_completed} | Actor: {mean_actor_loss:.5f} | "
