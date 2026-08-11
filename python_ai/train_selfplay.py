@@ -1288,8 +1288,35 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # matter what the agent does -- including nothing -- so counting
             # them drags ScenDef toward 1.0 and hides real defensive failures.
             "scenario_defensive": 1.0 if getattr(self, "scenario_defensive", False) else 0.0,
+            # Per-card realized elixir economy, for the strategy readout's ROI
+            # column. This is the falsifiable half of "did un-choking the
+            # entropy controller help": raising exploration alone SPREADS
+            # placements and LOWERS return per elixir, so a spread that rises
+            # while ROI also rises is learning, and a spread that rises while
+            # ROI falls is just noise. Engine counters, so nothing here can be
+            # gamed by the policy.
+            #
+            # Filled only on the terminal step -- 16 registry calls per EPISODE
+            # rather than per step -- but the KEYS are always present and the
+            # shape is always (8,). A key that appears on some steps and not
+            # others makes the vector env's info aggregation emit a companion
+            # mask array instead of a plain stack, which is a needless trap for
+            # the reader; zeros mid-episode cost nothing and the trainer only
+            # reads these on a real episode end.
+            "ep_killed_by_card": self._episode_economy(0, terminated or truncated),
+            "ep_spent_by_card": self._episode_economy(1, terminated or truncated),
         }
         return obs, reward, terminated, truncated, info
+
+    # Deck order is DEFAULT_DECK: phase 2's neural opponents and the trainee all
+    # play it (see CLAUDE.md). A scripted bot's randomised deck belongs to team
+    # 1, which these team-0 counters never touch.
+    def _episode_economy(self, which, ended):
+        if not ended:
+            return np.zeros(len(DEFAULT_DECK), dtype=np.float32)
+        fn = (self.game.get_elixir_value_killed_by if which == 0
+              else self.game.get_elixir_spent_on_card)
+        return np.asarray([fn(c, 0) for c in DEFAULT_DECK], dtype=np.float32)
 
 
 def make_env():
@@ -1703,6 +1730,23 @@ def train_selfplay_ppo():
     ep_card_ids = [set() for _ in range(num_envs)]
     ep_elixir_at_play = [[] for _ in range(num_envs)]
     ep_play_count = np.zeros(num_envs, dtype=np.int64)
+    # Placements landing in the forward band (y >= FORWARD_ROW_Y, i.e. the
+    # bridge-adjacent rows rather than the tower pocket). Reported as a rate so
+    # it does not move with match length.
+    #
+    # Read this ONLY alongside ROI. Raising placement entropy spreads the
+    # marginal toward the middle of the legal region, which lifts this number
+    # on its own -- it is evidence of aggression only when return per elixir
+    # holds up at the same time.
+    FORWARD_ROW_Y = 12
+    ep_forward_placements = np.zeros(num_envs, dtype=np.int64)
+    # Realized elixir economy per deck card, summed over recent episodes, so
+    # ROI is a ratio of totals rather than a mean of noisy per-episode ratios
+    # (episodes where a card was never played would otherwise contribute 0/0).
+    econ_killed = deque(maxlen=50)
+    econ_spent = deque(maxlen=50)
+    forward_rate_history = deque(maxlen=50)
+    tower_dmg_rate_history = deque(maxlen=50)
 
     obs, _ = envs.reset()
     prev_stats = None
@@ -1877,6 +1921,11 @@ def train_selfplay_ppo():
                                 ep_card_ids[i].add(cid)
                         ep_elixir_at_play[i].append(float(elixir_np[i]))
                         ep_play_count[i] += 1
+                        # Row of the cell that actually reached the board.
+                        # placement_cell is row-major over board_width, the
+                        # same layout cell_to_xy inverts.
+                        if int(placement_cell[i].item()) // net.board_width >= FORWARD_ROW_Y:
+                            ep_forward_placements[i] += 1
 
             # gamma passed explicitly: the tower term is potential-based
             # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
@@ -1966,9 +2015,26 @@ def train_selfplay_ppo():
                         plays_per_game_history.append(int(ep_play_count[i]))
                         if ep_elixir_at_play[i]:
                             elixir_at_play_history.append(float(np.mean(ep_elixir_at_play[i])))
+                        if ep_play_count[i] > 0:
+                            forward_rate_history.append(
+                                float(ep_forward_placements[i]) / float(ep_play_count[i]))
+                        killed_i = np.asarray(infos["ep_killed_by_card"][i], dtype=np.float64)
+                        spent_i = np.asarray(infos["ep_spent_by_card"][i], dtype=np.float64)
+                        if spent_i.sum() > 0.0:
+                            econ_killed.append(killed_i)
+                            econ_spent.append(spent_i)
+                        # Tower damage per 1000 engine ticks. Length-normalized
+                        # because a slower match accumulates more of everything
+                        # -- AvgTicks moved 24% in one hour after the placement
+                        # mask fix, which would masquerade as more pressure.
+                        ticks_i = float(ep_steps[i]) * 10.0
+                        if ticks_i > 0.0:
+                            tower_dmg_rate_history.append(
+                                float(infos["team0_tower_damage"][i]) * 1000.0 / ticks_i)
                     ep_card_ids[i] = set()
                     ep_elixir_at_play[i] = []
                     ep_play_count[i] = 0
+                    ep_forward_placements[i] = 0
                     ep_rewards[i] = 0
                     ep_shaping[i] = 0
                     ep_steps[i] = 0
@@ -2002,11 +2068,46 @@ def train_selfplay_ppo():
                         cards_pg = np.mean(cards_per_game_history) if cards_per_game_history else float("nan")
                         plays_pg = np.mean(plays_per_game_history) if plays_per_game_history else float("nan")
                         elix_pl = np.mean(elixir_at_play_history) if elixir_at_play_history else float("nan")
+                        # --- strategic progress, as opposed to spread ---------
+                        # ROI is a ratio of SUMS over the window, not a mean of
+                        # per-episode ratios: a card that went unplayed in an
+                        # episode contributes 0/0, and averaging those makes the
+                        # number jump around for reasons that have nothing to do
+                        # with how well the card was used.
+                        roi_all = float("nan")
+                        roi_worst = float("nan")
+                        worst_name = "-"
+                        if econ_spent:
+                            k_tot = np.sum(econ_killed, axis=0)
+                            s_tot = np.sum(econ_spent, axis=0)
+                            if s_tot.sum() > 0:
+                                roi_all = float(k_tot.sum() / s_tot.sum())
+                            played = s_tot > 0
+                            if played.any():
+                                per_card = np.where(played, k_tot / np.maximum(s_tot, 1e-9), np.inf)
+                                w = int(np.argmin(per_card))
+                                roi_worst = float(per_card[w])
+                                worst_name = _card_name(list(DEFAULT_DECK)[w]).split("_")[0][:9]
+                                for ci, cid in enumerate(DEFAULT_DECK):
+                                    if played[ci]:
+                                        writer.add_scalar(
+                                            f"Economy/ROI_ByCard/{_card_name(cid)}",
+                                            float(k_tot[ci] / s_tot[ci]), episodes_completed)
+                        fwd_rate = (np.mean(forward_rate_history)
+                                    if forward_rate_history else float("nan"))
+                        twr_rate = (np.mean(tower_dmg_rate_history)
+                                    if tower_dmg_rate_history else float("nan"))
                         print(f"Episodes: {episodes_completed} | Avg(50): {avg_reward:.2f} | "
                               f"W/L/D: {wins/n:.2f}/{losses/n:.2f}/{draws/n:.2f} | Decisive: {decisive_wr:.2f} | "
                               f"ScenDef: {scenario_sr:.2f} | ScenOff: {scenario_or:.2f} | AvgTicks: {avg_ticks_50:.0f} | "
                               f"Cards/Game: {cards_pg:.2f}/8 | Plays: {plays_pg:.1f} | Elixir@Play: {elix_pl:.2f} | "
+                              f"ROI: {roi_all:.2f} | Worst: {worst_name} {roi_worst:.2f} | "
+                              f"Fwd: {100*fwd_rate:.0f}% | TwrDmg/1k: {twr_rate:.0f} | "
                               f"Pool: {len(historical_pool)} | EntCoef c/p: {ent_coef_card:.4f}/{ent_coef_place:.4f}")
+                        writer.add_scalar("Economy/ROI_All_Cards", roi_all, episodes_completed)
+                        writer.add_scalar("Economy/ROI_Worst_Card", roi_worst, episodes_completed)
+                        writer.add_scalar("Strategy/Forward_Placement_Rate", fwd_rate, episodes_completed)
+                        writer.add_scalar("Strategy/Tower_Damage_Per_1k_Ticks", twr_rate, episodes_completed)
                         writer.add_scalar("Strategy/Distinct_Cards_Per_Game", cards_pg, episodes_completed)
                         writer.add_scalar("Strategy/Plays_Per_Game", plays_pg, episodes_completed)
                         writer.add_scalar("Strategy/Elixir_At_Play", elix_pl, episodes_completed)
