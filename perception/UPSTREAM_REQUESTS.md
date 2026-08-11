@@ -812,3 +812,158 @@ this item leads with the measurement rather than the story.
 The `.pyd` post-build copy into `python_ai/` fails with MSB3073 while any
 Python process has the module loaded, so the live trainer must be stopped for
 the copy step. Compilation itself can be verified without stopping it.
+
+---
+
+## 13. OPEN — state snapshot/restore, so decision-time search becomes possible (proposed 2026-08-11)
+
+**What is being asked for:** a way to copy a `GameManager` deeply, so a caller
+can try several candidate actions from one position and keep the best. Today a
+copy is shallow — `Board` holds `std::vector<std::shared_ptr<Entity>>`, so the
+copy shares every entity with the original and stepping one corrupts the other.
+
+### Why this is worth reading despite the blast radius
+
+A fast deterministic simulator is the project's biggest unexploited asset.
+Combat has no RNG at all (the only randomness is `PlayerState::initializeDeck`'s
+shuffle and `HeuristicOpponent`), so rolling a candidate action forward gives
+*exactly* what would happen. That is a strict policy-improvement operator, and
+`python_ai/bc_pretrain.py` — already built, schema pinned, verified end to end —
+is exactly the consumer needed to distil the result back into the policy.
+
+Two measurements taken 2026-08-11 size it:
+
+| | cost |
+|---|---|
+| 20-tick (2 s) engine rollout | **0.34 ms** |
+| one `MicroRoyaleNet` forward (CPU) | **50.51 ms** |
+
+The engine is **~150x cheaper than the network that evaluates it**. Search here
+is not compute-bound on simulation at all: a 10-second rollout of 12 candidates
+costs ~20 ms. That asymmetry is what makes lookahead attractive on this
+hardware, and it is the opposite of the usual assumption.
+
+Candidates measurably differ. Over 24 constructed mid-game positions, K=12,
+10 s horizon:
+
+| | |
+|---|---|
+| observable damage swing spread (max-min) | mean **508.7** |
+| critic value spread (max-min) | mean **0.738** |
+| the two scorers pick the same best candidate | **50%** |
+
+A ~500 damage swing is roughly 15% of a Princess Tower. There is real signal to
+choose between.
+
+### The correction to the existing plan — `Entity::clone()` ALREADY EXISTS
+
+`CLAUDE.md` records this item as "needs a virtual `Entity::clone()` across the
+whole hierarchy — invasive simulation-core surgery". That is out of date.
+`include/entities/Entity.h:113` already declares:
+
+```cpp
+virtual std::shared_ptr<Entity> clone(int newId) const { (void)newId; return nullptr; }
+```
+
+overridden in `MeleeTroop`, `RangedTroop`, `BuildingTargeter` and
+`RangedBuildingTargeter`, each as three lines of implicit-copy-constructor:
+
+```cpp
+auto copy = std::make_shared<MeleeTroop>(*this);
+copy->id = newId;
+copy->hp = 1;              // Clone card: full damage, 1 hp
+return copy;
+```
+
+**So copy-construction of concrete entity types is already relied on in
+production code.** The mechanism is proven; only its coverage and semantics are
+wrong for snapshotting.
+
+### Why the existing `clone()` must NOT simply be reused
+
+Two reasons, both of which would corrupt a snapshot silently:
+
+1. **`copy->hp = 1`.** It implements the Clone *card*, whose duplicates have 1
+   HP by design. A snapshot needs HP preserved exactly.
+2. **The default returns `nullptr`, not an error.** Buildings, Towers,
+   `AreaSpell` and `Projectile` have no override, because they were never valid
+   Clone targets in the real game. A naive "clone every entity" loop would
+   therefore produce a board that has **silently dropped every tower, building,
+   spell and projectile** — and would look like a working snapshot.
+
+### Proposed shape (the human decides the details)
+
+- a second virtual, e.g. `virtual std::shared_ptr<Entity> snapshot() const`,
+  preserving id and hp exactly, implemented for **every concrete type**
+- its base implementation should **fail loudly** (assert / throw), never return
+  `nullptr`, so a future entity type cannot silently punch a hole in a snapshot
+- `Board::deepCopy()` rebuilding `activeEntities`, `pendingEntities` and
+  `idCounter`
+- `GameManager` snapshot = that board copy plus its scalar members
+  (`currentTick`, `gameOver`, `loserTeam`, `oppElixirMultiplier`, `rng`, the
+  deck configs, tower-troop types, `stats`, `playerAI`, `playerOpponent`),
+  which are already value types
+
+Estimated size: roughly 3 lines per concrete entity type across ~8-12 classes,
+plus the board/manager plumbing. That is meaningfully smaller than "a virtual
+clone across the whole hierarchy plus effects".
+
+### The risk I could NOT clear from the outside, and it is the crux
+
+`CombatEntity` holds effects as shared pointers — `onHitEffects`, `deathEffect`,
+`periodicEffect`, `onDamageTakenEffect`, `onHitSpawnEffect`,
+`transformDeathEffect`, `abilityEffect`. An implicit copy constructor copies the
+*pointers*, so a snapshot would **share** those effect objects with the
+original.
+
+- if effects are stateless strategy objects, sharing is correct and desirable
+- if any effect carries mutable per-instance state, stepping the snapshot
+  mutates the original, and the corruption is silent
+
+**This needs verifying before anything is built.** I have not read every effect
+implementation and will not assert it either way. The same question applies to
+whether any entity caches a pointer to its current target across ticks; if so, a
+deep copy must remap those or it will alias into the original board.
+
+### The Catch-22, stated plainly rather than papered over
+
+The obvious question is "what does search buy in win rate?" I tried to answer it
+and **could not**, and the reason is structural rather than a matter of effort.
+
+Without snapshotting, a search action can only be tested at a decision point
+that can be *constructed* (via `inject`), after which both branches are played
+out by the policy. That measures the marginal value of **one** improved action
+diluted across ~80 subsequent policy actions. Result over 45 disagreement
+states:
+
+```
+search branch ahead 51%   policy ahead 47%   tie 2%
+paired tower-HP delta +0.0145 +/- 0.2162 (95% CI), n=45
+```
+
+The confidence interval is **15x wider than the effect**. Observed paired std
+0.74 puts the sample size needed at roughly **20,000 constructed states** — and
+even then it would only measure a one-decision intervention, not the
+every-decision search that expert iteration actually performs.
+
+**This is explicitly NOT evidence that search does not work.** It is an
+underpowered null from an experiment that could not have detected the effect it
+was looking for. Recording it that way, rather than quoting "51% vs 47%" as
+though it meant something, is the point.
+
+So the evidence that would justify the change is unobtainable without the
+change. The honest basis for proceeding is architectural priors — the 150:1
+compute asymmetry, the measured candidate spread, the determinism guarantee, and
+a distillation pipeline that already exists — not a demonstrated win rate. The
+human should decide with that stated, not implied.
+
+### Blast radius
+
+Simulation core. Nothing about existing behaviour changes if the new method is
+purely additive and nothing calls it — but any bug in it produces *wrong
+simulated futures*, which would then be distilled into the policy as if they
+were expert labels. That failure mode is silent, which argues for the
+loud-failure default above and for a divergence test: snapshot a live game, step
+both copies with identical actions for N ticks, and assert the observations stay
+bit-identical. `perception/`'s bridge already demonstrates exactly this kind of
+zero-divergence control.
