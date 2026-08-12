@@ -92,6 +92,21 @@ def _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_
     BY THE CRITIC'S OWN MEASURE. Any loss it takes is the critic being wrong,
     which is a different and more interesting failure than search being wrong.
     """
+    # Canonicalise a no-op greedy to (NOOP, 0, 0) before seeding `seen`.
+    # ClashEnv::step ignores placement whenever cardIndex >= HAND_SIZE, so
+    # (NOOP, gx, gy) and (NOOP, 0, 0) are THE SAME ACTION -- but as tuples they
+    # differ, so without this the no-op is emitted twice and the two copies roll
+    # out identically and score identically.
+    #
+    # That cost nothing for the win-rate A/B (the duplicate always ties, and
+    # argmax returns the lower index, which is greedy). It is fatal for
+    # distribution distillation: with the policy no-oping ~80-90% of the time,
+    # the majority of rows ended up with exactly two candidates that were the
+    # same action, giving a target with a measured median value spread of
+    # EXACTLY 0.0 -- a uniform distribution over one action, carrying no signal
+    # while still contributing gradient.
+    if greedy[0] >= HAND_SIZE:
+        greedy = (NOOP, 0.0, 0.0)
     cands = [greedy]
     seen = {greedy}
 
@@ -123,11 +138,24 @@ def _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_
 
 @torch.no_grad()
 def _search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden_next,
-                   greedy, cfg, device):
-    """Roll every candidate forward on its own snapshot, score, pick the best."""
+                   greedy, cfg, device, return_details=False):
+    """Roll every candidate forward on its own snapshot, score, pick the best.
+
+    `return_details` appends the full (candidates, scores) pair as a 4th return
+    value. Off by default, so every existing caller keeps the same 3-tuple and
+    the arm that measured +0.319 is untouched. It exists for expert-iteration
+    distillation: the argmax alone discards how MUCH better the winner was, and
+    that margin is the only thing distinguishing "waiting is marginally better"
+    from "playing here is a blunder".
+    """
     cands = _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map,
                               hidden_next, greedy, cfg.k_cards, cfg.k_cells)
     if len(cands) == 1:
+        # One candidate carries no preference information at all -- there is
+        # nothing to rank, so distillation must skip these rows rather than
+        # train on a degenerate one-hot.
+        if return_details:
+            return greedy, False, 1, None
         return greedy, False, 1
 
     final_obs = []
@@ -165,6 +193,8 @@ def _search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidde
             scores[i] = reward * cfg.terminal_weight
 
     best = int(scores.argmax().item())
+    if return_details:
+        return cands[best], best != 0, len(cands), (cands, scores.detach().cpu().numpy())
     return cands[best], best != 0, len(cands)
 
 
