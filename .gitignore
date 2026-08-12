@@ -383,3 +383,8 @@ build_test/
 # files behind them, and follow the same no-replays-in-git rule as replays/.
 replays_sample/
 *.pth.bak
+
+# Generated experiment artifacts: BC / expert-iteration label datasets.
+# Regenerable (expert_iteration.py --collect, ~7 min for 80 episodes) and
+# large, same reasoning as *.pth above.
+*.npz

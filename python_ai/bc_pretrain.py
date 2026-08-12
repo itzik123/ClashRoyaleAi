@@ -205,8 +205,21 @@ def load_dataset(path):
 
 
 def train_bc(data, net=None, epochs=6, lr=1e-3, batch_episodes=8, device=None,
-             placement_weight=1.0, verbose=True):
+             placement_weight=1.0, verbose=True, sample_weights=None,
+             episode_filter=None):
     """Fit a policy to the demonstrations by maximum likelihood.
+
+    `sample_weights` is an optional per-ROW float array (same length as
+    data["card"]). None -- the default -- takes the original unweighted code
+    path unchanged, so nothing about existing callers moves. It exists for
+    expert-iteration distillation, where ~90% of labels already agree with what
+    the policy does and the gradient is otherwise dominated by "keep doing what
+    you already do"; upweighting the disagreement rows is the lever that tests
+    whether the policy can learn the CONDITIONAL rule rather than the marginal.
+
+    `episode_filter` restricts training to a subset of episode ids, so a
+    held-out split can be kept back. Without one, "the policy fits the labels"
+    and "the policy generalises" are the same number and neither is trustworthy.
 
     Trained through the LSTM in episode order rather than on shuffled
     independent frames: the network is recurrent, and a policy fitted on
@@ -224,9 +237,14 @@ def train_bc(data, net=None, epochs=6, lr=1e-3, batch_episodes=8, device=None,
     opt = torch.optim.Adam(net.parameters(), lr=lr)
 
     ep_ids = np.unique(data["episode"])
+    if episode_filter is not None:
+        keep = set(int(e) for e in episode_filter)
+        ep_ids = np.asarray([e for e in ep_ids if int(e) in keep])
     obs_all = torch.tensor(data["obs"]).to(device)
     card_all = torch.tensor(data["card"]).to(device)
     cell_all = torch.tensor(data["cell"]).to(device)
+    weight_all = (torch.tensor(np.asarray(sample_weights, dtype=np.float32)).to(device)
+                  if sample_weights is not None else None)
 
     history = []
     for epoch in range(epochs):
@@ -279,7 +297,16 @@ def train_bc(data, net=None, epochs=6, lr=1e-3, batch_episodes=8, device=None,
                 dropped_card += int((~legal).sum())
                 if legal.sum() == 0:
                     continue
-                l_card = F.cross_entropy(card_lp[legal], ca[legal])
+                # weight_all is None on the original path, and the branch below
+                # then calls F.cross_entropy exactly as before -- identical
+                # numerics, not merely equivalent ones.
+                w = weight_all[idx] if weight_all is not None else None
+                if w is None:
+                    l_card = F.cross_entropy(card_lp[legal], ca[legal])
+                else:
+                    per = F.cross_entropy(card_lp[legal], ca[legal], reduction="none")
+                    wl = w[legal]
+                    l_card = (per * wl).sum() / wl.sum().clamp_min(1e-8)
 
                 played = legal & (ca != net.hand_size)
                 if played.sum() > 0:
@@ -289,7 +316,12 @@ def train_bc(data, net=None, epochs=6, lr=1e-3, batch_episodes=8, device=None,
                     dropped_cell += int((~cell_legal).sum())
                     if cell_legal.sum() > 0:
                         sel = torch.where(played)[0][cell_legal]
-                        l_cell = F.cross_entropy(cell_lp[sel], ce[sel])
+                        if w is None:
+                            l_cell = F.cross_entropy(cell_lp[sel], ce[sel])
+                        else:
+                            per_c = F.cross_entropy(cell_lp[sel], ce[sel], reduction="none")
+                            wc = w[sel]
+                            l_cell = (per_c * wc).sum() / wc.sum().clamp_min(1e-8)
                         cell_hits += int((cell_lp[sel].argmax(1) == ce[sel]).sum())
                     else:
                         l_cell = torch.zeros((), device=device)
