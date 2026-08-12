@@ -821,13 +821,168 @@ critic quality, and new capabilities; **not** demonstrated end strength.
    blocker. Self-play discovers strategies but not *the distribution humans
    play*; AlphaStar's supervised stage was load-bearing, not optional.
 
-2. **Decision-time lookahead / search — the biggest unexploited asset.** A fast
-   deterministic simulator is owned and unused. Roll the top-K candidate actions
-   ~2 s forward and pick by value; that is a strict improvement operator, and
-   distilling it back is expert iteration. **Blocked:** `Board` holds
-   `shared_ptr<Entity>`, so a `GameManager` copy is *shallow*. Needs a virtual
-   `Entity::clone()` across the whole hierarchy plus effects — invasive
-   simulation-core surgery, needs explicit sign-off.
+2. **Decision-time lookahead / search — UNBLOCKED 2026-08-11, mechanism built
+   and exposed.** A fast deterministic simulator is owned and was unused. Roll
+   the top-K candidate actions forward and pick by value; that is a strict
+   improvement operator, and distilling it back is expert iteration. The engine
+   is **~150× cheaper than the network that scores it** — a 20-tick rollout
+   costs 0.34 ms against one `MicroRoyaleNet` forward at 50.51 ms — so search
+   here is not compute-bound on simulation at all.
+
+   **What now exists:** `Board::deepCopy()`, `GameManager::snapshot()` and
+   `ClashEnv::snapshot()`, bound to Python as `env.snapshot()`. Measured from
+   Python: **0.033 ms per snapshot**, 0.027 ms per 10-tick step, so a **K=12
+   sweep at a 2 s horizon costs 1.1 ms** — against ~50 ms for the single network
+   forward that scores it. Simulation is free; *scoring* is the entire budget,
+   which is why `python_ai/search_ab_test.py` batches all K candidate
+   evaluations into one forward.
+
+   **An unexpected second payoff: this is also a seeding substitute.**
+   `UPSTREAM_REQUESTS.md` item 7 asks for `ClashEnv::seed()` because unpaired
+   A/B tests need ~1,568 episodes per arm to resolve 5 win-rate points. Snapshot
+   gives the same pairing without it — reset once, snapshot, hand both arms a
+   bit-identical opening (same shuffled hand, same heuristic lane). Item 7 is
+   still worth doing for reproducible *failures*, but it is no longer the
+   blocker on paired experiments.
+
+   **Ceiling effect, measured, and it will bite any future A/B here:** against
+   `heuristic@1.00` the ep-64k policy wins ~100%, so both arms of a search-vs-
+   policy comparison saturate and the delta is pinned at 0 by the *opponent*,
+   not by search being useless (4/4 trials, 1.000 vs 1.000). Run comparisons at
+   **1.5× opponent elixir**, where there is headroom on both sides.
+
+   **First measurement, 2026-08-11 — search wins, and by a lot.**
+   `python_ai/search_ab_test.py`, 160 paired trials at 1.5× opponent elixir,
+   ep-64k checkpoint, `DEFAULT_DECK`, K≈3 candidates, 4 s horizon, critic-scored:
+
+   | | |
+   |---|---|
+   | greedy policy win rate | **0.625** |
+   | + 1-ply search | **0.944** |
+   | paired delta | **+0.319**, 95% CI [+0.237, +0.401] |
+   | discordant pairs | 56 search-better / 5 search-worse / 99 tied |
+   | exact McNemar | **p = 5.6e-12** |
+   | deviation rate | 13.8% (5,764 of 41,792 decisions) |
+   | cost | 2.2× wall clock (11.9 → 26.0 s/episode) |
+
+   **Read the deviation rate first.** Search overrode the greedy action on only
+   ~1 decision in 7, and greedy is always candidate 0, so search can only
+   deviate when the critic prefers something else. A +32-point swing off 13.8%
+   of decisions is the headline, but the *interpretation* is the useful part:
+   the scorer is this same network's own critic, so **the value head is
+   substantially better than the action head is at exploiting it.** That is
+   precisely the condition under which expert iteration pays — there is a gap
+   to distil, and it is the policy head, not the critic, that is underfit.
+
+   **What this does NOT establish**, stated plainly because item 13's history is
+   an underpowered null that was nearly over-read in the other direction:
+   one checkpoint, one deck, one opponent (the C++ heuristic), one horizon. It
+   says nothing about neural opponents in the PFSP league. The effect is also
+   regime-specific: at 1.0× elixir it is exactly zero, by ceiling.
+
+   **2026-08-12 — distilling it back does NOT work yet. Measured, negative.**
+   `python_ai/expert_iteration.py`. 80 episodes of search-labelled play (20,333
+   decisions), distilled into the policy with the trunk/LSTM/critic frozen and
+   only the action heads trainable (15,878 of 1.88 M params):
+
+   | | null | after distillation |
+   |---|---|---|
+   | `card_match_decisions` | 0.6330 | **0.6960** (+0.063) |
+   | `cell_match` | 0.5765 | 0.5730 (**−0.004**) |
+   | critic drift `|dV|` | — | **0.000000** (freeze verified) |
+
+   The behaviour transferred. **The win rate did not.** Paired greedy-vs-greedy,
+   no search in either arm:
+
+   | run | n | original | distilled | delta | p |
+   |---|---|---|---|---|---|
+   | exploratory | 200 | 0.570 | 0.675 | +0.105 [+0.008, +0.202] | 0.044 |
+   | **confirmatory** | **800** | **0.634** | **0.650** | **+0.016 [−0.030, +0.061]** | **0.553** |
+
+   **The exploratory p = 0.044 was noise and the confirmatory run at 4× the power
+   killed it** — 178 better / 166 worse is a coin flip. Do not resurrect the
+   +0.105; it is the single most over-readable number this project has produced.
+   The confirmatory run was launched as a *fresh* experiment with n fixed in
+   advance rather than by extending the first, because continuing after seeing a
+   marginal result is optional stopping and would have manufactured a result.
+
+   Three things worth carrying:
+
+   - **The control arm's own variance is the trap.** Original greedy measured
+     0.625, 0.570, 0.700 and 0.634 across four runs at 1.5×. Any comparison here
+     under a few hundred paired trials is measuring that, not the treatment.
+   - **What search does is WAIT.** Of 2,126 card-level deviations, **1,847 were
+     search declining to play where greedy plays**, against 137 the reverse —
+     13:1. But search waits *conditionally*, when the critic dislikes this
+     specific play; BC on 89.5%-already-agreed labels mostly teaches the
+     *marginal* "no-op more often". Same blind spot this file already records
+     three times, inverted: imitating an aggregate that cannot express the
+     conditional.
+   - **The placement head is starved by construction.** The expert no-ops 89.7%
+     of the time, so placement trains on 10.3% of rows (2,099) — near the 1,799
+     that already underfit in `bc_pretrain`. Half of what search does (781
+     cell-level deviations) transfers not at all.
+
+   **Next levers, in order:** upweight the ~10% disagreement rows so the
+   gradient is not dominated by "keep doing what you already do"; unfreeze the
+   trunk (15,878 params may simply lack capacity for the conditional rule) and
+   watch the now-measurable critic drift; and iterate DAgger-style, since one
+   distillation pass is not expert *iteration* — after step 1 the policy visits
+   different states than the labels came from.
+
+   **This entry used to say it needed "a virtual `Entity::clone()` across the
+   whole hierarchy plus effects — invasive simulation-core surgery". That was
+   wrong on all three counts** and deterred the work for months. The reality,
+   established 2026-08-11:
+
+   - **`clone()` already exists** (`Entity.h:113`), overridden in four types as
+     three lines of implicit-copy-constructor each. Copy-construction of
+     concrete entities is already relied on in production.
+   - **Effects need no deep copy.** All five effect interfaces declare `apply`
+     `const`, and a search across every file defining or using them finds zero
+     `mutable` and zero `const_cast`. They are stateless strategy objects, so
+     sharing them across a snapshot is *correct* and deep-copying them would be
+     wasted work.
+   - **The hierarchy is 8 concrete types, not "the whole hierarchy"** —
+     `MeleeTroop`, `RangedTroop`, `BuildingTargeter`, `RangedBuildingTargeter`,
+     `AreaSpell`, `Projectile`, `Tower`, `Building`. Everything else
+     (`CardEntity`, `CombatEntity`, `Troop`) is abstract or never instantiated.
+
+   What it *does* need, and what the old framing missed entirely: `clone()`
+   cannot be reused, because it sets `hp = 1` (it implements the Clone *card*)
+   and its default returns `nullptr` rather than failing — so a naive
+   "clone every entity" loop yields a board that has **silently dropped every
+   tower, building, spell and projectile** and still looks like it worked.
+   Hence a separate `snapshot()` with a throwing default.
+
+   The one genuine hazard is **`Projectile::target`** (`Projectile.h:16`), the
+   only entity-pointer *member* in the hierarchy — every other
+   `shared_ptr<Entity>` is a per-tick local inside `findTarget`/
+   `resolveCurrentTarget`. An implicit copy carries it verbatim, so a
+   projectile in flight inside a snapshot would deal damage to an entity on the
+   **original live board**. Being a `weak_ptr`, the symptom is wrong damage
+   rather than a leak — invisible, not loud. `Board::deepCopy()` therefore
+   builds an old-id → new-entity map and remaps that one member through it.
+
+   **A second aliasing case of the same shape, found while implementing and
+   not in the original proposal: `Board::statsEvents`.** The bus holds
+   `shared_ptr<IStatsObserver>`, and unlike the effects those collectors are
+   *stateful* — running damage totals, kill attribution. Copying the subscriber
+   list would post every hypothetical hit in every rollout into the **live
+   match's** statistics, and those feed the reward shaping, so a search would
+   silently corrupt the returns it was being scored against. `deepCopy` starts
+   the copy with an empty bus.
+
+   **And the mirror-image trap one level up:** `GameManager::snapshot()` must
+   *not* fix that by calling `MatchStatistics::attach()` on the copied board.
+   `attach()` builds **fresh zeroed** collectors, so a snapshot would report a
+   match where nobody had dealt any damage — and since the tower term is
+   potential-based over *cumulative* damage, every candidate would score as the
+   same enormous instant loss. That looks exactly like a working search that
+   simply never prefers anything. `snapshotFor()` deep-copies each collector so
+   totals carry over. Both directions are pinned by tests.
+
+   Evidence and the full write-up: `perception/UPSTREAM_REQUESTS.md` item 13.
 
 3. **Remaining observation gaps.** Cells still *overwrite* rather than
    accumulate in channels 0–7 (`obs[idx] = normalizedHp`), so a Skeleton Army

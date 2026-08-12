@@ -1,9 +1,12 @@
 # Simulator changes requested from `perception/`
 
-Written from `perception/`, which modifies nothing outside itself. **Nothing
-in this document has been applied by me.**
+Written from `perception/`, which modifies nothing outside itself. Items are
+**proposed** here first, with evidence and blast radius, and applied only with
+explicit sign-off — see CLAUDE.md's rule on never changing C++ without
+confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-07-30, after items 1-2 landed.
+Last updated 2026-08-11, after item 13 landed. Items 0, 1, 2, 4, 9, 12 and 13
+are applied; 3, 5, 6, 7 and 8 are still open.
 
 | # | Request | Severity | Status |
 |---|---|---|---|
@@ -17,6 +20,8 @@ Last updated 2026-07-30, after items 1-2 landed.
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
 | 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
 | 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
+| 12 | Bind `isValidPlacement` so the action mask stops disagreeing with the engine | 58.7% of card choices silently rejected | **DONE — `is_valid_placement` is bound in the current `.pyd`** |
+| 13 | **State snapshot/restore, so decision-time search becomes possible** | unblocks the biggest unexploited asset | **DONE — applied and verified 2026-08-11** |
 
 Items 1 and 2 were done together since the measured benefit is combined
 (max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
@@ -815,7 +820,194 @@ the copy step. Compilation itself can be verified without stopping it.
 
 ---
 
-## 13. OPEN — state snapshot/restore, so decision-time search becomes possible (proposed 2026-08-11)
+## 13. DONE — state snapshot/restore, so decision-time search becomes possible (applied and verified 2026-08-11)
+
+**Applied as proposed below**, with one design change found during
+implementation. What landed:
+
+| site | what it does |
+|---|---|
+| `Entity::snapshot()` (`Entity.h`) | new virtual, **throws `std::logic_error`** naming the offending type via `typeid` |
+| `Entity::remapSnapshotReferences()` (`Entity.h`) | new virtual, default no-op, second pass over a fresh copy |
+| the 8 concrete types | one line each: `make_shared<T>(*this)` |
+| `Projectile` | overrides the remap; gains `getTargetId()` for the tests |
+| `Board::deepCopy()` (`Board.h`) | the copy itself |
+
+**The design change:** the remap is a **virtual on `Entity`**, not a
+`dynamic_pointer_cast<Projectile>` inside `Board::deepCopy`. It has to be —
+`Projectile.h` includes `Board.h`, so `Board` **cannot** include `Projectile.h`
+to know what a projectile is. Routing it through a virtual also matches the
+idiom `Entity` already uses three times (`onDeath`, `clampPosition`,
+`onNearbyDeath`) for exactly this "let Board act without knowing the concrete
+type" problem, and it keeps `Projectile::target` private — no public setter for
+a member that nothing else should ever write.
+
+### A second aliasing case, not in the proposal below, found while implementing
+
+`Board::statsEvents` is a `StatsEventBus` holding `shared_ptr<IStatsObserver>`,
+and unlike the effects those collectors are **stateful** — running damage
+totals, kill attribution, match outcome. Copying the subscriber list would post
+every hypothetical hit in every rollout into the **real match's** statistics,
+and those feed the reward shaping, so a search would silently rewrite the
+returns it was being scored against. Exactly the `Projectile::target` failure
+shape one level up, and it would have been just as invisible.
+
+`deepCopy` starts the copy with an empty bus. A caller that wants stats off a
+rollout subscribes its own collectors to the copy. Covered by
+`"deepCopy does not carry the stats subscriber list"`.
+
+### Verified
+
+`tests/core/test_board_deepcopy.cpp` — 13 cases, 323 assertions. Full suite
+**520 cases / 4756 assertions, 0 warnings** under the existing `-Wall -Wextra`.
+The pre-existing 507 cases pass unchanged.
+
+The acceptance test is the zero-divergence control this section asked for:
+snapshot a mid-game board (6 towers, both lanes pushing with `DEFAULT_DECK`
+cards, projectiles in flight), step original and copy with identical inputs for
+120 ticks, and require every entity to match **exactly** — id, hp, team, cardId,
+position and projectile target — compared in **vector order**, since
+`resolveCollisions` walks `activeEntities` as an ordered `i<j` loop and two
+boards holding the same entities in a different order drift apart on their own.
+
+**The negative case reproduces the corruption rather than describing it.** A
+snapshot-only copy (no remap) with a shot in flight is stepped, and the
+**original** board's troop is the one that loses 250 hp while the copy's is
+untouched — the live game damaged by a simulation nobody stepped it in.
+
+**Mutation-tested, so the suite is known to have teeth:** with the remap pass
+commented out, **5 of the 13 cases fail**, including the 120-tick divergence
+test and "stepping a deep copy leaves the original untouched". Restored and
+re-run green.
+
+**One test was flaky at ~1 run in 20 and the flake was mine, not the
+engine's.** "Two snapshots given different actions diverge from each other"
+stepped both branches 100 times and required the entity lists to differ. They
+genuinely RECONVERGE: a lone troop with no support walks into the enemy
+Princess Towers, dies without landing a hit, and elixir re-caps at 10, so both
+boards end up holding the same six full-health towers and nothing else. The
+assertion was false about Clash Royale, not about the snapshot. Fixing it
+surfaced a second one immediately -- `playCard` queues into `pendingEntities`
+and `getEntities()` exposes only `activeEntities`, so a successful play is
+invisible until the next `step()` commits it, and comparing before that shows
+two identical boards. Now asserted over a short horizon after one commit step,
+and **verified across 200 consecutive full-suite runs**.
+
+Worth recording because a single green run would have shipped both: a suite run
+once is not a suite that passes, and "the futures diverge forever" is the kind
+of assumption that is obviously wrong once stated and invisible until it flakes.
+
+### Blast radius, as measured rather than estimated
+
+**Zero deletions in every C++ file** — `git diff --numstat` reports `+82/-0`,
+`+66/-0`, `+48/-0` and so on across all ten headers. Not one existing line was
+modified, so no existing code path can behave differently. **Not
+gameplay-affecting: `model_weights.pth`'s win-rate history stands, and no
+checkpoint is invalidated.** The rebuilt `.pyd` reports `observation_size()`
+13606, unchanged, and plays a full match normally.
+
+### The manager/env layer — also landed, same day
+
+`GameManager::snapshot()` and `ClashEnv::snapshot()`, the latter bound to
+Python as **`env.snapshot()`**. `GameManager` copy-constructs (every remaining
+member is already a value type — ticks, flags, `rng`, deck configs, both
+`PlayerState`s) and then replaces the two members holding `shared_ptr`.
+
+Two implementation notes worth keeping:
+
+**`ClashEnv::snapshot` needs a tagged constructor, not copy-then-fix.**
+`GameManager` holds `const float ELIXIR_REGEN_RATE`, so its implicit copy
+*assignment* is deleted and `game = other.game.snapshot()` does not compile.
+Copy-*initialising* it in the member list works, and in C++17 the prvalue is
+elided straight into place.
+
+**The replay logger deliberately does NOT carry across.** `GameLogger`
+accumulates a `TickSnapshot` per tick with an `EntitySnapshot` per entity, so by
+mid-match it is the largest thing in the object; copying a thousand ticks of
+history to simulate twenty is what makes lookahead look infeasible when it is
+not. A rollout is also a hypothetical, and its ticks do not belong in a replay
+of the real match.
+
+**A third aliasing hazard, and the mirror-image trap next to it.**
+`MatchStatistics` holds `shared_ptr` to *stateful* collectors, so the copy must
+not share them — same shape as `Projectile::target`, one level up again. But
+the obvious fix, calling `attach()` on the copied board, is equally wrong in the
+opposite direction: `attach()` builds **fresh zeroed** collectors, and since
+train.py's tower term is potential-based over *cumulative* damage, every
+candidate would then score as the same enormous instant loss — a search that
+looks like it works and never prefers anything. `snapshotFor()` deep-copies each
+collector instead. Both failure directions have their own test.
+
+### Measured from Python, on the rebuilt `.pyd`
+
+| | cost |
+|---|---|
+| `env.snapshot()` | **0.033 ms** |
+| one `step()` (10 ticks) | 0.027 ms |
+| K=12 candidates at a 2 s horizon | **1.1 ms** |
+| one `MicroRoyaleNet` forward | ~50 ms |
+
+So the simulation is free and the **scoring** is the entire budget — the
+opposite of the usual assumption, and the reason `python_ai/search_ab_test.py`
+batches all K candidate evaluations into a single forward.
+
+### This partly supersedes item 7 (RNG seeding)
+
+Item 7 asks for `seed()` because unpaired A/Bs need ~1,568 episodes per arm.
+`snapshot()` delivers the pairing directly: reset once, snapshot, and hand both
+arms a bit-identical opening — same shuffled hand, same heuristic lane. Item 7
+is still worth having for reproducible *failures*, but it is no longer what
+blocks paired experiments.
+
+### The Catch-22 below is now RESOLVED, and the answer was yes
+
+This section originally recorded that the evidence justifying snapshotting was
+unobtainable without snapshotting: the one attempt to size search's value gave
+`+0.0145 +/- 0.2162` over 45 constructed states, a confidence interval **15x
+wider than the effect**, and the honest reading was "underpowered null", not
+"search does not work".
+
+With the mechanism built, the same question answered cleanly.
+`python_ai/search_ab_test.py`, 160 **paired** trials (both arms handed a
+bit-exact copy of one reset), 1.5x opponent elixir, ep-64k checkpoint,
+K ~= 3 candidates at a 4 s horizon, scored by the network's own critic:
+
+| | |
+|---|---|
+| greedy policy win rate | **0.625** |
+| + 1-ply search | **0.944** |
+| paired delta | **+0.319**, 95% CI [+0.237, +0.401] |
+| discordant pairs | 56 search-better / 5 search-worse / 99 tied |
+| exact McNemar | **p = 5.6e-12** |
+| deviation rate | 13.8% (5,764 of 41,792 decisions) |
+| cost | 2.2x wall clock |
+
+Three things about *why* this worked where the earlier attempt could not:
+
+  * **Pairing, which is what snapshot() bought.** The earlier design compared
+    one improved action diluted across ~80 subsequent policy actions. This one
+    compares whole episodes that share an opening, so search acts at every
+    decision and the shared variance is removed rather than averaged over.
+  * **An opponent with headroom.** At 1.0x elixir both arms win ~100% and the
+    delta is exactly zero -- by ceiling, not by search being useless. Measured,
+    4/4 trials at 1.000 vs 1.000, before switching to 1.5x.
+  * **Greedy is candidate 0**, so search deviates only when the critic prefers
+    something else, and any loss it takes is the critic being wrong.
+
+**The interpretation matters more than the number.** The scorer is the same
+network's critic, so search beating the network's own action head by 32 points
+says the **value head is much better than the action head is at exploiting it**.
+That is exactly the gap expert iteration exists to close, and it locates the
+underfit in the policy head rather than the critic.
+
+**Still not established:** one checkpoint, one deck, one opponent, one horizon;
+nothing about neural opponents in the PFSP league; and nothing about whether
+distillation back into the policy works, which is the only experiment that
+would change training.
+
+---
+
+## 13 (original proposal, kept for the record) — state snapshot/restore (proposed 2026-08-11)
 
 **What is being asked for:** a way to copy a `GameManager` deeply, so a caller
 can try several candidate actions from one position and keep the best. Today a
