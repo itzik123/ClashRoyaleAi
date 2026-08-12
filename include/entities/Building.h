@@ -23,6 +23,14 @@ public:
 
     bool isBuilding() const override { return true; }
 
+    // Board::deepCopy. Carries ticksAlive/maxHp with it via the implicit copy
+    // constructor, so a snapshotted building keeps its exact position in its
+    // own decay schedule -- a copy that restarted at ticksAlive = 0 would give
+    // every rollout a building that outlives the real one.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<Building>(*this);
+    }
+
     void update(Board& board) override {
         CombatEntity::update(board);
         if (lifetimeTicks > 0) {

@@ -5,6 +5,7 @@
 #include "OnHitEffect.h"
 #include "StatsEvents.h"
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class Projectile : public Entity {
@@ -66,6 +67,53 @@ public:
         returnsToSender(returnsToSender), returnDelayTicks(returnDelayTicks) {}
 
     bool isTargetable() const override { return false; }
+
+    // Board::deepCopy. UNSAFE ON ITS OWN -- the implicit copy constructor
+    // carries `target` over verbatim, so the copy homes on, and deals damage
+    // to, an entity belonging to whatever board the ORIGINAL lives on. That is
+    // repaired by remapSnapshotReferences() below, which Board::deepCopy calls
+    // on every copied entity; this is the one type in the hierarchy where that
+    // second pass is not a no-op.
+    //
+    // Deliberately a plain copy rather than defensively clearing the target:
+    // a projectile with no target dies on its next tick (update() sets hp = 0
+    // when the lock fails), so a "safe" default would silently delete every
+    // shot in flight from every rollout -- the same quiet wrongness this whole
+    // mechanism exists to prevent. Better that the remap is mandatory and the
+    // tests prove it is happening.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<Projectile>(*this);
+    }
+
+    // Re-points this shot at the equivalent entity in the copied board. The
+    // lookup lives here rather than in Board because `target` is private and
+    // this is the only member in the hierarchy that needs repairing -- Board
+    // stays ignorant of concrete entity types, exactly like onDeath() and
+    // clampPosition() above it.
+    //
+    // A target that is missing from the map (already dead and erased, so the
+    // weak_ptr has expired) is cleared rather than left pointing across
+    // boards. Clearing costs one projectile that was about to die anyway;
+    // leaving it would be a live cross-board write.
+    void remapSnapshotReferences(
+        const std::unordered_map<int, std::shared_ptr<Entity>>& byOldId) override {
+        auto t = target.lock();
+        if (!t) return; // already expired: nothing aliased, nothing to repair
+        auto it = byOldId.find(t->id);
+        target = (it != byOldId.end())
+            ? std::weak_ptr<Entity>(it->second)
+            : std::weak_ptr<Entity>();
+    }
+
+    // Which entity this shot is homing on, or -1 if that target is gone.
+    // Read-only and id-valued: no caller can obtain a handle to another
+    // board's entity through it. Exists so the deepCopy divergence tests can
+    // assert the remap actually happened, instead of inferring it from
+    // damage landing in the right place.
+    int getTargetId() const {
+        auto t = target.lock();
+        return t ? t->id : -1;
+    }
 
     void update(Board& board) override {
         auto t = target.lock();

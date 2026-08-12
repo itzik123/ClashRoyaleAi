@@ -54,14 +54,41 @@ public:
         championAbility = std::make_shared<ChampionAbilityStatsCollector>();
         outcome = std::make_shared<MatchOutcomeCollector>();
 
-        board.statsEvents.subscribe(damage);
-        board.statsEvents.subscribe(damageByTargetType);
-        board.statsEvents.subscribe(kill);
-        board.statsEvents.subscribe(elixirValueKilled);
-        board.statsEvents.subscribe(elixir);
-        board.statsEvents.subscribe(cardPlay);
-        board.statsEvents.subscribe(championAbility);
-        board.statsEvents.subscribe(outcome);
+        subscribeAll(board);
+    }
+
+    // Independent copy of every collector, subscribed to `board` -- the stats
+    // half of GameManager::snapshot(), paired with Board::deepCopy().
+    //
+    // Note what this is NOT: calling attach() on the copied board would have
+    // been one line, and WRONG. attach() builds FRESH ZEROED collectors, so a
+    // snapshot would report a match in which nobody had dealt any damage yet.
+    // train.py's tower-damage term is potential-based -- Phi(s) is a function
+    // of CUMULATIVE damage -- so a search scoring candidates by Phi on a
+    // zeroed snapshot would read every rollout as an enormous instant loss of
+    // accumulated progress, identically for every candidate. It would look
+    // like a working search that simply never preferred anything.
+    //
+    // Copying the shared_ptrs instead (the implicit copy) is the opposite
+    // failure and the one Board::deepCopy already documents: the collectors
+    // are stateful, so a rollout's hits would land in the LIVE match's totals.
+    // Only a genuine per-collector deep copy is correct, and each is plain
+    // data (ints and unordered_maps), so the implicit copy constructor does it.
+    MatchStatistics snapshotFor(Board& board) const {
+        MatchStatistics copy;
+        copy.damage = damage ? std::make_shared<DamageStatsCollector>(*damage) : nullptr;
+        copy.damageByTargetType = damageByTargetType
+            ? std::make_shared<DamageByTargetTypeCollector>(*damageByTargetType) : nullptr;
+        copy.kill = kill ? std::make_shared<KillStatsCollector>(*kill) : nullptr;
+        copy.elixirValueKilled = elixirValueKilled
+            ? std::make_shared<ElixirValueKilledCollector>(*elixirValueKilled) : nullptr;
+        copy.elixir = elixir ? std::make_shared<ElixirStatsCollector>(*elixir) : nullptr;
+        copy.cardPlay = cardPlay ? std::make_shared<CardPlayStatsCollector>(*cardPlay) : nullptr;
+        copy.championAbility = championAbility
+            ? std::make_shared<ChampionAbilityStatsCollector>(*championAbility) : nullptr;
+        copy.outcome = outcome ? std::make_shared<MatchOutcomeCollector>(*outcome) : nullptr;
+        copy.subscribeAll(board);
+        return copy;
     }
 
     int totalDamageDealt(int team) const { return damage ? damage->total(team) : 0; }
@@ -146,6 +173,27 @@ public:
     }
 
 private:
+    // The subscribe list in ONE place, shared by attach() and snapshotFor().
+    // Written as a helper rather than repeated, because two copies of "every
+    // collector" is a list that drifts: a ninth collector added to attach()
+    // and forgotten here would go on recording the live match while silently
+    // recording nothing across a snapshot -- and the query API would still
+    // answer, with stale numbers, rather than fail.
+    //
+    // The null guards only matter for snapshotFor() on a never-attached
+    // MatchStatistics (a GameManager copied before its first reset()), which
+    // stays legitimately empty rather than becoming half-subscribed.
+    void subscribeAll(Board& board) {
+        if (damage) board.statsEvents.subscribe(damage);
+        if (damageByTargetType) board.statsEvents.subscribe(damageByTargetType);
+        if (kill) board.statsEvents.subscribe(kill);
+        if (elixirValueKilled) board.statsEvents.subscribe(elixirValueKilled);
+        if (elixir) board.statsEvents.subscribe(elixir);
+        if (cardPlay) board.statsEvents.subscribe(cardPlay);
+        if (championAbility) board.statsEvents.subscribe(championAbility);
+        if (outcome) board.statsEvents.subscribe(outcome);
+    }
+
     template <typename MapT>
     static void writeTeamCardMaps(std::ostringstream& out, const MapT* team0, const MapT* team1) {
         out << "\"team0\":{";

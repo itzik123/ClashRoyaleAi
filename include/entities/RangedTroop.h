@@ -22,6 +22,11 @@ public:
         return copy;
     }
 
+    // Board::deepCopy -- id and hp preserved exactly, unlike clone() above.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<RangedTroop>(*this);
+    }
+
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         // On-hit effects ride along with the shot and land when it does,

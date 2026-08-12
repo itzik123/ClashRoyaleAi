@@ -112,6 +112,15 @@ public:
 
     bool isTargetable() const override { return false; }
 
+    // Board::deepCopy. delayTicks and remainingHits ride along with the
+    // implicit copy, so a spell mid-fuse or mid-volley resumes where the
+    // original is rather than re-arming -- which is exactly the state a
+    // rollout needs to reason about ("does my Fireball land before that
+    // Musketeer walks out of it").
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<AreaSpell>(*this);
+    }
+
     void update(Board& board) override {
         if (delayTicks > 0) {
             delayTicks--;

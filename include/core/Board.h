@@ -2,6 +2,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
+#include <unordered_map>
 #include "Entity.h"
 #include "StatsEventBus.h"
 
@@ -67,6 +68,87 @@ public:
     Board(int w = 18, int h = 34) : width(w), height(h) {}
 
     int allocateId() { return idCounter++; }
+
+    // Fully independent copy of this board: every entity is duplicated via
+    // Entity::snapshot() instead of shared, so the copy can be stepped without
+    // touching the original. This is what makes decision-time search possible
+    // (CLAUDE.md open problem #2) -- roll candidate actions forward on a copy,
+    // score them, keep the best.
+    //
+    // NOT the same as copy-constructing a Board, which is still the implicit
+    // shallow copy: activeEntities is a vector of shared_ptr, so a plain copy
+    // shares every entity and stepping one board mutates the other. The
+    // implicit copy is left alone deliberately (GameManager holds a Board by
+    // value and deleting it would make GameManager non-copyable), so this is
+    // additive -- but anything doing lookahead wants THIS, not `Board b = a;`.
+    //
+    // Two things are deliberately NOT carried across, both because carrying
+    // them would corrupt the live match rather than the copy:
+    //
+    //   * `statsEvents` starts EMPTY. StatsEventBus holds shared_ptr to
+    //     stateful collectors (DamageStatsCollector's running totals,
+    //     KillStatsCollector's attribution map, MatchOutcomeCollector). Copying
+    //     the subscriber list would post every hypothetical hit in every
+    //     rollout into the REAL match's statistics -- and those feed the reward
+    //     shaping, so a search would silently rewrite the returns it is being
+    //     scored against. Same failure shape as the Projectile alias below, one
+    //     level up. A caller that genuinely wants stats off a rollout
+    //     subscribes its own collectors to the copy.
+    //   * Nothing outside Board. currentTick is mirrored here for damage
+    //     stamping, but GameManager's own currentTick/gameOver/loserTeam/elixir
+    //     are its members, not this one's -- a GameManager-level snapshot needs
+    //     those too and is a separate piece of work.
+    Board deepCopy() const {
+        Board copy(width, height);
+
+        // Geometry copied explicitly rather than trusting the fresh Board's
+        // in-class initialisers to still agree. They do today -- nothing
+        // mutates them -- but the river has already moved twice in this
+        // project's history, and if it ever becomes configurable the silent
+        // failure is every rollout quietly reverting to the default arena.
+        copy.riverY_start = riverY_start;
+        copy.riverY_end = riverY_end;
+        copy.leftBridge = leftBridge;
+        copy.rightBridge = rightBridge;
+
+        // idCounter must carry across or the copy re-issues ids the original
+        // already handed out: a projectile spawned during a rollout would
+        // collide with an existing entity's id, and every id-keyed lookup
+        // (resolveCurrentTarget, the remap below) would join on the wrong row.
+        copy.idCounter = idCounter;
+        copy.currentTick = currentTick;
+        copy.pendingElixirGrant[0] = pendingElixirGrant[0];
+        copy.pendingElixirGrant[1] = pendingElixirGrant[1];
+
+        std::unordered_map<int, std::shared_ptr<Entity>> byOldId;
+        byOldId.reserve(activeEntities.size() + pendingEntities.size());
+
+        // Pending entities are copied too, not dropped: a card played this
+        // tick lives there until the next commitPendingEntities(), so skipping
+        // them would make a snapshot taken mid-tick lose the very placement a
+        // search is trying to evaluate.
+        copy.activeEntities.reserve(activeEntities.size());
+        for (const auto& e : activeEntities) {
+            auto c = e->snapshot();
+            byOldId[e->id] = c;
+            copy.activeEntities.push_back(std::move(c));
+        }
+        copy.pendingEntities.reserve(pendingEntities.size());
+        for (const auto& e : pendingEntities) {
+            auto c = e->snapshot();
+            byOldId[e->id] = c;
+            copy.pendingEntities.push_back(std::move(c));
+        }
+
+        // Second pass, and it must be second: a projectile can be homing on an
+        // entity that had not been copied yet when the projectile itself was,
+        // so the map has to be complete before anything joins on it. A no-op
+        // for every type except Projectile -- see Entity::remapSnapshotReferences.
+        for (const auto& e : copy.activeEntities) e->remapSnapshotReferences(byOldId);
+        for (const auto& e : copy.pendingEntities) e->remapSnapshotReferences(byOldId);
+
+        return copy;
+    }
 
     int getWidth() const { return width; }
     int getHeight() const { return height; }

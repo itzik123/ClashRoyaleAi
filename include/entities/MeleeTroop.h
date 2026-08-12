@@ -15,6 +15,11 @@ public:
         return copy;
     }
 
+    // Board::deepCopy -- id and hp preserved exactly, unlike clone() above.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<MeleeTroop>(*this);
+    }
+
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         int dealt = getCurrentDamage();
