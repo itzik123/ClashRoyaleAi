@@ -923,12 +923,75 @@ critic quality, and new capabilities; **not** demonstrated end strength.
      that already underfit in `bc_pretrain`. Half of what search does (781
      cell-level deviations) transfers not at all.
 
-   **Next levers, in order:** upweight the ~10% disagreement rows so the
-   gradient is not dominated by "keep doing what you already do"; unfreeze the
-   trunk (15,878 params may simply lack capacity for the conditional rule) and
-   watch the now-measurable critic drift; and iterate DAgger-style, since one
-   distillation pass is not expert *iteration* — after step 1 the policy visits
-   different states than the labels came from.
+   **Those two levers are now measured DEAD, and a third works. 2026-08-12.**
+
+   The obvious fixes — upweight the disagreement rows, unfreeze the trunk —
+   were ablated as a 2×2 grid (`--ablate`), 64 train / 16 held-out episodes.
+   Held-out `disagreement_match` produced a clean-looking ladder, 0.235 → 0.246
+   → 0.372 → 0.655, **and it is an artifact.** 87% of the expert's overrides are
+   "wait where greedy plays", so a policy that simply no-ops more scores on that
+   metric for free, and the four configs came out perfectly monotonic in their
+   no-op rate (0.872 / 0.874 / 0.899 / 0.967) with each score predicted by that
+   rate alone. Config D, the "best" by the old metric, waits on 80% of rows
+   *regardless* of the expert — upweighting rows that are 87% "wait" by 8× just
+   teaches always-wait.
+
+   **`conditional_lift` is the metric that survives**, and it is the fourth time
+   this file records the same lesson: an aggregate cannot see a conditional.
+   Condition on rows where the ORIGINAL policy plays, then compare
+   `p1 = P(policy waits | expert waited)` against
+   `p0 = P(policy waits | expert played)`. Indiscriminate drift moves both
+   together; only a state-conditional rule separates them.
+
+   | config | lift | 95% CI | no-op | critic dV | p1/p0 |
+   |---|---|---|---|---|---|
+   | null | +0.0000 | — | 0.826 | 0.000000 | — |
+   | hard-label, frozen | +0.0462 | ±0.0675 | 0.872 | 0.000000 | 1.19 |
+   | hard-label, frozen, 8× | +0.0454 | ±0.0685 | 0.874 | 0.000000 | 1.18 |
+   | hard-label, full | +0.0658 | ±0.0753 | 0.899 | 0.048086 | 1.17 |
+   | hard-label, full, 8× | −0.0101 | ±0.0601 | 0.967 | 0.045452 | 0.99 |
+   | **distribution, frozen** | **+0.1027** | **±0.0408** | **0.822** | **0.000000** | **3.07** |
+   | **distribution, full** | **+0.1415** | **±0.0508** | 0.835 | 0.036895 | 2.42 |
+
+   **What works is distilling the search's VALUE DISTRIBUTION, not its argmax**
+   (`--train-dist`, AlphaZero's recipe). A single hard label strips the margin —
+   it cannot distinguish "waiting is marginally better" from "playing here is a
+   blunder", which is the distinction a conditional rule is made of. Recording
+   the full ranked candidate set and fitting `softmax(values/T)` makes both arms
+   significant where no hard-label arm was. The frozen arm's no-op rate is
+   **0.822 against a null of 0.826**: it is not waiting *more*, it is waiting
+   *differently*, 3:1 on the rows the expert judged bad, at a constant restraint
+   budget. Prefer frozen — nearly the same lift as full, zero critic drift
+   (the critic *is* the expert, so drifting it degrades future labels), and a
+   sharper ratio.
+
+   Three practical notes:
+
+   - **Temperature is the knob, and it must be picked from the target's own
+     entropy, not tuned on the outcome.** Candidate value spread is mean 0.221 /
+     median 0.193, at which T=0.25 puts the target at 94% of maximum entropy —
+     near-uniform, no signal, while looking like it is training. T=0.05 puts it
+     at ~55%. `--target-entropy` prints the table.
+   - **A no-op duplication silently destroyed the first attempt.**
+     `(NOOP, gx, gy)` and `(NOOP, 0, 0)` are the same action — `step()` ignores
+     placement for the no-op — but differ as tuples, so the no-op was emitted
+     twice and scored twice, identically. Harmless for the win-rate A/B (the
+     duplicate ties, argmax returns greedy) and fatal here: 99.1% of rows had a
+     target whose median value spread was **exactly 0.0**. After the fix, 32.6%
+     of rows carry a real distribution (median spread 0.193) and search is ~2×
+     faster, since most rows now have one candidate and skip rollout entirely.
+   - **Distribution labels also fix the placement starvation.** Hard labels
+     trained placement on 2,099 rows (10.3%, near the 1,799 that already
+     underfit in `bc_pretrain`); every row with ≥2 candidates now contributes
+     placement gradient, 6,900 rows (32.6%).
+
+   **Still unmeasured, and do not assume it:** whether any of this converts to
+   WIN RATE. The previous cycle transferred behaviour cleanly and bought +0.016.
+   Conditional learning is necessary, not sufficient. Neither distribution arm
+   is significantly better than hard-label config A head-to-head either
+   (z ≈ 1.2–1.4) — each clears zero on its own, which is not the same claim.
+   A paired greedy eval at n≈800 costs ~30 min and is the next thing to spend.
+   DAgger-style iteration remains untried: one pass is not expert *iteration*.
 
    **This entry used to say it needed "a virtual `Entity::clone()` across the
    whole hierarchy plus effects — invasive simulation-core surgery". That was
