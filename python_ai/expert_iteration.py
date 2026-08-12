@@ -377,6 +377,64 @@ def conditional_match_rate(net, data, greedy_card, device, episodes=None):
     }
 
 
+@torch.no_grad()
+def conditional_lift(net, data, greedy_card, device, episodes=None):
+    """Separates CONDITIONAL restraint from indiscriminate no-op drift.
+
+    `disagreement_match` alone cannot do it, and assuming otherwise is the trap
+    this project has now hit four times. 87% of the expert's overrides are
+    "wait where greedy plays", so a policy that simply no-ops MORE OFTEN, with
+    no regard for the board, scores well on disagreement_match for free. The
+    first ablation's four configs came out perfectly monotonic in their no-op
+    rate, which is exactly what that artifact looks like.
+
+    So condition on the rows where the disagreement lives -- rows where the
+    ORIGINAL policy plays -- and ask whether the new policy's restraint is
+    aimed:
+
+        p1 = P(policy no-ops | greedy plays, expert WAITED)   <- should be high
+        p0 = P(policy no-ops | greedy plays, expert ALSO PLAYED) <- should be low
+        lift = p1 - p0
+
+    Indiscriminate drift moves p1 and p0 together and gives lift ~ 0 no matter
+    how high the no-op rate climbs. Only a policy conditioning on the board can
+    hold p0 down while pushing p1 up. Lift is therefore the metric that answers
+    the actual question, and it is scale-free with respect to the no-op rate.
+    """
+    net = net.to(device).eval()
+    ep_ids = np.unique(data["episode"]) if episodes is None else np.asarray(sorted(episodes))
+    n1 = n0 = ok1 = ok0 = 0
+    for e in ep_ids:
+        idx = np.where(data["episode"] == e)[0]
+        if len(idx) == 0:
+            continue
+        o = torch.tensor(data["obs"][idx]).to(device)
+        ca, gc = data["card"][idx], greedy_card[idx]
+        feats, _, _ = net.extract_features(o)
+        mask = net.affordability_mask(o)
+        hx = torch.zeros(1, LSTM_HIDDEN, device=device)
+        cx = torch.zeros(1, LSTM_HIDDEN, device=device)
+        for t in range(len(idx)):
+            cl, _, _, _, (hx, cx) = net.step_lstm_and_card(
+                feats[t:t + 1], (hx, cx), mask[t:t + 1])
+            if int(gc[t]) == net.hand_size:
+                continue  # greedy already waited: no restraint decision to make
+            waited = int(int(cl.argmax(1)) == net.hand_size)
+            if int(ca[t]) == net.hand_size:
+                n1 += 1
+                ok1 += waited
+            else:
+                n0 += 1
+                ok0 += waited
+    p1 = ok1 / max(1, n1)
+    p0 = ok0 / max(1, n0)
+    # SE of a difference of two independent proportions -- printed so a lift
+    # inside its own noise is not read as a small positive effect.
+    se = math.sqrt(p1 * (1 - p1) / max(1, n1) + p0 * (1 - p0) / max(1, n0))
+    return {"p1_expert_waited": p1, "p0_expert_played": p0, "lift": p1 - p0,
+            "se": se, "n1": n1, "n0": n0}
+
+
 def disagreement_weights(data, greedy_card, factor):
     """Per-row weights: `factor` on rows the expert overrode, 1.0 elsewhere.
 
@@ -622,6 +680,8 @@ def main():
     ap.add_argument("--placement-weight", type=float, default=1.0)
     ap.add_argument("--full-finetune", action="store_true",
                     help="train the trunk too (default freezes it; see module docstring)")
+    ap.add_argument("--lift", action="store_true",
+                    help="conditional-lift analysis over the saved ablation checkpoints")
     ap.add_argument("--ablate", action="store_true",
                     help="grid over {frozen,full} x {w=1,w=upweight}; learning dynamics only")
     ap.add_argument("--upweight", type=float, default=8.0,
@@ -749,7 +809,36 @@ def main():
     if args.ablate:
         run_ablation(args, cfg, device, resolve)
 
-    if not (args.collect or args.train or args.eval or args.ablate):
+    if args.lift:
+        print("=== conditional lift: aimed restraint vs indiscriminate no-op drift ===")
+        data = bc_pretrain.load_dataset(resolve(args.data))
+        greedy_card = np.load(resolve(args.data))["greedy_card"]
+        ep_ids = np.unique(data["episode"])
+        n_hold = max(1, int(round(len(ep_ids) * args.holdout_frac)))
+        held = [int(e) for e in ep_ids[-n_hold:]]
+
+        nets = [("-- null --", resolve(args.weights))]
+        for tag in ("A", "B", "C", "D"):
+            p = resolve(f"exit_ablate_{tag}.pth")
+            if os.path.exists(p):
+                nets.append((f"{tag}", p))
+        print(f"held-out episodes: {len(held)}   "
+              f"expert no-op rate {noop_rate(data['card']):.3f}\n")
+        print(f"{'config':10s} {'p1 (exp waited)':>16s} {'p0 (exp played)':>16s} "
+              f"{'lift':>9s} {'+/-1.96se':>10s} {'verdict':>22s}")
+        for tag, path in nets:
+            net = load_net(path, device, verbose=False)
+            r = conditional_lift(net, data, greedy_card, device, held)
+            ci = 1.96 * r["se"]
+            verdict = "CONDITIONAL" if r["lift"] - ci > 0 else "indiscriminate/none"
+            print(f"{tag:10s} {r['p1_expert_waited']:16.4f} {r['p0_expert_played']:16.4f} "
+                  f"{r['lift']:+9.4f} {ci:10.4f} {verdict:>22s}")
+        print(f"\nn1={r['n1']} rows where greedy played and the expert waited; "
+              f"n0={r['n0']} where both played.")
+        print("lift ~ 0 means the extra waiting is untargeted -- the policy learned")
+        print("the expert's MARGINAL restraint, not the state-dependent rule.")
+
+    if not (args.collect or args.train or args.eval or args.ablate or args.lift):
         ap.print_help()
 
 
