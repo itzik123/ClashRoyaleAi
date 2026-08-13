@@ -821,13 +821,281 @@ critic quality, and new capabilities; **not** demonstrated end strength.
    blocker. Self-play discovers strategies but not *the distribution humans
    play*; AlphaStar's supervised stage was load-bearing, not optional.
 
-2. **Decision-time lookahead / search — the biggest unexploited asset.** A fast
-   deterministic simulator is owned and unused. Roll the top-K candidate actions
-   ~2 s forward and pick by value; that is a strict improvement operator, and
-   distilling it back is expert iteration. **Blocked:** `Board` holds
-   `shared_ptr<Entity>`, so a `GameManager` copy is *shallow*. Needs a virtual
-   `Entity::clone()` across the whole hierarchy plus effects — invasive
-   simulation-core surgery, needs explicit sign-off.
+2. **Decision-time lookahead / search — UNBLOCKED 2026-08-11, mechanism built
+   and exposed.** A fast deterministic simulator is owned and was unused. Roll
+   the top-K candidate actions forward and pick by value; that is a strict
+   improvement operator, and distilling it back is expert iteration. The engine
+   is **~150× cheaper than the network that scores it** — a 20-tick rollout
+   costs 0.34 ms against one `MicroRoyaleNet` forward at 50.51 ms — so search
+   here is not compute-bound on simulation at all.
+
+   **What now exists:** `Board::deepCopy()`, `GameManager::snapshot()` and
+   `ClashEnv::snapshot()`, bound to Python as `env.snapshot()`. Measured from
+   Python: **0.033 ms per snapshot**, 0.027 ms per 10-tick step, so a **K=12
+   sweep at a 2 s horizon costs 1.1 ms** — against ~50 ms for the single network
+   forward that scores it. Simulation is free; *scoring* is the entire budget,
+   which is why `python_ai/search_ab_test.py` batches all K candidate
+   evaluations into one forward.
+
+   **An unexpected second payoff: this is also a seeding substitute.**
+   `UPSTREAM_REQUESTS.md` item 7 asks for `ClashEnv::seed()` because unpaired
+   A/B tests need ~1,568 episodes per arm to resolve 5 win-rate points. Snapshot
+   gives the same pairing without it — reset once, snapshot, hand both arms a
+   bit-identical opening (same shuffled hand, same heuristic lane). Item 7 is
+   still worth doing for reproducible *failures*, but it is no longer the
+   blocker on paired experiments.
+
+   **Ceiling effect, measured, and it will bite any future A/B here:** against
+   `heuristic@1.00` the ep-64k policy wins ~100%, so both arms of a search-vs-
+   policy comparison saturate and the delta is pinned at 0 by the *opponent*,
+   not by search being useless (4/4 trials, 1.000 vs 1.000). Run comparisons at
+   **1.5× opponent elixir**, where there is headroom on both sides.
+
+   **First measurement, 2026-08-11 — search wins, and by a lot.**
+   `python_ai/search_ab_test.py`, 160 paired trials at 1.5× opponent elixir,
+   ep-64k checkpoint, `DEFAULT_DECK`, K≈3 candidates, 4 s horizon, critic-scored:
+
+   | | |
+   |---|---|
+   | greedy policy win rate | **0.625** |
+   | + 1-ply search | **0.944** |
+   | paired delta | **+0.319**, 95% CI [+0.237, +0.401] |
+   | discordant pairs | 56 search-better / 5 search-worse / 99 tied |
+   | exact McNemar | **p = 5.6e-12** |
+   | deviation rate | 13.8% (5,764 of 41,792 decisions) |
+   | cost | 2.2× wall clock (11.9 → 26.0 s/episode) |
+
+   **Read the deviation rate first.** Search overrode the greedy action on only
+   ~1 decision in 7, and greedy is always candidate 0, so search can only
+   deviate when the critic prefers something else. A +32-point swing off 13.8%
+   of decisions is the headline, but the *interpretation* is the useful part:
+   the scorer is this same network's own critic, so **the value head is
+   substantially better than the action head is at exploiting it.** That is
+   precisely the condition under which expert iteration pays — there is a gap
+   to distil, and it is the policy head, not the critic, that is underfit.
+
+   **What this does NOT establish**, stated plainly because item 13's history is
+   an underpowered null that was nearly over-read in the other direction:
+   one checkpoint, one deck, one opponent (the C++ heuristic), one horizon. It
+   says nothing about neural opponents in the PFSP league. The effect is also
+   regime-specific: at 1.0× elixir it is exactly zero, by ceiling.
+
+   **2026-08-12 — distilling it back does NOT work yet. Measured, negative.**
+   `python_ai/expert_iteration.py`. 80 episodes of search-labelled play (20,333
+   decisions), distilled into the policy with the trunk/LSTM/critic frozen and
+   only the action heads trainable (15,878 of 1.88 M params):
+
+   | | null | after distillation |
+   |---|---|---|
+   | `card_match_decisions` | 0.6330 | **0.6960** (+0.063) |
+   | `cell_match` | 0.5765 | 0.5730 (**−0.004**) |
+   | critic drift `|dV|` | — | **0.000000** (freeze verified) |
+
+   The behaviour transferred. **The win rate did not.** Paired greedy-vs-greedy,
+   no search in either arm:
+
+   | run | n | original | distilled | delta | p |
+   |---|---|---|---|---|---|
+   | exploratory | 200 | 0.570 | 0.675 | +0.105 [+0.008, +0.202] | 0.044 |
+   | **confirmatory** | **800** | **0.634** | **0.650** | **+0.016 [−0.030, +0.061]** | **0.553** |
+
+   **The exploratory p = 0.044 was noise and the confirmatory run at 4× the power
+   killed it** — 178 better / 166 worse is a coin flip. Do not resurrect the
+   +0.105; it is the single most over-readable number this project has produced.
+   The confirmatory run was launched as a *fresh* experiment with n fixed in
+   advance rather than by extending the first, because continuing after seeing a
+   marginal result is optional stopping and would have manufactured a result.
+
+   Three things worth carrying:
+
+   - **The control arm's own variance is the trap.** Original greedy measured
+     0.625, 0.570, 0.700 and 0.634 across four runs at 1.5×. Any comparison here
+     under a few hundred paired trials is measuring that, not the treatment.
+   - **What search does is WAIT.** Of 2,126 card-level deviations, **1,847 were
+     search declining to play where greedy plays**, against 137 the reverse —
+     13:1. But search waits *conditionally*, when the critic dislikes this
+     specific play; BC on 89.5%-already-agreed labels mostly teaches the
+     *marginal* "no-op more often". Same blind spot this file already records
+     three times, inverted: imitating an aggregate that cannot express the
+     conditional.
+   - **The placement head is starved by construction.** The expert no-ops 89.7%
+     of the time, so placement trains on 10.3% of rows (2,099) — near the 1,799
+     that already underfit in `bc_pretrain`. Half of what search does (781
+     cell-level deviations) transfers not at all.
+
+   **Those two levers are now measured DEAD, and a third works. 2026-08-12.**
+
+   The obvious fixes — upweight the disagreement rows, unfreeze the trunk —
+   were ablated as a 2×2 grid (`--ablate`), 64 train / 16 held-out episodes.
+   Held-out `disagreement_match` produced a clean-looking ladder, 0.235 → 0.246
+   → 0.372 → 0.655, **and it is an artifact.** 87% of the expert's overrides are
+   "wait where greedy plays", so a policy that simply no-ops more scores on that
+   metric for free, and the four configs came out perfectly monotonic in their
+   no-op rate (0.872 / 0.874 / 0.899 / 0.967) with each score predicted by that
+   rate alone. Config D, the "best" by the old metric, waits on 80% of rows
+   *regardless* of the expert — upweighting rows that are 87% "wait" by 8× just
+   teaches always-wait.
+
+   **`conditional_lift` is the metric that survives**, and it is the fourth time
+   this file records the same lesson: an aggregate cannot see a conditional.
+   Condition on rows where the ORIGINAL policy plays, then compare
+   `p1 = P(policy waits | expert waited)` against
+   `p0 = P(policy waits | expert played)`. Indiscriminate drift moves both
+   together; only a state-conditional rule separates them.
+
+   | config | lift | 95% CI | no-op | critic dV | p1/p0 |
+   |---|---|---|---|---|---|
+   | null | +0.0000 | — | 0.826 | 0.000000 | — |
+   | hard-label, frozen | +0.0462 | ±0.0675 | 0.872 | 0.000000 | 1.19 |
+   | hard-label, frozen, 8× | +0.0454 | ±0.0685 | 0.874 | 0.000000 | 1.18 |
+   | hard-label, full | +0.0658 | ±0.0753 | 0.899 | 0.048086 | 1.17 |
+   | hard-label, full, 8× | −0.0101 | ±0.0601 | 0.967 | 0.045452 | 0.99 |
+   | **distribution, frozen** | **+0.1027** | **±0.0408** | **0.822** | **0.000000** | **3.07** |
+   | **distribution, full** | **+0.1415** | **±0.0508** | 0.835 | 0.036895 | 2.42 |
+
+   **What works is distilling the search's VALUE DISTRIBUTION, not its argmax**
+   (`--train-dist`, AlphaZero's recipe). A single hard label strips the margin —
+   it cannot distinguish "waiting is marginally better" from "playing here is a
+   blunder", which is the distinction a conditional rule is made of. Recording
+   the full ranked candidate set and fitting `softmax(values/T)` makes both arms
+   significant where no hard-label arm was. The frozen arm's no-op rate is
+   **0.822 against a null of 0.826**: it is not waiting *more*, it is waiting
+   *differently*, 3:1 on the rows the expert judged bad, at a constant restraint
+   budget. Prefer frozen — nearly the same lift as full, zero critic drift
+   (the critic *is* the expert, so drifting it degrades future labels), and a
+   sharper ratio.
+
+   Three practical notes:
+
+   - **Temperature is the knob, and it must be picked from the target's own
+     entropy, not tuned on the outcome.** Candidate value spread is mean 0.221 /
+     median 0.193, at which T=0.25 puts the target at 94% of maximum entropy —
+     near-uniform, no signal, while looking like it is training. T=0.05 puts it
+     at ~55%. `--target-entropy` prints the table.
+   - **A no-op duplication silently destroyed the first attempt.**
+     `(NOOP, gx, gy)` and `(NOOP, 0, 0)` are the same action — `step()` ignores
+     placement for the no-op — but differ as tuples, so the no-op was emitted
+     twice and scored twice, identically. Harmless for the win-rate A/B (the
+     duplicate ties, argmax returns greedy) and fatal here: 99.1% of rows had a
+     target whose median value spread was **exactly 0.0**. After the fix, 32.6%
+     of rows carry a real distribution (median spread 0.193) and search is ~2×
+     faster, since most rows now have one candidate and skip rollout entirely.
+   - **Distribution labels also fix the placement starvation.** Hard labels
+     trained placement on 2,099 rows (10.3%, near the 1,799 that already
+     underfit in `bc_pretrain`); every row with ≥2 candidates now contributes
+     placement gradient, 6,900 rows (32.6%).
+
+   **It DOES convert to win rate — +0.045, and that is the whole of it.**
+   Measured over three paired greedy-vs-greedy evals (no search in either arm),
+   reported together because reporting only the last one would be dishonest:
+
+   | net | n | original | distilled | delta | 95% CI | p |
+   |---|---|---|---|---|---|---|
+   | hard-label | 800 | 0.634 | 0.650 | +0.016 | [−0.030, +0.061] | 0.553 |
+   | distribution, 4 ep | 800 | 0.629 | 0.666 | +0.038 | [−0.005, +0.080] | 0.095 |
+   | **distribution + DAgger** | **1600** | **0.649** | **0.693** | **+0.045** | **[+0.013, +0.077]** | **0.0074** |
+
+   The final result is significant and survives Bonferroni for the three tests
+   (α = 0.0167). 377 better / 306 worse / 917 tied.
+
+   **Read the effect size honestly: ~4.5 win-rate points, which is ~14% of the
+   +0.319 that search itself buys.** And the last two nets are statistically
+   indistinguishable from each other (+0.038 vs +0.045) — most of the jump in
+   significance came from doubling n, not from DAgger making a better policy.
+   Do not claim DAgger raised the win rate; claim it raised the conditional lift
+   (+0.1535 → +0.1733 at fixed data budget) and that the win rate was then
+   resolved by power.
+
+   The coverage-linearity model — expected gain ≈ p1 × 0.319 — was stated before
+   each eval and **over-predicted by 30–40% both times** (+0.050 predicted vs
+   +0.0375; +0.072 vs +0.0447). It is useful for sizing experiments and should
+   be discounted accordingly, not trusted as a point estimate.
+
+   **The screening ladder, and the one lever that is actively harmful:**
+
+   | config | lift | p1 | p0 | ratio | no-op |
+   |---|---|---|---|---|---|
+   | null | +0.0000 | 0.0000 | 0.0000 | — | 0.802 |
+   | 4 ep / 80 eps | +0.1027 | 0.1523 | 0.0496 | 3.07 | 0.822 |
+   | 16 ep / 80 eps | +0.1268 | 0.2236 | 0.0968 | 2.31 | 0.834 |
+   | 16 ep / 180 eps | +0.1535 | 0.2850 | 0.1315 | 2.17 | 0.843 |
+   | **DAgger / 180 eps** | **+0.1733** | 0.2924 | 0.1191 | **2.45** | 0.843 |
+
+   More epochs fixed a genuine underfit (loss still falling, argmax-agreement
+   still rising at epoch 3) and bought 47% coverage for one training run.
+   **More DATA is where it goes wrong**: coverage kept climbing while the lift
+   stalled, because p0 rose faster than p1 — selectivity fell 3.07 → 2.31 → 2.17
+   and the no-op rate walked toward the expert's 0.896. That is the hard-label
+   marginal-drift failure returning by a slower road. DAgger, at a *fixed* 180-
+   episode budget (80 original + 100 from the distilled policy), is the only
+   thing that reversed it, improving lift and selectivity together.
+
+   Corroboration from collection rather than from held-out metrics: search
+   overrides the distilled policy on **12.1%** of decisions against **14.8%**
+   for the original. But search ON TOP of the distilled policy scores 0.940 vs
+   0.944 — better candidate proposals did not make the expert better, which is
+   the clearest single sign that the remaining gap is not a proposal problem.
+
+   **Where this leaves the idea.** A reactive policy head amortises roughly a
+   seventh of what 1-ply search does. The residual is plausibly structural: the
+   critic gets to RUN the simulator four seconds forward, and the policy only
+   ever sees `s`. Distillation is worth keeping — +0.045 for zero inference cost
+   is real — but **search at inference remains ~7× more valuable than distilling
+   it**, and that is the honest ranking of the two options.
+
+   **This entry used to say it needed "a virtual `Entity::clone()` across the
+   whole hierarchy plus effects — invasive simulation-core surgery". That was
+   wrong on all three counts** and deterred the work for months. The reality,
+   established 2026-08-11:
+
+   - **`clone()` already exists** (`Entity.h:113`), overridden in four types as
+     three lines of implicit-copy-constructor each. Copy-construction of
+     concrete entities is already relied on in production.
+   - **Effects need no deep copy.** All five effect interfaces declare `apply`
+     `const`, and a search across every file defining or using them finds zero
+     `mutable` and zero `const_cast`. They are stateless strategy objects, so
+     sharing them across a snapshot is *correct* and deep-copying them would be
+     wasted work.
+   - **The hierarchy is 8 concrete types, not "the whole hierarchy"** —
+     `MeleeTroop`, `RangedTroop`, `BuildingTargeter`, `RangedBuildingTargeter`,
+     `AreaSpell`, `Projectile`, `Tower`, `Building`. Everything else
+     (`CardEntity`, `CombatEntity`, `Troop`) is abstract or never instantiated.
+
+   What it *does* need, and what the old framing missed entirely: `clone()`
+   cannot be reused, because it sets `hp = 1` (it implements the Clone *card*)
+   and its default returns `nullptr` rather than failing — so a naive
+   "clone every entity" loop yields a board that has **silently dropped every
+   tower, building, spell and projectile** and still looks like it worked.
+   Hence a separate `snapshot()` with a throwing default.
+
+   The one genuine hazard is **`Projectile::target`** (`Projectile.h:16`), the
+   only entity-pointer *member* in the hierarchy — every other
+   `shared_ptr<Entity>` is a per-tick local inside `findTarget`/
+   `resolveCurrentTarget`. An implicit copy carries it verbatim, so a
+   projectile in flight inside a snapshot would deal damage to an entity on the
+   **original live board**. Being a `weak_ptr`, the symptom is wrong damage
+   rather than a leak — invisible, not loud. `Board::deepCopy()` therefore
+   builds an old-id → new-entity map and remaps that one member through it.
+
+   **A second aliasing case of the same shape, found while implementing and
+   not in the original proposal: `Board::statsEvents`.** The bus holds
+   `shared_ptr<IStatsObserver>`, and unlike the effects those collectors are
+   *stateful* — running damage totals, kill attribution. Copying the subscriber
+   list would post every hypothetical hit in every rollout into the **live
+   match's** statistics, and those feed the reward shaping, so a search would
+   silently corrupt the returns it was being scored against. `deepCopy` starts
+   the copy with an empty bus.
+
+   **And the mirror-image trap one level up:** `GameManager::snapshot()` must
+   *not* fix that by calling `MatchStatistics::attach()` on the copied board.
+   `attach()` builds **fresh zeroed** collectors, so a snapshot would report a
+   match where nobody had dealt any damage — and since the tower term is
+   potential-based over *cumulative* damage, every candidate would score as the
+   same enormous instant loss. That looks exactly like a working search that
+   simply never prefers anything. `snapshotFor()` deep-copies each collector so
+   totals carry over. Both directions are pinned by tests.
+
+   Evidence and the full write-up: `perception/UPSTREAM_REQUESTS.md` item 13.
 
 3. **Remaining observation gaps.** Cells still *overwrite* rather than
    accumulate in channels 0–7 (`obs[idx] = normalizedHp`), so a Skeleton Army

@@ -16,6 +16,11 @@ public:
         return copy;
     }
 
+    // Board::deepCopy -- id and hp preserved exactly, unlike clone() above.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<BuildingTargeter>(*this);
+    }
+
 protected:
     // Same two-tier sight-range/tower-fallback shape as
     // CombatEntity::findTarget's own (see its comment), just filtered to

@@ -79,6 +79,26 @@ PYBIND11_MODULE(clash_royale_env, m) {
              "of the board geometry. Read-only. See "
              "perception/UPSTREAM_REQUESTS.md item 12 -- 58.7% of the policy's "
              "card choices were being refused here, silently.")
+        // Decision-time search. Returns a genuinely independent environment --
+        // entities deep-copied, stats collectors deep-copied, projectile
+        // targets remapped -- so a caller can try a candidate action, roll it
+        // forward and throw it away without touching the live match.
+        //
+        // return_value_policy::move so the freshly built ClashEnv is moved
+        // into the Python object rather than copied again; copying it would be
+        // correct but would redo the whole deep copy a second time.
+        .def("snapshot", &ClashEnv::snapshot, py::return_value_policy::move,
+             "Independent deep copy of this environment, for decision-time "
+             "search or what-if analysis. Stepping the copy cannot affect the "
+             "original: entities, and the stats collectors behind "
+             "get_tower_damage_dealt()/get_elixir_spent(), are all duplicated, "
+             "and a projectile in flight is re-pointed at the copy's own "
+             "target rather than the original's. Cumulative statistics carry "
+             "over, so a rollout continues the match's totals instead of "
+             "restarting them. The replay log does NOT carry over (a rollout "
+             "is a hypothetical, not part of the match). Roughly 150x cheaper "
+             "than one network forward -- see perception/UPSTREAM_REQUESTS.md "
+             "item 13.")
         // Structural constants the observation/action encoding is built from --
         // read-only class attributes (ClashRoyaleEnv.NUM_CARD_IDS etc, no
         // instance needed) so model.py/train.py/train_selfplay.py/

@@ -1,6 +1,10 @@
 #pragma once
 #include <cmath>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
+#include <unordered_map>
 
 struct Vector2D {
     float x, y;
@@ -111,6 +115,68 @@ public:
     // nullptr -- most entities (buildings, spells, projectiles) were never
     // valid Clone targets in the real game either.
     virtual std::shared_ptr<Entity> clone(int newId) const { (void)newId; return nullptr; }
+
+    // Exact copy of this entity for Board::deepCopy() -- decision-time search
+    // rolls candidate actions forward on a copied board and keeps the best
+    // (see CLAUDE.md open problem #2). Distinct from clone() directly above,
+    // which CANNOT be reused for this despite looking almost identical:
+    //
+    //   * clone() sets hp = 1, because it implements the Clone *card's* rule
+    //     ("duplicates have 1 hp but full damage"). A snapshot must preserve hp
+    //     exactly, or the search reasons about a board that never existed.
+    //   * clone() also assigns a FRESH id. A snapshot must keep the original
+    //     id, since that is what Board::deepCopy's remap table and every
+    //     id-keyed member (currentTargetId, forcedTargetEntityId) join on.
+    //
+    // Implementations are one line -- make_shared<T>(*this) -- relying on each
+    // concrete type's implicit copy constructor, exactly as clone() already
+    // does. Sharing the effect pointers (onHitEffects, deathEffect,
+    // periodicEffect, ...) that the implicit copy carries over is CORRECT and
+    // deliberate: every effect interface declares apply() const and none holds
+    // mutable state, so they are stateless strategy objects and deep-copying
+    // them would be wasted work. See UPSTREAM_REQUESTS.md item 13.
+    //
+    // THROWS rather than returning nullptr, which is the whole point of it
+    // existing separately. clone()'s nullptr default is safe there -- a
+    // building was never a legal Clone target anyway -- but the same default
+    // here would let a copied board silently lose every tower, building, spell
+    // and projectile and still look like a working snapshot. A search that
+    // then distilled those futures back into the policy would be training on
+    // positions that cannot occur. Loud beats silent: any concrete Entity
+    // added later fails immediately and by name instead of quietly punching a
+    // hole in every rollout.
+    virtual std::shared_ptr<Entity> snapshot() const {
+        throw std::logic_error(
+            std::string("Entity::snapshot() not implemented for concrete type '") +
+            typeid(*this).name() +
+            "'. Every concrete Entity must override snapshot() or Board::deepCopy() "
+            "would silently drop it from the copied board.");
+    }
+
+    // Second pass of Board::deepCopy, run on every copied entity once all of
+    // them exist and the old-id -> new-entity map is complete (it cannot run
+    // during the copy loop itself: a projectile may be homing on an entity
+    // that has not been copied yet).
+    //
+    // Default no-op, same shape as onDeath/clampPosition/onNearbyDeath above
+    // -- it lets Board repair cross-board references generically without
+    // knowing which concrete type it is looking at, which here is not just
+    // tidiness: Projectile.h includes Board.h, so Board CANNOT include
+    // Projectile.h to dynamic_cast for it.
+    //
+    // Projectile is the only override, because Projectile::target is the only
+    // entity-pointer MEMBER in the hierarchy. Every other shared_ptr<Entity>
+    // (CombatEntity::update's local, findTarget/resolveCurrentTarget's
+    // returns, the targeting helpers) is a per-tick local that never outlives
+    // the tick that computed it, and every persistent reference to another
+    // entity is stored as a plain int id (currentTargetId,
+    // forcedTargetEntityId) which needs no remapping at all -- ids are
+    // preserved exactly by snapshot(). If a future entity type gains a
+    // pointer member, it must override this too.
+    virtual void remapSnapshotReferences(
+        const std::unordered_map<int, std::shared_ptr<Entity>>& byOldId) {
+        (void)byOldId;
+    }
 };
 
 // Repositioning helpers shared by every pull/push mechanic (Fisherman's

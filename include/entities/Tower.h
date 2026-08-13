@@ -23,6 +23,14 @@ public:
 
     bool isTower() const override { return true; }
 
+    // Board::deepCopy. Its own override, not Building's inherited one, which
+    // would slice a Tower down to a plain Building -- losing isTower() and
+    // with it the findTarget fallback that makes towers always-visible
+    // destinations, so troops in a rollout would wander instead of pushing.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<Tower>(*this);
+    }
+
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         auto arrow = std::make_shared<Projectile>(

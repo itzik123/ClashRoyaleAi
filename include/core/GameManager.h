@@ -221,6 +221,44 @@ public:
     const Board& getBoard() const { return board; }
     const MatchStatistics& getStatistics() const { return stats; }
 
+    // Fully independent copy of this match, for decision-time search: step the
+    // result as far as you like and nothing about `this` changes. The board
+    // half is Board::deepCopy(); everything else here is already a value type
+    // and copies correctly on its own.
+    //
+    // What rides along on the implicit copy, and why each is right:
+    //   currentTick / gameOver / loserTeam   plain scalars
+    //   oppElixirMultiplier                  plain scalar (curriculum setting)
+    //   aiDeckConfig / oppDeckConfig         vector<int>
+    //   aiTowerTroop / oppTowerTroop         enums
+    //   playerAI / playerOpponent            elixir, hand, handCooldownTicks,
+    //                                        deckQueue, evolutionState,
+    //                                        championSlots -- all values, so
+    //                                        a rollout cycles its own deck and
+    //                                        spends its own elixir
+    //   rng                                  COPIED, not reseeded: two
+    //                                        snapshots of the same position
+    //                                        must roll out identically, or a
+    //                                        search would be comparing
+    //                                        candidates across different
+    //                                        futures and scoring noise
+    //
+    // Only `board` and `stats` need fixing up, and both for the same reason --
+    // they are the only members holding shared_ptr, so the implicit copy
+    // aliases rather than duplicates them.
+    //
+    // Implemented as copy-then-replace rather than a member-by-member
+    // constructor deliberately: a new GameManager field then joins the
+    // snapshot automatically, whereas an explicit list would silently omit it.
+    // The intermediate shallow board exists only between these two statements,
+    // and nothing is stepped in that window.
+    GameManager snapshot() const {
+        GameManager copy(*this);
+        copy.board = board.deepCopy();
+        copy.stats = stats.snapshotFor(copy.board);
+        return copy;
+    }
+
     // Exact bounds isValidPlacement enforces, exposed so callers (the Python
     // binding layer) query the real boundary instead of re-deriving it from
     // separate board/river/buffer constants that could silently drift out of

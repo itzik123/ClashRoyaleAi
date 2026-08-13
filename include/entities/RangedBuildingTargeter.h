@@ -18,6 +18,15 @@ public:
         return copy;
     }
 
+    // Board::deepCopy. Its own override, not BuildingTargeter's inherited one:
+    // make_shared<BuildingTargeter>(*this) would compile happily and SLICE
+    // this back to its base, silently downgrading a ranged attacker into a
+    // melee one inside every rollout. Same reason Tower needs one separately
+    // from Building.
+    std::shared_ptr<Entity> snapshot() const override {
+        return std::make_shared<RangedBuildingTargeter>(*this);
+    }
+
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         auto proj = std::make_shared<Projectile>(

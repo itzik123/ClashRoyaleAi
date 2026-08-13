@@ -133,6 +133,27 @@ private:
     HeuristicOpponent heuristicOpponent;
     GameLogger logger;
 
+    // Disambiguates the snapshot constructor from the implicit copy
+    // constructor, which must keep its ordinary shallow meaning -- pybind11
+    // and anything else that copies a ClashEnv by value relies on it.
+    struct SnapshotTag {};
+
+    // A constructor rather than copy-then-fix, because GameManager's implicit
+    // copy ASSIGNMENT is deleted: it holds `const float ELIXIR_REGEN_RATE`, so
+    // `game = other.game.snapshot()` does not compile. Copy-INITIALISING it in
+    // the member list works, and in C++17 the prvalue is elided straight into
+    // place rather than moved.
+    //
+    // Initialiser order matches declaration order exactly (game, maxTicks,
+    // currentTick, rng, heuristicOpponent) -- `logger` is omitted on purpose
+    // and default-constructs empty, see snapshot() below.
+    ClashEnv(const ClashEnv& other, SnapshotTag)
+        : game(other.game.snapshot()),
+          maxTicks(other.maxTicks),
+          currentTick(other.currentTick),
+          rng(other.rng),
+          heuristicOpponent(other.heuristicOpponent) {}
+
     // Generalized over which team the observation is FOR, so the same
     // network -- always trained believing it's "team 0" (self near low y,
     // enemy near high y, self always channels 0-3) -- can also drive team 1
@@ -360,6 +381,28 @@ public:
             TowerTroopType oppTowerTroop = TowerTroopType::None)
         : game(aiDeck, oppDeck, aiTowerTroop, oppTowerTroop), maxTicks(maxTicks), currentTick(0),
           rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
+
+    // Independent copy of this environment, for decision-time search: try a
+    // candidate action on the copy, roll it forward, score it, throw it away.
+    // Nothing done to the copy can reach this env. See GameManager::snapshot
+    // and Board::deepCopy for the two layers underneath.
+    //
+    // Everything is carried across except the replay logger, which starts
+    // EMPTY. That is deliberate on both counts:
+    //   * cost -- GameLogger accumulates a TickSnapshot per tick with an
+    //     EntitySnapshot per entity, so by mid-match it is the largest thing
+    //     in the object. Search copies an env once per candidate per decision,
+    //     and copying a thousand ticks of history to simulate twenty is the
+    //     kind of overhead that makes lookahead look infeasible when it isn't.
+    //   * meaning -- a rollout is a hypothetical, not a match. Its ticks do
+    //     not belong in a replay of the real one, and save_log() on a snapshot
+    //     writing out the parent's real history followed by imagined ticks
+    //     would be worse than either.
+    // `rng` and `heuristicOpponent` ARE copied, so the opponent plays the same
+    // way in the rollout as it would have in the real match -- a search whose
+    // opponent behaved differently from the real one would be scoring the
+    // wrong game.
+    ClashEnv snapshot() const { return ClashEnv(*this, SnapshotTag{}); }
 
     int observationSize() const {
         return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP/attribute channels
