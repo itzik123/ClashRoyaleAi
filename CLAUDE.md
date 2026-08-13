@@ -985,13 +985,63 @@ critic quality, and new capabilities; **not** demonstrated end strength.
      underfit in `bc_pretrain`); every row with ≥2 candidates now contributes
      placement gradient, 6,900 rows (32.6%).
 
-   **Still unmeasured, and do not assume it:** whether any of this converts to
-   WIN RATE. The previous cycle transferred behaviour cleanly and bought +0.016.
-   Conditional learning is necessary, not sufficient. Neither distribution arm
-   is significantly better than hard-label config A head-to-head either
-   (z ≈ 1.2–1.4) — each clears zero on its own, which is not the same claim.
-   A paired greedy eval at n≈800 costs ~30 min and is the next thing to spend.
-   DAgger-style iteration remains untried: one pass is not expert *iteration*.
+   **It DOES convert to win rate — +0.045, and that is the whole of it.**
+   Measured over three paired greedy-vs-greedy evals (no search in either arm),
+   reported together because reporting only the last one would be dishonest:
+
+   | net | n | original | distilled | delta | 95% CI | p |
+   |---|---|---|---|---|---|---|
+   | hard-label | 800 | 0.634 | 0.650 | +0.016 | [−0.030, +0.061] | 0.553 |
+   | distribution, 4 ep | 800 | 0.629 | 0.666 | +0.038 | [−0.005, +0.080] | 0.095 |
+   | **distribution + DAgger** | **1600** | **0.649** | **0.693** | **+0.045** | **[+0.013, +0.077]** | **0.0074** |
+
+   The final result is significant and survives Bonferroni for the three tests
+   (α = 0.0167). 377 better / 306 worse / 917 tied.
+
+   **Read the effect size honestly: ~4.5 win-rate points, which is ~14% of the
+   +0.319 that search itself buys.** And the last two nets are statistically
+   indistinguishable from each other (+0.038 vs +0.045) — most of the jump in
+   significance came from doubling n, not from DAgger making a better policy.
+   Do not claim DAgger raised the win rate; claim it raised the conditional lift
+   (+0.1535 → +0.1733 at fixed data budget) and that the win rate was then
+   resolved by power.
+
+   The coverage-linearity model — expected gain ≈ p1 × 0.319 — was stated before
+   each eval and **over-predicted by 30–40% both times** (+0.050 predicted vs
+   +0.0375; +0.072 vs +0.0447). It is useful for sizing experiments and should
+   be discounted accordingly, not trusted as a point estimate.
+
+   **The screening ladder, and the one lever that is actively harmful:**
+
+   | config | lift | p1 | p0 | ratio | no-op |
+   |---|---|---|---|---|---|
+   | null | +0.0000 | 0.0000 | 0.0000 | — | 0.802 |
+   | 4 ep / 80 eps | +0.1027 | 0.1523 | 0.0496 | 3.07 | 0.822 |
+   | 16 ep / 80 eps | +0.1268 | 0.2236 | 0.0968 | 2.31 | 0.834 |
+   | 16 ep / 180 eps | +0.1535 | 0.2850 | 0.1315 | 2.17 | 0.843 |
+   | **DAgger / 180 eps** | **+0.1733** | 0.2924 | 0.1191 | **2.45** | 0.843 |
+
+   More epochs fixed a genuine underfit (loss still falling, argmax-agreement
+   still rising at epoch 3) and bought 47% coverage for one training run.
+   **More DATA is where it goes wrong**: coverage kept climbing while the lift
+   stalled, because p0 rose faster than p1 — selectivity fell 3.07 → 2.31 → 2.17
+   and the no-op rate walked toward the expert's 0.896. That is the hard-label
+   marginal-drift failure returning by a slower road. DAgger, at a *fixed* 180-
+   episode budget (80 original + 100 from the distilled policy), is the only
+   thing that reversed it, improving lift and selectivity together.
+
+   Corroboration from collection rather than from held-out metrics: search
+   overrides the distilled policy on **12.1%** of decisions against **14.8%**
+   for the original. But search ON TOP of the distilled policy scores 0.940 vs
+   0.944 — better candidate proposals did not make the expert better, which is
+   the clearest single sign that the remaining gap is not a proposal problem.
+
+   **Where this leaves the idea.** A reactive policy head amortises roughly a
+   seventh of what 1-ply search does. The residual is plausibly structural: the
+   critic gets to RUN the simulator four seconds forward, and the policy only
+   ever sees `s`. Distillation is worth keeping — +0.045 for zero inference cost
+   is real — but **search at inference remains ~7× more valuable than distilling
+   it**, and that is the honest ranking of the two options.
 
    **This entry used to say it needed "a virtual `Entity::clone()` across the
    whole hierarchy plus effects — invasive simulation-core surgery". That was
