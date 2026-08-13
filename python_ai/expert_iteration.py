@@ -409,6 +409,40 @@ def conditional_match_rate(net, data, greedy_card, device, episodes=None):
     }
 
 
+
+def merge_datasets(paths, verbose=True):
+    """Concatenate several label files, offsetting episode ids so they stay distinct.
+
+    DAgger needs this: round k trains on round k's states UNION every earlier
+    round's, or the policy forgets the distribution it was originally correct on.
+    Episode ids are the unit of recurrence (train_distribution replays the LSTM
+    per episode), so they must not collide across files -- two different
+    trajectories sharing an id would be replayed as one spliced sequence.
+    """
+    import numpy as _np
+    keys = ("obs", "card", "cell", "episode", "greedy_card", "greedy_cell",
+            "cand_card", "cand_cell", "cand_value", "cand_n")
+    out = {k: [] for k in keys}
+    offset = 0
+    for path in paths:
+        z = _np.load(path)
+        missing = [k for k in keys if k not in z]
+        if missing:
+            raise SystemExit(f"{path}: missing {missing} -- recorded before the "
+                             f"distribution schema. Re-collect it.")
+        n_ep = int(z["episode"].max()) + 1 if len(z["episode"]) else 0
+        for k in keys:
+            out[k].append(z[k] + offset if k == "episode" else z[k])
+        if verbose:
+            print(f"    {os.path.basename(path)}: {len(z['card'])} rows, {n_ep} episodes")
+        offset += n_ep
+    merged = {k: _np.concatenate(out[k]) for k in keys}
+    if verbose:
+        print(f"    merged: {len(merged['card'])} rows, "
+              f"{len(_np.unique(merged['episode']))} episodes")
+    return merged
+
+
 def candidate_target(values, n, temperature):
     """softmax(values / T) over the n real candidates. Rows with n<2 are dead.
 
@@ -462,7 +496,11 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
         keep = set(int(e) for e in episode_filter)
         ep_ids = np.asarray([e for e in ep_ids if int(e) in keep])
 
-    obs_all = torch.tensor(data["obs"]).to(device)
+    # NOT torch.tensor(data["obs"]) -- that doubles peak RAM (13606 floats/row,
+    # ~1.1 GB per 80 episodes) for no benefit, since the recurrent replay below
+    # only ever touches one episode at a time. Converting per episode is what
+    # lets the dataset scale past the machine's ~5 GB of free memory.
+    obs_np = data["obs"]
     cand_card = data["cand_card"]
     cand_cell = data["cand_cell"]
     cand_value = data["cand_value"]
@@ -479,7 +517,7 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
             used = 0
             for e in chunk:
                 idx = np.where(data["episode"] == e)[0]
-                o = obs_all[idx]
+                o = torch.from_numpy(obs_np[idx]).to(device)
                 feats, embeds, spatial = net.extract_features(o)
                 mask = net.affordability_mask(o)
                 hx = torch.zeros(1, LSTM_HIDDEN, device=device)
@@ -1014,15 +1052,15 @@ def main():
 
     if args.train_dist:
         print("\n=== distribution distillation (AlphaZero-style) ===")
-        data = bc_pretrain.load_dataset(resolve(args.data))
-        z = np.load(resolve(args.data))
-        if "cand_value" not in z:
-            raise SystemExit(
-                f"{args.data} has no candidate arrays -- it was recorded before the "
-                f"distribution schema. Re-collect with --collect.")
-        for k in ("cand_card", "cand_cell", "cand_value", "cand_n", "greedy_card"):
-            data[k] = z[k]
-        greedy_card = z["greedy_card"]
+        paths = [resolve(p.strip()) for p in args.data.split(",") if p.strip()]
+        print("  datasets:")
+        data = merge_datasets(paths)
+        # Same guard load_dataset applies: a dataset recorded against a different
+        # observation layout must not be silently reinterpreted.
+        expected = make_env(1.0, 100).observation_size()
+        if data["obs"].shape[1] != expected:
+            raise SystemExit(f"observation size {data['obs'].shape[1]} != engine's {expected}")
+        greedy_card = data["greedy_card"]
 
         ep_ids = np.unique(data["episode"])
         n_hold = max(1, int(round(len(ep_ids) * args.holdout_frac)))
