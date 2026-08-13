@@ -388,3 +388,8 @@ replays_sample/
 # Regenerable (expert_iteration.py --collect, ~7 min for 80 episodes) and
 # large, same reasoning as *.pth above.
 *.npz
+
+# Generated paired replay JSONs from make_replays.py -- regenerable, and large
+# (each is 1-4 MB of per-tick board state).
+replays_e3/
+replays_search/
