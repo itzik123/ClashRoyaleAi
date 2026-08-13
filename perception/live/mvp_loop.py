@@ -286,9 +286,59 @@ class NeuralPolicy:
         print(f"placement: {n_ok}/{cells} cells reachable by the actuator "
               f"({cells - n_ok} engine rows have no detector row)")
 
+        # Per-card legality, straight from the ENGINE's own predicate.
+        #
+        # model.py's placement_mask grants a troop every own-half cell; the
+        # engine additionally rejects the back-row dead zone and the tower
+        # footprints. Measured gap on DEFAULT_DECK: 46 cells for every troop,
+        # 80 for the Cannon (building clearance), 12 for Fireball. Those are
+        # the placements the real game refuses -- a 180 s match issued three
+        # Cannons at (2,5)/(2,6)/(2,7), all inside the left Princess Tower's
+        # footprint, and all three came back unconfirmed.
+        #
+        # Safe to precompute: UPSTREAM_REQUESTS item 12 measured this predicate
+        # to be independent of board state (208/288 for Cannon on an empty
+        # board and with six troops deployed, 0 cells lost to units), so it is
+        # three constant tables rather than a per-step query.
+        # DECK holds CRBAB card objects, not simulator ids -- hand_card_id_for
+        # is the existing bridge between the two namespaces (mapping/card_map.json).
+        import clash_royale_env  # noqa: PLC0415
+        from live.unit_to_card import (  # noqa: PLC0415
+            UNKNOWN_CARD_SIM_ID,
+            hand_card_id_for,
+        )
+        sim_ids = [hand_card_id_for(c.name) for c in DECK]
+        sim_ids = [i for i in sim_ids if i != UNKNOWN_CARD_SIM_ID]
+        oracle = clash_royale_env.ClashRoyaleEnv(sim_ids, sim_ids, 100)
+        oracle.reset()
+        width = self.net.board_width
+        self._legal_by_card = {}
+        for card_id in set(sim_ids):
+            self._legal_by_card[card_id] = torch.tensor(
+                [oracle.is_valid_placement(card_id, float(c % width), float(c // width), 0)
+                 for c in range(cells)], dtype=torch.bool).unsqueeze(0)
+        counts = sorted(int(m.sum()) for m in self._legal_by_card.values())
+        print(f"placement: engine-legal cells per card {counts} "
+              f"(of {cells}; unmasked would be {cells})")
+
     def reset_hidden(self) -> None:
         self._hx = self.torch.zeros(1, 256)
         self._cx = self.torch.zeros(1, 256)
+
+    @staticmethod
+    def _card_id_for_slot(gs, slot: int):
+        """The simulator card id sitting in this hand slot, or None.
+
+        Read from the perceived hand rather than assumed from DECK order: the
+        hand cycles, so slot 2 is a different card minute to minute, and the
+        card-icon reader is the weakest in the pipeline (see GameState.my_hand)
+        so a blank or misread slot has to be representable.
+        """
+        hand = getattr(gs, "my_hand", ()) or ()
+        if 0 <= slot < len(hand):
+            card_id = hand[slot]
+            return int(card_id) if card_id is not None and card_id >= 0 else None
+        return None
 
     def decide(self, gs, ready, now: float) -> Decision:
         torch = self.torch
@@ -323,6 +373,21 @@ class NeuralPolicy:
             # history, to fix something that only exists on this screen.
             placement = placement.masked_fill(
                 ~self._tappable_cells.to(placement.device), float("-inf"))
+            # THIRD mask: the engine's own isValidPlacement for THIS card.
+            # Keyed on the card id rather than the slot, because the slot's
+            # contents change as the hand cycles. An unrecognised id (hand
+            # misread, blank slot) falls through unmasked rather than blocking
+            # the play -- perception being unsure is not a reason to refuse a
+            # placement the game may well accept.
+            legal = self._legal_by_card.get(self._card_id_for_slot(gs, slot))
+            if legal is not None:
+                placement = placement.masked_fill(
+                    ~legal.to(placement.device), float("-inf"))
+            if not torch.isfinite(placement).any():
+                # Every cell for this card is masked. Waiting is correct and
+                # honest; sampling from an all -inf row would return cell 0 and
+                # tap somewhere arbitrary.
+                return Decision(None, DEFAULT_TILE, "no-op (no legal cell)")
             cell = torch.distributions.Categorical(logits=placement).sample()
             x, y = self.net.cell_to_xy(cell)
         # cell_to_xy returns ENGINE board coordinates, which is what the
