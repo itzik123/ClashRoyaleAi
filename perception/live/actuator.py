@@ -194,17 +194,21 @@ DETECTOR_ROWS = 32
 def engine_row_is_tappable(tile_y: int) -> bool:
     """Does this ENGINE row correspond to a real, tappable arena row?
 
-    Measured, not assumed: with TILE_Y_OFFSET = 1, engine row 0 converts to
-    detector row -1, whose centre is pixel y=1018 against an arena bottom edge
-    of DISPLAY_HEIGHT - TILE_INIT_Y = 1003.81. The tap lands BELOW the arena, in
-    the dead strip above the card tray, so the game silently drops the
-    placement -- the card is deselected and no unit is deployed.
+    The engine's board is 34 rows and the arena is 32, so with TILE_Y_OFFSET = 1
+    engine row 0 converts to detector row -1: a row that does not exist on
+    screen. Its tap lands below the board whatever the tile grid is, in the dead
+    strip above the card tray, and the game silently drops the placement.
 
-    That is not a hypothetical. A 180 s live match issued 25 placements, 5 of
-    them on engine row 0, and reported "18 issued plays never confirmed". The
-    policy is free to choose row 0 because model.py's placement_mask is built
-    from the ENGINE's own bounds, which happily include it -- the engine really
-    does have that row, it is simply not reachable through this screen mapping.
+    ONLY ROW 0. Engine rows 1..15 are the real own half and are all reachable --
+    verified live at 100% acceptance across columns 0, 9 and 17.
+
+    That is worth stating explicitly because for a while they were NOT, and the
+    cause was not this function. The 2026-08-05 tile-grid refit put the arena's
+    bottom edge at y=1003.8 when the game stops accepting taps at y=981, so
+    engine row 1 was tapped at y=989 -- below the board -- and measured 0/6
+    acceptance live while this predicate happily called it tappable. Widening
+    the mask here would have been the wrong fix for a wrong grid; see
+    clashroyalebuildabot/constants.py.
 
     Derived from the geometry rather than hardcoded to `y > 0` so it stays
     correct if TILE_Y_OFFSET is ever re-fitted. This is the same discipline
@@ -344,6 +348,25 @@ class AdbActuator:
                   else tile_centre(tile_x, tile_y))
         # Recorded synchronously, at intent, so `taps` is deterministic for
         # callers and tests regardless of when the worker gets to it.
+        self.taps.extend((card, target))
+        if not self.dry_run:
+            try:
+                self._q.put_nowait((card, target))
+            except queue.Full:
+                self.dropped += 1
+        return card, target
+
+    def play_pixel(self, slot: int, px: int, py: int) -> tuple[Tap, Tap]:
+        """Select a hand slot, then tap a RAW SCREEN PIXEL.
+
+        For calibration only: `play()` is the path the agent uses and the one
+        whose tile conversion is under test, so a measurement of WHERE the
+        arena's deployable edge sits cannot go through it without assuming the
+        answer. This takes the tile grid out of the loop entirely, which is what
+        makes a pixel-space bisection of the boundary meaningful.
+        """
+        card = card_centre(slot)
+        target = Tap(int(px), int(py))
         self.taps.extend((card, target))
         if not self.dry_run:
             try:

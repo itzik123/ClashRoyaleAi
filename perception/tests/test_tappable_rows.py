@@ -1,14 +1,22 @@
 """Engine rows the actuator cannot reach must never be offered to the policy.
 
 The bug this pins: engine row 0 converts to detector row -1 (TILE_Y_OFFSET = 1),
-whose tap centre is pixel y=1018 against an arena bottom edge of
-DISPLAY_HEIGHT - TILE_INIT_Y = 1003.81. The tap lands in the dead strip between
-the arena and the card tray, so the game deselects the card and deploys nothing.
+a row the 32-row arena does not have. Its tap centre falls below the board's
+bottom edge, in the dead strip between the arena and the card tray, so the game
+deselects the card and deploys nothing.
 
 Measured live before the fix: a 180 s match issued 25 placements, 5 on engine
 row 0, and reported "18 issued plays never confirmed". model.py's
 placement_mask permits row 0 because the ENGINE genuinely has that row -- it is
 the screen mapping, not the game, that cannot reach it.
+
+Stated in TILE UNITS rather than in pixels on purpose. An earlier version of
+this file quoted y=1018 against an arena bottom of 1003.81, both of which came
+from a tile grid later measured to be wrong; the assertions still passed
+because they compared two numbers derived from the same wrong constants. What
+makes row 0 unreachable is that it is outside the arena's row range, which is
+true of any correct grid. `test_tile_grid.py` is what pins the grid itself,
+against the board the game draws.
 """
 import sys
 from pathlib import Path

@@ -1,32 +1,57 @@
-# Session handoff — 2026-08-13
+# Session handoff — 2026-08-13 (second session)
 
-Written at the end of a long session. Read this before touching the live loop
-or the expert-iteration pipeline. Everything here is measured unless it says
-otherwise, and the open problems are stated as open rather than as "nearly
-done".
+Read this before touching the live loop or the expert-iteration pipeline.
+Everything here is measured unless it says otherwise.
 
 ---
 
-## 0. Read this first: a measurement that was WRONG
+## 0. RESOLVED: the placements were landing off the board
 
-I reported **"0 illegal placements out of 32 live"**. Do not trust that number.
+The previous session reported **"0 illegal placements out of 32 live"** off a
+circular test — it validated placements against `is_valid_placement`, the same
+predicate the mask was built from. That warning stands as a method lesson.
 
-It was produced by validating every placement the bot issued against
-`ClashRoyaleEnv.is_valid_placement` — **the same predicate the mask was built
-from**. A mask derived from a predicate will always satisfy that predicate. The
-test was circular and could only ever return zero. It shows the mask is
-self-consistent; it says nothing about the real game.
+**The cause is now found, fixed and verified live, and it was not legality at
+all. It was the tile grid.**
 
-**The human watched the actual screen and the game is still blocking
-placements.** That observation outranks every offline number in this document.
-The engine's notion of legality and Clash Royale's are evidently not the same,
-and nothing here has established where they diverge.
+The 2026-08-05 refit of `TILE_WIDTH/HEIGHT/INIT_X/INIT_Y` was wrong in *both*
+axes, so the actuator computed tap pixels for a board 28 px too wide and 23 px
+too tall. Engine row 1 — the back row the policy uses constantly — was tapped
+at y=989 against an arena that stops at y=981. The tap landed below the board,
+the game ignored it, and the elixir ledger reported "issued but never
+confirmed".
 
-This is the fourth time this project has been bitten by an aggregate that
-cannot see the failure it is meant to detect (see CLAUDE.md: the checkerboard
-bias, the team-1 observation bug, the entropy controller, the
-disagreement_match ladder). The pattern is always the same — the metric shares
-an assumption with the thing it is checking.
+Measured, live, with the elixir bar at its cap so acceptance is unambiguous:
+
+| | before | after |
+|---|---|---|
+| engine row 1 accepted (controlled probe) | **0/6** | **6/6** |
+| engine rows 2, 5, 15 accepted | 12/12 | 12/12 |
+| live placements tapping outside the board | **13/34 (38%)** | **0/28 (0%)** |
+| live engine-row-1 placements ledger-confirmed | **0/11** | **7/9** |
+
+Fisher exact on that last row: **p = 4.6e-4**.
+
+**The oracle that broke it open: Clash Royale draws the answer itself.**
+Selecting a card tints the region you may NOT deploy into red, so differencing
+a selected frame against an unselected one is a dense per-pixel readout of the
+real rule — 288 cells at once, zero elixir, no policy and no detector in the
+loop. Redness delta is ~60 inside the forbidden region and ~0.1 outside it, so
+the threshold is not a tuning parameter. `tools/deploy_zone.py`.
+
+**Why the bad refit passed its own cross-check, which is the transferable
+lesson.** It scaled each axis off a landmark *separation* whose tile count was
+assumed rather than measured, and both counts were short by one (the river gaps
+are 11 tiles apart, not 10; the princess HP bars 22, not 21). Both fits were
+anchored on the board centre, so the error is zero in the middle and grows
+outward — and the symmetry check it congratulated itself on ("engine x 9.0
+lands on display centre 360") is *structurally incapable* of seeing a scale
+error anchored at the centre. Both the wrong grid and the right one pass it.
+The arena's **edges** discriminate; the centre cannot.
+
+That is the fifth instance of this project's recurring failure: an aggregate
+that shares an assumption with the thing it is checking. `test_tile_grid.py`
+now pins the board's four edges against the game's own rectangle.
 
 ---
 
@@ -163,43 +188,29 @@ This is real and it helped (the human's run went 18 → 4 unconfirmed). It is
 
 ---
 
-## 2. OPEN PROBLEM 1 (CRITICAL): illegal placements, still unsolved
+## 2. RESOLVED: what the real game's deploy rule actually is
 
-**Status: OPEN. The live game is still blocking placements.**
+Measured directly off the tint, for every card in the deck, at 288 cells:
 
-Directly observed by the human watching the screen, after all of the following
-had landed:
+**The real game allows engine rows 1..15 × all 18 columns — 270 cells.**
+Engine row 0 has no arena row at all (the engine's board is 34 rows, the arena
+is 32) and stays masked by `engine_row_is_tappable`.
 
-- the row-0 tappability mask (`engine_row_is_tappable`)
-- the engine-legality mask (`is_valid_placement` per card, applied live)
-- `model.py`'s own `placement_mask`
+Two things follow, and the second is a live problem worth its own entry:
 
-Measured gap that the engine-legality mask closed (own half, 288 cells):
+- **`TILE_Y_OFFSET = 1` is correct.** It was carried for months flagged as
+  "derived, not verified". It is now verified: rows 1..15 accept at 100% and
+  row 16 is across the river.
+- **The engine's `is_valid_placement` is STRICTER than the real game, not
+  looser** — it refuses 34–65 cells the game permits (Cannon 208/288 vs 270,
+  troops 242/288 vs 270). So the third live mask is throwing away legal
+  placements, most of them the tower-adjacent defensive cells a Cannon most
+  wants. It never caused a refusal; it costs action space. Removing it is a
+  live-path change with no engine impact — untested, so it stays for now.
 
-| card | engine-legal | model.py mask allowed |
-|---|---|---|
-| Cannon | 208/288 | 288 |
-| troops | 242/288 | 288 |
-| Fireball | 276/288 | 288 |
-
-**Why my verification was worthless:** I validated issued placements against
-`is_valid_placement`, the same predicate the mask was built from. Circular. See
-section 0.
-
-**What this means:** the ENGINE's legality rule and the REAL GAME's are not the
-same. Candidate divergences, none investigated:
-
-- the engine's 18x34 frame vs the real arena's tile grid (`TILE_Y_OFFSET` is
-  documented in `actuator.py` as "still unverified")
-- tower footprint radii differing between engine and game
-- the back-row opening width (`BACK_ROW_OPENING_HALF_WIDTH = 3.0`)
-- pixel-level tap accuracy near cell boundaries (constants.py notes upstream
-  values were off ~10% in x / 4% in y and were REFITTED 2026-08-05)
-- the real game's own deploy restrictions the engine does not model at all
-
-**The only trustworthy oracle is the game itself.** Any future fix must be
-validated against observed in-game behaviour, never against
-`is_valid_placement`.
+Also confirmed: the real game does **not** restrict the back row to the middle
+six columns. CRBAB's own `ALLY_TILES` says it does (`y=0` limited to x 6..11)
+and that is simply wrong — x=0 and x=17 at engine row 1 both accept.
 
 ---
 
@@ -242,9 +253,25 @@ fine.
 distinguish them: the game refused the tap; the tap never arrived; the ledger
 could not reconcile the elixir trace.
 
+**Now instrumented and largely explained.** `live/placement_confirm.py` adds two
+oracles independent of the bar (a unit of the expected type appearing, and the
+hand slot cycling) and cross-tabulates them against the ledger, keyed per play
+via a new `tag` on `ElixirLedger.record_play`. After the grid fix the ledger's
+residual went **−19 → −4 → +1** across three runs, i.e. it stopped inventing
+spend, because the spend it was recording is now real.
+
+**A caution on the hand oracle, measured.** In the live loop it reported
+33/34 placements as "the slot cycled" during the pre-fix run — including 10 of
+the 11 engine-row-1 placements that the controlled probe proves never spent a
+single elixir (0/6) and that the ledger scored 0/11. The card reader is noisy
+enough under load that any misread inside the 3.5 s window trips it. Treat
+`hand_changed` as a **lower bound on refusals**, never as confirmation on its
+own; the elixir-at-cap probe in `tools/placement_truth.py` is the oracle to
+trust when it matters.
+
 ---
 
-## 4. Proposed next step: unit-appearance confirmation
+## 4. DONE: unit-appearance confirmation
 
 The elixir bar is the wrong oracle. **Whether our unit appeared is the right
 one**, and `GameState.units` already carries team.
@@ -291,6 +318,11 @@ discrepancy is in unit DETECTION, not encoding.
 
 | file | what |
 |---|---|
+| `perception/tools/deploy_zone.py` | **the real deploy zone, off the game's own tint**; `--fit-grid` refits the tile grid to the arena rectangle |
+| `perception/tools/placement_truth.py` | controlled per-cell accept/refuse at capped elixir; `--pixel-scan` for raw-pixel boundary hunting |
+| `perception/tools/match_nav.py` | unattended navigation into a Training Camp match from any screen |
+| `perception/live/placement_confirm.py` | the unit/hand oracles and the 2x2 against the ledger |
+| `perception/tests/test_tile_grid.py` | pins the board's four edges to the measured arena |
 | `python_ai/search_ab_test.py` | paired search-vs-policy A/B |
 | `python_ai/expert_iteration.py` | collect / distil / eval / ablate / lift / target-entropy |
 | `python_ai/make_replays.py` | paired replay JSONs for `web/viewer.html` |
@@ -315,7 +347,19 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ./build_test/Release/ClashRoyaleTests.exe
 ```
 
-318 perception tests (1 skipped) and 530 C++ cases pass as of this commit.
+337 perception tests (1 skipped) and 530 C++ cases pass as of this commit.
+No C++ or `python_ai/` file was touched this session — every change is inside
+`perception/`, so no checkpoint or win-rate history is affected.
+
+Ground-truth probes (need the emulator; they place real cards):
+
+```bash
+perception/.venv/Scripts/python.exe perception/tools/deploy_zone.py --ensure-match --slots 0,1,2,3
+```
+
+```bash
+perception/.venv/Scripts/python.exe perception/tools/placement_truth.py --rows 1,2,15 --xs 0,9,17
+```
 
 Live run (queue a Training Camp match first, or use the tool above):
 
@@ -325,9 +369,44 @@ perception/.venv/Scripts/python.exe -m perception.live.mvp_loop --policy neural 
 
 ---
 
+## 5b. Still open, and now the largest live problem
+
+**The agent issues placements faster than its elixir can support.** Measured on
+the pre-fix run: 34 placements in 160 s, one every 4.7 s, against a sustainable
+rate of one per ~9.5 s at 2.8 s/elixir and a 3.4 average cost. It sat at 0–3
+elixir for the whole match.
+
+The grid fix improved this a lot without addressing it directly — once taps
+actually deploy, they actually cost elixir, so the affordability mask throttles
+properly: 34 → 20 placements, spend 82 → 55 (against ~62 available), residual
+−19 → −4. But 5 of 28 post-fix placements still go unconfirmed by the ledger,
+and the remaining suspects are the ~1.6 s round trip between deciding and
+landing, and the integer elixir reading.
+
+Worth measuring next with `tools/placement_truth.py`'s oracle rather than the
+ledger, since the ledger is the thing under suspicion.
+
+**Do not re-open "the game refuses our placements" without new live evidence.**
+It was measured at 0/28 this session across two matches.
+
+---
+
 ## 6. Discipline notes worth keeping
 
 - **Never validate a mask against the predicate that generated it.** Section 0.
+- **A cross-check anchored where the error is zero proves nothing.** The bad
+  tile grid passed "engine x 9.0 lands on display centre 360" because both fits
+  were centre-anchored and the scale error grows outward. Check the edges of
+  the range you care about, not its middle.
+- **Every failure mode of the deploy-zone probe is "everything is legal"** — an
+  unaffordable card selects nothing, a stale baseline already holds the tint, a
+  tap pixel off the board is untinted because there is no board there. When a
+  measurement's failure mode is maximal permissiveness, it needs an internal
+  control that must fire (here: a band deep in the enemy half that MUST be
+  tinted whenever a card is really selected).
+- **The game is a better oracle than the simulator, and it is free.** The
+  deploy-zone tint answers in one screenshot what a season of `is_valid_placement`
+  comparisons could not.
 - **The control arm's own variance is large**: original greedy measured 0.625,
   0.570, 0.700, 0.634 across four runs at 1.5x elixir. Any comparison under a
   few hundred paired trials measures that, not the treatment.

@@ -67,6 +67,7 @@ from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
 from live.pipeline import PerceptionWorker, Stages  # noqa: E402
+from live.placement_confirm import PlacementConfirmer  # noqa: E402
 
 DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
@@ -424,6 +425,12 @@ def main() -> int:
     ap.add_argument("--checkpoint", type=Path,
                     default=Path(__file__).resolve().parents[2] / "python_ai"
                     / "model_weights_selfplay.pth")
+    ap.add_argument("--confirm-log", type=Path, default=None,
+                    help="write one JSON line per issued placement, with both "
+                         "oracles' verdicts and the pixel actually tapped")
+    ap.add_argument("--ensure-match", action="store_true",
+                    help="navigate into a Training Camp match before starting, "
+                         "and treat the end of that match as the end of the run")
     ap.add_argument("--frames", type=Path, default=None,
                     help="replay a tools/record_match.py directory instead of "
                          "capturing live. The rest of the chain is identical, "
@@ -447,6 +454,15 @@ def main() -> int:
     # execution provider produced it cannot be compared against another.
     print(f"execution provider: "
           f"{detector.unit_detector.sess.get_providers()[0]}")
+    if args.ensure_match:
+        # tools/ is not a package on the path -- the live package is. Added
+        # here rather than at import time so a run without the flag does not
+        # depend on the emulator navigation code at all.
+        if str(_ROOT / "tools") not in sys.path:
+            sys.path.insert(0, str(_ROOT / "tools"))
+        from match_nav import ensure_in_match  # noqa: PLC0415
+        ensure_in_match(detector)
+
     actuator = AdbActuator(dry_run=not args.act)
     if args.act:
         print(f"actuator backend: {actuator.backend}")
@@ -468,6 +484,10 @@ def main() -> int:
     print(f"deck costs: {', '.join(f'{c:.0f}' for c in costs)}")
     ledger = ElixirLedger(costs=costs)
     gate = ActionGate(enforce_staleness=not args.ignore_staleness)
+    # Independent of the ledger by construction -- see placement_confirm.py.
+    # The ledger says whether the elixir trace reconciled; this says whether a
+    # unit actually appeared. Only both being silent means the game refused it.
+    confirmer = PlacementConfirmer()
 
     print(f"capture {source.size[0]}x{source.size[1]}   "
           f"decision rate {DECISION_HZ} Hz   for {args.seconds:.0f}s\n")
@@ -537,6 +557,7 @@ def main() -> int:
 
     t0 = time.perf_counter()
     next_due = t0
+    last_observed = None
     n = slow = stale = 0
     ages = []
     waits: list[float] = []
@@ -586,6 +607,15 @@ def main() -> int:
             if replay is None:
                 next_due = time.perf_counter() + 1.0 / DECISION_HZ
 
+            # Fold this board into every placement still awaiting a verdict --
+            # but only ONCE per board. The decision loop can sample the same
+            # published board twice when the producer is slower than 1 Hz, and
+            # counting it twice would inflate `observations` into looking like
+            # evidence was gathered when nothing new was seen.
+            if board_index != last_observed:
+                confirmer.observe(gs, time.perf_counter())
+                last_observed = board_index
+
             in_game = state.screen.name == "in_game"
             if hasattr(policy, "on_screen_change"):
                 policy.on_screen_change(in_game)
@@ -598,10 +628,26 @@ def main() -> int:
             if decision.slot is not None:
                 verdict = gate.check(board_index, age_ms)
                 if verdict:
-                    actuator.play(decision.slot, *decision.tile)
+                    _card_tap, tile_tap = actuator.play(decision.slot,
+                                                        *decision.tile)
                     # Recorded only after the tap returns, so an adb failure
                     # leaves the board available to retry.
                     gate.record(board_index)
+                    # The card NAME comes from the detector's own hand crops
+                    # ([1:5] -- cards[0] is the Next preview), not from DECK
+                    # order: the hand cycles, so slot 2 is a different card
+                    # minute to minute, and the whole point of the confirmer is
+                    # to know which card we asked for.
+                    hand_names = [c.name for c in state.cards[1:5]]
+                    rec = confirmer.issue(
+                        gs, slot=decision.slot,
+                        card_name=hand_names[decision.slot],
+                        card_sim_id=(gs.my_hand[decision.slot]
+                                     if decision.slot < len(gs.my_hand) else -1),
+                        tile=tuple(decision.tile),
+                        tap=(tile_tap.x, tile_tap.y),
+                        now=time.perf_counter(),
+                        owed=ledger.unconfirmed_cost)
                     # Ground truth: we know exactly which card and what it
                     # cost, which no amount of staring at the bar can recover
                     # once 3 and 4 quantise to the same drop.
@@ -616,7 +662,10 @@ def main() -> int:
                         # No timestamp: the ledger stamps it with its own frame
                         # clock. Passing a wall clock here would mix time bases
                         # with the readings and nothing would ever expire.
-                        ledger.record_play(cost)
+                        # Tagged with the confirmer's own sequence number, which
+                        # is what lets the two verdicts be cross-tabulated
+                        # instead of merely counted side by side.
+                        ledger.record_play(cost, tag=rec.seq)
                 else:
                     gate.refuse(verdict.reason)
                     decision = Decision(None, decision.tile,
@@ -678,6 +727,18 @@ def main() -> int:
     print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "
           f"residual {ledger.residual:+.0f}, "
           f"{ledger.rejected} issued plays never confirmed")
+
+    # THE MEASUREMENT THIS RUN EXISTS FOR. `ledger.rejected` above conflates a
+    # refused placement with a reconciliation failure; the cross-tab separates
+    # them, and the listed rows are the ground-truth dataset of what the real
+    # game actually rejects.
+    confirmer.close_all()
+    confirmer.apply_ledger(ledger.confirmed_tags, ledger.rejected_tags)
+    print()
+    print(confirmer.summary())
+    if args.confirm_log:
+        confirmer.write_log(args.confirm_log)
+        print(f"\nplacement log: {args.confirm_log}")
     return 0
 
 

@@ -180,6 +180,16 @@ class ElixirLedger:
     """Placements we issued that the bar never confirmed. Almost always a tap
     that arrived after the elixir it needed had already gone."""
 
+    confirmed_tags: list = field(default_factory=list)
+    rejected_tags: list = field(default_factory=list)
+    """Caller-supplied identity of each play this ledger confirmed or wrote off.
+
+    `rejected` alone is a COUNT, which is why "17 issued plays never confirmed"
+    could never be cross-examined: there was no way to ask which 17, or what
+    they had in common. Tagging costs one field and turns the ledger's verdict
+    into something `live/placement_confirm.py` can put on the other axis of a
+    2x2 against an independent oracle."""
+
     _recent: list[tuple[float, float]] = field(default_factory=list)
     _last: float | None = None
     _last_t: float | None = None
@@ -195,7 +205,8 @@ class ElixirLedger:
 
     # -- ground truth from our own play stream --------------------------------
 
-    def record_play(self, cost: float, now: float | None = None) -> None:
+    def record_play(self, cost: float, now: float | None = None,
+                    tag=None) -> None:
         """A placement we ISSUED, with its cost known exactly.
 
         Not spend yet. A tap can be rejected -- by the time it reaches the game
@@ -220,7 +231,7 @@ class ElixirLedger:
         with self._lock:
             if now is None:
                 now = self._last_t if self._last_t is not None else 0.0
-            self._pending.append((float(cost), float(now)))
+            self._pending.append((float(cost), float(now), tag))
 
     @property
     def unconfirmed_cost(self) -> float:
@@ -232,13 +243,15 @@ class ElixirLedger:
         elixir three times -- the burst that fills the actuator queue.
         """
         with self._lock:
-            return sum(cost for cost, _ in self._pending)
+            return sum(item[0] for item in self._pending)
 
     def _expire(self, now: float) -> None:
         """Drop issued plays the bar never accounted for."""
-        keep = [(c, t) for c, t in self._pending
-                if now - t <= PLAY_CONFIRM_WINDOW_S]
-        self.rejected += len(self._pending) - len(keep)
+        keep, gone = [], []
+        for item in self._pending:
+            (keep if now - item[1] <= PLAY_CONFIRM_WINDOW_S else gone).append(item)
+        self.rejected += len(gone)
+        self.rejected_tags.extend(item[2] for item in gone)
         self._pending = keep
 
     def _confirm(self, drop: float):
@@ -335,6 +348,7 @@ class ElixirLedger:
                 if hit is not None:
                     _err, total, idx = hit
                     combo = tuple(self._pending[i][0] for i in idx)
+                    self.confirmed_tags.extend(self._pending[i][2] for i in idx)
                     for i in sorted(idx, reverse=True):
                         self._pending.pop(i)
                     self.spent += total
