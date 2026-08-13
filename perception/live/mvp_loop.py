@@ -266,6 +266,25 @@ class NeuralPolicy:
         self._hx = None
         self._cx = None
         self._was_in_game = False
+        # Which placement cells the actuator can actually reach, computed once
+        # from the tile geometry (see actuator.engine_row_is_tappable). Built
+        # here rather than per decision because it is a constant of the screen
+        # mapping, and asserted non-empty so a future geometry change that
+        # masked EVERY cell would fail loudly instead of turning the agent into
+        # a permanent no-op.
+        from live.actuator import engine_row_is_tappable  # noqa: PLC0415
+        cells = self.net.placement_cells
+        width = self.net.board_width
+        self._tappable_cells = torch.tensor(
+            [engine_row_is_tappable(c // width) for c in range(cells)],
+            dtype=torch.bool).unsqueeze(0)
+        n_ok = int(self._tappable_cells.sum())
+        if n_ok == 0:
+            raise RuntimeError(
+                "no placement cell is tappable -- the tile geometry and the "
+                "engine frame disagree completely; check TILE_Y_OFFSET.")
+        print(f"placement: {n_ok}/{cells} cells reachable by the actuator "
+              f"({cells - n_ok} engine rows have no detector row)")
 
     def reset_hidden(self) -> None:
         self._hx = self.torch.zeros(1, 256)
@@ -292,6 +311,18 @@ class NeuralPolicy:
                 self._hx, embeds, card, obs, smap)
             placement = placement.masked_fill(
                 ~self.net.placement_mask(obs, card), float("-inf"))
+            # SECOND mask, live-only: model.py's placement_mask is built from
+            # the ENGINE's bounds, which include rows this screen mapping cannot
+            # reach. Engine row 0 converts to detector row -1, whose tap lands
+            # below the arena -- the game drops the placement silently and the
+            # elixir ledger reports it as "issued but never confirmed".
+            #
+            # Applied here and not in model.py on purpose: this is a property of
+            # the ACTUATOR, not of the game. Narrowing the training action space
+            # would change what the policy learns and invalidate its win-rate
+            # history, to fix something that only exists on this screen.
+            placement = placement.masked_fill(
+                ~self._tappable_cells.to(placement.device), float("-inf"))
             cell = torch.distributions.Categorical(logits=placement).sample()
             x, y = self.net.cell_to_xy(cell)
         # cell_to_xy returns ENGINE board coordinates, which is what the

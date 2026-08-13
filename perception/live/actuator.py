@@ -183,6 +183,36 @@ def tile_centre(tile_x: int, tile_y: int) -> Tap:
     return Tap(int(round(x)), int(round(y)))
 
 
+# The detector frame is 18x32; the engine frame is 18x34 (an extra row behind
+# each King). engine_tile_centre subtracts TILE_Y_OFFSET to convert, so engine
+# rows outside [TILE_Y_OFFSET, TILE_Y_OFFSET + DETECTOR_ROWS) have NO detector
+# row and therefore no tappable pixel -- their "centre" lands outside the arena
+# rectangle entirely.
+DETECTOR_ROWS = 32
+
+
+def engine_row_is_tappable(tile_y: int) -> bool:
+    """Does this ENGINE row correspond to a real, tappable arena row?
+
+    Measured, not assumed: with TILE_Y_OFFSET = 1, engine row 0 converts to
+    detector row -1, whose centre is pixel y=1018 against an arena bottom edge
+    of DISPLAY_HEIGHT - TILE_INIT_Y = 1003.81. The tap lands BELOW the arena, in
+    the dead strip above the card tray, so the game silently drops the
+    placement -- the card is deselected and no unit is deployed.
+
+    That is not a hypothetical. A 180 s live match issued 25 placements, 5 of
+    them on engine row 0, and reported "18 issued plays never confirmed". The
+    policy is free to choose row 0 because model.py's placement_mask is built
+    from the ENGINE's own bounds, which happily include it -- the engine really
+    does have that row, it is simply not reachable through this screen mapping.
+
+    Derived from the geometry rather than hardcoded to `y > 0` so it stays
+    correct if TILE_Y_OFFSET is ever re-fitted. This is the same discipline
+    CLAUDE.md requires of engine constants: live where derivable.
+    """
+    return 0 <= tile_y - TILE_Y_OFFSET < DETECTOR_ROWS
+
+
 def engine_tile_centre(tile_x: int, tile_y: int) -> Tap:
     """Android coordinates of an ENGINE-frame tile (18x34).
 
