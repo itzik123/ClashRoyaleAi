@@ -251,7 +251,8 @@ class NeuralPolicy:
     the same shape of failure as the team-1 observation bug.
     """
 
-    def __init__(self, checkpoint: Path, deck_ability_slots: int = 0):
+    def __init__(self, checkpoint: Path, deck_ability_slots: int = 0,
+                 tactical: bool = True, reserve: float = 4.0):
         import torch  # noqa: PLC0415
 
         import perception_encoder  # noqa: PLC0415
@@ -322,6 +323,38 @@ class NeuralPolicy:
         print(f"placement: engine-legal cells per card {counts} "
               f"(of {cells}; unmasked would be {cells})")
 
+        # --- tactical officer -------------------------------------------------
+        # The trained placement head is a constant function for Cannon, Fireball
+        # and Giant and is worth LESS than a random cell (PLACEMENT_COLLAPSE.md).
+        # For those three the WHERE is taken out of the network and given to
+        # tactics.py, whose cells are scored against the engine's own accounting:
+        # Cannon 564 vs 12 tower HP preserved, Fireball 2.405 vs 0.000 elixir
+        # killed, Giant 536 vs 3 tower damage dealt.
+        #
+        # The advisor is handed the SAME masks the sampled path uses, intersected
+        # -- engine legality AND actuator reachability. Handing it only the engine
+        # mask would let it propose engine row 0, whose tap lands below the arena
+        # and is silently dropped: precisely the bug the tile-grid fix closed, and
+        # an override is exactly the kind of code that would reintroduce it.
+        self._tactical = tactical
+        self._advisor_legal = {
+            cid: (m & self._tappable_cells)[0].numpy().astype(bool)
+            for cid, m in self._legal_by_card.items()
+        }
+        if tactical:
+            import tactics  # noqa: PLC0415
+            self._tactics = tactics
+            self._gate = tactics.SolvencyGate(reserve=reserve)
+            self._override_ids = {tactics.CANNON_ID, tactics.FIREBALL_ID,
+                                  tactics.GIANT_ID}
+            have = sorted(self._override_ids & set(self._advisor_legal))
+            print(f"tactical: advisor ON for card ids {have}, "
+                  f"solvency gate reserve {reserve}")
+        else:
+            self._tactics = None
+            self._gate = None
+            self._override_ids = set()
+
     def reset_hidden(self) -> None:
         self._hx = self.torch.zeros(1, 256)
         self._cx = self.torch.zeros(1, 256)
@@ -349,8 +382,23 @@ class NeuralPolicy:
         obs = torch.as_tensor(self.encoder.encode(gs)).unsqueeze(0)
         with torch.no_grad():
             feats, embeds, smap = self.net.extract_features(obs)
+            card_mask = self.net.affordability_mask(obs)
+            if self._gate is not None:
+                # Veto spends that would leave us unable to answer, but only
+                # while nothing is attacking, and only up to what the opponent
+                # could actually punish with (their elixir, from the net's own
+                # auxiliary head using the PREVIOUS step's state -- the mask has
+                # to exist before this step's LSTM runs).
+                o = obs[0].numpy()
+                costs = (obs[0, self.net.spatial_size + 1:
+                              self.net.spatial_size + 1 + self.net.hand_size]
+                         * 10.0).tolist()
+                opp = float(self.net.predict_opp_elixir(self._hx)[0])
+                allow = torch.tensor([self._gate.mask(o, costs, opp)],
+                                     dtype=torch.bool)
+                card_mask = card_mask & allow
             logits, _a1, _a2, _v, (self._hx, self._cx) = self.net.step_lstm_and_card(
-                feats, (self._hx, self._cx), self.net.affordability_mask(obs))
+                feats, (self._hx, self._cx), card_mask)
             card = torch.distributions.Categorical(logits=logits).sample()
             slot = int(card.item())
             if slot >= self.net.hand_size:
@@ -358,6 +406,26 @@ class NeuralPolicy:
                 # forced into a play: "hold elixir" is a real decision and the
                 # affordability mask guarantees this column is never masked.
                 return Decision(None, DEFAULT_TILE, "no-op")
+            # --- tactical override: the advisor decides WHERE for the three
+            # cards whose learned placement is worse than a random cell.
+            # Returns immediately: the three masks below exist to filter the
+            # NETWORK's distribution, and the advisor has already been handed
+            # their intersection, so re-applying them would be redundant.
+            card_id = self._card_id_for_slot(gs, slot)
+            if card_id in self._override_ids:
+                legal = self._advisor_legal.get(card_id)
+                if legal is not None and legal.any():
+                    o = obs[0].numpy()
+                    if card_id == self._tactics.FIREBALL_ID:
+                        ax, ay, _ = self._tactics.best_spell_cell(o, legal=legal)
+                    elif card_id == self._tactics.GIANT_ID:
+                        ax, ay, _ = self._tactics.best_giant_cell(o, legal=legal)
+                    else:
+                        ax, ay, _ = self._tactics.best_building_cell(o, legal=legal)
+                    return Decision(slot, (int(ax), int(ay)),
+                                    f"advisor slot {slot} card {card_id} "
+                                    f"-> ({int(ax)},{int(ay)})")
+
             placement = self.net.placement_given_card(
                 self._hx, embeds, card, obs, smap)
             placement = placement.masked_fill(
@@ -425,6 +493,12 @@ def main() -> int:
     ap.add_argument("--checkpoint", type=Path,
                     default=Path(__file__).resolve().parents[2] / "python_ai"
                     / "model_weights_selfplay.pth")
+    ap.add_argument("--no-tactical", action="store_true",
+                    help="disable the advisor override and solvency gate, so the "
+                         "network alone decides where -- the A/B control arm")
+    ap.add_argument("--reserve", type=float, default=4.0,
+                    help="elixir the solvency gate keeps in hand while nothing "
+                         "is attacking")
     ap.add_argument("--confirm-log", type=Path, default=None,
                     help="write one JSON line per issued placement, with both "
                          "oracles' verdicts and the pixel actually tapped")
@@ -472,9 +546,11 @@ def main() -> int:
         import shutil, tempfile  # noqa: PLC0415
         frozen = Path(tempfile.gettempdir()) / "mvp_policy_snapshot.pth"
         shutil.copy2(args.checkpoint, frozen)
-        policy = NeuralPolicy(frozen)
+        policy = NeuralPolicy(frozen, tactical=not args.no_tactical,
+                              reserve=args.reserve)
         print(f"policy: TRAINED NET from {args.checkpoint.name} "
-              f"(episode {policy.episodes})")
+              f"(episode {policy.episodes})"
+              f"{'' if args.no_tactical else ' + tactical officer'}")
     else:
         policy = ScriptedPolicy()
         print("policy: scripted placeholder")
