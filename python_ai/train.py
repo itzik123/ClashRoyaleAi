@@ -18,6 +18,7 @@ import clash_royale_env
 import gym_wrapper
 from model import MicroRoyaleNet
 from elixir_shaping import W_SOLVENCY, solvency_shaping
+import advisor_target
 
 # Reward-shaping weights (dense guidance on top of the sparse +1/-1 win/loss signal).
 # Kept intentionally small so the cumulative shaping over an episode stays comparable
@@ -428,15 +429,36 @@ SOLVENCY_COEF = float(os.environ.get("CLASH_SOLVENCY_COEF", W_SOLVENCY))
 PLACEMENT_COVERAGE_COEF = float(os.environ.get("CLASH_PLACEMENT_COVERAGE_COEF", 0.02))
 
 
-def placement_coverage_slots(card_mask_seq, hand_size):
-    """(L,B) long: one uniformly-sampled AFFORDABLE hand slot per timestep.
+def placement_coverage_slots(card_mask_seq, hand_size, slot_weights=None):
+    """(L,B) long: one sampled AFFORDABLE hand slot per timestep.
 
     Rows with nothing affordable fall back to the no-op slot. Those rows are
     masked out of the coverage term anyway (mb_decision is 0 exactly there), so
     the fallback only has to be a legal index, never a meaningful one.
+
+    `slot_weights` (L,B,hand_size) multiplies the per-slot sampling probability,
+    for concentrating the coverage budget where it is needed. Left None the
+    draw is uniform over affordable slots, which is the original behaviour.
+
+    WHY THE WEIGHTS EXIST, measured 2026-08-14. The coverage budget is one slot
+    per step, and the cards it has to reach -- Cannon(3), Fireball(4), Giant(5)
+    -- are exactly the ones affordability hides: the agent sits under 3 elixir
+    on 65.3% of decisions, so a uniform draw over AFFORDABLE slots is biased
+    toward the cheap cards, which are also the ones already receiving actor
+    gradient because they are the ones being played. Weighting toward the cards
+    with an advisor rule spends a scarce budget on the starved cards instead.
     """
     L, B, _ = card_mask_seq.shape
     playable = card_mask_seq[..., :hand_size].reshape(L * B, hand_size).float()
+    if slot_weights is not None:
+        playable = playable * slot_weights.reshape(L * B, hand_size).float()
+        # A row where every AFFORDABLE slot got weight 0 would be indistinguishable
+        # from a row with nothing affordable. Restore the unweighted mask there so
+        # the weights can only ever re-rank, never remove, a candidate.
+        empty = playable.sum(-1) <= 0
+        if bool(empty.any()):
+            base = card_mask_seq[..., :hand_size].reshape(L * B, hand_size).float()
+            playable = torch.where(empty.unsqueeze(-1), base, playable)
     none = playable.sum(-1) <= 0
     # Uniform over the affordable slots; the all-zero rows get a valid dummy
     # distribution so multinomial cannot raise, then are overwritten below.
@@ -1235,6 +1257,12 @@ def train_ppo():
     # Ground-truth opponent elixir per step -- supervision for the auxiliary
     # head only, never an input. See AUX_ELIXIR_COEF.
     aux_elixir_buffer = []
+    # --- advisor-targeted placement coverage --------------------------------
+    # Slot drawn here, once per timestep, rather than inside the PPO epoch loop.
+    # The advisor target is a function of the OBSERVATION, so it can only be
+    # computed while that observation is the live one.
+    coverage_slot_buffer, coverage_target_buffer, coverage_has_buffer = [], [], []
+    advisor_legal = advisor_target.build_legal_table(net) if advisor_target.enabled() else {}
 
     reward_history = deque(maxlen=50)
     shaping_history = deque(maxlen=50)   # Per-episode shaping sum, to watch it vs the +/-1 terminal (improvement #6)
@@ -1307,6 +1335,27 @@ def train_ppo():
             # the PPO update below can recompute a bit-identical mask without
             # storing it separately.
             card_mask = net.affordability_mask(obs_tensor)
+
+            # --- advisor-targeted coverage ---------------------------------
+            # See train_selfplay.py's identical block; the defect and the fix
+            # are the same in both loops.
+            hand_ids_now = net.hand_card_ids(obs_tensor)
+            cov_w = advisor_target.slot_weights_for(hand_ids_now)
+            cov_slot = placement_coverage_slots(
+                card_mask.unsqueeze(0), net.hand_size,
+                slot_weights=None if cov_w is None else cov_w.unsqueeze(0))[0]
+            coverage_slot_buffer.append(cov_slot)
+            if advisor_target.enabled():
+                slot_ids = torch.cat(
+                    [hand_ids_now,
+                     torch.full((num_envs, 1), -1, dtype=torch.long)], dim=1)
+                cov_ids = slot_ids.gather(1, cov_slot.view(-1, 1)).squeeze(1)
+                tgt_np, has_np = advisor_target.targets_for_batch(
+                    obs_tensor.cpu().numpy(), cov_ids.cpu().numpy(),
+                    advisor_legal)
+                coverage_target_buffer.append(torch.from_numpy(tgt_np))
+                coverage_has_buffer.append(
+                    torch.from_numpy(has_np.astype(np.float32)))
 
             # Captured BEFORE step_lstm_and_card advances (hx, cx) -- this is
             # the state a chunk starting at this timestep must resume from.
@@ -1661,6 +1710,13 @@ def train_ppo():
         decision_seq = torch.stack(decision_buffer)                    # (T, N) -- 1 only where a real choice existed
         hx_in_seq = torch.stack(hx_in_buffer)                          # (T, N, 256) -- chunk resume states
         cx_in_seq = torch.stack(cx_in_buffer)
+        coverage_slot_seq = torch.stack(coverage_slot_buffer)          # (T, N)
+        if advisor_target.enabled():
+            coverage_target_seq = torch.stack(coverage_target_buffer)  # (T,N,cells)
+            coverage_has_seq = torch.stack(coverage_has_buffer)        # (T, N)
+        else:
+            coverage_target_seq = None
+            coverage_has_seq = torch.zeros_like(coverage_slot_seq, dtype=torch.float32)
 
         # Watch how often the agent chooses to wait (no-op) when it ACTUALLY had
         # a choice -- restricted to decision steps, because counting the forced
@@ -1740,6 +1796,10 @@ def train_ppo():
         # at risk are precisely the ones it samples that the other series never
         # reaches.
         coverage_ents = []
+        # KL to the advisor's surface on the rows carrying one, and how many
+        # rows those are. Read as a pair -- KL can fall simply because the
+        # advisor went quiet.
+        coverage_kls, coverage_hits = [], []
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
@@ -1816,7 +1876,11 @@ def train_ppo():
                 # sampled uniformly -- the coverage pass. See
                 # placement_coverage_slots for why this is not free and why it
                 # is nonetheless the cheapest correct option.
-                cf_idx = placement_coverage_slots(card_mask_seq, net.hand_size)
+                # Read from the rollout, NOT resampled: the advisor target
+                # buffered alongside it belongs to exactly this slot on exactly
+                # this observation, and a fresh draw would pair one card's
+                # logits with another card's target.
+                cf_idx = coverage_slot_seq[tt, ee]
                 (cl_seq, pl_seq, new_values, new_aux_elixir, _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
@@ -1897,15 +1961,24 @@ def train_ppo():
                 # exactly the condition under which an unplayed card is
                 # freezing -- tying the two would switch coverage off precisely
                 # when it is needed.
-                cf_ent = Categorical(logits=cf_pl_seq).entropy()
-                cf_ent_mean = (cf_ent * mb_decision).sum() / n_decision
-                coverage_bonus = PLACEMENT_COVERAGE_COEF * cf_ent_mean / LOG_N_PLACEMENT
-                coverage_ents.append((cf_ent_mean / LOG_N_PLACEMENT).item())
+                #
+                # Split by row since 2026-08-14: where the advisor has a rule
+                # for the sampled card it supplies a TARGET and the row gets KL
+                # to it, everywhere else the entropy bonus stands. They are
+                # mutually exclusive because they ask for opposite things --
+                # see advisor_target.coverage_terms.
+                mb_cov_targets = (coverage_target_seq[tt, ee]
+                                  if coverage_target_seq is not None else None)
+                cov_delta, cov_ent_frac, cov_kl, cov_n = advisor_target.coverage_terms(
+                    cf_pl_seq, mb_cov_targets, coverage_has_seq[tt, ee],
+                    mb_decision, PLACEMENT_COVERAGE_COEF, LOG_N_PLACEMENT)
+                coverage_ents.append(float(cov_ent_frac))
+                coverage_kls.append(float(cov_kl))
+                coverage_hits.append(float(cov_n))
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
-                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT
-                                 + coverage_bonus)
+                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
                 # entropy_bonus already carries its per-head coefficients.
                 # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
                 # reason the critic loss is: phantom auto-reset steps carry an
@@ -1917,7 +1990,9 @@ def train_ppo():
                 aux_losses.append(aux_loss.item())
                 aux_maes.append(aux_mae.item())
 
-                loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
+                # cov_delta carries both signs already: the entropy half is a
+                # bonus (negative), the advisor KL a penalty (positive).
+                loss = (actor_loss + 0.5 * critic_loss - entropy_bonus + cov_delta
                         + AUX_ELIXIR_COEF * AUX_ELIXIR_SCALE * aux_loss)
 
                 optimizer.zero_grad()
@@ -1987,6 +2062,18 @@ def train_ppo():
         # prevent, and it is the shape that produced the (11,0) collapse.
         writer.add_scalar("Entropy/Placement_Coverage",
                           float(np.mean(coverage_ents)), episodes_completed)
+        # The cure's own instrumentation -- read KL and Rows together, since KL
+        # can fall simply because the advisor stopped speaking.
+        writer.add_scalar("Advisor/KL", float(np.mean(coverage_kls)),
+                          episodes_completed)
+        writer.add_scalar("Advisor/Rows", float(np.mean(coverage_hits)),
+                          episodes_completed)
+        writer.add_scalar("Advisor/Coef", advisor_target.ADVISOR_COVERAGE_COEF,
+                          episodes_completed)
+        # Proof that the anneal wired in on 2026-08-14 actually runs.
+        writer.add_scalar("Shaping/SpellValueWeight",
+                          spell_value_weight(episodes_completed),
+                          episodes_completed)
         writer.add_scalar("Aux/OppElixir_MSE", float(np.mean(aux_losses)), episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         # Printed (not just logged to TensorBoard) so progress can be monitored from
@@ -1996,6 +2083,9 @@ def train_ppo():
               f"ClipFrac: {mean_clip_frac:.4f} | OppElixirMAE: {float(np.mean(aux_maes)):.2f}")
 
         obs_buffer.clear()
+        coverage_slot_buffer.clear()
+        coverage_target_buffer.clear()
+        coverage_has_buffer.clear()
         card_actions_buffer.clear()
         placement_actions_buffer.clear()
         decision_buffer.clear()

@@ -166,3 +166,133 @@ def build_legal_table(net):
     """{card_id: (612,) bool} for every card the advisor has a rule for."""
     return {cid: net._placement_legal[cid].numpy().astype(bool)
             for cid in ADVISOR_CARDS}
+
+
+# --- the trainer-facing half ------------------------------------------------
+# Both trainers use these rather than each growing its own copy. The two PPO
+# loops are already near-duplicates and every divergence between them has cost
+# this project a measurement at some point.
+
+# How hard the advisor target pulls, as a fraction of log(n_cells) so it is
+# directly comparable to PLACEMENT_COVERAGE_COEF. 0 disables the target
+# entirely -- no advisor call is made at rollout time either -- which is the
+# control arm of the A/B and costs nothing to run.
+ADVISOR_COVERAGE_COEF = float(os.environ.get("CLASH_ADVISOR_COVERAGE_COEF", 0.10))
+
+_LOG_N_CELLS = float(np.log(N_CELLS))
+
+# How much more likely a slot holding an advisor card is to win the coverage
+# draw. 1.0 = uniform (the pre-2026-08-14 behaviour). Default 5.0 because the
+# measured constraint is affordability, not the advisor declining: over 258
+# decision steps the sampled slot held an advisor card 32.6% of the time and
+# the advisor then spoke on 90% of those -- so the way to raise coverage is to
+# draw those cards more often, not to loosen the gate.
+ADVISOR_SLOT_WEIGHT = float(os.environ.get("CLASH_ADVISOR_SLOT_WEIGHT", 5.0))
+
+
+def enabled():
+    return ADVISOR_COVERAGE_COEF > 0.0
+
+
+def slot_weights_for(hand_ids):
+    """(B, hand_size) float: ADVISOR_SLOT_WEIGHT on advisor cards, 1 elsewhere.
+
+    hand_ids: (B, hand_size) long from `net.hand_card_ids`, -1 for empty.
+    Returns None when the weighting is off, which the sampler reads as uniform.
+    """
+    import torch
+    if ADVISOR_SLOT_WEIGHT == 1.0 or not enabled():
+        return None
+    w = torch.ones(hand_ids.shape, dtype=torch.float32)
+    for cid in ADVISOR_CARDS:
+        w[hand_ids == cid] = ADVISOR_SLOT_WEIGHT
+    return w
+
+
+def targets_for_batch(obs_np, card_ids, legal_table, T=None):
+    """One rollout step's advisor targets.
+
+    obs_np:    (B, obs_dim) float32 -- the observations the policy just acted on
+    card_ids:  (B,) int -- the card in each env's sampled COVERAGE slot, or -1
+    returns:   targets (B, N_CELLS) float32, has_target (B,) bool
+
+    Rows without a target are left as zeros and flagged False; the caller must
+    never read them, and the loss masks them out.
+    """
+    B = obs_np.shape[0]
+    out = np.zeros((B, N_CELLS), dtype=np.float32)
+    has = np.zeros(B, dtype=bool)
+    for b in range(B):
+        cid = int(card_ids[b])
+        legal = legal_table.get(cid)
+        if legal is None:
+            continue
+        t = target_logits_for(obs_np[b], cid, legal, T)
+        if t is None:
+            continue
+        out[b] = t
+        has[b] = True
+    return out, has
+
+
+def masked_kl_elementwise(new_logits, target_logits):
+    """KL(target || new) per row, over the LEGAL cells only. (...,) tensor.
+
+    Same arithmetic as `distill_tactics.masked_kl` without its final `.mean()`,
+    so the caller can mask rows before averaging -- which this one must, since
+    only some rows carry a target.
+
+    Zeroing the non-finite terms is correct rather than a patch. `-inf` appears
+    on illegal cells in BOTH distributions, torch evaluates
+    0 * (-inf - -inf) = nan there, and the true contribution of a cell carrying
+    no probability mass in either distribution is exactly zero.
+    """
+    import torch
+    ln = torch.log_softmax(new_logits, -1)
+    lo = torch.log_softmax(target_logits, -1)
+    term = lo.exp() * (lo - ln)
+    term = torch.where(torch.isfinite(term), term, torch.zeros_like(term))
+    return term.sum(-1)
+
+
+def coverage_terms(cf_logits, targets, has_target, decision, entropy_coef,
+                   log_n_placement):
+    """The coverage half of the loss, for one minibatch.
+
+    Returns (loss_delta, ent_frac, kl_mean, n_target) where `loss_delta` is
+    ADDED to the total loss -- it already carries both signs, since the entropy
+    half is a bonus (negative) and the KL half is a penalty (positive).
+
+    THE RESOLUTION OF THE CONFLICT IS THE ROW MASK. A row either has an advisor
+    target and gets KL to it, or it does not and gets the entropy bonus. Never
+    both: entropy says "be spread out" and KL says "be here", and a row carrying
+    both is asking the head for two incompatible things at once. That opposition
+    is not hypothetical -- it is why the measured 3-arm coverage A/B moved the
+    frozen cell rather than unfreezing it.
+    """
+    import torch
+    from torch.distributions import Categorical
+
+    has = has_target * decision
+    no_t = (1.0 - has_target) * decision
+    n_has = has.sum()
+    n_no = no_t.sum()
+
+    cf_ent = Categorical(logits=cf_logits).entropy()
+    # Denominator is the rows the term actually applies to. Dividing by all
+    # decision rows instead would silently scale the bonus down as advisor
+    # coverage rises, i.e. weaken the fallback exactly where it still matters.
+    ent_mean = (cf_ent * no_t).sum() / n_no.clamp(min=1.0)
+    ent_frac = ent_mean / log_n_placement
+    loss_delta = -entropy_coef * ent_frac
+
+    kl_mean = torch.zeros((), device=cf_logits.device)
+    if float(n_has) > 0.0 and ADVISOR_COVERAGE_COEF > 0.0:
+        kl_elems = masked_kl_elementwise(cf_logits, targets)
+        kl_mean = (kl_elems * has).sum() / n_has.clamp(min=1.0)
+        loss_delta = loss_delta + ADVISOR_COVERAGE_COEF * kl_mean / log_n_placement
+
+    # Only loss_delta carries the graph. The other three are diagnostics and are
+    # detached here so callers can log them without torch warning about
+    # converting a grad-tracking tensor to a scalar on every minibatch.
+    return loss_delta, ent_frac.detach(), kl_mean.detach(), n_has.detach()
