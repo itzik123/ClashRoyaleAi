@@ -1,384 +1,417 @@
-# Handoff — 2026-08-14: the hybrid works, the neural cure is next
+# Handoff — v1.2.0, the live-ready hybrid, and what the neural cure needs next
 
-Read this before touching the placement head, `tactics.py`, or the live loop.
-Everything here is measured. Where a number is not measured it says so.
+Written 2026-08-14, at tag **v1.2.0**. Read this before touching the placement
+head, `tactics.py`, `hybrid_policy.py` or the live loop.
 
-The one-line state: **the bot is +11.8 win-rate points better because the
-placement decision was taken AWAY from the network for three cards.** The
-network's placement head is still broken. Fixing it properly is the next job and
-this document is the blueprint.
+Everything here is measured. Where a number is not measured it says so, and
+where a previous session's claim was **weakened by measurement** it says that
+too — three such corrections are recorded below, and they are the most useful
+part of this document.
 
 ---
 
-## 0. What to read, in order
+## 0. What v1.2.0 is, in one paragraph
 
-| file | what |
+The bot's placement decision for three cards was taken **away** from the network
+and given to a deterministic advisor (`tactics.py`), which is worth **+11.8
+win-rate points** (p = 1.9e-05). That is the shipping configuration and it now
+runs live against the real game. Separately, the network's placement head was
+given the resolution it was missing (`place_hires`), which fixes **Fireball**
+outright by the engine's own scoring — but those trained weights are an
+experiment, not the shipping net. **v1.2.0's runtime behaviour is exactly the
+hybrid baseline**, because the new branch is zero-initialized and the shipping
+checkpoint predates it.
+
+| | |
 |---|---|
-| `PLACEMENT_COLLAPSE.md` | the full investigation, every number, every negative result |
-| `python_ai/hybrid_policy.py` | the shipping policy — commander + tactical officer |
-| `python_ai/tactics.py` | the deterministic advisor, and the two measured surprises |
-| this file §5 | **the blueprint for the cure** |
+| shipping checkpoint | `python_ai/model_weights_selfplay.pth` (episode 64,309) |
+| shipping policy | `python_ai/hybrid_policy.py` — network chooses WHAT/WHEN, advisor chooses WHERE for Cannon/Fireball/Giant, `SolvencyGate` vetoes bankrupting spends |
+| live entry point | `perception/live/mvp_loop.py --policy neural --act` |
+| tests | 42 in `python_ai/test_python_ai.py`, 337 + 1 skipped in `perception/tests` |
 
-CLAUDE.md has been updated with the durable lessons; this file is the working
-handoff and can be deleted once §5 is done.
-
----
-
-## 1. The defect, restated precisely
-
-The placement head is a **constant function** for the three cards the policy
-stopped playing, and its cells are worth **less than a random legal cell**:
-
-| | Cannon (tower HP preserved) | Fireball (elixir killed) | Giant (tower dmg dealt) |
-|---|---|---|---|
-| trained policy | 12.1 | 0.000 | 3.3 |
-| random legal cell | 353.5 | 0.276 | 94.3 |
-| **advisor** | **564.1** | **2.405** | **535.6** |
-
-All engine-scored: snapshot the live match, `inject()` the card at a candidate
-cell (injection costs no elixir, so the rest of the match is untouched), run
-forward, read the engine's own accounting. n = 478 / 950 / 913, p up to 1.2e-119.
-
-**Root cause (mechanical, not statistical):** both the actor loss and the
-placement entropy bonus flow through `placement_given_card` for the **chosen**
-card only, so a card the policy stops playing receives **exactly zero** placement
-gradient forever. `card_id_embed` is `nn.Linear(num_card_ids, 16, bias=False)`,
-so column *c* belongs to card *c* alone and nothing downstream of the LSTM
-consumes an unchosen card's embedding.
-`python_ai/test_placement_coverage.py::test_unchosen_card_gets_no_gradient`
-asserts the gradient is `== 0.0` in exact arithmetic. That is a self-sustaining
-deadlock — frozen cell → card really is worthless → card head suppresses it →
-no gradient — which is why more training never fixed it.
+```bash
+python_ai/venv/Scripts/python.exe -m pytest python_ai/test_python_ai.py -q
+```
+```bash
+perception/.venv/Scripts/python.exe -m pytest perception/tests -q
+```
 
 ---
 
-## 2. Experiments run this session
+## 1. v1.2.0 baseline metrics — these are the numbers to beat
 
-### 2.1 Failed: entropy coverage term (`PLACEMENT_COVERAGE_COEF`)
-Restores a gradient to unplayed cards via placement entropy on one sampled
-affordable slot per step. 3 arms, parallel, byte-identical code, ~80 PPO updates,
-matched at episode ~64,800, engine-scored on 835/1,573 paired states.
+### 1.1 Win rate (simulator, paired, opponent 1.5× elixir)
 
-| Cannon | modal cell | top-1 p | tower HP preserved |
-|---|---|---|---|
-| seed | (11,0) | 0.920 | 135.9 |
-| control (coef 0) | (11,0) | 0.550 | 116.4 |
-| treatment (coef 0.02) | (6,0) | **0.051** | 182.0 |
-
-Sign test p = 0.158; Fireball unchanged at 0.000. **The lock moved, it did not
-break.** Top-1 of 0.051 is near-uniform (uniform = 1/612 = 0.0016), and *the
-argmax of a flat map is an arbitrary constant*. **Entropy is a MARGINAL
-objective** — "be spread out", not "depend on the board".
-
-The code is still in `train.py`/`train_selfplay.py` and is ON by default at 0.02.
-It is harmless (a regularizer that never touches `new_logprobs`; pinned by
-`test_coverage_does_not_change_the_ppo_ratio`) and it does close a real gradient
-hole. **It is not a fix on its own.** Ablate with
-`CLASH_PLACEMENT_COVERAGE_COEF=0`.
-
-### 2.2 Failed: advisor distillation into the head (`distill_tactics.py`)
-Advisor cells as a supervised target for the dead cards, trunk/LSTM/critic frozen
-(critic drift verified 0.000000), alive cards held by a KL anchor.
-Cannon **+161.9 HP, p = 2.0e-06** — real but still below random. Fireball
-**0.000, no movement at all**. Cross-entropy fell 180.9 → 21.4 while exact-cell
-argmax match stayed **0.0%**. That signature — loss falling, argmax never
-matching — is a target the head **cannot represent**, not one it has not learned.
-See §5 Path A.
-
-### 2.3 Failed: potential-based solvency shaping (`elixir_shaping.py`)
-Policy-invariant by construction, so safe and also limited. Over ~80 updates:
-bankruptcy **−1.0 points, 95% CI [−2.7, +0.6], p = 0.21**. Every other metric's
-CI contains 0. Built, 9 unit tests (telescoping, "a pure hoarder earns nothing"),
-wired in, **on by default** via `CLASH_SOLVENCY`. Keep or disable freely.
-
-### 2.4 Worked: the hybrid
-See §3.
-
-### 2.5 Removed after measurement: tactical INITIATION
-Letting the officer *start* Cannon/Fireball plays (not just place them) looked
-necessary — the commander's take-up is 0.06/0.00/0.00. A 5-arm ablation, n=30:
-
-| arm | win rate | tower HP DEALT/ep | cannons initiated |
-|---|---|---|---|
-| neural | 0.600 | 7627 | — |
-| gate only | 0.633 | 6659 | 0.00 |
-| **placement only** | **0.733** | 7655 | 0.00 |
-| initiate | 0.467 | 5390 | 4.03 |
-| full stack | 0.233 (p=0.013) | 4216 (p=0.0014) | 4.73 |
-
-**Defending better is worthless if it is paid for with the attack.** The
-placement override survives precisely because it is PASSIVE: it changes where a
-card lands, never how often one is played. `initiate=False` is the default;
-`initiate=True` is kept only so the ablation reproduces.
-
----
-
-## 3. The hybrid's baseline — these are the numbers to beat
-
-`python_ai/hybrid_policy.py`. Two independent **pre-registered** paired runs
-(`env.snapshot()` gives both arms a bit-identical opening), opponent 1.5x elixir,
-net `model_weights_selfplay.pth`:
+Two independent **pre-registered** paired runs, `env.snapshot()` giving both
+arms a bit-identical opening, net `model_weights_selfplay.pth`:
 
 | | n | neural | hybrid | delta | p |
 |---|---|---|---|---|---|
 | exploratory | 250 | 0.646 | 0.720 | +0.074 [−0.004, +0.150] | 0.070 |
 | **confirmatory** | **600** | **0.584** | **0.703** | **+0.118 [+0.067, +0.171]** | **1.9e-05** |
 
-Confirmatory run, full metric set (n=600):
+Confirmatory run, full metric set (n = 600):
 
 | metric | neural | hybrid | paired delta | p |
 |---|---|---|---|---|
 | win rate | 0.584 | **0.703** | +0.118 | 1.9e-05 |
-| bankrupt <3 elixir | 72.7% | **41.7%** | −31.0 pts, 600/600 | 4.8e-181 |
+| bankrupt (<3 elixir) | 72.7% | **41.7%** | −31.0 pts, 600/600 | 4.8e-181 |
 | mean elixir | 2.22 | 3.45 | +1.23, 600/600 | 4.8e-181 |
 | elixir spent / ep | 103 | 105 | +1.6 | 0.042 |
 | plays / ep | 29.3 | 30.4 | +1.1 | 0.003 |
-| tower HP DEALT / ep | 6545 | **7089** | +544 | 0.010 |
+| tower HP dealt / ep | 6545 | **7089** | +544 | 0.010 |
 | tower HP lost / ep | 5575 | **4564** | −1011 | 7.4e-09 |
 
-It attacks better AND defends better on essentially unchanged spending.
-`init_cannon/fireball/giant` are all 0.00, so the entire gain is the passive
+It attacks better *and* defends better on essentially unchanged spending.
+`init_cannon/fireball/giant` are all 0.00 — the entire gain is the **passive**
 placement override plus the solvency gate.
 
-**Two cautions.** The neural baseline measured 0.646 and 0.584 across the two
-runs — that is the control-arm variance CLAUDE.md records (0.570–0.775), and it
-is why both arms must share an opening. And this is a **workaround**: the
-placement head is still worse than random, and the ~7x value decision-time search
-demonstrated is still unclaimed.
+**The control arm's own variance is the trap.** Plain greedy has measured
+0.570–0.775 across runs of this same net. Any comparison here under a few
+hundred *paired* trials is measuring that, not the treatment.
 
-Reproduce:
 ```bash
 python_ai/venv/Scripts/python.exe python_ai/hybrid_ab.py --n 600
 ```
 
----
+### 1.2 Live, on the real game (new in v1.2.0)
 
-## 4. Architectural changes made
+One Training Camp match, `--policy neural --act --ensure-match`, DirectML:
 
-| file | change | risk |
+| | |
+|---|---|
+| decisions | 250 in 260 s, **0.96 Hz** |
+| decisions over the 1000 ms budget | **0 / 250** |
+| board age | mean 511 ms, median 479, p95 852, max 1149 |
+| over the staleness cap | **0 / 250** |
+| perception thread | 663 boards @ 2.55 Hz, **0 errors** |
+| perceive breakdown (median) | decode 48.9 ms / detector 224.5 ms / adapter 75.1 ms |
+| placements issued | 18; **17/18** confirmed by at least one oracle |
+| actuator | raw-evdev, 0 dropped, 0 errors |
+
+**Two honest caveats.** The advisor fired **once** in 250 decisions — the
+commander's take-up of Cannon/Fireball/Giant is ~0, so the live sample of the
+override path is thin, and the live evidence is that the loop *runs*, not that
+the advisor *helps*. And the bot **lost that match 0–3** to Trainer Red; live
+play is gated by perception fidelity, and **no live win rate has ever been
+measured** (the operator reports it plays visibly better with the hybrid on;
+that is an observation, not a measurement).
+
+The reproducible half of this check needs no emulator and is deterministic:
+
+```bash
+perception/.venv/Scripts/python.exe -m perception.live.mvp_loop --policy neural --frames perception/assets/live/match_practice_01 --seconds 45
+```
+
+### 1.3 Placement quality, scored by the engine
+
+The definitive metric: snapshot the match, `inject()` the card at the proposed
+cell (injection costs no elixir, so the rest of the match is untouched), run
+forward, read the engine's own accounting. Paired over states drawn by one fixed
+reference policy (`prove_placement.py`, 12 episodes, opponent 1.5×):
+
+| arm | Fireball, elixir killed (n=1937) | Cannon, tower HP preserved (n=894) |
 |---|---|---|
-| `python_ai/tactics.py` | **NEW.** Deterministic advisor: `best_spell_cell`, `best_building_cell`, `best_giant_cell`, `SolvencyGate`, `TacticalOverride`. Reads the OBSERVATION, so it behaves identically in sim and live. | none (additive) |
-| `python_ai/hybrid_policy.py` | **NEW.** The shipping policy. | none (additive) |
-| `python_ai/elixir_shaping.py` | **NEW.** PBRS solvency potential. | inert, measured |
-| `python_ai/model.py` | `forward_sequence(..., extra_card_idx_seq=None)` returns a 6th value. **No new parameters → no checkpoint invalidated.** Both trainers updated (the only callers). | low |
-| `python_ai/train.py` | coverage term, solvency term, and four env-var overrides: `CLASH_PLACEMENT_COVERAGE_COEF`, `CLASH_SOLVENCY`, `CLASH_NUM_ENVS`, `CLASH_PHASE2_ENTRY_WIN_RATE`, `CLASH_SAVE_EVERY`. Defaults preserve prior behaviour except the two new loss terms. | **gameplay-affecting** |
-| `python_ai/train_selfplay.py` | same coverage term | **gameplay-affecting** |
-| `perception/live/mvp_loop.py` | `NeuralPolicy(tactical=True, reserve=4.0)`; CLI `--no-tactical`, `--reserve`. | live path |
+| shipping net alone | 0.062 | 102.2 |
+| coarse-distilled control | 0.000 | 161.3 |
+| **net + `place_hires`** | **1.863** | **232.6** |
+| random legal cell | 0.346 | 357.0 |
+| **advisor (what ships)** | **2.647** | **539.1** |
 
-**The live override is handed the INTERSECTION of engine legality and actuator
-reachability.** Handing it only the engine mask would let it propose engine
-row 0, whose tap lands below the arena — exactly the bug the tile-grid fix
-closed. An override is precisely the kind of code that reintroduces it.
-
-Harnesses added: `prove_placement.py` (engine-scored, paired, with an advisor
-arm), `prove_solvency.py`, `hybrid_ab.py` (`--ablate`), `gate_ab.py`,
-`tactical_ab.py`, `distill_tactics.py`.
-
-Tests: 31 pass in `python_ai/` (`test_tactics.py`, `test_placement_coverage.py`,
-`test_elixir_shaping.py`); perception unchanged at 337 passed / 1 skipped.
-
-```bash
-python_ai/venv/Scripts/python.exe -m pytest python_ai/test_tactics.py python_ai/test_placement_coverage.py python_ai/test_elixir_shaping.py -q
-perception/.venv/Scripts/python.exe -m pytest perception/tests -q
-```
+Read this as the ranking it is: **the advisor is still the best placer for both
+cards**, which is why the override stays on. The head went from *worse than
+chance* to **5.4× better than chance** for Fireball, and is still below chance
+for the Cannon.
 
 ---
 
-## 5. THE BLUEPRINT FOR THE CURE
+## 2. Everything measured today, and what each one taught
 
-Two paths. **They are not alternatives — Path A is a prerequisite for getting
-full value from Path B**, because search proposes candidates and a head that
-cannot express a good cell cannot propose one.
+### 2.1 The hi-res branch works, and it is non-destructive (`prove_hires.py`)
 
-### Path A — give the placement head the resolution it lacks
+`cnn_trunk` pools twice, so the head read a **9×5** map of a 34×18 board.
+`place_hires` adds a parallel path from the trunk's own **pre-pool 16×34×18**
+activation at one-tile resolution, conditioned on the same `(hx, card)` context,
+added to the coarse logits as a residual. **3,993 parameters (+0.2%).**
 
-**The diagnosis, precisely.** `cnn_trunk` is
-`Conv(21→16) → MaxPool(2, ceil) → Conv(16→32) → MaxPool(2, ceil)`, so a
-34×18 board becomes **9×5**. `placement_given_card` then feeds that 32×9×5 map
-through `place_up` (`Upsample×2 → Conv → Upsample×2 → Conv → Conv`) back to
-36×20 and crops to 34×18. **One pooled cell covers roughly 4×4 board tiles.**
-The card context enters as a spatially uniform vector added to that map.
+Controlled A/B: one collection of 2,376 states from the seed policy's own
+trajectory, contiguous-tail held-out split, both arms from the same checkpoint
+and seed, identical epochs/lr/anchor. The **only** difference is whether
+`place_hires` trains. Held out (n = 582 / 653):
 
-So the head's spatial vocabulary is ~4-tile blocks. An exact-cell target is close
-to inexpressible, which is exactly what §2.2 measured: CE fell 4× while argmax
-match never left 0.0%. Fireball is worse than Cannon because it must localise an
-enemy clump anywhere on 34 rows, and the frozen trunk evidently does not carry
-that feature at all.
+| | control (coarse) | +hires |
+|---|---|---|
+| Fireball exact cell | 0.0% | **63.9%** |
+| Fireball mean distance | 14.25 tiles | **3.31** |
+| Fireball top-1 p | **0.0017** | 0.1002 |
+| Fireball modal share | 98.0% | 13.0% |
+| Cannon within 2 tiles | 0.2% | **10.0%** |
+| Cannon mean distance | 9.69 tiles | **6.89** |
+| Cannon modal share | 88.8% | 31.8% |
 
-> **STATUS 2026-08-14 — A2 is DONE and Fireball is FIXED (engine-scored 1.863
-> elixir killed vs 0.346 for a random cell and 2.647 for the advisor, p=1.8e-95,
-> 561 better / 71 worse). The Cannon improved but is still below random, so the
-> tactical override stays on for it.** A1 is done and does NOT help.
-> The diagnosis above is right that resolution is the binding constraint and
-> wrong that the target is inexpressible — the coarse head fits an exact-cell
-> task at small scale (14/14), it just cannot at real scale, where it dissolves
-> to *uniform* (top-1 p 0.0017 vs a uniform 0.00163) rather than sharpening on
-> the wrong cell. A2 was built as a **zero-initialized residual branch** instead
-> of a concat into `place_up`, which keeps every checkpoint valid. See
-> CLAUDE.md's 2026-08-14 `place_hires` entry, `prove_hires.py`, and
-> `test_placement_hires.py`. A1's soft target measured neutral-to-worse as a
-> third arm on the same data. A3 remains untried and is still ordered last.
+**Read the control's top-1 probability first: 0.0017 against a uniform
+1/612 = 0.00163.** Fit to the advisor's exact cell, the coarse head does not
+sharpen on a wrong cell — it *dissolves to uniform*, and then reports a 98.0%
+modal share, which is the degenerate reading CLAUDE.md warns about. Its loss
+plateaus at ~21 (matching the earlier 21.4) while the branch's falls to 15.1.
+Replicated on two independent collections.
 
-**Do these in order. Each is independently measurable.**
+**Why it costs no checkpoint.** The branch's final conv is zero-initialized in
+weight *and* bias, so it contributes an **exact** zero at init and an existing
+checkpoint behaves bit-identically. The loader says so:
+`warm-started 27/27 tensor(s), re-initialized: []`. The handoff's original plan
+(concatenate into `place_up`) would have changed that layer's shape and
+discarded the trained placement head from every checkpoint. Gradient still
+flows: a zero conv has a nonzero gradient of its own, so it leaves zero on the
+first step and the layer under it starts learning on the second.
 
-**A1. Soft neighbourhood target (cheap, do first, no architecture change).**
-Replace the exact-cell cross-entropy in `distill_tactics.py` with a KL to a
-target distribution spread over a disc/Gaussian centred on the advisor's cell,
-σ ≈ 1.5 tiles — matched to the 4× upsample block, i.e. to what the head can
-actually represent. Reuse `masked_kl()` (already in that file); it zeroes the
-non-finite terms that `placement_mask`'s `-inf` cells otherwise turn into `nan`.
-Expected: Cannon should clear the 353.5 HP random baseline. If Fireball still
-does not move, the trunk is the binding constraint → A2.
+**Cost:** placement head fwd+bwd at B=256 went 85.0 → 105.7 ms (+24% of the
+head, which is ~41% of update time, so roughly **+10% per PPO update**).
 
-**A2. High-resolution skip connection (the recommended structural fix).**
-`cnn_trunk` is a `nn.Sequential`; split it so the **pre-pool** 16×34×18 feature
-map is available, and concatenate it into `place_up`'s final stage (which is
-already at 36×20 — crop/pad to align). This gives the placement head a full-
-resolution path *without* touching the features the card head, critic, LSTM and
-aux head consume, so nothing else in the network is disturbed.
-- Cost: one 3×3 conv at full resolution. The placement head is already ~41% of
-  update time; measure before and after, and note `place_up` got **1.8× faster**
-  when `ConvTranspose2d` was replaced, so there is headroom.
-- **This changes `place_up`'s shape → the placement head will not load from
-  existing checkpoints.** `load_state_dict_flexible` warm-starts everything else
-  and reinitialises it, which is the same trade the 2026-08-09 checkerboard fix
-  made. Say so when proposing it.
+### 2.2 CORRECTION — "the head cannot express an exact cell" was too strong
 
-**A2b. THE NEXT STEP, and it is not more distillation: the entropy coverage
-term will erode what A2 just bought.** This is a mechanical argument, not a
-measurement, and it should be measured before it is trusted —
-`PLACEMENT_COVERAGE_COEF` adds an *entropy bonus* on one uniformly-sampled
-affordable slot per step. For a card the policy does not play, that bonus is the
-**only** placement gradient in the whole objective, and it pushes the map toward
-uniform. A distilled Fireball map is exactly such a card's map. So the two
-mechanisms are in direct opposition: distillation puts mass on the right cell,
-coverage pushes it flat, and coverage runs for the whole of training.
+The premise for this whole workstream was `distill_tactics.py`'s signature:
+cross-entropy fell 180.9 → 21.4 while exact-cell argmax match never left
+**0.0%**, read as inexpressibility. Tested directly, on the task reduced to its
+essential — 14 boards differing only in which column holds one enemy, answer in
+that column — **the coarse head fits 14/14 exactly.** Nearest-upsample followed
+by 3×3 convs lets a fine cell mix *neighbouring* pooled cells, so sub-block
+position is recoverable in principle.
 
-The fix follows the conclusion this project already reached twice — *closing a
-coverage hole needs a TARGET, not noise* — so the coverage term should carry the
-advisor's map rather than entropy: for the sampled slot, if the advisor has a
-rule for that card, add KL to its (masked) score map; otherwise fall back to the
-entropy bonus as today. The pieces now exist: `tactics.building_score_map`,
-`tactics.spell_catch_map`, `distill_tactics.collect(..., want_maps=True)` and
-`prove_hires.soft_target_logits`. Compute the target once per rollout step (not
-per PPO epoch) and buffer it; the advisor costs ~0.2 ms per call.
+The limit is real but it is **capacity at scale**, not impossibility. Both
+results are kept in `test_python_ai.py` so the correction cannot be lost.
 
-Note the one result that argues against assuming this will work: the soft target
-in A1 was *also* a target rather than noise, and it bought nothing. The
-difference is that A1 replaced a good hard target with a soft one, while this
-replaces pure noise with a target — but that is an argument, not evidence.
+### 2.3 CORRECTION — the Cannon's exact cell is the teacher's fault
 
-**A3. Unfreeze the trunk — only if A1+A2 are insufficient.** Ordered last
-because it is the most invasive: the trunk feeds the critic, and the critic is
-the scorer decision-time search depends on. If you do it, keep the critic frozen,
-add a KL anchor on the card head, and verify critic drift is 0.000000 the way
-`distill_tactics.py` already does.
+`building_score_map` accumulates coverage by scattering **flat discs**, so every
+cell reaching the same enemies scores *exactly* the same and the only
+tie-breakers are two step functions. The top of the surface is therefore a large
+exact-tie plateau, and `np.argmax` returns its top-left cell by row-major
+accident — a target that jumps discontinuously while the advisor is genuinely
+**indifferent** across all of it.
 
-**How to know it worked.** `prove_placement.py` is ready and includes an
-**advisor arm as the ceiling**:
-```bash
-python_ai/venv/Scripts/python.exe python_ai/prove_placement.py \
-    --seed model_weights_selfplay.pth --control <before>.pth --treatment <after>.pth --episodes 8
-```
-Targets, in order: beat **random** (Cannon 353.5 HP, Fireball 0.276 elixir), then
-approach the **advisor** (564.1 / 2.405). Report modal share **next to top-1
-probability** — modal share alone degenerates on a near-uniform distribution
-(§2.1) and will lie to you.
+Quantified: lowering the softmax temperature **cannot** push the Cannon target
+below **~66% of maximum entropy** (Fireball reaches 41%), because the ties never
+break.
 
-### Path B — decision-time search, now with good candidates
+| T | Cannon | Fireball |
+|---|---|---|
+| 0.10 | 65.8% | 41.5% |
+| 0.25 | 68.3% | 41.8% |
+| 1.00 | 86.6% | 52.7% |
+| 2.00 | 96.7% | 89.6% |
 
-CLAUDE.md: 1-ply search buys **+0.319** win rate at 2.2× wall clock, and 87% of
-its overrides are "wait where greedy plays". The engine is ~150× cheaper than
-one network forward, so **scoring is the entire budget**, not simulation.
+So Cannon exact-match near zero is **expected and uninformative**. Judge a
+building by mean distance and by engine score, never by exact cell.
+`building_score_map` was split out of `best_building_cell` so the surface that
+is distilled and the cell that is played cannot drift apart (pinned by test).
 
-Previously, "better candidate proposals did not make the expert better"
-(0.940 vs 0.944) — but that was measured with the **collapsed** placement head
-proposing candidates. It now has a source of genuinely good cells.
+### 2.4 NEGATIVE — the soft neighbourhood target does not help (with a frozen trunk)
 
-**B1.** In `search_ab_test.py::_build_candidates`, add the advisor's cell for
-each affordable card as an extra candidate alongside the policy's top-K. Beware
-the no-op duplication bug already documented there: `(NOOP, gx, gy)` and
-`(NOOP, 0, 0)` are the same action and scoring both silently destroyed an earlier
-run.
-**B2.** Measure search **on top of the hybrid**, not on top of the raw neural
-policy — the hybrid is the new baseline and the comparison must be against it.
-**B3.** If search + hybrid beats hybrid, expert-iterate it back with the
-**value-distribution** recipe (`expert_iteration.py --train-dist`, T chosen from
-`--target-entropy`, trunk frozen), which is the only distillation variant that
-has ever converted here (+0.045, p=0.0074). Hard-label argmax does not work.
+Run as a third arm on the same collection: KL to
+`softmax(standardized advisor score / T)`, T = 0.25 chosen off the entropy table
+above rather than tuned on the outcome.
 
-**Live constraint:** the loop acts at 1 Hz and search costs 2.2× wall clock. It
-is affordable in simulation for training labels; whether it fits the live budget
-is unmeasured.
+| | control | argmax target | **soft target** |
+|---|---|---|---|
+| Fireball within 2 | 0.0% | **71.4%** | 71.2% |
+| Fireball mean distance | 14.25 | **3.31** | 4.49 |
+| Fireball exact cell | 0.0% | **63.9%** | 0.8% |
+| Cannon within 2 | 0.2% | **10.0%** | 8.4% |
+| Cannon mean distance | 9.69 | **6.89** | 7.92 |
+
+It spreads mass over the neighbourhood exactly as designed and buys nothing.
+The plateau argument in §2.3 predicted it would rescue the Cannon. It did not.
+**Resolution was the binding constraint, not target softness.**
+
+**Scope this result precisely before discarding the idea:** it was measured with
+the **trunk frozen**. Soft target + *unfrozen* trunk is a different experiment
+and is not refuted by the above — see §3.
+
+### 2.5 The live loader was strict and would have crashed every live run
+
+`NeuralPolicy.__init__` called `load_state_dict` with the default
+`strict=True`, so every pre-v1.2.0 checkpoint raises on the new `place_hires`
+keys. It now loads with `strict=False` **plus** an explicit check that the only
+missing keys are that branch — `strict=False` alone would also silently swallow
+a genuinely mismatched checkpoint. **Found by running the frame-replay path, not
+by any test.** Two diagnostic probes had the same defect and were fixed with
+`load_state_dict_flexible`.
+
+The loader's own message was also misleading: it reported "re-initialized" for
+both "a trained tensor was discarded" and "the net has parameters this
+checkpoint predates". Those are opposite situations and only one is bad; they
+now print differently.
+
+### 2.6 A latent bug found in the sweep and deliberately NOT fixed
+
+`spell_value_weight` is **never called**. Both `compute_shaping` call sites omit
+`w_spell`, so the Fireball-value shaping weight is pinned at
+`W_SPELL_VALUE_START = 0.08` for the whole of training and the anneal to zero
+that its own comment block describes **never happens**.
+
+Left in place with a warning docstring rather than wired in or deleted: wiring
+it changes the reward on every step of every future run (gameplay-affecting,
+needs its own measurement and its own decision), and deleting it would erase the
+evidence that the intended schedule exists. **Decide this deliberately before
+the next long run.**
 
 ---
 
-## 6. Traps discovered this session — do not re-pay for these
+## 3. THE BLUEPRINT FOR THE NEURAL CURE — do these in order
+
+The goal is a network that does not need the tactical officer. Two things stand
+between here and there, and they are independent.
+
+### Step 1 — give the coverage term a TARGET (highest value, not more distillation)
+
+**The problem, stated mechanically.** `PLACEMENT_COVERAGE_COEF` (0.02, on by
+default) adds an **entropy bonus** on one uniformly-sampled affordable slot per
+step. For a card the policy does not play, that bonus is the **only** placement
+gradient in the entire objective — and it pushes the map toward uniform. A
+distilled Fireball map is exactly such a card's map. So distillation and
+coverage are in **direct opposition**: distillation puts mass on the right cell,
+coverage flattens it, and coverage runs for all of training.
+
+This predicts that §2.1's gain will erode under PPO. **That prediction is not
+yet measured** — measuring it is cheap and is the first thing to do (train from
+the hires-distilled net for a few hundred updates and re-run `prove_placement`).
+
+**The fix follows the conclusion this project already reached twice** — *closing
+a coverage hole needs a TARGET, not noise.* For the sampled coverage slot: if
+the advisor has a rule for that card, add KL to its masked score map; otherwise
+fall back to today's entropy bonus. The pieces already exist:
+
+- `tactics.building_score_map` / `tactics.spell_catch_map` — the surfaces
+- `distill_tactics.collect(..., want_maps=True)` — collection with maps
+- `prove_hires.soft_target_logits` — score map → target logits at temperature T
+
+Compute the target **once per rollout step**, not per PPO epoch, and buffer it
+(~0.2 ms per advisor call; ~9.8 MB per card per rollout at 500 steps × 8 envs).
+Gate it behind an env var so it can be ablated, like the existing coverage term.
+
+**The honest counter-argument, stated so you can weigh it:** §2.4's soft target
+was *also* a target rather than noise, and it bought nothing. The difference is
+that §2.4 replaced a good hard target with a soft one, whereas this replaces
+pure noise with a target. That is an argument, not evidence.
+
+### Step 2: unfreeze the CNN trunk — but only with these guards
+
+Ordered second because it is the most invasive change available: the trunk feeds
+the **critic**, and the critic is the scorer that decision-time search depends
+on. Every distillation result above was obtained with the trunk frozen, so the
+trunk's features are the one thing never yet varied.
+
+The specific reason to expect something: **Fireball moved and the Cannon did
+not.** Fireball needs "where is the enemy clump", which conv1 clearly carries at
+full resolution. The Cannon needs "where will this push be in 2 s, and which
+lane is threatened" — a *derived* quantity nothing in the observation encodes
+directly. If the frozen trunk does not carry it, no head on top can read it, and
+unfreezing is the only lever that changes that.
+
+Guards, all of which have bitten this project before:
+
+1. **Keep the critic frozen** and assert drift is `0.000000`, exactly as
+   `distill_tactics.py` and `expert_iteration.py` already do. A drifting critic
+   silently degrades every future search label.
+2. **KL-anchor the card head and the alive cards' placement maps.** Five of
+   eight cards currently work; unfreezing the shared trunk can drag them.
+3. **Re-run the side null** — a policy against a bit-exact copy of itself must
+   score ~0.50. It is the only diagnostic that catches an observation-shaped
+   fault, and it read 0.598 once while every other metric looked healthy.
+4. **This is where the soft target is worth retrying** (§2.4 scoped it to a
+   frozen trunk). Run it as an arm, not as the default.
+
+### Step 3: only then, re-measure the override
+
+The override is justified for exactly as long as the advisor beats the head
+(§1.3). Re-run `prove_placement.py` after Steps 1–2 and turn the override off
+**per card**, not wholesale, and only where the head has overtaken the advisor.
+Then re-run `hybrid_ab.py` at n ≥ 600 — the control's own variance is 0.570–0.775
+and anything smaller measures noise.
+
+**Do not let the officer INITIATE plays.** A 5-arm ablation measured that
+letting it start Cannon/Fireball plays (rather than only place them) cut tower
+damage dealt by 3,410/ep and win rate by 0.367 (p = 0.013). The override works
+*because* it is passive: it changes where a card lands, never how often one is
+played, so it cannot spend elixir the commander did not already commit.
+
+### Explicitly NOT the next step
+
+- **More distillation data.** Coverage kept climbing while lift stalled in the
+  expert-iteration work; more data is where that went wrong, and DAgger at a
+  fixed budget was the only thing that reversed it.
+- **Re-trying the entropy coverage term as a fix on its own.** Measured: it
+  moves the frozen cell, it does not break the lock.
+- **Decision-time search (Path B).** Still worth ~7× what distilling it buys
+  (+0.319 vs +0.045), but it costs 2.2× wall clock and the live loop already
+  spends ~350 ms of its 1000 ms budget on perception. It is a training-label
+  generator here, not a live option.
+
+---
+
+## 4. Traps — do not re-pay for these
+
+Carried forward, all still live:
 
 - **Warm-starting a converged policy into a FRESH training state re-arms the
   initial entropy target and the controller dissolves the policy.** Seeding a
-  bare `state_dict` takes `train.py`'s legacy path, resets `episodes_completed`
-  to 0, so `placement_entropy_target(0)` returns 0.65 against a policy at 0.11.
-  Both arms of the first A/B went to near-uniform placement. **Always seed a full
-  checkpoint** — `scratchpad/make_seed.py` shows the required keys.
-- **A short resumed run writes NO checkpoint.** `last_save_ep = episodes_completed`
-  on resume, so the first save is 500 episodes later and `timeout` kills the
-  process before the end-of-loop save. Use `CLASH_SAVE_EVERY`.
-- **A stage-5 resume flips to `random_opponent` after 100 episodes** (win rate
-  ≥ `PHASE2_ENTRY_WIN_RATE`, and `PHASE2_MIN_CURRICULUM_STAGE` is 4), swapping
-  the opponent's deck mid-experiment. Pin it with `CLASH_PHASE2_ENTRY_WIN_RATE=2.0`.
-- **`F.kl_div` over `placement_mask`'s `-inf` cells gives `nan`**
-  (`0 * (-inf − -inf)`). Use `masked_kl()`.
-- **Modal share degenerates on a near-uniform distribution** — the argmax of a
-  flat map is arbitrary but deterministic, so a dissolved head reports 99% modal
-  share. Always read it next to top-1 probability.
-- **Stepping the LSTM once per query** instead of once per timestep silently runs
-  the reference policy at double clock. `prove_placement.step_net` does it right.
+  bare `state_dict` takes `train.py`'s legacy path and resets
+  `episodes_completed` to 0, so `placement_entropy_target(0)` returns 0.65
+  against a policy at 0.11. **Always resume through the full-checkpoint path.**
+- **A short resumed run writes NO checkpoint** (`last_save_ep` is set on
+  resume). Use `CLASH_SAVE_EVERY`.
+- **A stage-5 resume flips to `random_opponent` after 100 episodes**, swapping
+  the opponent's deck mid-experiment. Pin with `CLASH_PHASE2_ENTRY_WIN_RATE=2.0`.
+- **`F.kl_div` over `-inf` cells gives `nan`.** Use `distill_tactics.masked_kl`.
+- **Modal share degenerates on a near-uniform distribution** — always read it
+  next to top-1 probability. §2.1's control is the worked example: 98.0% modal
+  share at a top-1 of 0.0017.
+- **Stepping the LSTM once per query** instead of once per timestep silently
+  runs the reference policy at double clock. `prove_placement.step_net` is right.
 - **`get_elixir_value_killed_by(CANNON)` is the wrong metric for a building** —
-  it credits only its killfeed and scores distraction, most of its job, at zero.
-  Use tower HP preserved against a no-building counterfactual.
+  it scores distraction, most of its job, at zero. Use tower HP preserved.
+
+New today:
+
+- **Two boards that differ only in the elixir scalar are ONE board to the
+  placement head.** The first version of the expressivity test sampled 8 rollout
+  states that collapsed to 7 distinct spatial maps, making the task unfittable
+  by any head at any resolution. Build such fixtures with `env.inject`.
+- **`place_ctx_hi` matches the `place_ctx` prefix.** Any code selecting
+  trainable parameters by `name.startswith("place_ctx")` will silently train
+  half the hi-res branch. `prove_hires.fit` handles this explicitly; copy that
+  pattern.
+- **The tests are one file now** (`python_ai/test_python_ai.py`). If you split
+  them again, keep the section docstrings — they carry the *why*.
 
 ---
 
-## 7. Open, and explicitly not done
+## 5. Repo state at v1.2.0
 
-- The placement head is **still worse than random**. §5 is the fix.
-- The coverage term and the solvency term are both **on by default** and both are
-  measured to do nothing useful on their own. Neither is load-bearing for the
-  +11.8; disable freely while experimenting.
-- ~~**Nothing here has been run against the live emulator.**~~ **DONE
-  2026-08-14 — the hybrid runs live and holds its budget.** One Training Camp
-  match, `--policy neural --act --ensure-match`, DirectML:
+| | |
+|---|---|
+| tag | `v1.2.0` on `main` |
+| deleted | `python_ai/curriculum.py` (legacy gym registration, imported by nothing) |
+| merged | 4 test files → `python_ai/test_python_ai.py` (42 tests, node-id set verified identical) |
+| deduplicated | `_to_scalar`, was two byte-identical copies → `gym_wrapper._to_scalar` |
+| new | `python_ai/prove_hires.py`, `MicroRoyaleNet.place_hires` / `place_ctx_hi` / `extract_features_hires` / `hires_features` |
 
-  | | |
-  |---|---|
-  | decisions | 250 in 260 s, **0.96 Hz** |
-  | decisions over the 1000 ms budget | **0/250** |
-  | board age | mean 511 ms, p95 852, over the staleness cap on **0/250** |
-  | perception thread | 663 boards at 2.55 Hz, **0 errors** |
-  | placements issued | 18, with **17/18** confirmed by at least one oracle |
-  | advisor / gate | both active (`advisor ON for card ids [2, 7, 25]`) |
+**Kept deliberately, do not "clean" them up:** the checkpoints, `archive_*/`,
+`historical_checkpoints/` and `stage_checkpoints/` are untracked, so deleting
+them is unrecoverable, and they are the only record of ~46 h of measured
+training. The A/B and probe harnesses stay for the same reason — each one backs
+a number quoted in the docs, and deleting the harness makes the number
+unreproducible.
 
-  No crash, no actuator drops, cadence held. Two honest caveats: the **advisor
-  fired only once** in the match (the commander's take-up of Cannon/Fireball/
-  Giant is ~0, which is the known upstream problem, so the live sample of the
-  override path is thin), and **the bot lost the match 0–3** to Trainer Red —
-  live play is gated by perception fidelity, not by this change, and no live
-  win rate has ever been measured. The reproducible part of the check is the
-  frame-replay path, which exercises the identical chain deterministically:
-  ```bash
-  perception/.venv/Scripts/python.exe -m perception.live.mvp_loop \
-      --policy neural --frames perception/assets/live/match_practice_01 --seconds 45
-  ```
+**Experimental checkpoints from today** (none of them shipping, none win-rate
+tested): `model_weights_hires.pth` (the +hires distilled net of §2.1),
+`model_weights_hires_control.pth`, `model_weights_hires_soft.pth`.
 
-- **The live loader was strict and the architecture change would have crashed
-  it.** `NeuralPolicy.__init__` called `load_state_dict` with the default
-  `strict=True`, so every pre-2026-08-14 checkpoint would raise on the new
-  `place_hires` keys. Now loads with `strict=False` plus an explicit check that
-  the *only* missing keys are that branch — `strict=False` alone would also
-  swallow a genuinely wrong checkpoint. Caught by running the replay path, not
-  by any test.
-- Giant initiation is off. The Giant *placement* rule is validated (535.6 vs 3.3)
-  but the commander almost never plays Giant, so that rule is currently latent.
-  Reviving it means initiation, which measured harmful — revisit only with a
-  cost-aware trigger, not the flat one that failed.
+**Reproduce today's headline:**
+```bash
+python_ai/venv/Scripts/python.exe python_ai/prove_hires.py --episodes 12 --epochs 20 --soft-T 0.25
+```
+```bash
+python_ai/venv/Scripts/python.exe python_ai/prove_placement.py --seed model_weights_selfplay.pth --control model_weights_hires_control.pth --treatment model_weights_hires.pth --episodes 12
+```
