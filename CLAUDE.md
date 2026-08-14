@@ -874,6 +874,103 @@ argmax of a flat map is arbitrary but deterministic, and both arms reported a
 probability; the collapse in the table above has top-1 at 0.62–0.83, which is
 what makes it real.
 
+**2026-08-14, the placement head got its resolution back: a zero-initialized
+high-resolution residual branch (`place_hires`), and it works.** `cnn_trunk`
+pools twice, so the head reads a **9×5** map of a 34×18 board and `place_up`
+blows it back up; the card context enters as a spatially uniform vector.
+`place_hires` adds a parallel path from the trunk's own **pre-pool 16×34×18**
+activation at one-tile resolution, conditioned on the same `(hx, card)` context,
+added to the coarse logits as a residual. 3,993 new parameters (+0.2%).
+
+**No checkpoint is invalidated, and that was a design goal rather than luck.**
+The handoff proposed concatenating into `place_up`, which changes its shape and
+therefore discards the trained placement head from every checkpoint — the price
+the 2026-08-09 checkerboard fix had to pay. Zero-initializing the branch's final
+conv makes it an **exact** no-op at init (weight *and* bias zeroed, so the
+residual add is exact, not approximate), so an old checkpoint loads and behaves
+bit-identically and the cards that already work keep working. The loader
+confirms it: `warm-started 27/27 tensor(s), re-initialized: []`. Gradient still
+flows — a zero conv has a nonzero gradient of its own, so it leaves zero on step
+one and the layer beneath it starts learning on step two.
+
+Measured as a controlled A/B (`prove_hires.py`): one collection of 2,376 states
+from the seed policy's own trajectory, contiguous-tail held-out split, both arms
+from the same checkpoint and seed, identical epochs/lr/anchor, the **only**
+difference being whether `place_hires` trains. Held out (n=582/653):
+
+| | control (coarse) | +hires |
+|---|---|---|
+| Fireball exact cell | 0.0% | **63.9%** |
+| Fireball mean distance | 14.25 tiles | **3.31** |
+| Fireball top-1 p | **0.0017** | 0.1002 |
+| Fireball modal share | 98.0% | 13.0% |
+| Cannon within 2 tiles | 0.2% | **10.0%** |
+| Cannon mean distance | 9.69 tiles | **6.89** |
+| Cannon modal share | 88.8% | 31.8% |
+
+**Read the control's top-1 probability first: 0.0017 against a uniform
+1/612 = 0.00163.** Fit to the advisor's exact cell, the coarse head does not
+merely fail — it *dissolves to uniform*, and then reports a 98.0% modal share,
+which is the degenerate reading this file already warns about. Its training loss
+plateaus at ~21 (matching `distill_tactics.py`'s 21.4) while the branch's keeps
+falling to 15.1. Replicated on two independent collections.
+
+**ENGINE-SCORED, which is the only verdict that counts** (`prove_placement.py`,
+paired on states drawn by the seed policy, 12 episodes):
+
+| | Fireball, elixir killed (n=1937) | Cannon, tower HP preserved (n=894) |
+|---|---|---|
+| seed (the shipping net) | 0.062 | 102.2 |
+| control (coarse-distilled) | 0.000 | 161.3 |
+| **+hires** | **1.863** | **232.6** |
+| random legal cell | 0.346 | 357.0 |
+| advisor (the ceiling) | 2.647 | 539.1 |
+
+**Fireball is fixed.** It beats a random legal cell by **5.4×**
+(+1.516, 95% CI [+1.368, +1.669], **561 better / 71 worse**, p = 1.8e-95) and
+reaches **70% of the advisor's** value. This is the first time the placement
+head has ever beaten random for that card — every prior measurement had it at
+0.000–0.022 against random's 0.276–1.103, i.e. **worse than chance**. Against
+the control it is 600 better / **0 worse**.
+
+**The Cannon is improved but NOT fixed, and the honest statement is that it is
+still worse than random.** +71.2 HP over the control (p = 0.029) and +130.4 over
+the seed (p = 0.0034), but −124.4 against a random legal cell (p = 2.5e-09) and
+−306.6 against the advisor. Consistent with everything else measured about it:
+with a plateau target the head learns *roughly where* (mean distance 9.69 → 6.89
+tiles, modal share 88.8% → 31.8%) and still commits to a cell worth less than
+chance. **The tactical override in `hybrid_policy.py` therefore stays on for the
+Cannon** — it is not yet redundant, and turning it off would give back the
++11.8 win-rate points.
+
+Three things worth carrying:
+
+- **A claim in the handoff was too strong, and testing it directly is what
+  found the real story.** The premise was that the coarse head *cannot express*
+  an exact cell (from "CE fell 180.9 → 21.4 with argmax match stuck at 0.0%").
+  Tested on the task reduced to its essential — 14 boards differing only in
+  which column holds one enemy — **the coarse head fits 14/14 exactly**.
+  Nearest-upsample followed by 3×3 convs lets a fine cell mix neighbouring
+  pooled cells, so sub-block position *is* recoverable. The limit is real but
+  it is capacity at scale, not impossibility. `test_placement_hires.py` keeps
+  both results.
+- **The Cannon's exact cell is a BAD SUPERVISION TARGET and that is a property
+  of the teacher, not the student.** `building_score_map` scatters flat discs,
+  so the top of the surface is a large exact-tie plateau and `np.argmax`
+  returns its top-left cell by row-major accident. Quantified: lowering the
+  softmax temperature cannot push the Cannon target below **~66% of maximum
+  entropy** (Fireball reaches 41%), because the ties never break. So Cannon
+  exact-match near 0 is expected and mostly uninformative — judge a building by
+  distance and by engine score, never by exact cell.
+- **The soft/neighbourhood target the handoff recommended first (A1) is
+  measured NEUTRAL-to-WORSE here — do not re-try it without new reason.** As a
+  third arm on the same collection (KL to `softmax(standardized advisor score /
+  T)`, T=0.25 chosen off the printed entropy table): Fireball within-2 71.2% vs
+  the argmax arm's 71.4% and mean distance 4.49 vs 3.31; Cannon within-2 8.4%
+  vs 10.0%. It spreads mass over the neighbourhood exactly as designed and buys
+  nothing. The plateau argument predicted it would rescue the Cannon; it did
+  not. **Resolution was the binding constraint, not target softness.**
+
 ---
 
 ## Measured baselines — use these, don't re-derive them

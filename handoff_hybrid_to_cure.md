@@ -205,6 +205,20 @@ match never left 0.0%. Fireball is worse than Cannon because it must localise an
 enemy clump anywhere on 34 rows, and the frozen trunk evidently does not carry
 that feature at all.
 
+> **STATUS 2026-08-14 — A2 is DONE and Fireball is FIXED (engine-scored 1.863
+> elixir killed vs 0.346 for a random cell and 2.647 for the advisor, p=1.8e-95,
+> 561 better / 71 worse). The Cannon improved but is still below random, so the
+> tactical override stays on for it.** A1 is done and does NOT help.
+> The diagnosis above is right that resolution is the binding constraint and
+> wrong that the target is inexpressible — the coarse head fits an exact-cell
+> task at small scale (14/14), it just cannot at real scale, where it dissolves
+> to *uniform* (top-1 p 0.0017 vs a uniform 0.00163) rather than sharpening on
+> the wrong cell. A2 was built as a **zero-initialized residual branch** instead
+> of a concat into `place_up`, which keeps every checkpoint valid. See
+> CLAUDE.md's 2026-08-14 `place_hires` entry, `prove_hires.py`, and
+> `test_placement_hires.py`. A1's soft target measured neutral-to-worse as a
+> third arm on the same data. A3 remains untried and is still ordered last.
+
 **Do these in order. Each is independently measurable.**
 
 **A1. Soft neighbourhood target (cheap, do first, no architecture change).**
@@ -229,6 +243,30 @@ aux head consume, so nothing else in the network is disturbed.
   existing checkpoints.** `load_state_dict_flexible` warm-starts everything else
   and reinitialises it, which is the same trade the 2026-08-09 checkerboard fix
   made. Say so when proposing it.
+
+**A2b. THE NEXT STEP, and it is not more distillation: the entropy coverage
+term will erode what A2 just bought.** This is a mechanical argument, not a
+measurement, and it should be measured before it is trusted —
+`PLACEMENT_COVERAGE_COEF` adds an *entropy bonus* on one uniformly-sampled
+affordable slot per step. For a card the policy does not play, that bonus is the
+**only** placement gradient in the whole objective, and it pushes the map toward
+uniform. A distilled Fireball map is exactly such a card's map. So the two
+mechanisms are in direct opposition: distillation puts mass on the right cell,
+coverage pushes it flat, and coverage runs for the whole of training.
+
+The fix follows the conclusion this project already reached twice — *closing a
+coverage hole needs a TARGET, not noise* — so the coverage term should carry the
+advisor's map rather than entropy: for the sampled slot, if the advisor has a
+rule for that card, add KL to its (masked) score map; otherwise fall back to the
+entropy bonus as today. The pieces now exist: `tactics.building_score_map`,
+`tactics.spell_catch_map`, `distill_tactics.collect(..., want_maps=True)` and
+`prove_hires.soft_target_logits`. Compute the target once per rollout step (not
+per PPO epoch) and buffer it; the advisor costs ~0.2 ms per call.
+
+Note the one result that argues against assuming this will work: the soft target
+in A1 was *also* a target rather than noise, and it bought nothing. The
+difference is that A1 replaced a good hard target with a soft one, while this
+replaces pure noise with a target — but that is an argument, not evidence.
 
 **A3. Unfreeze the trunk — only if A1+A2 are insufficient.** Ordered last
 because it is the most invasive: the trunk feeds the critic, and the critic is
@@ -308,15 +346,38 @@ is unmeasured.
 - The coverage term and the solvency term are both **on by default** and both are
   measured to do nothing useful on their own. Neither is load-bearing for the
   +11.8; disable freely while experimenting.
-- **Nothing here has been run against the live emulator.** The wiring is in and
-  the perception suite passes, but no live match has been played with
-  `--tactical`. That is the first thing to do with hardware in front of you:
+- ~~**Nothing here has been run against the live emulator.**~~ **DONE
+  2026-08-14 — the hybrid runs live and holds its budget.** One Training Camp
+  match, `--policy neural --act --ensure-match`, DirectML:
+
+  | | |
+  |---|---|
+  | decisions | 250 in 260 s, **0.96 Hz** |
+  | decisions over the 1000 ms budget | **0/250** |
+  | board age | mean 511 ms, p95 852, over the staleness cap on **0/250** |
+  | perception thread | 663 boards at 2.55 Hz, **0 errors** |
+  | placements issued | 18, with **17/18** confirmed by at least one oracle |
+  | advisor / gate | both active (`advisor ON for card ids [2, 7, 25]`) |
+
+  No crash, no actuator drops, cadence held. Two honest caveats: the **advisor
+  fired only once** in the match (the commander's take-up of Cannon/Fireball/
+  Giant is ~0, which is the known upstream problem, so the live sample of the
+  override path is thin), and **the bot lost the match 0–3** to Trainer Red —
+  live play is gated by perception fidelity, not by this change, and no live
+  win rate has ever been measured. The reproducible part of the check is the
+  frame-replay path, which exercises the identical chain deterministically:
   ```bash
   perception/.venv/Scripts/python.exe -m perception.live.mvp_loop \
-      --policy neural --act --seconds 180 --window "BlueStacks App Player"
+      --policy neural --frames perception/assets/live/match_practice_01 --seconds 45
   ```
-  Watch `execution provider:` on line 1 (DirectML, not CPU) and the
-  `advisor slot N card C -> (x,y)` decision reasons.
+
+- **The live loader was strict and the architecture change would have crashed
+  it.** `NeuralPolicy.__init__` called `load_state_dict` with the default
+  `strict=True`, so every pre-2026-08-14 checkpoint would raise on the new
+  `place_hires` keys. Now loads with `strict=False` plus an explicit check that
+  the *only* missing keys are that branch — `strict=False` alone would also
+  swallow a genuinely wrong checkpoint. Caught by running the replay path, not
+  by any test.
 - Giant initiation is off. The Giant *placement* rule is validated (535.6 vs 3.3)
   but the commander almost never plays Giant, so that rule is currently latent.
   Reviving it means initiation, which measured harmful — revisit only with a
