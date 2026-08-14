@@ -1034,6 +1034,52 @@ resampled inside every PPO epoch: an advisor target has to be computed against
 the observation the slot was drawn on, and a fresh draw in the update would pair
 one card's logits with another card's target.
 
+**MEASURED, and it works. Pre-registered A/B, engine-scored, paired on states
+drawn by one reference policy.** Two arms from `model_weights_hires.pth` on a
+full training state at episode 64,309, byte-identical code, 80 updates each
+(fixed in advance), the only difference being `CLASH_ADVISOR_COVERAGE_COEF`
+(0 vs 0.10). Scored by `prove_placement.py --episodes 16`:
+
+| arm | Fireball, elixir killed (n=3106) | Cannon, tower HP preserved (n=1793) |
+|---|---|---|
+| random legal cell | 0.515 | 456.9 |
+| seed (hires-distilled) | 2.066 | 269.2 |
+| control (coverage entropy only) | 2.387 | 402.9 |
+| **treatment (advisor target)** | **2.969** | **480.3** |
+| advisor (the ceiling) | 3.013 | 702.7 |
+
+* **Fireball, treatment vs control: +0.583, 95% CI [+0.505, +0.661],
+  p = 1.2e-47.** And treatment vs the ADVISOR is +0.043, CI [−0.018, +0.102],
+  **p = 0.163 — statistically indistinguishable from the ceiling.** This is the
+  first time the head has matched the advisor on any card.
+* **Cannon, treatment vs control: +77.4, CI [+37.0, +118.6], p = 0.0012.**
+  Against a random legal cell it is +23.4, CI [−35.3, +82.1], p = 0.118 — i.e.
+  **no longer significantly worse than chance**, which every prior measurement
+  was (−124.4, p = 2.5e-09). It is still far below the advisor (−222,
+  p = 6.8e-22), so **the Cannon override stays on.**
+
+**The frozen cell is gone, and that is the qualitative result:**
+
+| net | Cannon modal | share | Fireball modal | share | cells used |
+|---|---|---|---|---|---|
+| seed | (11,0) | 46.2% | (11,0) | 32.3% | 90 / 210 |
+| control | (11,0) | 38.4% | (11,0) | 25.8% | 116 / 241 |
+| **treatment** | **(3,15)** | **19.1%** | **(13,14)** | **6.6%** | **138 / 278** |
+
+`(11,0)` is the pathological own-back-row cell this file has tracked since
+2026-08-11. The control is still parked on it for both cards; the treatment is
+not, at top-1 probability 0.076 / 0.056 — far above uniform 1/612 = 0.0016, so
+this is a head that is SHARP and MOVES ITS MODE, not a dissolved one. That is
+exactly the signature the modal-share detector was defined to look for.
+
+**A prediction of the handoff that did NOT survive contact, stated because it
+was the stated reason for doing this work.** §3 Step 1 predicted the entropy
+coverage term would ERODE the distilled placement head under PPO. It does not:
+the control IMPROVED over its seed on both cards (Fireball 2.066 → 2.387,
+Cannon 269.2 → 402.9) across 80 updates. So the conflict is real in mechanism
+but the erosion is not observable at this horizon. The advisor target is worth
+having because it is much BETTER, not because the alternative decays.
+
 **A resume trap that is specific to `place_hires` and bit pipeline 2 only.**
 The branch added 6 parameters, so a pre-2026-08-14 checkpoint's optimizer
 describes 26 and the net has 32. `train.py` degrades gracefully (it gates
