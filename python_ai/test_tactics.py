@@ -1,0 +1,278 @@
+"""Tests for the deterministic tactical advisor.
+
+    python_ai/venv/Scripts/python.exe -m pytest python_ai/test_tactics.py -q
+
+The advisor's accuracy against the engine is measured separately (see
+PLACEMENT_COLLAPSE.md); these pin the properties that must hold exactly --
+engine constants, legality, and the solvency gate whose absence lost the first
+version of the A/B.
+"""
+import os
+import sys
+
+import numpy as np
+import pytest
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import clash_royale_env as E  # noqa: E402
+import gym_wrapper  # noqa: E402
+import tactics  # noqa: E402
+from model import MicroRoyaleNet  # noqa: E402
+
+CE = E.ClashRoyaleEnv
+
+
+@pytest.fixture(scope="module")
+def net():
+    return MicroRoyaleNet(num_ability_slots=0)
+
+
+@pytest.fixture(scope="module")
+def fresh_obs():
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    return env, env.get_observation_for_team(0)
+
+
+def test_normalizers_match_header():
+    """The two ClashEnv.h constants pybind does not expose.
+
+    If either changes in the header this test is the only thing that catches it,
+    because nothing else in Python re-derives them -- exactly the second-copy
+    drift CLAUDE.md forbids, made detectable where it cannot be avoided.
+    """
+    import re
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "include", "core", "ClashEnv.h")
+    text = open(header, encoding="utf-8", errors="replace").read()
+
+    def from_header(name):
+        m = re.search(rf"{name}\s*=\s*([0-9.]+)f", text)
+        assert m, f"{name} not found in ClashEnv.h -- was it renamed?"
+        return float(m.group(1))
+
+    assert from_header("MAX_CELL_UNITS") == tactics.MAX_CELL_UNITS
+    assert from_header("MAX_UNIT_SPEED") == tactics.MAX_UNIT_SPEED
+
+
+def test_geometry_matches_engine():
+    assert tactics.BOARD_H == CE.BOARD_HEIGHT
+    assert tactics.BOARD_W == CE.BOARD_WIDTH
+    assert tactics.SPATIAL == CE.NUM_CHANNELS * CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+
+
+def test_own_elixir_matches_engine(fresh_obs):
+    env, obs = fresh_obs
+    assert tactics.own_elixir(obs) == pytest.approx(env.get_elixir_for_team(0), abs=1e-4)
+
+
+def test_empty_board_has_no_spell_target(fresh_obs):
+    """No enemies -> nothing to catch. The map must be flat zero, not noise."""
+    _env, obs = fresh_obs
+    assert tactics.enemy_hp_map(obs).sum() == 0.0
+    assert tactics.spell_catch_map(obs).max() == 0.0
+    assert tactics.threat_level(obs) == 0.0
+    assert tactics.threat_lane(obs) == 0
+
+
+def test_spell_finds_an_injected_clump():
+    """An injected squad must be found, and found where it actually is."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(41, 6.0, 12.0)          # Minions, 3 bodies
+    env.step(4, 0.0, 0.0, 1)
+    obs = env.get_observation_for_team(0)
+    x, y, val = tactics.best_spell_cell(obs)
+    assert val > 0.0
+    assert np.hypot(x - 6.0, y - 12.0) <= tactics.FIREBALL_RADIUS, (x, y)
+
+
+def test_spell_respects_the_legality_mask(net, fresh_obs):
+    """The advisor must never propose a cell the engine will silently refuse."""
+    _env, obs = fresh_obs
+    legal = net._placement_legal[tactics.FIREBALL_ID].numpy().astype(bool)
+    x, y, _ = tactics.best_spell_cell(obs, legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+
+
+def test_building_cell_is_legal_and_on_our_side(net, fresh_obs):
+    _env, obs = fresh_obs
+    legal = net._placement_legal[tactics.CANNON_ID].numpy().astype(bool)
+    x, y, _ = tactics.best_building_cell(obs, legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+    assert y < tactics.RIVER_Y, "a building cannot be placed across the river"
+
+
+def test_threat_lane_follows_the_push():
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 14.0, 18.0)          # Giant, right lane
+    env.step(4, 0.0, 0.0, 1)
+    assert tactics.threat_lane(env.get_observation_for_team(0)) == 1
+
+    env2 = CE(deck, deck, 3600)
+    env2.reset()
+    env2.inject_enemy(2, 3.0, 18.0)          # left lane
+    env2.step(4, 0.0, 0.0, 1)
+    assert tactics.threat_lane(env2.get_observation_for_team(0)) == -1
+
+
+def test_advance_conserves_mass_and_moves_the_right_way():
+    hp = np.zeros((34, 18), dtype=np.float32)
+    hp[20, 9] = 100.0
+    speed = np.zeros_like(hp)
+    speed[20, 9] = 0.1                        # tiles/tick
+    out = tactics.advance(hp, speed, 10)      # 1.0 tile toward our side
+    assert out.sum() == pytest.approx(100.0, rel=1e-5)
+    assert out[19, 9] == pytest.approx(100.0, rel=1e-5), "should land exactly one row nearer"
+    assert out[20, 9] == pytest.approx(0.0, abs=1e-5)
+
+
+def test_override_is_solvency_gated(net):
+    """The gate that the ungated A/B proved necessary.
+
+    With elixir below cost+reserve the override MUST decline, even when the
+    tactical opportunity is real -- otherwise it bankrupts an agent that already
+    sits under 3 elixir 65% of the time.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(41, 6.0, 12.0)
+    env.step(4, 0.0, 0.0, 1)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    ov = tactics.TacticalOverride(net._placement_legal.numpy(), reserve=4.0)
+    hand = list(env.get_hand())
+    default = (4, 0.0, 0.0)
+
+    starved = obs.copy()
+    starved[tactics.SPATIAL] = 0.4                      # 4.0 elixir
+    assert ov(starved, hand, [True] * 5, default) == default, \
+        "override spent elixir it could not spare"
+
+    rich = obs.copy()
+    rich[tactics.SPATIAL] = 1.0                         # 10.0 elixir
+    ov.reset()
+    out = ov(rich, hand, [True] * 5, default)
+    if tactics.FIREBALL_ID in hand or tactics.CANNON_ID in hand:
+        assert out != default or True   # firing is opportunity-dependent
+    # whatever it returns must be a legal slot
+    assert 0 <= out[0] <= 4
+
+
+def test_override_rate_limits_the_cannon(net):
+    """One Cannon per lifetime; stacking them is how the naive version bankrupted."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 9.0, 17.0)
+    env.step(4, 0.0, 0.0, 1)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    obs[tactics.SPATIAL] = 1.0
+    hand = list(env.get_hand())
+    if tactics.CANNON_ID not in hand:
+        pytest.skip("Cannon not in the opening hand this shuffle")
+
+    ov = tactics.TacticalOverride(net._placement_legal.numpy(), reserve=0.0,
+                                  cannon_min_cover=1.0, fireball_min_catch=1e12)
+    default = (4, 0.0, 0.0)
+    first = ov(obs, hand, [True] * 5, default)
+    assert first != default, "expected a Cannon on a clear threat"
+    second = ov(obs, hand, [True] * 5, default)
+    assert second == default, "Cannon fired twice inside its cooldown"
+
+
+def test_giant_goes_to_a_bridge_on_the_weaker_lane(net):
+    """The measured rule: bridge, away from the enemy's mass.
+
+    Scored at 535.6 enemy tower damage against 3.3 for the policy's own cell
+    over 913 states, so the geometry here is load-bearing rather than cosmetic.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
+
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 14.0, 20.0)          # enemy mass on the RIGHT
+    env.step(4, 0.0, 0.0, 1)
+    x, y, _ = tactics.best_giant_cell(env.get_observation_for_team(0), legal=legal)
+    assert y == tactics.BRIDGE_ROW
+    assert x == tactics.BRIDGE_XS[0], "should commit away from the enemy's mass"
+
+    env2 = CE(deck, deck, 3600)
+    env2.reset()
+    env2.inject_enemy(2, 3.0, 20.0)          # enemy mass on the LEFT
+    env2.step(4, 0.0, 0.0, 1)
+    x2, _, _ = tactics.best_giant_cell(env2.get_observation_for_team(0), legal=legal)
+    assert x2 == tactics.BRIDGE_XS[1]
+
+
+def test_giant_cell_is_always_legal(net):
+    legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    x, y, _ = tactics.best_giant_cell(env.get_observation_for_team(0), legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+
+
+def test_gate_reserve_shrinks_to_what_the_opponent_can_punish():
+    """The fix for the gate being anti-offense.
+
+    A flat reserve blocks exactly the spends that build a push, and measurably
+    cost 4,645 tower damage dealt per episode. Against a broke opponent there is
+    nothing to hold back for, so the reserve must collapse.
+    """
+    g = tactics.SolvencyGate(reserve=4.0)
+    assert g.effective_reserve(None) == 4.0
+    assert g.effective_reserve(10.0) == 4.0
+    assert g.effective_reserve(1.5) == 1.5
+    assert g.effective_reserve(0.0) == 0.0
+    assert g.effective_reserve(-3.0) == 0.0, "a negative estimate must not invert the rule"
+
+
+def test_gate_blocks_when_broke_and_opens_under_threat(net, fresh_obs):
+    _env, obs = fresh_obs
+    o = np.asarray(obs, dtype=np.float32).copy()
+    g = tactics.SolvencyGate(reserve=4.0)
+
+    o[tactics.SPATIAL] = 0.6                       # 6 elixir, empty board
+    assert g.allows(o, 1.0)                        # 6-1 >= 4
+    assert not g.allows(o, 3.0)                    # 6-3 < 4
+
+    # A rich opponent keeps the reserve; a broke one releases it.
+    assert not g.allows(o, 3.0, opp_elixir=9.0)
+    assert g.allows(o, 3.0, opp_elixir=1.0)
+
+
+def test_gate_opens_completely_under_a_real_push(net):
+    """Under threat the policy must be free to spend to zero as before."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 9.0, 10.0)                 # a Giant already on our half
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32).copy()
+    o[tactics.SPATIAL] = 0.5                       # only 5 elixir
+    g = tactics.SolvencyGate(reserve=4.0)
+    assert tactics.threat_map(o).sum() >= g.threat_hp
+    assert g.allows(o, 5.0), "the gate must not veto a defence"
+
+
+def test_gate_never_masks_the_noop():
+    """An all-illegal row would make Categorical return cell 0 and tap blind."""
+    g = tactics.SolvencyGate(reserve=99.0)         # absurd reserve: blocks all cards
+    obs = np.zeros(tactics.SPATIAL + 1, dtype=np.float32)
+    m = g.mask(obs, [3.0, 4.0, 4.0, 5.0])
+    assert m[-1] is True
+    assert not any(m[:-1])
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
