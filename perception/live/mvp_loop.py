@@ -262,7 +262,28 @@ class NeuralPolicy:
         self.encoder = perception_encoder
         self.net = MicroRoyaleNet(num_ability_slots=deck_ability_slots)
         blob = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        self.net.load_state_dict(blob["model"] if "model" in blob else blob)
+        state = blob["model"] if "model" in blob else blob
+        # NOT strict. Every checkpoint written before 2026-08-14 predates the
+        # high-resolution placement branch (`place_hires`/`place_ctx_hi`), whose
+        # final conv is zero-initialized -- so a net missing those tensors is
+        # not degraded, it computes exactly the pre-branch function.
+        #
+        # strict=False alone would be too quiet, though: it also swallows a
+        # checkpoint carrying tensors this net has no home for, which is a
+        # genuinely different model being loaded. So the missing keys are
+        # checked against the one prefix that is allowed to be absent, and
+        # anything unexpected is fatal.
+        missing, unexpected = self.net.load_state_dict(state, strict=False)
+        allowed = tuple(k for k in missing
+                        if k.startswith(("place_hires", "place_ctx_hi")))
+        if unexpected or set(missing) - set(allowed):
+            raise RuntimeError(
+                f"checkpoint does not match this network -- unexpected "
+                f"{list(unexpected)}, missing {sorted(set(missing) - set(allowed))}")
+        if missing:
+            print(f"checkpoint predates the hi-res placement branch; "
+                  f"{len(missing)} tensor(s) left at their zero init "
+                  f"(exactly the pre-branch behaviour)")
         self.net.eval()
         self.episodes = int(blob.get("episodes_completed", -1))
         self._hx = None

@@ -35,6 +35,7 @@ from torch.distributions import Categorical
 import clash_royale_env as E
 import gym_wrapper
 from model import MicroRoyaleNet
+from train import load_state_dict_flexible
 
 CE = E.ClashRoyaleEnv
 
@@ -59,7 +60,9 @@ def main():
     if os.path.exists(weights):
         ck = torch.load(weights, map_location="cpu", weights_only=False)
         sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-        net.load_state_dict(sd)
+        # Flexible, not strict -- see probe_aux_robustness.py for why: a
+        # checkpoint predating the `place_hires` branch is not a mismatch.
+        load_state_dict_flexible(net, sd, os.path.basename(weights))
         ep = ck.get("episodes_completed", "?") if isinstance(ck, dict) else "?"
         print(f"loaded {os.path.basename(weights)} (episode {ep})")
     else:

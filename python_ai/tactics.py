@@ -432,6 +432,32 @@ class TacticalOverride:
         return default
 
 
+def building_score_map(obs, legal=None, rng_range=CANNON_RANGE):
+    """The full per-cell score `best_building_cell` takes the argmax of.
+
+    Split out because the argmax alone is a BAD SUPERVISION TARGET and the map
+    is a good one. Coverage is accumulated by scattering each enemy's HP over a
+    disc of radius `rng_range`, so every cell that reaches the same set of
+    enemies scores EXACTLY the same, and the only tie-breakers are two step
+    functions (the y>=6 depth bonus and the lane multiplier). The surface is
+    therefore made of large exact plateaus, and `np.argmax` resolves them by
+    row-major order -- it returns the top-left cell of the winning plateau,
+    which jumps to a completely different cell when the plateau shifts by one
+    tile, while the advisor is genuinely INDIFFERENT across all of them.
+
+    Fitting a head to that argmax asks it to learn a tie-break rule that carries
+    no value. Measured 2026-08-14 on 594 held-out states: Fireball, whose target
+    comes from a smooth blast-coverage map, reached 54.3% exact-cell match after
+    the hi-res branch; the Cannon stayed at 0.2% while its top-1 probability
+    rose 10x and its modal share fell 89.8% -> 54.9% -- i.e. the head DID become
+    state-dependent and sharp, against a target whose exact cell is noise.
+
+    Returns (BOARD_H, BOARD_W) float32 with -inf on illegal/across-river cells,
+    which is what `masked_kl`-style losses expect.
+    """
+    return _building_score(obs, legal, rng_range)[0]
+
+
 def best_building_cell(obs, legal=None, rng_range=CANNON_RANGE):
     """(x, y, score) -- where a defensive building actually defends.
 
@@ -447,6 +473,21 @@ def best_building_cell(obs, legal=None, rng_range=CANNON_RANGE):
     With no threat on the board it returns the classic defensive pocket -- in
     front of the King, between the two Princess towers -- which is where a
     building wants to be pre-placed anyway.
+    """
+    score, kind = _building_score(obs, legal, rng_range)
+    if kind == "none":
+        return float(OWN_KING[0]), 9.0, 0.0
+    i = int(np.argmax(score))
+    value = 0.0 if kind == "pocket" else float(score.reshape(-1)[i])
+    return float(i % BOARD_W), float(i // BOARD_W), value
+
+
+def _building_score(obs, legal=None, rng_range=CANNON_RANGE):
+    """(score map, kind). kind is 'coverage', 'pocket' or 'none'.
+
+    One implementation shared by `best_building_cell` and
+    `building_score_map`, so the cell that is PLAYED and the surface that is
+    DISTILLED can never come from two drifting copies of this arithmetic.
     """
     hp = enemy_hp_map(obs)
     # Look ahead: score against where the push WILL be in ~2s, not where it is.
@@ -483,7 +524,7 @@ def best_building_cell(obs, legal=None, rng_range=CANNON_RANGE):
                          score, -np.inf)
 
     if not np.isfinite(score).any():
-        return float(OWN_KING[0]), 9.0, 0.0
+        return score, "none"
     if float(np.nanmax(score[np.isfinite(score)])) <= 0.0:
         # Nothing is approaching: fall back to the classic pocket -- central,
         # forward of the King, not across the river -- which is where a building
@@ -494,8 +535,6 @@ def best_building_cell(obs, legal=None, rng_range=CANNON_RANGE):
         if legal is not None:
             pocket = np.where(np.asarray(legal, bool).reshape(BOARD_H, BOARD_W),
                               pocket, -np.inf)
-        i = int(np.argmax(pocket))
-        return float(i % BOARD_W), float(i // BOARD_W), 0.0
+        return pocket, "pocket"
 
-    i = int(np.argmax(score))
-    return float(i % BOARD_W), float(i // BOARD_W), float(score.reshape(-1)[i])
+    return score, "coverage"

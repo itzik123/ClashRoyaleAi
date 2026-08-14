@@ -2310,8 +2310,15 @@ def train_selfplay_ppo():
                 ee = ev.unsqueeze(0).expand(bptt_chunk, B)    # (L, B)
 
                 mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
-                feats_seq, card_embeds_seq, spatial_seq = net.extract_features(mb_obs_flat)
+                # Pre-pool activation taken from the same call, for the
+                # high-resolution placement branch -- see the matching comment
+                # in train.py. Identical arithmetic to letting
+                # placement_given_card rebuild it; this just avoids re-running
+                # the trunk's first conv once per minibatch per epoch.
+                (feats_seq, card_embeds_seq, spatial_seq,
+                 hires_seq) = net.extract_features_hires(mb_obs_flat)
                 feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                hires_seq = hires_seq.view(bptt_chunk, B, *hires_seq.shape[1:])
                 # Same (T,B,...) split for the CNN's spatial map, which the
                 # convolutional placement head consumes. Recomputed here from
                 # the SAME stored observations rather than buffered, for the
@@ -2355,7 +2362,7 @@ def train_selfplay_ppo():
                 (cl_seq, pl_seq, new_values, new_aux_elixir, _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
-                    extra_card_idx_seq=cf_idx)
+                    extra_card_idx_seq=cf_idx, hires_seq=hires_seq)
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)

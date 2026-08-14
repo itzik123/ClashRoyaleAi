@@ -124,8 +124,12 @@ def load_net(path, device, verbose=True):
         eps = ckpt.get("episodes_completed", "?") if isinstance(ckpt, dict) else "?"
         print(f"  loaded {os.path.basename(path)} (episodes_completed={eps}, clean_load={clean})")
         if not clean:
-            print("    !! NOT a clean load -- some tensors were reinitialised. A warm-started")
-            print("       placement head is a different experiment; check this before trusting results.")
+            # load_state_dict_flexible has just printed WHICH case this is:
+            # tensors discarded (trained weights lost) or merely tensors the
+            # checkpoint predates (nothing lost). Do not restate it as the
+            # alarming case -- every checkpoint written before the 2026-08-14
+            # `place_hires` branch takes this path harmlessly.
+            print("    ^ see the line above for whether anything trained was lost.")
     return net
 
 

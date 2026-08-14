@@ -66,16 +66,25 @@ TARGET_CARDS = (CANNON, FIREBALL)
 
 
 @torch.no_grad()
-def collect(net, episodes, opp_elixir, device):
+def collect(net, episodes, opp_elixir, device, want_maps=False):
     """Play with `net` and record (obs, per-card advisor cell) at each step.
 
     States come from the net's OWN trajectory on purpose: that is the
     distribution the placement head will be queried on in play, so it is the one
     it should be correct on.
+
+    With `want_maps`, also returns the advisor's full per-cell SCORE MAP for
+    each card (illegal cells -inf), which is the target a distribution-valued
+    distillation needs. The argmax alone throws away the margin -- it cannot
+    say whether the runner-up was equally good or a blunder -- and for the
+    Cannon it is actively misleading, because `building_score_map` is built
+    from flat discs whose top is a large exact-tie plateau resolved by
+    row-major order (see that function, and prove_hires.py).
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     legal = {c: net._placement_legal[c].numpy().astype(bool) for c in TARGET_CARDS}
     obs_rows, hx_rows, targets = [], [], {c: [] for c in TARGET_CARDS}
+    maps = {c: [] for c in TARGET_CARDS}
 
     for ep in range(episodes):
         env = CE(deck, deck, 3600)
@@ -106,6 +115,17 @@ def collect(net, episodes, opp_elixir, device):
                 hx_rows.append(hx[0].detach().cpu().numpy().copy())
                 targets[CANNON].append(int(cy_) * tactics.BOARD_W + int(cx_))
                 targets[FIREBALL].append(int(fy_) * tactics.BOARD_W + int(fx_))
+                if want_maps:
+                    # Same masking the advisor itself applies, so the surface
+                    # being distilled and the cell being played come from one
+                    # set of legal cells. -inf (not -1) on illegal: the target
+                    # is consumed as logits, and a finite floor would leave
+                    # real probability mass on a cell the engine refuses.
+                    cm = tactics.building_score_map(o, legal=legal[CANNON])
+                    fm = tactics.spell_catch_map(o).reshape(-1).copy()
+                    fm[~legal[FIREBALL].reshape(-1)] = -np.inf
+                    maps[CANNON].append(cm.reshape(-1).astype(np.float32))
+                    maps[FIREBALL].append(fm.astype(np.float32))
             gi = int(logits.argmax(-1).item())
             place = net.placement_given_card(hx, embeds, torch.tensor([gi], device=device), t, sp)
             cell = int(place.argmax(-1).item())
@@ -114,9 +134,13 @@ def collect(net, episodes, opp_elixir, device):
             if r.done:
                 break
         print(f"  ep{ep}: {len(obs_rows)} usable states", flush=True)
-    return (np.asarray(obs_rows, dtype=np.float32),
-            np.asarray(hx_rows, dtype=np.float32),
-            {c: np.asarray(v) for c, v in targets.items()})
+    out = (np.asarray(obs_rows, dtype=np.float32),
+           np.asarray(hx_rows, dtype=np.float32),
+           {c: np.asarray(v) for c, v in targets.items()})
+    if want_maps:
+        return out + ({c: np.asarray(v, dtype=np.float32)
+                       for c, v in maps.items()},)
+    return out
 
 
 def masked_kl(new_logits, old_logits):

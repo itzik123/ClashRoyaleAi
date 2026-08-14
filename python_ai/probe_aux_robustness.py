@@ -35,6 +35,7 @@ from torch.distributions import Categorical
 import clash_royale_env as E
 import gym_wrapper
 from model import MicroRoyaleNet
+from train import load_state_dict_flexible
 
 CE = E.ClashRoyaleEnv
 
@@ -109,7 +110,10 @@ def main():
         return
     ck = torch.load(w, map_location="cpu", weights_only=False)
     sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-    net.load_state_dict(sd)
+    # Flexible, not strict: every checkpoint written before 2026-08-14 predates
+    # the zero-initialized `place_hires` branch, and a strict load raises on the
+    # missing keys even though the net it produces is the identical function.
+    load_state_dict_flexible(net, sd, os.path.basename(w))
     net.eval()
     print(f"loaded {os.path.basename(w)} (episode {ck.get('episodes_completed','?')})")
 

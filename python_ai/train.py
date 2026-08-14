@@ -610,8 +610,25 @@ def load_state_dict_flexible(net, state_dict, context_label):
         net.load_state_dict(own_state)
         if context_label not in _warned_mismatches:
             _warned_mismatches.add(context_label)
-            print(f"[{context_label}] Architecture mismatch -- warm-started "
-                  f"{len(compatible)}/{len(state_dict)} tensor(s), re-initialized: {skipped}")
+            # Two very different situations reach this branch and only one of
+            # them loses trained weights:
+            #   * `skipped` non-empty -- the checkpoint carried a tensor this
+            #     net cannot use. Something trained was DISCARDED.
+            #   * `skipped` empty -- every tensor the checkpoint had was loaded;
+            #     the net simply has parameters that postdate it (e.g. the
+            #     zero-initialized `place_hires` branch added 2026-08-14, which
+            #     is an exact no-op at init). Nothing trained was lost.
+            # Reporting both as "re-initialized" is how a harmless load gets
+            # read as a discarded placement head.
+            missing = sorted(set(own_state.keys()) - set(state_dict.keys()))
+            if skipped:
+                print(f"[{context_label}] Architecture mismatch -- warm-started "
+                      f"{len(compatible)}/{len(state_dict)} tensor(s), "
+                      f"DISCARDED (shape changed): {skipped}")
+            else:
+                print(f"[{context_label}] Checkpoint predates this architecture "
+                      f"-- all {len(compatible)} of its tensor(s) loaded; "
+                      f"fresh (not in checkpoint): {missing}")
         return False
 
 def train_ppo():
@@ -1708,8 +1725,17 @@ def train_ppo():
                 # Batch the (non-recurrent) CNN + scalar feature extraction over the
                 # whole chunk at once, then loop only the cheap LSTMCell.
                 mb_obs_flat = obs_seq[tt, ee].reshape(bptt_chunk * B, -1)
-                feats_seq, card_embeds_seq, spatial_seq = net.extract_features(mb_obs_flat)
+                # ...and the trunk's PRE-pool activation with it, for the
+                # high-resolution placement branch. Taken from the same call
+                # rather than rebuilt inside placement_given_card: identical
+                # arithmetic either way (pinned by
+                # test_recomputed_hires_equals_the_passed_one), but rebuilding
+                # would re-run the trunk's first conv -- the most expensive
+                # layer in it -- once per minibatch per epoch.
+                (feats_seq, card_embeds_seq, spatial_seq,
+                 hires_seq) = net.extract_features_hires(mb_obs_flat)
                 feats_seq = feats_seq.view(bptt_chunk, B, -1)
+                hires_seq = hires_seq.view(bptt_chunk, B, *hires_seq.shape[1:])
                 # Same (T,B,...) split for the CNN's spatial map, which the
                 # convolutional placement head consumes. Recomputed here from
                 # the SAME stored observations rather than buffered, for the
@@ -1758,7 +1784,7 @@ def train_ppo():
                 (cl_seq, pl_seq, new_values, new_aux_elixir, _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
-                    extra_card_idx_seq=cf_idx)
+                    extra_card_idx_seq=cf_idx, hires_seq=hires_seq)
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)

@@ -274,5 +274,49 @@ def test_gate_never_masks_the_noop():
     assert not any(m[:-1])
 
 
+def test_building_score_map_is_the_surface_best_building_cell_ranks():
+    """The map that gets DISTILLED and the cell that gets PLAYED must agree.
+
+    They are two entry points to one `_building_score`; this pins that they
+    stay that way, since a drifting copy would train the head toward a surface
+    whose argmax is not the cell the advisor actually plays.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 6.0, 20.0)
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    x, y, _ = tactics.best_building_cell(o)
+    smap = tactics.building_score_map(o)
+    i = int(np.argmax(smap))
+    assert (i % tactics.BOARD_W, i // tactics.BOARD_W) == (int(x), int(y))
+
+
+def test_the_building_target_is_a_plateau_not_a_point():
+    """WHY the Cannon's exact cell is a bad supervision target, as a number.
+
+    Coverage is scattered as flat discs, so many cells tie EXACTLY at the top
+    and `argmax` returns whichever comes first in row-major order. The advisor
+    is indifferent among them; a head fitted to the argmax is being asked to
+    learn that tie-break, which carries no value and moves discontinuously with
+    the board. Measured here rather than asserted in a comment.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 6.0, 20.0)
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    smap = tactics.building_score_map(o)
+    finite = smap[np.isfinite(smap)]
+    tied = int((finite == finite.max()).sum())
+    assert tied > 1, ("expected a plateau of equally-scored cells; if this ever "
+                      "becomes 1 the exact-cell target has become well-posed "
+                      "and the soft target may no longer be needed")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

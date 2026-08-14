@@ -12,6 +12,14 @@ import clash_royale_env
 # האסטרטגית המלאה של קלף; ה-CNN/scalar MLP כבר נותנים ל-LSTM את כל השאר.
 CARD_EMBED_DIM = 16
 
+# רוחב ענף הרזולוציה המלאה של ראש המיקום (ראה place_hires ב-__init__).
+# מכוון בכוונה צר: הענף רץ ב-34x18 המלא, כלומר פי 12.24 תאים מהמפה המאוחדת
+# 9x5, אז כל ערוץ שם עולה בערך פי 12 מערוץ בקצה הגס. 8 ערוצי הקשר + 8 ערוצי
+# ביניים מספיקים כדי לבחור משבצת בתוך בלוק, וזה מה שהענף צריך לעשות -- את
+# "איפה בערך" הקצה הגס כבר יודע.
+HIRES_CTX_DIM = 8
+HIRES_HIDDEN = 8
+
 # מספר שורות המיקום החוקיות בחצי שלנו, נשלף חי מהמנוע (כמו כל שאר הקבועים
 # כאן) במקום עותק hardcoded. get_own_half_max_y() מחזיר 15.0 (לאחר תיקון
 # מירכוז הנהר סביב 16.5, ראה Board.h -- קודם היה 15.5 עם נהר לא-ממורכז
@@ -316,6 +324,42 @@ class MicroRoyaleNet(nn.Module):
             nn.ReLU(),
             nn.Conv2d(8, 1, kernel_size=3, stride=1, padding=1),    # -> (B,1,36,20)
         )
+        # ==========================================
+        # 4ג. ענף רזולוציה-מלאה שיורי (2026-08-14)
+        # ==========================================
+        # מה שהיה חסר: place_up קורא מפה של 9x5 עבור לוח 34x18, כלומר תא מאוחד
+        # אחד מכסה ~4x4 משבצות לוח, וההקשר (hx + קלף) נכנס כוקטור **אחיד
+        # מרחבית**. לכן אוצר המילים המרחבי של הראש הוא בלוקים של 4 משבצות: הקלף
+        # יכול להזיז את כל המפה בקבוע, אבל *איזו משבצת בתוך הבלוק מנצחת* נקבע
+        # ע"י משקלים משותפים לכל המצבים. זו מגבלת **ייצוג**, לא כשל אימון --
+        # וזה בדיוק מה ש-distill_tactics.py מדד ב-2026-08-14: cross-entropy מול
+        # התא המדויק של היועץ ירד 180.9 -> 21.4 בעוד ההתאמה המדויקת (argmax)
+        # נשארה **0.0%**. loss שיורד בזמן ש-argmax לא זז אף פעם הוא החתימה של
+        # מטרה שהראש לא מסוגל לבטא.
+        #
+        # הענף כאן קורא את האקטיבציה של ה-trunk **לפני** הפולינג (16x34x18),
+        # ברזולוציית משבצת בודדת, מותנה באותו הקשר בדיוק, ומתווסף ללוגיטים
+        # הגסים כשארית.
+        #
+        # למה הקונבולוציה האחרונה מאותחלת ל-אפס: ה-handoff הציע לשרשר לתוך
+        # place_up, מה שמשנה את הצורה שלו ולכן **זורק את ראש המיקום המאומן**
+        # מכל צ'קפוינט (בדיוק המחיר שתיקון הצ'קרבורד ב-2026-08-09 נאלץ לשלם).
+        # המחיר הזה מיותר: ענף שיורי מאותחל-אפס מחשב פונקציה **זהה בדיוק**
+        # באתחול, ולכן צ'קפוינט קיים נטען ומתנהג bit-identical, הקלפים שעובדים
+        # היום ממשיכים לעבוד, ורק פרמטרים חדשים באמת מתחילים מאפס.
+        # הגרדיאנט עדיין זורם: לשכבה המאופסת עצמה יש גרדיאנט לא-אפסי (היא
+        # רואה אקטיבציה חיה), אז היא יוצאת מאפס בצעד הראשון והשכבה שמתחתיה
+        # מתחילה ללמוד בשני. התנהגות zero-conv סטנדרטית.
+        self.place_ctx_hi = nn.Linear(256 + CARD_EMBED_DIM, HIRES_CTX_DIM)
+        self.place_hires = nn.Sequential(
+            nn.Conv2d(16 + HIRES_CTX_DIM, HIRES_HIDDEN,
+                      kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(HIRES_HIDDEN, 1, kernel_size=3, stride=1, padding=1),
+        )
+        nn.init.zeros_(self.place_hires[-1].weight)
+        nn.init.zeros_(self.place_hires[-1].bias)
+
         # ה-deconv מייצר 4*pooled_h x 4*pooled_w, שהוא >= גודל הלוח כי הפולינג
         # השתמש ב-ceil_mode. חותכים בחזרה לפינה השמאלית-עליונה: מכיוון ששני
         # הפולינגים הם stride 2 עם ceil, תא ממוזג i מכסה את המקוריים 2i,2i+1
@@ -368,7 +412,7 @@ class MicroRoyaleNet(nn.Module):
         # הפעולה החם (ולסכן את כל מי שקורא לו).
         self.aux_elixir_head = nn.Linear(256, 1)
 
-    def extract_features(self, obs):
+    def extract_features_hires(self, obs):
         """
         חילוץ מאפיינים (CNN + MLP סקלרי + embeddings של זהות קלף) - החלק
         הלא-רקורנטי של הרשת. אפשר לקרוא לזה על באצ' ענק ומשוטח (T*N) כדי
@@ -386,12 +430,21 @@ class MicroRoyaleNet(nn.Module):
           spatial_map: (Batch, 32, pooled_h, pooled_w) -- מפת המאפיינים של
             ה-CNN *לפני* ההשטחה, הקלט של ראש המיקום הקונבולוציוני. זהו אותו
             טנזור שממנו נגזר combined, לא חישוב נוסף.
+          hires_map: (Batch, 16, board_height, board_width) -- האקטיבציה
+            שלפני הפולינג הראשון, הקלט של ענף הרזולוציה המלאה
+            (ראה place_hires). גם היא לא חישוב נוסף: spatial_map נגזר ממנה.
         """
         # פיצול הווקטור השטוח לחלק המרחבי ולחלק הסקלרי בהתאם לפונקציית observationSize() ב-C++
         spatial_obs = obs[:, :self.spatial_size].view(-1, self.channels, self.board_height, self.board_width)
         scalar_obs = obs[:, self.spatial_size:]
 
-        spatial_map = self.cnn_trunk(spatial_obs)
+        # ה-trunk מורץ בשני חצאים במקום כ-Sequential אחד, כדי להוציא את
+        # האקטיבציה שלפני הפולינג (16x34x18) לענף הרזולוציה המלאה. אותם
+        # מודולים, אותו סדר, אותו חישוב -- לא מחושב שום דבר פעמיים, ו-
+        # test_trunk_split_is_bit_identical_to_the_sequential מוודא שאין סטייה
+        # ולו ב-ulp אחד (סטייה כזו הייתה מזיזה את המאפיינים מתחת לכל צ'קפוינט).
+        hires_map = self.cnn_trunk[:2](spatial_obs)
+        spatial_map = self.cnn_trunk[2:](hires_map)
         cnn_features = self.cnn_flatten(spatial_map)
         scalar_features = self.scalar_mlp(scalar_obs)
         combined = torch.cat((cnn_features, scalar_features), dim=1)
@@ -406,7 +459,30 @@ class MicroRoyaleNet(nn.Module):
         noop = self.noop_embed.view(1, 1, -1).expand(card_embeds.shape[0], 1, -1)
         card_embeds = torch.cat([card_embeds, noop], dim=1)  # (Batch, hand_size+1, CARD_EMBED_DIM)
 
+        return combined, card_embeds, spatial_map, hires_map
+
+    def extract_features(self, obs):
+        """שלושת הערכים הישנים בלבד -- ראה extract_features_hires.
+
+        נשמר כעטיפה במקום להרחיב את החתימה, כי לכל קורא קיים (שני המאמנים,
+        exploiter, כל סקריפטי המדידה, לולאת ה-live) יש פריקה של בדיוק שלושה
+        ערכים. הקוראים החמים בלבד עברו ל-extract_features_hires ומעבירים את
+        המפה הלאה; כל השאר נותנים ל-placement_given_card לבנות אותה מחדש מ-obs,
+        וזה **אותו חישוב בדיוק** (נבדק ב-test_recomputed_hires_equals_the_
+        passed_one), רק בעלות של conv אחד נוסף בנתיב קר.
+        """
+        combined, card_embeds, spatial_map, _ = self.extract_features_hires(obs)
         return combined, card_embeds, spatial_map
+
+    def hires_features(self, obs):
+        """האקטיבציה של ה-trunk לפני הפולינג: (Batch, 16, 34, 18).
+
+        זהו הקלט של ענף הרזולוציה המלאה. מחושב מ-obs כדי שקורא שלא החזיק את
+        המפה יוכל לשחזר אותה בעצמו במקום לקבל ראש אחר בשקט.
+        """
+        spatial_obs = obs[:, :self.spatial_size].view(
+            -1, self.channels, self.board_height, self.board_width)
+        return self.cnn_trunk[:2](spatial_obs)
 
     def affordability_mask(self, obs):
         """
@@ -496,7 +572,8 @@ class MicroRoyaleNet(nn.Module):
         ability_slot2_logits = self.ability_slot2_head(hx) if self.ability_slot2_head is not None else None
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
-    def placement_given_card(self, hx, card_embeds, card_idx, obs=None, spatial_map=None):
+    def placement_given_card(self, hx, card_embeds, card_idx, obs=None,
+                             spatial_map=None, hires_map=None):
         """
         חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
@@ -528,6 +605,31 @@ class MicroRoyaleNet(nn.Module):
         logit_map = self.place_up(h)                                    # (B, 1, 4*ph, 4*pw)
         logits = logit_map[:, 0, :self.placement_rows, :self.board_width].reshape(
             -1, self.placement_cells)
+
+        # --- ענף הרזולוציה המלאה, כשארית --------------------------------
+        # הקצה הגס למעלה יודע "איפה בערך"; זה בוחר את המשבצת בתוך הבלוק.
+        # מאותחל-אפס, אז באתחול השורה הזו מוסיפה אפס מדויק (לא "בקירוב"):
+        # הקונבולוציה האחרונה מאופסת במשקל ובהטיה, ולכן הפלט הוא טנזור אפס
+        # מדויק והחיבור השיורי מדויק. זה מה שמאפשר לצ'קפוינטים קיימים
+        # להיטען ולהתנהג bit-identical.
+        if hires_map is None:
+            if obs is None:
+                # אין נפילה שקטה לראש הגס-בלבד. פונקציה אחרת מזו שהריצה את
+                # ה-rollout הייתה שוברת את יחס ה-PPO בשקט -- בדיוק מה
+                # שהשמירה על spatial_map=None כבר קיימת בשבילו.
+                raise ValueError(
+                    "placement_given_card דורש hires_map או obs כדי לבנות "
+                    "אותו (ראה hires_features). None בשניהם היה מחשב ראש "
+                    "אחר מזה שהריץ את ה-rollout.")
+            hires_map = self.hires_features(obs)
+        ctx_hi = self.place_ctx_hi(torch.cat((hx, chosen_embed), dim=-1))
+        h_hi = torch.cat(
+            (hires_map,
+             ctx_hi.view(-1, HIRES_CTX_DIM, 1, 1).expand(
+                 -1, -1, hires_map.shape[2], hires_map.shape[3])), dim=1)
+        fine = self.place_hires(h_hi)                                   # (B,1,H,W)
+        logits = logits + fine[:, 0, :self.placement_rows, :self.board_width].reshape(
+            -1, self.placement_cells)
         if obs is not None:
             # מיסוך חוקיות מותנה-קלף. -inf ולא ערך סופי, מאותה סיבה בדיוק
             # כמו ב-step_lstm_and_card: Categorical מנרמל דרך log_softmax,
@@ -539,7 +641,7 @@ class MicroRoyaleNet(nn.Module):
 
     def forward_sequence(self, feats_seq, card_embeds_seq, spatial_seq, obs_seq,
                          card_mask_seq, card_idx_seq, reset_seq, hidden_state,
-                         extra_card_idx_seq=None):
+                         extra_card_idx_seq=None, hires_seq=None):
         """
         חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
         מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
@@ -576,12 +678,17 @@ class MicroRoyaleNet(nn.Module):
         values = self.value_head(flat_hx).squeeze(-1)
         aux = self.aux_elixir_head(flat_hx).squeeze(-1) * 10.0
 
+        # נבנית פעם אחת ומשותפת לשתי הקריאות למטה. בלי זה מעבר הכיסוי היה
+        # משחזר את conv1 של ה-trunk בפעם השנייה על אותו קלט בדיוק.
+        flat_obs = obs_seq.reshape(L * B, -1)
+        flat_hires = (self.hires_features(flat_obs) if hires_seq is None
+                      else hires_seq.reshape(L * B, *hires_seq.shape[2:]))
+        flat_embeds = card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:])
+        flat_spatial = spatial_seq.reshape(L * B, *spatial_seq.shape[2:])
+
         place_logits = self.placement_given_card(
-            flat_hx,
-            card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:]),
-            card_idx_seq.reshape(L * B),
-            obs_seq.reshape(L * B, -1),
-            spatial_seq.reshape(L * B, *spatial_seq.shape[2:]))
+            flat_hx, flat_embeds, card_idx_seq.reshape(L * B),
+            flat_obs, flat_spatial, hires_map=flat_hires)
 
         # --- placement COVERAGE pass (optional) -----------------------------
         # מפת המיקום של קלף *אחר* מזה שנבחר, על אותם flat_hx/spatial בדיוק.
@@ -598,11 +705,8 @@ class MicroRoyaleNet(nn.Module):
         extra_logits = None
         if extra_card_idx_seq is not None:
             extra_logits = self.placement_given_card(
-                flat_hx,
-                card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:]),
-                extra_card_idx_seq.reshape(L * B),
-                obs_seq.reshape(L * B, -1),
-                spatial_seq.reshape(L * B, *spatial_seq.shape[2:])).view(L, B, -1)
+                flat_hx, flat_embeds, extra_card_idx_seq.reshape(L * B),
+                flat_obs, flat_spatial, hires_map=flat_hires).view(L, B, -1)
 
         return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
                 values.view(L, B), aux.view(L, B), (hx, cx), extra_logits)
