@@ -23,6 +23,7 @@ from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
     DRAW_PENALTY, load_state_dict_flexible,
+    PLACEMENT_COVERAGE_COEF, placement_coverage_slots,
 )
 import exploiter as exploiter_mod
 
@@ -2281,6 +2282,9 @@ def train_selfplay_ppo():
         chunk_offsets = torch.arange(bptt_chunk, dtype=torch.long, device=device).unsqueeze(1)
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
         aux_losses, aux_maes = [], []
+        # Placement entropy of affordable-but-UNCHOSEN cards -- the freeze
+        # detector. See train.py's PLACEMENT_COVERAGE_COEF.
+        coverage_ents = []
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
@@ -2343,9 +2347,15 @@ def train_selfplay_ppo():
                 # mb_card_actions is the STORED action from rollout, not a fresh
                 # sample: placement must be conditioned on exactly the card the
                 # log-prob is scored against, or the ratio breaks silently.
-                (cl_seq, pl_seq, new_values, new_aux_elixir, _) = net.forward_sequence(
+                # Placement coverage pass -- see train.py's PLACEMENT_COVERAGE_COEF
+                # for the measured defect this closes. Identical here because the
+                # defect is identical: both loops score placement only through the
+                # chosen card, so both starve an unplayed card's map of gradient.
+                cf_idx = placement_coverage_slots(card_mask_seq, net.hand_size)
+                (cl_seq, pl_seq, new_values, new_aux_elixir, _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
-                    card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx))
+                    card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
+                    extra_card_idx_seq=cf_idx)
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)
@@ -2438,8 +2448,12 @@ def train_selfplay_ppo():
 
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
+                cf_ent = Categorical(logits=cf_pl_seq).entropy()
+                cf_ent_mean = (cf_ent * mb_decision).sum() / n_decision
+                coverage_ents.append((cf_ent_mean / LOG_N_PLACEMENT).item())
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
-                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
+                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT
+                                 + PLACEMENT_COVERAGE_COEF * cf_ent_mean / LOG_N_PLACEMENT)
                 # entropy_bonus already carries its per-head coefficients.
                 # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
                 # reason the critic loss is: phantom auto-reset steps carry an
@@ -2557,6 +2571,8 @@ def train_selfplay_ppo():
         # mb_placed). It is not comparable to the same series before that date,
         # which averaged in no-op steps and read roughly 0.37 higher.
         writer.add_scalar("Entropy/Placement_Measured", place_frac, episodes_completed)
+        writer.add_scalar("Entropy/Placement_Coverage",
+                          float(np.mean(coverage_ents)), episodes_completed)
         if ent_place_noop_log:
             # Kept purely as the contrast that makes the fix legible: if these
             # two ever converge, the no-op arm stopped being a free ride.

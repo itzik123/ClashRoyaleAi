@@ -538,7 +538,8 @@ class MicroRoyaleNet(nn.Module):
         return logits
 
     def forward_sequence(self, feats_seq, card_embeds_seq, spatial_seq, obs_seq,
-                         card_mask_seq, card_idx_seq, reset_seq, hidden_state):
+                         card_mask_seq, card_idx_seq, reset_seq, hidden_state,
+                         extra_card_idx_seq=None):
         """
         חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
         מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
@@ -582,8 +583,29 @@ class MicroRoyaleNet(nn.Module):
             obs_seq.reshape(L * B, -1),
             spatial_seq.reshape(L * B, *spatial_seq.shape[2:]))
 
+        # --- placement COVERAGE pass (optional) -----------------------------
+        # מפת המיקום של קלף *אחר* מזה שנבחר, על אותם flat_hx/spatial בדיוק.
+        # קיים כדי לסגור חור-כיסוי בגרדיאנט: גם actor_loss וגם בונוס
+        # האנטרופיה זורמים רק דרך placement_given_card של הקלף ש**נבחר**, ולכן
+        # קלף שהמדיניות הפסיקה לשחק לא מקבל שום גרדיאנט מיקום לעולם והראש שלו
+        # קופא. נמדד: Cannon/Fireball/Giant החזירו את התא הקבוע (11,0) ב-54%-91%
+        # מהמצבים, והנחת Cannon בתא של המדיניות שימרה 121 HP של מגדלים מול 396
+        # לתא אקראי חוקי -- גרוע מאקראי, כלומר פונקציה שבורה ולא הערכת ערך.
+        #
+        # מחזיר לוגיטים בלבד; מי שקורא מחליט מה לעשות איתם (train.py מוסיף
+        # אנטרופיה). אין כאן שום פרמטר חדש -- הראש הוא אותו ראש -- ולכן שום
+        # צ'קפוינט לא נפסל.
+        extra_logits = None
+        if extra_card_idx_seq is not None:
+            extra_logits = self.placement_given_card(
+                flat_hx,
+                card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:]),
+                extra_card_idx_seq.reshape(L * B),
+                obs_seq.reshape(L * B, -1),
+                spatial_seq.reshape(L * B, *spatial_seq.shape[2:])).view(L, B, -1)
+
         return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
-                values.view(L, B), aux.view(L, B), (hx, cx))
+                values.view(L, B), aux.view(L, B), (hx, cx), extra_logits)
 
     def predict_opp_elixir(self, hx):
         """

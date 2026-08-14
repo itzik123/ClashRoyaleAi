@@ -17,6 +17,7 @@ from collections import deque
 import clash_royale_env
 import gym_wrapper
 from model import MicroRoyaleNet
+from elixir_shaping import W_SOLVENCY, bankruptcy_rate, solvency_shaping
 
 # Reward-shaping weights (dense guidance on top of the sparse +1/-1 win/loss signal).
 # Kept intentionally small so the cumulative shaping over an episode stays comparable
@@ -312,6 +313,107 @@ def spell_value_shaping(stats, prev_stats, w):
     return (w * np.where(traded > 0.0, traded * solvent, traded)).astype(np.float32)
 
 
+# --- elixir solvency --------------------------------------------------------
+# Potential-based, therefore policy-invariant: it CANNOT change which policy is
+# optimal, only how fast the agent finds it. That is the right tool here because
+# the failure is credit assignment, not a mis-specified objective -- decision-
+# time search optimises this same reward and gains +0.319 win rate with 87% of
+# its overrides being "wait where greedy plays", so waiting more is already
+# better under the current objective and the policy simply has not found it.
+#
+# Full derivation, the measurement, and the refuted alternative explanation
+# (the card-entropy target is NOT forcing the spending -- the policy carries
+# 45.1% play probability where the target only requires 18.1%) are in
+# elixir_shaping.py.
+#
+# Both knobs are env-overridable so the term can be ablated against itself
+# without editing code between arms.
+# Periodic-checkpoint interval. Overridable ONLY so a short controlled run
+# produces matched artifacts: a resume sets last_save_ep to the resumed episode,
+# so at the 500 default an experiment shorter than 500 episodes finishes having
+# written nothing at all -- and `timeout` kills the process before the
+# end-of-loop save, so the whole run is unmeasurable. Leave unset for real runs.
+SAVE_EVERY_EPISODES = int(os.environ.get("CLASH_SAVE_EVERY", 500))
+SOLVENCY_ENABLED = os.environ.get("CLASH_SOLVENCY", "1") != "0"
+SOLVENCY_COEF = float(os.environ.get("CLASH_SOLVENCY_COEF", W_SOLVENCY))
+
+
+# --- placement coverage -----------------------------------------------------
+# THE BUG THIS EXISTS FOR, measured 2026-08-14 on model_weights_dist_e3.pth.
+#
+# Both the actor loss and the placement entropy bonus flow through
+# `placement_given_card` for the card that was CHOSEN and no other. A card the
+# policy has stopped playing therefore receives ZERO placement gradient from
+# either term, forever. Its conditional map freezes at whatever it happened to
+# be and drifts only as the shared trunk moves under it.
+#
+# That is a self-sustaining deadlock, not a transient: the frozen cell makes the
+# card worthless, worthlessness keeps the card head from selecting it, and not
+# being selected keeps the head frozen. No amount of additional training escapes
+# it, which is why "train it longer" had not worked.
+#
+# Measured, 40 greedy episodes at 1.5x opponent elixir:
+#
+#   card       modal cell   modal share   plays   H(place|card)
+#   Cannon       (11,0)        91.0%        24        0.098
+#   Fireball     (11,0)        58.4%         2        0.141
+#   Giant        (11,0)        54.1%         2        0.147
+#   Mini PEKKA   (14,15)       19.0%       230        0.086
+#
+# Mini PEKKA has the LOWEST entropy of the four and is the most-played card, so
+# entropy does not separate them -- modal-cell stability across states does. And
+# the collapse is not a valuation: scored by tower HP preserved over a Cannon's
+# full 300-tick life across 449 threatened states, the policy's own cell saved
+# 121 HP against 396 for a RANDOM legal cell (paired -274 HP, 95% CI
+# [-328, -221]). A policy cannot be correctly valuing a card it places
+# significantly worse than chance.
+#
+# Dating it: the phase-1 net from 2026-08-09 placed Cannon at (3,15) with a 9.5%
+# modal share and H=0.368 -- healthy and state-dependent. The collapse appears in
+# the 2026-08-11 net, bracketing the entropy-masking change of that day
+# (e16cdd7, "Measure placement entropy on real placements, not on no-ops").
+# That change was CORRECT for the defect it targeted, and it had an unmeasured
+# side effect: the no-op steps it stopped rewarding were the only thing holding
+# open the placement maps of cards that are never played. Note the signature --
+# in the pre-fix net Cannon and Giant had the two HIGHEST per-card placement
+# entropies; after it they have the lowest. The rank order inverted for exactly
+# the unplayed cards, which is what this mechanism predicts and little else does.
+#
+# The fix restores a placement gradient for affordable-but-unchosen cards
+# without reintroducing the measurement bug: the REPORTED
+# Entropy/Placement_Measured still averages over real placements only.
+#
+# Cost is real: the placement head is ~41% of update time and this runs it a
+# second time. Measured wall clock is in the commit message. It is the cheapest
+# correct option -- covering all 4 slots every step would be ~4x, and sampling
+# one slot uniformly reaches every card ~1000 times per rollout, which is ample.
+#
+# Overridable from the environment ONLY so the fix can be ablated against
+# itself: the A/B that justifies this term sets CLASH_PLACEMENT_COVERAGE_COEF=0
+# for the control arm and leaves the default for the treatment. Both arms then
+# run byte-identical code, which is the only way the comparison attributes the
+# difference to the term rather than to two different scripts.
+PLACEMENT_COVERAGE_COEF = float(os.environ.get("CLASH_PLACEMENT_COVERAGE_COEF", 0.02))
+
+
+def placement_coverage_slots(card_mask_seq, hand_size):
+    """(L,B) long: one uniformly-sampled AFFORDABLE hand slot per timestep.
+
+    Rows with nothing affordable fall back to the no-op slot. Those rows are
+    masked out of the coverage term anyway (mb_decision is 0 exactly there), so
+    the fallback only has to be a legal index, never a meaningful one.
+    """
+    L, B, _ = card_mask_seq.shape
+    playable = card_mask_seq[..., :hand_size].reshape(L * B, hand_size).float()
+    none = playable.sum(-1) <= 0
+    # Uniform over the affordable slots; the all-zero rows get a valid dummy
+    # distribution so multinomial cannot raise, then are overwritten below.
+    probs = torch.where(none.unsqueeze(-1), torch.ones_like(playable), playable)
+    idx = torch.multinomial(probs, 1).squeeze(-1)
+    idx = torch.where(none, torch.full_like(idx, hand_size), idx)
+    return idx.view(L, B)
+
+
 def tower_potential(stats, w_bldg=W_BLDG):
     """Phi(s): the TOWER-damage differential, normalized.
 
@@ -414,9 +516,17 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     towers_lost = np.maximum(0, prev_stats["team0_towers_alive"] - stats["team0_towers_alive"])
     tower_events = w_tower * (towers_taken - towers_lost)
 
+    # Elixir solvency, same discounted potential-based form and for the same
+    # reason -- see elixir_shaping.py for the measurement (below 3 elixir on
+    # 65.3% of decisions, 60.8% during a big push) and for why the obvious
+    # entropy-normalization explanation was tested and refuted.
+    solvency = (solvency_shaping(stats, prev_stats, gamma, w=SOLVENCY_COEF)
+                if SOLVENCY_ENABLED else 0.0)
+
     shaping = (tower_shaping
                + lethal_shaping
                + spell_value_shaping(stats, prev_stats, w_spell)
+               + solvency
                + tower_events
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
@@ -516,7 +626,13 @@ def train_ppo():
     # Doubling from 4 halves the variance of the per-rollout advantage normalization
     # and the critic's return targets -- the flat/noisy Loss/Critic and the rising
     # (not falling) Loss/Entropy both pointed at that noise as the likely culprit.
-    num_envs = 8
+    # Overridable so several arms of a controlled experiment fit on one machine
+    # at once. Every arm must use the SAME value -- it sets the rollout batch
+    # width B, which changes advantage-normalization variance and the number of
+    # BPTT segments per minibatch. Keep it a divisor-friendly value: the update
+    # splits (update_timestep/bptt_chunk)*num_envs segments across
+    # num_minibatches, so 4 gives 20*4/8 = 10 segments per minibatch.
+    num_envs = int(os.environ.get("CLASH_NUM_ENVS", 8))
     print(f"Initializing {num_envs} Async Vectorized Environments...")
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
 
@@ -850,7 +966,13 @@ def train_ppo():
     # beating a bot that gets 1.4x elixir and plays random cards at random
     # positions is not a prerequisite for learning from varied decks, it is a
     # different and less useful skill. The real tests come after it.
-    PHASE2_ENTRY_WIN_RATE = 0.60
+    # Overridable from the environment for CONTROLLED EXPERIMENTS only. A
+    # mirror -> random_opponent flip swaps the opponent's whole deck mid-run,
+    # which silently changes the task underneath any A/B that is measuring
+    # something else. Setting CLASH_PHASE2_ENTRY_WIN_RATE above 1.0 makes the
+    # gate unreachable and pins the run to the mirror deck for its duration.
+    # Not a training knob -- leave it unset for real runs.
+    PHASE2_ENTRY_WIN_RATE = float(os.environ.get("CLASH_PHASE2_ENTRY_WIN_RATE", 0.60))
     # Phase 2 replays the SAME CURRICULUM_STAGES gated progression (win rate
     # threshold -> escalate elixir multiplier) against each random deck, from
     # stage 0 (1.0x, normal speed), instead of a flat elixir speed for a flat
@@ -1559,6 +1681,12 @@ def train_ppo():
         # from noisy episode-outcome stats.
         actor_losses, critic_losses, entropy_bonuses, total_losses, clip_fracs = [], [], [], [], []
         aux_losses, aux_maes = [], []
+        # Normalized placement entropy of affordable-but-unchosen cards. This is
+        # the freeze detector: the aggregate Entropy/Placement_Measured provably
+        # cannot see a per-card collapse, and this series can, because the cards
+        # at risk are precisely the ones it samples that the other series never
+        # reaches.
+        coverage_ents = []
         # Logged separately so a collapsing head is visible in TensorBoard
         # directly, instead of only showing up in an offline behavioral probe.
         ent_card_log, ent_place_log = [], []
@@ -1622,9 +1750,15 @@ def train_ppo():
                 # mb_card_actions is the STORED action from rollout, not a fresh
                 # sample: placement must be conditioned on exactly the card the
                 # log-prob is scored against, or the ratio breaks silently.
-                (cl_seq, pl_seq, new_values, new_aux_elixir, _) = net.forward_sequence(
+                # One AFFORDABLE-but-not-necessarily-chosen slot per timestep,
+                # sampled uniformly -- the coverage pass. See
+                # placement_coverage_slots for why this is not free and why it
+                # is nonetheless the cheapest correct option.
+                cf_idx = placement_coverage_slots(card_mask_seq, net.hand_size)
+                (cl_seq, pl_seq, new_values, new_aux_elixir, _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
-                    card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx))
+                    card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
+                    extra_card_idx_seq=cf_idx)
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)
@@ -1689,10 +1823,27 @@ def train_ppo():
                     # denominator rather than feed the controller a 0, which it
                     # would chase as a total collapse.
                     ent_place_mean = (new_ent_place * mb_decision).sum() / n_decision
+                # --- placement coverage -------------------------------------
+                # Entropy of the placement map for a card that was AFFORDABLE
+                # this step, chosen or not. This is a regularizer, not part of
+                # the PPO objective: it never touches new_logprobs, so the
+                # ratio is unaffected and the update stays a valid PPO step.
+                #
+                # Its coefficient is deliberately FIXED rather than tied to the
+                # adaptive ent_coef_place. The controller lowers that
+                # coefficient when REAL placements are sharp enough, which is
+                # exactly the condition under which an unplayed card is
+                # freezing -- tying the two would switch coverage off precisely
+                # when it is needed.
+                cf_ent = Categorical(logits=cf_pl_seq).entropy()
+                cf_ent_mean = (cf_ent * mb_decision).sum() / n_decision
+                coverage_bonus = PLACEMENT_COVERAGE_COEF * cf_ent_mean / LOG_N_PLACEMENT
+                coverage_ents.append((cf_ent_mean / LOG_N_PLACEMENT).item())
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
                 entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
-                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
+                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT
+                                 + coverage_bonus)
                 # entropy_bonus already carries its per-head coefficients.
                 # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
                 # reason the critic loss is: phantom auto-reset steps carry an
@@ -1768,6 +1919,12 @@ def train_ppo():
         # is exactly what diagnosed the fixed-target pathology in the first place.
         writer.add_scalar("Entropy/Placement_Target", ent_target_place, episodes_completed)
         writer.add_scalar("Entropy/Placement_Measured", place_frac, episodes_completed)
+        # Affordable-but-unchosen cards. Read this NEXT TO Placement_Measured:
+        # Measured going down while Coverage stays up is a policy sharpening on
+        # the cards it plays; BOTH going down is the freeze this term exists to
+        # prevent, and it is the shape that produced the (11,0) collapse.
+        writer.add_scalar("Entropy/Placement_Coverage",
+                          float(np.mean(coverage_ents)), episodes_completed)
         writer.add_scalar("Aux/OppElixir_MSE", float(np.mean(aux_losses)), episodes_completed)
         writer.add_scalar("Loss/Clip_Fraction", mean_clip_frac, episodes_completed)
         # Printed (not just logged to TensorBoard) so progress can be monitored from
@@ -1792,7 +1949,7 @@ def train_ppo():
         hx, cx = hx.detach(), cx.detach()
 
         # Saves
-        if episodes_completed - last_save_ep >= 500:
+        if episodes_completed - last_save_ep >= SAVE_EVERY_EPISODES:
             torch.save({
                 "model": net.state_dict(),
                 "optimizer": optimizer.state_dict(),
