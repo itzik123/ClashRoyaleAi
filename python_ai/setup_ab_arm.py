@@ -43,16 +43,25 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(args.dst)), exist_ok=True)
 
-    # No optimizer state is carried over. Adam moments belong to the parameters
-    # that produced them, and `model_weights_hires.pth` was written by a
-    # DIFFERENT optimizer (distillation, placement pathway only) than the one
-    # PPO is about to run. A fresh optimizer is honest; a borrowed one would
-    # apply stale second moments to weights they never saw. train.py accepts an
-    # empty state dict and starts clean, and both arms get the same treatment,
-    # which is what the comparison actually requires.
+    # No optimizer MOMENTS are carried over, but a real, empty-state Adam
+    # state_dict is: torch's load_state_dict reads `param_groups` and raises
+    # KeyError on a bare {}, and train.py's full-resume path is gated on the
+    # "optimizer" key being present -- omitting it drops the arm onto the legacy
+    # path and straight into the entropy-target trap this file exists to avoid.
+    #
+    # Moments are dropped deliberately. Adam's second moments belong to the
+    # parameters that produced them, and model_weights_hires.pth was written by
+    # a different optimizer (distillation, placement pathway only) than the one
+    # PPO is about to run. Both arms get the same fresh start, which is what the
+    # comparison requires. lr must match train.py's own 3e-4, since
+    # load_state_dict overwrites the hyperparameters the trainer just set.
+    from model import MicroRoyaleNet
+    probe = MicroRoyaleNet(num_ability_slots=0)
+    fresh_opt = torch.optim.Adam(probe.parameters(), lr=3e-4).state_dict()
+
     ckpt = {
         "model": model,
-        "optimizer": {},
+        "optimizer": fresh_opt,
         "curriculum_stage": args.stage,
         "stage_start_episode": args.episodes,
         "episodes_completed": args.episodes,
