@@ -26,6 +26,7 @@ from train import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
     DRAW_PENALTY, load_state_dict_flexible,
     PLACEMENT_COVERAGE_COEF, placement_coverage_slots,
+    spell_value_weight,
 )
 import exploiter as exploiter_mod
 
@@ -1962,7 +1963,10 @@ def train_selfplay_ppo():
             # gamma passed explicitly: the tower term is potential-based
             # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
             # holds if this is the SAME gamma the GAE/returns use below.
-            shaping = compute_shaping(stats, prev_stats, gamma=gamma)
+            # w_spell passed explicitly since 2026-08-14 -- see train.py's
+            # spell_value_weight for the dead-code bug this closes.
+            shaping = compute_shaping(stats, prev_stats, gamma=gamma,
+                                      w_spell=spell_value_weight(episodes_completed))
             shaping = shaping * (1.0 - prev_dones)
             shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards

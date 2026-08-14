@@ -269,29 +269,46 @@ def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
 # zero so the policy finishes trained on the true objective.
 W_SPELL_VALUE_START = 0.08
 W_SPELL_VALUE_FINAL = 0.0
-SPELL_VALUE_ANNEAL_EPISODES = 40000
+SPELL_VALUE_ANNEAL_EPISODES = int(os.environ.get(
+    "CLASH_SPELL_ANNEAL_EPISODES", 40000))
+# Episode at which the anneal BEGINS. 0 reproduces the originally-intended
+# schedule exactly and is what a from-scratch run wants; see the docstring for
+# the only reason it is not always 0.
+SPELL_VALUE_ANNEAL_START = int(os.environ.get("CLASH_SPELL_ANNEAL_START", 0))
 # Elixir that must remain after a cast for its POSITIVE reward to count. Set to
 # Fireball's own cost: enough to answer with one more card.
 SPELL_SOLVENCY_RESERVE = 4.0
 
 
-def spell_value_weight(eps_done):
-    """!! NOT WIRED IN -- the anneal described above does NOT currently happen.
+def spell_value_weight(eps_done, start=None, length=None):
+    """The Fireball-value weight at `eps_done`, annealing START -> FINAL.
 
-    Found 2026-08-14 during a dead-code sweep: nothing calls this. Both call
-    sites (`train.py`'s and `train_selfplay.py`'s) invoke
-    `compute_shaping(stats, prev_stats, gamma=gamma)` without `w_spell`, so the
-    weight is pinned at `W_SPELL_VALUE_START = 0.08` for the whole of training
-    and never decays to `W_SPELL_VALUE_FINAL`. The comment block above says
-    otherwise, and it is the comment that is wrong.
+    WIRED IN 2026-08-14, and that is a GAMEPLAY-AFFECTING change: every win rate
+    measured before it was earned under a constant w_spell = 0.08.
 
-    Deliberately left in place and NOT connected: wiring it would change the
-    reward on every step of every future run, which is a gameplay-affecting
-    change that needs its own measurement and its own decision. Kept because the
-    function records the intended schedule; if you connect it, say so in
-    CLAUDE.md and treat prior win rates as not comparable.
+    It had been dead code since the term was written. Both trainers called
+    `compute_shaping(stats, prev_stats, gamma=gamma)` with no `w_spell`, so the
+    weight sat at `W_SPELL_VALUE_START` for the whole of training and the anneal
+    the comment block above describes never ran. Nothing detected it because no
+    test ever varied the argument -- `test_compute_shaping_actually_responds_to_
+    w_spell` is the regression that now would.
+
+    The anneal matters for the reason that block gives: this term is NOT
+    potential-based, so it biases the optimum by construction, deliberately, and
+    it has to reach zero for the policy to finish trained on the true objective.
+    A term that never anneals is a permanent bias nobody chose.
+
+    `start` slides the schedule onto a run that resumes mid-life.
+    `model_weights_selfplay.pth` is at episode 64,309 against a 40,000-episode
+    horizon, so a faithful wiring pins a resumed run at FINAL from its first
+    step -- correct by the schedule, and it makes the anneal unobservable, which
+    matters when the anneal is one of the things being validated. Both knobs are
+    env-overridable (`CLASH_SPELL_ANNEAL_START`, `CLASH_SPELL_ANNEAL_EPISODES`)
+    so a run can set them without editing code between arms.
     """
-    frac = min(1.0, max(0.0, eps_done / float(SPELL_VALUE_ANNEAL_EPISODES)))
+    start = SPELL_VALUE_ANNEAL_START if start is None else start
+    length = SPELL_VALUE_ANNEAL_EPISODES if length is None else length
+    frac = min(1.0, max(0.0, (eps_done - start) / float(max(1, length))))
     return W_SPELL_VALUE_START + frac * (W_SPELL_VALUE_FINAL - W_SPELL_VALUE_START)
 
 
@@ -1393,7 +1410,11 @@ def train_ppo():
             # gamma passed explicitly: the tower term is potential-based
             # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
             # holds if this is the SAME gamma the GAE/returns use below.
-            shaping = compute_shaping(stats, prev_stats, gamma=gamma)
+            # w_spell passed explicitly since 2026-08-14. It used to be omitted,
+            # which silently pinned the Fireball-value term at its START weight
+            # forever instead of annealing it to zero -- see spell_value_weight.
+            shaping = compute_shaping(stats, prev_stats, gamma=gamma,
+                                      w_spell=spell_value_weight(episodes_completed))
             shaping = shaping * (1.0 - prev_dones)
             shaped_rewards = step_rewards + shaping - draw_penalty
             ep_rewards += shaped_rewards
