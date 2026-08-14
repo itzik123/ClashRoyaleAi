@@ -971,6 +971,81 @@ Three things worth carrying:
   nothing. The plateau argument predicted it would rescue the Cannon; it did
   not. **Resolution was the binding constraint, not target softness.**
 
+**2026-08-14 (later), two GAMEPLAY-AFFECTING changes: the spell anneal is wired
+in, and the coverage term was given a target.**
+
+**`spell_value_weight` was dead code and now runs.** Both trainers called
+`compute_shaping(stats, prev_stats, gamma=gamma)` with no `w_spell`, so the
+Fireball-value weight sat at `W_SPELL_VALUE_START = 0.08` for the whole of
+training and the anneal its own comment block describes never happened. Nothing
+detected it because **no test ever varied the argument** —
+`test_compute_shaping_actually_responds_to_w_spell` is the regression that now
+would. The term is deliberately NOT potential-based, so it biases the optimum by
+construction; a schedule that never reaches zero is a permanent bias nobody
+chose. Every win rate before this was earned under a constant 0.08.
+
+`SPELL_VALUE_ANNEAL_START` (env `CLASH_SPELL_ANNEAL_START`, default 0) exists
+because a warm start resumes PAST the horizon: `model_weights_selfplay.pth` is
+at episode 64,309 against a 40,000-episode anneal, so a faithful wiring pins
+`w_spell` at FINAL from the first step and the anneal cannot be observed at all.
+At the default the behaviour is exactly the original intent.
+
+**The coverage term now carries a TARGET where the advisor has one**
+(`advisor_target.py`). `PLACEMENT_COVERAGE_COEF` adds an ENTROPY bonus on one
+sampled affordable slot, and for a card the policy never plays that bonus is the
+*only* placement gradient in the objective — so it pushes the map toward
+uniform, which is precisely what the hi-res distillation is trying to undo. The
+two are in direct opposition and coverage runs for all of training.
+
+The resolution is a **row mask**: a row either has an advisor target and gets
+KL to the advisor's masked score map, or it does not and keeps the entropy
+bonus. Never both — entropy says "be spread out", KL says "be here", and a row
+carrying both asks the head for two incompatible things. This is the fourth time
+this project has landed on the same conclusion: *closing a coverage hole needs a
+target, not noise.*
+
+Three things worth carrying:
+
+- **The gate is the load-bearing part.** `tactics` always returns a cell, and on
+  a quiet board that cell is a default — the defensive pocket for a building, an
+  arbitrarily tie-broken lane for the Giant. Training on defaults teaches a
+  CONSTANT, which is the exact pathology being repaired. `target_logits_for`
+  returns `None` there and the row falls back to entropy. This mirrors
+  `distill_tactics.collect`'s `cover > 0 or catch > 0` filter.
+- **The limiter was AFFORDABILITY, not the gate, and it was worth measuring
+  rather than guessing.** Over 258 decision steps the sampled coverage slot held
+  an advisor card 32.6% of the time and the advisor then spoke on 90% of those.
+  Cannon(3)/Fireball(4)/Giant(5) are exactly the cards a near-bankrupt agent
+  cannot afford — it sits under 3 elixir on 65.3% of decisions — so a uniform
+  draw over *affordable* slots is biased toward the cheap cards, which are also
+  the ones already getting actor gradient because they are the ones being
+  played. `placement_coverage_slots` grew a `slot_weights` argument
+  (`CLASH_ADVISOR_SLOT_WEIGHT`, default 5.0); measured `Advisor/Rows` 13-19 →
+  23-25 per minibatch. Weights re-rank, never remove: a row whose affordable
+  slots all weigh zero falls back to the unweighted mask rather than through to
+  the no-op.
+- **Read `Advisor/KL` and `Advisor/Rows` as a PAIR, never KL alone.** KL falls
+  both when the head learns the surface and when the advisor simply stops
+  speaking, and those are opposite situations. Same shape as every other
+  aggregate this file warns about.
+
+The coverage slot is now sampled **once at rollout time and buffered**, not
+resampled inside every PPO epoch: an advisor target has to be computed against
+the observation the slot was drawn on, and a fresh draw in the update would pair
+one card's logits with another card's target.
+
+**A resume trap that is specific to `place_hires` and bit pipeline 2 only.**
+The branch added 6 parameters, so a pre-2026-08-14 checkpoint's optimizer
+describes 26 and the net has 32. `train.py` degrades gracefully (it gates
+optimizer restore on a clean model load); **`train_selfplay.py` loads it
+unconditionally and dies at startup** with "loaded state dict contains a
+parameter group that doesn't match the size of optimizer's group" — and
+`load_state_dict_flexible` reports CLEAN, because all 33 tensors are supplied.
+`setup_ab_arm.py` remaps the moments **by name**: the new parameters land at
+indices 22-27, in the MIDDLE of `named_parameters()` order rather than appended,
+so the obvious "keep 0..25 and append the rest" hands the trunk's moments to the
+placement head — a run that trains, looks healthy, and is quietly wrong.
+
 ---
 
 ## Measured baselines — use these, don't re-derive them
@@ -1436,8 +1511,16 @@ python_ai/           READ-ONLY by default — training runs here.
   train_selfplay.py    Pipeline 2: PFSP league, scripted bots, scenarios, eval.
   exploiter.py         League exploiter, self-contained PPO loop.
   bc_pretrain.py       Behaviour cloning + the demonstration .npz schema.
-  curriculum.py        LEGACY, imported by nothing. Random-action probe from
-                       before the real stage system existed. Ignore it.
+  advisor_target.py    The advisor's score surface as a TRAINING TARGET for the
+                       placement-coverage term, plus the loss both trainers
+                       call. The only place that knows which cards have rules.
+  setup_ab_arm.py      Builds a FULL training checkpoint for an experiment arm
+                       (and remaps optimizer moments by NAME across a
+                       checkpoint that gained parameters).
+  validate_pipeline.py Pre-flight: PFSP routing, scenario contracts, advisor
+                       targeting at scale, search cost ratio, spell anneal,
+                       side null, C++ suite.
+  monitor_run.py       Health daemon for an unattended run. Read-only.
   archive_*/           Checkpoints invalidated by engine/architecture changes.
 tests/               C++ Catch2 tests (ClashRoyaleTests).
 perception/          Screen -> placement events -> simulator as estimator.
