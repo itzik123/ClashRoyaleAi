@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from search_ab_test import (  # noqa: E402
-    LSTM_HIDDEN, NOOP, _greedy_from_logits, _policy_head, _search_action, outcome_score,
+    LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action, outcome_score,
 )
 from expert_iteration import SearchCfg, load_net  # noqa: E402
 from train import annotate_replay_with_agent_info  # noqa: E402

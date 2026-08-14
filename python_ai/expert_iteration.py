@@ -73,7 +73,7 @@ from bc_pretrain import _cell_from_xy, action_match_rate, train_bc  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
 from search_ab_test import (  # noqa: E402
-    LSTM_HIDDEN, NOOP, _greedy_from_logits, _policy_head, _search_action,
+    LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action,
     outcome_score, play_episode,
 )
 from train import load_state_dict_flexible  # noqa: E402

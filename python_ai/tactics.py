@@ -62,7 +62,7 @@ MAX_UNIT_SPEED = 1.5          # ClashEnv.h MAX_UNIT_SPEED -- not bound; see belo
 # pybind does NOT expose (unlike MAX_TROOP_HP / MAX_BUILDING_HP / CH_*). They are
 # hardcoded here with this comment naming the header, which is exactly the
 # fallback CLAUDE.md prescribes for values that are not derivable. If either
-# changes in ClashEnv.h, `test_tactics.py::test_normalizers_match_header` fails.
+# changes in ClashEnv.h, `test_python_ai.py::test_normalizers_match_header` fails.
 
 # Enemy-side channel indices (side offset 1 = enemy, see ClashEnv.h).
 CH_ENEMY_TROOP = (4, 5, 6)    # melee / ranged / building-targeter
@@ -118,7 +118,7 @@ def advance(hp, speed, ticks):
     the lead a step function of speed and quantize away every sub-tile lead.
 
     This is a first-order model, deliberately: it ignores pathing to the bridge
-    and target re-acquisition. `test_tactics.py` measures it against the
+    and target re-acquisition. `test_python_ai.py` measures it against the
     simulator's own 10-tick rollout, which is the ground truth it approximates.
     """
     out = np.zeros_like(hp)

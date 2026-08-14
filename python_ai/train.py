@@ -17,7 +17,7 @@ from collections import deque
 import clash_royale_env
 import gym_wrapper
 from model import MicroRoyaleNet
-from elixir_shaping import W_SOLVENCY, bankruptcy_rate, solvency_shaping
+from elixir_shaping import W_SOLVENCY, solvency_shaping
 
 # Reward-shaping weights (dense guidance on top of the sparse +1/-1 win/loss signal).
 # Kept intentionally small so the cumulative shaping over an episode stays comparable
@@ -276,6 +276,21 @@ SPELL_SOLVENCY_RESERVE = 4.0
 
 
 def spell_value_weight(eps_done):
+    """!! NOT WIRED IN -- the anneal described above does NOT currently happen.
+
+    Found 2026-08-14 during a dead-code sweep: nothing calls this. Both call
+    sites (`train.py`'s and `train_selfplay.py`'s) invoke
+    `compute_shaping(stats, prev_stats, gamma=gamma)` without `w_spell`, so the
+    weight is pinned at `W_SPELL_VALUE_START = 0.08` for the whole of training
+    and never decays to `W_SPELL_VALUE_FINAL`. The comment block above says
+    otherwise, and it is the comment that is wrong.
+
+    Deliberately left in place and NOT connected: wiring it would change the
+    reward on every step of every future run, which is a gameplay-affecting
+    change that needs its own measurement and its own decision. Kept because the
+    function records the intended schedule; if you connect it, say so in
+    CLAUDE.md and treat prior win rates as not comparable.
+    """
     frac = min(1.0, max(0.0, eps_done / float(SPELL_VALUE_ANNEAL_EPISODES)))
     return W_SPELL_VALUE_START + frac * (W_SPELL_VALUE_FINAL - W_SPELL_VALUE_START)
 

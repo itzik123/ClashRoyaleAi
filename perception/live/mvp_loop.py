@@ -524,8 +524,10 @@ def main() -> int:
                     help="write one JSON line per issued placement, with both "
                          "oracles' verdicts and the pixel actually tapped")
     ap.add_argument("--ensure-match", action="store_true",
-                    help="navigate into a Training Camp match before starting, "
-                         "and treat the end of that match as the end of the run")
+                    help="navigate into a Training Camp match before starting. "
+                         "The run still ends on --seconds, NOT when the match "
+                         "does, so size --seconds to cover the match (~200 s "
+                         "plus loading) or the loop stops mid-game")
     ap.add_argument("--frames", type=Path, default=None,
                     help="replay a tools/record_match.py directory instead of "
                          "capturing live. The rest of the chain is identical, "

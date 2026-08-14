@@ -61,7 +61,6 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.distributions import Categorical
 
 import clash_royale_env
 import gym_wrapper

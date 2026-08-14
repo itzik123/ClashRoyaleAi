@@ -735,7 +735,7 @@ the actor loss and the placement entropy bonus flow through
 `placement_given_card` for the **chosen** card only, so a card the policy has
 stopped playing receives **exactly zero** placement gradient from either term,
 forever. `card_id_embed` is per-card, so this is mechanical, not statistical —
-`python_ai/test_placement_coverage.py` asserts the gradient is `== 0.0`.
+`test_python_ai.py::test_unchosen_card_gets_no_gradient` asserts it is `== 0.0`.
 
 That is a self-sustaining deadlock: frozen map → the card really is worthless →
 card head suppresses it → no gradient → still frozen. **More training cannot
@@ -952,7 +952,7 @@ Three things worth carrying:
   which column holds one enemy — **the coarse head fits 14/14 exactly**.
   Nearest-upsample followed by 3×3 convs lets a fine cell mix neighbouring
   pooled cells, so sub-block position *is* recoverable. The limit is real but
-  it is capacity at scale, not impossibility. `test_placement_hires.py` keeps
+  it is capacity at scale, not impossibility. `test_python_ai.py` keeps
   both results.
 - **The Cannon's exact cell is a BAD SUPERVISION TARGET and that is a property
   of the teacher, not the student.** `building_score_map` scatters flat discs,

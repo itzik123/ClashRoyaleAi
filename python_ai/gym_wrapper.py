@@ -136,6 +136,23 @@ def get_all_card_ids():
     return clash_royale_env.get_all_card_ids()
 
 
+def _to_scalar(val):
+    """Unwrap whatever an action field arrived as into a plain Python scalar.
+
+    Callers build the action dict several different ways -- gym's own vectorized
+    space hands over 0-d/1-element numpy arrays, train.py's PPO loop passes
+    `np.array([i])`, and the hand-written probes pass bare ints -- so this has to
+    accept all three. Defined once at module level and imported by
+    `train_selfplay.py` rather than nested inside both `step()` methods, which is
+    where it used to live as two byte-identical copies.
+    """
+    if hasattr(val, "item"):
+        return val.item()
+    if isinstance(val, (list, tuple, np.ndarray)):
+        return val[0]
+    return val
+
+
 class MicroRoyaleEnv(gym.Env):
     def __init__(self, env_config=None):
         super().__init__()
@@ -211,13 +228,6 @@ class MicroRoyaleEnv(gym.Env):
         return obs, {}
 
     def step(self, action, skip_frames=10):
-        def _to_scalar(val):
-            if hasattr(val, "item"):
-                return val.item()
-            if isinstance(val, (list, tuple, np.ndarray)):
-                return val[0]
-            return val
-
         card_idx = int(_to_scalar(action["card_index"]))
         target_x = float(_to_scalar(action["target_x"]))
         target_y = float(_to_scalar(action["target_y"]))

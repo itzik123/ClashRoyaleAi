@@ -93,7 +93,7 @@ A card the policy has stopped playing therefore receives **exactly zero**
 placement gradient from either term, forever. This is mechanical, not
 statistical: `card_id_embed` is `nn.Linear(num_card_ids, 16, bias=False)`, so
 column *c* belongs to card *c* alone, and nothing downstream of the LSTM
-consumes an unchosen card's embedding. `test_placement_coverage.py` asserts the
+consumes an unchosen card's embedding. `test_python_ai.py` asserts the
 gradient is `== 0.0` in exact arithmetic.
 
 That closes a **deadlock**:
@@ -240,10 +240,10 @@ states paired against the engine oracle:
   (75.0 vs 75.5). That variant was built, measured paired, and deleted.
 
 ### Tests
-`python_ai/test_placement_coverage.py`, 5 cases:
+`python_ai/test_python_ai.py` (the coverage section), 5 cases:
 
 ```bash
-python_ai/venv/Scripts/python.exe -m pytest python_ai/test_placement_coverage.py -q
+python_ai/venv/Scripts/python.exe -m pytest python_ai/test_python_ai.py -q -k coverage
 ```
 
 `test_unchosen_card_gets_no_gradient` asserts the *defect* (gradient exactly

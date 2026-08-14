@@ -1,0 +1,964 @@
+"""The python_ai test suite -- every ML-side test in one file.
+
+    python_ai/venv/Scripts/python.exe -m pytest python_ai/test_python_ai.py -q
+
+Consolidated 2026-08-14 from test_tactics.py, test_placement_coverage.py,
+test_elixir_shaping.py and test_placement_hires.py. The test bodies are
+unchanged -- only the four import headers were merged into one, so the set of
+test node ids is identical to the four files it replaces (verified by
+collecting both and diffing the names).
+
+Each section keeps its original module docstring as a comment block, because
+those record WHY the tests exist -- which is the half that is expensive to
+reconstruct and the half a merge would otherwise silently drop.
+"""
+import os
+import sys
+
+import numpy as np
+import pytest
+import torch
+from torch.distributions import Categorical
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import clash_royale_env  # noqa: E402
+import clash_royale_env as E  # noqa: E402
+import gym_wrapper  # noqa: E402
+import tactics  # noqa: E402
+from elixir_shaping import (  # noqa: E402
+    SOLVENCY_RESERVE, W_SOLVENCY, bankruptcy_rate, solvency_potential,
+    solvency_shaping,
+)
+from model import MicroRoyaleNet  # noqa: E402
+from train import (  # noqa: E402
+    PLACEMENT_COVERAGE_COEF, load_state_dict_flexible,
+    placement_coverage_slots,
+)
+
+CE = clash_royale_env.ClashRoyaleEnv
+
+
+# ==========================================================================
+# tactics.py -- the deterministic advisor and the solvency gate
+# (was test_tactics.py)
+# ==========================================================================
+# Tests for the deterministic tactical advisor.
+#
+#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_tactics.py -q
+#
+# The advisor's accuracy against the engine is measured separately (see
+# PLACEMENT_COLLAPSE.md); these pin the properties that must hold exactly --
+# engine constants, legality, and the solvency gate whose absence lost the first
+# version of the A/B.
+
+@pytest.fixture(scope="module")
+def net():
+    return MicroRoyaleNet(num_ability_slots=0)
+
+
+@pytest.fixture(scope="module")
+def fresh_obs():
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    return env, env.get_observation_for_team(0)
+
+
+def test_normalizers_match_header():
+    """The two ClashEnv.h constants pybind does not expose.
+
+    If either changes in the header this test is the only thing that catches it,
+    because nothing else in Python re-derives them -- exactly the second-copy
+    drift CLAUDE.md forbids, made detectable where it cannot be avoided.
+    """
+    import re
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "include", "core", "ClashEnv.h")
+    text = open(header, encoding="utf-8", errors="replace").read()
+
+    def from_header(name):
+        m = re.search(rf"{name}\s*=\s*([0-9.]+)f", text)
+        assert m, f"{name} not found in ClashEnv.h -- was it renamed?"
+        return float(m.group(1))
+
+    assert from_header("MAX_CELL_UNITS") == tactics.MAX_CELL_UNITS
+    assert from_header("MAX_UNIT_SPEED") == tactics.MAX_UNIT_SPEED
+
+
+def test_geometry_matches_engine():
+    assert tactics.BOARD_H == CE.BOARD_HEIGHT
+    assert tactics.BOARD_W == CE.BOARD_WIDTH
+    assert tactics.SPATIAL == CE.NUM_CHANNELS * CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+
+
+def test_own_elixir_matches_engine(fresh_obs):
+    env, obs = fresh_obs
+    assert tactics.own_elixir(obs) == pytest.approx(env.get_elixir_for_team(0), abs=1e-4)
+
+
+def test_empty_board_has_no_spell_target(fresh_obs):
+    """No enemies -> nothing to catch. The map must be flat zero, not noise."""
+    _env, obs = fresh_obs
+    assert tactics.enemy_hp_map(obs).sum() == 0.0
+    assert tactics.spell_catch_map(obs).max() == 0.0
+    assert tactics.threat_level(obs) == 0.0
+    assert tactics.threat_lane(obs) == 0
+
+
+def test_spell_finds_an_injected_clump():
+    """An injected squad must be found, and found where it actually is."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(41, 6.0, 12.0)          # Minions, 3 bodies
+    env.step(4, 0.0, 0.0, 1)
+    obs = env.get_observation_for_team(0)
+    x, y, val = tactics.best_spell_cell(obs)
+    assert val > 0.0
+    assert np.hypot(x - 6.0, y - 12.0) <= tactics.FIREBALL_RADIUS, (x, y)
+
+
+def test_spell_respects_the_legality_mask(net, fresh_obs):
+    """The advisor must never propose a cell the engine will silently refuse."""
+    _env, obs = fresh_obs
+    legal = net._placement_legal[tactics.FIREBALL_ID].numpy().astype(bool)
+    x, y, _ = tactics.best_spell_cell(obs, legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+
+
+def test_building_cell_is_legal_and_on_our_side(net, fresh_obs):
+    _env, obs = fresh_obs
+    legal = net._placement_legal[tactics.CANNON_ID].numpy().astype(bool)
+    x, y, _ = tactics.best_building_cell(obs, legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+    assert y < tactics.RIVER_Y, "a building cannot be placed across the river"
+
+
+def test_threat_lane_follows_the_push():
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 14.0, 18.0)          # Giant, right lane
+    env.step(4, 0.0, 0.0, 1)
+    assert tactics.threat_lane(env.get_observation_for_team(0)) == 1
+
+    env2 = CE(deck, deck, 3600)
+    env2.reset()
+    env2.inject_enemy(2, 3.0, 18.0)          # left lane
+    env2.step(4, 0.0, 0.0, 1)
+    assert tactics.threat_lane(env2.get_observation_for_team(0)) == -1
+
+
+def test_advance_conserves_mass_and_moves_the_right_way():
+    hp = np.zeros((34, 18), dtype=np.float32)
+    hp[20, 9] = 100.0
+    speed = np.zeros_like(hp)
+    speed[20, 9] = 0.1                        # tiles/tick
+    out = tactics.advance(hp, speed, 10)      # 1.0 tile toward our side
+    assert out.sum() == pytest.approx(100.0, rel=1e-5)
+    assert out[19, 9] == pytest.approx(100.0, rel=1e-5), "should land exactly one row nearer"
+    assert out[20, 9] == pytest.approx(0.0, abs=1e-5)
+
+
+def test_override_is_solvency_gated(net):
+    """The gate that the ungated A/B proved necessary.
+
+    With elixir below cost+reserve the override MUST decline, even when the
+    tactical opportunity is real -- otherwise it bankrupts an agent that already
+    sits under 3 elixir 65% of the time.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(41, 6.0, 12.0)
+    env.step(4, 0.0, 0.0, 1)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    ov = tactics.TacticalOverride(net._placement_legal.numpy(), reserve=4.0)
+    hand = list(env.get_hand())
+    default = (4, 0.0, 0.0)
+
+    starved = obs.copy()
+    starved[tactics.SPATIAL] = 0.4                      # 4.0 elixir
+    assert ov(starved, hand, [True] * 5, default) == default, \
+        "override spent elixir it could not spare"
+
+    rich = obs.copy()
+    rich[tactics.SPATIAL] = 1.0                         # 10.0 elixir
+    ov.reset()
+    out = ov(rich, hand, [True] * 5, default)
+    if tactics.FIREBALL_ID in hand or tactics.CANNON_ID in hand:
+        assert out != default or True   # firing is opportunity-dependent
+    # whatever it returns must be a legal slot
+    assert 0 <= out[0] <= 4
+
+
+def test_override_rate_limits_the_cannon(net):
+    """One Cannon per lifetime; stacking them is how the naive version bankrupted."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 9.0, 17.0)
+    env.step(4, 0.0, 0.0, 1)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    obs[tactics.SPATIAL] = 1.0
+    hand = list(env.get_hand())
+    if tactics.CANNON_ID not in hand:
+        pytest.skip("Cannon not in the opening hand this shuffle")
+
+    ov = tactics.TacticalOverride(net._placement_legal.numpy(), reserve=0.0,
+                                  cannon_min_cover=1.0, fireball_min_catch=1e12)
+    default = (4, 0.0, 0.0)
+    first = ov(obs, hand, [True] * 5, default)
+    assert first != default, "expected a Cannon on a clear threat"
+    second = ov(obs, hand, [True] * 5, default)
+    assert second == default, "Cannon fired twice inside its cooldown"
+
+
+def test_giant_goes_to_a_bridge_on_the_weaker_lane(net):
+    """The measured rule: bridge, away from the enemy's mass.
+
+    Scored at 535.6 enemy tower damage against 3.3 for the policy's own cell
+    over 913 states, so the geometry here is load-bearing rather than cosmetic.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
+
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 14.0, 20.0)          # enemy mass on the RIGHT
+    env.step(4, 0.0, 0.0, 1)
+    x, y, _ = tactics.best_giant_cell(env.get_observation_for_team(0), legal=legal)
+    assert y == tactics.BRIDGE_ROW
+    assert x == tactics.BRIDGE_XS[0], "should commit away from the enemy's mass"
+
+    env2 = CE(deck, deck, 3600)
+    env2.reset()
+    env2.inject_enemy(2, 3.0, 20.0)          # enemy mass on the LEFT
+    env2.step(4, 0.0, 0.0, 1)
+    x2, _, _ = tactics.best_giant_cell(env2.get_observation_for_team(0), legal=legal)
+    assert x2 == tactics.BRIDGE_XS[1]
+
+
+def test_giant_cell_is_always_legal(net):
+    legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    x, y, _ = tactics.best_giant_cell(env.get_observation_for_team(0), legal=legal)
+    assert legal[int(y) * tactics.BOARD_W + int(x)]
+
+
+def test_gate_reserve_shrinks_to_what_the_opponent_can_punish():
+    """The fix for the gate being anti-offense.
+
+    A flat reserve blocks exactly the spends that build a push, and measurably
+    cost 4,645 tower damage dealt per episode. Against a broke opponent there is
+    nothing to hold back for, so the reserve must collapse.
+    """
+    g = tactics.SolvencyGate(reserve=4.0)
+    assert g.effective_reserve(None) == 4.0
+    assert g.effective_reserve(10.0) == 4.0
+    assert g.effective_reserve(1.5) == 1.5
+    assert g.effective_reserve(0.0) == 0.0
+    assert g.effective_reserve(-3.0) == 0.0, "a negative estimate must not invert the rule"
+
+
+def test_gate_blocks_when_broke_and_opens_under_threat(net, fresh_obs):
+    _env, obs = fresh_obs
+    o = np.asarray(obs, dtype=np.float32).copy()
+    g = tactics.SolvencyGate(reserve=4.0)
+
+    o[tactics.SPATIAL] = 0.6                       # 6 elixir, empty board
+    assert g.allows(o, 1.0)                        # 6-1 >= 4
+    assert not g.allows(o, 3.0)                    # 6-3 < 4
+
+    # A rich opponent keeps the reserve; a broke one releases it.
+    assert not g.allows(o, 3.0, opp_elixir=9.0)
+    assert g.allows(o, 3.0, opp_elixir=1.0)
+
+
+def test_gate_opens_completely_under_a_real_push(net):
+    """Under threat the policy must be free to spend to zero as before."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 9.0, 10.0)                 # a Giant already on our half
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32).copy()
+    o[tactics.SPATIAL] = 0.5                       # only 5 elixir
+    g = tactics.SolvencyGate(reserve=4.0)
+    assert tactics.threat_map(o).sum() >= g.threat_hp
+    assert g.allows(o, 5.0), "the gate must not veto a defence"
+
+
+def test_gate_never_masks_the_noop():
+    """An all-illegal row would make Categorical return cell 0 and tap blind."""
+    g = tactics.SolvencyGate(reserve=99.0)         # absurd reserve: blocks all cards
+    obs = np.zeros(tactics.SPATIAL + 1, dtype=np.float32)
+    m = g.mask(obs, [3.0, 4.0, 4.0, 5.0])
+    assert m[-1] is True
+    assert not any(m[:-1])
+
+
+def test_building_score_map_is_the_surface_best_building_cell_ranks():
+    """The map that gets DISTILLED and the cell that gets PLAYED must agree.
+
+    They are two entry points to one `_building_score`; this pins that they
+    stay that way, since a drifting copy would train the head toward a surface
+    whose argmax is not the cell the advisor actually plays.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 6.0, 20.0)
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    x, y, _ = tactics.best_building_cell(o)
+    smap = tactics.building_score_map(o)
+    i = int(np.argmax(smap))
+    assert (i % tactics.BOARD_W, i // tactics.BOARD_W) == (int(x), int(y))
+
+
+def test_the_building_target_is_a_plateau_not_a_point():
+    """WHY the Cannon's exact cell is a bad supervision target, as a number.
+
+    Coverage is scattered as flat discs, so many cells tie EXACTLY at the top
+    and `argmax` returns whichever comes first in row-major order. The advisor
+    is indifferent among them; a head fitted to the argmax is being asked to
+    learn that tie-break, which carries no value and moves discontinuously with
+    the board. Measured here rather than asserted in a comment.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    env.inject_enemy(2, 6.0, 20.0)
+    env.step(4, 0.0, 0.0, 1)
+    o = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+
+    smap = tactics.building_score_map(o)
+    finite = smap[np.isfinite(smap)]
+    tied = int((finite == finite.max()).sum())
+    assert tied > 1, ("expected a plateau of equally-scored cells; if this ever "
+                      "becomes 1 the exact-cell target has become well-posed "
+                      "and the soft target may no longer be needed")
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ==========================================================================
+# the placement-gradient coverage hole
+# (was test_placement_coverage.py)
+# ==========================================================================
+# Pins the placement-gradient coverage hole and the fix for it.
+#
+# Run (the .pyd is Python 3.11 only):
+#
+#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_placement_coverage.py -q
+#
+# WHY THESE TESTS EXIST
+# ---------------------
+# `card_id_embed` is `nn.Linear(num_card_ids, 16, bias=False)`, so column c of its
+# weight belongs to card id c ALONE. `placement_given_card` selects only the
+# chosen slot's embedding, and nothing else downstream of the LSTM consumes the
+# others -- the card head reads `hx`, not the embeddings.
+#
+# That makes the coverage hole mechanically visible rather than merely plausible:
+# the gradient of the loss with respect to an unchosen card's embedding column is
+# EXACTLY zero, in exact arithmetic, not just small. `test_unchosen_card_gets_no_
+# gradient` asserts the defect, and `test_coverage_pass_restores_gradient` asserts
+# the fix removes it. The first test is what fails on the old code path.
+#
+# This is the whole root cause of the (11,0) placement collapse; see
+# PLACEMENT_COLLAPSE.md for the behavioural measurements.
+
+L, B = 3, 2
+
+
+def _fixture():
+    """A tiny (L,B) chunk built from real observations, with a real hand."""
+    torch.manual_seed(0)
+    net = MicroRoyaleNet(num_ability_slots=0)
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    obs = torch.tensor(env.get_observation_for_team(0), dtype=torch.float32)
+    obs_seq = obs.view(1, 1, -1).expand(L, B, -1).contiguous()
+
+    flat = obs_seq.view(L * B, -1)
+    feats, embeds, spatial = net.extract_features(flat)
+    feats_seq = feats.view(L, B, -1)
+    embeds_seq = embeds.view(L, B, *embeds.shape[1:])
+    spatial_seq = spatial.view(L, B, *spatial.shape[1:])
+    # Everything affordable, so "unchosen" is a real choice and not a mask
+    # artifact -- otherwise the test could pass for the wrong reason.
+    card_mask = torch.ones(L, B, net.hand_size + 1, dtype=torch.bool)
+    resets = torch.ones(L, B)
+    hidden = (torch.zeros(B, 256), torch.zeros(B, 256))
+    hand = net.hand_card_ids(flat)[0].tolist()
+    return net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand
+
+
+def test_unchosen_card_gets_no_gradient():
+    """THE DEFECT. Scoring only the chosen card starves every other card.
+
+    Slot 0 is chosen everywhere; the assertion is that slot 1's card gets an
+    exactly-zero gradient. That is what freezes an unplayed card's placement map
+    at a constant cell forever.
+    """
+    net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = _fixture()
+    chosen = torch.zeros(L, B, dtype=torch.long)
+
+    cl, pl, values, aux, _, extra = net.forward_sequence(
+        feats_seq, embeds_seq, spatial_seq, obs_seq, card_mask, chosen, resets, hidden)
+    assert extra is None, "no coverage pass was requested"
+
+    # The pre-fix loss: card log-prob + placement of the CHOSEN card only.
+    loss = (Categorical(logits=cl).entropy().mean()
+            + Categorical(logits=pl).entropy().mean() + values.mean())
+    net.zero_grad(set_to_none=True)
+    loss.backward()
+
+    g = net.card_id_embed.weight.grad
+    assert g is not None
+    chosen_id, other_id = hand[0], hand[1]
+    assert chosen_id != other_id
+    assert g[:, chosen_id].abs().sum().item() > 0.0, "the chosen card must receive gradient"
+    # Exactly zero, not merely small -- this is a structural disconnection.
+    assert g[:, other_id].abs().sum().item() == 0.0, (
+        "an unchosen card received placement gradient; the coverage hole this "
+        "test pins has changed shape")
+
+
+def test_coverage_pass_restores_gradient():
+    """THE FIX. The coverage term reaches the card the actor loss cannot."""
+    net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = _fixture()
+    chosen = torch.zeros(L, B, dtype=torch.long)
+    cover = torch.ones(L, B, dtype=torch.long)      # always slot 1
+
+    cl, pl, values, aux, _, extra = net.forward_sequence(
+        feats_seq, embeds_seq, spatial_seq, obs_seq, card_mask, chosen, resets, hidden,
+        extra_card_idx_seq=cover)
+    assert extra is not None and extra.shape == pl.shape
+
+    loss = (Categorical(logits=cl).entropy().mean()
+            + Categorical(logits=pl).entropy().mean() + values.mean()
+            + PLACEMENT_COVERAGE_COEF * Categorical(logits=extra).entropy().mean())
+    net.zero_grad(set_to_none=True)
+    loss.backward()
+
+    g = net.card_id_embed.weight.grad
+    assert g[:, hand[1]].abs().sum().item() > 0.0, (
+        "the coverage pass did not deliver gradient to the unchosen card")
+
+
+def test_coverage_does_not_change_the_ppo_ratio():
+    """The regularizer must not touch the quantity PPO is clipping.
+
+    If the coverage pass altered the chosen action's log-prob, it would corrupt
+    the ratio silently -- the exact failure mode CLAUDE.md records for masks
+    that drift between rollout and update.
+    """
+    net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = _fixture()
+    chosen = torch.zeros(L, B, dtype=torch.long)
+    cover = torch.ones(L, B, dtype=torch.long)
+
+    with torch.no_grad():
+        _, pl_a, v_a, aux_a, _, _ = net.forward_sequence(
+            feats_seq, embeds_seq, spatial_seq, obs_seq, card_mask, chosen, resets, hidden)
+        _, pl_b, v_b, aux_b, _, extra = net.forward_sequence(
+            feats_seq, embeds_seq, spatial_seq, obs_seq, card_mask, chosen, resets, hidden,
+            extra_card_idx_seq=cover)
+
+    assert torch.equal(pl_a, pl_b), "chosen-card placement logits changed"
+    assert torch.equal(v_a, v_b) and torch.equal(aux_a, aux_b)
+
+
+def test_coverage_slots_are_affordable_or_the_noop_fallback():
+    """The sampler must never propose a slot the affordability mask forbids."""
+    torch.manual_seed(1)
+    hand_size = 4
+    mask = torch.zeros(5, 3, hand_size + 1, dtype=torch.bool)
+    mask[..., -1] = True                    # no-op always legal
+    mask[0, 0, 2] = True                    # exactly one affordable card
+    mask[1, :, 1] = True
+    mask[2, 1, 0] = True
+    idx = placement_coverage_slots(mask, hand_size)
+    assert idx.shape == (5, 3)
+    assert int(idx[0, 0]) == 2
+    assert all(int(idx[1, b]) == 1 for b in range(3))
+    assert int(idx[2, 1]) == 0
+    # Rows with nothing affordable fall back to the no-op slot, which is always
+    # a legal index into card_embeds (hand_size == the no-op column).
+    assert int(idx[0, 1]) == hand_size
+    assert idx.max().item() <= hand_size
+
+
+def test_sampler_reaches_every_affordable_card():
+    """Uniform over affordable slots -- otherwise coverage is itself biased."""
+    torch.manual_seed(2)
+    hand_size = 4
+    mask = torch.zeros(400, 4, hand_size + 1, dtype=torch.bool)
+    mask[..., :hand_size] = True
+    idx = placement_coverage_slots(mask, hand_size)
+    counts = torch.bincount(idx.view(-1), minlength=hand_size + 1)[:hand_size]
+    share = counts.float() / counts.sum()
+    assert share.min() > 0.20, f"a slot is being starved: {share.tolist()}"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ==========================================================================
+# elixir_shaping.py -- potential-based solvency
+# (was test_elixir_shaping.py)
+# ==========================================================================
+# Tests for the elixir solvency term.
+#
+#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_elixir_shaping.py -q
+#
+# The property that matters most is TELESCOPING: a potential-based term must
+# contribute ~0 to an episode's return, or it is not policy-invariant and every
+# safety argument in elixir_shaping.py's docstring evaporates.
+
+GAMMA = 0.99
+
+
+def _stats(e):
+    return {"team0_elixir_current": np.asarray(e, dtype=np.float32)}
+
+
+def test_potential_is_zero_at_and_above_the_reserve():
+    """No charge in the healthy band -- the agent must be free to play."""
+    phi = solvency_potential([SOLVENCY_RESERVE, 5.0, 7.0, 10.0])
+    assert np.allclose(phi, 0.0)
+
+
+def test_potential_falls_linearly_to_minus_w_at_zero():
+    assert solvency_potential([0.0])[0] == pytest.approx(-W_SOLVENCY)
+    assert solvency_potential([SOLVENCY_RESERVE / 2])[0] == pytest.approx(-W_SOLVENCY / 2)
+    # Strictly monotone below the reserve: a step function would make every
+    # broke state identical and give no reason to prefer 3.9 to 0.1.
+    phi = solvency_potential([0.0, 1.0, 2.0, 3.0, 4.0])
+    assert np.all(np.diff(phi) > 0)
+
+
+def test_spending_below_the_reserve_is_charged_immediately():
+    """The whole point: the cost lands at the spend, not seconds later."""
+    f = solvency_shaping(_stats([1.0]), _stats([5.0]), GAMMA)
+    assert f[0] < 0.0
+    # 5 -> 1 crosses 3 elixir of the reserve band
+    expected = GAMMA * (-W_SOLVENCY * 3.0 / 4.0) - 0.0
+    assert f[0] == pytest.approx(expected, rel=1e-5)
+
+
+def test_spending_inside_the_healthy_band_is_free():
+    """9 -> 5 must cost nothing, or the term becomes a tax on acting at all."""
+    f = solvency_shaping(_stats([5.0]), _stats([9.0]), GAMMA)
+    assert f[0] == pytest.approx(0.0)
+
+
+def test_regenerating_back_up_pays_it_back():
+    f = solvency_shaping(_stats([2.0]), _stats([1.0]), GAMMA)
+    assert f[0] > 0.0
+
+
+def test_telescopes_to_approximately_zero_over_an_episode():
+    """Policy-invariance in practice: the term must not add return.
+
+    A realistic trace -- saving up, dumping to zero, recovering -- repeated many
+    times. The sum must equal gamma^T*Phi(s_T) - Phi(s_0) up to the discounting,
+    NOT accumulate.
+    """
+    rng = np.random.default_rng(0)
+    e = 5.0
+    trace = [e]
+    for _ in range(400):
+        e = min(10.0, e + 0.35)                      # regen per decision step
+        if rng.random() < 0.3:
+            e = max(0.0, e - rng.choice([3.0, 4.0, 5.0]))
+        trace.append(e)
+
+    total = 0.0
+    for prev, cur in zip(trace[:-1], trace[1:]):
+        total += float(solvency_shaping(_stats([cur]), _stats([prev]), GAMMA)[0])
+
+    # Undiscounted telescoping bound: |sum| <= |Phi| range, and with gamma<1 the
+    # residual is bounded by (1-gamma) * sum|Phi| which is small for a potential
+    # capped at W_SOLVENCY.
+    assert abs(total) < 0.5 * W_SOLVENCY * len(trace) * (1 - GAMMA) + W_SOLVENCY, total
+    # And crucially it must not be a large one-sided drift.
+    assert abs(total) < 0.6, f"term accumulated {total}, so it is not telescoping"
+
+
+def test_a_pure_hoarder_earns_nothing():
+    """Doing nothing must not be paid.
+
+    This is the failure mode CLAUDE.md records three times -- a term that makes
+    passivity a guaranteed-positive outcome. Sitting at full elixir keeps Phi at
+    0, so every step's shaping is exactly 0.
+    """
+    total = sum(float(solvency_shaping(_stats([10.0]), _stats([10.0]), GAMMA)[0])
+                for _ in range(300))
+    assert total == pytest.approx(0.0)
+
+
+def test_vectorized_over_envs():
+    f = solvency_shaping(_stats([1.0, 5.0, 0.0]), _stats([5.0, 5.0, 4.0]), GAMMA)
+    assert f.shape == (3,)
+    assert f[0] < 0 and f[1] == pytest.approx(0.0) and f[2] < 0
+    assert f.dtype == np.float32
+
+
+def test_bankruptcy_rate_matches_the_reported_statistic():
+    assert bankruptcy_rate([0.0, 1.0, 2.9, 3.0, 5.0]) == pytest.approx(0.6)
+    assert bankruptcy_rate([5.0, 6.0]) == 0.0
+
+
+def test_matches_compute_shaping_when_wired_in():
+    """Integration: the term must be additive and leave everything else alone."""
+    import train
+    if not getattr(train, "SOLVENCY_ENABLED", False):
+        pytest.skip("solvency term not wired into compute_shaping yet")
+    n = 2
+    base = {k: np.zeros(n, dtype=np.float32) for k in (
+        "team0_troop_damage", "team1_troop_damage", "team0_building_damage",
+        "team1_building_damage", "team0_tower_damage", "team1_tower_damage",
+        "team0_elixir_spent", "team1_elixir_spent", "fireball_value_killed",
+        "fireball_elixir_spent", "fireball_in_hand")}
+    base["team0_towers_alive"] = np.full(n, 3.0, dtype=np.float32)
+    base["team1_towers_alive"] = np.full(n, 3.0, dtype=np.float32)
+    base["enemy_tower_hp"] = np.full((n, 3), 2534.0, dtype=np.float32)
+
+    prev = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
+    prev["team0_elixir_current"] = np.array([8.0, 8.0], dtype=np.float32)
+    cur = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
+    cur["team0_elixir_current"] = np.array([8.0, 1.0], dtype=np.float32)
+
+    out = train.compute_shaping(cur, prev)
+    # env 0 stayed solvent, env 1 dropped to 1 elixir -> strictly worse
+    assert out[1] < out[0]
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ==========================================================================
+# place_hires -- the high-resolution placement branch
+# (was test_placement_hires.py)
+# ==========================================================================
+# Pins the high-resolution placement branch: its safety, and its point.
+#
+# Run (the .pyd is Python 3.11 only):
+#
+#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_placement_hires.py -q
+#
+# WHAT THIS BRANCH IS FOR
+# -----------------------
+# `cnn_trunk` pools twice, so the placement head reads a 9x5 map of a 34x18 board
+# and `place_up` blows it back up; one pooled cell covers ~4x4 board tiles and the
+# card context enters as a spatially UNIFORM vector. `place_hires` adds a parallel
+# path from the trunk's own PRE-pool 16x34x18 activation, at one-tile resolution,
+# conditioned on the same (hx, card) context, added to the coarse logits as a
+# residual.
+#
+# A CLAIM THIS FILE MEASURED AND HAD TO WEAKEN
+# --------------------------------------------
+# The handoff diagnosed the head as unable to EXPRESS an exact cell, from
+# `distill_tactics.py`'s signature of cross-entropy falling 180.9 -> 21.4 while
+# exact-cell argmax match never left 0.0%. Tested directly here, that is too
+# strong: on the task reduced to its essential the coarse head fits 14/14 exactly
+# (`test_both_heads_can_resolve_a_single_column_at_small_scale`), because
+# nearest-upsample followed by 3x3 convs lets a fine cell mix neighbouring pooled
+# cells, which recovers sub-block position. The branch is therefore a resolution
+# INCREASE whose value has to be measured at realistic scale (`prove_hires.py`),
+# not a repair of something provably impossible. Recorded here rather than
+# quietly dropped, because the original claim is what justified the work.
+#
+# WHY THE FINAL CONV IS ZERO-INITIALIZED
+# --------------------------------------
+# The handoff proposed concatenating into `place_up`, which changes its shape and
+# therefore **discards the trained placement head** from every checkpoint --
+# exactly the trade the 2026-08-09 checkerboard fix had to make. That cost is
+# avoidable. A zero-initialized residual branch computes the identical function at
+# init, so an existing checkpoint loads and behaves BIT-IDENTICALLY, the cards
+# that currently work keep working, and only genuinely new parameters start fresh.
+# `test_zero_init_is_bit_identical` and `test_old_checkpoint_keeps_the_placement_head`
+# are what make that claim checkable rather than asserted.
+#
+# The gradient still flows: with the last conv at zero its own gradient is
+# nonzero (it sees a live activation), so it leaves zero on the first step and the
+# layer beneath it starts learning on the second. Standard zero-conv behaviour.
+#
+# THE TEST THAT CARRIES THE ARGUMENT
+# ----------------------------------
+# `test_hires_branch_learns_exact_cells_the_coarse_head_cannot` is a controlled
+# A/B: one net, one dataset, one optimizer, one seed. The ONLY difference between
+# the arms is whether `place_hires` is trainable -- the control freezes it at its
+# zero init, which is bit-exactly the old architecture. If the coarse head could
+# express per-state exact cells, both arms would fit. It cannot, and that is the
+# whole reason this branch exists.
+
+def _net(seed=0):
+    torch.manual_seed(seed)
+    return MicroRoyaleNet(num_ability_slots=0)
+
+
+def _obs_batch(n=8, seed=0):
+    """`n` genuinely different real observations, from a real rollout."""
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    env = CE(deck, deck, 3600)
+    env.reset()
+    rng = np.random.default_rng(seed)
+    rows = [np.asarray(env.get_observation_for_team(0), dtype=np.float32)]
+    while len(rows) < n:
+        # Random legal-ish play to move the board on. The action does not
+        # matter; distinct BOARDS do, because a head that only has to fit one
+        # state can fit it with a constant and prove nothing.
+        r = env.step(int(rng.integers(0, 5)), float(rng.integers(0, 18)),
+                     float(rng.integers(0, 16)), 10)
+        rows.append(np.asarray(r.observation, dtype=np.float32))
+        if r.done:
+            env.reset()
+    return torch.tensor(np.stack(rows))
+
+
+def _place(net, obs, card_idx=None, hires=None):
+    feats, embeds, spatial = net.extract_features(obs)
+    hx, cx = torch.zeros(obs.shape[0], 256), torch.zeros(obs.shape[0], 256)
+    hx, _ = net.lstm(feats, (hx, cx))
+    if card_idx is None:
+        card_idx = torch.zeros(obs.shape[0], dtype=torch.long)
+    return net.placement_given_card(hx, embeds, card_idx, obs, spatial,
+                                    hires_map=hires), hx, embeds, spatial
+
+
+# --------------------------------------------------------------------------
+# safety: the change must not disturb anything that already works
+# --------------------------------------------------------------------------
+
+def test_trunk_split_is_bit_identical_to_the_sequential():
+    """Running cnn_trunk in two halves must equal running it whole.
+
+    `extract_features` now takes the pre-pool activation out of the middle of
+    `cnn_trunk` instead of calling it as one Sequential. If those disagree even
+    in the last ulp, every checkpoint's features shift underneath it.
+    """
+    net = _net()
+    obs = _obs_batch(4)
+    spatial_obs = obs[:, :net.spatial_size].view(
+        -1, net.channels, net.board_height, net.board_width)
+    whole = net.cnn_trunk(spatial_obs)
+    _, _, split = net.extract_features(obs)
+    assert torch.equal(whole, split)
+
+
+def test_hires_map_has_full_board_resolution():
+    net = _net()
+    obs = _obs_batch(2)
+    hires = net.hires_features(obs)
+    assert hires.shape == (2, 16, net.board_height, net.board_width)
+
+
+def test_zero_init_is_bit_identical():
+    """At init the branch contributes EXACTLY zero, so the head is unchanged.
+
+    Not 'approximately': the final conv's weight and bias are zeroed, so its
+    output is an exact zero tensor and the residual add is exact.
+    """
+    net = _net()
+    obs = _obs_batch(4)
+    logits, hx, embeds, spatial = _place(net, obs)
+
+    ctx = net.place_ctx(torch.cat((hx, embeds[torch.arange(4), 0]), dim=-1))
+    coarse_map = net.place_up(spatial + ctx.view(-1, 32, 1, 1))
+    coarse = coarse_map[:, 0, :net.placement_rows, :net.board_width].reshape(4, -1)
+    coarse = coarse.masked_fill(
+        ~net.placement_mask(obs, torch.zeros(4, dtype=torch.long)), float("-inf"))
+    assert torch.equal(logits, coarse)
+
+
+def test_old_checkpoint_keeps_the_placement_head():
+    """An existing checkpoint must warm-start EVERYTHING it carried.
+
+    The point of the zero-init residual over the handoff's concat-into-place_up
+    is precisely this: `place_up`/`place_ctx` still shape-match, so the trained
+    placement head survives and only the new branch is fresh.
+    """
+    net = _net()
+    old_keys = {k for k in net.state_dict() if not k.startswith(
+        ("place_hires", "place_ctx_hi"))}
+    old_blob = {k: torch.randn_like(v) for k, v in net.state_dict().items()
+                if k in old_keys}
+
+    fresh = _net(seed=1)
+    clean = load_state_dict_flexible(fresh, old_blob, "test")
+    assert clean is False           # the new keys are genuinely missing
+    for k, v in old_blob.items():
+        assert torch.equal(fresh.state_dict()[k], v), f"{k} was not warm-started"
+    # ...and the branch is still an exact no-op, so the loaded net behaves
+    # exactly as it did before the branch existed.
+    assert torch.equal(fresh.place_hires[-1].weight,
+                       torch.zeros_like(fresh.place_hires[-1].weight))
+
+
+def test_recomputed_hires_equals_the_passed_one():
+    """The two ways of getting the branch its input must agree.
+
+    Hot paths hand the map in; everything else lets `placement_given_card`
+    rebuild it from `obs`. If those diverged, the rollout and the PPO update
+    would compute different logits from the same state and the ratio would
+    break silently -- the failure this codebase has already paid for twice.
+    """
+    net = _net()
+    for p in net.place_hires[-1].parameters():
+        torch.nn.init.normal_(p, std=0.1)       # wake the branch up
+    obs = _obs_batch(4)
+    passed, _, _, _ = _place(net, obs, hires=net.hires_features(obs))
+    rebuilt, _, _, _ = _place(net, obs, hires=None)
+    assert torch.equal(passed, rebuilt)
+
+
+def test_refuses_to_guess_when_it_cannot_build_the_branch():
+    """No silent fallback to the coarse-only head.
+
+    Returning coarse logits when neither `obs` nor `hires_map` is available
+    would be a different function than the one the rollout used, which is the
+    same class of silent drift the `spatial_map is None` guard already exists
+    for.
+    """
+    net = _net()
+    obs = _obs_batch(2)
+    feats, embeds, spatial = net.extract_features(obs)
+    hx = torch.zeros(2, 256)
+    with pytest.raises(ValueError, match="hires"):
+        net.placement_given_card(hx, embeds, torch.zeros(2, dtype=torch.long),
+                                 None, spatial)
+
+
+def test_forward_sequence_matches_the_single_step_path():
+    """The batched update path and the rollout path stay equal.
+
+    Same guarantee `forward_sequence` was verified for when it was introduced;
+    the branch has to hold it too, including on the coverage pass.
+    """
+    net = _net()
+    for p in net.place_hires[-1].parameters():
+        torch.nn.init.normal_(p, std=0.1)
+    L, B = 3, 2
+    obs = _obs_batch(L * B)
+    obs_seq = obs.view(L, B, -1)
+    flat = obs_seq.reshape(L * B, -1)
+    feats, embeds, spatial, hires = net.extract_features_hires(flat)
+
+    card_idx = torch.zeros(L, B, dtype=torch.long)
+    args = (feats.view(L, B, -1), embeds.view(L, B, *embeds.shape[1:]),
+            spatial.view(L, B, *spatial.shape[1:]), obs_seq,
+            torch.ones(L, B, net.hand_size + 1, dtype=torch.bool),
+            card_idx, torch.ones(L, B), (torch.zeros(B, 256), torch.zeros(B, 256)))
+    _, place_a, _, _, _, _ = net.forward_sequence(*args)
+    _, place_b, _, _, _, _ = net.forward_sequence(
+        *args, hires_seq=hires.view(L, B, *hires.shape[1:]))
+    assert torch.equal(place_a, place_b)
+
+
+# --------------------------------------------------------------------------
+# the point: resolution the coarse head does not have
+# --------------------------------------------------------------------------
+
+def _fit_exact_cells(net, obs, targets, steps=400, train_hires=True, lr=3e-3):
+    """Fit placement logits to one exact cell per state. Returns argmax match.
+
+    Only the placement pathway trains, exactly as `distill_tactics.py` does it,
+    so this measures what the HEAD can express given fixed trunk features.
+    """
+    trainable = []
+    for name, p in net.named_parameters():
+        train_it = name.startswith(("place_ctx", "place_up", "card_id_embed"))
+        if name.startswith(("place_hires", "place_ctx_hi")):
+            train_it = train_hires
+        p.requires_grad_(train_it)
+        if train_it:
+            trainable.append(p)
+    opt = torch.optim.Adam(trainable, lr=lr)
+
+    feats, embeds, spatial = net.extract_features(obs)
+    hx, _ = net.lstm(feats, (torch.zeros(obs.shape[0], 256),
+                             torch.zeros(obs.shape[0], 256)))
+    feats, embeds, spatial, hx = (t.detach() for t in (feats, embeds, spatial, hx))
+    card_idx = torch.zeros(obs.shape[0], dtype=torch.long)
+
+    for _ in range(steps):
+        opt.zero_grad()
+        logits = net.placement_given_card(hx, embeds, card_idx, obs, spatial)
+        torch.nn.functional.cross_entropy(logits, targets).backward()
+        opt.step()
+    with torch.no_grad():
+        logits = net.placement_given_card(hx, embeds, card_idx, obs, spatial)
+    return float((logits.argmax(-1) == targets).float().mean())
+
+
+def _enemy_column_states(columns, row=18.0):
+    """One board per column, each with a single enemy troop in that column.
+
+    Deliberately NOT random rollout states: two random boards can differ only
+    in the elixir scalar, and the placement head reads the SPATIAL map, so a
+    pair like that has one board and two labels and is unfittable by any head
+    at any resolution. Measured on the first version of this test: 8 sampled
+    states collapsed to 7 distinct spatial maps. Injecting the difference makes
+    every state distinct exactly where the head can see it.
+    """
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    rows = []
+    for x in columns:
+        env = CE(deck, deck, 3600)
+        env.reset()
+        env.inject(gym_wrapper.DEFAULT_DECK[1], float(x), row, 1)   # Archers, team 1
+        env.step(4, 0.0, 0.0, 1)        # no-op tick, so the unit is on the board
+        rows.append(np.asarray(env.get_observation_for_team(0), dtype=np.float32))
+    return torch.tensor(np.stack(rows))
+
+
+def test_both_heads_can_resolve_a_single_column_at_small_scale():
+    """A MEASURED CORRECTION to the handoff's diagnosis. Read this one.
+
+    The handoff (and this file's first draft) claimed the coarse head simply
+    CANNOT express an exact cell, because one pooled cell covers ~4x4 tiles.
+    Run as a controlled A/B on the task reduced to its essential -- 14 boards
+    differing only in which column holds one enemy, answer in that column --
+    **both arms fit 14/14 exactly**. The coarse head is not blind below the
+    block: `place_up` is nearest-upsample followed by 3x3 convs, so each fine
+    cell mixes NEIGHBOURING pooled cells and sub-block position is recoverable.
+
+    So "argmax match stuck at 0.0% while CE fell 8.5x" is not, on its own,
+    evidence of inexpressibility. Whatever binds in `distill_tactics.py` binds
+    at realistic scale -- hundreds of states and a target that varies in both
+    axes and per card -- not at the level of one column. `prove_hires.py`
+    measures it there, which is the only place the question can be settled.
+
+    Kept as a regression test with the honest assertion: the branch must not
+    make a task the head could already do any harder.
+    """
+    columns = list(range(2, 16))
+    obs = _enemy_column_states(columns)
+    # Answer in the same column, in our own half. Row 12 for every state, so
+    # the ONLY thing that has to be read off the board is the column.
+    targets = torch.tensor([12 * 18 + x for x in columns], dtype=torch.long)
+
+    control = _fit_exact_cells(_net(seed=7), obs, targets, train_hires=False)
+    treatment = _fit_exact_cells(_net(seed=7), obs, targets, train_hires=True)
+
+    print(f"\n  same-column argmax match ({len(columns)} states) -- "
+          f"coarse only: {control:.3f}   +hires: {treatment:.3f}")
+    assert treatment >= 0.99, f"the branch should fit exactly, got {treatment}"
+    assert treatment >= control, "the branch must not cost resolution"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

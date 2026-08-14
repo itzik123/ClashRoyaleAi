@@ -27,7 +27,7 @@ import tactics  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from expert_iteration import load_net  # noqa: E402
 from hybrid_policy import HybridPolicy  # noqa: E402
-from search_ab_test import LSTM_HIDDEN, outcome_score  # noqa: E402
+from search_ab_test import outcome_score  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10

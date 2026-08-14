@@ -10,7 +10,7 @@ exact-cell argmax match never left **0.0%**. That was read as the head being
 unable to REPRESENT an exact cell, and it is the premise the whole
 "high-resolution skip connection" plan rests on.
 
-`test_placement_hires.py` tested that premise directly and it is too strong: on
+`test_python_ai.py` tested that premise directly and it is too strong: on
 14 boards differing only in which column holds one enemy, the coarse head fits
 14/14. Nearest-upsample + 3x3 conv lets a fine cell mix neighbouring pooled
 cells, so sub-block position is recoverable in principle.

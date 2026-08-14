@@ -17,7 +17,9 @@ from collections import deque, defaultdict
 
 import clash_royale_env
 import gym_wrapper
-from gym_wrapper import DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS, train_FIREBALL_ID
+from gym_wrapper import (
+    DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS, _to_scalar, train_FIREBALL_ID,
+)
 from model import MicroRoyaleNet
 from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
@@ -1184,13 +1186,6 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         return NO_OP
 
     def step(self, action, skip_frames=10):
-        def _to_scalar(val):
-            if hasattr(val, "item"):
-                return val.item()
-            if isinstance(val, (list, tuple, np.ndarray)):
-                return val[0]
-            return val
-
         card_idx0 = int(_to_scalar(action["card_index"]))
         x0 = float(_to_scalar(action["target_x"]))
         y0 = float(_to_scalar(action["target_y"]))

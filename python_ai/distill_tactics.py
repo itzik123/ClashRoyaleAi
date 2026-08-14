@@ -57,7 +57,6 @@ import clash_royale_env as E  # noqa: E402
 import gym_wrapper  # noqa: E402
 import tactics  # noqa: E402
 from expert_iteration import load_net  # noqa: E402
-from model import MicroRoyaleNet  # noqa: E402
 
 CE = E.ClashRoyaleEnv
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
@@ -197,7 +196,7 @@ def main():
 
     # Only the placement pathway trains. card_id_embed is included because it is
     # the per-card parameter the coverage hole starves -- see
-    # test_placement_coverage.py.
+    # test_python_ai.py.
     trainable = []
     for name, p in net.named_parameters():
         train_it = name.startswith(("place_ctx", "place_up", "card_id_embed"))

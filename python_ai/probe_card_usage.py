@@ -25,7 +25,6 @@ opposite.
 
 import argparse
 import os
-import sys
 from collections import Counter
 
 import numpy as np
