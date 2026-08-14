@@ -725,6 +725,155 @@ Three lessons, all of which nearly hid it:
   p ≈ 0.19). At n=50 per anchor that metric cannot resolve much; treat any
   single-eval move as noise until it repeats.
 
+**2026-08-14, three of eight cards were dead and it was a gradient COVERAGE hole,
+not the reward.** Full write-up and every number: `PLACEMENT_COLLAPSE.md`.
+
+Cannon, Fireball and Giant were played on ~2% of plays and their placement head
+returned the *same* cell — (11,0), our own back row — in 54–91% of states. The
+reward was the obvious suspect and it is not the cause. The cause is that both
+the actor loss and the placement entropy bonus flow through
+`placement_given_card` for the **chosen** card only, so a card the policy has
+stopped playing receives **exactly zero** placement gradient from either term,
+forever. `card_id_embed` is per-card, so this is mechanical, not statistical —
+`python_ai/test_placement_coverage.py` asserts the gradient is `== 0.0`.
+
+That is a self-sustaining deadlock: frozen map → the card really is worthless →
+card head suppresses it → no gradient → still frozen. **More training cannot
+escape it**, which is why it survived every previous fix.
+
+It is not a valuation, and one measurement settles that. Injecting a Cannon at
+each candidate cell and running the engine a full 300-tick lifetime, over 449
+threatened states, scored by tower HP preserved: the policy's own cell **121 HP**,
+a **random legal cell 396 HP**, oracle 1389. Paired, random − policy = **+274 HP,
+95% CI [+221, +328]**. A policy cannot be correctly valuing a card it places
+*significantly worse than chance*. Same for Fireball against
+`get_elixir_value_killed_by` over 1,059 states: policy **0.022** elixir and it
+caught anything at all **0.1–0.5%** of the time, against **1.103 for a random
+legal cell** — 50× worse than random.
+
+Dating it: the 08-09 phase-1 net placed Cannon at (3,15), modal share 9.5%,
+H=0.368 — healthy and state-dependent. The collapse appears in the 08-11 net,
+bracketing `e16cdd7` ("Measure placement entropy on real placements, not on
+no-ops"). **That commit was right about its own defect and had an unmeasured
+side effect**: the no-op steps it stopped rewarding were the only thing holding
+open the maps of cards that are never played. The signature is specific — in the
+pre-fix net Cannon and Giant had the two *highest* per-card placement entropies
+(0.368, 0.409); after it they have the lowest. The rank order inverted for
+exactly the unplayed cards. The same-day placement-legality mask (`24a2c78`) was
+checked and ruled out: (3,15) is still legal, so the head abandoned an available
+cell rather than being masked off one.
+
+Fixed by a **coverage term** — one uniformly-sampled *affordable* slot per step
+contributes placement entropy at a fixed `PLACEMENT_COVERAGE_COEF = 0.02`. It is
+a regularizer, not part of the PPO objective (it never touches `new_logprobs`,
+so the ratio is untouched; pinned by test). The coefficient is deliberately
+**not** tied to the adaptive `ent_coef_place`, which falls exactly when real
+placements are sharp — the condition under which an unplayed card is freezing.
+`Entropy/Placement_Coverage` is the new freeze detector. No new parameters, so
+**no checkpoint is invalidated**.
+
+Two further results worth carrying:
+
+- **Leading a spell target is HARMFUL here.** Fireball has `spellDelayTicks=10`,
+  so aiming where the target will be looks obviously right. Measured paired over
+  1,059 states against the engine's own value-killed: lead=0 captures **75.5%**
+  of achievable value, lead=10 **52.4%**. The blast radius is 2.5 tiles while 1 s
+  of movement is 0.6–1.6 tiles, so a moving target stays inside the blast anyway
+  — while a target standing still (engaged, the common case) is led straight off
+  the edge of it. `tactics.py` defaults `lead_ticks=0`; do not "fix" it.
+- **"Defensive apathy" is bankruptcy, not apathy or hoarding.** P(play) looks
+  flat against threat (9.4% → 13.7%), but **60.8% of decisions during a big push
+  are below 3 elixir** — the cheapest card in the deck — so P(play) there is
+  0.0% by arithmetic. Conditioned on affordability the response is real:
+  27.8% → 34.9%. The agent spends ~105 elixir per episode against ~98 of income
+  and sits under 3 elixir **65.3%** of the time.
+
+**RE-RUN, and the coverage term does NOT break the lock — it moves it.** Three
+arms in parallel, byte-identical code, full-checkpoint seeds so the entropy
+target anneals correctly, ~80 updates, compared at matched episode ~64,800 and
+scored by the engine on 835/1,573 paired states. Cannon: control 116.4 HP vs
+treatment 182.0 HP (bootstrap CI excludes 0 but **sign test p = 0.158**, so no);
+Fireball: treatment kills **0.000** elixir, identical to control. Treatment's
+top-1 probability is **0.051** (Cannon) and **0.006** (Fireball) against a
+uniform 1/612 = 0.0016 — the distribution went nearly FLAT, and **the argmax of
+a flat map is an arbitrary constant**, so a greedy policy still plays one fixed
+cell. The frozen cell relocated (11,0) → (6,0).
+
+**Entropy is a MARGINAL objective — it says "be spread out", not "depend on the
+board".** A card with no other gradient has nothing telling it which cell is
+right in which state. Closing a coverage hole needs a TARGET, not noise. (The
+control also partially unfroze on its own — 88.7% → 55.4% modal share — so part
+of the original collapse was the mis-set entropy target below, not the coverage
+hole alone.)
+
+**What does work is the deterministic advisor** (`tactics.py`), same protocol,
+same states: Cannon **564.1 HP** preserved vs 353.5 for a random legal cell and
+**12.1 for the trained policy**; Fireball **2.405 elixir** killed vs 0.276
+random and **0.000** for the policy (396 better / **0 worse** of 950 states,
+p = 1.2e-119). Distilling it into the head (`distill_tactics.py`, frozen trunk)
+moved Cannon significantly (+161.9 HP, p = 2.0e-06) and Fireball not at all,
+both still below random — the head's spatial signal is a 9×5 pooled map
+upsampled 4× on a frozen trunk, so an exact-cell target is close to
+inexpressible (CE fell 180.9 → 21.4 with argmax match stuck at 0.0%).
+
+**Bankruptcy: fixed as a statistic, no outcome gain.** The potential-based
+solvency term (`elixir_shaping.py`) measured **-1.0 points, p = 0.21** over 80
+updates — policy-invariance is what makes it safe and also what limits it. An
+inference-time reserve gate (`tactics.SolvencyGate`, refuse spends below 4
+elixir while nothing attacks) fixes it outright over 130 paired openings:
+bankruptcy **72.7% → 39.2%, 130/130 episodes, p = 1.5e-39**, with **total elixir
+spent statistically unchanged** (102 → 98, p = 0.25) — so it moved *when* the
+bot spends, not how much. But tower HP lost (p = 0.25) and win rate
+(−0.042, p = 0.63) are both flat. **Having elixir does not help while the
+placements are worth less than random**; placement quality is the binding
+constraint.
+
+**2026-08-14, the hybrid: route around the broken head rather than repair it.
++11.8 win-rate points, p = 1.9e-05.** `python_ai/hybrid_policy.py` — the network
+keeps WHAT to play and WHEN; `tactics.py` decides WHERE for Cannon, Fireball and
+Giant, and `SolvencyGate` vetoes spends that would bankrupt it. Two independent
+pre-registered paired runs, opponent 1.5x:
+
+| | n | neural | hybrid | delta | p |
+|---|---|---|---|---|---|
+| exploratory | 250 | 0.646 | 0.720 | +0.074 [−0.004, +0.150] | 0.070 |
+| **confirmatory** | **600** | **0.584** | **0.703** | **+0.118 [+0.067, +0.171]** | **1.9e-05** |
+
+Damage DEALT rose (+544/ep, p=0.010) while damage taken fell (−1011/ep,
+p=7.4e-09) on unchanged spending — it attacks better *and* defends better. The
+Giant rule was validated before shipping: bridge on the weaker-defended lane
+scores **535.6** enemy tower damage against **3.3** for the policy's own cell
+(n=913, p=3.0e-87). Wired into the live loop behind `--no-tactical`.
+
+**The component that had to be REMOVED is the instructive part.** Letting the
+tactical officer *initiate* Cannon/Fireball (rather than only place them) looked
+necessary, since the commander's take-up of those cards is 0.06/0.00/0.00. A
+5-arm ablation killed it: initiating ~4 Cannons a match cut tower damage DEALT
+by 3,410/ep and win rate by 0.367 (p=0.013). **Defending better is worthless if
+it is paid for with the attack.** The placement override works precisely because
+it is PASSIVE — it changes where a card lands, never how often one is played, so
+it cannot spend elixir the commander did not already commit. Same reason a FLAT
+solvency reserve had to become `min(reserve, opponent_elixir)`: a flat reserve
+blocks exactly the spends that build a push.
+
+**The FIRST attempt at the coverage A/B was INCONCLUSIVE and the reason is a trap
+worth knowing: warm-starting a converged policy into a FRESH training state
+re-arms the initial entropy target and the controller dissolves the policy.** Seeding a
+bare `state_dict` takes `train.py`'s legacy-checkpoint path, which resets
+`episodes_completed` to 0, so `placement_entropy_target(0)` returns
+`ENTROPY_TARGET_PLACEMENT_START = 0.65` against a policy measuring 0.11. Both
+arms spent the run being inflated toward that target and ended at ~0.83 of max
+with top-1 probability 0.002–0.008 — near-uniform placement, in the control as
+well as the treatment. Same shape as the exploiter's 2026-07-31 entropy-scaling
+failure. **Always resume through the full-checkpoint path when the entropy
+schedule matters.**
+
+Corollary: **modal share degenerates on a near-uniform distribution** — the
+argmax of a flat map is arbitrary but deterministic, and both arms reported a
+90–100% modal share while being flat. Read modal share next to top-1
+probability; the collapse in the table above has top-1 at 0.62–0.83, which is
+what makes it real.
+
 ---
 
 ## Measured baselines — use these, don't re-derive them
@@ -1142,6 +1291,23 @@ component is a delta. That is not hypothetical: on 2026-08-11 the aggregate
 read a healthy 0.462 while Cannon sat at **0.017 of max with 96.4% of its mass
 on one cell**, and Fireball and Giant were pinned to that same cell. Any card
 near 0 here is placing at a fixed point regardless of the board.
+
+**...and `ByCard_Min` is itself the wrong statistic — use MODAL SHARE.**
+Measured 2026-08-14 on `model_weights_dist_e3.pth` over 40 greedy episodes:
+
+| card | plays | modal cell | modal share | H(place\|card) |
+|---|---|---|---|---|
+| Mini PEKKA | 230 | (14,15) | 19.0% | **0.086** |
+| Cannon | 24 | (11,0) | **91.0%** | 0.098 |
+| Fireball | 2 | (11,0) | 58.4% | 0.141 |
+| Giant | 2 | (11,0) | 54.1% | 0.147 |
+
+Mini PEKKA has the **lowest** entropy in the deck and is the **most-played**
+card, so `ByCard_Min` flags the healthiest card and clears the three dead ones.
+A good head is sharp but moves its mode with the board; a broken one returns one
+cell regardless of it. **Count how often each card's argmax cell repeats across
+states**, not how peaked the distribution is. Sixth instance of this project's
+recurring failure — an aggregate that shares an assumption with what it checks.
 
 **And add a fourth: the placement PHASE histogram.** Count `int(actionX) % 4`
 over `replays/*.json` and compare against the 27.8/27.8/22.2/22.2 null that 18
