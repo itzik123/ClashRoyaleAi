@@ -1332,7 +1332,10 @@ def train_selfplay_ppo():
     # episodes_completed is resolved (either 0 on a from-scratch run or
     # restored from a resumed checkpoint) -- MIN_OPPONENT_AGE_EPISODES
     # filtering needs that value to know what's "too young" to be eligible.
-    num_envs = 8
+    # Overridable for the same reason train.py's is: an experiment that has to
+    # share the box with a second arm needs to say so without editing code
+    # between arms. Leave unset for real runs.
+    num_envs = int(os.environ.get("CLASH_NUM_ENVS", 8))
     print(f"Initializing {num_envs} self-play environments...")
     envs = gym.vector.AsyncVectorEnv([make_env() for _ in range(num_envs)])
 

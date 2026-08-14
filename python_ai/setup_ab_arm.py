@@ -23,6 +23,68 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+def _widen_optimizer(opt_state, old_model, new_model):
+    """Carry Adam moments across a checkpoint that gained parameters.
+
+    THE FAILURE THIS FIXES, caught by smoke-testing pipeline 2 before the long
+    run rather than at hour 0 of it:
+
+        ValueError: loaded state dict contains a parameter group that doesn't
+        match the size of optimizer's group
+
+    `place_hires` added 6 parameters, so the shipping checkpoint's optimizer
+    describes 26 and the current net has 32. torch matches optimizer state to
+    parameters by POSITIONAL INDEX, and train_selfplay.py -- unlike train.py --
+    loads it unconditionally, so this is fatal on resume.
+
+    Dropping the state would work and is wrong: it discards Adam's second
+    moments for the trunk, LSTM and critic, none of which changed, and those
+    are what keep a warm resume stable. So the indices are remapped by NAME.
+
+    The new parameters land at positions 22-27, in the MIDDLE of the ordering,
+    not appended -- so a naive "keep 0..25, append 26..31" remap would silently
+    hand the trunk's moments to the placement head. That is the kind of error
+    that produces a run which trains, looks healthy, and is subtly wrong.
+
+    Old ordering is reconstructed as "current order minus the new names", valid
+    because nothing else moved in the module registration order; the count
+    assertion below is what makes that assumption load-bearing rather than
+    hoped-for.
+    """
+    if not opt_state or "param_groups" not in opt_state:
+        return opt_state
+    from model import MicroRoyaleNet
+
+    net = MicroRoyaleNet(num_ability_slots=0)
+    new_names = [n for n, _ in net.named_parameters()]
+    added = set(new_model) - set(old_model)
+    old_names = [n for n in new_names if n not in added]
+
+    group = opt_state["param_groups"][0]
+    if len(group["params"]) != len(old_names):
+        raise SystemExit(
+            f"cannot remap optimizer state: checkpoint describes "
+            f"{len(group['params'])} parameters but reconstructing the old "
+            f"ordering gives {len(old_names)}. The module registration order "
+            f"changed by more than an append -- remap by hand.")
+
+    name_to_new = {n: i for i, n in enumerate(new_names)}
+    remap = {old_i: name_to_new[old_names[pos]]
+             for pos, old_i in enumerate(group["params"])}
+    state = {remap[int(k)]: v for k, v in opt_state["state"].items()
+             if int(k) in remap}
+
+    out = dict(opt_state)
+    out["state"] = state
+    # Every parameter listed, new ones with no state -- Adam initializes
+    # exp_avg/exp_avg_sq lazily on first step, so an absent entry is correct
+    # and is exactly what a fresh parameter should get.
+    out["param_groups"] = [dict(group, params=list(range(len(new_names))))]
+    print(f"  optimizer: remapped {len(state)} moment entries by name, "
+          f"{len(new_names) - len(state)} fresh")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True,
@@ -34,6 +96,12 @@ def main():
     ap.add_argument("--stage", type=int, default=5,
                     help="curriculum stage; 5 is the final 1.5x-opponent stage, "
                          "which is the regime prove_placement measures in")
+    ap.add_argument("--base", default=None,
+                    help="a FULL checkpoint to inherit training state from "
+                         "(optimizer moments, league roster, entropy "
+                         "coefficients, episode count). --src then supplies only "
+                         "the weights. Use when the weights come from an offline "
+                         "distillation but the run should continue a real life.")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +123,30 @@ def main():
     # PPO is about to run. Both arms get the same fresh start, which is what the
     # comparison requires. lr must match train.py's own 3e-4, since
     # load_state_dict overwrites the hyperparameters the trainer just set.
+    if args.base:
+        # Inherit a real training life and swap only the weights. Safe here
+        # BECAUSE the weights differ from the base only in the placement
+        # pathway -- verified tensor by tensor: of 27 shared tensors, 18 are
+        # bit-identical and the 9 that changed are card_id_embed, place_ctx and
+        # place_up. The trunk, LSTM, critic and aux head are untouched, so the
+        # inherited Adam moments still belong to the parameters that produced
+        # them. Do NOT use --base across a change that moves the trunk.
+        base = args.base if os.path.isabs(args.base) else os.path.join(here, args.base)
+        ckpt = torch.load(base, map_location="cpu", weights_only=False)
+        prev = ckpt["model"]
+        shared = set(prev) & set(model)
+        moved = [k for k in sorted(shared) if not torch.equal(prev[k].float(),
+                                                              model[k].float())]
+        ckpt["model"] = model
+        ckpt["optimizer"] = _widen_optimizer(ckpt.get("optimizer"), prev, model)
+        torch.save(ckpt, args.dst)
+        print(f"wrote {args.dst}: {len(model)} tensors "
+              f"({len(set(model) - set(prev))} new, {len(moved)} changed, "
+              f"{len(shared) - len(moved)} identical), inheriting training "
+              f"state from {args.base} at episode {ckpt.get('episodes_completed')}")
+        print(f"  changed: {moved}")
+        return
+
     from model import MicroRoyaleNet
     probe = MicroRoyaleNet(num_ability_slots=0)
     fresh_opt = torch.optim.Adam(probe.parameters(), lr=3e-4).state_dict()
