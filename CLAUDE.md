@@ -1122,6 +1122,52 @@ to (4,17) — just across the river at the left bridge. The Cannon's moved to
 dissolution toward uniform, not a cure. They diverged here, which is what makes
 it real.
 
+**THE TACTICAL OVERRIDE IS NOW REDUNDANT — a measured NULL, which is the point.**
+`hybrid_ab.py --per-card`, 200 paired openings on the cured net, solvency gate
+held ON in every arm so only placement varies:
+
+| arm | win rate | vs neural | p |
+|---|---|---|---|
+| neural (no placement override) | 0.507 | — | — |
+| cannon_only | 0.510 | +0.003 | 1.0 |
+| cannon_giant | 0.480 | −0.028 | 0.54 |
+| all_three | 0.480 | −0.028 | 0.56 |
+
+At v1.2.0 the same override was worth **+11.8 points, p = 1.9e-05**. This n had
+the power to see an effect that size and it is gone. The officer is not helping
+because there is no longer a hole for it to fill. **`hybrid_policy.py` can drop
+to gate-only.**
+
+**AND THE UNCOMFORTABLE HALF, which is the more useful result.** Two paired
+win-rate comparisons of the cured net against v1.2.0's
+`model_weights_selfplay.pth`, both side-controlled:
+
+| opponent | v1.2.0 | cured | delta |
+|---|---|---|---|
+| C++ `HeuristicOpponent` @1.5x (`net_ab.py`, 200 paired openings) | 0.6225 | **0.5100** | −0.1125, CI [−0.2025, −0.0200] |
+| **v1.2.0 itself**, head-to-head, sides swapped (`net_h2h.py`, 120 pairings) | 0.3875 | **0.6125** | **+0.1125, CI [+0.054, +0.171]** |
+
+**This is SPECIALIZATION, not degradation, and only a neural opponent could tell
+the two apart.** 13,961 episodes in a PFSP league whose members are all neural
+made the net significantly better against that opponent class — it beats its own
+predecessor — while losing ground against the C++ heuristic, which pipeline 2
+never shows it. Read either number alone and you get the wrong answer.
+
+Two controls that make the attribution stick:
+
+- **The seed is not the cause.** `model_weights_hires.pth` was never win-rate
+  tested (the v1.2.0 handoff says so). Measured: 0.6125 vs v1.2.0's 0.6350,
+  delta −0.0225, CI [−0.100, +0.055], p = 0.76 — indistinguishable. The whole
+  −0.1125 came from the training run, not from the distilled starting point.
+- **Sides were swapped** in the head-to-head. A policy beat a bit-exact copy of
+  itself 0.598 once purely by side assignment; it reads 0.530 today, small but
+  not zero, and a one-sided duel would fold that straight into the result.
+
+**So `model_weights_selfplay.pth` was NOT replaced.** Two checkpoints now exist
+with different strengths, and which is "better" depends on the opponent you
+care about. The real game is not the C++ heuristic, which argues for the cured
+net; but nothing here measures the real game.
+
 **A resume trap that is specific to `place_hires` and bit pipeline 2 only.**
 The branch added 6 parameters, so a pre-2026-08-14 checkpoint's optimizer
 describes 26 and the net has 32. `train.py` degrades gracefully (it gates
