@@ -92,6 +92,48 @@ own-back-row cell `(11,0)` is gone from both cards.
 
 ---
 
+## 2b. Win rate: the override is redundant, and the net SPECIALIZED
+
+**The override is a measured null now** (`hybrid_ab.py --per-card`, 200 paired
+openings, solvency gate ON in every arm so only placement varies):
+
+| arm | win rate | vs neural | p |
+|---|---|---|---|
+| neural (no placement override) | 0.507 | — | — |
+| cannon_only | 0.510 | +0.003 | 1.0 |
+| cannon_giant | 0.480 | −0.028 | 0.54 |
+| all_three | 0.480 | −0.028 | 0.56 |
+
+At v1.2.0 the same override was worth +11.8 points (p = 1.9e-05). This n had
+power to see that, and it is gone. **`hybrid_policy.py` can drop to gate-only.**
+
+**Then the part that needs reading carefully.**
+
+| opponent | v1.2.0 | cured | delta |
+|---|---|---|---|
+| C++ `HeuristicOpponent` @1.5x (`net_ab.py`, n=200 paired) | 0.6225 | **0.5100** | −0.1125, CI [−0.2025, −0.0200] |
+| **v1.2.0 itself**, head-to-head, sides swapped (`net_h2h.py`, n=120) | 0.3875 | **0.6125** | **+0.1125, CI [+0.054, +0.171]** |
+
+**Specialization, not degradation.** 13,961 episodes in an all-neural PFSP
+league made the net better against that opponent class — it beats its own
+predecessor — and worse against the C++ heuristic, which pipeline 2 never shows
+it. **Either number alone gives the wrong answer.**
+
+Two controls make that attribution stick:
+
+- **The seed is not the cause.** `model_weights_hires.pth` had never been
+  win-rate tested; it measures 0.6125 vs v1.2.0's 0.6350 (delta −0.0225,
+  p = 0.76). The regression came from the run, not the starting point.
+- **Sides were swapped.** A policy once beat a bit-exact copy of itself 0.598
+  purely by side assignment; it reads 0.530 today, and a one-sided duel would
+  fold that into the result.
+
+**`model_weights_selfplay.pth` was deliberately NOT replaced.** Two checkpoints
+with different strengths now exist. Which is "better" depends on the opponent
+you care about, and **nothing here measures the real game.**
+
+---
+
 ## 3. Predictions that did NOT survive — read these first
 
 **The stated motivation for this work did not reproduce.** The v1.2.0 handoff
