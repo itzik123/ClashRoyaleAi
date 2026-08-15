@@ -100,6 +100,16 @@ def main():
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     ap.add_argument("--ablate", action="store_true",
                     help="localise which component moves which metric")
+    ap.add_argument("--per-card", action="store_true",
+                    help="run the PER-CARD override ablation. The override is "
+                         "justified only for as long as the advisor beats the "
+                         "head, and that is now a per-card question: as of "
+                         "2026-08-14 the head matches the advisor on Fireball "
+                         "(p = 0.163) while still losing badly on Cannon "
+                         "(p = 6.8e-22). Turning it off wholesale would give "
+                         "back the Cannon's contribution to the measured +11.8 "
+                         "win-rate points; leaving it on wholesale keeps a "
+                         "layer that is doing nothing for Fireball.")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -124,6 +134,20 @@ def main():
             "initiate": mk(use_advisor=True, initiate=True),
             "full": mk(use_gate=True, use_advisor=True, initiate=True,
                        initiate_giant=True),
+        }
+    elif args.per_card:
+        from hybrid_policy import CANNON, FIREBALL, GIANT
+        # The solvency gate stays ON in every arm: it is a separate, measured
+        # component (bankruptcy 72.7% -> 41.7%) and leaving it to vary would
+        # confound the placement question this ablation exists to answer.
+        arms = {
+            "neural": mk(use_gate=True),
+            "cannon_only": mk(use_gate=True, use_advisor=True,
+                              override_cards=(CANNON,)),
+            "cannon_giant": mk(use_gate=True, use_advisor=True,
+                               override_cards=(CANNON, GIANT)),
+            "all_three": mk(use_gate=True, use_advisor=True,
+                            override_cards=(CANNON, FIREBALL, GIANT)),
         }
     else:
         arms = {"neural": mk(), "hybrid": HybridPolicy(net, device)}

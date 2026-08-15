@@ -393,3 +393,7 @@ replays_sample/
 # (each is 1-4 MB of per-tick board state).
 replays_e3/
 replays_search/
+
+# Session working directories: isolated trainer CWDs and checkpoint backups
+_runs/
+_session_backup_*/
