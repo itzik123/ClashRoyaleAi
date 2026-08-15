@@ -1080,6 +1080,48 @@ Cannon 269.2 → 402.9) across 80 updates. So the conflict is real in mechanism
 but the erosion is not observable at this horizon. The advisor target is worth
 having because it is much BETTER, not because the alternative decays.
 
+**AND IT HOLDS UNDER A LONG RUN. 2026-08-15, ep 78,270 (13,961 episodes / 524
+PPO updates of pipeline 2 with the term on, zero alarms throughout).** Same
+harness, same reference policy, same paired protocol:
+
+| | seed (hires) | control (80 upd, coef 0) | **main (524 upd, coef 0.10)** | advisor | random |
+|---|---|---|---|---|---|
+| Cannon, tower HP preserved (n=1582) | 276.0 | 403.0 | **553.1** | 687.9 | 411.3 |
+| Fireball, elixir killed (n=2979) | 1.506 | 2.190 | **2.565** | 2.464 | 0.469 |
+
+* **The Cannon beats a random legal cell for the first time in this project's
+  history: +141.8, 95% CI [+74.5, +210.2], p = 0.0071.** Every prior
+  measurement had it BELOW chance (−124.4, p = 2.5e-09 at v1.2.0; +23.4,
+  p = 0.118 and not significant at 80 updates). The advisor still beats it
+  (−134.9, p = 5.0e-10), so **the Cannon override stays on** — but the gap has
+  closed from −306.6 (v1.2.0) to −222 (80 updates) to −134.9.
+* **Fireball has overtaken the advisor**, +0.100 elixir in the net's favour.
+  The two tests disagree on significance — the bootstrap CI [−0.175, −0.025]
+  excludes zero, the exact sign test does not (223 better / 252 worse,
+  p = 0.199) — because the advisor wins more pairs while the net wins bigger
+  ones. **The defensible claim is "no longer distinguishable from the advisor,
+  and certainly not worse", which is enough to retire that override.**
+
+**The dynamism table is the qualitative proof, and Fireball's is the cleanest
+result this metric has ever produced:**
+
+| net | Cannon modal | share | top-1 | Fireball modal | share | top-1 | cells |
+|---|---|---|---|---|---|---|---|
+| seed | (11,0) | 44.9% | 0.140 | (11,0) | 32.8% | 0.087 | 88 / 188 |
+| control | (11,0) | 27.1% | 0.050 | (11,0) | 16.9% | 0.030 | 126 / 228 |
+| **main** | **(16,15)** | **17.0%** | 0.062 | **(4,17)** | **12.7%** | **0.112** | **135 / 256** |
+
+Fireball's modal share fell 32.8% → 12.7% while its top-1 probability ROSE
+0.087 → 0.112. That is the exact signature this file defines as healthy and
+which no previous net has shown: **more confident within a state, less
+repetitive across states.** Its modal cell moved from the own-back-row (11,0)
+to (4,17) — just across the river at the left bridge. The Cannon's moved to
+(16,15), the right bridge mouth on our own side.
+
+**Watch this in any future run:** modal share and top-1 falling TOGETHER is
+dissolution toward uniform, not a cure. They diverged here, which is what makes
+it real.
+
 **A resume trap that is specific to `place_hires` and bit pipeline 2 only.**
 The branch added 6 parameters, so a pre-2026-08-14 checkpoint's optimizer
 describes 26 and the net has 32. `train.py` degrades gracefully (it gates
