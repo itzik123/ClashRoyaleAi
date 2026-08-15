@@ -1122,6 +1122,28 @@ to (4,17) — just across the river at the left bridge. The Cannon's moved to
 dissolution toward uniform, not a cure. They diverged here, which is what makes
 it real.
 
+**THE GIANT IS CURED TOO, and it was the worst of the three** (`prove_giant.py`,
+new — `prove_placement.py` scores only Cannon and Fireball, so this card had
+never been engine-scored at all). Enemy tower damage over 600 ticks, paired on
+states drawn by the cured net, n=2784:
+
+| arm | tower damage | modal cell | share | cells used |
+|---|---|---|---|---|
+| v1.2.0 | **13.7** | (11,0) | 49.7% | 38 |
+| **cured** | **231.9** | (1,15) | 24.7% | **140** |
+| advisor | 380.5 | (14,15) | 57.7% | 2 |
+| random legal cell | 86.7 | — | — | 242 |
+
+**+145.2 vs a random legal cell (p = 6.5e-19)** and **+218.2 vs v1.2.0
+(p = 1.0e-98)**. The shipping net's Giant was 6x WORSE than chance at 13.7 —
+matching the 3.3 recorded when `best_giant_cell` was written — and used 38 of
+612 cells with half its mass on (11,0). The advisor still wins (−148.6,
+p = 1.1e-69), and note WHY: its rule is essentially two cells (57.7% on one of
+the two bridges), which is a very strong prior this board rewards.
+
+**So all three starved cards moved from worse-than-chance to better-than-chance.**
+Fireball reached the advisor; Cannon and Giant beat random but remain below it.
+
 **THE TACTICAL OVERRIDE IS NOW REDUNDANT — a measured NULL, which is the point.**
 `hybrid_ab.py --per-card`, 200 paired openings on the cured net, solvency gate
 held ON in every arm so only placement varies:

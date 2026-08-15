@@ -184,11 +184,13 @@ suspect and worth fixing before it is relied on again.
 2. **Re-measure the Cannon after more training.** Its gap to the advisor has
    closed monotonically across three measurements. It is the one card still
    needing the officer.
-3. **The Giant was never scored by the engine here.** `prove_placement.py`
-   covers Cannon and Fireball only, and the Giant's advisor rule is a single
-   cell rather than a surface. Its modal share improved (55.6% → ~12%) but that
-   is a dynamism metric, not a value one. **Nobody has measured whether the
-   cured net's Giant placement is any good.**
+3. **The Giant is now scored too** (`prove_giant.py`, written to close this
+   gap). n=2784: v1.2.0 **13.7** tower damage, cured **231.9**, advisor 380.5,
+   random 86.7. **+145.2 vs random (p = 6.5e-19), +218.2 vs v1.2.0
+   (p = 1.0e-98)** — it was 6x WORSE than chance and used 38 of 612 cells with
+   half its mass on (11,0); it now uses 140. Still below the advisor (−148.6),
+   whose rule is effectively two cells (57.7% on one bridge), a strong prior
+   this board rewards. **All three starved cards now beat chance.**
 4. **Decision-time search remains unwired.** Validated this session — snapshot
    0.020 ms, 10-tick step 0.026 ms, a K=12 2s sweep at 0.87 ms against 5.65 ms
    for one network forward — so the "simulation is free, scoring is the budget"
