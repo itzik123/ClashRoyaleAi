@@ -106,6 +106,24 @@ MIN_HORIZON_S = 1.0 / TICKS_PER_SECOND
 
 
 def _import_engine():
+    """The engine bindings, preferring a FRESHER build over python_ai/'s copy.
+
+    The build copies its .pyd into python_ai/ as a post-build step, and that
+    copy FAILS (MSB3073) whenever a training process has the module mapped --
+    Windows will not overwrite a loaded DLL. So during a live run python_ai/
+    holds a stale binary and `build_python/Release/` holds the current one, and
+    importing the stale copy silently omits whatever was just added: the
+    state-estimator setters landed on 2026-08-17 and were invisible here for
+    exactly that reason.
+
+    Preferring the build output rather than copying over python_ai/ is
+    deliberate. Overwriting it mid-run is the one thing that could disturb a
+    multi-hour training job, and perception has no business doing that.
+    """
+    build_output = Path(__file__).resolve().parent.parent / "build_python" / "Release"
+    if build_output.is_dir() and str(build_output) not in sys.path:
+        # Prepended: this must win over python_ai/, which is already importable.
+        sys.path.insert(0, str(build_output))
     try:
         import clash_royale_env  # noqa: PLC0415
     except ImportError as exc:                              # pragma: no cover
