@@ -66,6 +66,7 @@ from live.action_gate import MAX_STALENESS_MS, ActionGate  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
+from live.match_state import MatchState  # noqa: E402
 from live.pipeline import PerceptionWorker, Stages  # noqa: E402
 from live.placement_confirm import PlacementConfirmer  # noqa: E402
 
@@ -600,6 +601,18 @@ def main() -> int:
     # would have addressed 4% of the budget.
     stages = Stages()
 
+    # THE MATCH GATE. Updated only here, on whichever thread owns perception,
+    # so there is a single writer; the decision loop only ever READS
+    # `match.in_match`, which is atomic in CPython.
+    #
+    # It replaces a bare `state.screen.name == "in_game"` at two sites. That
+    # test has no hysteresis, so one misread frame at a boundary either admitted
+    # lobby frames to the readers or ended the match in our bookkeeping while it
+    # was still being played. Measured over the 2,510-frame live capture, gating
+    # takes off-deck card reads from 7.8% to 0.5% and duplicates from 8.7% to
+    # 1.7% -- a quarter of every capture is not a battle at all.
+    match = MatchState()
+
     def perceive(frame):
         """capture-frame -> (State, GameState). Runs on whichever thread owns
         perception: the worker when pipelined, the loop when --serial."""
@@ -611,7 +624,7 @@ def main() -> int:
         t = stages.time("2 detector.run", t)
         if state is None:
             return None, None
-        if state.screen.name == "in_game":
+        if match.update(state.screen.name):
             # The reading's own capture time, not now(): the ledger models how
             # much elixir regenerated between samples, and at this rate a
             # frame's worth of latency is a quarter of an elixir.
@@ -715,7 +728,10 @@ def main() -> int:
                 confirmer.observe(gs, time.perf_counter())
                 last_observed = board_index
 
-            in_game = state.screen.name == "in_game"
+            # The DEBOUNCED gate, not `state.screen.name`: the raw read flips
+            # on a single bad frame, and this value both starts the policy's
+            # recurrent state and releases taps.
+            in_game = match.in_match
             if hasattr(policy, "on_screen_change"):
                 policy.on_screen_change(in_game)
             # The policy steps every tick whatever the gate decides: it is
