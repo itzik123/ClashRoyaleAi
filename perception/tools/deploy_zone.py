@@ -112,12 +112,18 @@ CONTROL_MIN_DELTA = 20.0
 
 
 def screencap(adb: Path, path: Path | None = None) -> Image.Image:
-    raw = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
-                         capture_output=True, timeout=30).stdout
+    # The adb daemon-start banner lands on STDOUT ahead of the PNG on the first
+    # call of a session -- see match_nav.decode_screencap, which owns the one
+    # copy of that knowledge. Saving `raw` unstripped would also write a
+    # corrupt .png to `path`, so the offset is resolved BEFORE the write.
+    from match_nav import _PNG_MAGIC, decode_screencap  # noqa: PLC0415
+
+    p = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
+                       capture_output=True, timeout=60)
+    img = decode_screencap(p.stdout, p.returncode, p.stderr)
     if path is not None:
-        path.write_bytes(raw)
-    import io
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+        path.write_bytes(p.stdout[p.stdout.find(_PNG_MAGIC):])
+    return img
 
 
 def redness(img: Image.Image) -> np.ndarray:

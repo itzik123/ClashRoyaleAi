@@ -216,3 +216,173 @@ the from-scratch arm and every log quoted above. Checkpoints were backed up to
 
 **No C++ was changed.** CLAUDE.md forbids it without the human confirming
 diagnosis and edit, and the human was offline. **No emulator was used.**
+
+---
+---
+
+# Session 2 — 2026-08-16: search shipped, distillation refuted, and the
+# architectural problem that is actually left
+
+Appended after a second autonomous session. Sections 7-10 supersede nothing
+above; they answer the question section 5 left open ("the measured-positive use
+is offline value-DISTRIBUTION distillation"), and the answer is **no longer
+true on this seed**.
+
+---
+
+## 7. What shipped: search at inference, weights unchanged
+
+The heuristic regression (0.51 vs v1.2.0's 0.6225) was going to be fixed with a
+from-scratch search-distilled run plus a mixed curriculum. **Both premises were
+measured first and both were false** — see CLAUDE.md's 2026-08-15 entry for the
+numbers. Briefly: the mixed curriculum already existed at a realized **20.8%**
+heuristic share and had not prevented the regression; and search at random init
+is inert (overrides 21.5% of decisions, gains nothing), so it cannot bootstrap
+a from-scratch run.
+
+The lever nobody had swept was `horizon`. Depth costs engine steps (0.015 ms),
+width costs network rows (0.13 ms), so lookahead is ~9x cheaper than candidates.
+Going h=4 → h=12 took search from 0.667 to 0.963 **and got cheaper**.
+
+| | bar | result |
+|---|---|---|
+| vs C++ heuristic@1.5x (n=400 paired) | >0.65 | **0.9225** (greedy 0.5200) |
+| h2h vs v1.2.0 as shipped (n=150 swapped) | >0.60 | **0.7200** CI [0.675, 0.765] |
+
+**And the control that keeps this honest:** give BOTH sides search and the
+cured net scores **0.4425** CI [0.3825, 0.5025] against v1.2.0 — no difference
+resolved. The gain is search, not the cured weights.
+
+Shipping config is named in one place: `python_ai/shipping.py`.
+
+---
+
+## 8. Distillation is REFUTED on a cured seed — do not re-run it
+
+The obvious follow-up was to bake the h=12 expert's +0.4025 into the weights,
+since the h=4 expert had distilled for +0.045. Run at the best known recipe
+(value-DISTRIBUTION labels, frozen trunk, 16 epochs, 180 episodes, T=0.05 chosen
+from `--target-entropy` before any outcome). **Three independent measurements,
+all null:**
+
+| | h=4 → v1.2.0 (worked) | h=12 → cured (this) |
+|---|---|---|
+| conditional lift | +0.1535 | **−0.0032 ± 0.0230** |
+| p1/p0 selectivity | 2.17 | **0.92** |
+| paired greedy A/B | +0.045, p=0.0074 | **+0.0250, p=0.608** (n=300) |
+| search delta ON the student | fell, deviation 14.8%→12.1% | **+0.3583**, deviation 13.17%→**13.06%** |
+
+**The last row is the one that settles it.** Search is worth +0.4025 on the
+teacher and +0.3583 on its student, with overlapping CIs, and overrides the
+student just as often. A student that absorbed the expert would be deviated
+from *less*.
+
+**THE SEED IS THE VARIABLE, NOT THE EXPERT.** The distillation that worked was
+seeded from a net whose placement head was *broken* — three cards placing worse
+than random. That gap is what it taught into. The cure closes it, so there is
+nothing left to copy. Said the other way, and this is the same fact the
+compute-matched control reports from the other side: **search and the placement
+cure repair the same weakness.** They do not stack, and neither substitutes for
+the other's absence.
+
+What remains is the part that requires **actually running the simulator** twelve
+seconds forward. A reactive head that only ever sees `s` has no way to represent
+it. Section 9 is about that.
+
+---
+
+## 9. THE FUTURE BLUEPRINT — giving the policy lookahead it can own
+
+This is the design problem, not a training run. **Do not spend compute on any of
+these before the design is argued through**; three sessions of this project have
+now been spent on things that measurement killed in under an hour.
+
+The framing: the critic is allowed to *roll the world forward* and the actor is
+not. Every option below is a way of closing that specific asymmetry. They are
+ordered by expected value per unit of risk, which is not the same as by
+ambition.
+
+### 9.1 Recurrent rollout head — cheapest, most likely to pay
+
+Let the policy do internally what search does externally: propose a candidate,
+imagine `k` steps, and score. Concretely a small head that takes `(h_t, card,
+cell)` and predicts the value the critic *would* assign after a `k`-step
+rollout — trained on labels the search already produces for free.
+
+Why this is different from what just failed: distillation copied the search's
+*output* (an action distribution). This copies the search's *intermediate
+quantity* (the per-candidate value), which is a far denser and better-posed
+target — one scalar per candidate per state rather than one categorical over
+612 cells. The 48k-row collection already contains `cand_value`; **no new data
+is needed to test it.**
+
+Risk: it is still a reactive approximation, so it may hit the same ceiling. The
+cheap falsification is whether predicted candidate values correlate with the
+search's actual ones on held-out states — measurable in minutes, before any
+policy training.
+
+### 9.2 Learned forward model (latent dynamics) — the real fix, the real cost
+
+MuZero's shape: learn `(z_t, a) -> z_{t+1}` in a latent space plus reward/value
+heads, then plan in latent space at inference. The policy stops needing the
+simulator because it carries its own.
+
+Why it is genuinely attractive here and not just fashionable: **we own a fast
+deterministic simulator**, so the forward model can be trained on unlimited
+perfectly-labelled transitions rather than scraped from play. That removes the
+single hardest part of MuZero.
+
+Why it is expensive and risky: it is a new network, a new loss, a new failure
+surface, and this project's own history says every such addition took several
+sessions to debug (the checkerboard head, the team-1 observation, the entropy
+scaling). Budget it as a workstream, not an experiment. **Do not start it to
+chase +0.04.**
+
+### 9.3 Give the actor the critic's rollout as an INPUT
+
+The cheapest structural change: run the search, and feed its per-candidate
+values into the policy head as features rather than distilling them away. This
+does not remove the inference cost — it is not a substitute for 9.1/9.2 — but it
+converts search from an *override* into *information the policy can learn to
+use*, which is a strictly better use of the same compute and would let the
+policy learn *when to trust it*.
+
+### 9.4 Deeper/wider search, and why it is nearly exhausted
+
+h=20 was measured WORSE than h=12 (0.875 vs 0.963) because a candidate rollout
+assumes both sides no-op, and 20 s of that stops resembling the game. **The next
+gain here is not depth, it is a better opponent model inside the rollout** —
+even the opponent's greedy action instead of a no-op. Cheap to try, and it is
+the one search improvement not yet measured.
+
+### 9.5 What NOT to do
+
+- **Do not distil this expert again on a cured seed.** Refuted above, three ways.
+- **Do not scale the distillation dataset.** Already known harmful (selectivity
+  falls, no-op rate drifts toward the expert's).
+- **Do not re-add heuristic exposure to the PFSP pool.** Already 20.8%.
+- **Do not run a from-scratch AlphaZero loop with this search module.** Inert at
+  init; the expert only exists after the critic is trained.
+
+---
+
+## 10. Live play — the gap between the benchmark and the emulator
+
+**Search is NOT wired into `perception/live/mvp_loop.py`.** The loop's neural
+path builds the 13,606-float observation through `perception_encoder` and calls
+the policy head directly; there is no candidate rollout and no engine snapshot
+in that path. So the configuration that measures **0.9225** cannot currently be
+run live — live play gets the cured net **greedy**, which measures **0.5200**
+against the heuristic.
+
+That is the single highest-value integration task outstanding, and it is
+plausibly small: the live loop already owns a simulator mirror
+(`perception/forecast.py` holds a real `ClashRoyaleEnv` and calls
+`get_observation_for_team(0)`), which is exactly the object `_search_action`
+needs to snapshot. **Wiring search into the live loop is worth more than any
+weight change currently on the table** — it is the difference between a 0.52
+agent and a 0.92 one, already measured, already paid for.
+
+Also note `mvp_loop.py`'s module docstring is **stale**: it says the trained
+policy cannot be reached because no encoder exists. The encoder exists and
+`--policy neural` works. Fix the docstring before it misleads someone again.

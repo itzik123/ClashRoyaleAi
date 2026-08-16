@@ -88,9 +88,92 @@ import clash_royale_env
 # already measured to fail).
 # ---------------------------------------------------------------------------
 #
+# ---------------------------------------------------------------------------
+# 2026-08-16: SWITCHED to the classic 2.6 HOG CYCLE.
+#
+#   Hog Rider(15) 4 | Musketeer(6) 4 | Cannon(25) 3 | Ice Golem(40) 2
+#   Skeletons(24) 1 | Ice Spirit(72) 1 | The Log(33) 2 | Fireball(7) 4
+#   total 21, average 2.625, spread 3 (1..4)
+#
+# This deliberately gives up the recorded-match tie the Giant deck was reverted
+# FOR (2026-07-30, above): the 8 recordings play the Giant deck, so behaviour
+# cloning from them is not available against this one. That is a real cost and
+# it is being paid on purpose -- BC was blocked on the extraction step anyway,
+# and the deck is being changed to test the LEARNING MECHANISM.
+#
+# It also removes the risk that reversion re-accepted. The Giant deck's failure
+# mode was a starved 5-cost win condition: at 0.35 elixir per decision a 5-cost
+# card is legal only after ~14 consecutive non-spending steps, and Giant was
+# never played once across four full runs. NOTHING here costs more than 4, and
+# two cards cost 1, so no slot can be systematically masked out of existence.
+#
+# MEASURED IN THIS ENGINE before switching (all 8 verified functional, not just
+# present in the registry):
+#   Hog Rider    building-targeter, crosses and deals 317 tower damage in 40 s
+#   Cannon       prevents 3,823 HP against a lone enemy Hog
+#   The Log      ground-only rolling spell, 12 -> 5 bodies on a Skeleton clump
+#   Fireball     12 -> 3 bodies on the same clump
+#   Skeletons    3 bodies | Ice Spirit 1, hits air | Ice Golem tank, ~17 s
+#   Musketeer    ranged, hits air
+#
+# WATCH: Hog Rider (id 15) usage and Cannon-vs-Hog defence. The Giant deck's
+# tell was a win condition that was never played; the equivalent tell here is
+# Hog usage collapsing, and the honest response would again be the cost curve
+# or the gradient path -- NOT more entropy.
+# ---------------------------------------------------------------------------
+#
 # Verified against the live registry: all 8 ids exist, no Champions, and
 # validate_deck_slots returns "" (legal).
-DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
+DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]
+
+
+def _find_win_condition(deck):
+    """The deck's win condition = its BUILDING-TARGETER, found by asking the engine.
+
+    A building-targeter is the only unit that walks past your defenders to hit
+    a tower, which is what makes it the win condition -- and it is the reason
+    the win-condition reward term can use `get_damage_dealt_by_card` at all:
+    such a unit attacks nothing else, so its total damage IS tower damage.
+
+    DERIVED, not written down. `get_card_info` exposes cost/is_spell/
+    is_building but no archetype, so the class is recovered the same way
+    perception_encoder.build_card_table recovers every other attribute: inject
+    the card onto an empty board and see which type channel the observation
+    lights up. ClashEnv.h's type offsets are 0 melee / 1 ranged / 2
+    BUILDING-TARGETER / 3 building. A hardcoded `WIN_CONDITION_ID = 15` would
+    silently mean "Hog Rider" forever and be wrong the next time the deck
+    changes -- exactly the drift that made a test inject a Musketeer while its
+    comment said Archers.
+
+    Returns None if the deck has no building-targeter, which is a legitimate
+    deck (the win-condition reward term then contributes nothing rather than
+    crashing or, worse, crediting an arbitrary card).
+    """
+    import numpy as _np
+    E = clash_royale_env.ClashRoyaleEnv
+    plane = E.BOARD_WIDTH * E.BOARD_HEIGHT
+    found = []
+    for cid in deck:
+        info = clash_royale_env.get_card_info(cid)
+        if info["is_spell"] or info["is_building"]:
+            continue
+        env = E(deck, deck, 100)
+        env.reset()
+        env.inject(cid, 9.0, 8.0, 0)
+        env.step(E.HAND_SIZE, 0.0, 0.0, 1)
+        obs = _np.asarray(env.get_observation_for_team(0), _np.float32)
+        # channel 2 = ally building-targeter ("tank") in ClashEnv's 0-3 block
+        if obs[2 * plane:3 * plane].max() > 1e-6:
+            found.append(cid)
+    if not found:
+        return None
+    # More than one (e.g. Hog + Ice Golem, which also targets buildings): the
+    # win condition is the one that actually threatens a tower, i.e. the
+    # highest-cost such card. Ice Golem is a 2-cost shield, not a win condition.
+    return max(found, key=lambda c: clash_royale_env.get_card_info(c)["cost"])
+
+
+WIN_CONDITION_ID = _find_win_condition(DEFAULT_DECK)
 # Card id of the deck's only spell -- see train.lethal_spell_potential.
 train_FIREBALL_ID = 7
 
@@ -282,6 +365,14 @@ class MicroRoyaleEnv(gym.Env):
             # compute_shaping() -- see W_TOWER_DESTROYED.
             "team0_towers_alive": self.game.get_towers_alive(0),
             "team1_towers_alive": self.game.get_towers_alive(1),
+            # Cumulative damage dealt by the deck's WIN CONDITION -- input to
+            # train.compute_shaping's win-condition term. See WIN_CONDITION_ID
+            # below for how the card is identified, and ClashEnv::
+            # getDamageDealtByCard for what this counter does and does not
+            # measure (it is damage to anything, which for a building-targeter
+            # is tower damage plus any enemy deployed building in the way).
+            "team0_wincon_damage": (self.game.get_damage_dealt_by_card(WIN_CONDITION_ID, 0)
+                                    if WIN_CONDITION_ID is not None else 0),
             # SUPERVISION TARGET for the network's auxiliary elixir head, and
             # nothing else. Deliberately delivered through info -- NOT through
             # the observation -- because the opponent's current elixir is

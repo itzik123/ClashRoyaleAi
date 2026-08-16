@@ -210,14 +210,33 @@ own plays** (the heuristic opponent's are logged nowhere), and **the training
 run rewrites that directory continuously** — observed dropping from 8 files to
 1 within minutes. Frozen fixtures live in `perception/tests/assets/`.
 
-`DEFAULT_DECK = [10, 1, 41, 25, 7, 2, 6, 5]` (`python_ai/gym_wrapper.py`) —
-Valkyrie, Archers, Minions, Cannon, Fireball, Giant, Musketeer, Mini PEKKA.
-Costs 3-5, avg 3.75, spread 2. Win condition Giant (5); only 3 of 8 cards hit
-air (Archers, Minions, Musketeer); one spell (Fireball).
+`DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]` (`python_ai/gym_wrapper.py`)
+— **the classic 2.6 Hog Cycle**, since 2026-08-16: Hog Rider, Musketeer,
+Cannon, Ice Golem, Skeletons, Ice Spirit, The Log, Fireball. Costs 1-4, avg
+2.625, spread 3. Win condition Hog Rider (4); 3 of 8 hit air (Musketeer, Ice
+Spirit, and Fireball as a spell); **two** spells (Fireball, The Log).
 
-**This deck is chosen to match the recordings**, deliberately overriding the
-cost-curve argument — see the block comment above the literal, and "Open
-problems" for the risk it re-introduces.
+All eight were verified FUNCTIONAL in this engine, not merely present in the
+registry: Hog crosses and deals 317 tower damage in 40 s; a Cannon prevents
+3,823 HP against a lone enemy Hog; The Log takes a Skeleton clump 12 → 5
+bodies and Fireball 12 → 3; Skeletons spawn 3 bodies, Ice Golem tanks ~17 s.
+
+**This replaces the Giant deck and gives up the recordings tie** that the
+2026-07-30 revert was made for — behaviour cloning from
+`perception/assets/recordings/` is not available against this deck. Paid on
+purpose: BC was blocked on extraction anyway, and the deck was changed to test
+the learning mechanism. It also removes the starved-win-condition risk that
+revert re-accepted, structurally rather than probabilistically: **nothing here
+costs more than 4.**
+
+`test_default_deck_is_the_26_hog_cycle_and_every_card_is_cheap_enough` pins
+both the identity and the `max(cost) <= 4` property.
+
+**Fireball injected out of range does nothing, and that is not a bug.** A first
+probe scored `inject(FIREBALL)` at 0.000 value-killed and briefly looked like
+broken kill attribution; injected ON the clump it kills 12 → 3 bodies normally.
+`get_troop_damage_dealt` includes **our own towers shooting**, so it is not
+evidence a spell landed. Nothing in `prove_placement.py` is invalidated.
 
 ---
 
@@ -1202,6 +1221,373 @@ indices 22-27, in the MIDDLE of `named_parameters()` order rather than appended,
 so the obvious "keep 0..25 and append the rest" hands the trunk's moments to the
 placement head — a run that trains, looks healthy, and is quietly wrong.
 
+**2026-08-15, the heuristic regression is fixed by WIRING IN SEARCH, and the
+weights never changed.** The cured net's loss against the C++ heuristic
+(0.51 vs v1.2.0's 0.6225) was going to be answered with a from-scratch
+search-distilled run plus a mixed curriculum. Both premises were measured
+first, and both are false:
+
+- **The mixed curriculum already exists and did not work.**
+  `BUILTIN_TRAINING_OPPONENTS` (2026-07-31) puts the heuristic in the PFSP pool
+  at `BUILTIN_MIN_WEIGHT = 0.5`. Reproducing the env's own pool construction and
+  sampler at the cured net's state (48-member pool, measured win rates) gives a
+  realized share of **20.8%** — ~2,897 of that run's 13,905 episodes were
+  ALREADY played against the heuristic, and it regressed anyway. Routing is
+  correct (`game.step()`, not `step_self_play`), so this is not the silent-
+  no-opponent trap. Adding heuristic exposure is a no-op.
+- **Search cannot bootstrap a from-scratch run.** Search scores candidates with
+  the net's OWN critic, so at random init the expert is not an expert. Paired,
+  n=60: random init @1.0x scores **0.450 policy / 0.417 search** (ns) while
+  overriding **21.5%** of decisions; the trained net @1.5x scores 0.483 / 0.667
+  at **10.2%**. At init it deviates twice as often and gains nothing, so early
+  distillation targets are noise.
+
+**`horizon` is the lever, and depth is nearly free.** One engine step costs
+0.015 ms; one scored candidate costs a network row at 0.13 ms — so lookahead is
+~9x cheaper than width. Sweep (cured net vs heuristic@1.5x, n=80 paired):
+horizon 4 → 0.667 (1.6x cost), 4 with K≤13 → 0.788 (1.7x), 8 → 0.925 (1.5x),
+**12 → 0.963 (1.5x)**, 20 → 0.875 (1.8x). It degrades past ~12 because a
+candidate rollout assumes both sides no-op and 20 s of that stops resembling
+the game. Chosen on the sweep, then CONFIRMED on a fresh independent run.
+
+**Confirmatory, `model_weights_cured.pth` + search horizon 12:**
+
+| criterion | bar | result |
+|---|---|---|
+| vs C++ heuristic@1.5x (n=400 paired) | >0.65 | **0.9225** (policy 0.5200, delta +0.4025 CI [+0.3486, +0.4564], 174 better / 13 worse) |
+| h2h vs v1.2.0 as shipped (n=150 swapped) | >0.60 | **0.7200** CI [0.6750, 0.7650] |
+| Cannon placement, shipping config | dynamic | modal 12.9% over **36** cells (greedy: 17.1% over 20) |
+
+**THE UNCOMFORTABLE CONTROL, and it is the more useful result. Give BOTH sides
+search and the cured net's advantage disappears:** 0.4425, CI [0.3825, 0.5025]
+(n=100 swapped) — no difference resolved, point estimate favouring v1.2.0. So
+the +0.72 is **search, not the cured weights**. Search and the placement cure
+repair the same weakness, and they do not stack. Anything claiming the cure
+made a stronger network has to answer this number.
+
+Two smaller things worth carrying:
+
+- **The x mod 4 detector fires on a healthy net, because its null is wrong for
+  a trained policy.** The shipping config measured 43.6% on x ≡ 1 (mod 4),
+  χ² = 96.3 — which reads exactly like the 2026-08-09 checkerboard bug. It is
+  not. The discriminating test is the one the fix was verified with: on a
+  SPATIALLY CONSTANT input, phase explains **6.8–14.0%** of the head's surface,
+  against the broken head's **100%**. A trained policy concentrates on columns
+  for tactical reasons and the uniform-column null cannot tell that from a head
+  artifact. Run the constant-input test before believing the histogram.
+- **v1.2.0 is a fair baseline under the new architecture.** It loads with
+  `place_hires` freshly initialized, and `place_hires.2` weight AND bias are
+  both exactly zero, so the residual add contributes exactly nothing and the
+  checkpoint plays bit-identically to how it shipped. Verified, not assumed.
+
+The shipping configuration is named in one place, `python_ai/shipping.py`, so an
+evaluation and a deployment cannot drift onto different settings. Harnesses
+added: `net_h2h_search.py` (either side may search) and
+`prove_placement_shipping.py` (dynamism over cells ACTUALLY played).
+
+**2026-08-16, distilling the h=12 expert into the CURED net does NOT work, and
+the reason is that the cure already took the absorbable part.** The obvious next
+step after the above was to bake search's +0.4025 into the weights, since the
+h=4 expert had distilled for +0.045 (p = 0.0074). Run at the best known recipe —
+value-DISTRIBUTION labels, frozen trunk, 16 epochs, 180 episodes, seeded from
+`model_weights_cured.pth`. Collection: 48,035 rows, expert win rate 0.9528,
+deviation 12.76%. T=0.05 chosen from `--target-entropy` BEFORE any outcome
+(spread mean 0.2801 / median 0.1795, putting the target at 0.573 of max
+entropy), 21.8% of rows carrying ≥2 candidates.
+
+**Three independent measurements, all null:**
+
+| | h=4 into v1.2.0 (worked) | h=12 into cured |
+|---|---|---|
+| conditional lift | **+0.1535** | **−0.0032 ± 0.0230** |
+| p1/p0 selectivity | 2.17 | **0.92** |
+| paired greedy A/B | +0.045, p = 0.0074 | **+0.0250, CI [−0.0509, +0.1009], p = 0.608** (n=300, 72 better / 65 worse) |
+| search delta ON the student | 0.319 → 0.12-ish (deviation 14.8% → 12.1%) | **+0.3583 [+0.258, +0.459]**, deviation 13.17% → **13.06%** |
+
+**Read the last row first — it is the one that settles it.** Search is worth
++0.4025 on the cured net and +0.3583 on its distilled student, with heavily
+overlapping CIs, and it overrides the student just as often as the teacher
+(13.06% vs 13.17%). A student that had absorbed the expert would be deviated
+from LESS. Essentially nothing transferred.
+
+**The seed is the variable, not the expert.** The distillation that worked was
+seeded from `model_weights_selfplay.pth`, whose placement head was *broken* —
+Cannon, Fireball and Giant all placing WORSE THAN RANDOM. That is an enormous
+gap for an expert to teach into. Seeded from the cured net there is no such
+gap: the condition this file names for expert iteration to pay ("the value head
+is substantially better than the action head is at exploiting it") is largely
+gone once the action head works. This is the same fact the compute-matched h2h
+control reported from the other side — **search and the placement cure repair
+the same weakness, so they neither stack nor substitute for each other's
+absence.**
+
+What is left for search to add is the part that requires ACTUALLY RUNNING THE
+SIMULATOR twelve seconds forward, and a reactive head that only ever sees `s`
+has no way to represent it. That was already the standing hypothesis ("the
+residual is plausibly structural"); this is the first measurement that isolates
+it from the placement confound.
+
+Two caveats recorded honestly:
+
+- **The fit is UNDERCONVERGED and that is not the explanation.** Loss was still
+  falling at epoch 15 (2.8605 → 2.4645) and argmax agreement still rising
+  (0.433 → 0.446), so more epochs is the one untried lever. But underfitting
+  does not predict the search-on-student result: a partially-fit student would
+  still be deviated from less often, and it was not.
+- **`--train` and `--train-dist` are INDEPENDENT flags, not a mode selector.**
+  Passing both runs hard-label BC to completion first and only then the
+  distribution phase — ~2.7 h of wasted compute here. It did not contaminate
+  the result (the distribution phase re-loads `student` from `--weights`), but
+  the hard-label pass also overwrites `--out` on its way past.
+
+**`model_weights_h12dist.pth` is NOT shipped.** `shipping.py` stays on
+`model_weights_cured.pth` + search horizon 12.
+
+**2026-08-16, "the bot plays like a disconnected zombie": one of the three
+reported symptoms is real, and its cause is the ENTROPY CONTROLLER's
+normalizer, not the observation, the architecture or the reward.** Prompted by
+a live emulator session reporting suicide placements, back-corner spam and
+defensive apathy. All three were tested in the simulator against
+`model_weights_cured.pth` before anything was changed. Two do not reproduce.
+
+**REFUTED — "it drops a Musketeer on top of a Mini PEKKA".** Musketeer had
+never been engine-scored here (`prove_placement.py` covers Cannon/Fireball,
+`prove_giant.py` the Giant). Scored on the same protocol — snapshot, inject at
+the proposed cell, run a 300-tick lifetime, read the engine — over 337 paired
+states against a random legal cell:
+
+| | policy | random legal cell | delta |
+|---|---|---|---|
+| elixir value killed | **5.745** | 4.481 | **+1.264**, CI [+0.650, +1.872] |
+| tower damage taken | **1411.3** | 1708.3 | **297 HP less** |
+
+144 better / 106 worse / 87 tied. The head places the Musketeer **better than
+chance**, which is the opposite of the Cannon/Fireball/Giant pathology this
+file spent 2026-08-11 to 08-15 curing.
+
+**REFUTED — "it is disconnected from the board".** Counterfactual ablation:
+delete EVERY enemy troop from the observation (their cells zeroed across all
+enemy channels; towers, own units, elixir, hand and the recurrent state left
+untouched) and re-query the same net from the same hidden state. Pooled over
+1,532 states, the placement distribution moves **TV = 0.444** and the argmax
+cell changes in **60.4%** of states, against **TV = 0.625** for switching to a
+different card — a change the head is known to condition on. Per card it is
+stronger still: Mini PEKKA 0.844 / 83.3%, Valkyrie 0.762 / 93.1%. The head
+reads the board.
+
+**CONFIRMED, and it is a REGULARIZER BUG. `LOG_N_CARD = log(hand_size + 1)` is
+a maximum the masked distribution can never reach.** Both trainers divided the
+card head's entropy by `log(5)` and drove the result to
+`ENTROPY_TARGET_CARD = 0.35`. But `mb_decision` means "at least one card was
+AFFORDABLE", and the affordability mask leaves only `(#affordable + 1)` legal
+arms. Measured over 706 decision steps:
+
+| n_legal on a decision step | share | reachable max |
+|---|---|---|
+| **2** (one affordable card + no-op) | **54.1%** | log 2 = 0.693 |
+| 3 | 15.6% | 1.099 |
+| 4 | 25.8% | 1.386 |
+| 5 | 4.5% | 1.609 |
+
+The target `0.35 × log(5) = 0.5633` nats is **81.3% of the reachable maximum**
+on the majority case. So the controller demanded the play/wait choice be near a
+coin flip — and then **read 0.3125 against its own 0.35 target and kept RAISING
+the coefficient**, while the policy's real randomness was **0.4906 of
+reachable**.
+
+The downstream chain is the reported symptom:
+
+| | |
+|---|---|
+| mean elixir | **2.25 / 10** |
+| P(nothing affordable) | **73.9%** |
+| ...during the largest threat bucket | **78.5%** — worst when defending matters |
+| P(play), no threat → HUGE threat | 0.1008 → **0.1016** (flat) |
+| P(play \| something affordable) | 0.3655 → 0.4719 (the response IS there) |
+
+**The agent is not apathetic and not blind. It is bankrupt, and the regularizer
+is what bankrupts it** — it spends on sight because it is being paid to flip a
+coin. This is the same shape as the 2026-07-31 exploiter collapse (raw nats vs
+`log 612`) and the 2026-08-11 no-op placement average: **a normalizer that does
+not hold in the regime being measured.** Seventh instance.
+
+Fixed by normalizing each head per-step by `log(n_legal)` — recovered from the
+card mask, and from `torch.isfinite(pl_seq)` for placement, so no plumbing is
+needed. The placement head had the same defect more mildly (troops see ~242 of
+612 cells, so its annealed target was inflated ~17%) and is fixed identically.
+`test_card_entropy_must_be_normalized_by_the_REACHABLE_maximum` pins the
+invariant: **uniform over the legal arms must read exactly 1.0, at any number
+of arms.** Under the old divisor a uniform 2-arm row read 0.431.
+
+**The tell was already in the codebase.** `train_selfplay.py`'s per-card
+diagnostic has always divided by `log(n_legal)` and its comment gives the
+reason — "a spell sees 588 cells, a plain troop 242, the Cannon 208 ... a raw
+nat count is not comparable across cards". The DIAGNOSTIC was right and the
+OBJECTIVE was never given the same treatment.
+
+**GAMEPLAY-AFFECTING**: it changes the loss in both pipelines.
+
+**Also 2026-08-16: "perfect defense" is now expressible, and the obvious way to
+do it was the wrong way.** The tower term is linear and SYMMETRIC — 100 HP
+chipped off the enemy pays exactly what 100 HP taken costs — so the reward is
+indifferent between "trade 500 for 500" and "take 0, deal 0". The tempting fix,
+weighting damage TAKEN above damage DEALT, is the one thing that must not be
+done: this file already records that policy-invariant tower shaping left PURE
+DEFENCE as the optimum and win-condition usage decayed to **0.7%**.
+
+`flawless_defense_bonus()` instead pays `W_FLAWLESS_DEFENSE = 0.5` scaled by
+the fraction of our own tower HP still standing, **only on a WIN**. Gating on
+the win is the whole safety argument: a turtle that stalls into a timeout
+collects nothing and still pays `DRAW_PENALTY`, and a loss collects nothing, so
+the term cannot reorder win/loss/draw at all — it can only rank WINS against
+each other. Not potential-based, so biasing by construction, the same
+eyes-open trade as `W_TOWER_DESTROYED`. Three tests pin it, including that a
+DRAW collects nothing however clean, and that the post-autoreset counter is
+read through a running max (otherwise a scraped win is paid as flawless).
+
+**And a live/sim drift worth knowing: there are THREE disagreeing `max_ticks`
+defaults.** `ClashEnv.h`'s C++ constructor says 3600, **`bindings.cpp` says
+1800**, and `gym_wrapper` — which trains the policy — passes 3600. A bare
+`ClashRoyaleEnv(deck, deck)` from Python silently gets a HALF-LENGTH match.
+
+`perception_encoder.py` had been written against the binding default, dividing
+the time scalar by 1800 while the policy it feeds was trained at 3600 — **the
+deployed agent's clock ran at twice the rate it had learned**, on the one input
+clock management depends on. Invisible in every simulator metric, because
+nothing in the simulator path uses that file. The round-trip bit-exactness
+tests did not catch it; they *pinned* it, by building their env with the bare
+constructor. Both are fixed, and the tests now pass `TRAINING_MAX_TICKS`
+explicitly.
+
+**PRE-REGISTERED PREDICTIONS for the from-scratch 2.6 run, written before it
+had trained.** The entropy fix is justified by a mechanism, not yet by an
+outcome. These are the numbers that falsify it, all measurable with
+`probe_defense.py` / `probe_entropy_norm.py` on the new net:
+
+1. **Mean elixir rises above 2.25 / 10** and **P(nothing affordable) falls
+   below 73.9%**. This is the direct claim. If bankruptcy persists at the same
+   level, the normalizer was not the binding cause and the diagnosis is wrong.
+2. **P(play) stops being flat against threat.** It was 0.1008 → 0.1016 from no
+   threat to the largest. Any real defensive reflex has to show up here.
+3. **`Policy/Entropy_Card_Frac` settles near 0.35 rather than below it.** It is
+   now measured against a reachable ceiling, so the controller should be able
+   to hold its target instead of chasing one it cannot reach.
+4. **The card entropy COEFFICIENT should fall early, not rise.** A fresh net is
+   near-uniform over its legal arms (~1.0 of reachable), i.e. far ABOVE target,
+   so the controller must push down. Observed in the first updates: 0.0500 →
+   0.0363. Under the old normalizer it rose instead.
+
+Prediction 4 is already confirmed; 1-3 need a trained net.
+
+**FIRST READ AT ep 600 (still very immature). Prediction 2 confirmed hard,
+prediction 1 half-failed, and MY PREDICTION WAS PARTLY THE WRONG METRIC.**
+
+| | old net (Giant deck) | ep-600 net (2.6) |
+|---|---|---|
+| P(nothing affordable) | 73.9% | **52.9%** |
+| mean elixir | 2.25 | **1.84** (went DOWN) |
+| P(play) overall | 0.105 | **0.237** |
+| P(play \| affordable), no threat → HUGE | 0.3655 → 0.4719 | **0.4606 → 0.8601** |
+
+**Prediction 2 is the real result.** The defensive reflex went from a 29%
+relative rise across the threat range to an 87% rise ending at **0.86** — the
+agent now plays a card on 86% of decisions where it can afford one during a big
+push. That was the symptom being chased and it is gone.
+
+**Prediction 1's "mean elixir rises" was a BAD PREDICTION and it failed.** Mean
+elixir is not deck-invariant: 2.6 Hog Cycle has two 1-cost cards, so
+"affordable" is satisfied at 1 elixir and the agent can correctly hold less
+while having MORE options. The deck-invariant version of the claim —
+P(nothing affordable) — improved 73.9% → 52.9%. Use that one; do not compare
+mean elixir across decks.
+
+**THE HONEST LIMIT, stated because the numbers above are otherwise
+over-readable: the entropy fix and the deck change landed TOGETHER, so this
+comparison cannot attribute the improvement to either one.** A cheaper deck
+alone would raise P(play) and lower P(nothing affordable). The clean
+attribution needs a from-scratch control arm on 2.6 with
+`new_ent_card / log(n_legal)` reverted — ~28 h — and nothing here substitutes
+for it. What IS unconfounded is the mechanism: the old divisor scores a
+literal coin flip at 0.413 against a 0.35 target, which is arithmetic, not a
+measurement.
+
+One more early read, same caveat: Musketeer at ep 600 already preserves
+**+458 HP** vs a random legal cell (CI [+329, +583], 276 better / 161 worse)
+against the shipped net's +297 — but on a different deck, so not comparable.
+
+**And the fresh run makes the defect legible in one number.** At ep ~180 the
+untrained policy measures `Policy/Entropy_Card_Frac` = **0.958** — 95.8% of its
+REACHABLE maximum, i.e. very nearly a coin flip, correctly far above the 0.35
+target, so the controller drives the coefficient down to its 0.01 floor.
+
+Under the OLD divisor that same uniform policy would have read
+`0.958 × log(2)/log(5) = 0.413`. **A policy that is flipping a literal coin on
+"play or wait" scored 0.413 against a 0.35 target — i.e. the old controller
+considered near-maximum randomness to be roughly correct, and pushed UP from
+there.** That single comparison is the whole bug.
+
+Both heads now read on a scale where **1.0 means uniform over the legal arms**,
+which is what makes the target interpretable at all. Placement reads 0.996
+against its 0.649 annealed start, also correctly falling.
+
+**RUN 1 PROGRESS, and an alarm I raised and then measured away.** The
+from-scratch 2.6 run cleared the mirror phase fast — stage gates at ep 1,615 /
+2,778 / 3,588 / 6,216 (opp elixir 1.0 → 1.4), then **phase advanced to
+`random_opponent` at ep 6,373** on a 0.60 mirror win rate. Handoff to
+`train_selfplay.py` scheduled at ep 11,373 (a 5,000-episode random-deck budget,
+NOT the 40,000 cap this file used to name — the budget is what fires first).
+
+Perfect defense, same checkpoint (ep 6,053), two opponent strengths:
+
+| | @1.0x | @1.4x (live difficulty) |
+|---|---|---|
+| win rate | 1.000 | 0.700 |
+| tower HP left \| WIN | 0.939 | 0.661 |
+| flawless wins | **47.5%** | **0.0%** |
+| crowns conceded \| win | 0.025 | 0.571 |
+
+`W_FLAWLESS_DEFENSE` is measurably shaping behaviour (0.820 → 0.939 HP on wins
+between ep 2,523 and 6,053 at matched 1.0x), **but zero flawless wins at 1.4x**
+— the "zero tower damage" standard is currently a property of facing a weak
+opponent, not a learned skill. Do not quote the 1.0x number alone; it is
+saturated at win rate 1.000.
+
+**THE ALARM: three of eight cards fell to near-zero usage — Hog 0.8%, Fireball
+0.6%, Cannon 1.6% — the same three ROLES (win condition, spell, building) that
+collapsed in the Giant deck.** That shape is why it looked structural.
+
+**IT IS NOT THE PLACEMENT COLLAPSE. Measured, `prove_hog.py` (new), n=2,552
+paired states, enemy tower damage over 600 ticks:**
+
+| | |
+|---|---|
+| policy cell | **470.3** |
+| random legal cell | 441.8 |
+| delta | **+28.5**, 95% CI [+6.3, +51.7], 826 better / 734 worse |
+| placement | modal (0,12) at **4.7%**, **155 distinct cells** |
+
+Better than chance, and the dynamism is the **healthiest a win condition has
+ever measured here** — against v1.2.0's Giant at 38 cells / 49.7% modal and the
+cured net's 140 / 24.7%. A frozen head returns one cell; this one uses 155. So
+the low usage is a **card-head VALUATION, not a broken placement function**, and
+the documented response applies: do not force it. Forcing Fireball once dropped
+win rate 97% → 23% because the low weighting was correct.
+
+What stays open is whether the valuation is OPTIMAL. +28.5 on a base of 442 is
+only +6.5% over random, so the Hog is placed better than chance but not
+strongly. That question needs a forced-usage A/B, which is exactly the
+experiment whose last outcome was "the policy was right".
+
+**Two things this audit did NOT fix, stated so they are not mistaken for
+solved.** `skip_frames = 10` (one decision per second) is a harder ceiling for
+2.6 Hog Cycle than it was for Giant beatdown — pulling a Hog with a Cannon and
+timing an Ice Spirit are sub-second decisions — and it was left alone because
+changing it is an unmeasured throughput/precision trade, not because it is
+fine. And the observation still carries **no card-cycle information**, which is
+the single most deck-specific gap: 2.6 is *defined* by cycling back to Hog
+faster than the opponent cycles their answer, and the net can see only the 4
+cards in hand.
+
 ---
 
 ## Measured baselines — use these, don't re-derive them
@@ -1697,7 +2083,7 @@ Run its tests with:
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ```
 
-58 tests, none requiring an emulator — they run against frozen replay
+344 tests (343 pass, 1 skipped), none requiring an emulator — they run against frozen replay
 fixtures, a synthetic camera, or video generated at test time.
 
 ---

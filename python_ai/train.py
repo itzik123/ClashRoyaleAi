@@ -121,6 +121,85 @@ W_ELIXIR_OVERFLOW = 0.1
 # the chip damage.
 DRAW_PENALTY = 1.0
 
+# --- the "perfect defense" standard --------------------------------------
+# Paid ONLY on a win, scaled by the fraction of our own tower HP still
+# standing: a flawless win pays 1 + W_FLAWLESS_DEFENSE, a win that gave up
+# both Princess towers pays barely more than 1.
+#
+# WHY IT IS SHAPED THIS WAY, and it is the whole design. The tower term in
+# compute_shaping() is LINEAR and SYMMETRIC -- 100 HP chipped off the enemy
+# pays exactly what 100 HP taken costs -- so the reward is indifferent between
+# "trade 500 for 500" and "take 0, deal 0". "Zero tower damage is the standard"
+# is simply not expressible in it.
+#
+# The obvious alternative, weighting damage TAKEN above damage DEALT, is the
+# one thing that must NOT be done here: this file already records that
+# policy-invariant tower shaping left PURE DEFENCE as the true optimum and
+# win-condition usage decayed to 0.7% over 8,300 episodes. Tilting the
+# per-step trade further toward defence walks straight back into that.
+#
+# Gating on the WIN is what makes this safe. A turtle that stalls into a
+# timeout collects nothing and still pays DRAW_PENALTY; a policy that loses
+# collects nothing. So the term cannot reorder win/loss/draw at all -- it can
+# only rank WINS against each other, which is exactly "among the policies that
+# win, prefer the ones that took no damage".
+#
+# NOT potential-based, and therefore biasing by construction -- the same
+# eyes-open trade as W_TOWER_DESTROYED, stated rather than hidden.
+W_FLAWLESS_DEFENSE = 0.5
+
+# Require the win to be DECISIVE -- at least one enemy tower actually
+# destroyed -- before the flawless bonus pays. Added 2026-08-17, and it is a
+# correction to the term above rather than an extension of it.
+#
+# The original gate was "any win", argued safe because a turtle that stalls
+# into a timeout collects nothing. That argument was incomplete. Against a weak
+# opponent the agent wins ~100% of games anyway, so "win" is nearly free, and
+# conditional on winning the ONLY remaining gradient was preserve-tower-HP --
+# i.e. never spend elixir on offence. The arithmetic is stark: conceding one
+# Princess costs 2534/9076 of the bonus = 0.140 reward, while a fully
+# successful Hog pays 0.5 * 470/4008 = 0.059 through tower_potential. The term
+# punished a defensive slip 2.4x harder than a perfect attack paid.
+#
+# Measured consequence at ep 6,053: Hog Rider fell to 0.8% of plays, Fireball
+# 0.6%, Cannon 1.6%, with 78.6% of all plays on four cheap defensive cards --
+# and prove_hog.py showed the Hog's PLACEMENT was fine (+28.5 over a random
+# legal cell, 155 distinct cells), so this was a valuation shift, not a broken
+# head. That is the "lazy local optimum" this gate exists to close.
+#
+# Requiring a crown makes the two terms ALIGNED instead of opposed: you must
+# attack to collect, and you are still paid for keeping your own towers. It is
+# also what "perfect defense" means in Clash -- take a crown, give none.
+FLAWLESS_REQUIRES_CROWN = True
+
+# --- teach the deck's WIN CONDITION that it is the win condition -----------
+# Extra reward per point of damage dealt BY the win-condition card, on top of
+# the tower term every source of damage already earns.
+#
+# WHY THIS FORM. The alternative on the table was forcing the card head toward
+# the Hog. That is the thing this project has already measured to be harmful:
+# forcing Fireball usage dropped win rate 97% -> 23%, because the low weighting
+# was a CORRECT valuation. This term never touches the action distribution. It
+# is OUTCOME-GATED -- a Hog thrown into a PEKKA deals no damage and earns
+# nothing -- so unlike forced usage it cannot pay for a suicide. It pays only
+# for a win condition that actually connected.
+#
+# SIZING, from the same arithmetic as FLAWLESS_REQUIRES_CROWN. A connecting Hog
+# deals ~470-630 damage. At 1.0 this adds ~470/4008 = 0.117, so a successful
+# Hog is worth ~0.176 all-in against the 0.140 that conceding a Princess costs.
+# That is deliberately just past break-even, not overwhelming: the point is to
+# make the win condition WORTH PLAYING, not to make it worth spamming.
+#
+# THIS IS NOT POTENTIAL-BASED AND THEREFORE BIASES THE OPTIMUM BY CONSTRUCTION.
+# That is the point and it is the cost: a policy-invariant version could not
+# change a valuation, which is the entire objective here. The honest reading is
+# that we are asserting the Hog is worth more than this engine's return says it
+# is, because a 2.6 agent that never plays its win condition cannot transfer to
+# a real opponent. It should be ANNEALED TOWARD ZERO once Hog usage recovers --
+# see W_SPELL_VALUE_START, whose anneal sat dead for a whole training era.
+# Every win rate earned under this is not comparable to one earned without it.
+W_WIN_CONDITION_DAMAGE = float(os.environ.get("CLASH_W_WINCON_DAMAGE", 1.0))
+
 # Historical self-play (pipeline #2, train_selfplay.py) needs a library of past
 # versions of this same policy to play against, weakest to strongest -- these
 # are saved here as bare weights-only snapshots (never resumed-from for further
@@ -220,6 +299,60 @@ MAX_BUILDING_HP = clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP
 # a single skip_frames-wide step (at most one or two card plays), keeping this
 # term's per-step magnitude comparable to the HP-normalized damage terms above.
 MAX_ELIXIR_PER_STEP = 10.0
+
+
+def _own_tower_hp_total():
+    """Total starting HP across our three towers, READ FROM THE ENGINE.
+
+    Denominator for the flawless-defense bonus (W_FLAWLESS_DEFENSE). Taken
+    from a fresh board's own appended tower scalars rather than written as
+    2*2534 + 4008: CLAUDE.md's rule about second copies of engine constants,
+    and the tower HPs are exactly the kind of number a balance pass moves.
+    The scalars are hp / MAX_BUILDING_HP, so multiplying back recovers points.
+    """
+    E = clash_royale_env.ClashRoyaleEnv
+    probe = E(list(range(8)), list(range(8)), 100)
+    obs = np.asarray(probe.reset(), dtype=np.float32)
+    tail = probe.observation_size() - E.NUM_EXTRA_SCALARS
+    # tail layout: 0 time | 1-2 elixir spent | 3-5 OWN king/left/right | 6-8 enemy
+    return float(obs[tail + 3:tail + 6].sum()) * E.MAX_BUILDING_HP
+
+
+OWN_TOWER_HP_TOTAL = _own_tower_hp_total()
+
+
+def flawless_defense_bonus(dones, step_rewards, stats, prev_stats,
+                           w=None):
+    """The 'perfect defense' term: rank WINS by how little we gave up.
+
+    Returns (num_envs,) float32, zero everywhere except on a step that ENDED a
+    won episode, where it is w * (fraction of our own tower HP still standing).
+
+    Gated on the win on purpose -- see W_FLAWLESS_DEFENSE. A stalled timeout
+    collects nothing and still pays DRAW_PENALTY, a loss collects nothing, so
+    this cannot reorder win/loss/draw; it only separates a clean win from a
+    scraped one.
+
+    np.maximum(prev, cur) rather than cur: on a done step the vector env has
+    already auto-reset, so the cumulative counter may read 0 for the NEW
+    episode. Both counters are monotone WITHIN an episode, so the running max
+    is exactly "the most damage this finished episode ever recorded" whichever
+    of the two the info dict happens to carry -- the same reasoning behind
+    compute_shaping's delta() clamp.
+    """
+    if w is None:
+        w = W_FLAWLESS_DEFENSE
+    is_win = dones & (step_rewards > 0.5)
+    if FLAWLESS_REQUIRES_CROWN:
+        # A win with all three enemy towers still standing is a timeout win on
+        # tower HP -- exactly the turtle this bonus must not pay. See
+        # FLAWLESS_REQUIRES_CROWN for the measured reason.
+        is_win = is_win & (np.asarray(stats["team1_towers_alive"]) < 3)
+    taken = stats["team1_tower_damage"]
+    if prev_stats is not None:
+        taken = np.maximum(prev_stats["team1_tower_damage"], taken)
+    hp_left = np.clip(1.0 - taken / OWN_TOWER_HP_TOTAL, 0.0, 1.0)
+    return (w * is_win.astype(np.float32) * hp_left.astype(np.float32)).astype(np.float32)
 
 # --- Lethal spell cycling (heuristic 2) -------------------------------------
 # Fireball's damage, read from the registry rather than copied, so a balance
@@ -496,7 +629,8 @@ def tower_potential(stats, w_bldg=W_BLDG):
 
 def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
                      w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW,
-                     w_tower=W_TOWER_DESTROYED, w_spell=W_SPELL_VALUE_START):
+                     w_tower=W_TOWER_DESTROYED, w_spell=W_SPELL_VALUE_START,
+                     w_wincon=W_WIN_CONDITION_DAMAGE):
     """
     Vectorized dense-reward shaping term based on per-step damage-dealt and
     elixir-spent deltas, read from the engine's authoritative MatchStatistics
@@ -577,11 +711,21 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     solvency = (solvency_shaping(stats, prev_stats, gamma, w=SOLVENCY_COEF)
                 if SOLVENCY_ENABLED else 0.0)
 
+    # WIN-CONDITION damage, on top of the tower term it already earns. Plain
+    # delta of a cumulative counter, clamped >=0 by delta() for the same
+    # post-autoreset reason as every other counter here. Deliberately NOT
+    # potential-based -- see W_WIN_CONDITION_DAMAGE. Contributes exactly zero
+    # for a deck with no building-targeter, where the key is absent.
+    wincon_damage = (delta("team0_wincon_damage") / MAX_BUILDING_HP
+                     if "team0_wincon_damage" in stats and "team0_wincon_damage" in prev_stats
+                     else 0.0)
+
     shaping = (tower_shaping
                + lethal_shaping
                + spell_value_shaping(stats, prev_stats, w_spell)
                + solvency
                + tower_events
+               + w_wincon * wincon_damage
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
                - w_overflow * overflow)
@@ -1449,6 +1593,11 @@ def train_ppo():
                 # than a phantom three-crown swing.
                 "team0_towers_alive": infos.get("team0_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
                 "team1_towers_alive": infos.get("team1_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
+                # Win-condition damage -- see W_WIN_CONDITION_DAMAGE. Zeros
+                # default for the same reason every other counter here does:
+                # compute_shaping's delta() clamp turns a missing key into a
+                # contribution of exactly 0, not a spurious spike.
+                "team0_wincon_damage": infos.get("team0_wincon_damage", zeros),
             }
 
             # Dense shaping term. On the step right after an episode ended, the vector env
@@ -1465,7 +1614,11 @@ def train_ppo():
             shaping = compute_shaping(stats, prev_stats, gamma=gamma,
                                       w_spell=spell_value_weight(episodes_completed))
             shaping = shaping * (1.0 - prev_dones)
-            shaped_rewards = step_rewards + shaping - draw_penalty
+
+            # "Perfect defense" -- see flawless_defense_bonus.
+            flawless_bonus = flawless_defense_bonus(dones, step_rewards,
+                                                    stats, prev_stats)
+            shaped_rewards = step_rewards + shaping - draw_penalty + flawless_bonus
             ep_rewards += shaped_rewards
             ep_shaping += shaping
             ep_steps += 1
@@ -1892,6 +2045,40 @@ def train_ppo():
                 new_ent_card = card_dist_t.entropy()
                 new_ent_place = place_dist_t.entropy()
 
+                # --- normalize each head by the entropy it can ACTUALLY reach.
+                #
+                # Both distributions are already masked to their legal arms, so
+                # the most entropy a step can carry is log(n_legal) -- never
+                # log(total arms). Dividing by the total is the same class of
+                # defect as the exploiter's raw-nats coefficient and the no-op
+                # placement average: a normalizer that does not hold in the
+                # regime being measured.
+                #
+                # MEASURED on model_weights_cured.pth, 706 decision steps:
+                # 54.1% of them leave exactly TWO legal card arms (one
+                # affordable card + the no-op), where the reachable maximum is
+                # log(2) = 0.693 nats. The controller's target of
+                # 0.35 * log(5) = 0.5633 nats is 81.3% of that -- so on the
+                # majority of decisions it demanded the play/wait choice be
+                # near a coin flip. It then READ 0.3125 against its 0.35 target
+                # and kept RAISING the coefficient, while the policy's real
+                # randomness was 0.4906 of reachable.
+                #
+                # Downstream: elixir gets spent the instant it is affordable,
+                # mean elixir sits at 2.25/10, and nothing is affordable on
+                # 73.9% of steps -- rising to 78.5% during a big push, i.e.
+                # worst exactly when defending matters. P(play) measured FLAT
+                # against threat (0.1008 with no threat, 0.1016 under the
+                # largest), which reads as "defensive apathy" and is really
+                # bankruptcy imposed by this regularizer.
+                #
+                # clamp(min=2) only guards log(1)=0; rows with a single legal
+                # arm carry zero entropy and are excluded by mb_decision anyway.
+                n_card_legal = card_mask_seq.sum(-1).clamp(min=2).float()
+                n_place_legal = torch.isfinite(pl_seq).sum(-1).clamp(min=2).float()
+                new_ent_card = new_ent_card / torch.log(n_card_legal)
+                new_ent_place = new_ent_place / torch.log(n_place_legal)
+
                 mb_adv = adv_norm_seq[tt, ee]
                 mb_ret = returns_seq[tt, ee]
                 mb_old_logprobs = old_logprobs_seq[tt, ee]
@@ -1977,8 +2164,10 @@ def train_ppo():
                 coverage_hits.append(float(cov_n))
                 # Each head normalized by its own maximum, then weighted -- see
                 # the LOG_N_CARD comment above for why the raw sum was wrong.
-                entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
-                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
+                # ent_*_mean are ALREADY fractions of each head's reachable
+                # maximum (divided per-step above), so no second division here.
+                entropy_bonus = (ent_coef_card * ent_card_mean
+                                 + ent_coef_place * ent_place_mean)
                 # entropy_bonus already carries its per-head coefficients.
                 # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
                 # reason the critic loss is: phantom auto-reset steps carry an
@@ -2029,8 +2218,10 @@ def train_ppo():
         mean_ent_card = np.mean(ent_card_log)
         mean_ent_place = np.mean(ent_place_log)
         # --- entropy controller step (see ENTROPY_TARGET_* above) ---
-        card_frac = mean_ent_card / LOG_N_CARD
-        place_frac = mean_ent_place / LOG_N_PLACEMENT
+        # Already per-step fractions of the REACHABLE maximum -- see the
+        # normalization block in the update loop.
+        card_frac = mean_ent_card
+        place_frac = mean_ent_place
         ent_target_place = placement_entropy_target(episodes_completed)
         ent_coef_card = float(np.clip(
             ent_coef_card * math.exp(ENTROPY_ADAPT_RATE * (ENTROPY_TARGET_CARD - card_frac)),
@@ -2042,8 +2233,8 @@ def train_ppo():
         writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
         writer.add_scalar("Loss/Entropy_Card", mean_ent_card, episodes_completed)
         writer.add_scalar("Loss/Entropy_Placement", mean_ent_place, episodes_completed)
-        writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card / LOG_N_CARD, episodes_completed)
-        writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place / LOG_N_PLACEMENT, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place, episodes_completed)
         writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
         # Auxiliary elixir head, reported in ELIXIR UNITS so it is directly
         # interpretable: MAE is "how many elixir off is our estimate of what

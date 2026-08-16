@@ -37,6 +37,26 @@ from contracts import GameState, Phase, TowerObservation, UnitObservation
 DECK = [10, 1, 41, 25, 7, 2, 6, 5]
 FULL = TowerObservation(hp_fraction=1.0, hp_measured=True)
 
+# Passed EXPLICITLY to every env built here, and that is the whole point.
+#
+# There are three different "default" match lengths in this project and they do
+# not agree: ClashEnv.h's C++ constructor default is 3600, bindings.cpp's
+# pybind default is **1800**, and gym_wrapper -- the thing that actually trains
+# the policy -- passes 3600. A bare `ClashRoyaleEnv(DECK, DECK)` from Python
+# therefore silently gets a HALF-LENGTH match.
+#
+# That mattered here because the observation's time scalar is
+# currentTick / maxTicks. These round-trip tests used the bare constructor, so
+# they pinned perception_encoder to the 1800 binding default -- and the encoder
+# had been written to match, dividing by 1800 while the policy it feeds was
+# trained against 3600. The live agent's clock ran at twice the rate it had
+# learned, and every simulator metric was blind to it because nothing in the
+# simulator path uses perception_encoder.
+#
+# These tests ask "does encode() reproduce the engine's observation", so they
+# have to ask it in the configuration the policy is actually trained in.
+TRAINING_MAX_TICKS = 3600
+
 
 @pytest.fixture(scope="module")
 def enc(engine):
@@ -87,7 +107,7 @@ def _state_from_board(enc, env, injected_ids):
 
 
 def _engine_with(engine, injects):
-    env = engine.ClashRoyaleEnv(DECK, DECK)
+    env = engine.ClashRoyaleEnv(DECK, DECK, TRAINING_MAX_TICKS)
     env.reset()
     for card_id, x, y, team in injects:
         env.inject(card_id, float(x), float(y), team)
@@ -96,7 +116,7 @@ def _engine_with(engine, injects):
 
 
 def test_observation_size_matches_the_engine(enc, engine):
-    env = engine.ClashRoyaleEnv(DECK, DECK)
+    env = engine.ClashRoyaleEnv(DECK, DECK, TRAINING_MAX_TICKS)
     env.reset()
     assert enc.OBSERVATION_SIZE == env.observation_size()
 

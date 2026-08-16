@@ -19,6 +19,7 @@ import clash_royale_env
 import gym_wrapper
 from gym_wrapper import (
     DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS, _to_scalar, train_FIREBALL_ID,
+    WIN_CONDITION_ID,
 )
 from model import MicroRoyaleNet
 from train import (
@@ -27,6 +28,7 @@ from train import (
     DRAW_PENALTY, load_state_dict_flexible,
     PLACEMENT_COVERAGE_COEF, placement_coverage_slots,
     spell_value_weight,
+    W_FLAWLESS_DEFENSE, OWN_TOWER_HP_TOTAL, flawless_defense_bonus,
 )
 import advisor_target as AT
 import exploiter as exploiter_mod
@@ -1268,6 +1270,13 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # compute_shaping() -- see W_TOWER_DESTROYED.
             "team0_towers_alive": self.game.get_towers_alive(0),
             "team1_towers_alive": self.game.get_towers_alive(1),
+            # Cumulative damage by the deck's win condition -- input to
+            # compute_shaping's win-condition term. Pipeline 2 builds its
+            # ClashRoyaleEnv directly rather than through gym_wrapper, so this
+            # key has to be supplied here too or the term silently contributes
+            # zero for the whole of self-play.
+            "team0_wincon_damage": (self.game.get_damage_dealt_by_card(WIN_CONDITION_ID, 0)
+                                    if WIN_CONDITION_ID is not None else 0),
             # Supervision target for the auxiliary elixir head -- see the
             # identical key in gym_wrapper.MicroRoyaleEnv.step()'s info dict
             # and MicroRoyaleNet.predict_opp_elixir. Hidden information, so it
@@ -1966,6 +1975,8 @@ def train_selfplay_ppo():
                 # than a phantom three-crown swing.
                 "team0_towers_alive": infos.get("team0_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
                 "team1_towers_alive": infos.get("team1_towers_alive", np.full(num_envs, 3, dtype=np.int64)),
+                # Win-condition damage -- see train.W_WIN_CONDITION_DAMAGE.
+                "team0_wincon_damage": infos.get("team0_wincon_damage", zeros),
             }
 
             # Which envs ACTUALLY got a card down this step. The engine silently
@@ -2005,7 +2016,12 @@ def train_selfplay_ppo():
             shaping = compute_shaping(stats, prev_stats, gamma=gamma,
                                       w_spell=spell_value_weight(episodes_completed))
             shaping = shaping * (1.0 - prev_dones)
-            shaped_rewards = step_rewards + shaping - draw_penalty
+
+            # "Perfect defense" -- the SAME function train.py calls, not a
+            # second copy of the arithmetic.
+            flawless_bonus = flawless_defense_bonus(dones, step_rewards,
+                                                    stats, prev_stats)
+            shaped_rewards = step_rewards + shaping - draw_penalty + flawless_bonus
             ep_rewards += shaped_rewards
             ep_shaping += shaping
             ep_steps += 1
@@ -2422,6 +2438,36 @@ def train_selfplay_ppo():
                 new_ent_card = card_dist_t.entropy()
                 new_ent_place = place_dist_t.entropy()
 
+                # --- normalize each head by the entropy it can ACTUALLY reach.
+                #
+                # The per-card diagnostic below (place_frac_elem) has always
+                # divided by log(n_legal) and its comment already gives the
+                # reason: "a spell sees 588 cells, a plain troop 242, the
+                # Cannon 208 ... a raw nat count is not comparable". The
+                # OBJECTIVE and the CONTROLLER never got the same treatment --
+                # they divided by log(total arms) instead, which is a ceiling
+                # no masked step can reach.
+                #
+                # It matters most on the card head. MEASURED on
+                # model_weights_cured.pth over 706 decision steps: 54.1% leave
+                # exactly two legal arms (one affordable card + the no-op),
+                # where the reachable maximum is log(2) = 0.693 nats, so the
+                # 0.35 * log(5) = 0.5633 target is 81.3% of it -- the play/wait
+                # decision was being held near a coin flip on the majority of
+                # decisions. The controller read 0.3125 against its 0.35 target
+                # and kept RAISING the coefficient while the policy's real
+                # randomness was 0.4906 of reachable. Consequence: elixir spent
+                # on sight, mean elixir 2.25/10, nothing affordable on 73.9% of
+                # steps (78.5% under a big push), and P(play) FLAT against
+                # threat -- 0.1008 with no threat vs 0.1016 under the largest.
+                #
+                # clamp(min=2) only guards log(1)=0; single-arm rows carry zero
+                # entropy and are excluded by mb_decision regardless.
+                n_card_legal = card_mask_seq.sum(-1).clamp(min=2).float()
+                n_place_legal = torch.isfinite(pl_seq).sum(-1).clamp(min=2).float()
+                new_ent_card = new_ent_card / torch.log(n_card_legal)
+                new_ent_place = new_ent_place / torch.log(n_place_legal)
+
                 mb_adv = adv_norm_seq[tt, ee]
                 mb_ret = returns_seq[tt, ee]
                 mb_old_logprobs = old_logprobs_seq[tt, ee]
@@ -2484,8 +2530,11 @@ def train_selfplay_ppo():
                         # spell sees 588 cells, a plain troop 242, the Cannon
                         # 208 (placementRadius clearance), so a raw nat count is
                         # not comparable across cards.
-                        n_legal = torch.isfinite(pl_seq).sum(dim=-1).clamp(min=2)
-                        place_frac_elem = new_ent_place / torch.log(n_legal.float())
+                        # new_ent_place is ALREADY divided by log(n_legal) at
+                        # the top of this loop, so this is now the identity --
+                        # kept as a named alias so the per-card diagnostic below
+                        # keeps reading the same quantity it always did.
+                        place_frac_elem = new_ent_place
                         slot_ids = net.hand_card_ids(mb_obs_flat).view(
                             bptt_chunk, B, net.hand_size)
                         slot_ids = torch.cat(
@@ -2521,8 +2570,10 @@ def train_selfplay_ppo():
                 coverage_ents.append(float(cov_ent_frac))
                 coverage_kls.append(float(cov_kl))
                 coverage_hits.append(float(cov_n))
-                entropy_bonus = (ent_coef_card * ent_card_mean / LOG_N_CARD
-                                 + ent_coef_place * ent_place_mean / LOG_N_PLACEMENT)
+                # ent_*_mean are ALREADY fractions of each head's reachable
+                # maximum (divided per-step above), so no second division here.
+                entropy_bonus = (ent_coef_card * ent_card_mean
+                                 + ent_coef_place * ent_place_mean)
                 # entropy_bonus already carries its per-head coefficients.
                 # Auxiliary opponent-elixir loss. Masked by mb_valid for the same
                 # reason the critic loss is: phantom auto-reset steps carry an
@@ -2567,8 +2618,10 @@ def train_selfplay_ppo():
         mean_ent_card = np.mean(ent_card_log)
         mean_ent_place = np.mean(ent_place_log)
         # --- entropy controller step (see ENTROPY_TARGET_* above) ---
-        card_frac = mean_ent_card / LOG_N_CARD
-        place_frac = mean_ent_place / LOG_N_PLACEMENT
+        # Already per-step fractions of the REACHABLE maximum -- see the
+        # normalization block in the update loop.
+        card_frac = mean_ent_card
+        place_frac = mean_ent_place
         # Measured on the anneal clock SINCE THE LAST STALL RE-BOOST, not on
         # the raw episode counter. Until 2026-08-09 this read
         # episodes_completed, which made the stall re-boost dead code: the
@@ -2625,8 +2678,8 @@ def train_selfplay_ppo():
         writer.add_scalar("Policy/Entropy_Coef_Placement", ent_coef_place, episodes_completed)
         writer.add_scalar("Loss/Entropy_Card", mean_ent_card, episodes_completed)
         writer.add_scalar("Loss/Entropy_Placement", mean_ent_place, episodes_completed)
-        writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card / LOG_N_CARD, episodes_completed)
-        writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place / LOG_N_PLACEMENT, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Card_Frac", mean_ent_card, episodes_completed)
+        writer.add_scalar("Policy/Entropy_Placement_Frac", mean_ent_place, episodes_completed)
         writer.add_scalar("Loss/Total", mean_total_loss, episodes_completed)
         # Auxiliary elixir head, reported in ELIXIR UNITS so it is directly
         # interpretable: MAE is "how many elixir off is our estimate of what

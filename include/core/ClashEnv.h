@@ -680,6 +680,25 @@ public:
     float getElixirSpentOnCard(int cardId, int team) const {
         return game.getStatistics().elixirSpentByCard(cardId, team);
     }
+    // Total damage one card has dealt, cumulative this match. Already tracked
+    // by DamageCollector::byCard; this only exposes it, so nothing about the
+    // simulation changes.
+    //
+    // Added 2026-08-17 for the win-condition damage term in train.py. The
+    // reward needs "how much has the WIN CONDITION hurt them", and the two
+    // existing accessors cannot express it: towerDamageDealt is per TEAM (it
+    // cannot tell a Hog's damage from a Musketeer's) and damageByTargetType is
+    // per target class (it cannot tell WHICH card did it).
+    //
+    // NOTE what this is and is not: it is damage by that card to ANYTHING, not
+    // tower damage specifically. For a BuildingTargeter win condition
+    // (Hog Rider, Giant, Balloon...) the two nearly coincide, because such a
+    // unit only ever attacks buildings -- the only contamination is an enemy
+    // DEPLOYED building (a Cannon it chews through on the way). Using it for a
+    // card that attacks troops would measure something quite different.
+    int getDamageDealtByCard(int cardId, int team) const {
+        return game.getStatistics().damageDealtByCard(cardId, team);
+    }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
 

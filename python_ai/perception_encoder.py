@@ -83,6 +83,14 @@ OBSERVATION_SIZE = SPATIAL_SIZE + SCALAR_SIZE
 # See the module docstring. Not an anonymous 0.0.
 OPP_SPEND_WHEN_UNMEASURED = 0.0
 
+# The `max_ticks` the policy is TRAINED with (gym_wrapper.MicroRoyaleEnv's
+# default, and ClashEnv's own constructor default). The time scalar has to be
+# normalised by this and not by the real game's 1800-tick regular time, or the
+# deployed net reads a clock running at twice the rate it learned. Not an
+# engine constant -- it is a constructor argument -- so it lives here as a
+# named literal rather than a binding lookup.
+TRAINING_MAX_TICKS = 3600.0
+
 # Deck used only to stand an env up for probing; any legal deck works.
 _PROBE_DECK = [10, 1, 41, 25, 7, 2, 6, 5]
 _PROBE_CELL = (9, 8)          # x, y -- middle of our own half, away from towers
@@ -335,7 +343,22 @@ def encode(state, *, card_table_=None) -> np.ndarray:
             obs[onehot + card_id] = 1.0
 
     e = s + 1 + HAND_SIZE + HAND_SIZE * NUM_CARD_IDS
-    obs[e + 0] = min(state.seconds_elapsed * 10.0 / 1800.0, 1.0)
+    # TIME. Must use the SAME denominator the policy was trained against, which
+    # is the training env's maxTicks (3600), NOT the real game's 1800-tick
+    # regular time. The engine writes `currentTick / maxTicks`, so the net has
+    # only ever learned to read this scalar as "fraction of a 3600-tick match".
+    #
+    # This read 1800.0, i.e. the live clock ran 2x fast: at 90 real seconds the
+    # net was handed 0.50 where training would have shown it 0.25. That is a
+    # train/deploy mismatch on the one input TimeoutRules-style clock
+    # management depends on, and it is invisible in every simulator metric
+    # because the simulator never uses this file.
+    #
+    # TRAINING_MAX_TICKS mirrors gym_wrapper's `max_ticks` default. It is not
+    # bound (it is a constructor argument, not an engine constant), so it is
+    # hardcoded here with this comment naming its source -- the pattern
+    # perception/geometry.py uses for genuinely unbound values.
+    obs[e + 0] = min(state.seconds_elapsed * 10.0 / TRAINING_MAX_TICKS, 1.0)
     obs[e + 1] = min(state.my_elixir_spent / MAX_MATCH_ELIXIR, 1.0)
     opp_spend = (OPP_SPEND_WHEN_UNMEASURED if state.opp_elixir_spent is None
                  else min(state.opp_elixir_spent / MAX_MATCH_ELIXIR, 1.0))

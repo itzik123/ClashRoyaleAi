@@ -69,10 +69,16 @@ SETTLE_S = 1.2
 
 
 def screencap(adb: Path, path: Path) -> Image.Image:
-    raw = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
-                         capture_output=True, timeout=30).stdout
-    path.write_bytes(raw)
-    return Image.open(path).convert("RGB")
+    # Strip the adb daemon-start banner before writing OR decoding -- see
+    # match_nav.decode_screencap. This function saves the bytes and then reads
+    # the image back off disk, so an unstripped write corrupts both.
+    from match_nav import _PNG_MAGIC, decode_screencap  # noqa: PLC0415
+
+    p = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
+                       capture_output=True, timeout=60)
+    img = decode_screencap(p.stdout, p.returncode, p.stderr)
+    path.write_bytes(p.stdout[p.stdout.find(_PNG_MAGIC):])
+    return img
 
 
 def hand_of(state) -> list[str]:

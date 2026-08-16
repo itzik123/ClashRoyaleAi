@@ -56,13 +56,89 @@ TRAINING_CAMP = _to_display(322, 308)
 CONFIRM_OK = (486, 738)
 
 
-def screencap(adb: Path = ADB, serial: str | None = None) -> Image.Image:
+#: PNG signature. `raw` is scanned for this rather than assumed to start with
+#: it -- see decode_screencap.
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def decode_screencap(raw: bytes, returncode: int = 0,
+                     stderr: bytes = b"") -> Image.Image:
+    """Turn `adb exec-out screencap -p` stdout into an image.
+
+    THE BANNER GOES TO STDOUT, NOT STDERR. On the first invocation after the
+    adb daemon is down, HD-Adb.exe prepends
+
+        * daemon not running. starting it now on port 5037 *
+        * daemon started successfully *
+
+    to STDOUT -- 85 bytes ahead of the PNG, with stderr empty and the exit code
+    0. Handing that to PIL raises `UnidentifiedImageError: cannot identify
+    image file`, which reads like a corrupt capture or a broken emulator and is
+    neither. Measured 2026-08-16: warm stdout 1,262,367 bytes starting at the
+    magic; cold stdout 1,263,969 bytes with the magic at offset 85.
+
+    It only bites the FIRST adb call of a session, so it is invisible to anyone
+    who ran `adb devices` first -- which is why it survived: every interactive
+    debugging session warms the daemon before reaching this code.
+
+    Seeking the magic rather than stripping known banner text keeps this robust
+    to whatever else a future adb build decides to announce.
+    """
+    if returncode != 0:
+        raise RuntimeError(
+            f"adb screencap failed (exit {returncode}): "
+            f"{stderr.decode('utf-8', 'replace').strip() or 'no stderr'}")
+    start = raw.find(_PNG_MAGIC)
+    if start < 0:
+        head = raw[:200].decode("utf-8", "replace").strip()
+        raise RuntimeError(
+            f"adb screencap returned {len(raw)} bytes with no PNG signature. "
+            f"Is the emulator running and authorised? First bytes: {head!r}")
+    return Image.open(io.BytesIO(raw[start:])).convert("RGB")
+
+
+_daemon_warmed = False
+
+
+def _warm_daemon(adb: Path, serial: str | None) -> None:
+    """Start the adb daemon on its own, before any call whose stdout we parse.
+
+    Two problems, one fix. The daemon-start banner contaminates the first
+    call's STDOUT (decode_screencap handles that defensively), and a cold start
+    plus device enumeration was measured at well over 60 s -- long enough that
+    folding it into the capture turns a slow start into a TimeoutExpired
+    mid-navigation. `start-server` is idempotent and costs nothing warm, so
+    paying it once up front makes every subsequent capture fast AND clean.
+
+    Deliberately not raising on failure: `decode_screencap` produces the better
+    message ("Is the emulator running and authorised?") with the actual bytes
+    in hand, and duplicating the diagnosis here would give two different errors
+    for one cause.
+    """
+    global _daemon_warmed
+    if _daemon_warmed:
+        return
     cmd = [str(adb)]
     if serial:
         cmd += ["-s", serial]
-    raw = subprocess.run(cmd + ["exec-out", "screencap", "-p"],
-                         capture_output=True, timeout=30).stdout
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+    try:
+        subprocess.run(cmd + ["start-server"], capture_output=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError):
+        pass          # let the capture below produce the real diagnosis
+    _daemon_warmed = True
+
+
+def screencap(adb: Path = ADB, serial: str | None = None) -> Image.Image:
+    _warm_daemon(adb, serial)
+    cmd = [str(adb)]
+    if serial:
+        cmd += ["-s", serial]
+    # 60 s rather than 30: even behind _warm_daemon, the first capture after
+    # the emulator itself has just booted is slow, and the old 30 s was not
+    # measured against that case.
+    p = subprocess.run(cmd + ["exec-out", "screencap", "-p"],
+                       capture_output=True, timeout=60)
+    return decode_screencap(p.stdout, p.returncode, p.stderr)
 
 
 def tap(x: int, y: int, adb: Path = ADB, serial: str | None = None) -> None:

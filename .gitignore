@@ -397,3 +397,34 @@ replays_search/
 # Session working directories: isolated trainer CWDs and checkpoint backups
 _runs/
 _session_backup_*/
+
+# --- data / run artefacts (2026-08-17 housekeeping) ------------------------
+# NOTE ON *.json, deliberately NOT blanket-ignored: eight tracked .json files
+# are CONFIG or FROZEN TEST FIXTURES, not data --
+#   perception/config/profile_gpg_1920x1080.json   calibration profile
+#   perception/mapping/card_map.json               card id mapping
+#   perception/tests/assets/replay_ep1026.json     frozen replay fixture
+#   perception/config/templates/.../digits.json    OCR templates
+#   perception/tools/labels_549x976.json           hand labels
+#   CMakePresets.json / .vscode / .claude          build + editor config
+# Ignoring *.json wholesale would untrack all of them and break calibration,
+# card mapping and the perception suite. The DATA-shaped json already is
+# ignored by path (replays/, replays_e3/, replays_search/).
+*.jsonl
+replay_keep_26hog/
+
+# Tensorboard event files, wherever they land (runs/ already covers the usual
+# location; this catches a stray one written elsewhere).
+*.tfevents*
+events.out.tfevents*
+
+# Recorded video. perception/.gitignore already ignores assets/recordings/;
+# this is the belt-and-braces rule for anything captured outside it.
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# Training console logs from long runs (kept locally, regenerable output).
+training_*.log
+training_*.log.err

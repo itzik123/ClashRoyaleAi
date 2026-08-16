@@ -62,6 +62,12 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("card_id"), py::arg("team"))
         .def("get_elixir_spent_on_card", &ClashEnv::getElixirSpentOnCard,
              py::arg("card_id"), py::arg("team"))
+        // Cumulative damage dealt BY one card -- read by train.py's
+        // win-condition damage term. Pure accessor over a counter the engine
+        // already maintains; see ClashEnv::getDamageDealtByCard for what it
+        // does and does not measure.
+        .def("get_damage_dealt_by_card", &ClashEnv::getDamageDealtByCard,
+             py::arg("card_id"), py::arg("team"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
         // Surviving TOWER count (King + Princesses) for one team -- see
         // ClashEnv::getTowersAlive for why the Python reward needs this.
