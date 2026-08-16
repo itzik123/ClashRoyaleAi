@@ -120,19 +120,8 @@ def _import_engine():
     deliberate. Overwriting it mid-run is the one thing that could disturb a
     multi-hour training job, and perception has no business doing that.
     """
-    build_output = Path(__file__).resolve().parent.parent / "build_python" / "Release"
-    if build_output.is_dir() and str(build_output) not in sys.path:
-        # Prepended: this must win over python_ai/, which is already importable.
-        sys.path.insert(0, str(build_output))
-    try:
-        import clash_royale_env  # noqa: PLC0415
-    except ImportError as exc:                              # pragma: no cover
-        raise ImportError(
-            "could not import clash_royale_env. The .pyd is built for Python "
-            "3.11 and lives in python_ai/; run this with "
-            "perception/.venv-dml/Scripts/python.exe or py -3.11."
-        ) from exc
-    return clash_royale_env
+    import engine  # noqa: PLC0415
+    return engine.load()
 
 
 @dataclass(frozen=True)

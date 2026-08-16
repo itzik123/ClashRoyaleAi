@@ -78,6 +78,26 @@ class HandTracker:
     _disagree_run: int = 0
     _since_play: int = 10_000
 
+    def reset(self) -> None:
+        """Forget everything, for the start of a new match.
+
+        The FIFO is only meaningful within one match: a new battle deals a
+        fresh opening hand, so carrying the previous match's queue over means
+        every play advances a cycle that describes a game that already ended.
+        Re-seeding costs one consensus window; not re-seeding is wrong for the
+        whole match and self-corrects only through the desync path, which is
+        deliberately slow.
+        """
+        self.hand = []
+        self.queue = deque(maxlen=4)
+        self.seeded = False
+        self.plays_applied = 0
+        self.ambiguous = 0
+        self.desyncs = 0
+        self._recent.clear()
+        self._disagree_run = 0
+        self._since_play = 10_000
+
     def consensus(self) -> tuple[int, ...] | None:
         """The modal reading over the window, or None until it is full."""
         if len(self._recent) < self._recent.maxlen:

@@ -66,12 +66,96 @@ from live.action_gate import MAX_STALENESS_MS, ActionGate  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
+from live.hand_tracker import HandTracker  # noqa: E402
 from live.match_state import MatchState  # noqa: E402
 from live.pipeline import PerceptionWorker, Stages  # noqa: E402
 from live.placement_confirm import PlacementConfirmer  # noqa: E402
 
-DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
-        Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
+def _training_deck_ids() -> list[int]:
+    """`gym_wrapper.DEFAULT_DECK`, read from source rather than imported.
+
+    Importing it would pull in gymnasium and torch, which perception's venv
+    deliberately does not carry -- the module is self-contained with its own
+    requirements.txt. Parsing the assignment gets the SAME single source of
+    truth without the dependency, and without a second copy of the list living
+    over here where it can go stale (which is exactly what happened to the
+    hand-written CRBAB deck this replaces).
+
+    Deliberately strict: a DEFAULT_DECK that is missing, or is not a plain list
+    of int literals, raises. Guessing a deck is how the live loop ends up
+    playing cards the policy has never seen.
+    """
+    import ast  # noqa: PLC0415
+
+    source_path = (Path(__file__).resolve().parent.parent.parent
+                   / "python_ai" / "gym_wrapper.py")
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "DEFAULT_DECK"
+                   for t in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if not isinstance(value, list) or not all(isinstance(v, int) for v in value):
+            raise RuntimeError(
+                f"DEFAULT_DECK in {source_path} is not a list of int literals; "
+                "it can no longer be read without importing gym_wrapper.")
+        return value
+    raise RuntimeError(f"no DEFAULT_DECK assignment found in {source_path}")
+
+
+def _deck_from_training() -> list:
+    """The live deck, DERIVED from the deck the policy was trained on.
+
+    This used to be a hand-written list of CRBAB cards, and it was the Giant
+    deck long after training moved to 2.6 Hog Cycle -- three of eight cards in
+    common. Nothing detected it: the loop is internally consistent whatever the
+    list says, so the agent simply played a deck it had never seen, and the
+    affordability mask, the hand one-hots and every card-conditioned placement
+    were computed for the wrong cards.
+
+    Deriving it means the live deck cannot drift from `DEFAULT_DECK` again, and
+    a change upstream either follows automatically or fails LOUDLY here. That
+    is the same rule the rest of this project applies to engine constants: live
+    where derivable, never a second copy.
+
+    Raises rather than dropping an unmappable card. A short deck would leave
+    the agent permanently unable to play a slot it believes it holds, which is
+    far harder to spot than a startup failure.
+    """
+    from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
+
+    DEFAULT_DECK = _training_deck_ids()
+
+    by_sim_id = {}
+    for card in vars(Cards).values():
+        name = getattr(card, "name", None)
+        if not name or name == "blank":
+            continue
+        sim_id = hand_card_id_for(name)
+        # First writer wins: Evolutions reuse their base card's name verbatim,
+        # so a name can never identify a card on its own and the base entry is
+        # the one that matches what the registry hands back.
+        by_sim_id.setdefault(sim_id, card)
+
+    deck, missing = [], []
+    for sim_id in DEFAULT_DECK:
+        card = by_sim_id.get(sim_id)
+        if card is None:
+            missing.append(sim_id)
+        else:
+            deck.append(card)
+    if missing:
+        raise RuntimeError(
+            f"no CRBAB card image for simulator id(s) {missing} in "
+            f"DEFAULT_DECK. The live loop cannot read a hand it has no "
+            f"template for -- add the icon under "
+            f"clashroyalebuildabot/images/cards/ and a Cards entry for it.")
+    return deck
+
+
+DECK = _deck_from_training()
 
 # A defensive tile in our own half, in ENGINE coordinates. Deliberately fixed:
 # the point is to exercise the placement path, not to play well.
@@ -188,6 +272,35 @@ def deck_costs(deck) -> tuple[tuple[float, ...], list[str]]:
                 warnings.append(f"{card.name}: engine says {engine_cost:.0f}, "
                                 f"CRBAB says {crbab:.0f}")
     return tuple(sorted(costs)), warnings
+
+
+def deck_cost_by_sim_id(deck) -> dict[int, float]:
+    """simulator card id -> elixir cost, for HandTracker.
+
+    Separate from `deck_costs` because the two want different shapes for
+    different jobs: the ledger decomposes a DROP and so needs the distinct
+    costs, while the tracker has to answer "which card in hand cost 4?" and so
+    needs them per card. Both read the ENGINE registry, so they cannot disagree
+    about what a card costs -- which would be a second source of truth for the
+    number `affordability_mask` is gated on.
+    """
+    import clash_royale_env as engine  # noqa: PLC0415
+
+    from live.unit_to_card import (  # noqa: PLC0415
+        UNKNOWN_CARD_SIM_ID,
+        hand_card_id_for,
+    )
+
+    out: dict[int, float] = {}
+    for card in deck:
+        sim_id = hand_card_id_for(card.name)
+        if sim_id == UNKNOWN_CARD_SIM_ID:
+            continue
+        try:
+            out[sim_id] = float(engine.get_card_info(sim_id)["cost"])
+        except Exception:                                   # noqa: BLE001
+            out[sim_id] = float(card.cost)
+    return out
 
 
 def hand_cost(gs, slot: int) -> float | None:
@@ -582,7 +695,23 @@ def main() -> int:
     for warning in cost_warnings:
         print(f"  !! card cost: {warning}")
     print(f"deck costs: {', '.join(f'{c:.0f}' for c in costs)}")
+    # Printed in full because the live deck is DERIVED from the training deck
+    # and a mismatch between the two is invisible at runtime -- the loop is
+    # internally consistent whatever deck it holds. This line is what makes
+    # "the live environment matches the training environment" auditable rather
+    # than assumed.
+    print("deck (derived from gym_wrapper.DEFAULT_DECK): "
+          + ", ".join(c.name for c in DECK))
     ledger = ElixirLedger(costs=costs)
+
+    # THE HAND COMES FROM THE CYCLE, NOT THE SCREEN. Measured over this capture,
+    # the per-frame reading changes ~2.5x more often than cards are actually
+    # played, and 88% of its slot changes have no elixir drop behind them. The
+    # cycle is a strict 8-slot FIFO, so the play history determines the hand
+    # exactly, and plays are the thing we read WELL (the ledger recovered 27
+    # cards against an affordable ceiling of 28). See hand_tracker.py.
+    tracker = HandTracker(deck=tuple(_training_deck_ids()),
+                          costs=deck_cost_by_sim_id(DECK))
     gate = ActionGate(enforce_staleness=not args.ignore_staleness)
     # Independent of the ledger by construction -- see placement_confirm.py.
     # The ledger says whether the elixir trace reconciled; this says whether a
@@ -612,6 +741,10 @@ def main() -> int:
     # takes off-deck card reads from 7.8% to 0.5% and duplicates from 8.7% to
     # 1.7% -- a quarter of every capture is not a battle at all.
     match = MatchState()
+    # A new battle deals a fresh opening hand, so the previous match's FIFO
+    # describes a game that has ended. Re-seeding costs one consensus window;
+    # carrying it over is wrong for the whole match.
+    match.on_change(lambda in_match: tracker.reset() if in_match else None)
 
     def perceive(frame):
         """capture-frame -> (State, GameState). Runs on whichever thread owns
@@ -624,7 +757,9 @@ def main() -> int:
         t = stages.time("2 detector.run", t)
         if state is None:
             return None, None
-        if match.update(state.screen.name):
+        in_match = match.update(state.screen.name)
+        plays_before = len(ledger.plays)
+        if in_match:
             # The reading's own capture time, not now(): the ledger models how
             # much elixir regenerated between samples, and at this rate a
             # frame's worth of latency is a quarter of an elixir.
@@ -634,6 +769,24 @@ def main() -> int:
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
             my_elixir_spent=ledger.spent)
+
+        # THE HAND IS REPLACED BY THE TRACKER'S, not merged with it. The screen
+        # reading still feeds the tracker -- as the seed, as the tie-breaker
+        # between two in-hand cards of equal cost, and as the desync detector --
+        # but what the policy sees is the FIFO's answer.
+        #
+        # Only while in a match: the tracker advances on elixir drops, and
+        # outside a battle there is no elixir bar to drop.
+        if in_match:
+            tracker.update(tuple(getattr(gs, "my_hand", ()) or ()),
+                           ledger.plays[plays_before:])
+            # Until the consensus window fills, `as_tuple()` is four UNKNOWNs,
+            # which would mask every slot as unplayable and freeze the agent for
+            # the first ~25 frames of every match. The screen reading is the
+            # better estimate in exactly that window, so it stands until the
+            # tracker has actually seeded.
+            if tracker.seeded:
+                gs = replace(gs, my_hand=tracker.as_tuple())
         # OPTIMISTIC DEBIT. The bar the agent is reading is ~1 s old and its
         # last tap needs another ~0.9 s to land, so cards it has already
         # committed are still shown as affordable -- and it spends the same

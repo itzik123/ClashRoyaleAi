@@ -59,6 +59,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import engine as _engine_build  # noqa: F401 -- see engine.py; must precede
+                                # any `import clash_royale_env` in the process
 from contracts import BoardGeometry
 
 # GameManager.h: OWN_HALF_RIVER_BUFFER.

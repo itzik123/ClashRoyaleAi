@@ -36,6 +36,8 @@ import dataclasses
 import re
 from functools import lru_cache
 
+import engine as _engine_build  # noqa: F401 -- see engine.py; must precede
+                                # any `import clash_royale_env` in the process
 from contracts import UNKNOWN_CARD_SIM_ID
 
 # One unit, several possible parent cards. Chosen as the card that spawns the

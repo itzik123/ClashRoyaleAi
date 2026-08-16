@@ -25,12 +25,44 @@ class FakeCard:
     cost: int
 
 
-def test_the_current_deck_derives_the_costs_it_used_to_assume():
-    """Behaviour-preserving today. If this ever fails, the live loop's elixir
-    accounting changed meaning without anyone choosing that."""
+def test_the_current_deck_needs_costs_the_default_table_cannot_represent():
+    """This assertion INVERTED on 2026-08-17, and that is the result.
+
+    It used to read `costs == DEFAULT_COSTS`, because the Giant deck's profile
+    happened to be exactly the ledger's (3, 4, 5) default -- so the derivation
+    was behaviour-preserving and the live loop worked while depending on a
+    coincidence. Switching to 2.6 Hog Cycle broke the coincidence: Skeletons
+    and Ice Spirit cost 1, Ice Golem and The Log cost 2, and NONE of those is
+    representable in (3, 4, 5).
+
+    So four of eight cards would have been mis-booked -- not dropped, which
+    would at least be countable, but snapped to the nearest representable cost
+    by the tolerance, exactly as `test_the_default_table_misprices_a_cost_it
+    _cannot_represent` demonstrates. The derivation stopped being a tidiness
+    measure and became load-bearing on the day the deck changed.
+    """
     costs, warnings = deck_costs(DECK)
-    assert costs == DEFAULT_COSTS
+    assert costs == (1.0, 2.0, 3.0, 4.0)
+    assert costs != DEFAULT_COSTS, (
+        "the derivation is only load-bearing while these differ; if they have "
+        "converged again, this test has stopped proving anything")
     assert warnings == []
+
+
+def test_the_live_deck_is_the_deck_the_policy_TRAINED_on():
+    """The live loop played the Giant deck for a day after training moved to
+    2.6 Hog Cycle -- three of eight cards in common -- and nothing detected it,
+    because the loop is internally consistent whatever deck it holds.
+
+    Deriving the deck from gym_wrapper.DEFAULT_DECK is what makes that
+    impossible rather than merely unlikely, so the derivation is pinned here
+    against the ids rather than against a hand-written list, which would just
+    be the same second copy one level down.
+    """
+    from live.mvp_loop import _training_deck_ids  # noqa: PLC0415
+    from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
+
+    assert [hand_card_id_for(c.name) for c in DECK] == _training_deck_ids()
 
 
 def test_a_deck_with_an_unusual_cost_is_reflected_in_the_table():
