@@ -292,6 +292,73 @@ public:
         return (team == 0) ? playerAI.elixir : playerOpponent.elixir;
     }
 
+    // --- STATE-ESTIMATOR SETTERS (2026-08-17) ------------------------------
+    // Write a reconstructed live state into the simulator, so decision-time
+    // search evaluates the REAL position rather than a reset one.
+    //
+    // Why these have to exist. perception/ already reads our elixir accurately
+    // (587 samples, mean confidence 0.990) and reports the hand, but
+    // forecast.py rebuilds a board by calling reset() and injecting units --
+    // and reset() sets elixir to 5.0 and deals a hand from an UNSEEDED
+    // std::mt19937. So the reconstructed position had the right units and a
+    // fabricated hand/elixir, and `affordability_mask` is built from exactly
+    // those scalars. Search over it would score fiction. The existing
+    // workaround (perception/bridge/sim_driver.py) reverse-engineers the
+    // shuffle by drawing resets until the hand matches, which is expensive and
+    // only ever recovers the OPENING hand.
+    //
+    // Deliberately on GameManager and not on PlayerState alone: the hand and
+    // the deck queue are one invariant (together they are a permutation of the
+    // 8-card deck), and letting a caller set one without the other is how that
+    // invariant rots.
+    void setElixir(int team, float value) {
+        PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        // Same [0, 10] clamp tick() enforces -- a caller handing us 11 elixir
+        // (or a negative from a bad estimate) must not create a state the
+        // engine itself can never reach.
+        player.elixir = std::max(0.0f, std::min(value, 10.0f));
+    }
+
+    // Returns FALSE and changes nothing if `cards` is not a valid hand for
+    // this team's deck. Loudly rejecting is the point: perception's card
+    // identity is the least reliable reading it produces, and a silently
+    // accepted misread would put the policy in a position the real game is not
+    // in -- the exact failure mode this project keeps paying for.
+    //
+    // Rejects: wrong size, a duplicate, or a card that is not in this team's
+    // deck at all.
+    bool setHand(int team, const std::vector<int>& cards) {
+        PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        if (cards.size() != player.hand.size()) return false;
+
+        // The deck is whatever is currently in hand plus whatever is queued --
+        // read from the live state rather than from the original deck list, so
+        // this stays correct mid-match after any amount of cycling.
+        std::vector<int> pool(player.hand.begin(), player.hand.end());
+        pool.insert(pool.end(), player.deckQueue.begin(), player.deckQueue.end());
+
+        std::vector<int> remaining = pool;
+        for (int card : cards) {
+            auto it = std::find(remaining.begin(), remaining.end(), card);
+            if (it == remaining.end()) return false;   // not in deck, or duplicate
+            remaining.erase(it);
+        }
+
+        player.hand.assign(cards.begin(), cards.end());
+        // Queue keeps the relative order the remaining cards already had, so a
+        // caller that sets the hand to what it already was is a no-op on the
+        // cycle rather than a silent reshuffle.
+        player.deckQueue.assign(remaining.begin(), remaining.end());
+        // Cooldowns cleared, and this is a judgement call worth stating: a
+        // freshly-cycled slot is unplayable for 20 ticks, but perception cannot
+        // observe that. Zero is the permissive reading -- it can make search
+        // believe a card is playable ~2 s early, whereas a non-zero guess would
+        // make it refuse a play the real game allows. Refusing a legal play is
+        // the worse error for a policy that is already too passive.
+        player.handCooldownTicks.assign(player.hand.size(), 0);
+        return true;
+    }
+
     bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius, bool deployAnywhere = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);

@@ -68,6 +68,16 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // does and does not measure.
         .def("get_damage_dealt_by_card", &ClashEnv::getDamageDealtByCard,
              py::arg("card_id"), py::arg("team"))
+        // State-estimator WRITE interface -- lets perception/ push a
+        // reconstructed live state in, so decision-time search evaluates the
+        // real position instead of reset()'s 5.0 elixir and unseeded hand
+        // shuffle. set_hand returns False (and changes nothing) on a hand that
+        // is not a valid permutation of that team's deck; check it, because a
+        // silently accepted misread is worse than no update at all.
+        .def("set_elixir_for_team", &ClashEnv::setElixirForTeam,
+             py::arg("team"), py::arg("value"))
+        .def("set_hand_for_team", &ClashEnv::setHandForTeam,
+             py::arg("team"), py::arg("cards"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
         // Surviving TOWER count (King + Princesses) for one team -- see
         // ClashEnv::getTowersAlive for why the Python reward needs this.

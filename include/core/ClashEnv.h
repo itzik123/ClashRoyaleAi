@@ -651,6 +651,23 @@ public:
         return game.getHand(team);
     }
 
+    // The WRITE half of the estimator interface -- see GameManager::setElixir
+    // and setHand for the semantics and for why setHand can refuse.
+    //
+    // These complete the loop perception/ was missing: inject() could rebuild
+    // the BOARD, but elixir and the hand came from reset() and were therefore
+    // fabricated, which is what made decision-time search over a reconstructed
+    // state score fiction rather than the real position.
+    //
+    // Opponent elixir is hidden information on a real screen and is expected to
+    // be supplied from MicroRoyaleNet's auxiliary opponent-elixir head, which
+    // exists for exactly this and measures ~0.9 MAE against a
+    // predict-the-mean baseline of 1.35.
+    void setElixirForTeam(int team, float value) { game.setElixir(team, value); }
+    bool setHandForTeam(int team, const std::vector<int>& cards) {
+        return game.setHand(team, cards);
+    }
+
     void setOpponentDeck(const std::vector<int>& deck) {
         game.setOpponentDeck(deck);
     }
