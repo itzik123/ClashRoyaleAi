@@ -56,6 +56,7 @@ BOARD_W = CE.BOARD_WIDTH
 N_CH = CE.NUM_CHANNELS
 SPATIAL = N_CH * BOARD_H * BOARD_W
 MAX_TROOP_HP = CE.MAX_TROOP_HP
+MAX_MATCH_ELIXIR = CE.MAX_MATCH_ELIXIR   # normaliser for the two spend scalars
 MAX_CELL_UNITS = 5.0          # ClashEnv.h MAX_CELL_UNITS -- not bound; see below
 MAX_UNIT_SPEED = 1.5          # ClashEnv.h MAX_UNIT_SPEED -- not bound; see below
 # MAX_CELL_UNITS and MAX_UNIT_SPEED are the two normalizers ClashEnv.h uses that
@@ -264,6 +265,140 @@ def best_giant_cell(obs, legal=None):
                     if 0 <= cand < BOARD_W and flat[y * BOARD_W + cand]:
                         return float(cand), float(y), 0.0
     return float(x), float(y), 0.0
+
+
+# --------------------------------------------------------------------------
+# Hog Rider -- the 2.6 win condition
+# --------------------------------------------------------------------------
+# CardRegistry.h: id 15, cost 4, building-targeter. Hardcoded like every other
+# id in this file because tactics.py must not import gym_wrapper (that pulls in
+# gymnasium and torch, and this module is imported by the advisor target on the
+# rollout path). test_hog_id_matches_the_registry pins it.
+HOG_ID = 15
+HOG_COST = 4.0
+
+# Elixir kept back AFTER paying for the Hog, so a counter-push can still be
+# answered. 2.6's cheapest answers are Skeletons(1) and Ice Spirit(1), and the
+# Cannon(3) is the real one -- hence 3, not 1. A Hog that wins the race but
+# loses the tower behind it is not a good trade.
+HOG_DEFENSIVE_RESERVE = 3.0
+
+# Enemy HP already on our half above which we defend instead of committing.
+# MAX_TROOP_HP-normalised units, matching threat_level's scale.
+HOG_MAX_THREAT = 0.35
+
+# Estimated opponent elixir above which we do NOT commit. At 7+ they can answer
+# the Hog AND counter-push, which is the situation the rule exists to avoid.
+HOG_MAX_OPP_ELIXIR = 7.0
+
+# ELIXIR_REGEN_RATE from ClashEnv.h -- not bound, so hardcoded with the header
+# named, per this project's rule for constants that cannot be derived.
+ELIXIR_REGEN_RATE = 0.035
+STARTING_ELIXIR = 5.0
+MAX_ELIXIR = 10.0
+TRAINING_MAX_TICKS = 3600.0
+
+
+def elapsed_ticks(obs):
+    """Match time in ticks, from the extra-scalar tail.
+
+    Layout verified empirically against the engine: obs[-9] is elapsed time
+    normalised by max_ticks, obs[-8] OUR cumulative elixir spend and obs[-7]
+    the OPPONENT'S, both over MAX_MATCH_ELIXIR, then six tower HPs.
+    """
+    return float(np.asarray(obs, dtype=np.float32)[-9]) * TRAINING_MAX_TICKS
+
+
+def opp_elixir_estimate(obs, multiplier=1.0):
+    """Opponent's current elixir, inferred from income minus observed spend.
+
+    The observation carries their CUMULATIVE SPEND, not their bar, so this
+    reconstructs the bar: start + regen*time - spent, clamped to the range the
+    engine can reach.
+
+    KNOWN BIAS, stated because it decides which way the gate errs. `multiplier`
+    is the opponent's elixir multiplier, which the curriculum raises to 1.5 and
+    which the OBSERVATION DOES NOT CARRY. Left at 1.0 this UNDER-estimates their
+    elixir at higher stages, so the gate opens more often than it should exactly
+    where the opponent is strongest. That is the wrong direction, and it is why
+    HOG_MAX_OPP_ELIXIR is set well below the 10 cap rather than near it.
+
+    The net's own aux head estimates this to MAE ~0.96 and would be the better
+    source, but it is not available here: tactics.py takes an observation, not a
+    network, and the advisor target is computed on the rollout path where
+    threading the net through would change that contract.
+    """
+    a = np.asarray(obs, dtype=np.float32)
+    spent = float(a[-7]) * MAX_MATCH_ELIXIR
+    gained = STARTING_ELIXIR + ELIXIR_REGEN_RATE * elapsed_ticks(obs) * multiplier
+    return float(np.clip(gained - spent, 0.0, MAX_ELIXIR))
+
+
+def best_hog_cell(obs, legal=None):
+    """(x, y, 0.0) -- the bridge, on whichever lane the enemy defends LESS.
+
+    Placement is the front row of our own half at a bridge column. The row
+    matters more than the column: from y=15 the Hog is across the river
+    immediately, which is the whole point of the card -- it minimises the
+    opponent's reaction time. Placed deeper it walks the length of our own half
+    first, which is what the untrained policy does and what scores ~3 damage.
+
+    Identical in form to the rule measured for the Giant (bridge, weaker lane:
+    535.6 enemy tower damage against 3.3 for the policy's own cell, n=913,
+    p=3.0e-87). The Hog is faster and cheaper, so the argument is strictly
+    stronger for it -- but that is an argument, and this rule is ENGINE-SCORED
+    separately before it is allowed to train anything.
+    """
+    hp = enemy_hp_map(obs)
+    left, right = hp[:, :BOARD_W // 2].sum(), hp[:, BOARD_W // 2:].sum()
+    x = BRIDGE_XS[0] if right >= left else BRIDGE_XS[1]
+    y = BRIDGE_ROW
+    if legal is not None:
+        flat = np.asarray(legal, bool).reshape(-1)
+        if not flat[y * BOARD_W + x]:
+            for dx in range(1, BOARD_W):
+                for cand in (x - dx, x + dx):
+                    if 0 <= cand < BOARD_W and flat[y * BOARD_W + cand]:
+                        return float(cand), float(y), 0.0
+    return float(x), float(y), 0.0
+
+
+def hog_should_commit(obs, multiplier=1.0):
+    """Is NOW the moment to send the win condition? (timing, not placement)
+
+    Three conditions, all necessary:
+
+      1. OUR HALF IS CLEAR. Committing 4 elixir into an active push means
+         defending the answer with what is left, and 2.6 has no card that
+         defends and pushes at once.
+      2. WE STAY SOLVENT. Elixir after the Hog must still cover a real answer,
+         which is the Cannon at 3 -- not the 1-cost cycle cards, which do not
+         stop anything on their own.
+      3. THEY ARE NOT BANKED. Against an opponent sitting near max elixir the
+         Hog is answered AND counter-pushed, which is the trade this rule is
+         specifically meant to refuse.
+
+    Returning False is not a no-op: `hog_advice` then emits NO TARGET, and the
+    advisor-target machinery falls back to the entropy term for that row. That
+    matters because tactics always returning a cell is what teaches a CONSTANT
+    -- the exact pathology the 2026-08-14 cure was built to undo. The gate is
+    the load-bearing half of the rule.
+    """
+    if threat_level(obs) > HOG_MAX_THREAT:
+        return False
+    if own_elixir(obs) < HOG_COST + HOG_DEFENSIVE_RESERVE:
+        return False
+    if opp_elixir_estimate(obs, multiplier) > HOG_MAX_OPP_ELIXIR:
+        return False
+    return True
+
+
+def hog_advice(obs, legal=None, multiplier=1.0):
+    """(x, y) to commit the Hog now, or None to say nothing this step."""
+    if not hog_should_commit(obs, multiplier):
+        return None
+    x, y, _rank = best_hog_cell(obs, legal)
+    return x, y
 
 
 def threat_map(obs):

@@ -56,7 +56,8 @@ import tactics
 
 CANNON_ID = tactics.CANNON_ID
 FIREBALL_ID = tactics.FIREBALL_ID
-GIANT_ID = tactics.GIANT_ID
+GIANT_ID = tactics.GIANT_ID   # retained for prove_giant.py only; NOT an advisor card
+HOG_ID = tactics.HOG_ID
 BOARD_W = tactics.BOARD_W
 BOARD_H = tactics.BOARD_H
 N_CELLS = BOARD_H * BOARD_W
@@ -66,7 +67,11 @@ N_CELLS = BOARD_H * BOARD_W
 ADVISOR_CARDS = {
     CANNON_ID: "building",
     FIREBALL_ID: "spell",
-    GIANT_ID: "cell",
+    # The GIANT entry was removed on 2026-08-17. It is not in DEFAULT_DECK --
+    # the deck became 2.6 Hog Cycle on 2026-08-16 -- so the rule could never
+    # fire, and a dead entry here is worse than none: it makes the advisor look
+    # like it covers a win condition when it covers nothing.
+    HOG_ID: "wincon",
 }
 
 # Temperature on the STANDARDIZED score. Read this off the target's own entropy,
@@ -138,6 +143,25 @@ def target_logits_for(obs, card_id, legal, T=None):
         if not np.isfinite(flat[legal]).all():
             return None
         return _standardize(flat, legal, T)
+
+    if kind == "wincon":
+        # The win condition is the one card whose rule is as much about WHEN as
+        # WHERE, so the gate lives in tactics.hog_advice and returning None here
+        # is the normal case, not an error path. Committing 4 elixir into an
+        # active push, while broke, or against a banked opponent are all trades
+        # the measurement says to refuse -- and a rule that always speaks would
+        # teach the head a CONSTANT bridge cell regardless of board, which is
+        # precisely the collapse the 2026-08-14 cure undid.
+        advice = tactics.hog_advice(obs, legal=legal)
+        if advice is None:
+            return None
+        x, y = advice
+        cell = int(y) * tactics.BOARD_W + int(x)
+        if not legal[cell]:
+            return None
+        flat = np.full(legal.shape, _NEG_INF, dtype=np.float32)
+        flat[cell] = 0.0
+        return flat
 
     if kind == "spell":
         flat = tactics.spell_catch_map(obs).reshape(-1).astype(np.float32).copy()

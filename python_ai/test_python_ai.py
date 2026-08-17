@@ -1126,15 +1126,26 @@ def test_advisor_target_never_puts_mass_on_an_illegal_cell(net):
     Only the map-backed kinds are finite across the legal set.
     """
     obs = _clump_obs()
+    spoke = 0
     for cid, kind in AT.ADVISOR_CARDS.items():
         legal = net._placement_legal[cid].numpy().astype(bool)
         t = AT.target_logits_for(obs, cid, legal)
-        assert t is not None, cid
+        if t is None:
+            # A gated rule declining to speak is the DESIGNED behaviour, not a
+            # failure: the win condition refuses to commit into an active push,
+            # and _clump_obs() is exactly that board. Asserting `is not None`
+            # for every card would forbid the gate this file elsewhere calls
+            # load-bearing.
+            continue
+        spoke += 1
         assert t.shape == (net.placement_cells,)
         assert np.all(np.isneginf(t[~legal])), cid
         assert np.isfinite(t).any(), cid
         if kind in ("building", "spell"):
             assert np.all(np.isfinite(t[legal])), cid
+    # ...but "every rule declined" would pass vacuously, so require that the
+    # board still produced at least one target.
+    assert spoke > 0, "no advisor spoke on a board with a live threat"
 
 
 def test_advisor_spell_target_peaks_where_the_advisor_aims(net):
@@ -1148,17 +1159,39 @@ def test_advisor_spell_target_peaks_where_the_advisor_aims(net):
     assert peak == int(ay) * tactics.BOARD_W + int(ax)
 
 
-def test_advisor_giant_target_is_a_delta_and_its_kl_is_cross_entropy(net):
-    """The Giant rule yields a CELL, not a surface, so its target is a delta.
+def _hog_commit_obs():
+    """A quiet board where the win-condition gate OPENS.
 
-    Encoding it as a delta keeps one code path for all three cards: masked_kl
+    Needs all three conditions at once: our half clear, us solvent past the
+    Cannon reserve, and the opponent not banked. Those cannot be arranged by
+    STEPPING -- idling to 9 elixir also banks the opponent to 10 and closes the
+    third condition -- so the elixir scalar is written directly on a fresh
+    board, which keeps time (and therefore the opponent's estimate) at its
+    opening value.
+
+    Deliberately not env.set_elixir_for_team: that binding exists only in the
+    current build, and python_ai/ holds the stale .pyd whenever the post-build
+    copy was blocked by a running trainer.
+    """
+    env = E.ClashRoyaleEnv(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32).copy()
+    obs[tactics.SPATIAL] = 0.9      # ClashEnv stores elixir / 10
+    return obs
+
+
+def test_advisor_wincon_target_is_a_delta_and_its_kl_is_cross_entropy(net):
+    """The Hog rule yields a CELL, not a surface, so its target is a delta.
+
+    Encoding it as a delta keeps one code path for every card: masked_kl
     against a delta is exactly cross-entropy to that cell, so the trainers need
     no separate hard-label branch.
     """
-    obs = _clump_obs()
-    legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
-    t = AT.target_logits_for(obs, tactics.GIANT_ID, legal)
-    gx, gy, _ = tactics.best_giant_cell(obs, legal=legal)
+    obs = _hog_commit_obs()
+    legal = net._placement_legal[tactics.HOG_ID].numpy().astype(bool)
+    t = AT.target_logits_for(obs, tactics.HOG_ID, legal)
+    assert t is not None, "gate should be open on a quiet, solvent board"
+    gx, gy, _ = tactics.best_hog_cell(obs, legal=legal)
     cell = int(gy) * tactics.BOARD_W + int(gx)
     assert int(np.argmax(t)) == cell
     assert int(np.isneginf(t).sum()) == len(t) - 1
