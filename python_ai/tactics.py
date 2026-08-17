@@ -277,15 +277,29 @@ def best_giant_cell(obs, legal=None):
 HOG_ID = 15
 HOG_COST = 4.0
 
-# Elixir kept back AFTER paying for the Hog, so a counter-push can still be
-# answered. 2.6's cheapest answers are Skeletons(1) and Ice Spirit(1), and the
-# Cannon(3) is the real one -- hence 3, not 1. A Hog that wins the race but
-# loses the tower behind it is not a good trade.
-HOG_DEFENSIVE_RESERVE = 3.0
+# Elixir kept back AFTER paying for the Hog.
+#
+# CALIBRATED, after the first attempt set this to 3.0 on Clash theory alone --
+# hold back enough for the Cannon -- and the gate then opened on 0 of 542
+# states. Measured on this policy's own trajectory: elixir median 2.25, p90
+# 4.35. A cheap-cycle deck spends continuously and essentially never banks 7,
+# so a 3-elixir reserve is not a conservative rule here, it is an off switch,
+# and an advisor that never speaks distils nothing.
+#
+# At 0 the rule fires whenever the Hog is merely AFFORDABLE, which is ~10% of
+# states -- ample signal. The safety it gives up is covered by HOG_MAX_THREAT
+# below: with our half clear there is nothing to reserve against yet, and 2.6
+# cycles back to a defence in a few seconds.
+HOG_DEFENSIVE_RESERVE = 0.0
 
 # Enemy HP already on our half above which we defend instead of committing.
-# MAX_TROOP_HP-normalised units, matching threat_level's scale.
-HOG_MAX_THREAT = 0.35
+#
+# ABSOLUTE HP, not a normalised fraction -- enemy_hp_map's docstring says so and
+# the first version of this constant (0.35) did not, which made it ~3 orders of
+# magnitude too strict: measured threat_level has median 721 on a contested
+# board. For scale a Musketeer is ~600 HP, so this admits a clear board or one
+# small unit already being handled, and refuses a real push.
+HOG_MAX_THREAT = 800.0
 
 # Estimated opponent elixir above which we do NOT commit. At 7+ they can answer
 # the Hog AND counter-push, which is the situation the rule exists to avoid.
@@ -384,6 +398,14 @@ def hog_should_commit(obs, multiplier=1.0):
     -- the exact pathology the 2026-08-14 cure was built to undo. The gate is
     the load-bearing half of the rule.
     """
+    # No enemy ANYWHERE means the lane choice carries no information: left and
+    # right both sum to zero, the tiebreak fires, and the rule degenerates to a
+    # fixed cell. Distilling that teaches a constant, which is the collapse this
+    # gate exists to prevent -- so decline, exactly as the "cell" kind already
+    # did. This is not the same test as the threat check below: that one is
+    # about a push on OUR half, this one is about having any read at all.
+    if float(enemy_hp_map(obs).sum()) <= 0.0:
+        return False
     if threat_level(obs) > HOG_MAX_THREAT:
         return False
     if own_elixir(obs) < HOG_COST + HOG_DEFENSIVE_RESERVE:

@@ -1175,6 +1175,12 @@ def _hog_commit_obs():
     """
     env = E.ClashRoyaleEnv(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
     env.reset()
+    # One enemy, deep on THEIR half. Needed because the rule declines when the
+    # board is completely empty -- with no enemy anywhere the "weaker lane" is
+    # undefined and the tiebreak would emit a fixed cell. Placed at y=25 so it
+    # is visible to the lane read without counting as a threat on our half.
+    env.inject(6, 13.0, 25.0, 1)
+    env.step_self_play(4, 0.0, 0.0, 4, 0.0, 0.0, 1)   # inject lands on the tick
     obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32).copy()
     obs[tactics.SPATIAL] = 0.9      # ClashEnv stores elixir / 10
     return obs
