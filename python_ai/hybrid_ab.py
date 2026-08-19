@@ -55,8 +55,7 @@ def play(policy, env, device):
                 spent=float(env.get_elixir_spent(0)),
                 plays=policy.stats["plays"],
                 init_cannon=policy.stats["initiated_cannon"],
-                init_fireball=policy.stats["initiated_fireball"],
-                init_giant=policy.stats["initiated_giant"])
+                init_fireball=policy.stats["initiated_fireball"])
 
 
 def report(rows, base_key, other_key, rng):
@@ -73,7 +72,7 @@ def report(rows, base_key, other_key, rng):
         a = np.array([r[k] for r in rows[base_key]], dtype=float)
         b = np.array([r[k] for r in rows[other_key]], dtype=float)
         print(f"{label:<22}{fmt.format(a.mean()):>14}{fmt.format(b.mean()):>14}")
-    for label in ("init_cannon", "init_fireball", "init_giant"):
+    for label in ("init_cannon", "init_fireball"):
         v = np.mean([r[label] for r in rows[other_key]])
         print(f"{label:<22}{'--':>14}{v:>14.2f}")
 
@@ -118,8 +117,7 @@ def main():
     net = load_net(os.path.join(here, args.net), device)
 
     def mk(**kw):
-        base = dict(use_gate=False, use_advisor=False, initiate=False,
-                    initiate_giant=False)
+        base = dict(use_gate=False, use_advisor=False, initiate=False)
         base.update(kw)
         return HybridPolicy(net, device, **base)
 
@@ -132,22 +130,28 @@ def main():
             "gate": mk(use_gate=True),
             "place": mk(use_advisor=True),
             "initiate": mk(use_advisor=True, initiate=True),
-            "full": mk(use_gate=True, use_advisor=True, initiate=True,
-                       initiate_giant=True),
+            "full": mk(use_gate=True, use_advisor=True, initiate=True),
         }
     elif args.per_card:
-        from hybrid_policy import CANNON, FIREBALL, GIANT
+        from hybrid_policy import CANNON, FIREBALL
         # The solvency gate stays ON in every arm: it is a separate, measured
         # component (bankruptcy 72.7% -> 41.7%) and leaving it to vary would
         # confound the placement question this ablation exists to answer.
+        #
+        # These arms were "cannon_only" / "cannon_giant" / "all_three" until
+        # 2026-08-19. Giant left DEFAULT_DECK on 2026-08-16, so the Giant
+        # entries could never fire and the last two arms were bit-identical to
+        # the first two -- a four-arm ablation measuring two things twice. The
+        # arm that was actually missing is fireball_only, which is the half of
+        # the per-card question (--per-card's own help text) that had no arm.
         arms = {
             "neural": mk(use_gate=True),
             "cannon_only": mk(use_gate=True, use_advisor=True,
                               override_cards=(CANNON,)),
-            "cannon_giant": mk(use_gate=True, use_advisor=True,
-                               override_cards=(CANNON, GIANT)),
-            "all_three": mk(use_gate=True, use_advisor=True,
-                            override_cards=(CANNON, FIREBALL, GIANT)),
+            "fireball_only": mk(use_gate=True, use_advisor=True,
+                                override_cards=(FIREBALL,)),
+            "both": mk(use_gate=True, use_advisor=True,
+                       override_cards=(CANNON, FIREBALL)),
         }
     else:
         arms = {"neural": mk(), "hybrid": HybridPolicy(net, device)}

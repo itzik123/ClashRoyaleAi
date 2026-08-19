@@ -394,7 +394,9 @@ Pool members:
   because PFSP's own criterion works *against* seeing them: mastering them
   drives their weight to the floor. First tried at 0.20 and confirmed too low —
   in a ~98-member pool that is ~7.7% combined share, statistically invisible.
-- **Exploiters** (`exploiter.py`) — see below.
+- **Exploiters** (`exploiter.py`) — **currently disabled** (`EXPLOITER_ENABLED
+  = False` since 2026-08-11), so the pool has had no new exploiter members since
+  then. See below.
 - **`BUILTIN_ANCHORS`** for evaluation only: the C++ heuristic at 1.00/1.35/1.50
   elixir, Elo 1200/1500/1700. These must use `gym_wrapper.MicroRoyaleEnv`, not
   `MicroRoyaleSelfPlayEnv`, because `stepSelfPlay` deliberately never calls
@@ -427,6 +429,18 @@ when it was only longer matches. `Fwd` is confounded with entropy by
 construction and is only interpretable next to ROI.
 
 ### Exploiter (`exploiter.py`)
+
+**TURNED OFF since 2026-08-11 — `EXPLOITER_ENABLED = False`, so
+`should_run_burst()` returns `False` unconditionally and no burst has run since.**
+Everything below describes the mechanism as built and as it behaves when
+re-enabled; none of it is running today. It was disabled because the main agent
+was found to be reward-hacking (parking buildings at y=0), and an exploiter
+cannot punish a strategy whose payoff comes from the *reward function* rather
+than from the opponent — so the burst spends ~17% of throughput learning to beat
+something that is not the actual problem. The re-enable condition is stated in
+`exploiter.py`: fix the engine/shaping first, so a parked building is no longer
+free. **Do not read a stagnation plateau as "the exploiter found nothing" —
+check `EXPLOITER_ENABLED` before assuming it ran at all.**
 
 AlphaStar's league exploiter — the piece the pool was missing. Every neural
 opponent in it is a *past self*, so self-play was free to cycle rather than
@@ -2139,7 +2153,9 @@ recurrent state genuinely counts), `Entropy/Placement_Target` vs
 `_Measured` (tracking, not fighting), and `Cards/Game` in phase 2 — it sat at
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,
 which is the plateau signature the exploiter is meant to break. It has still
-never moved off ~5.3.
+never moved off ~5.3 — and note that the exploiter has been **off since
+2026-08-11**, so the plateau persisting is not evidence the exploiter failed to
+break it.
 
 **`Entropy/Placement_Measured` changed meaning on 2026-08-11** and is not
 comparable across that date — it now averages over steps that actually placed
