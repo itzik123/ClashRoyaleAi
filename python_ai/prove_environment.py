@@ -198,6 +198,33 @@ def _play_out(env, t0, t1, steps):
             break
 
 
+def _escort_slot(env, hand, teacher):
+    """(slot, x, y) for the cheapest affordable TANK to send ahead of the win
+    condition, or None.
+
+    A tank here means a unit whose role is not spell/building and which is not
+    the win condition itself -- resolved from teacher.roles, which derives roles
+    from the engine, so this survives a deck change. Cheapest because the escort
+    is meant to absorb, not to cost more than the push it protects.
+    """
+    import clash_royale_env as _E
+    elixir = env.get_elixir_for_team(0)
+    best = None
+    for slot, cid in enumerate(hand):
+        role = teacher.roles.get(cid)
+        if role in (None, "spell", "building", "wincon"):
+            continue
+        cost = float(_E.get_card_info(cid)["cost"])
+        if cost > elixir + 1e-6:
+            continue
+        if best is None or cost < best[0]:
+            best = (cost, slot, cid)
+    if best is None:
+        return None
+    _, slot, _cid = best
+    return slot, None, None   # lane filled in by the caller
+
+
 def marginal_value(args):
     """At states where the advisor's gate says COMMIT, is committing worth it?
 
@@ -268,8 +295,44 @@ def marginal_value(args):
 
                 o1 = np.asarray(env.get_observation_for_team(1), np.float32)
                 opp = t1.act(env, o1)
-                a.step_self_play(slot, x, y, opp[0], opp[1], opp[2], 10)
-                b.step_self_play(-1, 0.0, 0.0, opp[0], opp[1], opp[2], 10)
+
+                if args.supported:
+                    # A REAL 2.6 PUSH, not a naked win condition. The tank goes
+                    # first so it eats the building's targeting and the tower
+                    # shots while the Hog connects. This matters far more since
+                    # deploy time landed: measured on the trade probe, a lone
+                    # Hog in a punish window fell 1025 -> 343 tower damage
+                    # (it now stands inert under tower fire for a second) while
+                    # the escorted push holds at 993.8. Scoring only the lone
+                    # commitment would condemn the card on a play the new
+                    # physics correctly punishes.
+                    tank = _escort_slot(env, hand, t0)
+                    if tank is None:
+                        # No affordable escort in hand -- this is not a
+                        # supported-push state, so skip it rather than silently
+                        # scoring a lone Hog into the supported arm.
+                        o1b = np.asarray(env.get_observation_for_team(1), np.float32)
+                        a0 = t0.act(env, o0)
+                        a1 = t1.act(env, o1b)
+                        if env.step_self_play(a0[0], a0[1], a0[2],
+                                              a1[0], a1[1], a1[2], 10).done:
+                            break
+                        continue
+                    tslot, _, _ = tank
+                    # Same lane and row as the win condition, so the tank is
+                    # actually in front of it rather than in the other lane.
+                    tx, ty = x, y
+                    a.step_self_play(tslot, tx, ty, opp[0], opp[1], opp[2], 10)
+                    b.step_self_play(-1, 0.0, 0.0, opp[0], opp[1], opp[2], 10)
+                    # The win condition follows one decision later, behind it.
+                    hand_a = list(a.get_hand_for_team(0))
+                    if wincon in hand_a:
+                        a.step_self_play(hand_a.index(wincon), x, y, -1, 0.0, 0.0, 10)
+                    b.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, 10)
+                else:
+                    a.step_self_play(slot, x, y, opp[0], opp[1], opp[2], 10)
+                    b.step_self_play(-1, 0.0, 0.0, opp[0], opp[1], opp[2], 10)
+
                 _play_out(a, ta0, ta1, args.horizon)
                 _play_out(b, tb0, tb1, args.horizon)
                 diffs.append(_tower_diff(a) - _tower_diff(b))
@@ -284,7 +347,9 @@ def marginal_value(args):
         if played >= args.max_states:
             break
 
-    print(f"\nMARGINAL VALUE OF ONE WIN-CONDITION COMMITMENT")
+    label = ("SUPPORTED PUSH (tank + win condition)" if args.supported
+             else "LONE WIN-CONDITION COMMITMENT")
+    print(f"\nMARGINAL VALUE OF ONE {label}")
     print(f"  states scored      {played}  (gate fired on {gate_hits} of "
           f"{seen} decisions)")
     if not diffs:
@@ -324,6 +389,9 @@ def main():
     ap.add_argument("--horizon", type=int, default=40,
                     help="decisions to play on after the commitment (mode=marginal)")
     ap.add_argument("--max-states", type=int, default=200)
+    ap.add_argument("--supported", action="store_true",
+                    help="mode=marginal: escort the win condition with a tank, "
+                         "i.e. the push a real 2.6 deck actually sends")
     ap.add_argument("--max-opp-elixir", type=float, default=None,
                     help="override tactics.HOG_MAX_OPP_ELIXIR for mode=marginal")
     args = ap.parse_args()
