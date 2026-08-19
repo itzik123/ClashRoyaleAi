@@ -412,9 +412,19 @@ _SUPPORT_IDS = [
     20,  # Dart Goblin
 ]
 # Real board coords for inject_enemy (team 1, low-y-bound), which bypasses
-# isValidPlacement so an on-the-bridge spawn at the river row is allowed. River
-# row is 17 (see ClashEnv::extractObservationForTeam); bridges sit at x lanes
-# 3-4 (left) and 13-14 (right).
+# isValidPlacement so an on-the-bridge spawn inside the river band is allowed.
+#
+# These are BOARD coordinates. Do not justify them from
+# ClashEnv::extractObservationForTeam's `riverRow = 17` / x-band 3-4 & 13-14 --
+# that is the OBSERVATION channel-8 marker, a wider visual hint painted for the
+# network, and it is a different frame. perception/geometry.py warns against
+# exactly this conflation. The board's own geometry (Board.h) is river
+# [15.5, 17.5) with bridges at x = 4.0 and 14.0.
+#
+# The values below are nonetheless correct and must not be "corrected":
+# y = 17.0 is inside the band, injectEnemy applies no clamp, and
+# Board::getNextWaypoint classifies 17.0 as neither bank and routes to the
+# bridge exit -- which is precisely the on-the-bridge spawn this wants.
 _RIVER_Y = 17.0
 _BRIDGE_LANES = [3.5, 13.5]
 

@@ -225,7 +225,7 @@ GIANT_ID = 2
 # Our side of the river (the river is [15.5, 17.5)), so a Giant placed here
 # starts crossing immediately instead of walking the length of our own half.
 BRIDGE_ROW = 15
-BRIDGE_XS = (4, 14)          # the two bridge columns, Board geometry in CLAUDE.md
+BRIDGE_XS = (4, 14)          # Board.h: leftBridge{4.0f, 16.5f}, rightBridge{14.0f, 16.5f}
 
 
 def best_giant_cell(obs, legal=None):

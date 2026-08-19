@@ -81,10 +81,23 @@ from train import load_state_dict_flexible  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 
-# Padding width for the per-decision candidate set. The default search emits at
-# most 1 + k_cards*k_cells = 7; 8 leaves headroom without costing anything
-# meaningful (K_MAX ints per row against a 13606-float observation).
+# Padding width for the per-decision candidate set. The default search
+# (k_cards=3, k_cells=2) emits at most 7 -- enumerated exhaustively over which
+# columns topk selects and whether greedy is the no-op, NOT the naive
+# 1 + k_cards*k_cells. 8 leaves headroom without costing anything meaningful
+# (K_MAX ints per row against a 13606-float observation).
+#
+# The default is the ONLY configuration that fits. Enumerated maxima:
+#     k_cards=3 k_cells=2 ->  7   (fits)
+#     k_cards=4 k_cells=2 ->  9   (overflows)
+#     k_cards=3 k_cells=3 -> 10   (overflows)
+#     k_cards=5 k_cells=3 -> 13   (overflows)
+# Overflow is no longer silent-and-harmful (candidates are kept by SCORE, see
+# collect_episode) but it is still lossy, so _warn_truncation reports it once.
 K_MAX = 8
+
+# Module-level so the warning fires once per process, not once per decision.
+_truncation_warned = False
 
 # Everything upstream of the action heads. Frozen by default -- see the module
 # docstring. `card_id_embed`/`noop_embed` feed placement_given_card AND are read
@@ -219,12 +232,36 @@ def collect_episode(net, env, device, cfg, episode_index):
         n_c = 0
         if details is not None:
             cands, scores = details
-            n_c = min(len(cands), K_MAX)
-            for i in range(n_c):
+            # Truncate by SCORE, not by generation order. This used to be
+            # `for i in range(min(len(cands), K_MAX))`, which keeps whichever
+            # candidates happened to be generated first -- so a configuration
+            # producing more than K_MAX could silently drop the HIGHEST-scoring
+            # candidate, including the search winner, out of the recorded soft
+            # target. The distribution would then be fitted to a set that does
+            # not contain the action search actually chose.
+            #
+            # K_MAX stays a fixed schema width so merge_datasets' np.concatenate
+            # keeps working. Ordering within the row carries no meaning --
+            # candidate_target softmaxes values[:n] and cand_card/cell/value are
+            # read positionally in lockstep -- so re-ranking is safe.
+            if len(cands) > K_MAX:
+                global _truncation_warned
+                if not _truncation_warned:
+                    _truncation_warned = True
+                    print(f"  WARNING: search emitted {len(cands)} candidates but "
+                          f"K_MAX={K_MAX}; keeping the {K_MAX} highest-scoring and "
+                          f"DISCARDING the rest. The recorded target is a partial "
+                          f"ranking. Raise K_MAX (it is a schema width -- datasets "
+                          f"recorded at different K_MAX cannot be merged) or lower "
+                          f"--k-cards/--k-cells. Only k_cards=3,k_cells=2 fits 8.",
+                          flush=True)
+            order = np.argsort(-np.asarray(scores, dtype=np.float64))[:K_MAX]
+            n_c = len(order)
+            for j, i in enumerate(order):
                 ci, cx, cy = cands[i]
-                c_card[i] = int(ci)
-                c_cell[i] = _cell_from_xy(cx, cy, BOARD_W, BOARD_H)
-                c_val[i] = float(scores[i])
+                c_card[j] = int(ci)
+                c_cell[j] = _cell_from_xy(cx, cy, BOARD_W, BOARD_H)
+                c_val[j] = float(scores[i])
         rows["cand_card"].append(c_card)
         rows["cand_cell"].append(c_cell)
         rows["cand_value"].append(c_val)

@@ -63,7 +63,14 @@ LSTM_HIDDEN = 256
 
 @torch.no_grad()
 def _policy_head(net, obs_t, hidden):
-    """One network forward. Returns the pieces both arms need."""
+    """One network forward. Returns the pieces both arms need.
+
+    Deliberately still returns FIVE values and calls the plain
+    extract_features. Six callers across five files unpack exactly five, and
+    model.py's own extract_features docstring records the same reasoning for
+    keeping that wrapper rather than widening its signature. The hires map is
+    recovered locally in _build_candidates instead -- see there.
+    """
     card_mask = net.affordability_mask(obs_t)
     features, card_embeds, spatial_map = net.extract_features(obs_t)
     card_logits, _, _, value, hidden_next = net.step_lstm_and_card(features, hidden, card_mask)
@@ -110,6 +117,16 @@ def _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_
     cands = [greedy]
     seen = {greedy}
 
+    # Build the pre-pool trunk activation ONCE for this decision. Without it
+    # every placement_given_card below rebuilds it from obs internally
+    # (model.py: `hires_map` defaults to None -> recomputed), so a k_cards=3
+    # decision ran cnn_trunk[:2] up to four times on identical input -- on the
+    # deadline-bounded path search_action_deadline exists to budget. Passing it
+    # is the seam model.py documents for hot callers, and the two routes are
+    # pinned bit-identical by
+    # test_python_ai.test_recomputed_hires_equals_the_passed_one.
+    hires_map = net.hires_features(obs_t)
+
     n_cards = card_logits.shape[-1]
     top_cards = torch.topk(card_logits[0], min(k_cards, n_cards)).indices
     for c in top_cards:
@@ -123,7 +140,8 @@ def _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_
                 cands.append(key)
             continue
         c_t = c.view(1)
-        place_logits = net.placement_given_card(hidden_next[0], card_embeds, c_t, obs_t, spatial_map)
+        place_logits = net.placement_given_card(hidden_next[0], card_embeds, c_t, obs_t,
+                                                spatial_map, hires_map=hires_map)
         top_cells = torch.topk(place_logits[0], k_cells).indices
         for cell in top_cells:
             if not torch.isfinite(place_logits[0, cell]):
