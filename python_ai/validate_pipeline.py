@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import advisor_target as AT  # noqa: E402
 import clash_royale_env as E  # noqa: E402
 import gym_wrapper  # noqa: E402
+import match_outcome  # noqa: E402
 import tactics  # noqa: E402
 import train  # noqa: E402
 import train_selfplay as TS  # noqa: E402
@@ -467,11 +468,16 @@ def validate_side_null(net_path, episodes=300):
             r = env.step_self_play(g0, x0, y0, g1, x1, y1, 10)
             if r.done:
                 break
-        t0_towers = env.get_towers_alive(0)
-        t1_towers = env.get_towers_alive(1)
-        if t0_towers > t1_towers:
+        # TimeoutRules' full verdict, not tower count alone. Count-only scoring
+        # dumped every equal-count finish into `draws`, and a draw contributes
+        # exactly 0.5 to the score either way -- so a genuine side advantage
+        # that showed up as "team 0 usually ends with a healthier weakest
+        # tower" was absorbed instead of detected, in the one test whose whole
+        # purpose is detecting side asymmetry. Strictly more sensitive.
+        s = match_outcome.score_from_towers(env, 0)
+        if s > 0.5:
             wins += 1
-        elif t0_towers == t1_towers:
+        elif s == 0.5:
             draws += 1
         if ep % 50 == 0:
             print(f"    ...episode {ep}/{episodes} ({time.time() - t0:.0f}s)",

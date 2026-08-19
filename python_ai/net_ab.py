@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env as E  # noqa: E402
 from expert_iteration import load_net  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
+from match_outcome import score_from_towers  # noqa: E402
 
 CE = E.ClashRoyaleEnv
 
@@ -53,8 +54,10 @@ def play(net, env, max_steps=400):
         obs = r.observation
         if r.done:
             break
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return 1.0 if a > b else (0.5 if a == b else 0.0)
+    # Tower COUNT alone used to decide this, which called every equal-count
+    # finish a draw and ignored TimeoutRules' weakest-tower tie-break entirely.
+    # See match_outcome.py.
+    return score_from_towers(env, 0)
 
 
 def main():

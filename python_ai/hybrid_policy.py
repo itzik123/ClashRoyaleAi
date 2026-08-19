@@ -23,7 +23,9 @@ Division of labour:
                                 (b) place the dead cards where the advisor says
 
 INITIATION WAS BUILT, MEASURED, AND IS OFF BY DEFAULT. The commander's take-up
-of the dead cards is 0.06 (Cannon) and 0.00 (Fireball/Giant), so it seemed
+of the dead cards is 0.06 (Cannon) and 0.00 (Fireball/Giant -- measured while
+Giant was still in the deck; it left on 2026-08-16 and its path here was
+removed on 2026-08-19, see the note above CANNON/FIREBALL below), so it seemed
 obvious that overriding only "where" would fire too rarely to matter and that
 the officer should also be allowed to START those plays. Measured over 30 paired
 openings, that reasoning is wrong and the component is actively harmful:
@@ -63,7 +65,15 @@ import torch
 
 import tactics
 
-CANNON, FIREBALL, GIANT = tactics.CANNON_ID, tactics.FIREBALL_ID, 2
+# The GIANT path was removed on 2026-08-19, matching the cleanup advisor_target
+# .py already applied to itself on 2026-08-17 and for the same reason: the deck
+# became 2.6 Hog Cycle on 2026-08-16, Giant is not in DEFAULT_DECK, so every
+# Giant branch here was unreachable. A dead entry is worse than none -- it made
+# this policy look like it covered a win condition when it covered nothing, and
+# it silently collapsed two of hybrid_ab.py's --per-card arms into duplicates of
+# two others. tactics.GIANT_ID and tactics.best_giant_cell stay: prove_giant.py
+# and train_selfplay.py's scenarios still use them.
+CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
 LSTM_HIDDEN = 256
 
 FIREBALL_MIN_CATCH = 690.0   # 3 x 230 HP: a Minions squad, i.e. a 3-cost trade
@@ -74,9 +84,19 @@ CANNON_COOLDOWN_STEPS = 30   # the Cannon's own 300-tick lifetime, in decisions
 class HybridPolicy:
     """Stateful per-episode policy. Call reset() between matches."""
 
+    # Which advisor surface each overridable card gets. Explicit, because the
+    # old dispatch fell through to the BUILDING surface for anything it did not
+    # recognise -- and override_cards is a caller-supplied tuple, so an
+    # unexpected card silently got a Cannon-shaped placement rather than an
+    # error. Adding a card here without a surface is now a loud failure.
+    ADVISOR_SURFACE = {
+        CANNON: "building",
+        FIREBALL: "spell",
+    }
+
     def __init__(self, net, device=None, use_gate=True, use_advisor=True,
-                 override_cards=(CANNON, FIREBALL, GIANT), initiate=False,
-                 initiate_giant=False, use_opp_elixir=True,
+                 override_cards=(CANNON, FIREBALL), initiate=False,
+                 use_opp_elixir=True,
                  reserve=4.0, fireball_min_catch=FIREBALL_MIN_CATCH,
                  cannon_min_cover=CANNON_MIN_COVER):
         self.net = net
@@ -84,14 +104,19 @@ class HybridPolicy:
         self.use_gate = use_gate
         self.use_advisor = use_advisor
         self.override_cards = tuple(override_cards)
+        unmapped = [c for c in self.override_cards if c not in self.ADVISOR_SURFACE]
+        if unmapped:
+            raise ValueError(
+                f"override_cards contains cards with no advisor surface: {unmapped}. "
+                f"Add them to HybridPolicy.ADVISOR_SURFACE or drop them -- silently "
+                f"falling back to the building surface is what this check replaces.")
         self.initiate = initiate
-        self.initiate_giant = initiate_giant
         self.use_opp_elixir = use_opp_elixir
         self.gate = tactics.SolvencyGate(reserve=reserve)
         self.fireball_min_catch = fireball_min_catch
         self.cannon_min_cover = cannon_min_cover
         self._legal = {c: np.asarray(net._placement_legal[c]).astype(bool)
-                       for c in (CANNON, FIREBALL, GIANT)}
+                       for c in self.ADVISOR_SURFACE}
         self.reset()
 
     def reset(self):
@@ -99,8 +124,7 @@ class HybridPolicy:
         self.hidden = (h, h.clone())
         self._cannon_cd = 0
         self.stats = {"initiated_cannon": 0, "initiated_fireball": 0,
-                      "initiated_giant": 0, "overrode": 0,
-                      "gate_blocked": 0, "plays": 0}
+                      "overrode": 0, "gate_blocked": 0, "plays": 0}
 
     @torch.no_grad()
     def act(self, obs):
@@ -168,12 +192,15 @@ class HybridPolicy:
 
     # ------------------------------------------------------------------ util
     def _advisor_cell(self, o, card_id):
-        if card_id == FIREBALL:
-            x, y, _ = tactics.best_spell_cell(o, legal=self._legal[FIREBALL])
-        elif card_id == GIANT:
-            x, y, _ = tactics.best_giant_cell(o, legal=self._legal[GIANT])
+        # Keyed on the card's own mapped surface rather than an if/elif chain
+        # ending in a catch-all else -- see ADVISOR_SURFACE. __init__ has
+        # already rejected any override card missing from it, so this cannot
+        # KeyError for a card that actually reaches here.
+        surface = self.ADVISOR_SURFACE[card_id]
+        if surface == "spell":
+            x, y, _ = tactics.best_spell_cell(o, legal=self._legal[card_id])
         else:
-            x, y, _ = tactics.best_building_cell(o, legal=self._legal[CANNON])
+            x, y, _ = tactics.best_building_cell(o, legal=self._legal[card_id])
         return x, y
 
     def _try_initiate(self, o, hand, affordable):
@@ -193,14 +220,7 @@ class HybridPolicy:
                     self._cannon_cd = CANNON_COOLDOWN_STEPS
                     self.stats["initiated_cannon"] += 1
                     return s
-        # Giant last: it is the biggest commitment, so it should only go in when
-        # nothing more urgent wanted the elixir. No extra threshold is needed --
-        # the SolvencyGate already requires 5 (cost) + 4 (reserve) = 9 elixir,
-        # which is the standard "push only at or near the cap" rule and is why
-        # this cannot fire while a defence is owed.
-        if self.initiate_giant and GIANT in hand:
-            s = hand.index(GIANT)
-            if affordable[s]:
-                self.stats["initiated_giant"] += 1
-                return s
+        # A third "initiate the Giant last, once nothing more urgent wanted the
+        # elixir" branch lived here behind an initiate_giant flag. Removed with
+        # the rest of the Giant path on 2026-08-19 -- see the module-level note.
         return None

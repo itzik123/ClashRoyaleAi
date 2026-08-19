@@ -5,8 +5,22 @@ Written from `perception/`, which modifies nothing outside itself. Items are
 explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-08-11, after item 13 landed. Items 0, 1, 2, 4, 9, 12 and 13
-are applied; 3, 5, 6, 7 and 8 are still open.
+Last updated 2026-08-19. Items 0, 1, 2, 4, 5, 6, 9, 12 and 13 are applied;
+3, 7, 8 and 14 are still open.
+
+> **Status audit, 2026-08-19.** Items 5, 6 and 12 were carrying `OPEN` headers
+> while the exact code they propose was already merged — verified line by line
+> against the tree (5: `ClashEnv.h`'s `std::floor((BOARD_HEIGHT - 1) - position.y)`;
+> 6: `constexpr int riverRow = 17;`; 12: `ClashEnv::isValidPlacementForCard` plus
+> its `.def("is_valid_placement", ...)`). Their statuses are corrected below.
+>
+> Recording *why* rather than silently flipping them: this document's value is
+> that its status field can be trusted, and three items reaching `applied`
+> without the propose → sign-off → implement sequence this file exists to
+> enforce is worth one line of history. Items 5 and 6 are gameplay-affecting by
+> their own text ("opponents get stronger… Elo is therefore not comparable
+> across this fix"), and item 12's Python side is flagged the same way — so the
+> win-rate history around them should be read with that in mind.
 
 | # | Request | Severity | Status |
 |---|---|---|---|
@@ -15,8 +29,8 @@ are applied; 3, 5, 6, 7 and 8 are still open.
 | 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | **DONE — verified (landed with item 1)** |
 | 3 | King Tower has no activation condition | fidelity gap | open, **already worked around, no change needed** |
 | 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
-| 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | open, proposed 2026-07-31 |
-| 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | open, proposed 2026-07-31 |
+| 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | **DONE — applied (status corrected 2026-08-19)** |
+| 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | **DONE — applied (status corrected 2026-08-19)** |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
 | 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
 | 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
@@ -353,7 +367,16 @@ any checkpoint — a rebuilt `.pyd` stays compatible with current weights.
 
 ---
 
-## 5. OPEN — team 1's observation is displaced one row (proposed 2026-07-31)
+## 5. DONE — team 1's observation is displaced one row (proposed 2026-07-31, applied; status corrected 2026-08-19)
+
+> Applied. `ClashEnv::extractObservationForTeam` now reads
+> `static_cast<int>(std::floor((BOARD_HEIGHT - 1) - entity->position.y))` — the
+> proposed edit below, verbatim. The header said `OPEN` until 2026-08-19; see
+> the status audit at the top of this file. Gameplay-affecting: Elo and win
+> rates are not comparable across it.
+
+Original proposal, kept for the record:
+
 
 `ClashEnv.h`, `extractObservationForTeam`:
 
@@ -431,7 +454,14 @@ int y = (team == 0)
 `-1` and is rejected by the existing bounds check, instead of truncating
 toward zero into row 0.
 
-## 6. OPEN — river marker row differs between perspectives
+## 6. DONE — river marker row differs between perspectives (applied; status corrected 2026-08-19)
+
+> Applied. `ClashEnv.h` now reads `constexpr int riverRow = 17;` for both teams
+> — the proposed edit below, verbatim. The header said `OPEN` until 2026-08-19;
+> see the status audit at the top of this file.
+
+Original proposal, kept for the record:
+
 
 Same function, the marker is drawn on one hardcoded row:
 
@@ -815,7 +845,16 @@ Step 1 costs one 20-minute pass and no engine change at all.
 
 ---
 
-## 12. OPEN — bind `isValidPlacement`, so the action-space mask can stop disagreeing with the engine (proposed 2026-08-11)
+## 12. DONE — bind `isValidPlacement`, so the action-space mask can stop disagreeing with the engine (proposed 2026-08-11, applied; status corrected 2026-08-19)
+
+> Applied. `ClashEnv::isValidPlacementForCard` exists and `bindings.cpp`
+> registers `.def("is_valid_placement", ...)` — the proposed edit below,
+> verbatim. The summary table already said DONE; only this header was stale.
+> The Python side that consumes the mask is gameplay-affecting, so win rates
+> are not comparable across it.
+
+Original proposal, kept for the record:
+
 
 **The ask is one read-only accessor.** No gameplay change, no checkpoint
 invalidation, no behavioural difference to any existing caller. Everything
@@ -1309,3 +1348,106 @@ loud-failure default above and for a divergence test: snapshot a live game, step
 both copies with identical actions for N ticks, and assert the observations stay
 bit-identical. `perception/`'s bridge already demonstrates exactly this kind of
 zero-divergence control.
+
+---
+
+## 14. OPEN — bind `TimeoutRules::resolve`, so match outcomes have one definition (proposed 2026-08-19)
+
+**The ask is one read-only accessor.** No gameplay change, no observation or
+action-space change, no checkpoint invalidation, no behavioural difference to
+any existing caller.
+
+### The problem
+
+`include/core/TimeoutRules.h` is the engine's definition of who won: tower count
+first, then the weakest surviving tower's HP, and only an exact tie is a draw.
+It has exactly one call site, `ClashEnv::calculateReward`, and it is not
+reachable from Python by any other route.
+
+So every Python script that wants an outcome without going through `reward`
+re-derives one. **Five did, and all five implemented only the first of the three
+rules:**
+
+| file | what it decides |
+|---|---|
+| `python_ai/net_ab.py` | greedy-episode win rate |
+| `python_ai/net_h2h.py` | head-to-head duel score |
+| `python_ai/net_h2h_search.py` (×2) | search leaf value, and the ship/no-ship duel number |
+| `python_ai/validate_pipeline.py` | the side-asymmetry regression check |
+
+Each read `get_towers_alive(0/1)` and returned a draw whenever the counts
+matched. A match ending 3–3 on towers but 1200 HP against 90 HP on the weakest
+is a clear win by the engine's own rules, and all five called it a draw — in the
+scripts whose entire output is a win rate.
+
+Fixed on the Python side in the same commit as this proposal
+(`python_ai/match_outcome.py`), by reading the six tower-HP scalars the
+observation already carries and reapplying the rule by hand. That works, and it
+is tested — but it is a **hand-written mirror of engine logic**, which is the
+exact pattern CLAUDE.md records going stale twice before (`model.py`'s
+"18*16=288", `calibrate.py` scoring bridges against `y=17.0` after the river
+moved). If `TimeoutRules` ever gains a fourth rule, nothing makes that file
+follow.
+
+### The exact edit
+
+```cpp
+// ClashEnv.h -- purely additive.
+// -1 = draw, 0 = team 0 lost, 1 = team 1 lost. Same convention as
+// MatchRules::Outcome::loserTeam, which is what TimeoutRules already returns.
+int resolveTimeoutOutcome() const {
+    return TimeoutRules::resolve(game.getBoard()).loserTeam;
+}
+```
+
+```cpp
+// bindings.cpp
+.def("resolve_timeout_outcome", &ClashEnv::resolveTimeoutOutcome)
+```
+
+`TimeoutRules::resolve` is already `static`, already takes `const Board&`, and
+already only reads. `ClashEnv` already includes what it needs via `GameManager`.
+
+### What it is worth
+
+`python_ai/match_outcome.py` collapses from a hand-maintained reimplementation
+(~50 lines of rule-mirroring plus the float-resolution argument for comparing
+normalised HP instead of raw ints) to a pass-through. The five call sites do not
+change again. Any future rule change propagates for free instead of silently
+not propagating.
+
+### Blast radius
+
+Effectively none. Read-only, additive, no existing symbol changes meaning, and
+a rebuilt `.pyd` stays compatible with current weights. The one caveat is the
+usual one: it needs a `.pyd` rebuild before the Python side can use it, so
+`match_outcome.py` should keep its current implementation as the fallback until
+that lands rather than being deleted in the same change.
+
+---
+
+## Lower-priority C++ observations (recorded, not requested)
+
+Surfaced by the 2026-08-19 review of the `dd99991..HEAD` batch. Neither is a
+bug today; both are recorded so they are not rediscovered from scratch.
+
+**`Board::getNextWaypoint`'s two branches are mirror images.** The
+`isCurrentBelow` and `isCurrentAbove` paths run the same "compute the near bank,
+check `distanceTo <= WAYPOINT_ARRIVAL_EPS`, otherwise return it" logic with
+`riverY_start`/`riverY_end` swapped. A shared helper would remove the risk of
+the epsilon check being fixed on one side and not the other — the same drift
+this file's own history is full of. Not requested: it is a refactor of live
+pathing code, and the current version is correct and tested.
+
+**`Entity::snapshot()` depends on an unenforced "effects are stateless"
+invariant.** `Entity.h` documents that `onHitEffects`/`deathEffect`/
+`periodicEffect`/`abilityEffect` are deliberately *shared* rather than deep-copied
+between an entity and its snapshot, because every effect interface declares
+`apply() const` and none holds mutable state. That is true of the ~30
+implementations today, but nothing enforces it — not a `const`-only member type,
+not a `static_assert`, not a test. A future effect using a `mutable` counter
+("every 3rd hit stuns") would let a *hypothetical* search rollout mutate state
+the *live* match reads back, which is precisely the failure class
+`test_board_deepcopy.cpp` exists to prevent and the one vector it does not cover.
+Worth a comment at minimum; a fixture card with a stateful effect would turn it
+into a real test.

@@ -26,10 +26,18 @@ TWO THINGS THE ROLLOUT DOES DELIBERATELY:
     approximation, but it is the SAME approximation for every candidate, so the
     ranking it produces is fair.
 
-  * TERMINAL POSITIONS ARE SCORED FROM TOWER COUNTS, not from `result.reward`.
-    A finished game has no meaningful critic estimate, and this file does not
-    depend on `step_self_play`'s reward convention matching `step`'s -- it
-    reuses the tower-count verdict `net_h2h.duel` already trusts.
+  * TERMINAL POSITIONS ARE SCORED FROM SURVIVING TOWERS, not from
+    `result.reward`. A finished game has no meaningful critic estimate, and
+    this file does not depend on `step_self_play`'s reward convention matching
+    `step`'s.
+
+    Both the leaf value and the final duel verdict now go through
+    `match_outcome`, which applies TimeoutRules' FULL rule -- tower count,
+    then weakest surviving tower, then draw. They previously used tower count
+    alone and called every equal-count finish a draw, which is not what the
+    engine decides and which biased this file's own ship/no-ship number.
+    Because the leaf value feeds candidate ranking, search behaviour changes
+    across that fix: A/B figures measured before it are not comparable.
 
 SIDES ARE SWAPPED and each pairing is played twice, for the reason net_h2h.py
 records: a policy beating a bit-exact copy of itself measured 0.598 once purely
@@ -47,6 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env as E  # noqa: E402
 from expert_iteration import load_net  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
+from match_outcome import score_from_towers, terminal_value  # noqa: E402
 from search_ab_test import (  # noqa: E402
     HAND_SIZE, LSTM_HIDDEN, NOOP, _build_candidates, _greedy_from_logits,
     _policy_head,
@@ -64,9 +73,13 @@ class Cfg:
 
 
 def _terminal_value(sim, team):
-    """+1 / 0 / -1 from surviving towers, from `team`'s point of view."""
-    a, b = sim.get_towers_alive(team), sim.get_towers_alive(1 - team)
-    return 1.0 if a > b else (0.0 if a == b else -1.0)
+    """+1 / 0 / -1 from surviving towers, from `team`'s point of view.
+
+    Delegates to match_outcome so the leaf value and the duel verdict can never
+    disagree about what a win is -- see this module's docstring for why the old
+    tower-count-only version was wrong and what it invalidates.
+    """
+    return terminal_value(sim, team)
 
 
 @torch.no_grad()
@@ -142,8 +155,7 @@ def duel(net0, net1, env, s0, s1, cfg, max_steps=400):
         steps += 1
         if env.step_self_play(g0, x0, y0, g1, x1, y1, 10).done:
             break
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return (1.0 if a > b else (0.5 if a == b else 0.0)), dev, steps
+    return score_from_towers(env, 0), dev, steps
 
 
 def main():

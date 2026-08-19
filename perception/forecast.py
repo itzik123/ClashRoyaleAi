@@ -40,27 +40,44 @@ Any card index outside [0, 4) is a no-op in both, which is how a pure
 
 WHAT CANNOT BE RECONSTRUCTED -- read this before trusting a number
 ------------------------------------------------------------------
-`inject` is additive and there is no setter for anything else. Grepping
-`set_*|clear|remove` across src/bindings.cpp returns nothing. So:
+`inject` is additive. Two setters exist as of 2026-08-11 and THIS MODULE DOES
+NOT USE THEM YET -- see "NOT YET MIGRATED" below. Everything here describes the
+state as this module actually rebuilds it today:
 
   unit HP     injected units spawn at FULL health. Perception measures a
-              fraction and it cannot be applied.
+              fraction and it cannot be applied. No setter exists for this.
   tower HP    always full after reset. These are extra scalars 3-8, i.e. the
-              six numbers the win condition is defined on.
-  elixir      always the starting value.
-  match clock always zero.
+              six numbers the win condition is defined on. No setter exists.
+  match clock always zero. No setter exists.
   removal     an entity that perception no longer sees cannot be deleted;
               the state is rebuilt from scratch each call instead.
-  the HAND    `reset()` reshuffles from an unseeded mt19937 that cannot be
-              seeded or set, so two forecasts of the SAME board come back
-              with different hands. Measured: forecasting one board twice
-              differs in 11 floats, every one of them a hand one-hot or a
-              hand cost, and in ZERO of the 12,852 spatial floats.
+  elixir      always the starting value -- BUT `set_elixir_for_team(team,
+              value)` now exists and would fix this.
+  the HAND    `reset()` reshuffles from an unseeded mt19937, so two forecasts
+              of the SAME board come back with different hands. Measured:
+              forecasting one board twice differs in 11 floats, every one of
+              them a hand one-hot or a hand cost, and in ZERO of the 12,852
+              spatial floats. `set_hand_for_team(team, cards)` now exists and
+              would fix this; it RETURNS A BOOL and can refuse, which a caller
+              must check -- a silently-accepted misread is worse than none.
 
 That last one is the trap for anyone who later feeds a forecast straight to
 the policy: the board would be a prediction but the hand would be fiction,
 and `affordability_mask` is built from those very scalars. The hand must be
 overwritten from perception before the vector is used as a policy input.
+
+NOT YET MIGRATED -- the elixir/hand gaps above are a TODO, not a platform limit
+------------------------------------------------------------------------------
+`ClashEnv::setElixirForTeam` / `setHandForTeam` (bound as `set_elixir_for_team`
+/ `set_hand_for_team`) were added on 2026-08-11, and their own C++ comment names
+THIS FILE as the motivating problem: "forecast.py rebuilds a board by calling
+reset() and injecting units... the reconstructed position had the right units
+and a fabricated hand/elixir."
+
+This module still goes through `reset()` + `inject()` and has not been switched
+over, so the two limitations above are self-inflicted from here on rather than
+imposed by the bindings. Anyone treating this docstring as proof that elixir and
+the hand are unreachable should stop and wire the setters up instead.
 
 It is also what makes cumulative stepping safe. Stepping 0.5 s and then
 another 1.0 s is bit-identical to stepping 1.5 s across the whole spatial
