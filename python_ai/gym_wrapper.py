@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 
 import clash_royale_env
+import scenario_offense
 
 # Real-meta Balloon Freeze deck, replacing the earlier Giant Beatdown archetype
 # entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
@@ -251,6 +252,7 @@ class MicroRoyaleEnv(gym.Env):
         # הזה יחידות-ענק דורסות חפיסת cycle), כך שאימון מול חפיסות רנדומליות מציב
         # את הסוכן במשחק כמעט-אבוד מראש ואות הניצחון/הפסד נעלם. גיוון חפיסות שייך
         # לשלב קוריקולום מאוחר, אחרי שהסוכן לומד לנצח במשחק מאוזן.
+        self.ai_deck = list(ai_deck)
         self.opp_deck = env_config.get("opp_deck", list(ai_deck))
         self.randomize_opp_deck = env_config.get("randomize_opp_deck", False)
         max_ticks = env_config.get("max_ticks", 3600)
@@ -282,6 +284,16 @@ class MicroRoyaleEnv(gym.Env):
         # COMPETENCE (teacher.TEACHER_STAGES) at a symmetric 1.0x economy.
         self.opponent_kind = env_config.get("opponent", "builtin")
         self.teacher = None
+        # Offensive scenario injection ("Proposal A"), DEFAULT OFF -- see
+        # scenario_offense.py for why it is demoted to an accelerator rather
+        # than a mechanism. It changes the state distribution, not the payoff,
+        # so it can only help once the payoff is right.
+        self.offensive_scenario_prob = float(
+            env_config.get("offensive_scenario_prob",
+                           scenario_offense.OFFENSIVE_SCENARIO_PROB))
+        self._scenario_rng = np.random.default_rng(
+            env_config.get("scenario_seed", None))
+        self.last_scenario = None
         if self.opponent_kind == "teacher":
             from teacher import UtilityTeacher
             self.teacher = UtilityTeacher(self.opp_deck, team=1)
@@ -330,6 +342,16 @@ class MicroRoyaleEnv(gym.Env):
             self.game.set_opponent_deck(self.opp_deck)
 
         obs_list = self.game.reset()
+        # Scenario injection rewrites the freshly-reset state, so the
+        # observation has to be RE-READ afterwards -- reset()'s return value
+        # describes the position before the rewrite.
+        self.last_scenario = None
+        if self.offensive_scenario_prob > 0.0:
+            self.last_scenario = scenario_offense.apply_offensive_scenario(
+                self.game, self._scenario_rng, list(self.game.get_hand())
+                and self.ai_deck, self.offensive_scenario_prob)
+            if self.last_scenario is not None:
+                obs_list = self.game.get_observation_for_team(0)
         # New match, new weight profile and lane bias. A FULLY deterministic
         # opponent is memorizable in one counter-line, which is the
         # single-opponent version of the echo chamber this curriculum exists to

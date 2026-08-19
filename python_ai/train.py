@@ -850,9 +850,13 @@ def load_state_dict_flexible(net, state_dict, context_label):
 def train_ppo():
     os.makedirs("replays", exist_ok=True)
     os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
-    weight_path = "model_weights.pth"
+    # Overridable so a smoke run or an experiment arm cannot clobber the real
+    # checkpoint. Both are redirected together: a run writing scratch weights
+    # into the live TensorBoard directory would silently interleave two runs'
+    # curves and make both unreadable.
+    weight_path = os.environ.get("CLASH_WEIGHTS", "model_weights.pth")
     resuming = os.path.exists(weight_path)
-    log_dir = "runs/clash_royale_experiment"
+    log_dir = os.environ.get("CLASH_LOGDIR", "runs/clash_royale_experiment")
 
     # 8 workers + 1 CPU-bound main process (no CUDA here, so the update step itself
     # needs real cores too) comfortably fits 12 logical processors with headroom.

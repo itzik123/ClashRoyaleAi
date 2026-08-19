@@ -1903,5 +1903,92 @@ def test_phase1_opponent_defaults_to_the_teacher():
         "opponent -- see the 2026-08-19 pivot")
 
 
+# --------------------------------------------------------------------------
+# scenario_offense.py -- Proposal A, kept as an accelerator and default-OFF
+# --------------------------------------------------------------------------
+
+def test_offensive_scenarios_are_off_by_default():
+    """THE ORDER MATTERS. Injection changes the state distribution, not the
+    payoff, so switching it on before the payoff is fixed just pays a negative
+    price more often -- which is exactly what the four forced-usage experiments
+    measured. It stays off until prove_environment.py says otherwise."""
+    import scenario_offense
+    assert scenario_offense.OFFENSIVE_SCENARIO_PROB == 0.0
+    env = gym_wrapper.MicroRoyaleEnv()
+    assert env.offensive_scenario_prob == 0.0
+    env.reset()
+    assert env.last_scenario is None
+
+
+def test_offensive_scenario_reports_a_stale_pyd_instead_of_an_attributeerror():
+    """set_elixir_for_team/set_hand_for_team were added by commit 26de409 and
+    the post-build copy into python_ai/ can silently fail (MSB3073). Discovering
+    that as an AttributeError mid-episode inside a scenario constructor is the
+    worst possible place; the check is hoisted to the entry point."""
+    import scenario_offense
+    if scenario_offense.HAS_STATE_SETTERS:
+        pytest.skip("this .pyd exports the state setters")
+    rng = np.random.default_rng(0)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    with pytest.raises(RuntimeError, match="post-build copy"):
+        scenario_offense.apply_offensive_scenario(
+            env, rng, gym_wrapper.DEFAULT_DECK, prob=1.0)
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_punish_window_actually_builds_the_position_it_claims():
+    """A silently rejected setup still counts as an injected episode and would
+    report practice that never happened -- set_hand_for_team returns False
+    rather than raising, so the return value is the only signal."""
+    import scenario_offense
+    rng = np.random.default_rng(0)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    name = scenario_offense.punish_window(env, rng, gym_wrapper.DEFAULT_DECK)
+    assert name is not None and name.startswith("punish_window")
+    assert 15 in list(env.get_hand_for_team(0)), "the win condition must be in hand"
+    assert env.get_elixir_for_team(0) == pytest.approx(8.0)
+    assert env.get_elixir_for_team(1) == pytest.approx(1.0)
+    # Their commitment is on the board, visible to us as ENEMY mass.
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    plane = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+    enemy = sum(float(obs[c * plane:(c + 1) * plane].sum()) for c in (4, 5, 6))
+    assert enemy > 0.0, "punish_window injected nothing the agent can see"
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_counter_push_leaves_our_own_units_alive_on_our_side():
+    import scenario_offense
+    rng = np.random.default_rng(1)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    name = scenario_offense.counter_push(env, rng, gym_wrapper.DEFAULT_DECK)
+    assert name is not None and name.startswith("counter_push")
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    plane = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+    ally = sum(float(obs[c * plane:(c + 1) * plane].sum()) for c in (0, 1, 2))
+    assert ally > 0.0, "counter_push injected no survivors to push behind"
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_scenario_injection_reobserves_after_rewriting_the_state():
+    """reset() returns the observation BEFORE the rewrite. If the env forgets to
+    re-read it, the agent's first observation describes a position that no
+    longer exists -- invisible in every metric."""
+    env = gym_wrapper.MicroRoyaleEnv({"offensive_scenario_prob": 1.0,
+                                      "scenario_seed": 0})
+    obs, _ = env.reset()
+    assert env.last_scenario is not None
+    live = np.asarray(env.game.get_observation_for_team(0), np.float32)
+    assert np.allclose(obs, live), "the returned observation is pre-scenario"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
