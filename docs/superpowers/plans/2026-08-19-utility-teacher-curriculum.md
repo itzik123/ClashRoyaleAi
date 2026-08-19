@@ -610,4 +610,97 @@ passes.
 
 ## Results
 
-*(filled in as Tasks 8, 9 and 12 complete)*
+All measured 2026-08-19 on the 2.6 Hog Cycle deck, teacher stage 5 unless noted.
+
+### Task 9 -- teacher strength (both bars PASS)
+
+| | result |
+|---|---|
+| bar 1: vs C++ `HeuristicOpponent` @1.0x, stage 5 (n=12) | **1.000** |
+| ...stages 0-4 | 0.54 / 0.29 / 0.71 / 0.96 / 0.92 |
+| bar 2: ep-31312 2.6 net (greedy), sides swapped (n=20) | net **0.775**, CI [0.663, 0.875] |
+| cost | 3.47 ms/decision, ~1 s/episode at stage 5 |
+
+Beatable but not free -- and materially harder than the C++ heuristic, which
+that same net beats ~100%. Stage 1 scoring below stage 0 is a real
+non-monotonicity in the rules-only rungs and is n=12 noise-dominated.
+
+**The teacher is not a turtle**, which was the first thing that could have gone
+wrong. Win-condition share of its own plays RISES with competence:
+
+| stage | Hog share of plays | P(play) |
+|---|---|---|
+| 0 | 7.1% | 0.182 |
+| 3 | 13.4% | 0.160 |
+| 5 | **16.5%** | 0.165 |
+
+against the RL agent's 0.8%. It uses all eight cards.
+
+### Task 8 -- the falsifier, and it did NOT go as predicted
+
+**Symmetric, teacher vs teacher, n=100 paired per row:**
+
+| opp elixir | attack | cycle | delta | p |
+|---|---|---|---|---|
+| 1.00 | 0.510 | 0.840 | **-0.330** | 5.7e-08 |
+| 1.10 | 0.145 | 0.455 | -0.310 | 4.5e-07 |
+| 1.20 | 0.015 | 0.130 | -0.115 | 7.6e-05 |
+
+Re-run at 1.0x with the continuous readout and the (confounded) ban arm:
+
+| arm | win | enemy tower dmg dealt | tower dmg TAKEN |
+|---|---|---|---|
+| attack | 0.540 | 6326.3 | **5772.7** |
+| cycle | 0.875 | 6938.4 | **3049.3** |
+| ban | 0.910 | -- | -- |
+
+Committing the win condition does not even raise our own tower damage
+(-612, p=0.13) and nearly DOUBLES the damage we take. Never playing it at all
+(0.910) beats attacking with it by 0.37.
+
+**Dose-response vs the C++ heuristic** (the historical setup, policy confound
+removed), n=80: 1.00x VOID at ceiling; 1.25x **-0.1875** (p=0.0096); 1.50x
+**-0.1062** (p=0.00049). So the historical finding REPLICATES with a
+deterministic bot -- it was never a policy failure.
+
+**Marginal value of one commitment** at the advisor's own gate, both sides
+playing on, n=220 states: **-298.2 tower HP, CI [-494.3, -107.1]**
+(sign test 87/105, p=0.22 -- the CI and the sign test disagree, so the effect is
+size-driven, not frequency-driven).
+
+### The mechanism, isolated
+
+An unopposed lone Hog is **not** weak: injected on an empty board it deals
+**2536 tower damage** (a full Princess Tower) and dies at tick 190. So neither
+the card nor the enemy King firing from tick 0 is what suppresses it.
+
+`prove_wincon_trade.py`, n=60 paired, defender playing on for 30 s:
+
+| defender elixir | arm | they spend | tower dmg | dmg/elixir committed |
+|---|---|---|---|---|
+| match state | hog (4) | 1.07 | 634.0 | 158.5 |
+| match state | supported (6) | 1.72 | 978.2 | 163.0 |
+| **forced to 1.0** | hog (4) | 1.32 | **1025.0** | **256.2** |
+| forced to 1.0 | supported (6) | 0.90 | 1162.3 | 193.7 |
+
+**The punish window is real and large: +391 tower HP (+62%) for hitting a
+bankrupt defender.** Escorting helps against a solvent defender (+344 HP, CI
+[+186, +524]) and is wasted against a broke one (dmg/elixir 256 -> 194), which
+is a correct and fairly subtle strategic result.
+
+So the card works and the window exists. What fails is SELECTION: the advisor
+commits whenever estimated opponent elixir is <= `HOG_MAX_OPP_ELIXIR = 7.0`,
+which is not a punish window at all.
+
+### A flaw found in the teacher itself
+
+`UtilityTeacher.rollout_stats` rolls candidates forward with **both sides
+no-oping**. That is fine for ranking a defensive placement a second ahead and
+wrong for an attack: the entire cost of committing a win condition is the
+counter-push that lands while our half is empty, and an opponent frozen on no-op
+never counter-pushes. **The teacher's own scorer therefore cannot see the cost
+of attacking**, which is consistent with it over-committing at a gate of 7.0.
+Stated as a known limitation rather than silently fixed, because the fix
+(letting the opponent act inside every rollout) costs ~20x per decision and the
+cheap alternative -- an explicit solvency term -- needs its threshold chosen by
+the gate sweep now running.
