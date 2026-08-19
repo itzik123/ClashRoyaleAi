@@ -303,14 +303,39 @@ PROFILES = {
 }
 
 # The competence ladder that replaces CURRICULUM_STAGES' elixir multipliers.
-# Stages 0-1 run with NO search at all, so the early curriculum is free.
+#
+# LOOKAHEAD IS THE PRIMARY PROGRESSION AXIS. Stage 0 is deliberately
+# short-sighted: it still places structurally well, because the candidate cells
+# come from tactics.py either way, but with 1 s of foresight it cannot see a
+# trade going bad and an unpolished agent can beat it. The top rung simulates a
+# full 10 s forward, which is long enough to watch a committed push arrive, be
+# answered, and be counter-pushed -- the whole exchange the earlier gates could
+# not see.
+#
+# DEPTH IS CHEAP AND WIDTH IS NOT, measured on this box: one engine step costs
+# 0.015 ms while one scored candidate costs a rollout, so a 3 s candidate is
+# 0.25 ms and a 6 s candidate 0.44 ms. 10 s therefore lands near 0.7 ms per
+# candidate, ~8 ms per decision at K~11 -- against a ~22 s wall-clock episode
+# per env at num_envs=8, i.e. a few percent. shipping.py reached the same
+# conclusion for the neural search from the other direction.
+#
+# THE 12-SECOND CAVEAT STILL APPLIES AND IS WHY THIS STOPS AT 10 s.
+# `rollout_stats` rolls forward with both sides no-oping, and CLAUDE.md records
+# that past ~12 s of that a rollout "stops resembling the game" -- the neural
+# search measured horizon 20 WORSE than horizon 12 for exactly this reason
+# (0.875 vs 0.963). 100 ticks sits inside the validated regime; going further
+# would buy a longer simulation of a fiction.
+#
+# epsilon is the probability of substituting a uniformly random LEGAL action
+# (no-op included) for the argmax, and falls to zero at the top so the final
+# rung is fully deterministic given its profile.
 TEACHER_STAGES = [
-    {"horizon_ticks":  0, "epsilon": 0.30, "k_cells": 1},
-    {"horizon_ticks":  0, "epsilon": 0.15, "k_cells": 1},
-    {"horizon_ticks": 30, "epsilon": 0.10, "k_cells": 2},
-    {"horizon_ticks": 30, "epsilon": 0.05, "k_cells": 2},
-    {"horizon_ticks": 60, "epsilon": 0.02, "k_cells": 3},
-    {"horizon_ticks": 60, "epsilon": 0.00, "k_cells": 3},
+    {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1},   # rules only
+    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1},   # 1 s
+    {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2},   # 3 s
+    {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2},   # 5 s
+    {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3},   # 7 s
+    {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3},   # 10 s -- clairvoyant
 ]
 
 
