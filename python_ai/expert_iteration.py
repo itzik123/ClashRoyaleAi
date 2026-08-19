@@ -72,11 +72,12 @@ import bc_pretrain  # noqa: E402
 from bc_pretrain import _cell_from_xy, action_match_rate, train_bc  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
+from policy_io import LSTM_HIDDEN, load_net  # noqa: E402
 from search_ab_test import (  # noqa: E402
-    LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action,
-    outcome_score, play_episode,
+    _greedy_from_logits, _policy_head, _search_action, outcome_score,
+    play_episode,
 )
-from train import load_state_dict_flexible  # noqa: E402
+
 
 CE = clash_royale_env.ClashRoyaleEnv
 BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
@@ -112,25 +113,6 @@ class SearchCfg:
         self.k_cells = k_cells
         self.terminal_weight = terminal_weight
         self.max_steps = max_steps
-
-
-def load_net(path, device, verbose=True):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-    net = MicroRoyaleNet().to(device)
-    clean = load_state_dict_flexible(net, state, path)
-    net.eval()
-    if verbose:
-        eps = ckpt.get("episodes_completed", "?") if isinstance(ckpt, dict) else "?"
-        print(f"  loaded {os.path.basename(path)} (episodes_completed={eps}, clean_load={clean})")
-        if not clean:
-            # load_state_dict_flexible has just printed WHICH case this is:
-            # tensors discarded (trained weights lost) or merely tensors the
-            # checkpoint predates (nothing lost). Do not restate it as the
-            # alarming case -- every checkpoint written before the 2026-08-14
-            # `place_hires` branch takes this path harmlessly.
-            print("    ^ see the line above for whether anything trained was lost.")
-    return net
 
 
 def verify_cell_roundtrip(net):

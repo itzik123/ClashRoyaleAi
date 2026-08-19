@@ -70,7 +70,6 @@ CONTRACTS THAT BITE
 """
 import os
 
-import numpy as np
 
 import clash_royale_env as E
 

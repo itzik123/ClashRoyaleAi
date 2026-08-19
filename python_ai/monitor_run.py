@@ -106,7 +106,7 @@ def check_placement(ckpt_path, episodes, opp_elixir):
     import clash_royale_env as E
     import gym_wrapper
     import tactics
-    from expert_iteration import load_net
+    from policy_io import load_net
 
     CE = E.ClashRoyaleEnv
     dev = torch.device("cpu")

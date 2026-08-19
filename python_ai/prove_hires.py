@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import distill_tactics as D  # noqa: E402
 import tactics  # noqa: E402
-from expert_iteration import load_net  # noqa: E402
+from policy_io import load_net  # noqa: E402
 
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
 NAME = {CANNON: "Cannon", FIREBALL: "Fireball"}

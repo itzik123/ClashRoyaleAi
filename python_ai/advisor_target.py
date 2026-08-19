@@ -56,7 +56,6 @@ import tactics
 
 CANNON_ID = tactics.CANNON_ID
 FIREBALL_ID = tactics.FIREBALL_ID
-GIANT_ID = tactics.GIANT_ID   # retained for prove_giant.py only; NOT an advisor card
 HOG_ID = tactics.HOG_ID
 BOARD_W = tactics.BOARD_W
 BOARD_H = tactics.BOARD_H

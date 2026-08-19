@@ -31,7 +31,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import clash_royale_env  # noqa: E402
-from expert_iteration import load_net  # noqa: E402
+from policy_io import load_net  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from search_ab_test import (  # noqa: E402
     HAND_SIZE, LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action,
@@ -112,7 +112,7 @@ def report(label, placed, all_x):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default="model_weights_cured.pth")
+    ap.add_argument("--weights", default="model_weights_selfplay.pth")
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--horizon", type=int, default=12)
     ap.add_argument("--opp-elixir", type=float, default=1.5)

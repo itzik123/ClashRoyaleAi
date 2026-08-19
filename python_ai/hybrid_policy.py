@@ -64,6 +64,7 @@ import numpy as np
 import torch
 
 import tactics
+from policy_io import LSTM_HIDDEN
 
 # The GIANT path was removed on 2026-08-19, matching the cleanup advisor_target
 # .py already applied to itself on 2026-08-17 and for the same reason: the deck
@@ -71,10 +72,10 @@ import tactics
 # Giant branch here was unreachable. A dead entry is worse than none -- it made
 # this policy look like it covered a win condition when it covered nothing, and
 # it silently collapsed two of hybrid_ab.py's --per-card arms into duplicates of
-# two others. tactics.GIANT_ID and tactics.best_giant_cell stay: prove_giant.py
-# and train_selfplay.py's scenarios still use them.
+# two others. tactics.best_giant_cell stays -- not for the Giant, which left
+# DEFAULT_DECK on 2026-08-16, but because advisor_target's HOG "wincon" rule
+# reuses its less-defended-lane logic.
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
-LSTM_HIDDEN = 256
 
 FIREBALL_MIN_CATCH = 690.0   # 3 x 230 HP: a Minions squad, i.e. a 3-cost trade
 CANNON_MIN_COVER = 721.0     # one Musketeer approaching

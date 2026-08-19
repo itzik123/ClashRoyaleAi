@@ -1,1 +1,75 @@
 # ClashRoyaleEnv
+
+A Clash Royale battle simulator in C++ (MSVC / CMake / pybind11) with a PPO
+agent in Python, plus `perception/`, which reads real matches off the screen and
+drives the simulator from them as a state estimator.
+
+## Where to look
+
+| | |
+|---|---|
+| **`CLAUDE.md`** | The knowledge base. Engine facts, the training mechanism, every measured result and how it was measured. Read this before changing anything. |
+| **`TODO.md`** | The single list of pending work, verified against the source tree. |
+| `perception/README.md` | Per-stage status of the live sensor, with measured numbers. |
+| `perception/UPSTREAM_REQUESTS.md` | Engine changes requested from `perception/`, with evidence and blast radius. |
+| `perception/BOT_REQUESTS.md` | Training-side suggestions from `perception/`. |
+| `docs/superpowers/specs/` | Design rationale for the utility teacher and the live sensor. |
+
+## Layout
+
+```
+include/, src/       C++ engine. READ-ONLY by default.
+tests/               C++ Catch2 tests (ClashRoyaleTests).
+python_ai/           PPO agent, training pipelines, measurement harnesses.
+                     READ-ONLY by default -- training runs here.
+perception/          Screen -> placement events -> simulator as estimator.
+                     Self-contained: own venv, own requirements.txt.
+web/viewer.html      Replay viewer.
+```
+
+## Running things
+
+The compiled extension `clash_royale_env.pyd` is built for **Python 3.11 only**.
+The default `python` on the development machine is 3.14 and fails with
+`ImportError: DLL load failed`, which reads like a corrupt build and is only a
+version mismatch. Use one of:
+
+```bash
+python_ai/venv/Scripts/python.exe
+```
+```bash
+perception/.venv/Scripts/python.exe
+```
+
+Tests:
+
+```bash
+python_ai/venv/Scripts/python.exe -m pytest python_ai/test_python_ai.py -q
+```
+```bash
+perception/.venv/Scripts/python.exe -m pytest perception/tests -q
+```
+
+Rebuild the engine (`cmake`, `cl` and `msbuild` are not on PATH):
+
+```bash
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" build_python\clash_royale_env.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+```
+
+The post-build copy into `python_ai/` fails with MSB3073 if any Python process
+holds the `.pyd` open — Windows will not overwrite a mapped DLL. That looks
+exactly like a broken compile and almost never is.
+
+## The rules that matter
+
+- **`include/`, `src/` and `python_ai/` are READ-ONLY unless explicitly asked.**
+  A training run is usually live against them.
+- **Never change C++ without confirming the exact diagnosis and the exact edit
+  first**, even when clearly justified. Propose it in
+  `perception/UPSTREAM_REQUESTS.md`.
+- **Any gameplay-affecting engine change invalidates the checkpoints' win-rate
+  history.** Say so when proposing one.
+- **Don't put a second copy of an engine constant in Python.** Derive it from
+  the bindings.
+
+`perception/` is the one place to edit freely.

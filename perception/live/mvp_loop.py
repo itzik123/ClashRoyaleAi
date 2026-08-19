@@ -1,18 +1,21 @@
 """Minimal end-to-end loop: screen -> GameState -> decision -> tap.
 
-WHY A STUPID POLICY ON PURPOSE
-------------------------------
-The trained policy consumes a 13,606-float observation, and the encoder that
-would build one from a `GameState` does not exist yet. Waiting for it before
-running anything end to end is how a pipeline accumulates six components that
-have each been measured alone and have never been in the same process
-together.
+TWO POLICIES, AND WHY THE STUPID ONE IS STILL HERE
+--------------------------------------------------
+`--policy neural` runs the trained network: `perception_encoder` turns a
+GameState into the 13,606-float observation and `NeuralPolicy` steps the net.
+That path works and is the one to use for real play.
 
-So the decision here is a hand-written rule, and every OTHER joint is real:
-live capture, the detector, the adapter, the tile->screen conversion and the
-tap. Those are the joints that can be structurally wrong. The policy is the one
-part already known to work -- it just needs the encoder to reach it, and it
-drops in behind `Policy.decide` when that lands.
+`--policy scripted` (the default) is a hand-written rule, kept because it
+isolates the integration from the policy. Every OTHER joint is real in both
+modes -- live capture, the detector, the adapter, the tile->screen conversion
+and the tap -- so a fault that reproduces under `scripted` is a fault in the
+pipeline, not in the network. That is worth one small class.
+
+An earlier version of this docstring claimed the encoder "does not exist yet"
+and that the trained policy therefore could not be reached. It has existed
+since 2026-08-16; the stale text is recorded here because it misled a session
+into re-deriving a component the repo already had.
 
 WHAT THIS IS FOR
 ----------------

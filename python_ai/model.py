@@ -109,6 +109,15 @@ def _build_placement_legality(num_card_ids, placement_rows, board_width):
 
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
+
+    # The recurrent width, declared ONCE here because it is the shape every
+    # caller needs before it has a net: a fresh (hx, cx) is zeros of this size,
+    # and every harness that steps the policy manually builds one. It used to be
+    # typed as a bare `256` in five separate files, which is the same duplicated-
+    # constant failure CLAUDE.md forbids for engine constants -- `policy_io`
+    # re-exports this attribute so nothing has to repeat the literal.
+    LSTM_HIDDEN = 256
+
     def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None,
                  placement_rows=None, num_ability_slots=0):
         super(MicroRoyaleNet, self).__init__()
@@ -243,7 +252,7 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         self.lstm_input_dim = self.cnn_out_dim + 64
         # אנו משתמשים ב-LSTMCell כדי שנוכל לשלוט על הפעימות (Ticks) ידנית בלולאת הסביבה
-        self.lstm = nn.LSTMCell(self.lstm_input_dim, 256)
+        self.lstm = nn.LSTMCell(self.lstm_input_dim, self.LSTM_HIDDEN)
 
         # ==========================================
         # 4. ראשי הפעולה - Actor Heads

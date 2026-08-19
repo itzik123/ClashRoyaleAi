@@ -50,9 +50,9 @@ sys.path.insert(0, HERE)
 import clash_royale_env as CE  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
+from policy_io import LSTM_HIDDEN  # noqa: E402
 
 E = CE.ClashRoyaleEnv
-LSTM_HIDDEN = 256
 NOOP = E.HAND_SIZE
 CANNON = 25
 HOG = 15

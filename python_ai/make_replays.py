@@ -53,7 +53,8 @@ from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from search_ab_test import (  # noqa: E402
     LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action, outcome_score,
 )
-from expert_iteration import SearchCfg, load_net  # noqa: E402
+from expert_iteration import SearchCfg  # noqa: E402
+from policy_io import load_net  # noqa: E402
 from train import annotate_replay_with_agent_info  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
@@ -104,7 +105,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--n", type=int, default=5, help="paired openings")
     ap.add_argument("--original", default="model_weights_selfplay.pth")
-    ap.add_argument("--distilled", default="model_weights_dist_e3.pth")
+    ap.add_argument("--distilled", default="model_weights_selfplay.pth")
     ap.add_argument("--outdir", default="replays_e3")
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     ap.add_argument("--max-ticks", type=int, default=3600)

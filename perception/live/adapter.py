@@ -62,7 +62,7 @@ from contracts import (
     TowerObservation,
     UnitObservation,
 )
-from live.board_filter import BOARD_HEIGHT, BOARD_WIDTH, on_board
+from live.board_filter import BOARD_HEIGHT, on_board
 from live.king_hp import read_king_hp
 from live.unit_hp import CALIBRATION_WIDTH, find_badges, match_badges
 from live.unit_to_card import (

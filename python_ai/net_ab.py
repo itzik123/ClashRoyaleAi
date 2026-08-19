@@ -30,7 +30,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import clash_royale_env as E  # noqa: E402
-from expert_iteration import load_net  # noqa: E402
+from policy_io import load_net  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from match_outcome import score_from_towers  # noqa: E402
 

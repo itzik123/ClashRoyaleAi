@@ -62,20 +62,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env as _E  # noqa: E402
 
 
-def weakest_tower_hp(env, team=0):
-    """Lowest HP among `team`'s SURVIVING towers, normalised, or None if none.
-
-    None mirrors TimeoutRules' `std::numeric_limits<int>::max()` sentinel for a
-    side with nothing left standing: unreachable from step 2, because a side
-    with zero towers cannot have tied the count against a side with any.
-    """
-    obs = np.asarray(env.get_observation_for_team(team), dtype=np.float32)
-    tail = env.observation_size() - _E.ClashRoyaleEnv.NUM_EXTRA_SCALARS
-    own = obs[tail + 3:tail + 6]
-    alive = own[own > 0.0]
-    return float(alive.min()) if alive.size else None
-
-
 def score_from_towers(env, team=0):
     """1.0 win / 0.5 draw / 0.0 loss for `team`, by TimeoutRules' rules.
 
@@ -93,6 +79,9 @@ def score_from_towers(env, team=0):
     # 2. Equal counts -> the lower weakest tower loses. Both slices come from
     #    ONE observation (own = tail+3..5, opponent = tail+6..8), so this is a
     #    single call, and `team`'s own perspective supplies both halves.
+    #    An empty slice mirrors TimeoutRules' numeric_limits<int>::max() sentinel
+    #    for a side with nothing standing -- unreachable from here, because a
+    #    side with zero towers cannot have tied the count against a side with any.
     obs = np.asarray(env.get_observation_for_team(team), dtype=np.float32)
     tail = env.observation_size() - _E.ClashRoyaleEnv.NUM_EXTRA_SCALARS
     my_alive = obs[tail + 3:tail + 6]

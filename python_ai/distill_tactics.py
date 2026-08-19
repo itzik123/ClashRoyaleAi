@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env as E  # noqa: E402
 import gym_wrapper  # noqa: E402
 import tactics  # noqa: E402
-from expert_iteration import load_net  # noqa: E402
+from policy_io import load_net  # noqa: E402
 
 CE = E.ClashRoyaleEnv
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID

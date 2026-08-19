@@ -34,7 +34,7 @@ from torch.distributions import Categorical
 import clash_royale_env as E
 import gym_wrapper
 from model import MicroRoyaleNet
-from train import load_state_dict_flexible
+from policy_io import load_state_dict_flexible
 
 CE = E.ClashRoyaleEnv
 

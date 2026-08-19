@@ -17,6 +17,7 @@ from collections import deque
 import clash_royale_env
 import gym_wrapper
 from model import MicroRoyaleNet
+from policy_io import load_state_dict_flexible
 from elixir_shaping import W_SOLVENCY, solvency_shaping
 import advisor_target
 
@@ -780,72 +781,6 @@ def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
 
     with open(filepath, "w") as f:
         json.dump(data, f)
-
-# Per-process cache of context_labels already warned about (see
-# load_state_dict_flexible below) -- train_selfplay.py's PFSP calls
-# set_historical_opponent, and therefore this function, on EVERY episode
-# reset in EVERY worker, so without this a single genuinely-mismatched
-# checkpoint floods the log with an identical line every episode for as long
-# as PFSP keeps sampling it (observed in practice: one mismatched checkpoint
-# alone produced ~4000 repeats of the same line). context_label already
-# encodes the checkpoint path, so this naturally dedupes per unique
-# checkpoint, not just per call.
-_warned_mismatches = set()
-
-def load_state_dict_flexible(net, state_dict, context_label):
-    """Loads state_dict into net. Returns True on a clean, fully-matching load.
-
-    On an architecture mismatch (e.g. a card-roster change resizing the hand
-    one-hot encoding, which is the only part of MicroRoyaleNet that depends on
-    NUM_CARD_IDS -- see model.py's scalar_size), falls back to loading only
-    the tensors whose shape still matches, leaving the rest at their fresh
-    initialization instead of crashing outright. The CNN/LSTM/action heads are
-    independent of NUM_CARD_IDS, so this warm-starts on everything except the
-    one incompatible layer rather than discarding a whole checkpoint (and,
-    upstream of this function, an entire opponent-history library, for
-    train_selfplay.py's callers) over it.
-
-    Shared between both pipelines (train.py's own resume, and everything
-    train_selfplay.py uses it for) rather than defined twice -- lives here
-    since train_selfplay.py already imports from train.py, and the reverse
-    would be a circular import.
-
-    Returns False when this fallback path was taken -- the caller should NOT
-    then load a paired optimizer state dict, since Adam's per-parameter
-    buffers would be stale/mismatched for whatever just got reinitialized.
-    """
-    try:
-        net.load_state_dict(state_dict)
-        return True
-    except RuntimeError:
-        own_state = net.state_dict()
-        compatible = {k: v for k, v in state_dict.items()
-                      if k in own_state and v.shape == own_state[k].shape}
-        skipped = sorted(set(state_dict.keys()) - set(compatible.keys()))
-        own_state.update(compatible)
-        net.load_state_dict(own_state)
-        if context_label not in _warned_mismatches:
-            _warned_mismatches.add(context_label)
-            # Two very different situations reach this branch and only one of
-            # them loses trained weights:
-            #   * `skipped` non-empty -- the checkpoint carried a tensor this
-            #     net cannot use. Something trained was DISCARDED.
-            #   * `skipped` empty -- every tensor the checkpoint had was loaded;
-            #     the net simply has parameters that postdate it (e.g. the
-            #     zero-initialized `place_hires` branch added 2026-08-14, which
-            #     is an exact no-op at init). Nothing trained was lost.
-            # Reporting both as "re-initialized" is how a harmless load gets
-            # read as a discarded placement head.
-            missing = sorted(set(own_state.keys()) - set(state_dict.keys()))
-            if skipped:
-                print(f"[{context_label}] Architecture mismatch -- warm-started "
-                      f"{len(compatible)}/{len(state_dict)} tensor(s), "
-                      f"DISCARDED (shape changed): {skipped}")
-            else:
-                print(f"[{context_label}] Checkpoint predates this architecture "
-                      f"-- all {len(compatible)} of its tensor(s) loaded; "
-                      f"fresh (not in checkpoint): {missing}")
-        return False
 
 def train_ppo():
     os.makedirs("replays", exist_ok=True)

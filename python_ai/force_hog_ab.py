@@ -53,13 +53,13 @@ if HERE not in sys.path:
 import clash_royale_env as CE  # noqa: E402
 from gym_wrapper import DEFAULT_DECK, WIN_CONDITION_ID  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
+from policy_io import LSTM_HIDDEN  # noqa: E402
 import tactics  # noqa: E402
 
 # BOARD_WIDTH lives on the CLASS, not the module -- same binding prove_hog.py
 # uses. `clash_royale_env.BOARD_WIDTH` raises AttributeError.
 E = CE.ClashRoyaleEnv
 
-LSTM_HIDDEN = 256
 NOOP = 4
 
 

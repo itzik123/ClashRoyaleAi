@@ -50,11 +50,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
-from train import load_state_dict_flexible  # noqa: E402
+from policy_io import LSTM_HIDDEN, load_state_dict_flexible  # noqa: E402
 
 HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
 NOOP = HAND_SIZE  # the no-op arm of the card head is the column past the hand
-LSTM_HIDDEN = 256
 
 
 # --------------------------------------------------------------------------

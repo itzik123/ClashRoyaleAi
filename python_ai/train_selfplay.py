@@ -25,11 +25,12 @@ from model import MicroRoyaleNet
 from train import (
     compute_shaping, building_hp_end, annotate_replay_with_agent_info,
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
-    DRAW_PENALTY, load_state_dict_flexible,
+    DRAW_PENALTY,
     PLACEMENT_COVERAGE_COEF, placement_coverage_slots,
     spell_value_weight,
     W_FLAWLESS_DEFENSE, OWN_TOWER_HP_TOTAL, flawless_defense_bonus,
 )
+from policy_io import load_state_dict_flexible
 import advisor_target as AT
 import exploiter as exploiter_mod
 
@@ -541,44 +542,6 @@ def _scenario_fireball_tower_value(rng):
 # entropy change reaches an action that is never sampled -- which is why this
 # is a START-STATE change and not any of those.
 #
-# The elixir is banked by advancing no-op ticks rather than being set, because
-# there is no set_elixir binding and the C++ engine stays read-only. That is a
-# feature, not a workaround: 90 no-op ticks is an ordinary quiet mid-match
-# moment, and BOTH sides bank equally (measured 5.0 -> 8.15 for each), so the
-# scenario hands the agent an opportunity rather than an advantage.
-_GIANT_ID = 2
-
-# Ticks of quiet banked before the episode starts. 75-110 puts elixir at
-# 7.6-8.9: comfortably above the Giant's 5, and deliberately under the 9.0
-# W_ELIXIR_OVERFLOW threshold, so the scenario does not open with a standing
-# per-step penalty that would bias every Giant episode negative. Randomised so
-# "scenario" does not become a fixed elixir cue the net can key on.
-_GIANT_WARMUP_TICKS = (75, 111)
-
-
-def _scenario_giant_commit(rng):
-    """A quiet board and enough elixir to actually play the win condition.
-
-    Nothing is spawned. The whole point is the state the agent almost never
-    reaches on its own -- an unmasked Giant slot -- so that choosing it, and
-    the push that follows, can accumulate gradient at all.
-
-    The window is long because the SIGNAL is long: a Giant at ~0.75 tiles/s
-    needs roughly 20-30 decisions to walk from a back placement across the
-    bridge and reach a tower. Truncating sooner would show the commitment and
-    hide the payoff, which is the shape of credit assignment that produced the
-    0.7% win-condition usage this is meant to undo.
-    """
-    return {
-        "name": "giant_commit",
-        "defensive": False,
-        "spawns": [],
-        "warmup_ticks": int(rng.integers(*_GIANT_WARMUP_TICKS)),
-        "require_own_card": _GIANT_ID,
-        "max_steps": 40,
-    }
-
-
 # (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
 # drop in here with the same machinery. Set a scenario's "max_steps" to None
 # to run it to the natural end of the game instead of a focused window.
@@ -588,19 +551,23 @@ def _scenario_giant_commit(rng):
 # the bridge-push scenarios are saturated and no longer teaching the reflex
 # they were added for. Their share drops from 100% to 50% of injected episodes
 # (SCENARIO_INJECTION_PROB itself is unchanged at 0.30).
-# giant_commit takes its share from the BRIDGE scenarios, not from the
-# Fireball ones. ScenDef is running at 0.97-0.98, so the bridge push is
-# saturated on both and no longer teaching the reflex it was added for, while
-# the Fireball scenarios are only ~13k episodes old and have not been read yet.
-# bridge_push 2.0 -> 1.0 and giant_commit at 1.0 leaves the total at 6.0, so
-# every other scenario's absolute share is unchanged: Fireball stays at 50%,
-# bridge falls 50% -> 33%, and giant_commit takes 17%.
+# giant_commit was REMOVED on 2026-08-19 and this is GAMEPLAY-AFFECTING.
+# It required card id 2 (Giant) in our own hand, and DEFAULT_DECK became 2.6
+# Hog Cycle on 2026-08-16 -- a deck that cannot contain it. So every time it was
+# drawn it spent 24 futile `reset()` calls hunting for the card, fell through,
+# and then ran a quiet board with banked elixir and no spawns: the one thing its
+# own docstring said was NOT the point ("the whole point is an unmasked Giant
+# slot"). At weight 1.0 of 6.0 it was diluting 17% of the injection budget into
+# a no-op. Removing it redistributes that share back to the four live
+# scenarios, so injected-episode composition changes and ScenDef/ScenOff are
+# not comparable across this edit.
+#
+# Total is now 5.0: Fireball 60%, bridge 40%.
 SCENARIOS = [
     (_scenario_bridge_push, 1.0),
     (_scenario_bridge_push_supported, 1.0),
     (_scenario_fireball_swarm, 1.5),
     (_scenario_fireball_tower_value, 1.5),
-    (_scenario_giant_commit, 1.0),
 ]
 
 
@@ -984,15 +951,22 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             scenario = sample_scenario(self.scenario_rng)
 
             # A scenario may require a specific card in the trainee's opening
-            # hand -- giant_commit is pointless without the Giant in it. The
-            # opening shuffle is an unseeded mt19937 that cannot be set and
-            # whose queue cannot be read, so the supported way to control the
-            # hand is to re-roll until it comes up. reset() costs 0.135 ms and
-            # its shuffle is uniform over all 70 hand-sets, so a 4-of-8 card
-            # arrives in ~2 tries. Capped, and falling through on exhaustion
-            # rather than looping: a scenario that occasionally runs without
-            # its card is a diluted scenario, but a reset that can hang is a
-            # stalled worker.
+            # hand. The opening shuffle is an unseeded mt19937 that cannot be
+            # set and whose queue cannot be read, so the supported way to
+            # control the hand is to re-roll until it comes up. reset() costs
+            # 0.135 ms and its shuffle is uniform over all 70 hand-sets, so a
+            # 4-of-8 card arrives in ~2 tries. Capped, and falling through on
+            # exhaustion rather than looping: a scenario that occasionally runs
+            # without its card is a diluted scenario, but a reset that can hang
+            # is a stalled worker.
+            #
+            # NO SCENARIO CURRENTLY SETS THIS. Its only user, giant_commit, was
+            # removed on 2026-08-19 -- it asked for a card DEFAULT_DECK cannot
+            # contain, so the cap was reached on every single draw. The hook is
+            # kept because it is the mechanism, not the dead config, and the
+            # next scenario that needs a named card should use it -- but check
+            # the card is actually in the deck, which is the failure that made
+            # giant_commit inert for three days without anything noticing.
             want = scenario.get("require_own_card")
             if want is not None:
                 for _ in range(24):

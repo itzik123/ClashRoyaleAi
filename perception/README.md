@@ -35,7 +35,7 @@ neither side changes it alone**. Perception emits it and stops; encoding the
 
 ### Recordings
 
-Three matches, 1920×1080 desktop capture (the emulator window occupies
+Eight matches, 1920×1080 desktop capture (the emulator window occupies
 686–1236 × 40–1012 of it), H.264, **constant frame rate confirmed by
 measurement — jitter 0.0000**. Calibration profile:
 `config/profile_gpg_1920x1080.json`.

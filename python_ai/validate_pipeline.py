@@ -424,7 +424,7 @@ def validate_side_null(net_path, episodes=300):
     if not os.path.exists(net_path):
         check("side null", False, f"missing {net_path}")
         return
-    from expert_iteration import load_net
+    from policy_io import load_net
     dev = torch.device("cpu")
     a = load_net(net_path, dev, verbose=False)
     b = load_net(net_path, dev, verbose=False)

@@ -31,7 +31,8 @@ sys.path.insert(0, HERE)
 
 import clash_royale_env as CE  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
-from expert_iteration import SearchCfg, load_net  # noqa: E402
+from expert_iteration import SearchCfg  # noqa: E402
+from policy_io import load_net  # noqa: E402
 from search_ab_test import (  # noqa: E402
     _search_action, _greedy_from_logits, _policy_head, LSTM_HIDDEN)
 
@@ -93,7 +94,7 @@ def measure(net, device, cfg, n_decisions, opp_elixir, warmup=15):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default=os.path.join(HERE, "model_weights_cured.pth"))
+    ap.add_argument("--weights", default=os.path.join(HERE, "model_weights_selfplay.pth"))
     ap.add_argument("--decisions", type=int, default=60)
     ap.add_argument("--opp-elixir", type=float, default=1.4)
     ap.add_argument("--budget-ms", type=float, default=150.0)

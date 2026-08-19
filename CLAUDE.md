@@ -764,7 +764,9 @@ Three lessons, all of which nearly hid it:
   single-eval move as noise until it repeats.
 
 **2026-08-14, three of eight cards were dead and it was a gradient COVERAGE hole,
-not the reward.** Full write-up and every number: `PLACEMENT_COLLAPSE.md`.
+not the reward.** (`PLACEMENT_COLLAPSE.md` carried the long-form write-up and was
+retired on 2026-08-19 once the bug was cured and confirmed cured; every number it
+reported that still matters is in this section and the ones below it.)
 
 Cannon, Fireball and Giant were played on ~2% of plays and their placement head
 returned the *same* cell — (11,0), our own back row — in 54–91% of states. The
@@ -1359,8 +1361,11 @@ Two caveats recorded honestly:
   the result (the distribution phase re-loads `student` from `--weights`), but
   the hard-label pass also overwrites `--out` on its way past.
 
-**`model_weights_h12dist.pth` is NOT shipped.** `shipping.py` stays on
-`model_weights_cured.pth` + search horizon 12.
+**`model_weights_h12dist.pth` is NOT shipped.** `shipping.py` stayed on
+`model_weights_cured.pth` + search horizon 12 — until 2026-08-19, when that net
+was retired with the Giant deck and `SHIPPING_WEIGHTS` moved to
+`model_weights_selfplay.pth`. The horizon-12 evidence was measured on the RETIRED
+net; see `shipping.py`'s docstring, which says so plainly.
 
 **2026-08-16, "the bot plays like a disconnected zombie": one of the three
 reported symptoms is real, and its cause is the ENTROPY CONTROLLER's
@@ -2025,6 +2030,13 @@ search measured horizon 20 WORSE than 12 (0.875 vs 0.963) for this exact reason.
 
 ## Measured baselines — use these, don't re-derive them
 
+> **Checkpoint names in the passages below are PROVENANCE, not files.** The
+> 2026-08-19 cleanup kept only `model_weights.pth` (ep 7,063, phase 1) and
+> `model_weights_selfplay.pth` (ep 31,312, the 2.6 Hog Cycle baseline).
+> `model_weights_cured.pth`, `_hires`, `_dist_e3` and the `archive_pre_*`
+> lineages were deleted along with the Giant deck they were trained on. A number
+> attributed to one of them still says where it came from; the weights are gone.
+
 **EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
 NO WIN RATE BELOW SURVIVES IT.** Troops now move at ~1/5 the speed every one
 of these numbers was earned at, which changes the relative value of every card
@@ -2108,15 +2120,61 @@ critic quality, and new capabilities; **not** demonstrated end strength.
 
 ---
 
-## Open problems and what would actually move the needle
+## Measurement discipline — the traps this project has actually fallen into
+
+Migrated here from `handoff.md` on 2026-08-19 when the session handoffs were
+retired. Each one cost real time; none of them is hypothetical.
+
+- **Never validate a mask against the predicate that generated it.** A live run
+  reported "0 illegal placements out of 32" by checking placements against
+  `is_valid_placement` — the same predicate the mask was built from. The check
+  was circular and could not fail. The placements were in fact landing off the
+  board entirely, for an unrelated reason (the tile grid), and this test was
+  structurally incapable of noticing.
+
+- **A cross-check anchored where the error is zero proves nothing.** The bad
+  2026-08-05 tile-grid refit passed its own check — "engine x 9.0 lands on
+  display centre 360" — because both fits were centre-anchored and the scale
+  error grows outward. It was wrong by 28 px at the board edge. **Check the
+  edges of the range you care about, not its middle.**
+
+- **When a measurement's failure mode is maximal permissiveness, it needs an
+  internal control that MUST fire.** Every failure mode of the deploy-zone probe
+  returns "everything is legal": an unaffordable card selects nothing, a stale
+  baseline already holds the tint, a tap outside the board is untinted because
+  there is no board there. The fix is a band deep in the enemy half that has to
+  be tinted whenever a card is really selected.
+
+- **The game is a better oracle than the simulator, and it is free.** Clash
+  Royale tints the region you may not deploy into, so differencing a selected
+  frame against an unselected one reads the real rule for 288 cells at once, at
+  zero elixir. That answered in one screenshot what a season of
+  `is_valid_placement` comparisons could not.
+
+- **Screen on a different metric than you confirm on, and never extend a run
+  after seeing a marginal result.** An exploratory n=200 arm gave +0.105 at
+  p=0.044 and it was NOISE — a confirmatory run at 4x the power collapsed it to
+  +0.016. Continuing the first run instead of launching a fresh one with n fixed
+  in advance is optional stopping, and it manufactures results.
+
+---
+
+## Open problems — the EVIDENCE behind them
+
+> **`TODO.md` is the authoritative task list.** It was consolidated on
+> 2026-08-19 from this section and from three session handoffs, and every item
+> in it was verified against the source tree. This section is not a second task
+> list: it is the measured history that justifies those items, kept here because
+> the numbers are the part that is expensive to re-derive. **If the two ever
+> disagree, `TODO.md` is what someone is acting on — fix this section.**
 
 **Ranked by expected value, from the architectural review.**
 
 **NEXT UP (2026-08-19) — upgrade the Utility Teacher to evaluate MULTI-CARD
 COMBO placements (e.g. Ice Golem + Hog), so it can exploit the engine mechanics
-deploy time just created.** Numbered separately from the list below only because
-those items cross-reference each other by number; by expected value this is now
-the top item.
+deploy time just created.** This is `TODO.md` item 1. Numbered separately from
+the list below only because those items cross-reference each other by number; by
+expected value this is now the top item.
 
 *Why it is top.* Deploy time made the escorted push the correct play and the
 naked push the punished one, measured on the same engine: a lone commitment
@@ -2514,8 +2572,16 @@ re-running after any change to the observation, the board, or `stepSelfPlay`.
 include/, src/       C++ engine. READ-ONLY by default.
 python_ai/           READ-ONLY by default — training runs here.
   model.py             MicroRoyaleNet. ALL observation-layout knowledge lives
-                       here; everything is derived from the bindings.
+                       here; everything is derived from the bindings. Also owns
+                       LSTM_HIDDEN, as a class attribute.
+  policy_io.py         Checkpoint -> ready net: load_net,
+                       load_state_dict_flexible, LSTM_HIDDEN.
+                       Exists so a probe does not import a 1,143-line
+                       experiment script (and through it both trainers) just to
+                       read one .pth -- see its docstring.
   gym_wrapper.py       MicroRoyaleEnv + DEFAULT_DECK.
+  teacher.py           UtilityTeacher: phase 1's opponent. Rules propose,
+                       simulation ranks. Difficulty is lookahead, not elixir.
   train.py             Pipeline 1 + the shaping/curriculum constants that
                        train_selfplay.py imports.
   train_selfplay.py    Pipeline 2: PFSP league, scripted bots, scenarios, eval.
@@ -2531,8 +2597,12 @@ python_ai/           READ-ONLY by default — training runs here.
                        targeting at scale, search cost ratio, spell anneal,
                        side null, C++ suite.
   monitor_run.py       Health daemon for an unattended run. Read-only.
-  archive_*/           Checkpoints invalidated by engine/architecture changes.
+  prove_*.py           Engine-scored measurement harnesses. Each one exists
+                       because a claim needed settling; none is imported by
+                       the training path.
 tests/               C++ Catch2 tests (ClashRoyaleTests).
+CLAUDE.md            This file: the knowledge base.
+TODO.md              The single, verified list of pending work.
 perception/          Screen -> placement events -> simulator as estimator.
                      Self-contained: own venv, own requirements.txt.
 web/viewer.html      Replay viewer.
@@ -2551,8 +2621,10 @@ Run its tests with:
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ```
 
-344 tests (343 pass, 1 skipped), none requiring an emulator — they run against frozen replay
-fixtures, a synthetic camera, or video generated at test time.
+354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
+frozen replay fixtures, a synthetic camera, or video generated at test time.
+`python_ai/test_python_ai.py` is 89 (88 pass, 1 skipped; the skip count varies
+run to run because one case depends on the unseeded opening-hand shuffle).
 
 ---
 

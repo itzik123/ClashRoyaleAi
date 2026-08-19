@@ -291,7 +291,7 @@ def main():
 
     # --vs shipping
     import torch
-    from expert_iteration import load_net
+    from policy_io import load_net
     import shipping
     here = os.path.dirname(os.path.abspath(__file__))
     path = args.weights or shipping.SHIPPING_WEIGHTS

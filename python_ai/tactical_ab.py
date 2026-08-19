@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clash_royale_env  # noqa: E402
 import tactics  # noqa: E402
 from gym_wrapper import DEFAULT_DECK  # noqa: E402
-from expert_iteration import load_net  # noqa: E402
+from policy_io import load_net  # noqa: E402
 from search_ab_test import LSTM_HIDDEN, outcome_score  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
@@ -113,7 +113,7 @@ def play(net, env, device, mode):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=200)
-    ap.add_argument("--net", default="model_weights_dist_e3.pth")
+    ap.add_argument("--net", default="model_weights_selfplay.pth")
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     args = ap.parse_args()
 
