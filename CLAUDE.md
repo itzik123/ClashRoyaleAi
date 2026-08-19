@@ -1649,6 +1649,54 @@ is only interpretable if the BASELINE arm is below ceiling. Check the baseline
 win rate before reading the delta; if it is >= 0.95, the test is void and needs
 an intermediate multiplier (1.2-1.3) instead.
 
+### Why a permanent multiplier suppresses punish cards, mechanically
+
+A multiplier is not the same kind of difficulty as a better opponent, and the
+difference is the whole point. A stronger POLICY makes every one of our options
+harder to execute roughly uniformly. A resource multiplier does something else:
+it changes which STRATEGY CLASS is optimal, and it does so asymmetrically.
+
+**The value of a punish card is priced against a window that the multiplier
+shortens.** A win condition pays when it arrives while the opponent cannot
+answer -- i.e. inside the window after they have just spent, before they have
+regenerated the cost of an answer. With regeneration rate `r` and multiplier
+`m`, that window lasts about `answer_cost / (m * r)`. At `m = 1.5` every such
+window is **two thirds** its natural length, so P(the Hog arrives unanswered)
+falls by roughly the same factor.
+
+**And the cost of the same play RISES with `m`.** Our 4 elixir is spent
+regardless; what the opponent then does with their surplus scales with `m`. So
+across the multiplier the expected value moves roughly as `1/m` while the
+expected counter-cost moves as `m`, and the ratio degrades on the order of
+`1/m^2`. That is a very steep suppression for a parameter we treated as a mere
+difficulty dial.
+
+**Defence, meanwhile, gets MORE valuable under the same change.** A defensive
+card's value scales with the volume of threats it answers, and a multiplier
+increases exactly that volume. So the multiplier pushes offence down and defence
+up simultaneously. The optimum does not merely shift; the ranking of strategy
+classes inverts.
+
+**This is why the interventions could not work.** Four mechanisms were built to
+make the agent play its win condition -- a reward multiplier, an advisor target,
+random exploration, gate-timed forcing -- and every one of them tries to move a
+POLICY. None of them changes the PAYOFF. If the environment prices the Hog at
+negative value, a correctly-functioning learner will keep finding its way back
+to 0%, and a forcing mechanism will simply pay the negative price more often.
+That is precisely the observed dose-response: usage up, win rate down, monotone.
+
+**It predicts the spell too, and that prediction was already sitting in the
+data.** Fireball is also a tempo/punish play, and it sits at 0.1% usage -- the
+same pit, never separately investigated. Under this hypothesis the two are one
+phenomenon, not two coincidences.
+
+**What it does NOT license.** It does not say the agent is strong, and it does
+not say the defence is "bulletproof". The 1.00x arm's 1.000 win rate says one
+specific non-neural opponent, at its weakest setting, cannot beat this policy --
+a fact this file already recorded for the ep-64k net and the reason the ceiling
+caveat exists. It is not a statement about Clash Royale, about human opponents,
+or about the policy's robustness to a strategy class it has never faced.
+
 **TESTED, 2026-08-18, AND THE HYPOTHESIS IS SUPPORTED -- BUT NOT PROVEN.** The
 same SMART-forced A/B (advisor timing gate + advisor bridge cell, gate
 calibrated to each multiplier), n=120 paired, ep-25202 net:
