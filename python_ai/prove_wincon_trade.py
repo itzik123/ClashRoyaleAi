@@ -64,6 +64,8 @@ from gym_wrapper import DEFAULT_DECK  # noqa: E402
 from teacher import UtilityTeacher  # noqa: E402
 
 CE = E.ClashRoyaleEnv
+HOG = 15
+ICE_GOLEM = 40
 
 
 def play_on(env, defender, steps):
@@ -79,10 +81,24 @@ def play_on(env, defender, steps):
             break
 
 
-def one_trial(seed, stage, horizon, warmup):
+def one_trial(seed, stage, horizon, warmup, defender_elixir):
+    """Returns {arm: (defence elixir spent, enemy tower damage caused)}.
+
+    Arms, all injected for FREE so the attacker's own spend stays off the
+    engine's ledger and is charged explicitly in the report:
+
+        none        nothing -- the baseline everything is differenced against
+        hog         a lone Hog at the advisor's bridge cell            (4 elixir)
+        supported   Ice Golem at the bridge with the Hog behind it     (6 elixir)
+
+    THE SUPPORTED ARM IS THE ONE THAT MATTERS. Real 2.6 never sends a naked win
+    condition; the Ice Golem goes first so it eats the building's targeting and
+    the tower shots while the Hog connects. A measurement that only ever tests a
+    LONE Hog is testing a play no competent player makes, and would condemn the
+    card on evidence about a strawman.
+    """
     root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
     root.reset()
-    # Let the position develop a little so this is not always the opening.
     warm = UtilityTeacher(DEFAULT_DECK, team=1, seed=seed)
     warm.set_stage(stage)
     warm.reset()
@@ -96,11 +112,25 @@ def one_trial(seed, stage, horizon, warmup):
     obs0 = np.asarray(base.get_observation_for_team(0), np.float32)
     x, y, _ = tactics.best_hog_cell(obs0)
 
+    arms = {
+        "none": [],
+        "hog": [(HOG, 0.0)],
+        "supported": [(ICE_GOLEM, 0.0), (HOG, -1.5)],
+    }
     out = {}
-    for label, inject in (("hog", True), ("none", False)):
+    for label, spawns in arms.items():
         env = base.snapshot()
-        if inject:
-            env.inject(15, float(x), float(y), 0)
+        for cid, dy in spawns:
+            env.inject(int(cid), float(x), float(y + dy), 0)
+        # inject QUEUES the spawn -- one tick is required before it is on the
+        # board at all (measured: 0.0 mass before, 0.399 after).
+        env.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, 1)
+        if defender_elixir is not None:
+            # THE PUNISH WINDOW. A defender at full elixir always has the answer
+            # affordable, which is the situation a punish card is specifically
+            # NOT for. Setting the bar down is the only way to test the moment
+            # the card actually exists for.
+            env.set_elixir_for_team(1, float(defender_elixir))
         d = UtilityTeacher(DEFAULT_DECK, team=1, seed=seed + 4242)
         d.set_stage(stage)
         d.reset()
@@ -109,8 +139,7 @@ def one_trial(seed, stage, horizon, warmup):
         play_on(env, d, horizon)
         out[label] = (float(env.get_elixir_spent(1) - spent_before),
                       float(env.get_tower_damage_dealt(0) - dmg_before))
-    return (out["hog"][0] - out["none"][0],      # defence elixir cost
-            out["hog"][1] - out["none"][1])      # tower damage caused
+    return out
 
 
 def report(name, vals, unit=""):
@@ -129,40 +158,62 @@ def main():
     ap.add_argument("--n", type=int, default=60)
     ap.add_argument("--stage", type=int, default=5)
     ap.add_argument("--horizon", type=int, default=30,
-                    help="defender decisions after the hog lands (1 = 1 s)")
+                    help="defender decisions after the push lands (1 = 1 s)")
     ap.add_argument("--warmup", type=int, default=20)
+    ap.add_argument("--defender-elixir", type=float, default=None,
+                    help="force the defender's bar (the PUNISH WINDOW); "
+                         "omit to leave it wherever the match put it")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    costs, dmgs = [], []
+    costs = {k: [] for k in ("hog", "supported")}
+    dmgs = {k: [] for k in ("hog", "supported")}
     for i in range(args.n):
-        r = one_trial(args.seed + i, args.stage, args.horizon, args.warmup)
-        if r is not None:
-            costs.append(r[0])
-            dmgs.append(r[1])
+        r = one_trial(args.seed + i, args.stage, args.horizon, args.warmup,
+                      args.defender_elixir)
+        if r is None:
+            continue
+        for k in costs:
+            costs[k].append(r[k][0] - r["none"][0])
+            dmgs[k].append(r[k][1] - r["none"][1])
 
-    hog_cost = float(E.get_card_info(15)["cost"])
-    print(f"\ndeck {DEFAULT_DECK}   stage {args.stage}   "
-          f"{len(costs)} paired trials   horizon {args.horizon}s\n")
-    print("WHAT ONE WIN CONDITION AT THE BRIDGE BUYS AND COSTS")
-    c_mean, c_lo, c_hi = report("defence elixir spent to answer", costs, " el")
-    d_mean, d_lo, d_hi = report("enemy tower damage caused", dmgs, " hp")
-    print(f"  {'our elixir spent':<34} {hog_cost:>9.2f} el   (fixed)")
+    n = len(costs["hog"])
+    committed = {"hog": float(E.get_card_info(HOG)["cost"]),
+                 "supported": float(E.get_card_info(HOG)["cost"]
+                                    + E.get_card_info(ICE_GOLEM)["cost"])}
+    dstr = ("match state" if args.defender_elixir is None
+            else f"forced to {args.defender_elixir:.1f}")
+    print(f"\ndeck {DEFAULT_DECK}   stage {args.stage}   {n} paired trials   "
+          f"horizon {args.horizon}s   defender elixir: {dstr}\n")
+    print("WHAT A PUSH AT THE BRIDGE BUYS AND COSTS, vs not sending one")
+    print(f"  {'arm':<12} {'we commit':>10} {'they spend':>12} "
+          f"{'trade':>8} {'tower dmg':>11} {'dmg/elixir':>11}")
+    results = {}
+    for k in ("hog", "supported"):
+        c = np.asarray(costs[k], dtype=np.float64)
+        d = np.asarray(dmgs[k], dtype=np.float64)
+        trade = c.mean() - committed[k]
+        print(f"  {k:<12} {committed[k]:>10.1f} {c.mean():>12.2f} "
+              f"{trade:>+8.2f} {d.mean():>11.1f} {d.mean() / committed[k]:>11.1f}")
+        results[k] = (c, d, trade)
+
     print()
-    print(f"  ELIXIR TRADE      {c_mean - hog_cost:>+8.2f} elixir in our favour")
-    print(f"  DAMAGE PER ELIXIR {d_mean / hog_cost:>8.1f} hp/elixir spent")
+    ch, dh, _ = results["hog"]
+    cs, ds, _ = results["supported"]
+    m, lo, hi = report("supported - lone, tower damage", ds - dh, " hp")
+    m2, lo2, hi2 = report("supported - lone, defence elixir", cs - ch, " el")
     print()
-    if c_hi < hog_cost and d_mean < 200:
-        print("  THE TRADE IS BAD. The defence answers a 4-elixir commitment for")
-        print("  less than 4 and concedes little -- the card is a losing exchange")
-        print("  in this engine, and no curriculum change repairs that.")
-    elif c_lo > hog_cost:
-        print("  THE TRADE IS GOOD. The defence pays more than the commitment")
-        print("  cost, so the win condition is positive-value and a policy that")
-        print("  never plays it is leaving elixir on the table.")
+    if lo > 0:
+        print("  ESCORTING THE WIN CONDITION HELPS. A lone Hog is a strawman "
+              "and any\n  verdict on the card has to be taken from the "
+              "supported arm.")
+    elif hi < 0:
+        print("  Escorting makes it WORSE -- the extra 2 elixir buys negative "
+              "damage.")
     else:
-        print("  The elixir trade is roughly even; read it together with the")
-        print("  damage line, which is what a win condition is actually for.")
+        print("  Escorting resolves no difference in damage; read the trade "
+              "column,\n  where the supported arm still commits 2 more elixir "
+              "for it.")
 
 
 if __name__ == "__main__":
