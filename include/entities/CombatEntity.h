@@ -83,6 +83,22 @@ public:
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
+    // Ticks left of this unit's deploy time -- see CardStats.h's
+    // DEPLOY_TIME_TICKS. While > 0 the unit is on the board and fully
+    // targetable/damageable, but does not move, target or attack.
+    //
+    // Deliberately NOT reusing freezeTicks, even though the observable effect
+    // overlaps. freezeTicks means "something stunned me", and the ramp system
+    // reads it that way: `wasFrozen` breaks the target lock and resets the
+    // charge/ramp ("a stun resets the charge"). A newly deployed unit has not
+    // been stunned and must not start life with its ramp state reset by an
+    // event that never happened. Separate field, separate meaning.
+    //
+    // Carried by the implicit copy constructor, so Board::deepCopy snapshots
+    // keep a unit's exact remaining deploy time -- a rollout that reset it to
+    // 0 would let search evaluate a board where every unit acts a second early.
+    int deployTicksRemaining = 0;
+
     // Poison-style damage-over-time mark (Dart Goblin/Firecracker
     // Evolutions) -- see applyDot/PoisonOnHit. dotTicksRemaining == 0
     // (the default) means no active mark; ticks down independently of
@@ -714,6 +730,22 @@ public:
     }
 
     void update(Board& board) override {
+        // DEPLOY TIME. A unit that has just landed is inert -- it does not
+        // move, does not acquire a target and does not attack -- but it IS on
+        // the board and IS targetable, which is what the real game does and
+        // what makes a mistimed defensive placement punishable.
+        //
+        // Only the DECREMENT happens here; the bail-out is further down, after
+        // the status-timer block. Returning from the very top instead was the
+        // first attempt and it was WRONG: it also froze freeze/shield/buff/
+        // curse/ability-cooldown and the poison damage-over-time mark, so a
+        // unit deployed into a Poison would have been briefly immune and a
+        // Champion's ability cooldown would have stopped counting. Inert is not
+        // the same as time-stopped. Caught by
+        // test_game_manager.cpp's champion-cooldown case.
+        const bool deploying = deployTicksRemaining > 0;
+        if (deploying) deployTicksRemaining--;
+
         // Captured before the decrement below so a freeze that's about to
         // expire this very tick still counts as "was frozen" for the ramp
         // reset -- matches the real "a stun resets the charge" rule for
@@ -790,6 +822,11 @@ public:
                 dotTicksUntilNextDamage = dotTickInterval;
             }
         }
+
+        // Everything above this line is bookkeeping that must keep running
+        // while deploying. Everything below it -- periodic spawns, targeting,
+        // movement, attacking -- is ACTION, and a deploying unit takes none.
+        if (deploying) return;
 
         if (periodicIntervalTicks > 0) {
             periodicTicksUntilNext--;

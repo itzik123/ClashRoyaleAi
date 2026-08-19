@@ -260,6 +260,7 @@ TEST_CASE("Executioner's axe hits its target twice: on arrival, then again on th
     auto executioner = std::dynamic_pointer_cast<RangedTroop>(board.getEntities().back());
     REQUIRE(executioner != nullptr);
 
+    advancePastDeploy(executioner, board);
     executioner->update(board); // fires: spawns the boomerang projectile
     board.commitPendingEntities();
     auto axe = std::dynamic_pointer_cast<Projectile>(board.getEntities().back());
@@ -495,6 +496,7 @@ TEST_CASE("Inferno Tower's damage ramps up the longer it stays locked onto the s
     auto tower = std::dynamic_pointer_cast<Building>(board.getEntities().back());
     REQUIRE(tower != nullptr);
 
+    advancePastDeploy(tower, board);
     tower->update(board); // ticksOnTarget == 0 on first lock: stage 1 (5% of 847)
     REQUIRE(enemy->hp == 1000000 - 42);
 
@@ -683,6 +685,7 @@ TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when
     auto iceWizardEntity = board.getEntities().back();
     REQUIRE(std::dynamic_pointer_cast<RangedTroop>(iceWizardEntity) != nullptr);
 
+    advancePastDeploy(iceWizardEntity, board);
     iceWizardEntity->update(board); // fires: spawns a projectile, does not freeze yet
     board.commitPendingEntities();
     REQUIRE(enemy->freezeTicks == 0);
@@ -705,6 +708,7 @@ TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_reg
     iceGolem->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
+    advancePastDeploy(board.getEntities().back(), board);
     board.getEntities().back()->update(board);
 
     REQUIRE(enemy->freezeTicks == 30);
@@ -732,6 +736,7 @@ TEST_CASE("Electro Wizard stuns on hit via the on-hit decorator (freeze with slo
     // Direct-damage attack (no projectile -- the real card is an instant
     // zap): damage and stun both land the same tick. Only one enemy in
     // range, so it takes the full 230, not the split half.
+    advancePastDeploy(electroWizardEntity, board);
     electroWizardEntity->update(board);
 
     REQUIRE(enemy->hp == 882); // 1000 - 118
@@ -757,6 +762,7 @@ TEST_CASE("Electro Wizard splits its attack across the 2 closest enemies at half
     }
     REQUIRE(electroWizardEntity != nullptr);
 
+    advancePastDeploy(electroWizardEntity, board);
     electroWizardEntity->update(board);
 
     REQUIRE(near->hp == 941);  // 1000 - 118/2
@@ -874,6 +880,7 @@ TEST_CASE("Inferno Dragon's beam damage ramps up like Inferno Tower's, while fly
     REQUIRE(dragon->isFlying);
     REQUIRE(dragon->targetsAir);
 
+    advancePastDeploy(dragon, board);
     dragon->update(board); // ticksOnTarget == 0 on first lock: stage 1 (~8.3% of 422)
     REQUIRE(enemy->hp == 1000000 - 35);
 }
@@ -913,6 +920,7 @@ TEST_CASE("Valkyrie's splash hits a second enemy standing near her primary targe
     valkyrie->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
+    advancePastDeploy(board.getEntities().back(), board);
     board.getEntities().back()->update(board);
 
     REQUIRE(primary->hp == 734);  // 1000 - 266
@@ -929,6 +937,7 @@ TEST_CASE("Tombstone periodically spawns Skeletons while alive, not just on deat
     auto building = board.getEntities().back();
     REQUIRE(board.getEntities().size() == 1); // just the Tombstone itself so far
 
+    advancePastDeploy(building, board);
     for (int i = 0; i < 35; ++i) building->update(board); // its periodic interval
     board.commitPendingEntities(); // the spawned Skeletons become visible
 
@@ -1310,6 +1319,7 @@ TEST_CASE("Goblin Demolisher transforms into a kamikaze that detonates on a buil
     // enough to attack immediately.
     auto building = std::make_shared<Building>(999, 5.0f, 5.4f, 5000, 1, 'C', 5.0f, 10, 10);
     spawn(board, building);
+    advancePastDeploy(kamikaze, board);
     kamikaze->update(board);
 
     REQUIRE(building->hp == 5000 - 404);
@@ -1333,6 +1343,7 @@ TEST_CASE("Mega Knight jumps to a distant target instead of walking, via the rea
     }
     REQUIRE(knight != nullptr);
 
+    advancePastDeploy(knight, board);
     knight->update(board);
 
     REQUIRE(target->hp < 100000); // jump landed a hit immediately, no multi-tick walk needed
@@ -1349,6 +1360,7 @@ TEST_CASE("Bowler's piercing line hits a bystander behind the primary target, no
     board.commitPendingEntities();
     auto bowler = board.getEntities().back();
 
+    advancePastDeploy(bowler, board);
     bowler->update(board); // fires the projectile
     board.commitPendingEntities();
     for (int i = 0; i < 10; ++i) {

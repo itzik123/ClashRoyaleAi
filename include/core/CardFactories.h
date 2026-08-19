@@ -27,6 +27,13 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
     entity->cardId = stats.id;
+    // Deploy time -- see CardStats.h's DEPLOY_TIME_TICKS for what it is and
+    // why. Set here rather than in each factory because this is the one hook
+    // every troop and building archetype already funnels through, and the one
+    // that spells (spawnSpell) and deploy effects (spawnDeployEffect)
+    // deliberately do NOT: a spell has its own spellDelayTicks and must not be
+    // delayed twice.
+    entity->deployTicksRemaining = DEPLOY_TIME_TICKS;
     entity->isFlying = stats.isFlying;
     entity->targetsAir = stats.targetsAir;
     entity->deathEffect = stats.deathEffect;

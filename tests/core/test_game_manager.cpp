@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "GameManager.h"
+#include "CardStats.h"
 #include "BuildingTargeter.h"
 #include "Building.h"
 #include <vector>
@@ -161,9 +162,13 @@ TEST_CASE("Elixir Collector passively grants its owner extra elixir beyond norma
     REQUIRE(game.playCard(0, 99, 9.0f, 10.0f));
 
     game.playerAI.elixir = 0.0f; // reset low so the cap doesn't mask the effect
-    for (int i = 0; i < 80; ++i) game.step(); // its periodic interval
+    // 80 ticks of periodic interval PLUS the 10-tick deploy time added
+    // 2026-08-19 -- a collector now starts its first cycle a second later, so
+    // 80 ticks flat would land one grant short and read as the mechanic
+    // failing rather than as the delay it is.
+    for (int i = 0; i < 80 + DEPLOY_TIME_TICKS; ++i) game.step();
 
-    float pureRegenOnly = 0.035f * 80; // ELIXIR_REGEN_RATE * ticks, no collector
+    float pureRegenOnly = 0.035f * (80 + DEPLOY_TIME_TICKS); // regen alone, same window
     REQUIRE(game.getElixirAI() > pureRegenOnly + 0.5f); // meaningfully more than regen alone
 }
 
@@ -359,7 +364,8 @@ TEST_CASE("A full scripted mini-match produces sane getStatistics() output", "[g
     auto enemy = std::make_shared<DummyEntity>(board.allocateId(), 9.0f, 10.5f, 1000, 1);
     spawn(board, enemy);
 
-    for (int i = 0; i < 5; ++i) game.step();
+    // 5 ticks of combat, after the Knight's 10-tick deploy time.
+    for (int i = 0; i < 5 + DEPLOY_TIME_TICKS; ++i) game.step();
 
     const auto& stats = game.getStatistics();
     REQUIRE(stats.elixirSpent(0) == Catch::Approx(3.0f));

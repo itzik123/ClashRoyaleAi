@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "CardRegistry.h"
 #include "GameManager.h"
+#include "CardStats.h"
 #include "HeroMiniPekkaBoostEffect.h"
 #include "SpawnOnAbility.h"
 #include "HeroKnightTauntEffect.h"
@@ -689,7 +690,10 @@ TEST_CASE("Hero Goblins' Banner Brigade reactivates the squad at the last-known 
     GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.hand[1] = 172;
     game.playCard(0, 172, 9.0f, 10.0f);
-    game.step(); // one tick of movement away from the exact deploy point (9.0, 10.0)
+    // The squad must actually MOVE before it dies, or this test cannot tell a
+    // death position from a deploy point -- and since 2026-08-19 the first 10
+    // ticks are deploy time, during which it deliberately does not move.
+    for (int i = 0; i < DEPLOY_TIME_TICKS + 1; ++i) game.step();
 
     // Death position capture uses whichever squad member the internal scan
     // happens to observe last (see syncChampionCooldowns), which isn't
