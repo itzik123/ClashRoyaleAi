@@ -89,6 +89,7 @@ import python_ai  # noqa: E402,F401
 
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
+from python_ai.eval import stats  # noqa: E402
 from python_ai.opponents.teacher import TEACHER_STAGES, UtilityTeacher  # noqa: E402
 
 CE = E.ClashRoyaleEnv
@@ -151,32 +152,16 @@ def arm(mode, stage, seed, base, multiplier, opponent):
 
 
 def paired(diffs):
-    """(mean, lo, hi, better, worse, p) -- bootstrap CI plus an exact sign test.
+    """(mean, lo, hi, better, worse, p) -- see `eval/stats.py`.
 
-    Reported together because they answer different questions and this project
-    has had them disagree: the CI is about the average size of the effect, the
-    sign test about how often it points the same way.
+    The arithmetic moved: this project had FOUR copies of paired-bootstrap +
+    exact sign test, which for measurement code is worse than ordinary
+    duplication. The tuple shape survives because six call sites below unpack it
+    positionally, and rewriting those would be churn with no reader benefit.
     """
-    from math import comb
-    d = np.asarray(diffs, dtype=np.float64)
-    rng = np.random.default_rng(0)
-    boot = np.array([rng.choice(d, len(d), replace=True).mean()
-                     for _ in range(10000)])
-    lo, hi = np.percentile(boot, [2.5, 97.5])
-    better = int((d > 0).sum())
-    worse = int((d < 0).sum())
-    n = better + worse
-    if n == 0:
-        return d.mean(), lo, hi, better, worse, 1.0
-    k = min(better, worse)
-    p = min(1.0, 2.0 * sum(comb(n, i) for i in range(k + 1)) / (2.0 ** n))
-    return d.mean(), lo, hi, better, worse, p
+    r = stats.paired_from_diffs(diffs)
+    return r.delta, r.lo, r.hi, r.better, r.worse, r.p
 
-
-
-# --------------------------------------------------------------------------
-# mode "marginal": the NET value of one win-condition commitment
-# --------------------------------------------------------------------------
 def _tower_diff(env, team=0):
     """(enemy tower damage we dealt) - (tower damage we took)."""
     return (float(env.get_tower_damage_dealt(team))

@@ -7,7 +7,7 @@ change on the C++ side propagates instead of silently drifting.
 
 The history that makes the rule concrete: the river moved on 2026-07-29 and the
 towers on 2026-07-30, and BOTH times a stale Python copy survived the edit
-(model.py's "18*16=288" comment, and calibrate.py scoring bridges against
+(models/net.py's "18*16=288" comment, and calibrate.py scoring bridges against
 y=17.0). Where a value genuinely is not exposed by any binding, it belongs in
 the module that needs it with a comment naming the header it came from --
 `advisors/tactics.py` shows that pattern -- never here.

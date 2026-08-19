@@ -62,10 +62,6 @@ import clash_royale_env as E  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval.match_outcome import score_from_towers, terminal_value  # noqa: E402
-from python_ai.eval.search_ab_test import (  # noqa: E402
-    HAND_SIZE, LSTM_HIDDEN, NOOP, _build_candidates, _greedy_from_logits,
-    _policy_head,
-)
 
 CE = E.ClashRoyaleEnv
 
@@ -93,10 +89,10 @@ def _search_action_selfplay(net, env, team, obs_t, card_logits, card_embeds,
                             spatial_map, hidden_next, greedy, cfg):
     """Roll every candidate forward on its own snapshot; pick the best by value.
 
-    Greedy is candidate 0 (see _build_candidates), so search can only deviate
+    Greedy is candidate 0 (see build_candidates), so search can only deviate
     when the critic prefers something else.
     """
-    cands = _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map,
+    cands = build_candidates(net, obs_t, card_logits, card_embeds, spatial_map,
                               hidden_next, greedy, cfg.k_cards, cfg.k_cells)
     if len(cands) == 1:
         return greedy, False
@@ -136,8 +132,8 @@ def _search_action_selfplay(net, env, team, obs_t, card_logits, card_embeds,
 def act(net, env, team, hid, use_search, cfg):
     obs_t = torch.tensor(np.asarray(env.get_observation_for_team(team),
                                     dtype=np.float32)).unsqueeze(0)
-    card_logits, card_embeds, spatial_map, _, hid_next = _policy_head(net, obs_t, hid)
-    gi, gx, gy, _ = _greedy_from_logits(net, obs_t, card_logits, card_embeds,
+    card_logits, card_embeds, spatial_map, _, hid_next = policy_head(net, obs_t, hid)
+    gi, gx, gy, _ = greedy_from_logits(net, obs_t, card_logits, card_embeds,
                                         spatial_map, hid_next)
     action, deviated = (gi, gx, gy), False
     if use_search:

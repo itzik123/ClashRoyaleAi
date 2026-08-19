@@ -39,9 +39,6 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
-from python_ai.eval.search_ab_test import (  # noqa: E402
-    HAND_SIZE, LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action,
-)
 
 CE = clash_royale_env.ClashRoyaleEnv
 BOARD_W = 18
@@ -69,11 +66,11 @@ def run(net, use_search, cfg, episodes, opp_elixir, max_ticks, max_steps=400):
         while not done and steps < max_steps:
             obs_t = torch.tensor(
                 np.asarray(env.get_observation_for_team(0), dtype=np.float32)).unsqueeze(0)
-            cl, emb, sp, _, hid_next = _policy_head(net, obs_t, hid)
-            gi, gx, gy, _ = _greedy_from_logits(net, obs_t, cl, emb, sp, hid_next)
+            cl, emb, sp, _, hid_next = policy_head(net, obs_t, hid)
+            gi, gx, gy, _ = greedy_from_logits(net, obs_t, cl, emb, sp, hid_next)
             action = (gi, gx, gy)
             if use_search:
-                action, _, _ = _search_action(net, env, obs_t, cl, emb, sp,
+                action, _, _ = search_action(net, env, obs_t, cl, emb, sp,
                                               hid_next, action, cfg,
                                               torch.device("cpu"))
             slot, x, y = action

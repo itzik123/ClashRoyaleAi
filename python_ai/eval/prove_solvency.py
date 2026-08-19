@@ -48,8 +48,9 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs import gym_wrapper  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
+from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
-from python_ai.eval.search_ab_test import outcome_score  # noqa: E402
+from python_ai.search.search import outcome_score  # noqa: E402
 
 CE = E.ClashRoyaleEnv
 CHEAPEST = 3.0
@@ -132,20 +133,13 @@ def summarize(name, eps):
 
 
 def boot_ci(x, rng, n=10000):
-    x = np.asarray(x, dtype=float)
-    b = np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(n)])
-    return float(x.mean()), float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))
+    """(mean, lo, hi). See `eval/stats.py` for why this is one function now."""
+    return stats.bootstrap_ci(x, rng=rng, n=n)
 
 
 def boot_diff(a, b, rng, n=10000):
-    """Unpaired bootstrap of mean(b) - mean(a), resampling episodes."""
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    d = np.array([b[rng.integers(0, len(b), len(b))].mean()
-                  - a[rng.integers(0, len(a), len(a))].mean() for _ in range(n)])
-    lo, hi = np.percentile(d, [2.5, 97.5])
-    # two-sided bootstrap p: how often the resampled difference crosses 0
-    p = 2 * min((d <= 0).mean(), (d >= 0).mean())
-    return float(b.mean() - a.mean()), float(lo), float(hi), float(min(1.0, p))
+    """(delta, lo, hi, p) for arms that are NOT paired. See `eval/stats.py`."""
+    return stats.unpaired_bootstrap_diff(a, b, rng=rng, n=n)
 
 
 def main():

@@ -55,6 +55,7 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs import gym_wrapper  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
+from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 
 CE = E.ClashRoyaleEnv
@@ -134,31 +135,14 @@ def step_net(net, obs_t, hidden, card_ids):
 
 # --------------------------------------------------------------- statistics --
 def paired_report(name, a, b, label_a, label_b, rng):
-    """Paired bootstrap CI + exact sign test on discordant pairs.
+    """Paired bootstrap CI + exact sign test. See `eval/stats.py`.
 
     Bootstrap rather than a t-test because these scores are heavily
     zero-inflated (most cells catch nothing), so normality is a bad assumption.
     The sign test is reported next to it because it makes no distributional
     assumption at all -- if the two disagree, believe the sign test.
     """
-    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
-    d = b - a
-    n = len(d)
-    if n == 0:
-        print(f"  {name}: no paired states")
-        return
-    boot = np.array([d[rng.integers(0, n, n)].mean() for _ in range(10000)])
-    lo, hi = np.percentile(boot, [2.5, 97.5])
-    better, worse = int((d > 0).sum()), int((d < 0).sum())
-    from math import comb
-    m = better + worse
-    p = (sum(comb(m, i) for i in range(min(better, worse) + 1)) * 2 / (2 ** m)
-         if m else 1.0)
-    print(f"  {name}: {label_a} {a.mean():.3f}  ->  {label_b} {b.mean():.3f}")
-    print(f"    paired delta {d.mean():+.3f}  95% CI [{lo:+.3f}, {hi:+.3f}]"
-          f"   n={n}")
-    print(f"    {better} better / {worse} worse / {n - better - worse} tied"
-          f"   sign test p = {min(1.0, p):.3g}")
+    stats.report_paired(name, a, b, label_a, label_b, rng=rng)
 
 
 def main():

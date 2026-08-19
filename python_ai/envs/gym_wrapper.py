@@ -9,7 +9,7 @@ from python_ai.envs import scenario_offense
 # entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
 # Reasons: (1) the old deck was picked back when CardRegistry had far fewer
 # cards implemented and doesn't reflect the roster available now; (2) pipeline
-# #1's phase 2 (randomized opponent decks, see train.py's PHASE2_WIN_RATE_GATE)
+# #1's phase 2 (randomized opponent decks, see trainers/train.py's PHASE2_WIN_RATE_GATE)
 # never actually ran -- the old model only ever played mirror-deck self-play,
 # a real overfitting risk; (3) the old checkpoint accumulated architecture
 # drift across several unrelated engine changes this project went through
@@ -59,7 +59,7 @@ from python_ai.envs import scenario_offense
 #                                                card competes on equal footing
 #
 # Hog Rider is a genuine building-targeter win condition (same archetype class
-# train_selfplay.py's _WIN_CONDITION_IDS treats as "the real threat"), so the
+# envs/scenarios.py's _WIN_CONDITION_IDS treats as "the real threat"), so the
 # deck still has a way to actually close games. Fireball is kept and is finally
 # usable: spells can now be aimed past the river (see MicroRoyaleNet's placement
 # mask and the get_card_info binding added for it).

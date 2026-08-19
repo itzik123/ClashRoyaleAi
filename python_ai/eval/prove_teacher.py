@@ -18,7 +18,7 @@ TWO BARS, AND BOTH MUST BE CLEARED
 
 WHY BAR 2 IS PROBED WITH THE GREEDY NET BY DEFAULT
 ---------------------------------------------------
-`search_ab_test._search_action` rolls candidates forward with `sim.step()`,
+`search.search.search_action` rolls candidates forward with `sim.step()`,
 which runs the C++ heuristic INSIDE the rollout. Against a teacher opponent
 that is the wrong opponent model, so reusing it here would measure a search
 handicapped by a mismatch rather than the teacher's beatability.

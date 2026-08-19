@@ -6,7 +6,7 @@ constraint entirely: the emulator does not pause, so what matters is the
 per-decision TAIL, not the mean. A search whose p99 blows the budget drops
 physical reaction windows even if its average looks fine.
 
-So this measures the REAL `_search_action` code path (not a cost model of it)
+So this measures the REAL `search_action` code path (not a cost model of it)
 over a realistic mid-match state distribution, and reports p50/p95/p99 for a
 grid of (horizon, K). The greedy path is measured too, because that is the
 failsafe and its own latency is the floor everything else sits on.
@@ -38,10 +38,8 @@ HERE = python_ai.PACKAGE_DIR
 
 import clash_royale_env as CE  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
-from python_ai.trainers.expert_iteration import SearchCfg  # noqa: E402
+from python_ai.search.config import SearchCfg  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
-from python_ai.eval.search_ab_test import (  # noqa: E402
-    _search_action, _greedy_from_logits, _policy_head, LSTM_HIDDEN)
 
 E = CE.ClashRoyaleEnv
 NOOP = E.HAND_SIZE
@@ -67,14 +65,14 @@ def measure(net, device, cfg, n_decisions, opp_elixir, warmup=15):
                              device=device).unsqueeze(0)
 
         t0 = time.perf_counter()
-        card_logits, card_embeds, spatial_map, _value, hidden_next = _policy_head(
+        card_logits, card_embeds, spatial_map, _value, hidden_next = policy_head(
             net, obs_t, hidden)
-        gc, gx, gy, _ = _greedy_from_logits(net, obs_t, card_logits, card_embeds,
+        gc, gx, gy, _ = greedy_from_logits(net, obs_t, card_logits, card_embeds,
                                             spatial_map, hidden_next)
         greedy = (gc, gx, gy)
         t1 = time.perf_counter()
 
-        action, _, n = _search_action(net, env, obs_t, card_logits, card_embeds,
+        action, _, n = search_action(net, env, obs_t, card_logits, card_embeds,
                                       spatial_map, hidden_next, greedy, cfg, device)
         t2 = time.perf_counter()
 
@@ -136,7 +134,7 @@ def main():
             _, s, nc = measure(net, device, cfg, args.decisions, args.opp_elixir)
             s, nc = np.asarray(s), np.asarray(nc)
             # Cost of a REAL search only. K==1 means nothing was affordable, so
-            # _search_action returns immediately without rolling anything
+            # search_action returns immediately without rolling anything
             # forward -- averaging those in reports a budget the worst case
             # never has to meet. The tail is what the budget is about.
             real = s[nc >= 2]

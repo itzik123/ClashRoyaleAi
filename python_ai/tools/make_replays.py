@@ -56,15 +56,12 @@ import python_ai  # noqa: E402,F401
 
 import clash_royale_env  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
-from python_ai.eval.search_ab_test import (  # noqa: E402
-    LSTM_HIDDEN, _greedy_from_logits, _policy_head, _search_action, outcome_score,
-)
-from python_ai.trainers.expert_iteration import SearchCfg  # noqa: E402
+from python_ai.search.config import SearchCfg  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.rl.replay import annotate_replay_with_agent_info  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
-SKIP = 10  # matches train.py's REPLAY_SKIP_FRAMES; the annotator maps 1 decision -> 10 ticks
+SKIP = 10  # matches rl.replay.REPLAY_SKIP_FRAMES; 1 decision -> 10 ticks
 
 
 @torch.no_grad()
@@ -78,11 +75,11 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
 
     while not done and steps < max_steps:
         obs_t = torch.tensor(np.asarray(obs, dtype=np.float32), device=device).unsqueeze(0)
-        card_logits, card_embeds, spatial_map, value, hidden_next = _policy_head(net, obs_t, hidden)
-        greedy = _greedy_from_logits(net, obs_t, card_logits, card_embeds, spatial_map, hidden_next)
+        card_logits, card_embeds, spatial_map, value, hidden_next = policy_head(net, obs_t, hidden)
+        greedy = greedy_from_logits(net, obs_t, card_logits, card_embeds, spatial_map, hidden_next)
         action = (greedy[0], greedy[1], greedy[2])
         if use_search:
-            action, _, _ = _search_action(net, env, obs_t, card_logits, card_embeds,
+            action, _, _ = search_action(net, env, obs_t, card_logits, card_embeds,
                                           spatial_map, hidden_next, action, cfg, device)
 
         # The hand is read BEFORE stepping: playCard consumes the slot and cycles

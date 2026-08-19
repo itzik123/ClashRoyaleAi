@@ -2,7 +2,8 @@
 
 ONE PLACE that names the deployable configuration, so an evaluation and a
 deployment cannot silently drift onto different settings -- the same reason
-`expert_iteration.SearchCfg` is a class rather than an argparse namespace.
+`search.config.SearchCfg` is a frozen dataclass rather than an argparse
+namespace.
 
 READ THIS FIRST: THE WEIGHTS CHANGED AND THE EVIDENCE DID NOT MOVE WITH THEM
 ---------------------------------------------------------------------------
@@ -94,8 +95,8 @@ USE_SOLVENCY_GATE = False       # unmeasured on top of search -- see docstring
 
 
 def search_cfg():
-    """The validated SearchCfg, for search_ab_test / expert_iteration callers."""
-    from python_ai.trainers.expert_iteration import SearchCfg
+    """The validated SearchCfg, for the search and expert-iteration callers."""
+    from python_ai.search.config import SearchCfg
     return SearchCfg(horizon=SEARCH_HORIZON,
                      k_cards=SEARCH_K_CARDS,
                      k_cells=SEARCH_K_CELLS,

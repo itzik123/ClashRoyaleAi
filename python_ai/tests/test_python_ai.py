@@ -104,7 +104,7 @@ def test_board_geometry_constants_match_their_headers():
 
     That change is not hypothetical. CLAUDE.md records the river moving on
     2026-07-29 ([16,18) -> [15.5,17.5)) and the towers on 2026-07-30, and BOTH
-    times a stale Python copy survived the edit: model.py's '18*16=288' comment
+    times a stale Python copy survived the edit: models/net.py's '18*16=288' comment
     and calibrate.py scoring bridges against y=17.0. This pins the remaining
     copies to the headers they came from.
     """

@@ -31,7 +31,8 @@ import clash_royale_env  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
-from python_ai.eval.search_ab_test import LSTM_HIDDEN, outcome_score  # noqa: E402
+from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
+from python_ai.search.search import outcome_score  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10

@@ -58,11 +58,21 @@ see the note above the __main__ block.
 """
 
 import os
+import sys
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-import clash_royale_env
+# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
+# resolve; importing the package is also what makes `clash_royale_env` (an
+# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+import python_ai  # noqa: E402,F401
+
+import clash_royale_env  # noqa: E402
 from python_ai.envs import gym_wrapper
 from python_ai.models.net import MicroRoyaleNet
 

@@ -51,7 +51,8 @@ import time
 import numpy as np
 import torch
 
-from python_ai.eval.search_ab_test import _build_candidates, LSTM_HIDDEN
+from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
+from python_ai.search.search import build_candidates  # noqa: E402
 
 NOOP_PLACEHOLDER = None
 
@@ -104,7 +105,7 @@ def search_action_deadline(net, env, obs_t, card_logits, card_embeds, spatial_ma
     if noop_slot is None:
         noop_slot = net.hand_size
 
-    cands = _build_candidates(net, obs_t, card_logits, card_embeds, spatial_map,
+    cands = build_candidates(net, obs_t, card_logits, card_embeds, spatial_map,
                               hidden_next, greedy, cfg.k_cards, cfg.k_cells)
     if legal_filter is not None:
         # Greedy stays at index 0 unconditionally -- it is the fallback and the

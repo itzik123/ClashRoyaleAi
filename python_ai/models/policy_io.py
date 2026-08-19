@@ -28,7 +28,7 @@ WHAT BELONGS HERE
 -----------------
 Only what is needed to turn a checkpoint path into a ready-to-run net, plus the
 recurrent shape that callers need in order to seed it. Search configuration
-stays in `expert_iteration.SearchCfg`; the deployable configuration stays in
+stays in `search/config.py`'s SearchCfg; the deployable configuration is in
 `shipping.py`. This module deliberately knows nothing about either.
 """
 import os
@@ -45,7 +45,7 @@ from python_ai.models.net import MicroRoyaleNet
 LSTM_HIDDEN = MicroRoyaleNet.LSTM_HIDDEN
 
 
-# Deduped per unique context_label rather than per call: train_selfplay.py's
+# Deduped per unique context_label rather than per call: pipeline 2's
 # PFSP calls set_historical_opponent -- and therefore load_state_dict_flexible --
 # on EVERY episode reset in EVERY worker, so without this a single genuinely
 # mismatched checkpoint floods the log with an identical line every episode for
@@ -59,13 +59,13 @@ def load_state_dict_flexible(net, state_dict, context_label):
 
     On an architecture mismatch (e.g. a card-roster change resizing the hand
     one-hot encoding, which is the only part of MicroRoyaleNet that depends on
-    NUM_CARD_IDS -- see model.py's scalar_size), falls back to loading only
+    NUM_CARD_IDS -- see models/net.py's scalar_size), falls back to loading only
     the tensors whose shape still matches, leaving the rest at their fresh
     initialization instead of crashing outright. The CNN/LSTM/action heads are
     independent of NUM_CARD_IDS, so this warm-starts on everything except the
     one incompatible layer rather than discarding a whole checkpoint (and,
     upstream of this function, an entire opponent-history library, for
-    train_selfplay.py's callers) over it.
+    pipeline 2's callers) over it.
 
     Returns False when this fallback path was taken -- the caller should NOT
     then load a paired optimizer state dict, since Adam's per-parameter

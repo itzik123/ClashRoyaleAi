@@ -71,7 +71,7 @@ import numpy as np
 SOLVENCY_RESERVE = 4.0
 
 # Scale of the potential, in the same units as the other shaping weights and
-# numerically equal to train.py's W_ELIXIR_OVERFLOW: this term is that one's
+# numerically equal to rewards/weights.py's W_ELIXIR_OVERFLOW: this term is that one's
 # conceptual mirror image. Overflow penalises sitting above 9 elixir (wasting
 # regen); this penalises sitting below 4 (unable to answer). Together they
 # define a healthy band of 4-9 in which the agent is charged nothing and is

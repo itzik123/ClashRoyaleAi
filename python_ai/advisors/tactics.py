@@ -21,7 +21,7 @@ same cell in 54-91% of states regardless of what is happening.
 range and 95.8% of the ones actually placed never had a single enemy inside it.
 
 The root cause is a gradient COVERAGE hole, not the reward (see CLAUDE.md and
-train.py's `mb_placed`): both the actor loss and the placement entropy bonus
+rl/ppo.py's `mb_placed`): both the actor loss and the placement entropy bonus
 flow only through `placement_given_card` for the card that was CHOSEN, so a
 card the policy has stopped playing receives zero placement gradient forever.
 That is a deadlock -- frozen head makes the card worthless, worthlessness keeps
