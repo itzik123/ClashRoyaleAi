@@ -56,6 +56,15 @@ CONTRACTS THAT BITE
 * `inject` bypasses hand, elixir and placement legality entirely -- correct for
   building a hypothetical position, and the reason the spawn coordinates below
   are ABSOLUTE board coordinates rather than either team's own frame.
+* `inject` QUEUES the spawn; the unit does not appear on the board (or in any
+  observation) until one tick has been stepped. Measured: enemy mass reads 0.0
+  immediately after inject and 0.399 after a single tick. A scenario that
+  skipped that tick would hand the agent an observation showing an EMPTY board
+  while the engine was about to spawn a push -- invisible, and exactly the kind
+  of silent state/observation mismatch this project has paid for. The tick is
+  stepped with `step_self_play` rather than `step` so the C++ heuristic does not
+  get a free move inside the setup, and elixir is written AFTER it so the bars
+  are exactly what the scenario says they are (a tick regenerates 0.035).
 * Elixir is clamped to [0, 10] by the engine, so a caller cannot construct a bar
   the engine itself could never reach.
 """
@@ -107,6 +116,15 @@ def _wincon_and_filler(deck):
     return wincon, others
 
 
+def _settle(env):
+    """One tick, so queued `inject` spawns actually reach the board.
+
+    step_self_play, not step: `step` would run the C++ HeuristicOpponent, giving
+    team 1 a free move inside what is supposed to be a state SETUP.
+    """
+    env.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, 1)
+
+
 def punish_window(env, rng, deck):
     """They just spent; we hold 8 and the win condition. Returns a name or None."""
     wincon, others = _wincon_and_filler(deck)
@@ -116,8 +134,6 @@ def punish_window(env, rng, deck):
         # Loud rather than silent: an unusable hand means this episode is NOT a
         # punish scenario and must not be counted as one.
         return None
-    env.set_elixir_for_team(0, 8.0)
-    env.set_elixir_for_team(1, 1.0)
 
     # Their commitment, in one lane, already crossing. Two bodies so a single
     # cheap answer does not trivially erase it -- otherwise the "punish" is free
@@ -126,6 +142,9 @@ def punish_window(env, rng, deck):
     x = BRIDGE_XS[lane]
     for cid, dy in ((wincon, 0.0), (others[0], 2.0)):
         env.inject(int(cid), float(x), float(RIVER_Y - dy), 1)
+    _settle(env)
+    env.set_elixir_for_team(0, 8.0)
+    env.set_elixir_for_team(1, 1.0)
     return f"punish_window_lane{lane}"
 
 
@@ -136,14 +155,15 @@ def counter_push(env, rng, deck):
         return None
     if not env.set_hand_for_team(0, [wincon] + others):
         return None
-    env.set_elixir_for_team(0, 6.0)
-    env.set_elixir_for_team(1, 3.0)
 
     lane = int(rng.integers(2))
     x = BRIDGE_XS[lane]
     # Survivors on OUR side of the river, healthy enough to escort a push.
     for cid, dy in ((others[0], 0.0), (others[1], 2.0)):
         env.inject(int(cid), float(x), float(OWN_SIDE_Y - dy), 0)
+    _settle(env)
+    env.set_elixir_for_team(0, 6.0)
+    env.set_elixir_for_team(1, 3.0)
     return f"counter_push_lane{lane}"
 
 
