@@ -14,9 +14,6 @@ project ("ClashRoyaleEnv")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Include sub-projects.
-# add_subdirectory ("ClashRoyaleEnv")
-
 add_executable(ClashRoyaleEnv src/main.cpp)
 target_include_directories(ClashRoyaleEnv PRIVATE include/core include/entities include/rendering)
 

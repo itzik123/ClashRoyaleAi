@@ -1273,11 +1273,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # normal-matchup win/loss (see Scenario/Defense_Success_Rate).
             "is_scenario": 1.0 if self.scenario_active is not None else 0.0,
             # Split out because ScenDef means "did the agent survive a threat",
-            # and two scenarios put no threat in our half at all:
-            # fireball_tower_value spawns at the ENEMY tower and giant_commit
-            # spawns nothing. In those, "did not take a big hit" is true no
-            # matter what the agent does -- including nothing -- so counting
-            # them drags ScenDef toward 1.0 and hides real defensive failures.
+            # and fireball_tower_value puts no threat in our half at all -- it
+            # spawns at the ENEMY tower. There, "did not take a big hit" is true
+            # no matter what the agent does -- including nothing -- so counting
+            # it drags ScenDef toward 1.0 and hides real defensive failures.
+            # (giant_commit, which spawned nothing, was the other such case and
+            # was removed on 2026-08-19.)
             "scenario_defensive": 1.0 if getattr(self, "scenario_defensive", False) else 0.0,
             # Per-card realized elixir economy, for the strategy readout's ROI
             # column. This is the falsifiable half of "did un-choking the
@@ -1748,7 +1749,7 @@ def train_selfplay_ppo():
     # = the injected episode did NOT end in a tower/game loss (survived the
     # threat, or truncated out of the focused window still alive).
     scenario_success_history = deque(maxlen=200)
-    # Non-defensive scenarios (fireball_tower_value, giant_commit) tracked
+    # Non-defensive scenarios (fireball_tower_value) tracked
     # separately rather than discarded: 'did this episode avoid a big
     # negative' is still worth watching there, it just is not DEFENCE and
     # must not be averaged into ScenDef.
@@ -2055,9 +2056,9 @@ def train_selfplay_ppo():
                         # means "the episode did not end in a tower/game loss",
                         # which is only a question worth asking when something
                         # was threatening us. fireball_tower_value spawns at the
-                        # ENEMY tower and giant_commit spawns nothing, so both
-                        # pass that test by default -- including when the agent
-                        # does nothing at all. Counting them pushed ScenDef
+                        # ENEMY tower, so it passes that test by default --
+                        # including when the agent does nothing at all.
+                        # Counting it pushed ScenDef
                         # toward 1.0 and would have masked a genuine collapse in
                         # the defensive reflex the metric exists to watch.
                         if scenario_def_arr[i] > 0.5:
