@@ -1598,5 +1598,185 @@ def test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing():
         "a flawless win that took a crown must still pay in full")
 
 
+# ==========================================================================
+# teacher.py -- the utility-search sparring partner (2026-08-19)
+# ==========================================================================
+# The elixir-multiplier curriculum priced the win condition negatively (see
+# CLAUDE.md's 1.5x hypothesis and its monotone dose-response). It is replaced
+# by a COMPETENCE curriculum: a deterministic utility-search bot at a symmetric
+# 1.0x economy, whose difficulty is dialed on lookahead/width/epsilon.
+#
+# These tests pin the parts that fail SILENTLY. In particular a wrong team-1
+# frame conversion makes every team-1 placement illegal, which reads as "the
+# bot is weak" rather than "the bot is broken" -- exactly the class of bug this
+# project has paid for three times.
+
+
+def test_card_roles_derives_roles_from_the_engine_not_a_hardcoded_list():
+    from teacher import card_roles
+    roles = card_roles(gym_wrapper.DEFAULT_DECK)
+    assert roles[15] == "wincon", "Hog Rider is the deck's building-targeter"
+    assert roles[7] == "spell"      # Fireball
+    assert roles[33] == "spell"     # The Log
+    assert roles[25] == "building"  # Cannon
+    assert roles[6] == "ranged"     # Musketeer
+    # Ice Golem also targets buildings but is a 2-cost shield, not a win
+    # condition -- highest-cost building-targeter wins, the same tiebreak
+    # gym_wrapper._find_win_condition uses.
+    assert roles[40] != "wincon"
+    assert set(roles) == set(gym_wrapper.DEFAULT_DECK)
+
+
+def _teacher_env(ticks=40):
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    for _ in range(ticks):
+        env.step_self_play(-1, 0, 0, -1, 0, 0, 10)
+    return env
+
+
+def test_teacher_candidates_are_all_legal_for_either_team():
+    """is_valid_placement takes ABSOLUTE y for both teams while step_self_play
+    takes team 1's y MIRRORED. Get that backwards and team 1 silently never
+    places anything."""
+    from teacher import UtilityTeacher
+
+    for team in (0, 1):
+        env = _teacher_env()
+        t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=team, horizon_ticks=0)
+        t.reset()
+        obs = np.asarray(env.get_observation_for_team(team), np.float32)
+        cands = t.candidates(env, obs)
+        assert len(cands) >= 1, "the no-op candidate is always present"
+        for c in cands:
+            if c.slot == CE.HAND_SIZE:
+                continue
+            assert env.is_valid_placement(c.card_id, c.x, t.to_absolute_y(c.y), team), (
+                f"team {team} proposed an illegal cell: {c}")
+
+
+def test_teacher_never_proposes_an_unaffordable_card():
+    from teacher import UtilityTeacher
+
+    env = _teacher_env(ticks=0)
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=0)
+    t.reset()
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    cands = t.candidates(env, obs, elixir=1.0)
+    for c in cands:
+        if c.slot == CE.HAND_SIZE:
+            continue
+        assert E.get_card_info(c.card_id)["cost"] <= 1.0
+
+
+def test_noop_scores_exactly_zero_so_the_teacher_can_hold_elixir():
+    """The no-op baseline is what makes every other score a MARGINAL value. If
+    it drifts, the bot either dumps elixir on sight or freezes forever."""
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=30)
+    t.reset()
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    noop = [c for c in t.candidates(env, obs) if c.slot == CE.HAND_SIZE][0]
+    base = t.rollout_stats(env, noop)
+    assert t.score(env, noop, base, obs) == 0.0
+
+
+def test_rollout_does_not_touch_the_live_match():
+    """snapshot() deep-copies the stats collectors. If that ever regresses,
+    every hypothetical hit lands in the REAL match's statistics -- and those
+    feed the reward shaping, so a search would corrupt its own returns."""
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    before = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
+              env.get_elixir_spent(0), env.get_elixir_for_team(0))
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=30)
+    t.reset()
+    t.act(env, np.asarray(env.get_observation_for_team(0), np.float32))
+    after = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
+             env.get_elixir_spent(0), env.get_elixir_for_team(0))
+    assert before == after
+
+
+def test_teacher_is_side_agnostic():
+    """One class plays both sides. A broken team-1 frame shows up here as a
+    bot that never lands a card, not as an exception."""
+    from teacher import UtilityTeacher
+
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    t1 = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1, horizon_ticks=30, seed=0)
+    t1.reset()
+    played = 0
+    for _ in range(120):
+        obs1 = np.asarray(env.get_observation_for_team(1), np.float32)
+        slot, x, y = t1.act(env, obs1)
+        spent_before = env.get_elixir_spent(1)
+        env.step_self_play(-1, 0, 0, slot, x, y, 10)
+        if env.get_elixir_spent(1) > spent_before:
+            played += 1
+        if env.is_game_over():
+            break
+    print(f"\n  team-1 teacher landed {played} cards in 120 decisions")
+    assert played >= 5, f"team-1 teacher only landed {played} cards"
+
+
+def test_cycle_tracker_counts_distance_to_the_win_condition():
+    from teacher import CycleTracker
+
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    ct = CycleTracker(gym_wrapper.DEFAULT_DECK)
+    ct.reset()
+    seen_far = False
+    for _ in range(300):
+        hand = list(env.get_hand_for_team(0))
+        ct.observe(hand)
+        d = ct.distance_to(15)
+        if 15 in hand:
+            assert d == 0, f"Hog is in hand {hand} but distance_to said {d}"
+        else:
+            assert d > 0, f"Hog absent from {hand} but distance_to said 0"
+            seen_far = True
+        env.step_self_play(0, 9.0, 10.0, -1, 0, 0, 10)
+        if env.is_game_over():
+            break
+    assert seen_far, "the hand never rotated -- the test proved nothing"
+
+
+def test_teacher_stages_are_competence_not_economy():
+    from teacher import TEACHER_STAGES
+
+    assert len(TEACHER_STAGES) == 6
+    for s in TEACHER_STAGES:
+        assert set(s) == {"horizon_ticks", "epsilon", "k_cells"}, (
+            "a stage must never carry an elixir multiplier -- that is the whole "
+            "point of this curriculum")
+    eps = [s["epsilon"] for s in TEACHER_STAGES]
+    hor = [s["horizon_ticks"] for s in TEACHER_STAGES]
+    assert eps == sorted(eps, reverse=True), "noise must fall monotonically"
+    assert hor == sorted(hor), "lookahead must rise monotonically"
+
+
+def test_epsilon_one_still_only_emits_legal_actions():
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=0,
+                       epsilon=1.0, seed=0)
+    t.reset()
+    for _ in range(50):
+        obs = np.asarray(env.get_observation_for_team(0), np.float32)
+        slot, x, y = t.act(env, obs)
+        if slot != CE.HAND_SIZE:
+            cid = env.get_hand_for_team(0)[slot]
+            assert env.is_valid_placement(cid, x, t.to_absolute_y(y), 0)
+        env.step_self_play(-1, 0, 0, -1, 0, 0, 10)
+        if env.is_game_over():
+            break
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
