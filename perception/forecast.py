@@ -20,12 +20,21 @@ close, which is why this module answers both and the harness reports both.
 WHY inject + step, NOT copy
 ---------------------------
 Branching search over candidate actions needs a `GameManager` copy, and
-`Board` holds `shared_ptr<Entity>`, so a copy is shallow -- that is open
-problem #2 and it is genuinely blocked on a virtual `Entity::clone()`.
+`Board` holds `shared_ptr<Entity>`, so a plain copy is shallow.
 
-Single-line forward prediction needs no branching at all: reset, inject what
-was seen, step, read. Every one of those is already bound. The blocker applies
-to search, not to prediction, and conflating the two is what kept this
+This used to read "genuinely blocked on a virtual `Entity::clone()`". **That is
+no longer true and has not been since 2026-08-11**: `Entity::clone()` exists,
+every concrete subtype overrides it, and `snapshot()` is bound (see
+UPSTREAM_REQUESTS.md item 13, DONE, and tests/core/test_board_deepcopy.cpp /
+test_game_manager_snapshot.cpp). CLAUDE.md's open problem #2 has already been
+corrected; this docstring had not been, which left the repo's own top-ranked
+unexploited asset looking blocked on surgery that already happened.
+
+What this module does is still inject + step rather than snapshot, for a
+different and smaller reason: single-line forward prediction needs no branching
+at all -- reset, inject what was seen, step, read. Branching search over
+candidates is `python_ai/realtime_search.py`'s job and it uses `snapshot()`
+already. The two were conflated here, and that conflation is what kept this
 unexplored.
 
 WHY step_self_play, NOT step
@@ -40,7 +49,7 @@ Any card index outside [0, 4) is a no-op in both, which is how a pure
 
 WHAT CANNOT BE RECONSTRUCTED -- read this before trusting a number
 ------------------------------------------------------------------
-`inject` is additive. Two setters exist as of 2026-08-11 and THIS MODULE DOES
+`inject` is additive. Two setters exist as of 2026-08-17 and THIS MODULE DOES
 NOT USE THEM YET -- see "NOT YET MIGRATED" below. Everything here describes the
 state as this module actually rebuilds it today:
 
@@ -66,18 +75,32 @@ the policy: the board would be a prediction but the hand would be fiction,
 and `affordability_mask` is built from those very scalars. The hand must be
 overwritten from perception before the vector is used as a policy input.
 
-NOT YET MIGRATED -- the elixir/hand gaps above are a TODO, not a platform limit
-------------------------------------------------------------------------------
+NOT YET MIGRATED -- a platform limit until 2026-08-17, a deliberate no-op since
+-------------------------------------------------------------------------------
 `ClashEnv::setElixirForTeam` / `setHandForTeam` (bound as `set_elixir_for_team`
-/ `set_hand_for_team`) were added on 2026-08-11, and their own C++ comment names
-THIS FILE as the motivating problem: "forecast.py rebuilds a board by calling
-reset() and injecting units... the reconstructed position had the right units
-and a fabricated hand/elixir."
+/ `set_hand_for_team`) were added on 2026-08-17 (26de409), and their own C++
+comment names THIS FILE as the motivating problem: "forecast.py rebuilds a board
+by calling reset() and injecting units... the reconstructed position had the
+right units and a fabricated hand/elixir."
 
-This module still goes through `reset()` + `inject()` and has not been switched
-over, so the two limitations above are self-inflicted from here on rather than
-imposed by the bindings. Anyone treating this docstring as proof that elixir and
-the hand are unreachable should stop and wire the setters up instead.
+This module still goes through `reset()` + `inject()`. That is a TODO, not a
+platform limit -- but wiring it up today would move NOTHING that is currently
+measured, which is why it has not been rushed:
+
+  * `forecast()` consumes exactly one field of the input state,
+    `game_state.units` (see the loop below) -- never a hand, never an elixir.
+  * Both consumers score TOWER-EXCLUDED UNIT OCCUPANCY
+    (`tools/sim_fidelity.py`, `tools/measure_decoupling.py`), so the fabricated
+    hand and elixir are already outside every reported metric.
+  * No source of a team-1 HAND exists on this side at all. Team-1 ELIXIR does
+    have one (`track/opp_elixir.py`, and live, the net's own
+    `predict_opp_elixir` -- which is precisely what ClashEnv's comment asks
+    for), so elixir is the half that could land first.
+
+So: migrate when a consumer starts scoring something hand- or elixir-dependent,
+and check `set_hand_for_team`'s BOOL RETURN when you do -- it refuses rather
+than accepting a misread, and a silently-ignored refusal is worse than no
+update at all.
 
 It is also what makes cumulative stepping safe. Stepping 0.5 s and then
 another 1.0 s is bit-identical to stepping 1.5 s across the whole spatial

@@ -5,8 +5,8 @@ Written from `perception/`, which modifies nothing outside itself. Items are
 explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-08-19. Items 0, 1, 2, 4, 5, 6, 9, 12 and 13 are applied;
-3, 7, 8 and 14 are still open.
+Last updated 2026-08-19. Items 0, 1, 2, 4, 5, 6, 9, 10, 12, 13 and 14 are
+applied; 3, 7, 8, 16 and 17 are still open. There is no item 11.
 
 > **Status audit, 2026-08-19.** Items 5, 6 and 12 were carrying `OPEN` headers
 > while the exact code they propose was already merged — verified line by line
@@ -35,10 +35,18 @@ Last updated 2026-08-19. Items 0, 1, 2, 4, 5, 6, 9, 12 and 13 are applied;
 | 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
 | 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
 | 12 | Bind `isValidPlacement` so the action mask stops disagreeing with the engine | 58.7% of card choices silently rejected | **DONE — `is_valid_placement` is bound in the current `.pyd`** |
+| 10 | State-estimator write half: `set_elixir_for_team` / `set_hand_for_team` | search over a reconstructed state scored a fabricated hand/elixir | **DONE — applied 2026-08-17, recorded here 2026-08-19** |
 | 13 | **State snapshot/restore, so decision-time search becomes possible** | unblocks the biggest unexploited asset | **DONE — applied and verified 2026-08-11** |
+| 14 | Offence structurally under-priced; deploy time added | win condition was unplayable by construction | **DONE — raised and applied 2026-08-19** |
+| 16 | Bind `TimeoutRules::resolve` so match outcomes have one definition | 5 Python copies, all missing the HP tie-break | open, proposed 2026-08-19 |
+| 17 | Const accessors for internal timing state | divergence tests cannot see cooldowns/fuses | open, proposed 2026-08-19, **ergonomics not coverage** |
 
 Items 1 and 2 were done together since the measured benefit is combined
 (max error 0.63 → 0.31 tiles) and neither is a large or risky edit.
+
+**There is no item 11.** 10 and 11 were both skipped when the numbering jumped
+9 → 12; 10 has since been filled in (retroactively, for the setters), 11 has
+not. Not reused, so older references to "item 12"/"item 13" stay valid.
 
 ---
 
@@ -845,6 +853,63 @@ Step 1 costs one 20-minute pass and no engine change at all.
 
 ---
 
+## 10. DONE — state-estimator write half: `set_elixir_for_team` / `set_hand_for_team` (applied 2026-08-17, recorded here 2026-08-19)
+
+**Recorded after the fact.** These landed in `26de409` ("Engine: set_elixir /
+set_hand, so search can evaluate the REAL position") without ever being written
+up here — the numbering jumped 9 → 12 and items 10 and 11 simply did not exist.
+Filling 10 so the file stops implying nothing happened between them. Same class
+of gap as the item 5/6/12 status drift noted at the top of this file.
+
+### What landed
+
+```cpp
+// ClashEnv.h
+void setElixirForTeam(int team, float value) { game.setElixir(team, value); }
+bool setHandForTeam(int team, const std::vector<int>& cards) {
+    return game.setHand(team, cards);
+}
+```
+```cpp
+// bindings.cpp
+.def("set_elixir_for_team", ...)
+.def("set_hand_for_team",  ...)
+```
+
+### Why it was needed
+
+The read half (`inject`, item 4) could rebuild the BOARD, but elixir and the
+hand still came from `reset()` — so a reconstructed position carried the right
+units and a **fabricated** hand and elixir. `ClashEnv.h`'s own comment names
+`perception/forecast.py` as the motivating case. Decision-time search over such
+a state scores fiction rather than the real position, which is what made this
+the blocking half rather than a convenience.
+
+### `setHandForTeam` REFUSES rather than accepting a misread
+
+It returns `false` and mutates nothing when the size is wrong, when a card is
+not in `player.hand + player.deckQueue`, or on a duplicate. **Callers must check
+the return.** This matters on real perception output: measured over 2,510 live
+frames, ~0.5% off-deck reads and ~1.7% duplicate reads survive match gating, so
+the guard fires in practice — it is not theoretical. A silently-ignored refusal
+would leave the estimator confidently wrong.
+
+### Current consumer status
+
+`perception/forecast.py` has **not** been migrated to these, deliberately: it
+consumes only `game_state.units`, and both of its consumers score tower-excluded
+unit occupancy, so the fabricated hand/elixir sit outside every reported metric
+today. There is also no team-1 hand source on this side at all (team-1 *elixir*
+does have one — `track/opp_elixir.py`, and live, the net's own
+`predict_opp_elixir`, which is exactly what ClashEnv's comment anticipates).
+Migrate when a consumer starts scoring something hand- or elixir-dependent.
+
+`perception/bridge/sim_driver.py` still reverse-engineers the opening hand by
+repeated `reset()` draws — `set_hand_for_team` is the intended replacement for
+that ~150-line workaround, not yet applied.
+
+---
+
 ## 12. DONE — bind `isValidPlacement`, so the action-space mask can stop disagreeing with the engine (proposed 2026-08-11, applied; status corrected 2026-08-19)
 
 > Applied. `ClashEnv::isValidPlacementForCard` exists and `bindings.cpp`
@@ -1351,7 +1416,7 @@ zero-divergence control.
 
 ---
 
-## 14. OPEN — bind `TimeoutRules::resolve`, so match outcomes have one definition (proposed 2026-08-19)
+## 16. OPEN — bind `TimeoutRules::resolve`, so match outcomes have one definition (proposed 2026-08-19)
 
 **The ask is one read-only accessor.** No gameplay change, no observation or
 action-space change, no checkpoint invalidation, no behavioural difference to
@@ -1451,3 +1516,76 @@ the *live* match reads back, which is precisely the failure class
 `test_board_deepcopy.cpp` exists to prevent and the one vector it does not cover.
 Worth a comment at minimum; a fixture card with a stateful effect would turn it
 into a real test.
+
+---
+
+## 17. OPEN — const accessors for internal timing state, so divergence tests can see it (proposed 2026-08-19)
+
+**Ergonomics, not a coverage unblocker.** Read that sentence before deciding:
+everything below is testable *today* through seams that already exist, so this
+buys earlier and better-localised failure messages, not new capability. Filed
+because the alternative — behavioural proxies — is what the current tests use,
+and one of them is genuinely lossy (see "the one real gap").
+
+### The ask
+
+Const getters for fields that have no public reader, on the model of
+`Projectile::getTargetId()` (`Projectile.h:113`), which was added verbatim
+"so the deepCopy divergence tests can assert the remap actually happened,
+instead of inferring it from damage landing in the right place":
+
+| type | fields |
+|---|---|
+| `CombatEntity` | `currentCooldown`, `currentTargetId`, `ticksOnTarget`, `ticksSinceLastHit`, `currentHitCount` |
+| `Building` | `ticksAlive` |
+| `AreaSpell` | `delayTicks`, `remainingHits`, `tickInterval` |
+| `Projectile` | `returnDelayTicks`, `outboundHitLanded` |
+
+### Why
+
+`tests/core/test_board_deepcopy.cpp`'s `EntityRow` compares only externally
+observable state — id, hp, team, cardId, x, y, projectileTargetId. A copy that
+diverged **only** in internal timing would pass its 120-tick window until the
+difference happened to surface as an hp or position change. Since a search
+rollout's whole job is to predict the next second or two accurately, a
+timing-only desync is exactly the defect class that matters and exactly the one
+the acceptance test cannot currently name.
+
+### The one real gap, and the honest limit of the rest
+
+Most of these ARE reachable behaviourally, which is why this is filed as
+ergonomics:
+
+- `currentCooldown` — `CombatEntity::seedCooldown(int)` is already **public**
+  (`CombatEntity.h:654`) and its own comment calls it "the one seam". Seed it,
+  copy, step both, assert the first hit lands on the same tick.
+- `Building::ticksAlive` — decay fires on `ticksAlive % 10 == 0`, so stepping to
+  a tick that is NOT a multiple of 10 before copying makes a reset detectable.
+  (Worth noting: the existing `WARMUP_TICKS = 60` IS a multiple of 10, so a
+  reset would currently stay phase-aligned and be invisible.)
+- `AreaSpell::delayTicks` / `remainingHits` — copy mid-fuse or mid-volley and
+  compare hp trajectories.
+- `Projectile::outboundHitLanded` — snapshot an Executioner axe after the
+  outbound hit and assert the return lands on the same tick.
+
+**`ticksOnTarget` is the exception and is the strongest argument here.** Its only
+public proxy is `getDamagePerTick()`, which collapses it into at most four ramp
+buckets via `getCurrentDamage()` — so a behavioural test detects a *stage*
+desync, never a *tick* desync. `getCurrentDamage()` also folds in
+`rangeFalloff`/`rangeBand` through `lastAttackDistance`, so on a falloff card the
+proxy varies continuously and the ramp stage stops being separable at all.
+
+### Blast radius
+
+None. Additive `const` getters returning by value; no existing symbol changes
+meaning, no field becomes writable, no gameplay path is touched. **Not
+gameplay-affecting, so `model_weights.pth`'s win-rate history is unaffected** —
+same framing item 13 used for its own additive surface.
+
+### What was done instead, pending a decision
+
+`tests/core/test_snapshot_champion_state.cpp` (new) covers the
+`championSlots` ↔ `Board` cross-structure invariant, which needed no engine
+change at all. `lastAttackDistance` is already public and varies at runtime in
+the existing fixture, so it is the one cheap non-vacuous addition to `EntityRow`
+available without this request.

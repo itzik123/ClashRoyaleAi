@@ -58,6 +58,13 @@ import numpy as np
 # to be robust to one slow frame, short enough to track a real change in load.
 PERIOD_WINDOW = 12
 
+# How many recent samples each STAGE timing is kept over. Same reasoning as
+# PERIOD_WINDOW one line up, and the same reasoning Stages.report already gives
+# for preferring the median: a figure averaged over a whole run describes
+# neither now nor then, because machine load drifts. Larger than PERIOD_WINDOW
+# because a stage median is read once at the end rather than continuously.
+STAGE_WINDOW = 256
+
 
 class Stages:
     """Accumulates per-stage timings across frames, safely across threads.
@@ -65,26 +72,44 @@ class Stages:
     Reports the MEDIAN. A per-frame mean is dominated by whichever frame the
     scheduler happened to descheduled -- the live run's own totals ranged
     1.9-9.3 s while the typical frame was nothing like either end.
+
+    Timings are kept in a bounded deque (STAGE_WINDOW), matching
+    PerceptionWorker._publishes below rather than growing without limit for the
+    lifetime of the process. The TOTAL count is tracked separately and is what
+    `n=` reports, because that number is diagnostic in its own right: stages
+    recorded before an early exit (e.g. detector.run) and after it
+    (build_game_state) legitimately differ, and a saturating window would erase
+    exactly that signal.
     """
 
     def __init__(self):
-        self._t: dict[str, list[float]] = {}
+        self._t: dict[str, deque[float]] = {}
+        self._n: dict[str, int] = {}
         self._lock = threading.Lock()
+
+    def _record(self, name: str, ms: float) -> None:
+        """Caller must hold the lock."""
+        if name not in self._t:
+            self._t[name] = deque(maxlen=STAGE_WINDOW)
+            self._n[name] = 0
+        self._t[name].append(ms)
+        self._n[name] += 1
 
     def time(self, name: str, t0: float) -> float:
         """Record `now - t0` against `name`; return now, to chain calls."""
         now = time.perf_counter()
         with self._lock:
-            self._t.setdefault(name, []).append((now - t0) * 1000.0)
+            self._record(name, (now - t0) * 1000.0)
         return now
 
     def add(self, name: str, ms: float) -> None:
         with self._lock:
-            self._t.setdefault(name, []).append(ms)
+            self._record(name, ms)
 
     def report(self, total_key: str | None = None) -> str:
         with self._lock:
             snapshot = {k: np.array(v) for k, v in self._t.items()}
+            counts = dict(self._n)
         if not snapshot:
             return "  (no stages recorded)"
         total = (float(np.median(snapshot[total_key]))
@@ -95,8 +120,12 @@ class Stages:
             v = snapshot[name]
             med = float(np.median(v))
             share = 100.0 * med / total if total > 0 else 0.0
+            n = counts.get(name, len(v))
+            # "n=1234" is every sample ever seen; "(last 256)" flags that the
+            # median above is over the window, not over all of them.
+            windowed = "" if n <= len(v) else f" (last {len(v)})"
             lines.append(f"    {name:<26} {med:8.1f} ms  ({share:5.1f}%)  "
-                         f"n={len(v)}")
+                         f"n={n}{windowed}")
         return "\n".join(lines)
 
 

@@ -52,6 +52,30 @@ Python process has the `.pyd` loaded** — Windows won't overwrite a mapped DLL.
 That looks exactly like "the compile is broken" and almost never is. Check
 `ps -W | grep -i python` first.
 
+> **⚠ Verified 2026-08-19: that command does not work on this machine any more.**
+> `C:\Program Files\Microsoft Visual Studio\18\` and `\2022\` are both **empty
+> directories** — there is no `MSBuild.exe` anywhere on the box, and no `cl`,
+> `cmake` or `clang++` either. **The `.pyd` cannot be rebuilt here**, which also
+> means `python_ai/venv` is absent and nothing importing `clash_royale_env` can
+> run. Keep the command above for whichever machine still has the toolchain.
+>
+> **The C++ TEST SUITE does still build and run here, via WSL:**
+>
+> ```bash
+> wsl g++ -std=c++20 -Wall -Wextra \
+>   -I include/core -I include/entities -I tests/entities -I <catch2-dir> \
+>   tests/entities/*.cpp tests/core/*.cpp <catch2-dir>/catch_amalgamated.cpp \
+>   -o clash_tests && ./clash_tests
+> ```
+>
+> WSL has g++ 13.3. Catch2's amalgamated `.hpp`/`.cpp` are not vendored in the
+> repo — fetch them from the Catch2 releases page into a scratch directory. This
+> is header-only against `include/`, so it needs no MSVC and no `.pyd`, and it is
+> what the "538 cases, 0 warnings" figures in this file are measured with. Python
+> work must be verified by other means here (stubbing `clash_royale_env`,
+> `py_compile`, static reading) — see `python_ai/match_outcome.py`'s tests for the
+> stub pattern.
+
 **The `claude` CLI is not on PATH either** — it's inside the desktop app, at
 `%APPDATA%\Claude\claude-code\<version>\claude.exe`. Needed for
 non-interactive plugin/marketplace management, since `/plugin` only opens an

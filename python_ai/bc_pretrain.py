@@ -108,7 +108,10 @@ def _cell_from_xy(x, y, board_width, board_height):
     this unit in" already means everywhere else in the system.
 
     Rounding broke on the exact case the scripted teachers hit constantly: a
-    Rusher places at `self.MAX_Y`, which is getOwnHalfMaxY() = 15.5, and
+    Rusher places at `self.MAX_Y`, which was getOwnHalfMaxY() = 15.5 AT THE
+    TIME (it is 15.0 since the 2026-07-29 river re-centring -- this paragraph
+    is kept as the historical account of why truncation was chosen, not as a
+    current statement of the constant), and
     round(15.5) = 16 -- one row PAST the last legal own-half row (0..15). The
     placement mask then marks that cell illegal, its logit is -inf, and the
     cross-entropy target can never be matched. Because train_bc drops

@@ -71,10 +71,20 @@ import numpy as np
 SOLVENCY_RESERVE = 4.0
 
 # Scale of the potential, in the same units as the other shaping weights and
-# deliberately equal to W_ELIXIR_OVERFLOW: this term is that one's mirror image.
-# Overflow penalises sitting above 9 elixir (wasting regen); this penalises
-# sitting below 4 (unable to answer). Together they define a healthy band of
-# 4-9 in which the agent is charged nothing and is free to play the game.
+# numerically equal to train.py's W_ELIXIR_OVERFLOW: this term is that one's
+# conceptual mirror image. Overflow penalises sitting above 9 elixir (wasting
+# regen); this penalises sitting below 4 (unable to answer). Together they
+# define a healthy band of 4-9 in which the agent is charged nothing and is
+# free to play the game.
+#
+# DELIBERATELY NOT SHARED, and do not "fix" this into an import. Two reasons:
+# (1) train.py imports W_SOLVENCY FROM this module, so the dependency already
+#     runs elixir_shaping -> train; importing back is circular in both entry
+#     orders at module level.
+# (2) They are different quantities that happen to be tuned to the same value --
+#     this one is a potential-based (policy-invariant) band-keeping term, that
+#     one is a per-step penalty. They are free to diverge, and an equality test
+#     asserting otherwise would be asserting a coincidence.
 #
 # Magnitude matters only for LEARNING SPEED here, not for the optimum, since the
 # term is potential-based. Kept modest anyway: policy-invariance is an

@@ -5,8 +5,9 @@
 #   py -3.11 -m venv perception/.venv
 #   perception/.venv/Scripts/python.exe -m pip install -r perception/requirements.txt
 #
-# Python 3.11 specifically, not 3.13/3.14: bridge/sim_driver.py imports
-# python_ai/clash_royale_env.pyd, which is built against 3.11 and fails with
+# Python 3.11 specifically, not 3.13/3.14: bridge/sim_driver.py, forecast.py
+# and live/mvp_loop.py's --policy neural all reach python_ai/
+# clash_royale_env.pyd, which is built against 3.11 and fails with
 # "DLL load failed" on any other version.
 
 numpy>=2.0
@@ -28,3 +29,15 @@ pytest>=8.0
 # WGC reads the window's own surface: ~100 ms, and works while the window is
 # completely covered, so the machine stays usable during a run.
 windows-capture>=2.0 ; sys_platform == "win32"
+
+# NEURAL POLICY ONLY -- live/mvp_loop.py --policy neural. Not needed for the
+# default heuristic policy, for calibration, or for the test suite, which is
+# why it is not an unconditional dependency.
+#
+# That path imports python_ai/model.py (MicroRoyaleNet) and
+# python_ai/perception_encoder.py, and the latter does a MODULE-LEVEL
+# `import clash_royale_env` -- so --policy neural additionally requires the
+# built .pyd and the 3.11 interpreter noted at the top, not just this package.
+# Pinned loosely: the checkpoint format is torch.save/load, not a
+# version-specific export.
+torch>=2.0

@@ -86,6 +86,51 @@ def test_normalizers_match_header():
     assert from_header("MAX_UNIT_SPEED") == tactics.MAX_UNIT_SPEED
 
 
+def test_board_geometry_constants_match_their_headers():
+    """The BOARD-geometry constants Python copies because nothing exposes them.
+
+    No binding reads back the river band or the bridge positions -- ClashEnv
+    exposes get_own_half_max_y() and nothing else -- so tactics.py keeps its own
+    copies. This test is the only thing standing between those copies and the
+    next geometry change.
+
+    That change is not hypothetical. CLAUDE.md records the river moving on
+    2026-07-29 ([16,18) -> [15.5,17.5)) and the towers on 2026-07-30, and BOTH
+    times a stale Python copy survived the edit: model.py's '18*16=288' comment
+    and calibrate.py scoring bridges against y=17.0. This pins the remaining
+    copies to the headers they came from.
+    """
+    import re
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    board = open(os.path.join(root, "include", "core", "Board.h"),
+                 encoding="utf-8", errors="replace").read()
+    gm = open(os.path.join(root, "include", "core", "GameManager.h"),
+              encoding="utf-8", errors="replace").read()
+
+    # Board.h: riverY_start / riverY_end.
+    m = re.search(r"riverY_start\s*=\s*([0-9.]+)f", board)
+    assert m, "riverY_start not found in Board.h -- renamed?"
+    river_start = float(m.group(1))
+
+    # GameManager.h: OWN_HALF_RIVER_BUFFER, the offset getOwnHalfMaxY applies.
+    m = re.search(r"OWN_HALF_RIVER_BUFFER\s*=\s*([0-9.]+)f", gm)
+    assert m, "OWN_HALF_RIVER_BUFFER not found in GameManager.h -- renamed?"
+    buffer = float(m.group(1))
+
+    # tactics.RIVER_Y is the river's START edge. It must equal what the engine
+    # reports live, via getOwnHalfMaxY() = riverStart - buffer.
+    assert river_start == tactics.RIVER_Y, (
+        f"Board.h riverY_start={river_start} but tactics.RIVER_Y={tactics.RIVER_Y}")
+    assert CE(list(gym_wrapper.DEFAULT_DECK), list(gym_wrapper.DEFAULT_DECK),
+              100).get_own_half_max_y() == river_start - buffer
+
+    # Board.h: the two bridge x's, which tactics.BRIDGE_XS copies.
+    xs = [float(x) for x in re.findall(r"(?:left|right)Bridge\s*\{\s*([0-9.]+)f", board)]
+    assert len(xs) == 2, f"expected 2 bridge x's in Board.h, found {xs}"
+    assert tuple(xs) == tuple(float(v) for v in tactics.BRIDGE_XS), (
+        f"Board.h bridges at x={xs} but tactics.BRIDGE_XS={tactics.BRIDGE_XS}")
+
+
 def test_geometry_matches_engine():
     assert tactics.BOARD_H == CE.BOARD_HEIGHT
     assert tactics.BOARD_W == CE.BOARD_WIDTH
