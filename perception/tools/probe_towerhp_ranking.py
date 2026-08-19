@@ -38,6 +38,8 @@ if str(_ROOT) not in sys.path:
 _PY_AI = _ROOT.parent / "python_ai"
 if str(_PY_AI) not in sys.path:
     sys.path.append(str(_PY_AI))
+if str(_PY_AI.parent) not in sys.path:
+    sys.path.append(str(_PY_AI.parent))
 
 import engine as _engine_build  # noqa: F401,E402 -- fresh build first
 
@@ -56,7 +58,7 @@ def main() -> int:
     args = parser.parse_args()
 
     import clash_royale_env as cre
-    from model import MicroRoyaleNet
+    from python_ai.models.net import MicroRoyaleNet
 
     import shutil
     import tempfile

@@ -91,7 +91,7 @@ def test_a_swarm_is_not_multiplied_by_its_own_body_count(forecaster):
     bodies routinely share a cell and cell-counting would hide the fault.
     """
     import numpy as np
-    import perception_encoder as enc
+    from python_ai.models import perception_encoder as enc
 
     seen = [unit(MINIONS, 9, 8, name="minion"),
             unit(MINIONS, 9, 8, name="minion"),
@@ -158,7 +158,7 @@ def test_stepping_cumulatively_matches_stepping_directly(forecaster):
     either way. See test_the_forecast_hand_is_fiction.
     """
     import numpy as np
-    import perception_encoder as enc
+    from python_ai.models import perception_encoder as enc
 
     spatial = enc.PLANE * 21
     together = forecaster.forecast(board(unit(GIANT, 9, 8)), [0.5, 1.5])
@@ -177,7 +177,7 @@ def test_the_forecast_hand_is_fiction(forecaster):
     hold. The hand must be overwritten from perception first.
     """
     import numpy as np
-    import perception_encoder as enc
+    from python_ai.models import perception_encoder as enc
 
     spatial = enc.PLANE * 21
     seen = board(unit(GIANT, 9, 8))

@@ -57,6 +57,11 @@ if str(_ROOT) not in sys.path:
 _ENGINE = _ROOT.parent / "python_ai"
 if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
+# ...and the repo root, so the `python_ai.*` package resolves too. The
+# python_ai/ entry above stays: clash_royale_env is an unpackaged .pyd
+# that lives inside it.
+if str(_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(_ROOT.parent))
 
 from capture.window import WindowSource  # noqa: E402
 from clashroyalebuildabot.constants import (  # noqa: E402
@@ -91,7 +96,7 @@ def _training_deck_ids() -> list[int]:
     import ast  # noqa: PLC0415
 
     source_path = (Path(__file__).resolve().parent.parent.parent
-                   / "python_ai" / "gym_wrapper.py")
+                   / "python_ai" / "envs" / "gym_wrapper.py")
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     for node in tree.body:
         if not isinstance(node, ast.Assign):
@@ -372,8 +377,8 @@ class NeuralPolicy:
                  tactical: bool = True, reserve: float = 4.0):
         import torch  # noqa: PLC0415
 
-        import perception_encoder  # noqa: PLC0415
-        from model import MicroRoyaleNet  # noqa: PLC0415
+        from python_ai.models import perception_encoder  # noqa: PLC0415
+        from python_ai.models.net import MicroRoyaleNet  # noqa: PLC0415
 
         self.torch = torch
         self.encoder = perception_encoder
@@ -480,7 +485,7 @@ class NeuralPolicy:
             for cid, m in self._legal_by_card.items()
         }
         if tactical:
-            import tactics  # noqa: PLC0415
+            from python_ai.advisors import tactics  # noqa: PLC0415
             self._tactics = tactics
             self._gate = tactics.SolvencyGate(reserve=reserve)
             self._override_ids = {tactics.CANNON_ID, tactics.FIREBALL_ID,

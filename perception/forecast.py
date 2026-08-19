@@ -135,6 +135,11 @@ from timebase import TICKS_PER_SECOND, ticks_to_seconds
 _PYTHON_AI = Path(__file__).resolve().parent.parent / "python_ai"
 if str(_PYTHON_AI) not in sys.path:
     sys.path.insert(0, str(_PYTHON_AI))
+# ...and the repo root, so the `python_ai.*` package resolves too. The
+# python_ai/ entry above stays: clash_royale_env is an unpackaged .pyd
+# that lives inside it.
+if str(_PYTHON_AI.parent) not in sys.path:
+    sys.path.insert(0, str(_PYTHON_AI.parent))
 
 # Any index outside [0, 4) skips the play branch in stepSelfPlay -- see
 # ClashEnv::stepSelfPlay's `cardIndex0 >= 0 && cardIndex0 < 4`.
@@ -358,13 +363,13 @@ class SimForecaster:
 
 # --- reading boards back out ------------------------------------------------
 #
-# Layout knowledge lives in python_ai/perception_encoder.py and is imported,
+# Layout knowledge lives in python_ai/models/perception_encoder.py and is imported,
 # never restated. Channels 0-3 are team 0's four type classes and 4-7 team 1's;
 # CLAUDE.md's rule about not keeping a second copy of an engine constant covers
 # the layout just as much as the numbers.
 
 def _encoder():
-    import perception_encoder  # noqa: PLC0415
+    from python_ai.models import perception_encoder  # noqa: PLC0415
     return perception_encoder
 
 

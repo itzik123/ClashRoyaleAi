@@ -109,6 +109,8 @@ def _engine_module():
     python_ai = Path(__file__).resolve().parent.parent / "python_ai"
     if str(python_ai) not in sys.path:
         sys.path.insert(0, str(python_ai))
+    if str(python_ai.parent) not in sys.path:
+        sys.path.insert(0, str(python_ai.parent))
     try:
         import clash_royale_env  # noqa: PLC0415
     except Exception:

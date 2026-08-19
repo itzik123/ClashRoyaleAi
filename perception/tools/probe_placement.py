@@ -43,6 +43,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 if str(_ROOT.parent / "python_ai") not in sys.path:
     sys.path.insert(0, str(_ROOT.parent / "python_ai"))
+if str(_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(_ROOT.parent))
 
 from clashroyalebuildabot.constants import (  # noqa: E402
     SCREENSHOT_HEIGHT,

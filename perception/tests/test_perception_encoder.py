@@ -60,7 +60,7 @@ TRAINING_MAX_TICKS = 3600
 
 @pytest.fixture(scope="module")
 def enc(engine):
-    import perception_encoder  # noqa: PLC0415
+    from python_ai.models import perception_encoder  # noqa: PLC0415
 
     return perception_encoder
 
