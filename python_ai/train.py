@@ -212,6 +212,18 @@ W_WIN_CONDITION_DAMAGE = float(os.environ.get("CLASH_W_WINCON_DAMAGE", 1.0))
 # much stronger) snapshots into the same folder as pipeline #2 progresses, and
 # those two runs' episode counters aren't on the same scale.
 HISTORICAL_CHECKPOINT_DIR = "historical_checkpoints"
+
+# Who plays team 1 in phase 1. "teacher" is the utility-search bot at a
+# symmetric 1.0x economy (teacher.py); "builtin" is the old C++
+# HeuristicOpponent, kept switchable ONLY so a comparison run against the
+# historical setup is one env var away.
+#
+# The default changed on 2026-08-19 and it is GAMEPLAY-AFFECTING: every win rate
+# earned against heuristic@{1.0..1.5}x is historical and is not comparable to
+# anything produced after this. Checkpoints are NOT invalidated -- the
+# observation, action space and architecture are untouched.
+PHASE1_OPPONENT = os.environ.get("CLASH_PHASE1_OPPONENT", "teacher")
+
 # Lowered 5000 -> 2000 on 2026-08-09, as a RE-DENOMINATION rather than a change
 # of intent. The 2026-08-07 movement-speed fix left gradient steps per hour
 # unchanged but cut episodes per hour 2,873 -> 1,301, so one episode now carries
@@ -252,7 +264,7 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 2000
 STAGE_CHECKPOINT_DIR = "stage_checkpoints"
 
 
-def save_stage_snapshot(net, directory, stage, episodes_completed, opp_elixir_multiplier, reason):
+def save_stage_snapshot(net, directory, stage, episodes_completed, teacher_stage, reason):
     """Weights-only snapshot tagged with the curriculum state it was taken at.
 
     Weights only (no optimizer/training state) on purpose -- these are never
@@ -268,10 +280,10 @@ def save_stage_snapshot(net, directory, stage, episodes_completed, opp_elixir_mu
         "model": net.state_dict(),
         "curriculum_stage": stage,
         "episodes_completed": episodes_completed,
-        "opp_elixir_multiplier": opp_elixir_multiplier,
+        "teacher_stage": teacher_stage,
         "reason": reason,
     }, path)
-    print(f">>> Stage snapshot saved to {path} ({reason}, opp_elixir_multiplier={opp_elixir_multiplier})")
+    print(f">>> Stage snapshot saved to {path} ({reason}, teacher_stage={teacher_stage})")
     return path
 
 # Spatial layout of the observation (must match ClashEnv.h):
@@ -740,7 +752,13 @@ def building_hp_end(obs_vec):
 
 def make_env():
     def _init():
-        return gym_wrapper.MicroRoyaleEnv()
+        # THE PHASE-1 OPPONENT IS THE UTILITY TEACHER, at a symmetric 1.0x
+        # economy. See CURRICULUM_STAGES below and teacher.py's docstring for
+        # why the C++ HeuristicOpponent no longer trains the agent (it remains
+        # an EVAL anchor in train_selfplay.BUILTIN_ANCHORS, so historical
+        # numbers stay comparable).
+        return gym_wrapper.MicroRoyaleEnv({"opponent": PHASE1_OPPONENT,
+                                           "teacher_stage": 0})
     return _init
 
 def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
@@ -1105,21 +1123,49 @@ def train_ppo():
     # engine's enforced bounds by construction. The bounds are still read live
     # from the engine, but inside model.py now (PLACEMENT_ROWS/MAX_PLACEMENT_X).
 
-    # --- Curriculum: once the agent's win-rate against the current opponent
-    # settles above a threshold, escalate the opponent's elixir multiplier.
-    # 1.0 = today's fully-random opponent; higher values make it play cards
-    # faster/near-continuously.
-    # Gradual 0.1 steps up to 1.5x, not the old 1.0 -> 1.75 -> 3.0 jump: at 1.75x the
-    # agent went 0-for-2000+ episodes with zero improvement (confirmed by measurement,
-    # not assumption) -- the opponent's elixir advantage was simply overwhelming at
-    # that multiplier, no amount of extra training time was fixing it.
+    # --- Curriculum: DIFFICULTY IS COMPETENCE, NOT ECONOMY (2026-08-19) ------
+    #
+    # This used to escalate the OPPONENT'S ELIXIR MULTIPLIER, 1.0 -> 1.5 in 0.1
+    # steps. That is what priced the win condition negatively. Measured, SMART-
+    # forced A/B (advisor timing gate + advisor bridge cell), n=120 paired:
+    #
+    #     opponent   baseline win   forced win   delta      p
+    #     1.00x         1.000          1.000     +0.0000    VOID (ceiling)
+    #     1.25x         0.950          0.825     -0.1250    0.0059
+    #     1.50x         0.617          0.317     -0.3000    3.2e-06
+    #
+    # A punish window lasts about `answer_cost / (m * r)`, so at m=1.5 it is two
+    # thirds its natural length, while our 4 elixir is spent regardless and what
+    # the opponent does with their surplus scales with m. Defence moves the
+    # OPPOSITE way, because a multiplier increases exactly the threat volume
+    # defence is priced against. The multiplier does not shift the optimum, it
+    # INVERTS the ranking of strategy classes -- which is why four separate
+    # interventions to rehabilitate the Hog all returned null: every one of them
+    # moved a POLICY and none of them changed the PAYOFF.
+    #
+    # DELETING THE MULTIPLIER ALONE WOULD NOT WORK. At 1.0x the C++ heuristic is
+    # beaten ~100% (recorded for the ep-64k Giant net and the ep-25202 2.6 net),
+    # so that converts a MISPRICED environment into a ZERO-GRADIENT one. The
+    # multiplier is therefore REPLACED by competence: both sides always run at
+    # 1.0x and the ladder is the teacher's lookahead / candidate width / epsilon
+    # (teacher.TEACHER_STAGES).
+    #
+    # `set_opponent_elixir_multiplier` is deliberately still BOUND and still
+    # callable -- ~15 measurement harnesses sweep it, including the falsifier
+    # that justified this change. It is simply never used by training again.
+    # `test_training_never_raises_the_opponent_elixir_multiplier` pins that.
+    #
+    # The gate (raw win rate >= 0.80 over 100 episodes) and every piece of
+    # machinery around it are UNCHANGED, including the load-bearing ordering
+    # where the phase transition is evaluated BEFORE stage advancement (the
+    # stage gate calls outcome_history.clear()).
     CURRICULUM_STAGES = [
-        {"opp_elixir_multiplier": 1.0, "win_rate_threshold": 0.80},
-        {"opp_elixir_multiplier": 1.1, "win_rate_threshold": 0.80},
-        {"opp_elixir_multiplier": 1.2, "win_rate_threshold": 0.80},
-        {"opp_elixir_multiplier": 1.3, "win_rate_threshold": 0.80},
-        {"opp_elixir_multiplier": 1.4, "win_rate_threshold": 0.80},
-        {"opp_elixir_multiplier": 1.5, "win_rate_threshold": None},  # final stage, no further auto-advance
+        {"teacher_stage": 0, "win_rate_threshold": 0.80},
+        {"teacher_stage": 1, "win_rate_threshold": 0.80},
+        {"teacher_stage": 2, "win_rate_threshold": 0.80},
+        {"teacher_stage": 3, "win_rate_threshold": 0.80},
+        {"teacher_stage": 4, "win_rate_threshold": 0.80},
+        {"teacher_stage": 5, "win_rate_threshold": None},  # final stage, no further auto-advance
     ]
 
     # --- Phase 2: once the agent is consistently strong against the mirror-
@@ -1348,10 +1394,10 @@ def train_ppo():
                 # the stage-based branch below, which would otherwise still apply phase 1's
                 # final (1.5x) multiplier regardless of where this deck's own progress is.
                 if phase == "random_opponent":
-                    envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"])
+                    envs.call("set_teacher_stage", CURRICULUM_STAGES[deck_curriculum_stage]["teacher_stage"])
                 elif curriculum_stage > 0:
-                    mult = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
-                    envs.call("set_opponent_elixir_multiplier", mult)
+                    stage_cfg = CURRICULUM_STAGES[curriculum_stage]["teacher_stage"]
+                    envs.call("set_teacher_stage", stage_cfg)
                 if phase == "random_opponent" and current_random_deck is not None:
                     envs.call("set_opponent_deck", current_random_deck)
                 print(f"Resumed from {weight_path}: episode {episodes_completed}, "
@@ -1751,13 +1797,13 @@ def train_ppo():
                             # before random opponent decks change the problem.
                             save_stage_snapshot(
                                 net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
-                                CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
+                                CURRICULUM_STAGES[curriculum_stage]["teacher_stage"],
                                 f"entered phase 2 at win_rate={win_rate:.2f} (end of mirror phase)")
                             phase = "random_opponent"
                             current_random_deck = sample_random_deck()
                             envs.call("set_opponent_deck", current_random_deck)
                             deck_curriculum_stage = 0
-                            envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[0]["opp_elixir_multiplier"])
+                            envs.call("set_teacher_stage", CURRICULUM_STAGES[0]["teacher_stage"])
                             outcome_history.clear()
                             phase_deck_episode_start = episodes_completed
                             random_phase_episode_start = episodes_completed
@@ -1799,14 +1845,14 @@ def train_ppo():
                                 # the multiplier it trained against.
                                 save_stage_snapshot(
                                     net, STAGE_CHECKPOINT_DIR, curriculum_stage, episodes_completed,
-                                    CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"],
+                                    CURRICULUM_STAGES[curriculum_stage]["teacher_stage"],
                                     f"cleared stage {curriculum_stage} gate at win_rate={win_rate:.2f}")
                                 curriculum_stage += 1
-                                new_multiplier = CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"]
-                                envs.call("set_opponent_elixir_multiplier", new_multiplier)
+                                new_stage = CURRICULUM_STAGES[curriculum_stage]["teacher_stage"]
+                                envs.call("set_teacher_stage", new_stage)
                                 outcome_history.clear()
                                 stage_start_episode = episodes_completed
-                                print(f">>> Curriculum advanced to stage {curriculum_stage} (opp_elixir_multiplier={new_multiplier})")
+                                print(f">>> Curriculum advanced to stage {curriculum_stage} (teacher_stage={new_stage})")
                                 writer.add_scalar("Training/Curriculum_Stage", curriculum_stage, episodes_completed)
 
                     # --- Phase 2 per-deck curriculum: the SAME gated stage progression
@@ -1830,7 +1876,7 @@ def train_ppo():
                             current_random_deck = sample_random_deck()
                             envs.call("set_opponent_deck", current_random_deck)
                             deck_curriculum_stage = 0
-                            envs.call("set_opponent_elixir_multiplier", CURRICULUM_STAGES[0]["opp_elixir_multiplier"])
+                            envs.call("set_teacher_stage", CURRICULUM_STAGES[0]["teacher_stage"])
                             outcome_history.clear()
                             phase_deck_episode_start = episodes_completed
                             stage_start_episode = episodes_completed   # re-boost exploration for the new opponent variety
@@ -1839,12 +1885,12 @@ def train_ppo():
                             print(f">>> New random opponent deck: {current_random_deck} (previous deck {reason})")
                         elif can_advance:
                             deck_curriculum_stage += 1
-                            new_multiplier = CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"]
-                            envs.call("set_opponent_elixir_multiplier", new_multiplier)
+                            new_stage = CURRICULUM_STAGES[deck_curriculum_stage]["teacher_stage"]
+                            envs.call("set_teacher_stage", new_stage)
                             outcome_history.clear()
                             stage_start_episode = episodes_completed   # re-boost exploration for the harder version of the SAME deck
                             print(f">>> Deck curriculum advanced to stage {deck_curriculum_stage} "
-                                  f"(opp_elixir_multiplier={new_multiplier}) against current random deck")
+                                  f"(teacher_stage={new_stage}) against current random deck")
 
             obs = next_obs
             prev_stats = stats
@@ -2324,17 +2370,18 @@ def train_ppo():
         # Generate Replay (Standalone test env to avoid corrupting async processes)
         if episodes_completed - last_replay_ep >= 1000:
             print(f"Generating replay video for episode {episodes_completed}...")
-            test_env = gym_wrapper.MicroRoyaleEnv()
+            test_env = gym_wrapper.MicroRoyaleEnv({"opponent": PHASE1_OPPONENT,
+                                                   "teacher_stage": 0})
             # Match the standalone replay env to the actual curriculum stage in
-            # progress -- otherwise it silently records against the default 1.0x
+            # progress -- otherwise it silently records against a stage-0
             # opponent regardless of how far training has actually advanced.
-            test_env.set_opponent_elixir_multiplier(CURRICULUM_STAGES[curriculum_stage]["opp_elixir_multiplier"])
+            test_env.set_teacher_stage(CURRICULUM_STAGES[curriculum_stage]["teacher_stage"])
             # Same for phase 2 -- otherwise this would silently keep recording
             # mirror-deck replays even once training has moved on to random
-            # opponent decks, and at the wrong (phase 1) elixir multiplier.
+            # opponent decks, and at the wrong (phase 1) teacher stage.
             if phase == "random_opponent" and current_random_deck is not None:
                 test_env.set_opponent_deck(current_random_deck)
-                test_env.set_opponent_elixir_multiplier(CURRICULUM_STAGES[deck_curriculum_stage]["opp_elixir_multiplier"])
+                test_env.set_teacher_stage(CURRICULUM_STAGES[deck_curriculum_stage]["teacher_stage"])
             t_obs, _ = test_env.reset()
             t_hx = torch.zeros(1, 256).to(device)
             t_cx = torch.zeros(1, 256).to(device)

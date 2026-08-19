@@ -122,6 +122,8 @@ same silent-failure shape as the 2026-07-31 team-1 observation bug.
 `to_absolute_y` is the single conversion point and
 `test_teacher_candidates_are_all_legal_for_either_team` pins both sides.
 """
+import functools
+
 import numpy as np
 
 import clash_royale_env as E
@@ -153,8 +155,18 @@ ELIXIR_OVERFLOW_AT = 9.0
 # --------------------------------------------------------------------------
 # card roles -- derived from the engine, never a hardcoded id list
 # --------------------------------------------------------------------------
+@functools.lru_cache(maxsize=64)
+def _card_roles_cached(deck_key):
+    return _card_roles_uncached(list(deck_key))
+
+
 def card_roles(deck):
     """{card_id: "wincon"|"spell"|"building"|"ranged"|"melee"} for one deck.
+
+    Memoized by deck, because the derivation below builds one `ClashRoyaleEnv`
+    per non-spell non-building card and phase 1 runs `num_envs = 8` teachers
+    that would otherwise each redo it. Returns a copy so a caller cannot mutate
+    the cached table.
 
     DERIVED BY INJECTION, the same technique `gym_wrapper._find_win_condition`
     already uses: `get_card_info` exposes cost/is_spell/is_building but no
@@ -169,6 +181,10 @@ def card_roles(deck):
     narrower question, it sits in the reward path, and changing it to serve a
     new caller is risk with no benefit.
     """
+    return dict(_card_roles_cached(tuple(deck)))
+
+
+def _card_roles_uncached(deck):
     roles = {}
     targeters = []
     for cid in deck:

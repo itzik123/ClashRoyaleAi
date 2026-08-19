@@ -1778,5 +1778,130 @@ def test_epsilon_one_still_only_emits_legal_actions():
             break
 
 
+def test_default_env_is_unchanged_and_still_uses_the_cpp_heuristic():
+    """The teacher is OPT-IN. Every existing harness, probe and eval anchor
+    constructs MicroRoyaleEnv with no opponent key and must keep getting the C++
+    HeuristicOpponent, or every historical number silently stops being
+    comparable."""
+    env = gym_wrapper.MicroRoyaleEnv()
+    assert env.teacher is None
+    assert env.opponent_kind == "builtin"
+
+
+def test_teacher_env_produces_the_same_info_keys_as_the_builtin_env():
+    """train.py reads ~20 keys out of info. stepSelfPlay returns a different
+    result type than step (observation0/reward0, no observation/reward), so the
+    routing is the one place those could diverge."""
+    a = gym_wrapper.MicroRoyaleEnv()
+    a.reset()
+    b = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 2})
+    b.reset()
+    assert b.teacher is not None
+    act = {"card_index": np.array([CE.HAND_SIZE]),
+           "target_x": np.array([9.0]), "target_y": np.array([10.0])}
+    _, _, _, _, ia = a.step(act)
+    _, _, _, _, ib = b.step(act)
+    assert set(ia) == set(ib)
+
+
+def test_teacher_opponent_actually_plays_cards():
+    """A teacher that silently never plays looks exactly like a weak opponent.
+    This is the end-to-end version of the frame check in
+    test_teacher_candidates_are_all_legal_for_either_team."""
+    env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 3})
+    env.reset()
+    act = {"card_index": np.array([CE.HAND_SIZE]),
+           "target_x": np.array([9.0]), "target_y": np.array([10.0])}
+    info = None
+    for _ in range(150):
+        _, _, term, _, info = env.step(act)
+        if term:
+            break
+    assert info is not None and info["team1_elixir_spent"] > 0.0, (
+        "the teacher opponent never spent a single elixir")
+
+
+def test_set_teacher_stage_is_a_noop_on_a_builtin_env():
+    """train.py calls envs.call('set_teacher_stage', n) unconditionally; on a
+    heuristic env that must not raise."""
+    env = gym_wrapper.MicroRoyaleEnv()
+    env.set_teacher_stage(4)          # must not raise
+    assert env.teacher is None
+
+
+def _train_source():
+    import pathlib
+    return pathlib.Path(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "train.py")
+    ).read_text(encoding="utf-8")
+
+
+def _curriculum_stages_literal():
+    """CURRICULUM_STAGES is a local of train_ppo(), so it cannot be imported.
+    Parse it out of the source instead of duplicating the values here."""
+    import ast
+    tree = ast.parse(_train_source())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "CURRICULUM_STAGES":
+                    return ast.literal_eval(node.value)
+    raise AssertionError("CURRICULUM_STAGES not found in train.py")
+
+
+def test_training_never_raises_the_opponent_elixir_multiplier():
+    """THE PIN ON THE 2026-08-19 PIVOT.
+
+    The 1.5x handicap is what priced the win condition negatively -- measured
+    monotone across 1.0/1.25/1.5x, and the reason four separate Hog
+    interventions all returned null. The API survives for the ~15 measurement
+    harnesses that sweep it (including the falsifier that justified the change);
+    the TRAINING path must never call it again.
+    """
+    import re
+    src = _train_source()
+    calls = []
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue                      # a comment explaining the ban is fine
+        if re.search(r"set_opponent_elixir_multiplier\s*\(", line) or \
+           re.search(r'"set_opponent_elixir_multiplier"', line):
+            calls.append(stripped)
+    assert not calls, (
+        "train.py still sets an opponent elixir multiplier:\n  "
+        + "\n  ".join(calls))
+
+
+def test_curriculum_stages_are_competence_not_economy():
+    stages = _curriculum_stages_literal()
+    assert len(stages) == 6
+    for s in stages:
+        assert "opp_elixir_multiplier" not in s, (
+            "a curriculum stage must never carry an elixir multiplier again")
+        assert "teacher_stage" in s
+    assert [s["teacher_stage"] for s in stages] == [0, 1, 2, 3, 4, 5]
+    # The gate itself is deliberately unchanged: 0.80 raw win rate on every
+    # stage but the last, which has no further auto-advance.
+    assert [s["win_rate_threshold"] for s in stages] == [0.8] * 5 + [None]
+
+
+def test_curriculum_stage_count_matches_the_teacher_ladder():
+    """If these ever drift, CURRICULUM_STAGES would index past the end of
+    TEACHER_STAGES -- or, worse, silently stop at a rung short of the top."""
+    from teacher import TEACHER_STAGES
+    stages = _curriculum_stages_literal()
+    assert len(stages) == len(TEACHER_STAGES)
+    for s in stages:
+        assert 0 <= s["teacher_stage"] < len(TEACHER_STAGES)
+
+
+def test_phase1_opponent_defaults_to_the_teacher():
+    import train
+    assert train.PHASE1_OPPONENT == "teacher", (
+        "the C++ HeuristicOpponent is an EVAL ANCHOR now, not a training "
+        "opponent -- see the 2026-08-19 pivot")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
