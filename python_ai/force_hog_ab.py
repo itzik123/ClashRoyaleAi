@@ -53,6 +53,7 @@ if HERE not in sys.path:
 import clash_royale_env as CE  # noqa: E402
 from gym_wrapper import DEFAULT_DECK, WIN_CONDITION_ID  # noqa: E402
 from model import MicroRoyaleNet  # noqa: E402
+import tactics  # noqa: E402
 
 # BOARD_WIDTH lives on the CLASS, not the module -- same binding prove_hog.py
 # uses. `clash_royale_env.BOARD_WIDTH` raises AttributeError.
@@ -71,7 +72,8 @@ def load(path):
 
 
 @torch.no_grad()
-def play(net, env, force_prob, rng, stats):
+def play(net, env, force_prob, rng, stats, advisor_cell=False,
+         hog_legal=None, smart_force=False, gate_mult=1.0):
     """One episode. Returns 1.0 win / 0.0 loss / 0.5 draw."""
     obs_l = env.get_observation_for_team(0)
     hx = torch.zeros(1, LSTM_HIDDEN)
@@ -84,7 +86,37 @@ def play(net, env, force_prob, rng, stats):
 
         card = int(cl.argmax(1))
         ids = net.hand_card_ids(obs)[0].tolist()
-        if force_prob > 0.0 and WIN_CONDITION_ID in ids:
+        forced_now = False
+        smart_cell = None
+
+        if smart_force and WIN_CONDITION_ID in ids:
+            # SMART FORCE: the trigger is the advisor's own TIMING gate, not a
+            # coin. A random epsilon ignores macro entirely -- it fires while a
+            # push is landing, the 4 elixir is then unavailable for the answer,
+            # and the loss is charged to the Hog when the real cause was the
+            # moment. That confound makes a viable card look unviable.
+            #
+            # hog_advice returns the bridge cell when its three conditions hold
+            # (our half clear, solvent, opponent not banked) and None otherwise,
+            # so this forces WHEN and WHERE together -- the only configuration
+            # in which "the Hog is unviable" can honestly be concluded.
+            # gate_mult is the OPPONENT'S elixir multiplier. The gate's
+            # opp_elixir_estimate reconstructs their bar from income minus
+            # spend, and income scales with it. Left at 1.0 while the test
+            # runs at 1.5x it under-estimates them by ~50%, so the gate
+            # opens precisely when they are banked -- the opposite of the
+            # condition it exists to enforce.
+            advice = tactics.hog_advice(np.asarray(obs_l, np.float32),
+                                        legal=hog_legal,
+                                        multiplier=gate_mult)
+            slot = ids.index(WIN_CONDITION_ID)
+            if advice is not None and bool(mask[0, slot]):
+                card = slot
+                forced_now = True
+                smart_cell = advice
+                stats["forced"] += 1
+
+        if (not forced_now) and force_prob > 0.0 and WIN_CONDITION_ID in ids:
             slot = ids.index(WIN_CONDITION_ID)
             # Only force what the engine would actually accept. Forcing an
             # unaffordable slot makes playCard return false silently, which
@@ -93,16 +125,36 @@ def play(net, env, force_prob, rng, stats):
             # was added to remove.
             if bool(mask[0, slot]) and rng.random() < force_prob:
                 card = slot
+                forced_now = True
                 stats["forced"] += 1
 
-        pl = net.placement_given_card(hx2, embeds, torch.tensor([card]),
-                                      obs, spatial, hires_map=hires)
-        c = int(pl.argmax(1))
+        if smart_cell is not None:
+            px, py = float(smart_cell[0]), float(smart_cell[1])
+            stats["advisor_placed"] += 1
+        elif forced_now and advisor_cell:
+            # BYPASS THE PLACEMENT HEAD. This is the whole point of the third
+            # arm: arms 1 and 2 both place the forced Hog wherever the NET
+            # wants it, and prove_hog measures that cell at -48.3 against a
+            # random legal one. So neither can separate "the Hog is unviable in
+            # this engine" from "the head has not learned where to put it".
+            #
+            # best_hog_cell, not hog_advice: hog_advice carries the TIMING gate,
+            # and timing is being forced externally here. Mixing the two would
+            # confound which half of the rule is being tested.
+            ax, ay, _rank = tactics.best_hog_cell(
+                np.asarray(obs_l, np.float32), legal=hog_legal)
+            px, py = float(ax), float(ay)
+            stats["advisor_placed"] += 1
+        else:
+            pl = net.placement_given_card(hx2, embeds, torch.tensor([card]),
+                                          obs, spatial, hires_map=hires)
+            c = int(pl.argmax(1))
+            px, py = float(c % E.BOARD_WIDTH), float(c // E.BOARD_WIDTH)
         if card != NOOP:
             stats["plays"] += 1
             played_id = net.hand_card_ids(obs)[0].tolist()[card]
             stats["by_card"][played_id] = stats["by_card"].get(played_id, 0) + 1
-        res = env.step(card, float(c % E.BOARD_WIDTH), float(c // E.BOARD_WIDTH), 10)
+        res = env.step(card, px, py, 10)
         obs_l = res.observation
         hx, cx = hx2, cx2
         if res.done:
@@ -122,6 +174,12 @@ def main() -> int:
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     ap.add_argument("--force-prob", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--smart-force", action="store_true",
+                    help="arm triggered by the advisor TIMING gate rather "
+                         "than a coin: forces WHEN and WHERE together")
+    ap.add_argument("--advisor-cell", action="store_true",
+                    help="third arm: force the Hog AND place it at the "
+                         "advisor bridge cell, bypassing the head")
     args = ap.parse_args()
 
     print(f"win condition = card id {WIN_CONDITION_ID}")
@@ -129,23 +187,41 @@ def main() -> int:
     root = CE.ClashRoyaleEnv(DEFAULT_DECK, DEFAULT_DECK, 3600)
     root.set_opponent_elixir_multiplier(args.opp_elixir)
 
-    arms = {"baseline": 0.0, f"forced@{args.force_prob}": args.force_prob}
+    hog_legal = net._placement_legal[WIN_CONDITION_ID].numpy().astype(bool)
+
+    # (force_prob, use_advisor_cell). All arms share ONE set of snapshot
+    # openings, so every pair is bit-identical across arms and the three are
+    # directly comparable rather than three separate experiments.
+    arms = {"baseline": (0.0, False),
+            f"forced@{args.force_prob} net-cell": (args.force_prob, False)}
+    if args.advisor_cell:
+        arms[f"forced@{args.force_prob} ADVISOR-cell"] = (args.force_prob, True)
+    if args.smart_force:
+        arms["SMART-forced (gate+bridge)"] = ("smart", True)
+
     scores = {k: [] for k in arms}
-    stats = {k: {"forced": 0, "plays": 0, "wincon_damage": 0.0, "by_card": {}}
-             for k in arms}
+    stats = {k: {"forced": 0, "plays": 0, "wincon_damage": 0.0,
+                 "advisor_placed": 0, "by_card": {}} for k in arms}
 
     for i in range(args.n):
         root.reset()
         base = root.snapshot()
-        for name, prob in arms.items():
-            rng = random.Random(args.seed * 100003 + i)   # same draws per pair
-            scores[name].append(play(net, base.snapshot(), prob, rng, stats[name]))
+        for name, (prob, use_adv) in arms.items():
+            # Same RNG stream per pair, so both forced arms draw their epsilon
+            # coin at the SAME steps. Otherwise they would differ in WHEN they
+            # forced as well as WHERE, confounding the placement comparison.
+            rng = random.Random(args.seed * 100003 + i)
+            smart = (prob == "smart")
+            scores[name].append(play(net, base.snapshot(),
+                                     0.0 if smart else prob, rng,
+                                     stats[name], advisor_cell=use_adv,
+                                     hog_legal=hog_legal, smart_force=smart,
+                                     gate_mult=args.opp_elixir))
         if (i + 1) % 25 == 0:
             print(f"  {i+1}/{args.n}", flush=True)
 
-    a, b = list(arms)
+    a = list(arms)[0]
     A = np.array(scores[a])
-    B = np.array(scores[b])
     print("\n" + "=" * 74)
     print(f"FORCED WIN-CONDITION USAGE  --  {os.path.basename(args.weights)}, "
           f"opp {args.opp_elixir}x, n={args.n} paired")
@@ -157,22 +233,28 @@ def main() -> int:
         print(f"  {name:<16} win {np.mean(scores[name]):.3f}   "
               f"plays/ep {s['plays']/args.n:5.1f}   "
               f"hog plays {hog:4d} ({100*hog/max(s['plays'],1):4.1f}%)   "
-              f"wincon dmg/ep {wc:7.1f}")
+              f"wincon dmg/ep {wc:7.1f}   "
+              f"adv-placed {s['advisor_placed']:4d}")
 
-    delta = float(B.mean() - A.mean())
-    diff = B - A
-    se = diff.std(ddof=1) / np.sqrt(len(diff)) if len(diff) > 1 else 0.0
-    better = int((diff > 0).sum())
-    worse = int((diff < 0).sum())
-    print(f"\n  delta (forced - baseline)  {delta:+.4f}  "
-          f"95% CI [{delta-1.96*se:+.4f}, {delta+1.96*se:+.4f}]")
-    print(f"  {better} better / {worse} worse / {len(diff)-better-worse} tied")
-    if better + worse:
-        from math import comb
-        n = better + worse
-        k = min(better, worse)
-        p = sum(comb(n, j) for j in range(k + 1)) * 2 / (2 ** n)
-        print(f"  exact sign test p = {min(p,1.0):.4g}")
+    from math import comb
+    for name in list(arms)[1:]:
+        B = np.array(scores[name])
+        diff = B - A
+        delta = float(diff.mean())
+        se = diff.std(ddof=1) / np.sqrt(len(diff)) if len(diff) > 1 else 0.0
+        better = int((diff > 0).sum())
+        worse = int((diff < 0).sum())
+        print("")
+        print(f"  {name} - baseline   {delta:+.4f}  "
+              f"95% CI [{delta-1.96*se:+.4f}, {delta+1.96*se:+.4f}]")
+        print(f"    {better} better / {worse} worse / "
+              f"{len(diff)-better-worse} tied")
+        if better + worse:
+            n = better + worse
+            kk = min(better, worse)
+            pv = sum(comb(n, j) for j in range(kk + 1)) * 2 / (2 ** n)
+            print(f"    exact sign test p = {min(pv,1.0):.4g}")
+
     print("\n  A NEGATIVE delta means the policy was RIGHT to avoid the card and")
     print("  no exploration fix is warranted. A positive one means it is stuck.")
     return 0

@@ -1590,6 +1590,73 @@ cards in hand.
 
 ---
 
+## The 1.5x Curriculum Overfitting Hypothesis
+
+**Status: HYPOTHESIS, stated with its falsifier. Not established.** It is
+recorded here because it is the best available explanation for a result that
+survived four independent attempts to fix it, and because the test that would
+kill it is cheap.
+
+**The claim.** Every win-rate measurement that matters in this project is taken
+against the C++ `HeuristicOpponent` at a **permanent 1.5x elixir multiplier**,
+and phase 1's curriculum tops out at 1.5x as well. But the Hog Rider is a
+*punish* card: its value comes from exploiting a temporary elixir deficit in the
+opponent's economy. **An opponent with a permanent 1.5x multiplier never has a
+meaningful deficit to punish.** Against a permanently over-resourced opponent,
+spending 4 elixir on a unit with zero defensive utility is close to strictly
+dominated -- whatever it deals, the answer is always affordable, and the
+counter-push arrives against 4 fewer elixir of defence.
+
+If that is right, the agent has not failed to learn its win condition. It has
+*correctly solved the environment we built*, and the environment is closer to a
+tower-defence survival mode than to Clash Royale. The 0% win-condition usage and
+the cheap-cycle defensive turtle are then the mathematical optimum, not a
+pathology -- which is exactly what every intervention has independently found.
+
+**What it explains.** Four separate fixes, each targeting a different mechanism,
+all produced nothing:
+
+| intervention | result |
+|---|---|
+| `W_WIN_CONDITION_DAMAGE` reward multiplier | fired thousands of times, moved nothing |
+| Hog advisor (bridge placement, engine-validated +176.0 tower damage) | usage 0.4% -> 0.2% |
+| forced usage at epsilon = 0.15 | -0.125, p = 0.044 |
+| SMART forcing (advisor timing gate + advisor cell, gate correctly calibrated to 1.5x) | **-0.300, p = 3.2e-06** |
+
+A card that is genuinely viable should have responded to at least one of those.
+A card that is *correctly valued at zero by the environment* responds to none of
+them, which is what was observed.
+
+**THE FALSIFIER, and it is one command.** Run the same paired forced-usage A/B
+at `--opp-elixir 1.0`:
+
+```bash
+python_ai/venv/Scripts/python.exe python_ai/force_hog_ab.py     --weights <net> --n 120 --opp-elixir 1.0 --force-prob 0.0 --smart-force
+```
+
+* If the penalty **shrinks or reverses** at 1.0x, the hypothesis is supported
+  and the correct response is a CURRICULUM change -- train and evaluate across
+  a range of multipliers including 1.0, rather than pinning everything at 1.5x.
+* If the penalty **persists at ~-0.30**, the hypothesis is dead and the Hog is
+  unviable in this engine's physics regardless of the opponent's economy. The
+  honest response then is to stop rehabilitating it.
+
+**A CEILING CAVEAT that must not be ignored when reading that test.** This file
+already records that at 1.0x the ep-64k policy wins ~100%, so both arms can
+saturate and pin the delta at 0 *by the opponent*, not by the treatment -- which
+would look like support for the hypothesis while measuring nothing. The result
+is only interpretable if the BASELINE arm is below ceiling. Check the baseline
+win rate before reading the delta; if it is >= 0.95, the test is void and needs
+an intermediate multiplier (1.2-1.3) instead.
+
+**A second, cheaper prediction worth checking.** If the hypothesis holds, the
+win condition should be *more* used, not less, by any policy trained with 1.0x
+exposure. Nothing in the current run provides that -- phase 1's curriculum
+starts at 1.0x but the agent passes through it in ~1,600 episodes and spends the
+remaining ~24,000 at 1.4-1.5x.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 **EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
