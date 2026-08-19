@@ -298,6 +298,14 @@ TEACHER_STAGES = [
 ]
 
 
+# Own-back-half cells used by `wincon_mode="cycle"` -- see UtilityTeacher's
+# docstring. Several offered because `candidates()` filters through the engine's
+# legality predicate and a single cell could be refused (tower footprint, back-row
+# dead zone), which would silently turn "cycle" into "ban" and confound the
+# experiment those two modes exist to separate.
+WINCON_DUD_CELLS = [(2.0, 2.0), (15.0, 2.0), (2.0, 4.0), (15.0, 4.0), (9.0, 5.0)]
+
+
 class Candidate:
     """One (slot, cell) the teacher is willing to consider. slot == HAND_SIZE
     is the no-op, which is always present and always scores exactly 0."""
@@ -359,12 +367,29 @@ class UtilityTeacher:
     Plays either side. `act(env, obs_own)` returns `(slot, x, y)` in the
     actor's OWN frame, ready to hand straight to `step_self_play` -- team 0's
     coordinates in slots 0-2, team 1's in slots 3-5.
+
+    `wincon_mode` exists for `prove_environment.py` and nothing else:
+
+      "attack"  the real rule -- the win condition goes to a bridge.
+      "cycle"   it is still drawn, still played, still costs its 4 elixir and
+                still rotates the hand, but it is placed in our own back half
+                where it is a dud. CLAUDE.md measures that difference directly:
+                bridge 535.6 enemy tower damage against ~3 for a back-row cell.
+      "ban"     never played at all.
+
+    "cycle" is the arm the falsifier actually uses. "ban" looks like the obvious
+    control and is CONFOUNDED: a card that is never played never leaves the hand,
+    so banning it also permanently clogs a hand slot and costs elixir efficiency
+    for a reason that has nothing to do with the economy under test. "cycle"
+    holds spend, cycle and hand occupancy identical across arms and varies only
+    WHERE the card lands, which is the one thing the hypothesis is about.
     """
 
     def __init__(self, deck, team, profile=None, horizon_ticks=30, k_cells=2,
-                 epsilon=0.0, seed=None):
+                 epsilon=0.0, seed=None, wincon_mode="attack"):
         self.deck = list(deck)
         self.team = int(team)
+        self.wincon_mode = wincon_mode
         self.roles = card_roles(self.deck)
         self.wincon_id = next((c for c, r in self.roles.items() if r == "wincon"),
                               None)
@@ -436,6 +461,8 @@ class UtilityTeacher:
             if info["cost"] > elixir + 1e-6:
                 continue
             role = self.roles.get(cid, "melee")
+            if role == "wincon" and self.wincon_mode == "ban":
+                continue
             for (x, y) in self._cells_for(role, cid, obs_own):
                 xi, yi = float(int(x)), float(int(y))
                 if env.is_valid_placement(cid, xi, self.to_absolute_y(yi), self.team):
@@ -446,6 +473,8 @@ class UtilityTeacher:
         """The rule layer: 1-3 tactically sensible cells for one card."""
         k = max(1, self.k_cells)
         if role == "wincon":
+            if self.wincon_mode == "cycle":
+                return list(WINCON_DUD_CELLS)
             x, y, _ = tactics.best_hog_cell(obs)
             cells = [(x, y)]
             if k > 1:
