@@ -692,6 +692,45 @@ So the card works and the window exists. What fails is SELECTION: the advisor
 commits whenever estimated opponent elixir is <= `HOG_MAX_OPP_ELIXIR = 7.0`,
 which is not a punish window at all.
 
+### The gate sweep, which is what settles it
+
+`--max-opp-elixir` overrides `tactics.HOG_MAX_OPP_ELIXIR` (ships at 7.0), so the
+commit gate itself becomes the variable. Marginal value of one commitment:
+
+| gate: commit while opp elixir <= | states | tower-HP delta | 95% CI | sign test |
+|---|---|---|---|---|
+| 7.0 (shipping) | 220 | -298.2 | [-494, -107] | 87/105, p=0.22 |
+| 3.0 | 160 | -268.6 | [-455, -90] | 50/81, p=0.0085 |
+| **1.5** | 162 | **-585.4** | [-816, -360] | 46/100, **p=9.2e-06** |
+
+**TIGHTER TIMING MAKES IT WORSE, AND THAT INVERTS THE PREMISE.** The pivot
+assumed a punish window is a state where the opponent cannot afford the answer.
+Both halves are measurable and they disagree:
+
+* **Artificially** forcing the defender's bar to 1.0 with nothing on the board:
+  the Hog is worth **+391 tower HP (+62%)**, 256 vs 158 hp/elixir. The mechanic
+  is real.
+* **Naturally occurring** low opponent elixir is not that state. They are low
+  BECAUSE THEY JUST SPENT, which means their push is already on the board and
+  the correct move is to defend. Committing 4 elixir there is the worst possible
+  moment, which is exactly what the -585.4 row measures.
+
+So the punish window exists in principle and essentially never occurs in this
+environment's dynamics. That is a property of the ENGINE'S PACE, not of the
+elixir multiplier, not of the policy, and not of the placement.
+
+Two further arms rule out the obvious remaining explanations:
+
+* **Cheap answers are not the blocker.** The defender answers with Skeletons
+  (35 of 40 trials) and Ice Spirit (31 of 40) -- a 1-for-4 trade in its favour,
+  which is REAL Clash, not an engine artifact. Forcing both out of its hand
+  moved the Hog's damage only 634.0 -> 665.7, because it cycles them back
+  within the horizon.
+* **The lone Hog is not a strawman result.** The supported push (Ice Golem
+  first) was measured separately and does help against a solvent defender
+  (+344 HP, CI [+186, +524]) -- but it commits 6 elixir for it, and it is
+  actively wasteful against a broke one (dmg/elixir 256 -> 194).
+
 ### A flaw found in the teacher itself
 
 `UtilityTeacher.rollout_stats` rolls candidates forward with **both sides
@@ -701,6 +740,31 @@ counter-push that lands while our half is empty, and an opponent frozen on no-op
 never counter-pushes. **The teacher's own scorer therefore cannot see the cost
 of attacking**, which is consistent with it over-committing at a gate of 7.0.
 Stated as a known limitation rather than silently fixed, because the fix
-(letting the opponent act inside every rollout) costs ~20x per decision and the
-cheap alternative -- an explicit solvency term -- needs its threshold chosen by
-the gate sweep now running.
+(letting the opponent act inside every rollout) costs ~20x per decision, and
+because the gate sweep above shows the cheap alternative would not have helped:
+no threshold on opponent elixir makes committing positive.
+
+### THE LIMIT OF ALL OF THIS, stated because the conclusion is strong
+
+Every number above is measured against ONE opponent -- this teacher -- whose
+attack repertoire is a bridge push (lone or Ice-Golem-escorted) and whose scorer
+carries the no-op bias just described. "The win condition is net-negative"
+therefore means "against a search-based defender at a symmetric economy, with
+this attack repertoire". It is not a proof that no attacking strategy pays in
+this engine. What it does rule out, with five independent measurements, is the
+specific claim the pivot was built on: that removing the elixir multiplier is
+sufficient to make the win condition pay.
+
+### Verdict on the plan's own gate (spec section 6.1)
+
+The environment-property test was pre-registered with three readings. The
+observed one is the third: **"attack beats cycle equally at every multiplier ->
+the multiplier is not what suppressed it; look elsewhere before rebuilding the
+curriculum around this."** The curriculum is still worth shipping -- it removes
+a measured mispricing and a zero-gradient ceiling, and the teacher passes both
+strength bars -- but it must NOT be shipped with the claim that it fixes the win
+condition, and Task 12's from-scratch run should not be started expecting Hog
+usage to rise.
+
+Task 10's offensive scenario injection stays DEFAULT-OFF: its gating condition
+(section 6.1 passing) was not met.
