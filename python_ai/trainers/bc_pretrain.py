@@ -134,7 +134,7 @@ def collect_demonstrations(n_episodes=40, teachers=None, seed=0, verbose=True):
     into "my own point of view" form, which is exactly the frame the network
     trains in.
     """
-    from python_ai.trainers.train_selfplay import MicroRoyaleSelfPlayEnv
+    from python_ai.envs.selfplay_env import MicroRoyaleSelfPlayEnv
 
     teachers = teachers or BC_TEACHERS
     rng = np.random.default_rng(seed)

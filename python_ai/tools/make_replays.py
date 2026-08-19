@@ -61,7 +61,7 @@ from python_ai.eval.search_ab_test import (  # noqa: E402
 )
 from python_ai.trainers.expert_iteration import SearchCfg  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
-from python_ai.trainers.train import annotate_replay_with_agent_info  # noqa: E402
+from python_ai.rl.replay import annotate_replay_with_agent_info  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10  # matches train.py's REPLAY_SKIP_FRAMES; the annotator maps 1 decision -> 10 ticks

@@ -37,10 +37,11 @@ from python_ai.rewards.elixir_shaping import (  # noqa: E402
     SOLVENCY_RESERVE, W_SOLVENCY, bankruptcy_rate, solvency_potential,
     solvency_shaping,
 )
+from python_ai import engine_constants as EC  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
-from python_ai.trainers.train import (  # noqa: E402
-    PLACEMENT_COVERAGE_COEF, load_state_dict_flexible,
-    placement_coverage_slots,
+from python_ai.models.policy_io import load_state_dict_flexible  # noqa: E402
+from python_ai.rl.coverage import (  # noqa: E402
+    PLACEMENT_COVERAGE_COEF, placement_coverage_slots,
 )
 
 CE = clash_royale_env.ClashRoyaleEnv
@@ -703,8 +704,8 @@ def test_bankruptcy_rate_matches_the_reported_statistic():
 
 def test_matches_compute_shaping_when_wired_in():
     """Integration: the term must be additive and leave everything else alone."""
-    from python_ai.trainers import train
-    if not getattr(train, "SOLVENCY_ENABLED", False):
+    from python_ai.rewards import shaping as train_shaping, weights
+    if not getattr(weights, "SOLVENCY_ENABLED", False):
         pytest.skip("solvency term not wired into compute_shaping yet")
     n = 2
     base = {k: np.zeros(n, dtype=np.float32) for k in (
@@ -721,7 +722,7 @@ def test_matches_compute_shaping_when_wired_in():
     cur = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
     cur["team0_elixir_current"] = np.array([8.0, 1.0], dtype=np.float32)
 
-    out = train.compute_shaping(cur, prev)
+    out = train_shaping.compute_shaping(cur, prev)
     # env 0 stayed solvent, env 1 dropped to 1 elixir -> strictly worse
     assert out[1] < out[0]
 
@@ -1068,18 +1069,19 @@ def test_both_heads_can_resolve_a_single_column_at_small_scale():
 #    something to say, and falls back to the entropy bonus where it does not.
 
 from python_ai.advisors import advisor_target as AT  # noqa: E402
-from python_ai.trainers import train  # noqa: E402
+from python_ai.rewards import shaping as train_shaping  # noqa: E402
+from python_ai.rewards import weights as train_weights  # noqa: E402
 from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 
 
 def test_spell_value_weight_anneals_from_start_to_final():
     """The schedule the docstring always claimed, now actually reachable."""
-    assert train.spell_value_weight(0) == pytest.approx(train.W_SPELL_VALUE_START)
-    end = train.SPELL_VALUE_ANNEAL_EPISODES
-    assert train.spell_value_weight(end) == pytest.approx(train.W_SPELL_VALUE_FINAL)
-    assert train.spell_value_weight(end * 10) == pytest.approx(train.W_SPELL_VALUE_FINAL)
+    assert train_shaping.spell_value_weight(0) == pytest.approx(train_weights.W_SPELL_VALUE_START)
+    end = train_weights.SPELL_VALUE_ANNEAL_EPISODES
+    assert train_shaping.spell_value_weight(end) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
+    assert train_shaping.spell_value_weight(end * 10) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
     # Monotone in between, and strictly decreasing end to end.
-    xs = [train.spell_value_weight(int(end * f)) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    xs = [train_shaping.spell_value_weight(int(end * f)) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
     assert all(a >= b for a, b in zip(xs, xs[1:])), xs
     assert xs[0] > xs[-1]
 
@@ -1094,13 +1096,13 @@ def test_spell_value_weight_respects_the_start_offset():
     schedule onto the run that is actually being performed. With the default
     offset of 0 the behaviour is exactly the original intent.
     """
-    end = train.SPELL_VALUE_ANNEAL_EPISODES
-    w = train.spell_value_weight
-    assert w(1000, start=1000) == pytest.approx(train.W_SPELL_VALUE_START)
-    assert w(1000 + end, start=1000) == pytest.approx(train.W_SPELL_VALUE_FINAL)
+    end = train_weights.SPELL_VALUE_ANNEAL_EPISODES
+    w = train_shaping.spell_value_weight
+    assert w(1000, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_START)
+    assert w(1000 + end, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
     # Before the offset the term is still at full strength, never extrapolated
     # past START.
-    assert w(0, start=1000) == pytest.approx(train.W_SPELL_VALUE_START)
+    assert w(0, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_START)
 
 
 def _shaping_stats(fireball_killed):
@@ -1132,15 +1134,15 @@ def test_compute_shaping_actually_responds_to_w_spell():
     weight START than at weight 0.
     """
     cur, prev = _shaping_stats(fireball_killed=8.0)
-    hot = train.compute_shaping(cur, prev, w_spell=train.W_SPELL_VALUE_START)
-    off = train.compute_shaping(cur, prev, w_spell=0.0)
+    hot = train_shaping.compute_shaping(cur, prev, w_spell=train_weights.W_SPELL_VALUE_START)
+    off = train_shaping.compute_shaping(cur, prev, w_spell=0.0)
     assert float(hot[0]) > float(off[0]), (
         "w_spell is not reaching spell_value_shaping -- the dead-code bug is back")
 
     none_cast, prev2 = _shaping_stats(fireball_killed=0.0)
     none_cast["fireball_elixir_spent"] = np.zeros(1, dtype=np.float32)
     assert float(off[0]) == pytest.approx(
-        float(train.compute_shaping(none_cast, prev2, w_spell=0.0)[0]))
+        float(train_shaping.compute_shaping(none_cast, prev2, w_spell=0.0)[0]))
 
 
 # --- the advisor target ----------------------------------------------------
@@ -1524,13 +1526,13 @@ def test_flawless_defense_pays_only_on_a_win_and_scales_with_tower_hp():
     the win is what stops this term walking back into that -- a turtle that
     stalls into a timeout must collect exactly nothing.
     """
-    from python_ai.trainers import train as T
+    from python_ai.rewards import shaping as T, weights as TW
 
     dones = np.array([True, True, True, False])
     #                 clean win, scraped win, loss, mid-episode
     step_rewards = np.array([1.0, 1.0, -1.0, 0.0], dtype=np.float32)
     stats = {"team1_tower_damage": np.array(
-        [0.0, T.OWN_TOWER_HP_TOTAL * 0.5, 0.0, 0.0], dtype=np.float32),
+        [0.0, EC.OWN_TOWER_HP_TOTAL * 0.5, 0.0, 0.0], dtype=np.float32),
         # A crown taken in every row, so this test isolates the HP SCALING.
         # The crown gate itself is covered by
         # test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing.
@@ -1539,10 +1541,10 @@ def test_flawless_defense_pays_only_on_a_win_and_scales_with_tower_hp():
     b = T.flawless_defense_bonus(dones, step_rewards, stats, None)
 
     print(f"\n  flawless bonus: clean={b[0]:.3f} scraped={b[1]:.3f} "
-          f"loss={b[2]:.3f} mid={b[3]:.3f}  (W={T.W_FLAWLESS_DEFENSE})")
+          f"loss={b[2]:.3f} mid={b[3]:.3f}  (W={TW.W_FLAWLESS_DEFENSE})")
 
-    assert b[0] == pytest.approx(T.W_FLAWLESS_DEFENSE), "a flawless win pays in full"
-    assert b[1] == pytest.approx(T.W_FLAWLESS_DEFENSE * 0.5), "half the HP, half the bonus"
+    assert b[0] == pytest.approx(TW.W_FLAWLESS_DEFENSE), "a flawless win pays in full"
+    assert b[1] == pytest.approx(TW.W_FLAWLESS_DEFENSE * 0.5), "half the HP, half the bonus"
     assert b[2] == 0.0, "a LOSS must never collect -- it could reorder outcomes"
     assert b[3] == 0.0, "mid-episode steps must never collect"
     draw = T.flawless_defense_bonus(
@@ -1557,18 +1559,18 @@ def test_flawless_defense_reads_a_counter_that_already_auto_reset():
     may already read 0 for the NEXT episode. The running max must recover the
     finished episode's real damage, or a hard-fought win would be paid as if it
     were flawless -- the bonus would then reward exactly the wrong games."""
-    from python_ai.trainers import train as T
+    from python_ai.rewards import shaping as T, weights as TW
 
-    took_half = T.OWN_TOWER_HP_TOTAL * 0.5
+    took_half = EC.OWN_TOWER_HP_TOTAL * 0.5
     crown = {"team1_towers_alive": np.array([2], dtype=np.int64)}
     prev = {"team1_tower_damage": np.array([took_half], dtype=np.float32), **crown}
     post_reset = {"team1_tower_damage": np.array([0.0], dtype=np.float32), **crown}
 
     b = T.flawless_defense_bonus(np.array([True]), np.array([1.0], dtype=np.float32),
                                  post_reset, prev)
-    assert b[0] == pytest.approx(T.W_FLAWLESS_DEFENSE * 0.5), (
+    assert b[0] == pytest.approx(TW.W_FLAWLESS_DEFENSE * 0.5), (
         "the post-autoreset zero was taken at face value; a scraped win would "
-        f"be paid as flawless (got {b[0]}, expected {T.W_FLAWLESS_DEFENSE * 0.5})")
+        f"be paid as flawless (got {b[0]}, expected {TW.W_FLAWLESS_DEFENSE * 0.5})")
 
 
 def test_default_deck_is_the_26_hog_cycle_and_every_card_is_cheap_enough():
@@ -1613,7 +1615,7 @@ def test_win_condition_damage_term_responds_to_its_weight():
     ever varied the argument -- the weight was simply never passed. This asserts
     the win-condition term actually reaches the reward.
     """
-    from python_ai.trainers import train as T
+    from python_ai.rewards import shaping as T, weights as TW
 
     # Reuse the module's own fixture rather than a parallel copy of the key
     # list -- a second copy is how a shaping test ends up silently exercising
@@ -1625,7 +1627,7 @@ def test_win_condition_damage_term_responds_to_its_weight():
     off = float(T.compute_shaping(cur, prev, gamma=0.99, w_wincon=0.0)[0])
     print(f"\n  wincon term: w=1.0 -> {on:.5f}   w=0.0 -> {off:.5f}")
     assert on > off, "the win-condition weight does not reach the reward"
-    assert on - off == pytest.approx(400.0 / T.MAX_BUILDING_HP, rel=1e-4)
+    assert on - off == pytest.approx(400.0 / EC.MAX_BUILDING_HP, rel=1e-4)
 
 
 def test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing():
@@ -1633,9 +1635,9 @@ def test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing():
     tower HP -- pure defence, which is the local optimum this term must not
     pay for. Measured at ep 6,053: Hog usage 0.8% while the agent won ~100% of
     games at 1.0x by defending."""
-    from python_ai.trainers import train as T
+    from python_ai.rewards import shaping as T, weights as TW
 
-    assert T.FLAWLESS_REQUIRES_CROWN, "this test describes the crown-gated behaviour"
+    assert TW.FLAWLESS_REQUIRES_CROWN, "this test describes the crown-gated behaviour"
     clean = {"team1_tower_damage": np.zeros(1, dtype=np.float32),
              "team1_towers_alive": np.full(1, 3, dtype=np.int64)}
     crowned = {"team1_tower_damage": np.zeros(1, dtype=np.float32),
@@ -1646,7 +1648,7 @@ def test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing():
     decisive = T.flawless_defense_bonus(dones, rew, crowned, None)[0]
     print(f"\n  flawless bonus: turtle-win={turtle:.3f}  crowned-win={decisive:.3f}")
     assert turtle == 0.0, "a win with all 3 enemy towers up must pay NOTHING"
-    assert decisive == pytest.approx(T.W_FLAWLESS_DEFENSE), (
+    assert decisive == pytest.approx(TW.W_FLAWLESS_DEFENSE), (
         "a flawless win that took a crown must still pay in full")
 
 
@@ -1943,24 +1945,35 @@ def test_set_teacher_stage_is_a_noop_on_a_builtin_env():
     assert env.teacher is None
 
 
-def _train_source():
+#: PIPELINE 1's training path -- `trainers/train.py` plus the loop and the
+#: curriculum that moved out of it into `rl/`. Scanning train.py alone, which is
+#: what this test used to do, would now pass while the banned call sat one
+#: import away.
+#:
+#: Deliberately NOT pipeline 2: `envs/selfplay_env.BUILTIN_TRAINING_OPPONENTS`
+#: really does put "builtin:heuristic@1.35" and "@1.50" in the PFSP pool, so a
+#: multiplier there is the anchor's own identity, not a curriculum handicap.
+#: The 2026-08-19 pivot was about phase 1's ladder and this test's claim is
+#: about phase 1's ladder.
+def _phase1_training_sources():
     import pathlib
-    return pathlib.Path(
-        os.path.join(python_ai.PACKAGE_DIR, "trainers", "train.py")
-    ).read_text(encoding="utf-8")
+    root = pathlib.Path(python_ai.PACKAGE_DIR)
+    yield root / "trainers" / "train.py"
+    yield from sorted((root / "rl").glob("*.py"))
 
 
 def _curriculum_stages_literal():
-    """CURRICULUM_STAGES is a local of train_ppo(), so it cannot be imported.
-    Parse it out of the source instead of duplicating the values here."""
-    import ast
-    tree = ast.parse(_train_source())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "CURRICULUM_STAGES":
-                    return ast.literal_eval(node.value)
-    raise AssertionError("CURRICULUM_STAGES not found in train.py")
+    """The real object, imported.
+
+    This used to PARSE `train.py` with `ast`, because CURRICULUM_STAGES was a
+    local of `train_ppo()` and could not be imported at all. That worked, and it
+    was a smell worth acting on: a constant nothing can import is a constant
+    nothing can check, and a parser that finds nothing can only be told apart
+    from a parser that finds the wrong thing by the assertion it raises. It now
+    lives at module scope in `rl/curriculum.py`.
+    """
+    from python_ai.rl.curriculum import CURRICULUM_STAGES
+    return CURRICULUM_STAGES
 
 
 def test_training_never_raises_the_opponent_elixir_multiplier():
@@ -1970,21 +1983,35 @@ def test_training_never_raises_the_opponent_elixir_multiplier():
     monotone across 1.0/1.25/1.5x, and the reason four separate Hog
     interventions all returned null. The API survives for the ~15 measurement
     harnesses that sweep it (including the falsifier that justified the change);
-    the TRAINING path must never call it again.
+    phase 1's training path must never call it again.
+
+    AST-based, not line-based. The line scan this replaces skipped anything
+    starting with `#`, which silently exempted every mention inside a DOCSTRING
+    -- and a docstring is exactly where a future author would explain the ban
+    before quietly reintroducing it below.
     """
-    import re
-    src = _train_source()
-    calls = []
-    for line in src.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue                      # a comment explaining the ban is fine
-        if re.search(r"set_opponent_elixir_multiplier\s*\(", line) or \
-           re.search(r'"set_opponent_elixir_multiplier"', line):
-            calls.append(stripped)
-    assert not calls, (
-        "train.py still sets an opponent elixir multiplier:\n  "
-        + "\n  ".join(calls))
+    import ast
+    offenders = []
+    for path in _phase1_training_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", "") == "set_opponent_elixir_multiplier"):
+                offenders.append(f"{path.name}:{node.lineno}: direct call")
+            elif isinstance(node, ast.Constant) and node.value in (
+                    "set_opponent_elixir_multiplier", "opp_elixir_multiplier"):
+                # `envs.call("set_opponent_elixir_multiplier", m)` and the
+                # env-config key are the two indirect routes to the same thing.
+                offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
+    assert not offenders, (
+        "phase 1's training path sets an opponent elixir multiplier:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_curriculum_lives_where_a_test_can_import_it():
+    """The regression for the reason the two tests below used to parse source."""
+    from python_ai.rl import curriculum
+    assert curriculum.CURRICULUM_STAGES is _curriculum_stages_literal()
 
 
 def test_curriculum_stages_are_competence_not_economy():

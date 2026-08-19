@@ -40,8 +40,10 @@ import clash_royale_env as E  # noqa: E402
 from python_ai.envs import gym_wrapper  # noqa: E402
 from python_ai.eval import match_outcome  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
-from python_ai.trainers import train  # noqa: E402
-from python_ai.trainers import train_selfplay as TS  # noqa: E402
+from python_ai.envs import scenarios  # noqa: E402
+from python_ai.envs import scripted_opponents  # noqa: E402
+from python_ai.envs import selfplay_env  # noqa: E402
+from python_ai.rewards import shaping, weights  # noqa: E402
 from python_ai.eval import prove_placement  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 
@@ -85,13 +87,13 @@ def validate_pfsp(trials=200000):
     stats["scripted:Counter"] = 0.99
 
     def floor_for(p):
-        if p in TS.DEFENSIVE_SCRIPTED_OPPONENTS:
-            return TS.DEFENSIVE_SCRIPTED_MIN_WEIGHT
+        if p in scripted_opponents.DEFENSIVE_SCRIPTED_OPPONENTS:
+            return scripted_opponents.DEFENSIVE_SCRIPTED_MIN_WEIGHT
         if p.startswith("builtin:"):
-            return TS.BUILTIN_MIN_WEIGHT
-        return TS.PFSP_MIN_WEIGHT
+            return selfplay_env.BUILTIN_MIN_WEIGHT
+        return selfplay_env.PFSP_MIN_WEIGHT
 
-    w = np.array([max(floor_for(p), (1.0 - stats[p]) ** TS.PFSP_EXPONENT)
+    w = np.array([max(floor_for(p), (1.0 - stats[p]) ** selfplay_env.PFSP_EXPONENT)
                   for p in pool], dtype=np.float64)
     expect = w / w.sum()
 
@@ -111,11 +113,11 @@ def validate_pfsp(trials=200000):
           float(expect.min()) > 0.0 and int((got == 0).sum()) == 0,
           f"min share {expect.min():.5f} over {len(pool)} members")
 
-    d_share = sum(expect[pool.index(p)] for p in TS.DEFENSIVE_SCRIPTED_OPPONENTS)
+    d_share = sum(expect[pool.index(p)] for p in scripted_opponents.DEFENSIVE_SCRIPTED_OPPONENTS)
     # The measured reason this floor exists: at 0.20 the two defensive bots got
     # ~7.7% combined in a ~98-member pool, which is statistically invisible.
     check("defensive scripted bots keep a real share",
-          d_share > 0.15, f"combined {d_share:.1%} (floor {TS.DEFENSIVE_SCRIPTED_MIN_WEIGHT})")
+          d_share > 0.15, f"combined {d_share:.1%} (floor {scripted_opponents.DEFENSIVE_SCRIPTED_MIN_WEIGHT})")
 
     mastered = expect[pool.index("hist_1.pth")]
     weak = expect[pool.index("hist_0.pth")]
@@ -139,7 +141,7 @@ def validate_scenarios(n=4000):
     defensive = 0
     playable = set(E.get_all_card_ids())
     for _ in range(n):
-        sc = TS.sample_scenario(rng)
+        sc = scenarios.sample_scenario(rng)
         names[sc["name"]] += 1
         defensive += bool(sc.get("defensive"))
         for spawn in sc["spawns"]:
@@ -152,13 +154,13 @@ def validate_scenarios(n=4000):
     check("every scenario spawns on the board with a real card",
           bad_spawn == 0, f"{bad_spawn} bad spawns in {n} scenarios")
     # Label deliberately count-free: the predicate is derived from
-    # len(TS.SCENARIOS), so a hardcoded number in the NAME goes stale the moment
+    # len(scenarios.SCENARIOS), so a hardcoded number in the NAME goes stale the moment
     # a scenario is added or removed and then reads as a failure when the check
     # is actually passing. It said "all five" while printing 4/4 on the run that
     # removed giant_commit.
     check("every registered scenario is reachable",
-          len(names) == len(TS.SCENARIOS),
-          f"{len(names)}/{len(TS.SCENARIOS)}: {dict(names)}")
+          len(names) == len(scenarios.SCENARIOS),
+          f"{len(names)}/{len(scenarios.SCENARIOS)}: {dict(names)}")
     check("defensive scenarios are a real fraction",
           0.2 < defensive / n < 0.8, f"{defensive / n:.1%} defensive")
 
@@ -186,7 +188,7 @@ def validate_scenarios(n=4000):
     seen = Counter()
     bad = []
     for _ in range(120):
-        sc = TS.sample_scenario(rng)
+        sc = scenarios.sample_scenario(rng)
         if not sc["spawns"]:
             continue                       # giant_commit spawns nothing by design
         env = CE(DECK, DECK, 3600)
@@ -389,11 +391,11 @@ def validate_search(iters=400):
 def validate_spell_anneal():
     """The bug fixed today, pinned end to end rather than by unit test alone."""
     banner("5. Spell-value shaping anneal")
-    w0 = train.spell_value_weight(0)
-    wmid = train.spell_value_weight(train.SPELL_VALUE_ANNEAL_EPISODES // 2)
-    wend = train.spell_value_weight(train.SPELL_VALUE_ANNEAL_EPISODES)
+    w0 = shaping.spell_value_weight(0)
+    wmid = shaping.spell_value_weight(weights.SPELL_VALUE_ANNEAL_EPISODES // 2)
+    wend = shaping.spell_value_weight(weights.SPELL_VALUE_ANNEAL_EPISODES)
     check("weight anneals START -> FINAL",
-          w0 > wmid > wend and abs(wend - train.W_SPELL_VALUE_FINAL) < 1e-9,
+          w0 > wmid > wend and abs(wend - weights.W_SPELL_VALUE_FINAL) < 1e-9,
           f"{w0:.4f} -> {wmid:.4f} -> {wend:.4f}")
 
     z = np.zeros(1, dtype=np.float32)
@@ -411,8 +413,8 @@ def validate_spell_anneal():
     cur["fireball_value_killed"] = np.array([8.0], dtype=np.float32)
     cur["fireball_elixir_spent"] = np.array([4.0], dtype=np.float32)
 
-    hot = float(train.compute_shaping(cur, prev, w_spell=w0)[0])
-    cold = float(train.compute_shaping(cur, prev, w_spell=wend)[0])
+    hot = float(shaping.compute_shaping(cur, prev, w_spell=w0)[0])
+    cold = float(shaping.compute_shaping(cur, prev, w_spell=wend)[0])
     check("the reward actually responds to the weight", hot > cold,
           f"shaping {hot:.5f} at w={w0} vs {cold:.5f} at w={wend}")
 
