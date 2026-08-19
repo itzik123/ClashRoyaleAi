@@ -1649,6 +1649,40 @@ is only interpretable if the BASELINE arm is below ceiling. Check the baseline
 win rate before reading the delta; if it is >= 0.95, the test is void and needs
 an intermediate multiplier (1.2-1.3) instead.
 
+**TESTED, 2026-08-18, AND THE HYPOTHESIS IS SUPPORTED -- BUT NOT PROVEN.** The
+same SMART-forced A/B (advisor timing gate + advisor bridge cell, gate
+calibrated to each multiplier), n=120 paired, ep-25202 net:
+
+| opponent | baseline win | SMART win | delta | p |
+|---|---|---|---|---|
+| **1.00x** | **1.000** | 1.000 | +0.0000 | -- VOID (ceiling) |
+| **1.25x** | 0.950 | 0.825 | **-0.1250** | 0.0059 |
+| **1.50x** | 0.617 | 0.317 | **-0.3000** | 3.2e-06 |
+
+**The cost of playing the win condition falls monotonically as the opponent's
+economy falls.** That is the hypothesis's central prediction and it holds.
+
+The 1.00x row is VOID exactly as the caveat above warned -- the baseline
+saturates at 1.000 and the delta is pinned by the opponent, not the treatment.
+It is reported rather than dropped because deleting a void arm after seeing it
+is how a ceiling gets mistaken for a cure.
+
+**And the honest alternative explanation, which is NOT fully excluded.** A
+baseline near 1.0 has less room to lose, so some of the shrinkage is
+compression. Normalising by available headroom: at 1.25x the penalty is
+0.125/0.950 = **13%** of what could be lost; at 1.5x it is 0.300/0.617 =
+**49%**. Still smaller at the lower multiplier, so the effect survives that
+correction -- but 1.25x is close enough to the ceiling that the point deserves
+replication at a multiplier where the baseline sits nearer 0.7-0.8.
+
+**WHAT THIS DOES NOT SAY: the Hog is not rehabilitated at any multiplier
+tested.** The penalty shrinks; it never reverses. Even at 1.25x, forcing the
+win condition with perfect timing and an engine-validated placement costs a
+significant 12.5 win-rate points. So the correct response is a CURRICULUM
+change -- train and evaluate across a range of opponent economies instead of
+pinning everything at 1.4-1.5x -- and NOT more Hog-specific machinery. Four
+such mechanisms have now been built and measured, and all four returned null.
+
 **A second, cheaper prediction worth checking.** If the hypothesis holds, the
 win condition should be *more* used, not less, by any policy trained with 1.0x
 exposure. Nothing in the current run provides that -- phase 1's curriculum
