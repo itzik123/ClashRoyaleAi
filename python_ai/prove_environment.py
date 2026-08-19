@@ -100,8 +100,23 @@ def duel(env, t0, t1):
         a1 = t1.act(env, o1)
         if env.step_self_play(a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], 10).done:
             break
+    return _outcome(env)
+
+
+def _outcome(env):
+    """(score, enemy tower damage we dealt, tower damage we took).
+
+    Tower damage is reported alongside the win/draw/loss because in a MIRROR
+    matchup between two strong defensive bots most matches reach the tick limit
+    and are then decided by a tower-HP tiebreak -- so win rate is a coarse,
+    heavily-quantised readout of a continuous difference. If the attack arm
+    deals more tower damage without converting it into wins, that is a real and
+    interpretable result, and win rate alone would hide it.
+    """
     a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return 1.0 if a > b else (0.5 if a == b else 0.0)
+    score = 1.0 if a > b else (0.5 if a == b else 0.0)
+    return (score, float(env.get_tower_damage_dealt(0)),
+            float(env.get_tower_damage_dealt(1)))
 
 
 def duel_heuristic(env, t0):
@@ -113,8 +128,7 @@ def duel_heuristic(env, t0):
         slot, x, y = t0.act(env, o0)
         if env.step(slot, x, y, 10).done:
             break
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return 1.0 if a > b else (0.5 if a == b else 0.0)
+    return _outcome(env)
 
 
 def arm(mode, stage, seed, base, multiplier, opponent):
@@ -153,6 +167,138 @@ def paired(diffs):
     return d.mean(), lo, hi, better, worse, p
 
 
+
+# --------------------------------------------------------------------------
+# mode "marginal": the NET value of one win-condition commitment
+# --------------------------------------------------------------------------
+def _tower_diff(env, team=0):
+    """(enemy tower damage we dealt) - (tower damage we took)."""
+    return (float(env.get_tower_damage_dealt(team))
+            - float(env.get_tower_damage_dealt(1 - team)))
+
+
+def _play_out(env, t0, t1, steps):
+    """Both teachers keep playing normally for `steps` decisions.
+
+    BOTH SIDES MUST KEEP PLAYING. `teacher.rollout_stats` and
+    `search_ab_test` both roll forward with the opponent no-oping, which is fine
+    for ranking candidates a second or two ahead -- and completely wrong here.
+    The entire cost of committing a win condition is the COUNTER-PUSH that
+    arrives while our half is empty, and an opponent frozen on no-op never
+    counter-pushes. A no-op rollout can only ever make attacking look good.
+    """
+    for _ in range(steps):
+        if env.is_game_over():
+            break
+        o0 = np.asarray(env.get_observation_for_team(0), np.float32)
+        o1 = np.asarray(env.get_observation_for_team(1), np.float32)
+        a0 = t0.act(env, o0)
+        a1 = t1.act(env, o1)
+        if env.step_self_play(a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], 10).done:
+            break
+
+
+def marginal_value(args):
+    """At states where the advisor's gate says COMMIT, is committing worth it?
+
+    THE INSTRUMENT THE WIN-RATE A/B COULD NOT BE. The arm comparison answers
+    "is this whole STRATEGY better", and it is confounded twice over: a
+    back-placed win condition is not a dud but an accidental defensive body, and
+    an over-eager attack rule would make attacking look bad even if attacking is
+    good. This measures ONE decision instead.
+
+    Paired on identical snapshots at states the gate selected:
+        arm PLAY   commit the win condition at the advisor's bridge cell
+        arm HOLD   no-op this step, keep the elixir
+    then let BOTH teachers play on normally for `--horizon` decisions and score
+    by tower-HP differential. Everything after the first step is identical in
+    distribution, so the difference IS the marginal value of that one
+    commitment -- counter-push included, which is the half `prove_hog.py`
+    (offensive damage only) structurally cannot see.
+    """
+    import tactics
+    diffs, played, gate_hits, seen = [], 0, 0, 0
+    for i in range(args.n):
+        root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
+        root.reset()
+        env = root.snapshot()
+        t0 = UtilityTeacher(DEFAULT_DECK, team=0, seed=args.seed + i)
+        t1 = UtilityTeacher(DEFAULT_DECK, team=1, seed=args.seed + 7777 + i)
+        t0.set_stage(args.stage)
+        t1.set_stage(args.stage)
+        t0.reset()
+        t1.reset()
+
+        for _ in range(MAX_STEPS):
+            if env.is_game_over():
+                break
+            seen += 1
+            o0 = np.asarray(env.get_observation_for_team(0), np.float32)
+            hand = list(env.get_hand_for_team(0))
+            wincon = t0.wincon_id
+            # Only states where committing is even POSSIBLE and the advisor's
+            # own timing gate approves -- scoring random moments would measure
+            # the gate, not the card.
+            if (wincon in hand
+                    and env.get_elixir_for_team(0) >= E.get_card_info(wincon)["cost"]
+                    and tactics.hog_should_commit(o0)):
+                gate_hits += 1
+                x, y, _ = tactics.best_hog_cell(o0)
+                slot = hand.index(wincon)
+
+                a = env.snapshot()
+                b = env.snapshot()
+                ta0 = UtilityTeacher(DEFAULT_DECK, team=0, seed=args.seed + i)
+                ta1 = UtilityTeacher(DEFAULT_DECK, team=1, seed=args.seed + 7777 + i)
+                tb0 = UtilityTeacher(DEFAULT_DECK, team=0, seed=args.seed + i)
+                tb1 = UtilityTeacher(DEFAULT_DECK, team=1, seed=args.seed + 7777 + i)
+                for t in (ta0, ta1, tb0, tb1):
+                    t.set_stage(args.stage)
+                    t.reset()
+
+                o1 = np.asarray(env.get_observation_for_team(1), np.float32)
+                opp = t1.act(env, o1)
+                a.step_self_play(slot, x, y, opp[0], opp[1], opp[2], 10)
+                b.step_self_play(-1, 0.0, 0.0, opp[0], opp[1], opp[2], 10)
+                _play_out(a, ta0, ta1, args.horizon)
+                _play_out(b, tb0, tb1, args.horizon)
+                diffs.append(_tower_diff(a) - _tower_diff(b))
+                played += 1
+
+            o1 = np.asarray(env.get_observation_for_team(1), np.float32)
+            a0 = t0.act(env, o0)
+            a1 = t1.act(env, o1)
+            if env.step_self_play(a0[0], a0[1], a0[2],
+                                  a1[0], a1[1], a1[2], 10).done:
+                break
+        if played >= args.max_states:
+            break
+
+    print(f"\nMARGINAL VALUE OF ONE WIN-CONDITION COMMITMENT")
+    print(f"  states scored      {played}  (gate fired on {gate_hits} of "
+          f"{seen} decisions)")
+    if not diffs:
+        print("  the gate never fired -- nothing measured. Not a null result.")
+        return
+    mean, lo, hi, better, worse, pv = paired(diffs)
+    print(f"  tower-HP delta     {mean:>+9.1f}   95% CI "
+          f"[{lo:>+8.1f}, {hi:>+8.1f}]")
+    print(f"  better/worse       {better}/{worse}   sign test p = {pv:.3}")
+    print()
+    if lo > 0:
+        print("  Committing the win condition is NET POSITIVE in this "
+              "environment.")
+    elif hi < 0:
+        print("  Committing the win condition is NET NEGATIVE even at a "
+              "symmetric economy\n  and with perfect timing. The card is not "
+              "rehabilitated by the curriculum\n  change, and no amount of "
+              "policy pressure will make it pay.")
+    else:
+        print("  No difference resolved. Either the commitment is roughly "
+              "neutral, or n is\n  too small -- check better/worse against "
+              "the CI width before reading it as\n  a null.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=120)
@@ -164,7 +310,17 @@ def main():
     ap.add_argument("--include-ban", action="store_true",
                     help="also run the CONFOUNDED never-play arm")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--mode", choices=["winrate", "marginal"], default="winrate")
+    ap.add_argument("--horizon", type=int, default=40,
+                    help="decisions to play on after the commitment (mode=marginal)")
+    ap.add_argument("--max-states", type=int, default=200)
     args = ap.parse_args()
+
+    if args.mode == "marginal":
+        print(f"\ndeck {DEFAULT_DECK}")
+        print(f"teacher stage {args.stage} {TEACHER_STAGES[args.stage]}")
+        marginal_value(args)
+        return
 
     modes = ["attack", "cycle"] + (["ban"] if args.include_ban else [])
 
@@ -179,13 +335,18 @@ def main():
     rows = []
     for m in args.multipliers:
         scores = {k: [] for k in modes}
+        dealt = {k: [] for k in modes}
+        taken = {k: [] for k in modes}
         for i in range(args.n):
             root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
             root.reset()
             base = root.snapshot()
             for mode in modes:
-                scores[mode].append(arm(mode, args.stage, args.seed + i,
-                                        base, m, args.opponent))
+                sc, dl, tk = arm(mode, args.stage, args.seed + i,
+                                 base, m, args.opponent)
+                scores[mode].append(sc)
+                dealt[mode].append(dl)
+                taken[mode].append(tk)
         a = np.asarray(scores["attack"])
         c = np.asarray(scores["cycle"])
         mean, lo, hi, better, worse, p = paired(a - c)
@@ -198,6 +359,16 @@ def main():
               f"  [{lo:>+7.4f}, {hi:>+7.4f}] {better:>6}/{worse:<6} {p:>10.2}"
               f"{flag}")
         rows.append((m, a.mean(), c.mean(), mean, lo, hi, p, void))
+        # The continuous readout, which survives a tower-HP tiebreak that win
+        # rate quantises away.
+        da, dc = np.asarray(dealt["attack"]), np.asarray(dealt["cycle"])
+        ta, tc = np.asarray(taken["attack"]), np.asarray(taken["cycle"])
+        dmean, dlo, dhi, dbet, dwor, dp = paired(da - dc)
+        print(f"{'':>10} enemy tower dmg  attack {da.mean():>7.1f}  "
+              f"cycle {dc.mean():>7.1f}  delta {dmean:>+8.1f} "
+              f"[{dlo:>+8.1f}, {dhi:>+8.1f}] {dbet:>4}/{dwor:<4} p={dp:.2}")
+        print(f"{'':>10} tower dmg TAKEN  attack {ta.mean():>7.1f}  "
+              f"cycle {tc.mean():>7.1f}")
         if "ban" in scores:
             b = np.asarray(scores["ban"])
             bm, blo, bhi, _, _, bp = paired(a - b)
