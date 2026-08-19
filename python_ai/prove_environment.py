@@ -217,6 +217,16 @@ def marginal_value(args):
     (offensive damage only) structurally cannot see.
     """
     import tactics
+    # THE GATE THRESHOLD IS THE VARIABLE UNDER TEST. tactics.HOG_MAX_OPP_ELIXIR
+    # ships at 7.0, i.e. "commit unless they are nearly full" -- and the trade
+    # probe measured a lone Hog at 158.5 hp/elixir against a defender at match
+    # elixir versus 256.2 against one forced to 1.0. If the punish window is
+    # what pays, a tighter gate should move this test's verdict, and a gate that
+    # opens at 7 is not selecting punish windows at all.
+    if args.max_opp_elixir is not None:
+        tactics.HOG_MAX_OPP_ELIXIR = float(args.max_opp_elixir)
+    print(f"  gate: commit while estimated opponent elixir <= "
+          f"{tactics.HOG_MAX_OPP_ELIXIR}")
     diffs, played, gate_hits, seen = [], 0, 0, 0
     for i in range(args.n):
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
@@ -314,6 +324,8 @@ def main():
     ap.add_argument("--horizon", type=int, default=40,
                     help="decisions to play on after the commitment (mode=marginal)")
     ap.add_argument("--max-states", type=int, default=200)
+    ap.add_argument("--max-opp-elixir", type=float, default=None,
+                    help="override tactics.HOG_MAX_OPP_ELIXIR for mode=marginal")
     args = ap.parse_args()
 
     if args.mode == "marginal":

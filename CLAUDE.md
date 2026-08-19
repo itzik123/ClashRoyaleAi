@@ -1462,7 +1462,7 @@ explicitly.
 **PRE-REGISTERED PREDICTIONS for the from-scratch 2.6 run, written before it
 had trained.** The entropy fix is justified by a mechanism, not yet by an
 outcome. These are the numbers that falsify it, all measurable with
-`probe_defense.py` / `probe_entropy_norm.py` on the new net:
+`probe_perfect_defense.py` / `probe_card_usage.py` on the new net:
 
 1. **Mean elixir rises above 2.25 / 10** and **P(nothing affordable) falls
    below 73.9%**. This is the direct claim. If bankruptcy persists at the same
@@ -1736,6 +1736,169 @@ win condition should be *more* used, not less, by any policy trained with 1.0x
 exposure. Nothing in the current run provides that -- phase 1's curriculum
 starts at 1.0x but the agent passes through it in ~1,600 episodes and spends the
 remaining ~24,000 at 1.4-1.5x.
+
+---
+
+## 2026-08-19: the curriculum pivot, and the hypothesis it did NOT confirm
+
+**The elixir-multiplier curriculum is GONE from training.** `CURRICULUM_STAGES`
+no longer carries `opp_elixir_multiplier`; both sides run at a symmetric 1.0x
+forever and the six rungs index `teacher.TEACHER_STAGES` — lookahead
+0/0/30/30/60/60 ticks with epsilon 0.30 → 0.00. **Difficulty is COMPETENCE, not
+economy.** `set_opponent_elixir_multiplier` stays bound and callable for the ~15
+measurement harnesses that sweep it;
+`test_training_never_raises_the_opponent_elixir_multiplier` fails if training
+touches it again. **GAMEPLAY-AFFECTING**: every win rate earned against
+`heuristic@{1.0..1.5}x` is historical. Checkpoints are NOT invalidated — the
+observation, action space and architecture are untouched.
+
+**Phase 1's opponent is now `teacher.UtilityTeacher`** (`CLASH_PHASE1_OPPONENT`,
+default `teacher`). The C++ `HeuristicOpponent` is an EVAL ANCHOR only.
+
+### Why the multiplier had to be replaced rather than merely deleted
+
+At 1.0x the C++ heuristic is beaten ~100% — recorded for the ep-64k Giant net
+and the ep-25202 2.6 net. **Deleting the handicap alone converts a MISPRICED
+environment into a ZERO-GRADIENT one**, which is exactly why the original
+hypothesis test's 1.00x row was VOID. The replacement has to be a real opponent.
+
+**It cannot be the neural search we already own.** Search scores candidates with
+the net's OWN critic, so at random init the expert is not an expert (measured:
+random init deviates on 21.5% of decisions and gains nothing). A hand-written
+utility function has no cold start. That is the whole argument for `teacher.py`.
+
+### The teacher: rules propose, simulation ranks
+
+`tactics.py`'s engine-validated cells are the candidate generator; each
+candidate is rolled forward on `env.snapshot()` and scored by DIFFERENCE against
+the NO-OP rollout, so no-op scores exactly 0 and every score is marginal.
+Side-agnostic by construction, reads observations only, ~3.5 ms/decision.
+
+Two things the design brief got wrong, both corrected with the reason:
+
+- **The no-op baseline does NOT absorb opportunity cost.** It removes
+  counterfactual value; the elixir actually spent still has to be charged.
+- **Scored on realized damage alone the teacher would never attack and would
+  turtle** — a Hog needs ~13 s to cross and the horizon is 3–6 s. That is the
+  pathology the pivot exists to remove, so `positional_advantage` is the
+  hand-written stand-in for the value bootstrap search gets from the critic.
+
+**Both strength bars pass.** vs the C++ heuristic @1.0x: stage 5 scores 1.000
+(stages 0–4: 0.54/0.29/0.71/0.96/0.92). The ep-31312 2.6 net beats it 0.775 (CI
+[0.663, 0.875], n=20 side-swapped) — materially harder than the heuristic that
+same net beats ~100%, and not a wall. **And it is not a turtle**: its own
+win-condition usage RISES with competence, 7.1% → 13.4% → **16.5%** of plays,
+against the RL agent's 0.8%.
+
+### THE HYPOTHESIS IS NOT CONFIRMED. Five measurements, all pointing the same way.
+
+The pivot was built on the 1.5x hypothesis: that a symmetric economy would make
+the win condition pay. **It does not.** `prove_environment.py` runs the
+falsifier with NO network — both sides are the deterministic teacher, so the
+historical confound between "the environment prices this badly" and "this net
+cannot execute it" is gone.
+
+**Symmetric, teacher vs teacher, n=100 paired.** Arms are `attack` (bridge) vs
+`cycle` (same card, same spend, same hand rotation, placed in our own back half
+at ~3 tower damage against 535.6). The `ban` arm is reported but CONFOUNDED — a
+card never played never leaves the hand, so banning also clogs a slot:
+
+| opp elixir | attack | cycle | delta | p |
+|---|---|---|---|---|
+| 1.00 | 0.510 | 0.840 | **−0.330** | 5.7e-08 |
+| 1.10 | 0.145 | 0.455 | −0.310 | 4.5e-07 |
+| 1.20 | 0.015 | 0.130 | −0.115 | 7.6e-05 |
+
+At 1.0x with the continuous readout: attack deals **less** enemy tower damage
+(6326 vs 6938, p=0.13) and takes **nearly double** (5772.7 vs 3049.3). The `ban`
+arm scores **0.910** — never playing the win condition at all beats attacking
+with it by 0.37.
+
+**The historical result REPLICATES with a deterministic bot**, so it was never a
+policy failure: vs the C++ heuristic, n=80, 1.00x VOID at ceiling, 1.25x
+**−0.1875** (p=0.0096), 1.50x **−0.1062** (p=0.00049).
+
+### The mechanism, isolated — and it is NOT the card, the King, or the timing
+
+- **The card is fine.** A lone Hog injected on an empty board deals **2536 tower
+  damage** (a full Princess Tower) and dies at tick 190. So neither the Hog nor
+  the enemy King firing from tick 0 (`Tower.h` has no activation condition,
+  unlike the real game) is what suppresses it. **CLAUDE.md's old "317 tower
+  damage in 40 s" figure no longer reproduces** — do not quote it.
+- **The punish mechanic is real.** Forcing the defender's bar to 1.0:
+  **1025.0 tower damage vs 634.0** at match elixir, i.e. **+391 HP (+62%)**,
+  256 vs 158 hp per elixir committed.
+- **Escorting helps, conditionally.** Ice Golem first is +344 HP (CI [+186,
+  +524]) against a solvent defender and actively wasteful against a broke one
+  (dmg/elixir 256 → 194). A correct and fairly subtle result, and the reason a
+  lone-Hog-only measurement would have been a strawman.
+- **Cheap answers are not the blocker.** The defender answers with Skeletons (35
+  of 40 trials) and Ice Spirit (31 of 40) — a 1-for-4 trade in its favour, which
+  is REAL Clash, not an artifact. Forcing both out of its hand moved the Hog only
+  634.0 → 665.7, because it cycles them back inside the horizon.
+
+**THE GATE SWEEP IS WHAT SETTLES IT, and it inverts the premise.** Marginal value
+of ONE commitment, paired, both sides playing on afterwards:
+
+| gate: commit while opp elixir ≤ | states | tower-HP delta | 95% CI | sign test |
+|---|---|---|---|---|
+| 7.0 (shipping) | 220 | −298.2 | [−494, −107] | 87/105, p=0.22 |
+| 3.0 | 160 | −268.6 | [−455, −90] | 50/81, p=0.0085 |
+| **1.5** | 162 | **−585.4** | [−816, −360] | 46/100, **p=9.2e-06** |
+
+**Tighter timing is WORSE.** The pivot assumed a punish window is a state where
+the opponent cannot afford the answer. Artificially constructed, that state pays
+(+391 HP). **Naturally occurring, it is the opposite: they are low BECAUSE THEY
+JUST SPENT, so their push is already on the board and the correct move is to
+defend.** Committing 4 elixir there is the worst available moment, which is what
+the −585.4 row measures.
+
+So the punish window exists in principle and **essentially never occurs in this
+environment's dynamics**. That is a property of the engine's PACE — not the
+elixir multiplier, not the policy, not the placement.
+
+### What this licenses and what it does not
+
+Every number above is against ONE opponent, whose attack repertoire is a bridge
+push (lone or escorted) and whose scorer carries a known bias:
+**`UtilityTeacher.rollout_stats` rolls candidates forward with BOTH SIDES
+NO-OPING**, so it structurally cannot see the counter-push — the entire cost of
+attacking. Left as a documented limitation rather than silently fixed, because
+the fix costs ~20x per decision and the gate sweep shows the cheap alternative
+(a solvency threshold) would not have helped at any threshold.
+
+So: "the win condition is net-negative" means *against a search-based defender
+at a symmetric economy with this repertoire*. It is **not** a proof that no
+attacking strategy pays here. What five independent measurements DO rule out is
+the specific claim the pivot was built on — that removing the multiplier
+suffices.
+
+**Do not start a from-scratch run expecting Hog usage to rise.** The curriculum
+is still worth shipping: it removes a measured mispricing and a zero-gradient
+ceiling, and the teacher is a much better sparring partner than the heuristic.
+It is not a win-condition cure. Offensive scenario injection
+(`scenario_offense.py`) stays DEFAULT-OFF; its gating condition was not met.
+
+The open question is now an ENGINE question — the cost balance between offence
+and defence — and belongs in `perception/UPSTREAM_REQUESTS.md`, not in more
+policy-side machinery. **That would be the fifth Hog mechanism; four have
+already returned null.**
+
+### Also fixed on the way
+
+**`python_ai/clash_royale_env.pyd` was STALE** — it predated commit `26de409`,
+so `set_elixir_for_team` / `set_hand_for_team` were missing even though
+`bindings.cpp` exports them. That is the MSB3073 post-build copy failure this
+file already documents, and it silently blocked two measurements. Replaced from
+`build_python/Release/`. Verified gameplay-identical rather than assumed: both
+commits since that build are purely additive accessors (119 insertions, 0
+deletions, no simulation code), and the perception suite reads 353 passed / 1
+skipped either side of the swap.
+
+**`inject` QUEUES a spawn.** The unit does not reach the board, or any
+observation, until one tick is stepped — measured 0.0 enemy mass immediately
+after `inject`, 0.399 after one tick. Any harness that injects and then reads an
+observation without stepping is looking at an empty board.
 
 ---
 

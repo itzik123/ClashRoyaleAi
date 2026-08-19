@@ -66,6 +66,9 @@ from teacher import UtilityTeacher  # noqa: E402
 CE = E.ClashRoyaleEnv
 HOG = 15
 ICE_GOLEM = 40
+# What actually answers a Hog in this deck, measured: the defender
+# played Skeletons in 35 of 40 trials and Ice Spirit in 31.
+CHEAP_ANSWERS = (24, 72)   # Skeletons, Ice Spirit
 
 
 def play_on(env, defender, steps):
@@ -81,7 +84,8 @@ def play_on(env, defender, steps):
             break
 
 
-def one_trial(seed, stage, horizon, warmup, defender_elixir):
+def one_trial(seed, stage, horizon, warmup, defender_elixir,
+              no_cheap_answer=False):
     """Returns {arm: (defence elixir spent, enemy tower damage caused)}.
 
     Arms, all injected for FREE so the attacker's own spend stays off the
@@ -125,6 +129,31 @@ def one_trial(seed, stage, horizon, warmup, defender_elixir):
         # inject QUEUES the spawn -- one tick is required before it is on the
         # board at all (measured: 0.0 mass before, 0.399 after).
         env.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, 1)
+        if no_cheap_answer:
+            # THE CYCLE TEST. Skeletons (1) and Ice Spirit (1) are what actually
+            # answer a Hog here -- the defender played them in 35 and 31 of 40
+            # trials -- and a 1-for-4 trade in the defender's favour is REAL
+            # Clash, not an engine artifact. Real 2.6 beats it by CYCLING, so
+            # the answer is not in hand when the Hog arrives. The observation
+            # carries no opponent-cycle information at all (CLAUDE.md open
+            # problem #3), so neither the teacher nor the policy can aim for
+            # that window. Forcing it here measures what the window is WORTH,
+            # which is the number that decides whether cycle tracking is worth
+            # building.
+            hand = list(env.get_hand_for_team(1))
+            keep = [c for c in DEFAULT_DECK if c not in CHEAP_ANSWERS]
+            want = [c for c in hand if c not in CHEAP_ANSWERS]
+            for c in keep:
+                if len(want) >= len(hand):
+                    break
+                if c not in want:
+                    want.append(c)
+            # set_hand_for_team REFUSES a hand that is not a valid permutation
+            # of the remaining pool and returns False rather than raising, so an
+            # unchecked call would silently leave the cheap answer in hand and
+            # the arm would measure nothing.
+            if not env.set_hand_for_team(1, want[:len(hand)]):
+                return None
         if defender_elixir is not None:
             # THE PUNISH WINDOW. A defender at full elixir always has the answer
             # affordable, which is the situation a punish card is specifically
@@ -163,6 +192,9 @@ def main():
     ap.add_argument("--defender-elixir", type=float, default=None,
                     help="force the defender's bar (the PUNISH WINDOW); "
                          "omit to leave it wherever the match put it")
+    ap.add_argument("--no-cheap-answer", action="store_true",
+                    help="force the 1-cost answers OUT of the defender's hand "
+                         "-- the cycle window a 2.6 deck plays for")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -170,7 +202,7 @@ def main():
     dmgs = {k: [] for k in ("hog", "supported")}
     for i in range(args.n):
         r = one_trial(args.seed + i, args.stage, args.horizon, args.warmup,
-                      args.defender_elixir)
+                      args.defender_elixir, args.no_cheap_answer)
         if r is None:
             continue
         for k in costs:
@@ -183,6 +215,8 @@ def main():
                                     + E.get_card_info(ICE_GOLEM)["cost"])}
     dstr = ("match state" if args.defender_elixir is None
             else f"forced to {args.defender_elixir:.1f}")
+    if args.no_cheap_answer:
+        dstr += ", cheap answers cycled OUT"
     print(f"\ndeck {DEFAULT_DECK}   stage {args.stage}   {n} paired trials   "
           f"horizon {args.horizon}s   defender elixir: {dstr}\n")
     print("WHAT A PUSH AT THE BRIDGE BUYS AND COSTS, vs not sending one")

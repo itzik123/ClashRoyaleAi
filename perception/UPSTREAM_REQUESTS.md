@@ -155,6 +155,94 @@ immediately, which is not true of the real game.
 
 ---
 
+## 14. OPEN — offence appears structurally under-priced. **Investigation asked for, no edit proposed.** (raised 2026-08-19)
+
+**No change is being requested yet.** This is a measured observation with a
+diagnosis I cannot complete from the Python side, written up per CLAUDE.md's
+rule that engine changes need the exact diagnosis first. It is deliberately NOT
+a proposed edit: every candidate fix here is gameplay-affecting and would
+invalidate the win-rate history of every checkpoint.
+
+### What was measured
+
+The 2026-08-19 curriculum pivot replaced the opponent-elixir-multiplier ladder
+with a competence ladder at a symmetric 1.0x economy, on the hypothesis
+(CLAUDE.md, "The 1.5x Curriculum Overfitting Hypothesis") that a permanent
+multiplier is what priced the win condition at zero. The falsifier was run with
+NO network on either side — both players are the deterministic
+`python_ai/teacher.py` — so the historical confound between "the environment
+prices this badly" and "this net cannot execute it" is removed.
+
+**The hypothesis was not confirmed.** At a symmetric 1.0x economy, committing
+the win condition is still strongly net-negative:
+
+| measurement | result |
+|---|---|
+| attack vs cycle, win rate (n=100 paired) | **−0.330**, p=5.7e-08 |
+| ...enemy tower damage dealt | 6326 vs 6938 (attack is not even ahead) |
+| ...our tower damage taken | **5772.7 vs 3049.3** |
+| never playing it at all (`ban` arm) | **0.910** — best of the three |
+| marginal value of one commitment (n=220) | **−298.2 tower HP**, CI [−494, −107] |
+
+### Why it is probably not the card, the King, or the timing
+
+* **Not the card.** A lone Hog injected on an empty board deals **2536 tower
+  damage** — a full Princess Tower — and dies at tick 190. (This also means
+  CLAUDE.md's older "317 tower damage in 40 s" no longer reproduces.)
+* **Not item 3 above.** The enemy King firing from tick 0 does reach a Hog
+  attacking either Princess (distance 6.1 against its 7.0 range), but the
+  unopposed number above already includes that and the Hog still takes the
+  tower.
+* **Not the answer's availability.** The defender answers with Skeletons (35 of
+  40 trials) and Ice Spirit (31 of 40) — a 1-for-4 trade in its favour, which is
+  REAL Clash. Forcing both out of its hand moved the Hog only 634.0 → 665.7.
+* **Not timing, and this is the surprising one.** Tightening the commit gate
+  makes it monotonically worse below ~3 elixir: −298.2 at ≤7.0, −268.6 at ≤3.0,
+  **−585.4 at ≤1.5** (p=9.2e-06). Naturally-occurring low opponent elixir means
+  they JUST SPENT, so their push is already on the board — the opposite of a
+  punish window.
+
+Against that, the punish mechanic itself demonstrably works when constructed
+artificially: forcing the defender's bar to 1.0 with nothing on the board is
+worth **+391 tower HP (+62%)**, 256 vs 158 hp per elixir committed.
+
+### The question for the engine owner
+
+**Does a defender in this engine recover its tempo faster than the real game
+allows?** The pattern — punish pays when constructed, never occurs naturally,
+and defence answers a 4-cost commitment for ~1.2 elixir while conceding ~634 HP
+— is what you would see if the defending side can re-establish a threat sooner
+than a real opponent could. Two known deviations already recorded in CLAUDE.md
+point the same direction and neither has been measured for this effect:
+
+1. **No deploy time.** The engine spawns a troop active; the real game freezes
+   it ~1 s after it lands. That 1 s is paid by the DEFENDER in the real game
+   (their answer arrives late), so removing it is a systematic subsidy to
+   defence — and it applies on every defensive placement, i.e. far more often
+   than on the occasional attack.
+2. **`Projectile.h:88` has its own untouched `speed`**, never recalibrated
+   alongside the 2026-08-07 `MOVEMENT_SPEED_SCALE` fix.
+
+### What I am NOT asking for
+
+No edit. Specifically not a reward-side or curriculum-side fix: **four Hog
+mechanisms have already been built and measured null** (a reward multiplier, an
+advisor target, random forcing, gate-timed smart forcing), and this pivot is the
+fifth thing that did not move it. Adding a sixth on the policy side would repeat
+a pattern this project has already paid for five times.
+
+The cheap next step, if it is wanted, is to measure deploy time in isolation:
+add a spawn delay behind a flag, default off, and re-run
+`python_ai/prove_environment.py --mode marginal`. That is a gameplay-affecting
+change and would invalidate every win rate, so it is the human's call.
+
+Harnesses, all new and all read-only against the engine:
+`python_ai/prove_environment.py` (win-rate arms + marginal value),
+`python_ai/prove_wincon_trade.py` (elixir trade, supported push, punish window),
+`python_ai/prove_teacher.py` (teacher strength bars).
+
+---
+
 ## 4. DONE — `inject(cardId, x, y, team)` and `get_hand(team)` (landed 2026-07-29)
 
 **Already in the engine, exactly as requested below** — `ClashEnv::inject`/
