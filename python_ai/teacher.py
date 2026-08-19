@@ -437,6 +437,29 @@ class UtilityTeacher:
             self.profile = PROFILES[names[int(self.rng.integers(len(names)))]]
         self.lane_bias = int(self.rng.integers(2))
 
+    def set_deck(self, deck):
+        """Point the teacher at a different deck.
+
+        NEEDED BY PHASE 1'S `random_opponent`, which re-rolls the opponent deck
+        every few hundred episodes. Without it the role table and the cycle
+        tracker keep describing the deck the teacher was CONSTRUCTED with, so a
+        random deck's win condition would be treated as a plain melee troop and
+        the cycle term would count cards that are not in the deck -- a silent
+        degradation that looks like "the teacher is weak against random decks".
+
+        `card_roles` is memoized per deck, so re-rolling a deck the teacher has
+        already seen costs nothing.
+        """
+        deck = list(deck)
+        if deck == self.deck:
+            return
+        self.deck = deck
+        self.roles = card_roles(self.deck)
+        self.wincon_id = next((c for c, r in self.roles.items() if r == "wincon"),
+                              None)
+        self.cycle = CycleTracker(self.deck)
+        self.cycle.reset()
+
     def set_stage(self, stage):
         """Apply one rung of TEACHER_STAGES. Difficulty is competence only --
         this never touches elixir."""

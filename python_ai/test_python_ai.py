@@ -1989,6 +1989,41 @@ def test_scenario_injection_reobserves_after_rewriting_the_state():
     live = np.asarray(env.game.get_observation_for_team(0), np.float32)
     assert np.allclose(obs, live), "the returned observation is pre-scenario"
 
+def test_teacher_follows_a_deck_change():
+    """Phase 1's `random_opponent` re-rolls the opponent deck every few hundred
+    episodes. A teacher still holding the OLD deck's role table would treat the
+    new deck's win condition as a plain melee troop and count cycle distance
+    over cards it no longer holds -- a silent degradation that reads as "the
+    teacher is weak against random decks"."""
+    from teacher import UtilityTeacher
+
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1)
+    assert t.wincon_id == 15
+    other = [2, 6, 25, 40, 24, 72, 33, 7]        # Giant instead of Hog Rider
+    t.set_deck(other)
+    assert t.deck == other
+    assert t.wincon_id == 2, "the Giant is the new deck's building-targeter"
+    assert set(t.roles) == set(other)
+    assert t.cycle.distance_to(15) == len(other), "the old wincon is gone"
+
+
+def test_env_deck_changes_propagate_to_the_teacher():
+    """Two separate paths write the opponent deck -- set_opponent_deck() and
+    reset()'s randomize_opp_deck branch, which writes straight to self.game.
+    The second is the easy one to miss."""
+    env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher"})
+    assert env.teacher.wincon_id == 15
+    env.set_opponent_deck([2, 6, 25, 40, 24, 72, 33, 7])
+    assert env.teacher.wincon_id == 2
+
+    rnd = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher",
+                                      "randomize_opp_deck": True})
+    for _ in range(3):
+        rnd.reset()
+        assert rnd.teacher.deck == rnd.current_opp_deck, (
+            "the teacher is playing a different deck than the engine dealt it")
+        assert set(rnd.teacher.roles) == set(rnd.current_opp_deck)
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

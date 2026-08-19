@@ -254,6 +254,7 @@ class MicroRoyaleEnv(gym.Env):
         # לשלב קוריקולום מאוחר, אחרי שהסוכן לומד לנצח במשחק מאוזן.
         self.ai_deck = list(ai_deck)
         self.opp_deck = env_config.get("opp_deck", list(ai_deck))
+        self.current_opp_deck = list(self.opp_deck)
         self.randomize_opp_deck = env_config.get("randomize_opp_deck", False)
         max_ticks = env_config.get("max_ticks", 3600)
         # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
@@ -337,9 +338,19 @@ class MicroRoyaleEnv(gym.Env):
             # only some deck slots accept, so it would routinely violate
             # CardRegistry::validateDeckSlots -- see sampleRandomDeck's own
             # comment in ClashEnv.h.
-            self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
+            random_deck = list(clash_royale_env.sample_random_deck())
+            self.game.set_opponent_deck(random_deck)
+            # Recorded so a caller (and the teacher-sync test) can see WHICH
+            # deck this episode is actually against -- self.opp_deck is the
+            # fixed fallback and deliberately stays unchanged here.
+            self.current_opp_deck = random_deck
+            # Same reason as set_opponent_deck() below -- and this path is the
+            # easier one to miss, because it writes straight to self.game.
+            if self.teacher is not None:
+                self.teacher.set_deck(random_deck)
         else:
             self.game.set_opponent_deck(self.opp_deck)
+            self.current_opp_deck = list(self.opp_deck)
 
         obs_list = self.game.reset()
         # Scenario injection rewrites the freshly-reset state, so the
@@ -464,6 +475,11 @@ class MicroRoyaleEnv(gym.Env):
         # revert this to whatever deck the env was constructed with.
         self.opp_deck = list(deck)
         self.game.set_opponent_deck(self.opp_deck)
+        # The teacher PLAYS this deck -- its role table (which card is the win
+        # condition) and its cycle tracker are per-deck, so a deck change that
+        # skipped this would leave it reasoning about the previous one.
+        if self.teacher is not None:
+            self.teacher.set_deck(self.opp_deck)
 
     def set_teacher_stage(self, stage):
         """Advance the teacher one rung of the competence ladder.
