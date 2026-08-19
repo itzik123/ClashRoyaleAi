@@ -142,8 +142,13 @@ waiting for the right step size.** Anywhere a mover's stop-condition and a
 planner's arrival-condition are separate literals, they can disagree.
 
 **Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
-its own untouched `speed`, and the engine has **no deploy time** at all while
-the real game freezes a troop ~1 s after it lands.
+its own untouched `speed`, never recalibrated alongside the movement fix.
+
+**Deploy time WAS the other half of this and is now FIXED (2026-08-19)** --
+`DEPLOY_TIME_TICKS = 10`. It turned out to be the mathematical flaw suppressing
+win conditions, because a missing deploy second is a subsidy paid to the
+DEFENDER on every placement. See the 2026-08-19 deploy-time section below for
+the controlled measurement.
 
 **Observation changed on 2026-07-29.** `NUM_CHANNELS` 9 → 21,
 `observation_size()` 6253 → **13606**, `NUM_EXTRA_SCALARS = 9` appended after
@@ -2092,6 +2097,39 @@ critic quality, and new capabilities; **not** demonstrated end strength.
 ## Open problems and what would actually move the needle
 
 **Ranked by expected value, from the architectural review.**
+
+**NEXT UP (2026-08-19) — upgrade the Utility Teacher to evaluate MULTI-CARD
+COMBO placements (e.g. Ice Golem + Hog), so it can exploit the engine mechanics
+deploy time just created.** Numbered separately from the list below only because
+those items cross-reference each other by number; by expected value this is now
+the top item.
+
+*Why it is top.* Deploy time made the escorted push the correct play and the
+naked push the punished one, measured on the same engine: a lone commitment
+scores **−556.3** tower HP marginally while a supported one scores **+448.5**
+(CI [+137.3, +760.1]), and escorting is worth **+650 HP** in a punish window.
+The teacher cannot make that play. `UtilityTeacher._cells_for` proposes cells
+for ONE card per decision and `score` ranks single candidates, so its whole
+attack repertoire is "send the win condition to a bridge, alone" — the exact
+play the new physics correctly punishes.
+
+That is why the strategy-level win-rate arm still reads attack 0.490 vs cycle
+0.715. **That number is now a property of the teacher's repertoire, not of the
+engine**, and it is the one place the two can still be confused.
+
+*What it needs.* Candidate generation over short SEQUENCES rather than single
+cells — at minimum (tank now, win condition next decision, same lane) — and a
+score that can attribute value to the pair. The rollout machinery already
+supports it: `rollout_stats` takes a candidate and rolls forward, so a two-step
+candidate is a two-step rollout on the same snapshot. The cost is the thing to
+watch, since width is what search is expensive in (an engine step is 0.015 ms;
+each extra candidate is a whole rollout) — so enumerate a handful of curated
+combos, not the cross product.
+
+*Do NOT confuse this with a fifth Hog mechanism.* The four that returned null
+all tried to move a POLICY toward a play the environment priced negatively. This
+is the opposite situation: the environment now prices the play POSITIVELY and
+the teacher simply cannot express it.
 
 1. **Human-replay imitation is now unblocked.** The recordings exist; the
    extraction step (`perception/` → the `bc_pretrain` `.npz` schema) is the
