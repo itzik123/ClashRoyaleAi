@@ -155,7 +155,30 @@ immediately, which is not true of the real game.
 
 ---
 
-## 14. OPEN — offence appears structurally under-priced. **Investigation asked for, no edit proposed.** (raised 2026-08-19)
+## 14. DONE — offence was structurally under-priced; deploy time added (raised and applied 2026-08-19)
+
+**RESOLVED by adding a 1.0 s deploy time** (`CardStats.h` `DEPLOY_TIME_TICKS = 10`,
+set in `CardFactories::applyCardMetadata`, consumed in `CombatEntity::update`).
+The human authorised the engine change after reading the investigation below.
+
+**Controlled result.** Same harness, same supported push, ~161 scored states
+each, engine the only difference:
+
+| engine | marginal value of a supported push | 95% CI |
+|---|---|---|
+| deploy time 0 (old) | -73.7 HP | [-349.5, +195.3] |
+| deploy time 10 (new) | **+448.5 HP** | [+137.3, +760.1] |
+
+The defence's cost to answer a 4-elixir commitment rose 1.07 -> 2.93 elixir. A
+naked win condition correctly got WORSE (1025 -> 343 tower damage in a punish
+window, since it now stands inert under tower fire) while an escorted push holds
+at 993.8 -- which is how real Clash prices those two plays.
+
+546 C++ cases pass. The original investigation is kept below unchanged, because
+the reasoning that selected deploy time out of several candidate deviations is
+the part worth re-reading if this is ever revisited.
+
+### Original investigation (2026-08-19), kept for the record
 
 **No change is being requested yet.** This is a measured observation with a
 diagnosis I cannot complete from the Python side, written up per CLAUDE.md's
@@ -223,7 +246,7 @@ point the same direction and neither has been measured for this effect:
 2. **`Projectile.h:88` has its own untouched `speed`**, never recalibrated
    alongside the 2026-08-07 `MOVEMENT_SPEED_SCALE` fix.
 
-### What I am NOT asking for
+### What I was NOT asking for (at the time)
 
 No edit. Specifically not a reward-side or curriculum-side fix: **four Hog
 mechanisms have already been built and measured null** (a reward multiplier, an

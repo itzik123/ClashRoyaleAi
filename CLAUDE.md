@@ -1902,6 +1902,108 @@ observation without stepping is looking at an empty board.
 
 ---
 
+## 2026-08-19 (later): DEPLOY TIME landed, and it fixes the offence/defence balance
+
+**ENGINE CHANGE, GAMEPLAY-AFFECTING.** A freshly placed troop or building is now
+inert for `DEPLOY_TIME_TICKS = 10` (1.0 s): on the board, **targetable and
+damageable**, but unable to move, acquire a target or attack. Spells keep their
+own `spellDelayTicks`, towers are never inert, projectiles are unaffected.
+**Every win rate earned before this is historical.** Checkpoints are not
+invalidated (no observation/action/architecture change).
+
+`CardStats.h` `DEPLOY_TIME_TICKS` → set in `CardFactories::applyCardMetadata` →
+consumed in `CombatEntity::update`.
+
+### Why it was the right root cause
+
+The omission was **not symmetric**. A defender places INTO an existing threat and
+needs its answer to act NOW; an attacker places before contact and would have
+spent that second walking anyway. So the missing second was a standing subsidy to
+DEFENCE, charged on every defensive placement — which is exactly the shape of
+what was measured: the defence answered a 4-elixir commitment for **1.07 elixir**
+while the card itself was fine (2536 tower damage unopposed).
+
+### THE CONTROLLED RESULT
+
+Same harness, same supported push (tank one decision ahead, win condition
+behind), same protocol, ~161 scored states each. **The only difference is the
+engine:**
+
+| engine | marginal value of a supported push | 95% CI | sign test |
+|---|---|---|---|
+| `DEPLOY_TIME_TICKS = 0` (old) | **−73.7** HP | [−349.5, +195.3] | 70/78, p=0.57 |
+| `DEPLOY_TIME_TICKS = 10` (new) | **+448.5** HP | [+137.3, +760.1] | 88/64, p=0.062 |
+
+**The supported arm alone does not do it — on the old engine it is a null.
+Deploy time is what flips the win condition to positive value.** The control was
+run by rebuilding with the constant zeroed and then restoring it, because the
+supported arm was itself a new treatment and without the control this would have
+been "we changed two things and something improved".
+
+The elixir trade moved the same way, n=60 paired:
+
+| | before | after |
+|---|---|---|
+| defence elixir to answer a lone Hog | 1.07 | **2.93** |
+| resulting trade on a 4-cost commitment | −2.93 | **−1.07** |
+
+### AND IT MADE THE GAME MORE LIKE CLASH, which is the better headline
+
+The naked Hog got **worse** and the escorted push got **better**. In a punish
+window (defender forced to 1.0 elixir), lone Hog fell 1025 → **343** tower damage
+— it now stands inert under tower fire for a second — while the escorted push
+holds at **993.8**, and escorting is worth **+650 HP, CI [+429, +878]**.
+
+That is correct Clash: you do not send a naked win condition, and the engine now
+prices that. It also means **the lone-Hog measurements are now a strawman** —
+`prove_environment.py --mode marginal` scores a lone commitment at −556.3 and a
+supported one at +448.5 **on the same engine**. Always read the supported arm.
+
+### What is still negative, and why it is not alarming
+
+The strategy-level win-rate arms (`--opponent teacher`, n=100 paired) still
+favour not attacking: attack 0.490 vs cycle 0.715 (−0.225, improved from −0.330;
+damage-taken gap 2724 → 1576). **That arm sends a LONE Hog**, because
+`teacher._cells_for` proposes one card per decision and the scorer cannot plan a
+two-card push. So the teacher's own repertoire, not the engine, is now the
+binding constraint on that number.
+
+For TRAINING this is the environment you want: **supported pushes pay, naked
+pushes are punished.** A policy is not restricted to the teacher's repertoire and
+can learn the difference — which is the first time that has been true here.
+
+### The teacher's ladder is now lookahead-driven
+
+`TEACHER_STAGES` horizons: **0 / 10 / 30 / 50 / 70 / 100 ticks** (0 → 10 s), with
+epsilon 0.30 → 0.00. Stage 0 is deliberately short-sighted so an unpolished agent
+can beat it; the top rung simulates a full 10 s, long enough to watch a push
+arrive, be answered and be counter-pushed.
+
+Measured cost at the 10 s rung: **3.26 ms/decision, 0.71 s/episode** against a
+~22 s per-env episode at `num_envs = 8`. Depth is cheap, width is not.
+
+**It stops at 10 s deliberately.** `rollout_stats` rolls forward with both sides
+no-oping, and past ~12 s of that a rollout stops resembling the game — the neural
+search measured horizon 20 WORSE than 12 (0.875 vs 0.963) for this exact reason.
+
+### Two traps worth carrying
+
+- **Inert is not time-stopped.** The first implementation returned from the top
+  of `CombatEntity::update`, which also froze freeze/shield/buff/curse/ability
+  cooldown and the poison damage-over-time mark — a unit deployed into a Poison
+  would have been briefly immune. The bail-out belongs AFTER the status-timer
+  block and BEFORE the action block. `test_game_manager`'s champion-cooldown case
+  is what caught it, which is why that failure was worth diagnosing instead of
+  editing away.
+- **15 existing C++ tests spawned a card and asserted on the very next tick.**
+  They now advance past deploy explicitly via `advancePastDeploy()` rather than
+  absorbing the delay into a changed magic number. Tests that build entities
+  directly (`StationaryCombatant`, a bare `MeleeTroop`) were untouched, because
+  `applyCardMetadata` is what assigns deploy time — that split is why most of the
+  suite needed no change.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 **EVERYTHING IN THIS SECTION PREDATES THE 2026-08-07 MOVEMENT-SPEED FIX AND
