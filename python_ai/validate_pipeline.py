@@ -144,7 +144,12 @@ def validate_scenarios(n=4000):
 
     check("every scenario spawns on the board with a real card",
           bad_spawn == 0, f"{bad_spawn} bad spawns in {n} scenarios")
-    check("all five scenarios are reachable",
+    # Label deliberately count-free: the predicate is derived from
+    # len(TS.SCENARIOS), so a hardcoded number in the NAME goes stale the moment
+    # a scenario is added or removed and then reads as a failure when the check
+    # is actually passing. It said "all five" while printing 4/4 on the run that
+    # removed giant_commit.
+    check("every registered scenario is reachable",
           len(names) == len(TS.SCENARIOS),
           f"{len(names)}/{len(TS.SCENARIOS)}: {dict(names)}")
     check("defensive scenarios are a real fraction",
