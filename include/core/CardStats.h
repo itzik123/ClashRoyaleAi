@@ -43,6 +43,35 @@ enum class Archetype {
 // perception/tools/sim_fidelity.py can settle it after this lands.
 inline constexpr float MOVEMENT_SPEED_SCALE = 0.2f;
 
+// DEPLOY TIME (2026-08-19). Ticks a freshly placed troop or building spends
+// inert: on the board, targetable and damageable, but unable to move, target
+// or attack. 10 ticks = 1.0 s at this engine's 10 ticks/second.
+//
+// WHY IT WAS ADDED, and it is a REBALANCE, not only a fidelity fix. The real
+// game freezes a unit ~1 s after it lands; this engine spawned everything
+// active. That is not a symmetric omission: the defender places INTO an
+// existing threat and needs its answer to act NOW, while the attacker places
+// before contact and would have spent that second walking anyway. So a missing
+// deploy time is a systematic subsidy to DEFENCE, paid on every single
+// defensive placement.
+//
+// It was measured before being changed. At a symmetric 1.0x economy against an
+// equally strong bot, committing the win condition scored -0.330 win rate
+// (n=100 paired, p=5.7e-08) and -298.2 tower HP marginally (n=220), while the
+// defence answered a 4-elixir commitment for ~1.2 elixir. The card itself is
+// fine -- unopposed it deals 2536 tower damage -- and tightening the commit
+// timing made things WORSE, which pointed at defender tempo rather than at the
+// card, the placement or the economy. See CLAUDE.md and
+// perception/UPSTREAM_REQUESTS.md item 14.
+//
+// GAMEPLAY-AFFECTING. Every win rate earned before this is historical.
+//
+// Applied in CardFactories::applyCardMetadata, which every troop and building
+// archetype calls and which spells, deploy effects, towers and projectiles all
+// bypass -- so spells keep using their own spellDelayTicks, and towers (built
+// directly by GameManager, never through the factories) are never inert.
+inline constexpr int DEPLOY_TIME_TICKS = 10;
+
 struct CardStats {
     int id = 0;
     std::string name;

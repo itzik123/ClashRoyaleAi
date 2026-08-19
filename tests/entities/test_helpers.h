@@ -7,6 +7,7 @@
 #include "Entity.h"
 #include "CombatEntity.h"
 #include "AbilityEffect.h"
+#include "CardStats.h"
 #include <memory>
 
 // Adds an entity to the board and makes it immediately visible to
@@ -15,6 +16,19 @@
 inline void spawn(Board& board, std::shared_ptr<Entity> entity) {
     board.addEntity(entity);
     board.commitPendingEntities();
+}
+
+// Advances `entity` past its deploy time (CardStats.h DEPLOY_TIME_TICKS), so a
+// test about what a card DOES can reach that behaviour without restating the
+// delay in every case.
+//
+// Only needed by tests that spawn through CardRegistry/CardFactories --
+// entities constructed directly (StationaryCombatant, DummyEntity, a bare
+// MeleeTroop) never get a deploy time, because applyCardMetadata is what sets
+// it. That split is deliberate: it keeps the mechanism tests independent of the
+// card pipeline, and it is why most of the suite needed no change at all.
+inline void advancePastDeploy(const std::shared_ptr<Entity>& entity, Board& board) {
+    for (int i = 0; i < DEPLOY_TIME_TICKS; ++i) entity->update(board);
 }
 
 // Bare Entity with a no-op update(), for testing Entity's own state machine

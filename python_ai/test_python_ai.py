@@ -1598,5 +1598,494 @@ def test_flawless_bonus_refuses_a_win_with_every_enemy_tower_standing():
         "a flawless win that took a crown must still pay in full")
 
 
+# ==========================================================================
+# teacher.py -- the utility-search sparring partner (2026-08-19)
+# ==========================================================================
+# The elixir-multiplier curriculum priced the win condition negatively (see
+# CLAUDE.md's 1.5x hypothesis and its monotone dose-response). It is replaced
+# by a COMPETENCE curriculum: a deterministic utility-search bot at a symmetric
+# 1.0x economy, whose difficulty is dialed on lookahead/width/epsilon.
+#
+# These tests pin the parts that fail SILENTLY. In particular a wrong team-1
+# frame conversion makes every team-1 placement illegal, which reads as "the
+# bot is weak" rather than "the bot is broken" -- exactly the class of bug this
+# project has paid for three times.
+
+
+def test_card_roles_derives_roles_from_the_engine_not_a_hardcoded_list():
+    from teacher import card_roles
+    roles = card_roles(gym_wrapper.DEFAULT_DECK)
+    assert roles[15] == "wincon", "Hog Rider is the deck's building-targeter"
+    assert roles[7] == "spell"      # Fireball
+    assert roles[33] == "spell"     # The Log
+    assert roles[25] == "building"  # Cannon
+    assert roles[6] == "ranged"     # Musketeer
+    # Ice Golem also targets buildings but is a 2-cost shield, not a win
+    # condition -- highest-cost building-targeter wins, the same tiebreak
+    # gym_wrapper._find_win_condition uses.
+    assert roles[40] != "wincon"
+    assert set(roles) == set(gym_wrapper.DEFAULT_DECK)
+
+
+def _teacher_env(ticks=40):
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    for _ in range(ticks):
+        env.step_self_play(-1, 0, 0, -1, 0, 0, 10)
+    return env
+
+
+def test_teacher_candidates_are_all_legal_for_either_team():
+    """is_valid_placement takes ABSOLUTE y for both teams while step_self_play
+    takes team 1's y MIRRORED. Get that backwards and team 1 silently never
+    places anything."""
+    from teacher import UtilityTeacher
+
+    for team in (0, 1):
+        env = _teacher_env()
+        t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=team, horizon_ticks=0)
+        t.reset()
+        obs = np.asarray(env.get_observation_for_team(team), np.float32)
+        cands = t.candidates(env, obs)
+        assert len(cands) >= 1, "the no-op candidate is always present"
+        for c in cands:
+            if c.slot == CE.HAND_SIZE:
+                continue
+            assert env.is_valid_placement(c.card_id, c.x, t.to_absolute_y(c.y), team), (
+                f"team {team} proposed an illegal cell: {c}")
+
+
+def test_teacher_never_proposes_an_unaffordable_card():
+    from teacher import UtilityTeacher
+
+    env = _teacher_env(ticks=0)
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=0)
+    t.reset()
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    cands = t.candidates(env, obs, elixir=1.0)
+    for c in cands:
+        if c.slot == CE.HAND_SIZE:
+            continue
+        assert E.get_card_info(c.card_id)["cost"] <= 1.0
+
+
+def test_noop_scores_exactly_zero_so_the_teacher_can_hold_elixir():
+    """The no-op baseline is what makes every other score a MARGINAL value. If
+    it drifts, the bot either dumps elixir on sight or freezes forever."""
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=30)
+    t.reset()
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    noop = [c for c in t.candidates(env, obs) if c.slot == CE.HAND_SIZE][0]
+    base = t.rollout_stats(env, noop)
+    assert t.score(env, noop, base, obs) == 0.0
+
+
+def test_rollout_does_not_touch_the_live_match():
+    """snapshot() deep-copies the stats collectors. If that ever regresses,
+    every hypothetical hit lands in the REAL match's statistics -- and those
+    feed the reward shaping, so a search would corrupt its own returns."""
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    before = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
+              env.get_elixir_spent(0), env.get_elixir_for_team(0))
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=30)
+    t.reset()
+    t.act(env, np.asarray(env.get_observation_for_team(0), np.float32))
+    after = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
+             env.get_elixir_spent(0), env.get_elixir_for_team(0))
+    assert before == after
+
+
+def test_teacher_is_side_agnostic():
+    """One class plays both sides. A broken team-1 frame shows up here as a
+    bot that never lands a card, not as an exception."""
+    from teacher import UtilityTeacher
+
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    t1 = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1, horizon_ticks=30, seed=0)
+    t1.reset()
+    played = 0
+    for _ in range(120):
+        obs1 = np.asarray(env.get_observation_for_team(1), np.float32)
+        slot, x, y = t1.act(env, obs1)
+        spent_before = env.get_elixir_spent(1)
+        env.step_self_play(-1, 0, 0, slot, x, y, 10)
+        if env.get_elixir_spent(1) > spent_before:
+            played += 1
+        if env.is_game_over():
+            break
+    print(f"\n  team-1 teacher landed {played} cards in 120 decisions")
+    assert played >= 5, f"team-1 teacher only landed {played} cards"
+
+
+def test_cycle_tracker_order_logic_against_an_exact_simulated_cycle():
+    """The ORDER half of CycleTracker, tested deterministically with no engine.
+
+    WHY NOT DRIVE THE ENGINE. Two engine-driven versions of this test passed
+    VACUOUSLY and one stayed flaky. Playing hand slot 0 every step rotates only
+    slot 0, so a Hog dealt into slots 1-3 never leaves the hand; playing the
+    CHEAPEST affordable card fails the same way for the opposite reason, since
+    2.6 has two 1-cost cards and a 4-cost Hog is never cheapest; and a uniform
+    draw still misses when the match ends before the Hog is ever affordable.
+    A vacuous pass on a cycle tracker is worse than no test at all -- 2.6 is
+    DEFINED by cycling -- so the logic is pinned here against an exact model and
+    the engine agreement is checked separately below.
+
+    The model is the engine's own rule: the played card goes to the BACK of the
+    queue, the front of the queue fills the vacated hand slot.
+    """
+    from teacher import CycleTracker
+
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    hand, queue = deck[:4], deck[4:]
+    ct = CycleTracker(deck)
+    ct.reset()
+    ct.observe(list(hand))
+
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        slot = int(rng.integers(len(hand)))
+        played = hand[slot]
+        hand[slot] = queue.pop(0)
+        queue.append(played)
+        ct.observe(list(hand))
+
+        # A card just played sits at the back of a 4-long queue, so it is
+        # exactly 4 plays from returning. Membership alone is satisfied by ANY
+        # ordering; this is the part that can actually be wrong.
+        assert ct.distance_to(played) == 4, (
+            f"{played} was just played; expected 4, got {ct.distance_to(played)}")
+        for i, card in enumerate(queue):
+            assert ct.distance_to(card) == i + 1, (
+                f"queue {queue} but distance_to({card}) said "
+                f"{ct.distance_to(card)}, expected {i + 1}")
+        for card in hand:
+            assert ct.distance_to(card) == 0
+
+
+def test_cycle_tracker_agrees_with_the_engines_own_hand():
+    """The identity invariant, against the real engine: distance is 0 exactly
+    when the card is in hand. Runs several matches because one can end before
+    the win condition is ever affordable, and asserts at the end that at least
+    one rotation was actually observed -- otherwise this passes vacuously too.
+    """
+    from teacher import CycleTracker
+
+    costs = {c: E.get_card_info(c)["cost"] for c in gym_wrapper.DEFAULT_DECK}
+    driver = np.random.default_rng(0)
+    seen_far = False
+    for _ in range(6):
+        env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+        env.reset()
+        ct = CycleTracker(gym_wrapper.DEFAULT_DECK)
+        ct.reset()
+        for _ in range(200):
+            hand = list(env.get_hand_for_team(0))
+            ct.observe(hand)
+            d = ct.distance_to(15)
+            if 15 in hand:
+                assert d == 0, f"Hog is in hand {hand} but distance_to said {d}"
+            else:
+                assert d > 0, f"Hog absent from {hand} but distance_to said 0"
+                seen_far = True
+            elixir = env.get_elixir_for_team(0)
+            playable = [i for i, c in enumerate(hand)
+                        if costs[c] <= elixir + 1e-6]
+            if not playable:
+                env.step_self_play(-1, 0.0, 0.0, -1, 0, 0, 10)
+                continue
+            env.step_self_play(int(driver.choice(playable)), 9.0, 10.0,
+                               -1, 0, 0, 10)
+            if env.is_game_over():
+                break
+        if seen_far:
+            break
+    assert seen_far, "the win condition never left hand in 6 matches"
+
+
+def test_teacher_stages_are_competence_not_economy():
+    from teacher import TEACHER_STAGES
+
+    assert len(TEACHER_STAGES) == 6
+    for s in TEACHER_STAGES:
+        assert set(s) == {"horizon_ticks", "epsilon", "k_cells"}, (
+            "a stage must never carry an elixir multiplier -- that is the whole "
+            "point of this curriculum")
+    eps = [s["epsilon"] for s in TEACHER_STAGES]
+    hor = [s["horizon_ticks"] for s in TEACHER_STAGES]
+    assert eps == sorted(eps, reverse=True), "noise must fall monotonically"
+    assert hor == sorted(hor), "lookahead must rise monotonically"
+
+
+def test_epsilon_one_still_only_emits_legal_actions():
+    from teacher import UtilityTeacher
+
+    env = _teacher_env()
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=0, horizon_ticks=0,
+                       epsilon=1.0, seed=0)
+    t.reset()
+    for _ in range(50):
+        obs = np.asarray(env.get_observation_for_team(0), np.float32)
+        slot, x, y = t.act(env, obs)
+        if slot != CE.HAND_SIZE:
+            cid = env.get_hand_for_team(0)[slot]
+            assert env.is_valid_placement(cid, x, t.to_absolute_y(y), 0)
+        env.step_self_play(-1, 0, 0, -1, 0, 0, 10)
+        if env.is_game_over():
+            break
+
+
+def test_default_env_is_unchanged_and_still_uses_the_cpp_heuristic():
+    """The teacher is OPT-IN. Every existing harness, probe and eval anchor
+    constructs MicroRoyaleEnv with no opponent key and must keep getting the C++
+    HeuristicOpponent, or every historical number silently stops being
+    comparable."""
+    env = gym_wrapper.MicroRoyaleEnv()
+    assert env.teacher is None
+    assert env.opponent_kind == "builtin"
+
+
+def test_teacher_env_produces_the_same_info_keys_as_the_builtin_env():
+    """train.py reads ~20 keys out of info. stepSelfPlay returns a different
+    result type than step (observation0/reward0, no observation/reward), so the
+    routing is the one place those could diverge."""
+    a = gym_wrapper.MicroRoyaleEnv()
+    a.reset()
+    b = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 2})
+    b.reset()
+    assert b.teacher is not None
+    act = {"card_index": np.array([CE.HAND_SIZE]),
+           "target_x": np.array([9.0]), "target_y": np.array([10.0])}
+    _, _, _, _, ia = a.step(act)
+    _, _, _, _, ib = b.step(act)
+    assert set(ia) == set(ib)
+
+
+def test_teacher_opponent_actually_plays_cards():
+    """A teacher that silently never plays looks exactly like a weak opponent.
+    This is the end-to-end version of the frame check in
+    test_teacher_candidates_are_all_legal_for_either_team."""
+    env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 3})
+    env.reset()
+    act = {"card_index": np.array([CE.HAND_SIZE]),
+           "target_x": np.array([9.0]), "target_y": np.array([10.0])}
+    info = None
+    for _ in range(150):
+        _, _, term, _, info = env.step(act)
+        if term:
+            break
+    assert info is not None and info["team1_elixir_spent"] > 0.0, (
+        "the teacher opponent never spent a single elixir")
+
+
+def test_set_teacher_stage_is_a_noop_on_a_builtin_env():
+    """train.py calls envs.call('set_teacher_stage', n) unconditionally; on a
+    heuristic env that must not raise."""
+    env = gym_wrapper.MicroRoyaleEnv()
+    env.set_teacher_stage(4)          # must not raise
+    assert env.teacher is None
+
+
+def _train_source():
+    import pathlib
+    return pathlib.Path(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "train.py")
+    ).read_text(encoding="utf-8")
+
+
+def _curriculum_stages_literal():
+    """CURRICULUM_STAGES is a local of train_ppo(), so it cannot be imported.
+    Parse it out of the source instead of duplicating the values here."""
+    import ast
+    tree = ast.parse(_train_source())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "CURRICULUM_STAGES":
+                    return ast.literal_eval(node.value)
+    raise AssertionError("CURRICULUM_STAGES not found in train.py")
+
+
+def test_training_never_raises_the_opponent_elixir_multiplier():
+    """THE PIN ON THE 2026-08-19 PIVOT.
+
+    The 1.5x handicap is what priced the win condition negatively -- measured
+    monotone across 1.0/1.25/1.5x, and the reason four separate Hog
+    interventions all returned null. The API survives for the ~15 measurement
+    harnesses that sweep it (including the falsifier that justified the change);
+    the TRAINING path must never call it again.
+    """
+    import re
+    src = _train_source()
+    calls = []
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue                      # a comment explaining the ban is fine
+        if re.search(r"set_opponent_elixir_multiplier\s*\(", line) or \
+           re.search(r'"set_opponent_elixir_multiplier"', line):
+            calls.append(stripped)
+    assert not calls, (
+        "train.py still sets an opponent elixir multiplier:\n  "
+        + "\n  ".join(calls))
+
+
+def test_curriculum_stages_are_competence_not_economy():
+    stages = _curriculum_stages_literal()
+    assert len(stages) == 6
+    for s in stages:
+        assert "opp_elixir_multiplier" not in s, (
+            "a curriculum stage must never carry an elixir multiplier again")
+        assert "teacher_stage" in s
+    assert [s["teacher_stage"] for s in stages] == [0, 1, 2, 3, 4, 5]
+    # The gate itself is deliberately unchanged: 0.80 raw win rate on every
+    # stage but the last, which has no further auto-advance.
+    assert [s["win_rate_threshold"] for s in stages] == [0.8] * 5 + [None]
+
+
+def test_curriculum_stage_count_matches_the_teacher_ladder():
+    """If these ever drift, CURRICULUM_STAGES would index past the end of
+    TEACHER_STAGES -- or, worse, silently stop at a rung short of the top."""
+    from teacher import TEACHER_STAGES
+    stages = _curriculum_stages_literal()
+    assert len(stages) == len(TEACHER_STAGES)
+    for s in stages:
+        assert 0 <= s["teacher_stage"] < len(TEACHER_STAGES)
+
+
+def test_phase1_opponent_defaults_to_the_teacher():
+    import train
+    assert train.PHASE1_OPPONENT == "teacher", (
+        "the C++ HeuristicOpponent is an EVAL ANCHOR now, not a training "
+        "opponent -- see the 2026-08-19 pivot")
+
+
+# --------------------------------------------------------------------------
+# scenario_offense.py -- Proposal A, kept as an accelerator and default-OFF
+# --------------------------------------------------------------------------
+
+def test_offensive_scenarios_are_off_by_default():
+    """THE ORDER MATTERS. Injection changes the state distribution, not the
+    payoff, so switching it on before the payoff is fixed just pays a negative
+    price more often -- which is exactly what the four forced-usage experiments
+    measured. It stays off until prove_environment.py says otherwise."""
+    import scenario_offense
+    assert scenario_offense.OFFENSIVE_SCENARIO_PROB == 0.0
+    env = gym_wrapper.MicroRoyaleEnv()
+    assert env.offensive_scenario_prob == 0.0
+    env.reset()
+    assert env.last_scenario is None
+
+
+def test_offensive_scenario_reports_a_stale_pyd_instead_of_an_attributeerror():
+    """set_elixir_for_team/set_hand_for_team were added by commit 26de409 and
+    the post-build copy into python_ai/ can silently fail (MSB3073). Discovering
+    that as an AttributeError mid-episode inside a scenario constructor is the
+    worst possible place; the check is hoisted to the entry point."""
+    import scenario_offense
+    if scenario_offense.HAS_STATE_SETTERS:
+        pytest.skip("this .pyd exports the state setters")
+    rng = np.random.default_rng(0)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    with pytest.raises(RuntimeError, match="post-build copy"):
+        scenario_offense.apply_offensive_scenario(
+            env, rng, gym_wrapper.DEFAULT_DECK, prob=1.0)
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_punish_window_actually_builds_the_position_it_claims():
+    """A silently rejected setup still counts as an injected episode and would
+    report practice that never happened -- set_hand_for_team returns False
+    rather than raising, so the return value is the only signal."""
+    import scenario_offense
+    rng = np.random.default_rng(0)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    name = scenario_offense.punish_window(env, rng, gym_wrapper.DEFAULT_DECK)
+    assert name is not None and name.startswith("punish_window")
+    assert 15 in list(env.get_hand_for_team(0)), "the win condition must be in hand"
+    assert env.get_elixir_for_team(0) == pytest.approx(8.0)
+    assert env.get_elixir_for_team(1) == pytest.approx(1.0)
+    # Their commitment is on the board, visible to us as ENEMY mass.
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    plane = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+    enemy = sum(float(obs[c * plane:(c + 1) * plane].sum()) for c in (4, 5, 6))
+    assert enemy > 0.0, "punish_window injected nothing the agent can see"
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_counter_push_leaves_our_own_units_alive_on_our_side():
+    import scenario_offense
+    rng = np.random.default_rng(1)
+    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+    env.reset()
+    name = scenario_offense.counter_push(env, rng, gym_wrapper.DEFAULT_DECK)
+    assert name is not None and name.startswith("counter_push")
+    obs = np.asarray(env.get_observation_for_team(0), np.float32)
+    plane = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
+    ally = sum(float(obs[c * plane:(c + 1) * plane].sum()) for c in (0, 1, 2))
+    assert ally > 0.0, "counter_push injected no survivors to push behind"
+
+
+@pytest.mark.skipif(
+    not __import__("scenario_offense").HAS_STATE_SETTERS,
+    reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
+def test_scenario_injection_reobserves_after_rewriting_the_state():
+    """reset() returns the observation BEFORE the rewrite. If the env forgets to
+    re-read it, the agent's first observation describes a position that no
+    longer exists -- invisible in every metric."""
+    env = gym_wrapper.MicroRoyaleEnv({"offensive_scenario_prob": 1.0,
+                                      "scenario_seed": 0})
+    obs, _ = env.reset()
+    assert env.last_scenario is not None
+    live = np.asarray(env.game.get_observation_for_team(0), np.float32)
+    assert np.allclose(obs, live), "the returned observation is pre-scenario"
+
+def test_teacher_follows_a_deck_change():
+    """Phase 1's `random_opponent` re-rolls the opponent deck every few hundred
+    episodes. A teacher still holding the OLD deck's role table would treat the
+    new deck's win condition as a plain melee troop and count cycle distance
+    over cards it no longer holds -- a silent degradation that reads as "the
+    teacher is weak against random decks"."""
+    from teacher import UtilityTeacher
+
+    t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1)
+    assert t.wincon_id == 15
+    other = [2, 6, 25, 40, 24, 72, 33, 7]        # Giant instead of Hog Rider
+    t.set_deck(other)
+    assert t.deck == other
+    assert t.wincon_id == 2, "the Giant is the new deck's building-targeter"
+    assert set(t.roles) == set(other)
+    assert t.cycle.distance_to(15) == len(other), "the old wincon is gone"
+
+
+def test_env_deck_changes_propagate_to_the_teacher():
+    """Two separate paths write the opponent deck -- set_opponent_deck() and
+    reset()'s randomize_opp_deck branch, which writes straight to self.game.
+    The second is the easy one to miss."""
+    env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher"})
+    assert env.teacher.wincon_id == 15
+    env.set_opponent_deck([2, 6, 25, 40, 24, 72, 33, 7])
+    assert env.teacher.wincon_id == 2
+
+    rnd = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher",
+                                      "randomize_opp_deck": True})
+    for _ in range(3):
+        rnd.reset()
+        assert rnd.teacher.deck == rnd.current_opp_deck, (
+            "the teacher is playing a different deck than the engine dealt it")
+        assert set(rnd.teacher.roles) == set(rnd.current_opp_deck)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

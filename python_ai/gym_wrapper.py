@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 
 import clash_royale_env
+import scenario_offense
 
 # Real-meta Balloon Freeze deck, replacing the earlier Giant Beatdown archetype
 # entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
@@ -251,7 +252,9 @@ class MicroRoyaleEnv(gym.Env):
         # הזה יחידות-ענק דורסות חפיסת cycle), כך שאימון מול חפיסות רנדומליות מציב
         # את הסוכן במשחק כמעט-אבוד מראש ואות הניצחון/הפסד נעלם. גיוון חפיסות שייך
         # לשלב קוריקולום מאוחר, אחרי שהסוכן לומד לנצח במשחק מאוזן.
+        self.ai_deck = list(ai_deck)
         self.opp_deck = env_config.get("opp_deck", list(ai_deck))
+        self.current_opp_deck = list(self.opp_deck)
         self.randomize_opp_deck = env_config.get("randomize_opp_deck", False)
         max_ticks = env_config.get("max_ticks", 3600)
         # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
@@ -264,6 +267,39 @@ class MicroRoyaleEnv(gym.Env):
 
         self.game = clash_royale_env.ClashRoyaleEnv(ai_deck, self.opp_deck, max_ticks, ai_tower_troop, opp_tower_troop)
         self.game.set_opponent_elixir_multiplier(opp_elixir_multiplier)
+
+        # --- WHO PLAYS TEAM 1 ------------------------------------------------
+        # "builtin" (the default) is unchanged: game.step() runs the C++
+        # HeuristicOpponent from inside ClashEnv::opponentTurn.
+        #
+        # "teacher" routes through stepSelfPlay instead, which DELIBERATELY
+        # never calls opponentTurn() -- so the C++ heuristic is absent on that
+        # path, which is exactly what is wanted. Both entry points accumulate
+        # calculateReward() identically, so the reward stream is unchanged.
+        #
+        # WHY THE OPPONENT CHANGED AT ALL: the elixir-multiplier curriculum
+        # priced the win condition negatively (CLAUDE.md's 1.5x hypothesis,
+        # monotone across 1.0/1.25/1.5x). Deleting the multiplier alone is not
+        # enough -- at 1.0x the C++ heuristic is beaten ~100%, so that converts a
+        # mispriced environment into a zero-gradient one. Difficulty moves to
+        # COMPETENCE (teacher.TEACHER_STAGES) at a symmetric 1.0x economy.
+        self.opponent_kind = env_config.get("opponent", "builtin")
+        self.teacher = None
+        # Offensive scenario injection ("Proposal A"), DEFAULT OFF -- see
+        # scenario_offense.py for why it is demoted to an accelerator rather
+        # than a mechanism. It changes the state distribution, not the payoff,
+        # so it can only help once the payoff is right.
+        self.offensive_scenario_prob = float(
+            env_config.get("offensive_scenario_prob",
+                           scenario_offense.OFFENSIVE_SCENARIO_PROB))
+        self._scenario_rng = np.random.default_rng(
+            env_config.get("scenario_seed", None))
+        self.last_scenario = None
+        if self.opponent_kind == "teacher":
+            from teacher import UtilityTeacher
+            self.teacher = UtilityTeacher(self.opp_deck, team=1)
+            self.teacher.set_stage(int(env_config.get("teacher_stage", 0)))
+            self.teacher.reset()
 
         self.action_space = spaces.Dict({
             # אינדקס HAND_SIZE = no-op (לא לשחק קלף הצעד הזה). המנוע מתעלם מ-cardIndex
@@ -302,11 +338,37 @@ class MicroRoyaleEnv(gym.Env):
             # only some deck slots accept, so it would routinely violate
             # CardRegistry::validateDeckSlots -- see sampleRandomDeck's own
             # comment in ClashEnv.h.
-            self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
+            random_deck = list(clash_royale_env.sample_random_deck())
+            self.game.set_opponent_deck(random_deck)
+            # Recorded so a caller (and the teacher-sync test) can see WHICH
+            # deck this episode is actually against -- self.opp_deck is the
+            # fixed fallback and deliberately stays unchanged here.
+            self.current_opp_deck = random_deck
+            # Same reason as set_opponent_deck() below -- and this path is the
+            # easier one to miss, because it writes straight to self.game.
+            if self.teacher is not None:
+                self.teacher.set_deck(random_deck)
         else:
             self.game.set_opponent_deck(self.opp_deck)
+            self.current_opp_deck = list(self.opp_deck)
 
         obs_list = self.game.reset()
+        # Scenario injection rewrites the freshly-reset state, so the
+        # observation has to be RE-READ afterwards -- reset()'s return value
+        # describes the position before the rewrite.
+        self.last_scenario = None
+        if self.offensive_scenario_prob > 0.0:
+            self.last_scenario = scenario_offense.apply_offensive_scenario(
+                self.game, self._scenario_rng, list(self.game.get_hand())
+                and self.ai_deck, self.offensive_scenario_prob)
+            if self.last_scenario is not None:
+                obs_list = self.game.get_observation_for_team(0)
+        # New match, new weight profile and lane bias. A FULLY deterministic
+        # opponent is memorizable in one counter-line, which is the
+        # single-opponent version of the echo chamber this curriculum exists to
+        # avoid -- see UtilityTeacher.reset.
+        if self.teacher is not None:
+            self.teacher.reset()
         obs = np.array(obs_list, dtype=np.float32)
         return obs, {}
 
@@ -319,12 +381,26 @@ class MicroRoyaleEnv(gym.Env):
         activate_ability_slot1 = bool(_to_scalar(action.get("activate_ability_slot1", 0)))
         activate_ability_slot2 = bool(_to_scalar(action.get("activate_ability_slot2", 0)))
 
-        step_result = self.game.step(card_idx, target_x, target_y, skip_frames,
-                                      activate_ability_slot1, activate_ability_slot2)
-        
-        obs = np.array(step_result.observation, dtype=np.float32)
-        reward = float(step_result.reward)
-        terminated = bool(step_result.done)
+        if self.teacher is None:
+            step_result = self.game.step(card_idx, target_x, target_y, skip_frames,
+                                          activate_ability_slot1, activate_ability_slot2)
+            obs = np.array(step_result.observation, dtype=np.float32)
+            reward = float(step_result.reward)
+            terminated = bool(step_result.done)
+        else:
+            # Team 1's move comes from ITS OWN mirrored observation and is
+            # returned in ITS OWN frame; stepSelfPlay mirrors the y back itself
+            # (realY1 = BOARD_HEIGHT - 1 - y1). Nothing here converts frames --
+            # doing so would double-mirror and put every opponent placement in
+            # its own back corner.
+            obs1 = np.asarray(self.game.get_observation_for_team(1), dtype=np.float32)
+            slot1, x1, y1 = self.teacher.act(self.game, obs1)
+            step_result = self.game.step_self_play(
+                card_idx, target_x, target_y, slot1, x1, y1, skip_frames,
+                activate_ability_slot1, activate_ability_slot2, False, False)
+            obs = np.array(step_result.observation0, dtype=np.float32)
+            reward = float(step_result.reward0)
+            terminated = bool(step_result.done)
         truncated = False
         
         info = {
@@ -399,6 +475,19 @@ class MicroRoyaleEnv(gym.Env):
         # revert this to whatever deck the env was constructed with.
         self.opp_deck = list(deck)
         self.game.set_opponent_deck(self.opp_deck)
+        # The teacher PLAYS this deck -- its role table (which card is the win
+        # condition) and its cycle tracker are per-deck, so a deck change that
+        # skipped this would leave it reasoning about the previous one.
+        if self.teacher is not None:
+            self.teacher.set_deck(self.opp_deck)
+
+    def set_teacher_stage(self, stage):
+        """Advance the teacher one rung of the competence ladder.
+
+        No-op when the opponent is the C++ heuristic, so `envs.call(...)` from
+        the trainer is safe regardless of how the env was configured."""
+        if self.teacher is not None:
+            self.teacher.set_stage(int(stage))
 
     def set_opponent_elixir_multiplier(self, multiplier):
         self.game.set_opponent_elixir_multiplier(multiplier)
