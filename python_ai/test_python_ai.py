@@ -1723,27 +1723,89 @@ def test_teacher_is_side_agnostic():
     assert played >= 5, f"team-1 teacher only landed {played} cards"
 
 
-def test_cycle_tracker_counts_distance_to_the_win_condition():
+def test_cycle_tracker_order_logic_against_an_exact_simulated_cycle():
+    """The ORDER half of CycleTracker, tested deterministically with no engine.
+
+    WHY NOT DRIVE THE ENGINE. Two engine-driven versions of this test passed
+    VACUOUSLY and one stayed flaky. Playing hand slot 0 every step rotates only
+    slot 0, so a Hog dealt into slots 1-3 never leaves the hand; playing the
+    CHEAPEST affordable card fails the same way for the opposite reason, since
+    2.6 has two 1-cost cards and a 4-cost Hog is never cheapest; and a uniform
+    draw still misses when the match ends before the Hog is ever affordable.
+    A vacuous pass on a cycle tracker is worse than no test at all -- 2.6 is
+    DEFINED by cycling -- so the logic is pinned here against an exact model and
+    the engine agreement is checked separately below.
+
+    The model is the engine's own rule: the played card goes to the BACK of the
+    queue, the front of the queue fills the vacated hand slot.
+    """
     from teacher import CycleTracker
 
-    env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
-    env.reset()
-    ct = CycleTracker(gym_wrapper.DEFAULT_DECK)
+    deck = list(gym_wrapper.DEFAULT_DECK)
+    hand, queue = deck[:4], deck[4:]
+    ct = CycleTracker(deck)
     ct.reset()
+    ct.observe(list(hand))
+
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        slot = int(rng.integers(len(hand)))
+        played = hand[slot]
+        hand[slot] = queue.pop(0)
+        queue.append(played)
+        ct.observe(list(hand))
+
+        # A card just played sits at the back of a 4-long queue, so it is
+        # exactly 4 plays from returning. Membership alone is satisfied by ANY
+        # ordering; this is the part that can actually be wrong.
+        assert ct.distance_to(played) == 4, (
+            f"{played} was just played; expected 4, got {ct.distance_to(played)}")
+        for i, card in enumerate(queue):
+            assert ct.distance_to(card) == i + 1, (
+                f"queue {queue} but distance_to({card}) said "
+                f"{ct.distance_to(card)}, expected {i + 1}")
+        for card in hand:
+            assert ct.distance_to(card) == 0
+
+
+def test_cycle_tracker_agrees_with_the_engines_own_hand():
+    """The identity invariant, against the real engine: distance is 0 exactly
+    when the card is in hand. Runs several matches because one can end before
+    the win condition is ever affordable, and asserts at the end that at least
+    one rotation was actually observed -- otherwise this passes vacuously too.
+    """
+    from teacher import CycleTracker
+
+    costs = {c: E.get_card_info(c)["cost"] for c in gym_wrapper.DEFAULT_DECK}
+    driver = np.random.default_rng(0)
     seen_far = False
-    for _ in range(300):
-        hand = list(env.get_hand_for_team(0))
-        ct.observe(hand)
-        d = ct.distance_to(15)
-        if 15 in hand:
-            assert d == 0, f"Hog is in hand {hand} but distance_to said {d}"
-        else:
-            assert d > 0, f"Hog absent from {hand} but distance_to said 0"
-            seen_far = True
-        env.step_self_play(0, 9.0, 10.0, -1, 0, 0, 10)
-        if env.is_game_over():
+    for _ in range(6):
+        env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
+        env.reset()
+        ct = CycleTracker(gym_wrapper.DEFAULT_DECK)
+        ct.reset()
+        for _ in range(200):
+            hand = list(env.get_hand_for_team(0))
+            ct.observe(hand)
+            d = ct.distance_to(15)
+            if 15 in hand:
+                assert d == 0, f"Hog is in hand {hand} but distance_to said {d}"
+            else:
+                assert d > 0, f"Hog absent from {hand} but distance_to said 0"
+                seen_far = True
+            elixir = env.get_elixir_for_team(0)
+            playable = [i for i, c in enumerate(hand)
+                        if costs[c] <= elixir + 1e-6]
+            if not playable:
+                env.step_self_play(-1, 0.0, 0.0, -1, 0, 0, 10)
+                continue
+            env.step_self_play(int(driver.choice(playable)), 9.0, 10.0,
+                               -1, 0, 0, 10)
+            if env.is_game_over():
+                break
+        if seen_far:
             break
-    assert seen_far, "the hand never rotated -- the test proved nothing"
+    assert seen_far, "the win condition never left hand in 6 matches"
 
 
 def test_teacher_stages_are_competence_not_economy():
