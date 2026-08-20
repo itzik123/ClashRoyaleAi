@@ -433,6 +433,30 @@ public:
         return count;
     }
 
+    // Who won, by TimeoutRules' FULL rule: tower count, then the weakest
+    // surviving tower's HP, and only an exact tie is a draw.
+    //
+    // Returns MatchRules::Outcome::loserTeam -- -1 draw, 0 team 0 lost,
+    // 1 team 1 lost -- the same convention calculateReward already consumes.
+    //
+    // Exists because getTowersAlive() above is the ONLY outcome-shaped thing
+    // Python can reach, and TimeoutRules::resolve had exactly one C++ call
+    // site (calculateReward) and no binding at all. So every evaluation script
+    // that wanted a verdict without going through `reward` re-derived one from
+    // tower counts and silently dropped the HP tie-break, reporting a draw for
+    // matches this engine calls a win. That happened EIGHT times across three
+    // waves before it was made a binding instead of a convention -- see
+    // perception/UPSTREAM_REQUESTS.md item 16 and
+    // python_ai/eval/match_outcome.py.
+    //
+    // Read-only and additive: TimeoutRules::resolve is already static, already
+    // takes a const Board&, and mutates nothing. No gameplay change, no
+    // observation or action-space change, so existing checkpoints are
+    // unaffected.
+    int resolveTimeoutOutcome() const {
+        return TimeoutRules::resolve(game.getBoard()).loserTeam;
+    }
+
     float getMaxPlacementX() const { return game.getMaxPlacementX(); }
     float getOwnHalfMaxY() const { return game.getOwnHalfMaxY(); }
 

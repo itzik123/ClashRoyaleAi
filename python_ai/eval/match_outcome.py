@@ -67,6 +67,24 @@ import python_ai  # noqa: E402,F401
 
 import clash_royale_env as _E  # noqa: E402
 
+# Prefer the engine's own verdict (UPSTREAM_REQUESTS.md item 16, signed off and
+# applied 2026-08-20): ClashEnv::resolveTimeoutOutcome calls TimeoutRules::
+# resolve directly, so there is one definition of "who won" instead of a Python
+# reimplementation that has to be kept in step by hand.
+#
+# The fallback is NOT dead code and must not be deleted. The binding lives in a
+# COMPILED .pyd, and this repo is worked on from at least one machine that
+# cannot rebuild it (no MSVC -- see CLAUDE.md's Machine A / Machine B box). A
+# checkout whose .pyd predates the binding would otherwise fail with
+# AttributeError at the worst moment: mid-evaluation, after the match is
+# already played. Feature-detect instead, and keep the mirror until every
+# environment is known to carry a fresh binary.
+#
+# When that day comes: drop _USE_BINDING, drop the fallback branch, and delete
+# the guard test tests/test_match_outcome_is_the_only_scorer.py, which exists
+# only because the mirror is hand-written.
+_USE_BINDING = hasattr(_E.ClashRoyaleEnv, "resolve_timeout_outcome")
+
 
 def score_from_towers(env, team=0):
     """1.0 win / 0.5 draw / 0.0 loss for `team`, by TimeoutRules' rules.
@@ -74,7 +92,17 @@ def score_from_towers(env, team=0):
     Safe to call on any finished match, not just a timed-out one: when a King
     has actually fallen the tower counts already differ, so step 1 decides it
     and the tie-break is never consulted.
+
+    Uses the ENGINE's own verdict when the binding is available, and falls back
+    to the hand-written mirror below when it is not -- see _use_binding.
     """
+    if _USE_BINDING:
+        # loserTeam: -1 draw, 0 team 0 lost, 1 team 1 lost.
+        loser = env.resolve_timeout_outcome()
+        if loser == -1:
+            return 0.5
+        return 0.0 if loser == team else 1.0
+
     mine = env.get_towers_alive(team)
     theirs = env.get_towers_alive(1 - team)
 

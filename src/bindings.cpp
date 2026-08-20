@@ -87,6 +87,12 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // Surviving TOWER count (King + Princesses) for one team -- see
         // ClashEnv::getTowersAlive for why the Python reward needs this.
         .def("get_towers_alive", &ClashEnv::getTowersAlive, py::arg("team"))
+        // The FULL outcome verdict -- tower count, then weakest surviving
+        // tower, then draw. get_towers_alive above gives only the first of
+        // those three rules, and eight separate scripts re-derived the rest
+        // wrongly from it before this existed. Returns loserTeam: -1 draw,
+        // 0 team 0 lost, 1 team 1 lost. See ClashEnv::resolveTimeoutOutcome.
+        .def("resolve_timeout_outcome", &ClashEnv::resolveTimeoutOutcome)
         // Real enforced placement bounds -- see GameManager::getMaxPlacementX/
         // getOwnHalfMaxY's own comments. Lets the Python side scale its action
         // space from the engine's actual numbers instead of a hardcoded copy.

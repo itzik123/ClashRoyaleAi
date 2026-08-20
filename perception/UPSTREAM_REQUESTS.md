@@ -5,8 +5,8 @@ Written from `perception/`, which modifies nothing outside itself. Items are
 explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-08-19. Items 0, 1, 2, 4, 5, 6, 9, 10, 12, 13 and 14 are
-applied; 3, 7, 8, 16 and 17 are still open. There is no item 11.
+Last updated 2026-08-20. Items 0, 1, 2, 4, 5, 6, 7, 9, 10, 12, 13, 14 and 16
+are applied; 3, 8 and 17 are still open. There is no item 11.
 
 > **Status audit, 2026-08-19.** Items 5, 6 and 12 were carrying `OPEN` headers
 > while the exact code they propose was already merged — verified line by line
@@ -38,7 +38,7 @@ applied; 3, 7, 8, 16 and 17 are still open. There is no item 11.
 | 10 | State-estimator write half: `set_elixir_for_team` / `set_hand_for_team` | search over a reconstructed state scored a fabricated hand/elixir | **DONE — applied 2026-08-17, recorded here 2026-08-19** |
 | 13 | **State snapshot/restore, so decision-time search becomes possible** | unblocks the biggest unexploited asset | **DONE — applied and verified 2026-08-11** |
 | 14 | Offence structurally under-priced; deploy time added | win condition was unplayable by construction | **DONE — raised and applied 2026-08-19** |
-| 16 | Bind `TimeoutRules::resolve` so match outcomes have one definition | 5 Python copies, all missing the HP tie-break | open, proposed 2026-08-19 |
+| 16 | Bind `TimeoutRules::resolve` so match outcomes have one definition | **8** Python copies, all missing the HP tie-break | **DONE — signed off and applied 2026-08-20** |
 | 17 | Const accessors for internal timing state | divergence tests cannot see cooldowns/fuses | open, proposed 2026-08-19, **ergonomics not coverage** |
 
 Items 1 and 2 were done together since the measured benefit is combined
@@ -1509,7 +1509,39 @@ zero-divergence control.
 
 ---
 
-## 16. OPEN — bind `TimeoutRules::resolve`, so match outcomes have one definition (proposed 2026-08-19)
+## 16. DONE — bind `TimeoutRules::resolve`, so match outcomes have one definition (proposed 2026-08-19, signed off and applied 2026-08-20)
+
+> **Applied.** `ClashEnv::resolveTimeoutOutcome()` calls
+> `TimeoutRules::resolve(game.getBoard()).loserTeam` and is bound as
+> `resolve_timeout_outcome`. Exactly the edit proposed below.
+>
+> **Why the count rose to eight before this landed.** Between the proposal and
+> the sign-off, the same tower-count-only scorer appeared in three MORE new
+> files (`eval/prove_combos.py`, `eval/prove_teacher.py`,
+> `eval/prove_environment.py`), on top of the five already fixed. Fixing
+> instances demonstrably does not hold when the wrong version is four lines
+> long and the right one is unreachable from Python.
+>
+> **`python_ai/eval/match_outcome.py` keeps its hand-written mirror as a
+> FALLBACK, on purpose.** The binding lives in a compiled `.pyd`, and this repo
+> is worked from at least one machine that cannot rebuild it (see CLAUDE.md's
+> Machine A / Machine B box). It feature-detects with `hasattr` so a checkout
+> whose `.pyd` predates the binding degrades to the mirror instead of raising
+> `AttributeError` mid-evaluation, after the match is already played. Verified:
+> both paths return identical verdicts on all six rule cases, including the
+> 3-3-towers / 1200-vs-90 case every broken scorer called a draw.
+>
+> **Retire the mirror** once every environment is known to carry a fresh
+> binary: drop `_USE_BINDING` and the fallback branch, and delete
+> `python_ai/tests/test_match_outcome_is_the_only_scorer.py`, which exists only
+> because the mirror is hand-written.
+>
+> **Also added: `tests/core/test_timeout_rules.cpp`.** TimeoutRules had NO
+> tests at all despite deciding every timed-out match. Now covers all three
+> rules, their precedence (count outranks HP), weakest-vs-total, Towers-only
+> (a Cannon is not a crown), dead-tower exclusion, and the new accessor.
+
+Original proposal, kept for the record:
 
 **The ask is one read-only accessor.** No gameplay change, no observation or
 action-space change, no checkpoint invalidation, no behavioural difference to
