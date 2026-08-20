@@ -3107,7 +3107,8 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
 
-The Python suite is **312 (311 pass, 1 skipped)** since the 2026-08-20
+The Python suite is **349 collected (347-348 pass, 1-2 skipped)** since the
+multi-card teacher landed on 2026-08-20, and was **312** after the 2026-08-20
 restructuring, up from 90; the skip count varies run to run because two cases
 depend on the unseeded opening-hand shuffle. Run it with:
 
