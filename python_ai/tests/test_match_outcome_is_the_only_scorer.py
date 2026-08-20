@@ -102,3 +102,44 @@ def test_only_match_outcome_scores_from_tower_counts():
         + "\n\nUse python_ai.eval.match_outcome.score_from_towers(env, team). "
           "Do not add the file to ALLOWED -- see this module's docstring."
     )
+
+
+# ---------------------------------------------------------------------------
+# The same pattern, outside Python.
+#
+# The guard above walks .py files ONLY, and that is exactly why it never saw
+# web/viewer.html -- which scored every timed-out match from "are both King
+# Towers alive?" and called the rest a draw, right up until 2026-08-21. A
+# replay ending 3-3 on towers with a Princess at 90 hp displayed as
+# "Draw. Timeout - both King Towers still standing".
+#
+# The defect is language-independent, so the guard has to be too.
+
+def test_the_replay_viewer_reads_the_engines_verdict():
+    viewer = os.path.join(python_ai.REPO_ROOT, "web", "viewer.html")
+    text = open(viewer, encoding="utf-8", errors="replace").read()
+
+    assert "gameData.result" in text, (
+        "web/viewer.html must consume the engine's own `result` object "
+        "(GameLogger::resultJson) rather than re-deriving a verdict of its own."
+    )
+
+    # The specific shortcut that caused the bug: concluding 'draw' straight off
+    # both Kings being alive, with no tower-count or weakest-hp tie-break.
+    king_only_draw = re.compile(
+        r"kingAlive\[0\]\s*&&\s*kingAlive\[1\][^\n]*\n?[^\n]*winner:\s*['\"]draw['\"]"
+    )
+    assert not king_only_draw.search(text), (
+        "web/viewer.html calls a match a draw purely because both King Towers "
+        "are alive. That is MatchRules::evaluate's question ('has a King died "
+        "yet?'), not TimeoutRules' ('who won at the limit?'). Apply tower count, "
+        "then the weakest tower's ABSOLUTE hp, before concluding a draw."
+    )
+
+    # And the fallback for pre-`result` replays must actually implement the
+    # tie-breaks rather than bailing out to a draw.
+    for needed in ("count[0] !== count[1]", "weakest[0] !== weakest[1]"):
+        assert needed in text, (
+            f"web/viewer.html's fallback for older replays is missing {needed!r}. "
+            "It must be a port of TimeoutRules, not the king-alive shortcut."
+        )

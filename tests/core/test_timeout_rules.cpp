@@ -3,6 +3,8 @@
 #include "ClashEnv.h"
 #include "GameManager.h"
 #include "Tower.h"
+#include "GameLogger.h"
+#include <string>
 #include <vector>
 
 // TimeoutRules, and the ClashEnv accessor that exposes it to Python.
@@ -154,4 +156,101 @@ TEST_CASE("ClashEnv::resolveTimeoutOutcome returns TimeoutRules' own verdict",
     }
     REQUIRE(env.getTowersAlive(0) == env.getTowersAlive(1));   // counts still tied
     REQUIRE(env.resolveTimeoutOutcome() == 1);                 // but team 1 is behind
+}
+
+// ---------------- the verdict a REPLAY reports ----------------
+//
+// TimeoutRules has been correct since it was written and is wired into the
+// reward path. The defect was in a CONSUMER: web/viewer.html re-derived the
+// outcome from "are both King Towers alive?" and called everything else a draw,
+// so a timed-out match with a badly damaged Princess Tower displayed as
+// "Draw. Timeout - both King Towers still standing".
+//
+// GameLogger now writes the engine's own verdict into the replay JSON and the
+// viewer reads it. These cases pin that the written verdict IS the engine's.
+
+TEST_CASE("GameLogger writes a decisive verdict for a timed-out match on tower count",
+          "[timeout][replay]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    Board& board = game.getBoard();
+    // Team 1 loses a Princess: both Kings alive, so this is a TIMEOUT decided
+    // on tower count, and team 1 must be the loser.
+    for (const auto& e : board.getEntities()) {
+        if (e->isTower() && e->team == 1 && e->symbol != 'R') { e->takeDamage(e->hp); break; }
+    }
+    board.cleanDeadEntities(0);
+
+    GameLogger logger;
+    logger.logTick(1, game);
+    const std::string json = logger.resultJson();
+
+    INFO(json);
+    REQUIRE(json.find("\"loserTeam\": 1") != std::string::npos);
+    REQUIRE(json.find("\"timedOut\": true") != std::string::npos);
+    REQUIRE(json.find("surviving tower count") != std::string::npos);
+}
+
+TEST_CASE("GameLogger applies the weakest-tower tie-break, not king-alive",
+          "[timeout][replay]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    Board& board = game.getBoard();
+    // Equal tower counts, both Kings up -- the exact state the viewer used to
+    // call a draw. Team 0's Princess is nearly dead, so team 0 loses.
+    for (const auto& e : board.getEntities()) {
+        if (e->isTower() && e->team == 0 && e->symbol != 'R') { e->takeDamage(e->hp - 90); break; }
+    }
+
+    GameLogger logger;
+    logger.logTick(1, game);
+    const std::string json = logger.resultJson();
+
+    INFO(json);
+    REQUIRE(json.find("\"loserTeam\": 0") != std::string::npos);
+    REQUIRE(json.find("weakest tower") != std::string::npos);
+    // And the engine agrees with the replay -- one rule, two data sources.
+    REQUIRE(TimeoutRules::resolve(board).loserTeam == 0);
+}
+
+TEST_CASE("GameLogger reports a King KO as a King KO, not a timeout",
+          "[timeout][replay]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    Board& board = game.getBoard();
+    for (const auto& e : board.getEntities()) {
+        if (e->isTower() && e->team == 1 && e->symbol == 'R') { e->takeDamage(e->hp); break; }
+    }
+    board.cleanDeadEntities(0);
+
+    GameLogger logger;
+    logger.logTick(1, game);
+    const std::string json = logger.resultJson();
+
+    INFO(json);
+    REQUIRE(json.find("\"timedOut\": false") != std::string::npos);
+    REQUIRE(json.find("\"loserTeam\": 1") != std::string::npos);
+    REQUIRE(json.find("King Tower destroyed") != std::string::npos);
+}
+
+TEST_CASE("an untouched match is the one genuine draw", "[timeout][replay]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    GameLogger logger;
+    logger.logTick(1, game);
+    const std::string json = logger.resultJson();
+
+    INFO(json);
+    REQUIRE(json.find("\"loserTeam\": -1") != std::string::npos);
+    REQUIRE(json.find("exact tie") != std::string::npos);
+}
+
+// decide() and resolve() must never disagree -- the whole point of splitting
+// them is that GameLogger and the viewer share the rule rather than copy it.
+TEST_CASE("TimeoutRules::decide is the rule resolve() applies", "[timeout][replay]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    Board& board = game.getBoard();
+    for (const auto& e : board.getEntities()) {
+        if (e->isTower() && e->team == 1 && e->symbol != 'R') { e->takeDamage(e->hp - 5); break; }
+    }
+    int counts[2] = { 3, 3 };
+    int weakest[2] = { 2534, 5 };
+    REQUIRE(TimeoutRules::decide(counts, weakest).loserTeam
+            == TimeoutRules::resolve(board).loserTeam);
 }

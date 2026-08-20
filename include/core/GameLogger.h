@@ -1,6 +1,9 @@
 #pragma once
 #include "GameManager.h"
 #include "CardRegistry.h"
+#include "TimeoutRules.h"
+#include <limits>
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -108,6 +111,70 @@ public:
         snapshots.clear();
     }
 
+    // The match verdict, from the ENGINE's own rules, written into the replay so
+    // consumers READ it instead of re-deriving one.
+    //
+    // web/viewer.html derived its own from "are both King Towers alive?" and
+    // called everything else a draw. Its comment said it "mirrors
+    // MatchRules::evaluate exactly" -- which was true, and was the bug.
+    // MatchRules answers "has a King died YET?", is called every tick, and
+    // correctly says "not over" right up to the limit. Who WON at the limit is
+    // TimeoutRules. A match ending 3-3 on towers with one Princess at 90 hp was
+    // shown as "Draw. Timeout - both King Towers still standing".
+    //
+    // Derived from this logger's own final snapshot -- it is const and holds no
+    // Board -- but through TimeoutRules::decide, so the RULE is shared rather
+    // than reimplemented here. Reimplementing it is exactly how the defect this
+    // fixes came about.
+    std::string resultJson() const {
+        if (snapshots.empty()) return "null";
+        const auto& last = snapshots.back();
+
+        int aliveCount[2] = { 0, 0 };
+        int weakestHp[2] = { std::numeric_limits<int>::max(),
+                             std::numeric_limits<int>::max() };
+        bool kingAlive[2] = { false, false };
+
+        for (const auto& e : last.entities) {
+            if (e.hp <= 0) continue;
+            if (e.team != 0 && e.team != 1) continue;
+            // Towers only: a Cannon or Tombstone is not a crown. The snapshot
+            // has no isTower(), so this keys on the reserved tower cardIds
+            // (GameManager::TOWER_KING_ID / TOWER_PRINCESS_ID) rather than on
+            // the symbol, which the renderer is free to change.
+            if (e.cardId != GameManager::TOWER_KING_ID &&
+                e.cardId != GameManager::TOWER_PRINCESS_ID) continue;
+            aliveCount[e.team]++;
+            weakestHp[e.team] = std::min(weakestHp[e.team], e.hp);
+            if (e.cardId == GameManager::TOWER_KING_ID) kingAlive[e.team] = true;
+        }
+
+        const bool timedOut = kingAlive[0] && kingAlive[1];
+        MatchRules::Outcome outcome =
+            timedOut ? TimeoutRules::decide(aliveCount, weakestHp)
+                     : MatchRules::Outcome{ true, (!kingAlive[0] && !kingAlive[1]) ? -1
+                                                  : (kingAlive[0] ? 1 : 0) };
+
+        std::string reason;
+        if (!timedOut) {
+            reason = (outcome.loserTeam == -1) ? "Both King Towers fell the same tick"
+                   : (outcome.loserTeam == 0)  ? "Blue's King Tower destroyed"
+                                               : "Red's King Tower destroyed";
+        } else if (outcome.loserTeam == -1) {
+            reason = "Timeout - exact tie on towers and weakest-tower HP";
+        } else if (aliveCount[0] != aliveCount[1]) {
+            reason = "Timeout - decided on surviving tower count";
+        } else {
+            reason = "Timeout - decided on the weakest tower's HP";
+        }
+
+        std::ostringstream out;
+        out << "{\"loserTeam\": " << outcome.loserTeam
+            << ", \"timedOut\": " << (timedOut ? "true" : "false")
+            << ", \"reason\": \"" << reason << "\"}";
+        return out.str();
+    }
+
     bool save(const std::string& filepath) const {
         std::ofstream file(filepath);
         if (!file.is_open()) return false;
@@ -116,6 +183,7 @@ public:
         file << "  \"boardWidth\": " << boardWidth << ",\n";
         file << "  \"boardHeight\": " << boardHeight << ",\n";
         file << "  \"totalTicks\": " << snapshots.size() << ",\n";
+        file << "  \"result\": " << resultJson() << ",\n";
 
         // Write card name lookup table
         file << "  \"cardNames\": {";

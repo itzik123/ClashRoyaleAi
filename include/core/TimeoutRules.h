@@ -35,6 +35,37 @@ class TimeoutRules {
 public:
     // Board is const& and only read -- this decides an outcome, it never
     // mutates match state.
+    // THE RULE, separated from where the numbers came from.
+    //
+    // Exists because GameLogger has to reach the same verdict from its own tick
+    // SNAPSHOTS (it is const and holds no Board), and web/viewer.html from the
+    // replay JSON. Every previous consumer that could not call resolve() below
+    // re-derived a verdict instead and got it wrong -- eight times across three
+    // waves on the Python side, and the replay viewer was still doing it on
+    // 2026-08-21, reporting "Draw" for a match with a Princess Tower at 90 hp.
+    // Splitting the decision from the gathering is what lets a caller with a
+    // different data source share the rule rather than copy it.
+    //
+    // weakestHp entries are int max for a side with no surviving towers, which
+    // is unreachable in a live match (a King dying ends it) and is handled
+    // consistently anyway: more towers wins.
+    static MatchRules::Outcome decide(const int aliveCount[2], const int weakestHp[2]) {
+        // 1. Fewer surviving towers loses.
+        if (aliveCount[0] != aliveCount[1]) {
+            return { true, aliveCount[0] < aliveCount[1] ? 0 : 1 };
+        }
+        // 2. Equal counts -> the lower weakest tower loses. ABSOLUTE hp, not a
+        //    fraction of max: the real game breaks this tie on percentage, and
+        //    King 4008 vs Princess 2534 means the two disagree often. Absolute
+        //    is what the 2026-08-21 audit specified, recorded as a deliberate,
+        //    known divergence rather than an oversight.
+        if (weakestHp[0] != weakestHp[1]) {
+            return { true, weakestHp[0] < weakestHp[1] ? 0 : 1 };
+        }
+        // 3. Genuine draw -- the only way to get one.
+        return { true, -1 };
+    }
+
     static MatchRules::Outcome resolve(const Board& board) {
         int aliveCount[2] = { 0, 0 };
         int weakestHp[2] = { std::numeric_limits<int>::max(),
@@ -56,15 +87,6 @@ public:
             weakestHp[team] = std::min(weakestHp[team], entity->hp);
         }
 
-        // 1. Fewer surviving towers loses.
-        if (aliveCount[0] != aliveCount[1]) {
-            return { true, aliveCount[0] < aliveCount[1] ? 0 : 1 };
-        }
-        // 2. Equal counts -> the lower weakest tower loses.
-        if (weakestHp[0] != weakestHp[1]) {
-            return { true, weakestHp[0] < weakestHp[1] ? 0 : 1 };
-        }
-        // 3. Genuine draw -- the only way to get one.
-        return { true, -1 };
+        return decide(aliveCount, weakestHp);
     }
 };

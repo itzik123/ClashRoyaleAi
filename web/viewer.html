@@ -797,20 +797,64 @@ function initViewer() {
   updateUI();
 }
 
-// Winner detection -- mirrors MatchRules::evaluate exactly: the match ends
-// the instant a King Tower (symbol 'R') dies; if the replay ran to maxTicks
-// with both Kings still alive, that's a timeout draw.
+// Winner detection -- READS the verdict the engine wrote into the replay. It
+// does not re-derive one.
+//
+// The previous version checked only whether both King Towers were still alive
+// and called anything else a draw. Its comment said it "mirrors
+// MatchRules::evaluate exactly", which was TRUE and was precisely the bug:
+// MatchRules answers "has a King died YET?", is called every tick, and correctly
+// reports "not over" right up to the tick limit. Who WON at the limit is
+// TimeoutRules -- fewer surviving towers loses; on equal counts the side whose
+// weakest surviving tower has the lower ABSOLUTE hp loses; only an exact tie on
+// both is a draw. A timed-out match with a Princess Tower at 90 hp was being
+// displayed as "Draw. Timeout — both King Towers still standing".
+//
+// The Python-side guard against this pattern (test_match_outcome_is_the_only_
+// scorer.py) walks .py files only, which is exactly why the defect survived here
+// in JavaScript. It now checks this file too.
 function computeMatchResult() {
   if (!gameData || !gameData.ticks.length) return null;
+
+  // The engine's own verdict, written by GameLogger::resultJson().
+  if (gameData.result) {
+    const r = gameData.result;
+    if (r.loserTeam === -1) return { winner: 'draw', reason: r.reason };
+    return { winner: r.loserTeam === 0 ? 'red' : 'blue', reason: r.reason };
+  }
+
+  // Replays written before the engine emitted `result`. A PORT of TimeoutRules,
+  // not the old king-alive-only shortcut -- an out-of-date replay should be
+  // scored by the right rule, not by the one this fix exists to remove.
   const finalTick = gameData.ticks[gameData.ticks.length - 1];
-  const blueKingAlive = finalTick.entities.some(e => e.symbol === 'R' && e.team === 0);
-  const redKingAlive = finalTick.entities.some(e => e.symbol === 'R' && e.team === 1);
-  if (blueKingAlive && redKingAlive) return { winner: 'draw', reason: 'Timeout — both King Towers still standing' };
-  if (!blueKingAlive && !redKingAlive) return { winner: 'draw', reason: 'Both King Towers fell the same tick' };
-  return {
-    winner: blueKingAlive ? 'blue' : 'red',
-    reason: blueKingAlive ? "Red's King Tower destroyed" : "Blue's King Tower destroyed"
-  };
+  const towers = finalTick.entities.filter(e => e.symbol === 'R' || e.symbol === 'P');
+  const kingAlive = [0, 1].map(t => towers.some(e => e.symbol === 'R' && e.team === t));
+
+  if (!kingAlive[0] || !kingAlive[1]) {
+    if (!kingAlive[0] && !kingAlive[1])
+      return { winner: 'draw', reason: 'Both King Towers fell the same tick' };
+    return {
+      winner: kingAlive[0] ? 'blue' : 'red',
+      reason: kingAlive[0] ? "Red's King Tower destroyed" : "Blue's King Tower destroyed"
+    };
+  }
+
+  const count = [0, 1].map(t => towers.filter(e => e.team === t).length);
+  if (count[0] !== count[1]) {
+    return {
+      winner: count[0] > count[1] ? 'blue' : 'red',
+      reason: 'Timeout — decided on surviving tower count'
+    };
+  }
+  const weakest = [0, 1].map(t =>
+    Math.min(...towers.filter(e => e.team === t).map(e => e.hp)));
+  if (weakest[0] !== weakest[1]) {
+    return {
+      winner: weakest[0] > weakest[1] ? 'blue' : 'red',
+      reason: "Timeout — decided on the weakest tower's HP"
+    };
+  }
+  return { winner: 'draw', reason: 'Timeout — exact tie on towers and weakest-tower HP' };
 }
 
 function updateResultBadge() {
