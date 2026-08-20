@@ -378,6 +378,11 @@ replays/
 
 build_python/
 build_test/
+# The CMake tree a plain `cmake -S . -B build` produces. Its two siblings above
+# were ignored and this one was not, so configuring the engine left 1331
+# untracked files sitting in `git add -A`'s path -- including CMakeCache.txt,
+# which pins absolute machine paths and is actively wrong to share.
+build/
 # Local-only evidence kept beside the dead pre-speed-fix checkpoints. The
 # measured numbers live in archive_pre_speed_fix/README.md; these are the raw
 # files behind them, and follow the same no-replays-in-git rule as replays/.
