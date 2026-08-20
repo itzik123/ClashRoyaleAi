@@ -31,14 +31,22 @@ hardcoded with a comment naming the header where not.
 ## Environment — the things that waste an hour
 
 **`clash_royale_env.pyd` is built for Python 3.11 only.** The default `python`
-on this machine is 3.14, and it fails with `ImportError: DLL load failed`,
-which reads like a corrupt build and is only a version mismatch. Use one of:
+is 3.13/3.14 depending on the box, and it fails with `ImportError: DLL load
+failed`, which reads like a corrupt build and is only a version mismatch. Use
+one of:
 
 ```bash
 python_ai/venv/Scripts/python.exe        # training env — do not modify
 perception/.venv/Scripts/python.exe      # perception env
 py -3.11
 ```
+
+Both venvs and the `.pyd` are gitignored build artifacts, so **a fresh clone
+has none of them** and neither does every machine — see the toolchain box
+below. Where they are absent, Python work is verified by stubbing
+`clash_royale_env` (constants only; `python_ai/eval/match_outcome.py`'s tests
+are the worked example), plus `py_compile` and static reading. That is enough
+for logic, and is not enough for anything that needs real engine dynamics.
 
 **`cmake`, `cl` and `msbuild` are not on PATH.** Rebuild the engine with:
 
@@ -69,35 +77,50 @@ The C++ test suite builds from the same generated solution and runs directly:
 Measured 2026-08-21: **550 test cases, 5,341 assertions, all passing**, ~90 s to
 compile from cold.
 
-> **⚠ THE THREE WARNINGS THAT USED TO SIT HERE WERE WRONG. Corrected
-> 2026-08-21 by building the `.pyd` and the C++ suite on this machine.**
+> **⚠ THE TOOLCHAIN DIFFERS BETWEEN THE MACHINES THIS REPO IS WORKED ON. Do
+> not trust any absolute claim in this section, including this one — run the
+> two probes below.** This block has now been rewritten in three directions
+> (2026-08-19, 2026-08-21, 2026-08-20 again) because each session described
+> *its own* box in a file that is shared, and each read the previous
+> description as an error rather than as a different environment.
 >
-> They claimed the Visual Studio directories were "both **empty**
-> directories", that there was "no `MSBuild.exe` anywhere on the box", that
-> "the `.pyd` cannot be rebuilt here", and that `python_ai/venv` was absent.
-> None of that is true. `C:\Program Files\Microsoft Visual Studio\2022\`
-> contains a full `Community` install with `cl.exe` (14.44.35207),
-> `MSBuild.exe` and its own `cmake.exe`; `python_ai/venv` exists and is what
-> every command in this file uses.
+> **Machine A (has MSVC, no WSL)** — verified 2026-08-21 by building the
+> `.pyd` and the suite: `C:\Program Files\Microsoft Visual Studio\2022\` holds
+> a full `Community` install with `cl.exe` (14.44.35207), `MSBuild.exe` and
+> its own `cmake.exe`; `python_ai/venv` exists; `wsl --version` reports WSL is
+> not installed.
 >
-> **How the error was made, because the shape of it will recur.** The check
-> was `ls "<dir>" | wc -l`, which returned `1` for each Visual Studio
-> directory. That was read as "effectively empty". The single entry was
-> `Community` -- the entire toolchain. A count is not an inspection, and
-> `wc -l` returning a small number is not evidence of absence.
+> **Machine B (has WSL, no MSVC)** — verified 2026-08-20, twice, by two
+> independent tools:
+> ```
+> Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022'   -> nothing
+> Test-Path '...\2022\Community\MSBuild\Current\Bin\MSBuild.exe'  -> False
+> ls python_ai/venv                                              -> not found
+> wsl --version                                                  -> 2.6.1.0
+> wsl g++ --version                                              -> 13.3.0
+> ```
+> On this box the `.pyd` genuinely cannot be rebuilt and nothing importing
+> `clash_royale_env` runs — but the Catch2 suite builds fine under `wsl g++`
+> (`-std=c++20 -Wall -Wextra` over `tests/**` plus Catch2's amalgamated
+> source, fetched into a scratch dir since it is not vendored). 553 cases were
+> built and run that way on 2026-08-20.
 >
-> **What IS true, and is the whole reason the wrong conclusion was
-> plausible:** `cl`, `cmake`, `msbuild`, `g++` and `clang++` are genuinely
-> **not on PATH**, so `command -v` finds nothing for any of them. That is
-> exactly why the absolute paths above exist. And WSL genuinely is not
-> installed (`wsl --version` reports so), so the old `wsl g++` recipe for the
-> Catch2 suite is dead -- but it is also unnecessary, because the suite builds
-> under MSVC from the generated project.
+> **So: probe, don't inherit.** Two commands settle it in seconds:
+> ```
+> powershell -NoProfile -Command "Test-Path 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe'"
+> wsl g++ --version
+> ```
+> Whichever answers, use that route. `cl`, `cmake`, `msbuild`, `g++` and
+> `clang++` are not on PATH on **either** machine, so `command -v` finds
+> nothing regardless and is not a useful test — which is exactly why the
+> absolute paths above exist.
 >
-> **The lesson for this file specifically:** an environment claim that says
-> "X cannot be done here" earns its keep only with the command that failed and
-> its output. Three separate sessions inherited "the toolchain is gone" without
-> re-testing it, and each one restricted what it was willing to attempt.
+> **The standing lesson, which both corrections agree on:** an environment
+> claim earns its keep only with the command that produced it and that
+> command's output. A count is not an inspection (`ls | wc -l` returning 1 for
+> a directory whose single entry is `Community` is not evidence of absence),
+> and equally, "it is missing on my box" is not evidence it is missing on
+> yours. State the probe, not the conclusion.
 
 **The `claude` CLI is not on PATH either** — it's inside the desktop app, at
 `%APPDATA%\Claude\claude-code\<version>\claude.exe`. Needed for
