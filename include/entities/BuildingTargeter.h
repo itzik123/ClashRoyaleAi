@@ -1,6 +1,7 @@
 #pragma once
 #include "Troop.h"
 #include "Building.h"
+#include "LanePath.h"
 #include "StatsEvents.h"
 
 class BuildingTargeter : public Troop {
@@ -55,7 +56,16 @@ protected:
                 closestInSight = entity;
             }
         }
-        return closestInSight ? closestInSight : closestTower;
+        if (closestInSight) return closestInSight;
+
+        // Same lane rule as CombatEntity::findTarget, deliberately SHARED
+        // rather than reimplemented: a building-targeter drifting out of
+        // agreement with a troop about which tower its lane leads to would be
+        // invisible until a Hog and its escort walked to different towers.
+        // Every Tower is a Building, so the objective is always eligible here.
+        auto laneTarget = LanePath::laneObjective(board, team, position);
+        if (laneTarget && laneTarget->isBuilding()) return laneTarget;
+        return closestTower;
     }
 
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {

@@ -1,6 +1,7 @@
 #pragma once
 #include "CardEntity.h"
 #include "Board.h"
+#include "LanePath.h"
 #include "OnHitEffect.h"
 #include "OnDamageTakenEffect.h"
 #include "DeathEffect.h"
@@ -1188,7 +1189,20 @@ protected:
                 closestInSight = entity;
             }
         }
-        return closestInSight ? closestInSight : closestTower;
+        if (closestInSight) return closestInSight;
+
+        // BLIND: nothing inside sight range. Walk our OWN lane's objective
+        // rather than whichever tower is nearest -- see LanePath.h for the
+        // measured case this fixes (a unit crossing the arena to the other
+        // lane's Princess once its own lane's is destroyed).
+        //
+        // Falls back to the old closest-tower answer when the lane objective is
+        // not a legal target for THIS attacker -- a Mortar's minAttackRange
+        // blind spot, an air/ground restriction -- so no existing edge case
+        // changes behaviour.
+        auto laneTarget = LanePath::laneObjective(board, team, position);
+        if (laneTarget && isValidTarget(laneTarget)) return laneTarget;
+        return closestTower;
     }
 
     // Only called when maxSplitTargets > 1 (Electro Wizard). Reuses
