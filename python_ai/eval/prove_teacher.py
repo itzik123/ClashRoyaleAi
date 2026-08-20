@@ -57,6 +57,7 @@ import python_ai  # noqa: E402,F401
 
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
+from python_ai.eval.match_outcome import score_from_towers  # noqa: E402
 from python_ai.opponents.teacher import PROFILES, TEACHER_STAGES, UtilityTeacher  # noqa: E402
 
 CE = E.ClashRoyaleEnv
@@ -65,8 +66,9 @@ MAX_STEPS = 400
 
 
 def _score(env):
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return 1.0 if a > b else (0.5 if a == b else 0.0)
+    # Tower count alone calls every equal-count finish a draw and ignores
+    # TimeoutRules' weakest-tower tie-break. See eval/match_outcome.py.
+    return score_from_towers(env, 0)
 
 
 def make_teacher(team, stage, profile=None, seed=None):

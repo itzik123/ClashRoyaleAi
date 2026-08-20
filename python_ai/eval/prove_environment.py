@@ -90,6 +90,7 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval import stats  # noqa: E402
+from python_ai.eval.match_outcome import score_from_towers  # noqa: E402
 from python_ai.opponents.teacher import TEACHER_STAGES, UtilityTeacher  # noqa: E402
 
 CE = E.ClashRoyaleEnv
@@ -120,8 +121,9 @@ def _outcome(env):
     deals more tower damage without converting it into wins, that is a real and
     interpretable result, and win rate alone would hide it.
     """
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    score = 1.0 if a > b else (0.5 if a == b else 0.0)
+    # Tower count alone calls every equal-count finish a draw and ignores
+    # TimeoutRules' weakest-tower tie-break. See eval/match_outcome.py.
+    score = score_from_towers(env, 0)
     return (score, float(env.get_tower_damage_dealt(0)),
             float(env.get_tower_damage_dealt(1)))
 
