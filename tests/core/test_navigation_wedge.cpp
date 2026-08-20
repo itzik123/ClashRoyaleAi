@@ -1,5 +1,6 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
+#include "ArenaLayout.h"
 #include "Board.h"
 #include "Building.h"
 #include "Tower.h"
@@ -19,6 +20,18 @@
 //   Ice Golem  at (11.360, 2.939), walking north
 //   King Tower at ( 9.000, 2.500) r=2.0  -> minDist 2.4, actual distance 2.401
 //   Cannon     at (12.032, 4.169) r=1.0  -> minDist 1.4, actual distance 1.401
+//
+// RE-ANCHORED 2026-08-21. One wall of that pocket was the King Tower, and the
+// King moved 9.0 -> 8.5 when the arena's centre was corrected, so this exact
+// configuration stopped trapping and the case stopped failing. The DEFECT is
+// unchanged -- pushAwayFrom's opposing slides still cancel -- so the pocket is
+// translated by the same -0.5 in x, preserving the relative geometry that
+// produced the fixed point.
+//
+// Re-measured on the corrected arena with tools/audit/soak.cpp: 4 stalls in
+// 347,501 unit-ticks over 60 matches, still none on or near a bridge, all in a
+// player's own back corner. So the rate is unchanged in kind; only this
+// reproduction's coordinates moved.
 //
 // Both constraints sit exactly on their boundary. The unit steps toward its
 // waypoint, Board::resolveCollisions pushes it back out of whichever circle it
@@ -44,8 +57,12 @@ constexpr int CANNON = 25;
 // which is why this starts the unit slightly outside it and lets it fall in.
 std::shared_ptr<Entity> spawnWedgedGolem(GameManager& game) {
     // GameManager::reset() already builds the King Tower at (9.0, 2.5) r=2.0.
-    CardRegistry::getInstance().getCard(CANNON)->spawnEntity(12.032f, 4.169f, 0, game.getBoard());
-    CardRegistry::getInstance().getCard(ICE_GOLEM)->spawnEntity(11.58f, 2.84f, 0, game.getBoard());
+    // Translated with the King: ArenaLayout::CENTER_X - 9.0f is the -0.5 the
+    // arena correction moved it by, applied to both so the pocket keeps its
+    // shape rather than being re-guessed.
+    constexpr float dx = ArenaLayout::CENTER_X - 9.0f;
+    CardRegistry::getInstance().getCard(CANNON)->spawnEntity(12.032f + dx, 4.169f, 0, game.getBoard());
+    CardRegistry::getInstance().getCard(ICE_GOLEM)->spawnEntity(11.58f + dx, 2.84f, 0, game.getBoard());
     game.getBoard().commitPendingEntities();
     for (const auto& e : game.getBoard().getEntities()) {
         if (e->cardId == ICE_GOLEM) return e;
