@@ -735,7 +735,16 @@ private:
         // === Defensive Structures ===
         add(building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10));
         add(building(26, "Tesla", 4.0f, 1182, 'T', 5.5f, 220, 11).withTargetsAir());
-        add(building(27, "Bomb Tower", 4.0f, 1356, 'D', 6.0f, 222, 18));
+        // withSightRange(6.0f) is NOT redundant with the 5.5 default: this card
+        // has attackRange 6.0, so the default left a 0.5-tile band in which it
+        // could attack something it could not SEE, never acquired it, and stood
+        // idle -- the same defect the 2026-08-20 audit fixed for Princess
+        // Towers, still latent here because nobody had overridden the default.
+        // Found by test_sight_range.cpp's "no card can attack further than it
+        // can see", which is the invariant that now makes this unmissable.
+        // CombatEntity::sightRange's comment gives buildings sight == attack
+        // range, and this is what makes that true for the Bomb Tower.
+        add(building(27, "Bomb Tower", 4.0f, 1356, 'D', 6.0f, 222, 18).withSightRange(6.0f));
         // Inferno Tower: damage is 5% of max for the first 2 seconds (20
         // ticks), 18.75% for the next 2 (tick 20-40), then full damage --
         // reset by a target switch or a stun (Zap/Freeze/etc, already
@@ -1016,9 +1025,16 @@ private:
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
             .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(3, 0.0f)).withSightRange(5.0f));
+        // withSightRange(6.0f) matching the single Musketeer (id 6), which has
+        // carried it all along -- this card is literally three of her and had
+        // been left on the 5.5 default against its own attackRange of 6.0,
+        // leaving a half-tile band where each Musketeer could attack something
+        // she could not see, so she never acquired it and stood idle. Same
+        // latent defect as the Bomb Tower's, found the same way, by
+        // test_sight_range.cpp's "no card can attack further than it can see".
         add(troop(80, "Three Musketeers", 9.0f, Archetype::RangedSquad, 722, 0.5f, 6.0f, 218, 10, ']')
             .withOffsets({ {-2.0f, 0.0f}, {0.0f, 0.0f}, {2.0f, 0.0f} })
-            .withTargetsAir());
+            .withTargetsAir().withSightRange(6.0f));
 
         // === New Building Targeters ===
         // Battle Ram: releases 2 Barbarians on death (reuses the already-

@@ -4,7 +4,9 @@
 #include "GameManager.h"
 #include "CardRegistry.h"
 #include "CombatEntity.h"
+#include "ClashEnv.h"   // getAllCardIds()
 #include <vector>
+#include <string>
 
 // ---------------- the sight / attack measurement mismatch ----------------
 //
@@ -93,4 +95,110 @@ TEST_CASE("sight is measured the same way as attack range, not centre-to-centre"
         INFO("tower at (" << e->position.x << ", " << e->position.y << ")");
         REQUIRE(combat->sightRange >= combat->getAttackRange());
     }
+}
+
+// ---------------- the sight-range catalog ----------------
+//
+// Sight range is not shown on the in-game card info screens; these values come
+// from a professional player's audit and the community stats breakdown behind
+// it. Rule A of that audit ("a unit can ONLY acquire a target inside its own
+// sight range") was already implemented here -- 58 per-card withSightRange
+// calls plus effectiveSightTo -- but NOTHING pinned the numbers, so a registry
+// edit could rebalance every aggro radius in the game silently.
+//
+// Read off the SPAWNED ENTITY rather than the registry literal, so this also
+// covers CardFactories::applyCardMetadata actually copying the value across --
+// a registry constant nothing transfers would pass a literal-only check.
+
+namespace {
+
+float spawnedSightRange(Board& board, int cardId) {
+    const auto* card = CardRegistry::getInstance().getCard(cardId);
+    REQUIRE(card != nullptr);
+    card->spawnEntity(9.0f, 10.0f, 0, board);
+    board.commitPendingEntities();
+    for (const auto& e : board.getEntities()) {
+        if (e->cardId != cardId) continue;
+        auto combat = std::dynamic_pointer_cast<CombatEntity>(e);
+        if (combat) return combat->sightRange;
+    }
+    return -1.0f;
+}
+
+} // namespace
+
+TEST_CASE("every DEFAULT_DECK card carries its catalogued sight range",
+          "[sight][registry][catalog]") {
+    struct Row { int cardId; const char* name; float sight; };
+    // The Log (33) and Fireball (7) are spells -- no sight range to carry.
+    const Row rows[] = {
+        { 15, "Hog Rider",  9.5f },   // building-targeter, the deck's win condition
+        {  6, "Musketeer",  6.0f },
+        { 25, "Cannon",     5.5f },   // building; sight == attackRange by design
+        { 40, "Ice Golem",  7.0f },   // building-targeter
+        { 24, "Skeletons",  5.5f },   // the catalog's stated standard
+        { 72, "Ice Spirit", 5.5f },
+    };
+    for (const auto& r : rows) {
+        Board board;
+        INFO(r.name << " (card id " << r.cardId << ")");
+        REQUIRE(spawnedSightRange(board, r.cardId) == Catch::Approx(r.sight));
+    }
+}
+
+// Two entries from the catalog that are NOT in the deck, chosen because they
+// bracket the range and because both are cards whose sight is famously longer
+// than their reach -- the property the whole mechanic exists for.
+TEST_CASE("catalogued outliers keep their sight range too", "[sight][registry][catalog]") {
+    struct Row { int cardId; const char* name; float sight; };
+    const Row rows[] = {
+        {  2, "Giant",     7.5f },
+        { 13, "P.E.K.K.A.", 5.0f },
+    };
+    for (const auto& r : rows) {
+        Board board;
+        INFO(r.name << " (card id " << r.cardId << ")");
+        REQUIRE(spawnedSightRange(board, r.cardId) == Catch::Approx(r.sight));
+    }
+}
+
+// THE INVARIANT, across the whole registry.
+//
+// Sight and attack range must be measured the same way -- surface to surface --
+// so that effective sight >= effective attack range and nothing can ever attack
+// what it cannot see. Two conventions for one geometric question is what let a
+// Musketeer destroy a 3204 hp Princess Tower from 8 tiles taking ZERO damage
+// (measured 2026-08-20, the case at the top of this file).
+//
+// Asserted per-card on the spawned entity, because the radii that turn a range
+// into an EFFECTIVE range are per-entity.
+TEST_CASE("no card can attack further than it can see", "[sight][invariant]") {
+    // Collects EVERY violation rather than failing on the first. A one-at-a-time
+    // assertion turns an audit into N build cycles, and worse, makes it look
+    // like there was only ever one problem.
+    int checked = 0;
+    std::string offenders;
+    for (int cardId : getAllCardIds()) {
+        const auto* card = CardRegistry::getInstance().getCard(cardId);
+        if (!card || card->isSpell) continue;
+
+        Board board;
+        card->spawnEntity(9.0f, 10.0f, 0, board);
+        board.commitPendingEntities();
+        for (const auto& e : board.getEntities()) {
+            auto combat = std::dynamic_pointer_cast<CombatEntity>(e);
+            if (!combat) continue;
+            if (combat->sightRange < combat->getAttackRange()) {
+                offenders += "\n  card " + std::to_string(cardId) + " " + card->name
+                           + ": sight " + std::to_string(combat->sightRange)
+                           + " < attackRange " + std::to_string(combat->getAttackRange());
+            }
+            checked++;
+        }
+    }
+    INFO("cards that can attack what they cannot see:" << offenders);
+    REQUIRE(offenders.empty());
+    // Guards the guard: a filter bug that skipped every card would otherwise
+    // make this pass vacuously.
+    REQUIRE(checked > 100);
 }
