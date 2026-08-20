@@ -554,6 +554,28 @@ class MicroRoyaleNet(nn.Module):
         """אליקסיר נוכחי (0..10) מתוך ה-obs. ClashEnv מחלק ב-10 בבנייה."""
         return obs[:, self.spatial_size] * 10.0
 
+    def hand_costs_from_obs(self, obs):
+        """עלויות קלפי היד (0..10) מתוך ה-obs: טנזור (Batch, hand_size).
+
+        אותו היפוך של החלוקה ב-10 ש-elixir_from_obs עושה, על הסקלרים שמייד
+        אחרי האליקסיר -- אותם היסטים בדיוק ש-affordability_mask קורא.
+
+        מחזיר טנזור ולא רשימה, בעקבות elixir_from_obs שמעליו: קורא שרוצה
+        רשימה שטוחה לשורה בודדת כותב `[0].tolist()` במפורש, במקום שהפונקציה
+        תבליע בשקט את מימד ה-batch.
+
+        קיים כאן כי היו לו שלושה עותקים מילוליים
+        (advisors/hybrid_policy.py, eval/gate_ab.py, perception/live/mvp_loop.py),
+        כל אחד עם ההיסט וה-10.0 כתובים ביד -- בדיוק דפוס ה"עותק שני של קבוע
+        מנוע" ש-CLAUDE.md אוסר, ושכבר התיישן פעמיים בפרויקט הזה.
+
+        לא מקפלים את זה לתוך SolvencyGate.mask: הבדיקה שם נבנית על
+        np.zeros(SPATIAL+1), כך שקריאת עלויות הייתה מחזירה פרוסה ריקה ולא
+        חריגה -- והבדיקה הייתה עוברת מבלי לבדוק דבר.
+        """
+        s = self.spatial_size
+        return obs[:, s + 1:s + 1 + self.hand_size] * 10.0
+
     def step_lstm_and_card(self, features, hidden_state, card_mask=None):
         """
         חצי ראשון של הצעד הרקורנטי: מקדם את ה-LSTM ומחשב בחירת קלף + הערכת

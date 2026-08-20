@@ -73,6 +73,104 @@ def noop_rate(cards):
     return float((cards == CE.HAND_SIZE).mean())
 
 @torch.no_grad()
+def _score_replay(net, data, greedy_card, device, episodes=None):
+    """One recurrent replay of `episodes`, scoring BOTH conditional metrics.
+
+    conditional_match_rate and conditional_lift ran character-for-character
+    identical replay loops -- same per-episode index select, same
+    extract_features/affordability_mask, same zeroed hidden state, same
+    step_lstm_and_card walk -- differing only in the bookkeeping inside the
+    `t` loop. Two copies of a recurrent unroll is two places for a hidden-state
+    or masking fix to be applied to one and not the other.
+
+    Worse, expert_iteration called them back to back on IDENTICAL arguments
+    (student + held), so the same rows were replayed twice for no reason. The
+    unroll is the expensive part -- it is sequential by construction, one
+    LSTM step per row -- so folding them halves that call site outright. Use
+    conditional_metrics() where both are wanted.
+
+    Returned dicts are byte-for-byte what the two public functions returned
+    before; they are now thin selectors over this.
+    """
+    net = net.to(device).eval()
+    ep_ids = np.unique(data["episode"]) if episodes is None else np.asarray(sorted(episodes))
+
+    dis_ok = dis_n = agr_ok = agr_n = 0
+    pred_noop = pred_n = 0
+    n1 = n0 = ok1 = ok0 = 0
+
+    for e in ep_ids:
+        idx = np.where(data["episode"] == e)[0]
+        if len(idx) == 0:
+            continue
+        o = torch.tensor(data["obs"][idx]).to(device)
+        ca = data["card"][idx]
+        gc = greedy_card[idx]
+        feats, _, _ = net.extract_features(o)
+        mask = net.affordability_mask(o)
+        hx = torch.zeros(1, LSTM_HIDDEN, device=device)
+        cx = torch.zeros(1, LSTM_HIDDEN, device=device)
+        for t in range(len(idx)):
+            cl, _, _, _, (hx, cx) = net.step_lstm_and_card(
+                feats[t:t + 1], (hx, cx), mask[t:t + 1])
+            pred = int(cl.argmax(1))
+            expert = int(ca[t])
+            greedy = int(gc[t])
+
+            # --- conditional_match_rate bookkeeping ---
+            pred_noop += int(pred == net.hand_size)
+            pred_n += 1
+            if expert != greedy:
+                dis_n += 1
+                dis_ok += int(pred == expert)
+            else:
+                agr_n += 1
+                agr_ok += int(pred == expert)
+
+            # --- conditional_lift bookkeeping ---
+            # Skips rows where greedy already waited: no restraint decision to
+            # make. That `continue` came last in the original loop, so it never
+            # skipped the match-rate counters above -- preserved by making it a
+            # plain conditional here rather than a `continue`.
+            if greedy != net.hand_size:
+                waited = int(pred == net.hand_size)
+                if expert == net.hand_size:
+                    n1 += 1
+                    ok1 += waited
+                else:
+                    n0 += 1
+                    ok0 += waited
+
+    p1 = ok1 / max(1, n1)
+    p0 = ok0 / max(1, n0)
+    # SE of a difference of two independent proportions -- printed so a lift
+    # inside its own noise is not read as a small positive effect.
+    se = math.sqrt(p1 * (1 - p1) / max(1, n1) + p0 * (1 - p0) / max(1, n0))
+
+    return {
+        "match_rate": {
+            "disagreement_match": dis_ok / max(1, dis_n),
+            "agreement_match": agr_ok / max(1, agr_n),
+            "pred_noop_rate": pred_noop / max(1, pred_n),
+            "disagreement_n": dis_n,
+            "agreement_n": agr_n,
+        },
+        "lift": {"p1_expert_waited": p1, "p0_expert_played": p0, "lift": p1 - p0,
+                 "se": se, "n1": n1, "n0": n0},
+    }
+
+
+def conditional_metrics(net, data, greedy_card, device, episodes=None):
+    """Both conditional metrics from ONE replay: (match_rate, lift).
+
+    Prefer this over calling conditional_match_rate and conditional_lift
+    separately on the same arguments -- that replays every row twice.
+    """
+    r = _score_replay(net, data, greedy_card, device, episodes)
+    return r["match_rate"], r["lift"]
+
+
+@torch.no_grad()
 def conditional_match_rate(net, data, greedy_card, device, episodes=None):
     """THE instrument for this question: does the policy learn the CONDITIONAL?
 
@@ -101,40 +199,7 @@ def conditional_match_rate(net, data, greedy_card, device, episodes=None):
         learned the marginal and not the conditional, which is the whole
         hypothesis under test.
     """
-    net = net.to(device).eval()
-    ep_ids = np.unique(data["episode"]) if episodes is None else np.asarray(sorted(episodes))
-    dis_ok = dis_n = agr_ok = agr_n = 0
-    pred_noop = pred_n = 0
-    for e in ep_ids:
-        idx = np.where(data["episode"] == e)[0]
-        if len(idx) == 0:
-            continue
-        o = torch.tensor(data["obs"][idx]).to(device)
-        ca = data["card"][idx]
-        gc = greedy_card[idx]
-        feats, _, _ = net.extract_features(o)
-        mask = net.affordability_mask(o)
-        hx = torch.zeros(1, LSTM_HIDDEN, device=device)
-        cx = torch.zeros(1, LSTM_HIDDEN, device=device)
-        for t in range(len(idx)):
-            cl, _, _, _, (hx, cx) = net.step_lstm_and_card(
-                feats[t:t + 1], (hx, cx), mask[t:t + 1])
-            pred = int(cl.argmax(1))
-            pred_noop += int(pred == net.hand_size)
-            pred_n += 1
-            if int(ca[t]) != int(gc[t]):
-                dis_n += 1
-                dis_ok += int(pred == int(ca[t]))
-            else:
-                agr_n += 1
-                agr_ok += int(pred == int(ca[t]))
-    return {
-        "disagreement_match": dis_ok / max(1, dis_n),
-        "agreement_match": agr_ok / max(1, agr_n),
-        "pred_noop_rate": pred_noop / max(1, pred_n),
-        "disagreement_n": dis_n,
-        "agreement_n": agr_n,
-    }
+    return _score_replay(net, data, greedy_card, device, episodes)["match_rate"]
 
 @torch.no_grad()
 def conditional_lift(net, data, greedy_card, device, episodes=None):
@@ -160,38 +225,7 @@ def conditional_lift(net, data, greedy_card, device, episodes=None):
     hold p0 down while pushing p1 up. Lift is therefore the metric that answers
     the actual question, and it is scale-free with respect to the no-op rate.
     """
-    net = net.to(device).eval()
-    ep_ids = np.unique(data["episode"]) if episodes is None else np.asarray(sorted(episodes))
-    n1 = n0 = ok1 = ok0 = 0
-    for e in ep_ids:
-        idx = np.where(data["episode"] == e)[0]
-        if len(idx) == 0:
-            continue
-        o = torch.tensor(data["obs"][idx]).to(device)
-        ca, gc = data["card"][idx], greedy_card[idx]
-        feats, _, _ = net.extract_features(o)
-        mask = net.affordability_mask(o)
-        hx = torch.zeros(1, LSTM_HIDDEN, device=device)
-        cx = torch.zeros(1, LSTM_HIDDEN, device=device)
-        for t in range(len(idx)):
-            cl, _, _, _, (hx, cx) = net.step_lstm_and_card(
-                feats[t:t + 1], (hx, cx), mask[t:t + 1])
-            if int(gc[t]) == net.hand_size:
-                continue  # greedy already waited: no restraint decision to make
-            waited = int(int(cl.argmax(1)) == net.hand_size)
-            if int(ca[t]) == net.hand_size:
-                n1 += 1
-                ok1 += waited
-            else:
-                n0 += 1
-                ok0 += waited
-    p1 = ok1 / max(1, n1)
-    p0 = ok0 / max(1, n0)
-    # SE of a difference of two independent proportions -- printed so a lift
-    # inside its own noise is not read as a small positive effect.
-    se = math.sqrt(p1 * (1 - p1) / max(1, n1) + p0 * (1 - p0) / max(1, n0))
-    return {"p1_expert_waited": p1, "p0_expert_played": p0, "lift": p1 - p0,
-            "se": se, "n1": n1, "n0": n0}
+    return _score_replay(net, data, greedy_card, device, episodes)["lift"]
 
 def disagreement_weights(data, greedy_card, factor):
     """Per-row weights: `factor` on rows the expert overrode, 1.0 elsewhere.

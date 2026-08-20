@@ -126,6 +126,26 @@ def test_board_geometry_constants_match_their_headers():
     assert tuple(xs) == tuple(float(v) for v in tactics.BRIDGE_XS), (
         f"Board.h bridges at x={xs} but tactics.BRIDGE_XS={tactics.BRIDGE_XS}")
 
+    # GameManager::reset()'s addTower() calls -- team 0's King and its two
+    # Princesses, which tactics.OWN_KING / OWN_PRINCESS copy. Nothing exposes
+    # entity positions through the bindings, so these are the last hand-typed
+    # geometry in the module. Both moved on 2026-07-30 (King x 8.5 -> 9.0, left
+    # Princess x 3.0 -> 4.0), which is precisely why they are pinned.
+    king = re.search(r"addTower\(\s*([0-9.]+)f,\s*([0-9.]+)f,\s*4008,\s*0,", gm)
+    assert king, "team-0 King addTower() call not found in GameManager.h -- changed shape?"
+    assert (float(king.group(1)), float(king.group(2))) == tactics.OWN_KING, (
+        f"GameManager.h King at {king.group(1)},{king.group(2)} but "
+        f"tactics.OWN_KING={tactics.OWN_KING}")
+
+    princesses = re.findall(
+        r'addTower\(\s*([0-9.]+)f,\s*([0-9.]+)f,\s*0,\s*"Princess Tower"', gm)
+    assert len(princesses) == 2, (
+        f"expected 2 team-0 Princess addTower() calls, found {princesses}")
+    found = tuple((float(x), float(y)) for x, y in princesses)
+    assert found == tactics.OWN_PRINCESS, (
+        f"GameManager.h Princesses at {found} but "
+        f"tactics.OWN_PRINCESS={tactics.OWN_PRINCESS}")
+
 
 def test_geometry_matches_engine():
     assert tactics.BOARD_H == CE.BOARD_HEIGHT

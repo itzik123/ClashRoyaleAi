@@ -135,11 +135,10 @@ class HybridPolicy:
         t = torch.tensor(o, device=self.device).unsqueeze(0)
 
         mask = net.affordability_mask(t)
-        scal = t[:, net.spatial_size:]
-        # Costs live at [1 : 1+hand_size] of the scalar tail, already /10 by the
-        # encoder -- the same offsets affordability_mask reads, so there is no
-        # second copy of the observation layout here.
-        costs = (scal[0, 1:1 + net.hand_size] * 10.0).tolist()
+        # Costs come from the net rather than being sliced out here -- the
+        # offsets and the /10 lived in three separate copies before
+        # hand_costs_from_obs existed. See its docstring.
+        costs = net.hand_costs_from_obs(t)[0].tolist()
 
         if self.use_gate:
             # Opponent-elixir estimate from the PREVIOUS step's recurrent state.

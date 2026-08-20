@@ -53,11 +53,10 @@ def play(net, env, device, gate):
         mask = net.affordability_mask(t)
 
         if gate is not None:
-            # Card costs sit in the scalar tail at [1 : 1+hand_size], already
-            # divided by 10 by the encoder -- same layout affordability_mask
-            # reads, so no second copy of the observation geometry.
-            scal = t[:, net.spatial_size:]
-            costs = (scal[0, 1:1 + net.hand_size] * 10.0).tolist()
+            # Costs come from the net rather than being sliced out here -- see
+            # MicroRoyaleNet.hand_costs_from_obs, which replaced three copies
+            # of this offset arithmetic.
+            costs = net.hand_costs_from_obs(t)[0].tolist()
             allow = torch.tensor([gate.mask(o, costs)], dtype=torch.bool, device=device)
             newmask = mask & allow
             # Never produce an all-illegal row: the no-op column is always legal

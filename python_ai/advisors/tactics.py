@@ -41,8 +41,13 @@ bit-equal to `getObservationForTeam(0)`, so anything computed from the
 observation behaves identically in simulation and on the real screen. Reading
 `env.getEntities()` instead would be more precise and would not transfer.
 
-Every engine constant here is READ from the bindings, never re-typed --
-CLAUDE.md's rule about second copies, which this project has paid for twice.
+Every engine constant here is READ from the bindings wherever a binding exists.
+Four are not exposed at all -- MAX_CELL_UNITS, MAX_UNIT_SPEED, the tower
+positions, and OWN_HALF_RIVER_BUFFER -- so those are typed once WITH the header
+named next to them, which is the fallback CLAUDE.md prescribes for values that
+cannot be derived. `tests/test_tactics.py` pins each of them against the header
+it came from, so a change on the C++ side fails a test here rather than
+silently going stale. This project has paid for the second-copy mistake twice.
 """
 import numpy as np
 
@@ -72,7 +77,25 @@ CH_ENEMY_COUNT = CE.CH_COUNT + 1
 CH_ENEMY_SPEED = CE.CH_SPEED + 1
 CH_ENEMY_DPS = CE.CH_DPS + 1
 
-RIVER_Y = 15.5
+# River START edge, DERIVED rather than typed. GameManager::getOwnHalfMaxY()
+# returns getRiverStart() - OWN_HALF_RIVER_BUFFER, so adding the buffer back
+# recovers the river edge exactly. The buffer itself is the one piece not
+# bound (GameManager.h: `OWN_HALF_RIVER_BUFFER = 0.5f`) -- named here per
+# CLAUDE.md's fallback rule, and pinned by
+# tests/test_tactics.py::test_board_geometry_constants_match_their_headers.
+#
+# This was `RIVER_Y = 15.5` until 2026-08-20. The river has already MOVED once
+# (2026-07-29, [16,18) -> [15.5,17.5)) and took stale Python copies with it, so
+# the literal was the exact hazard this module's own docstring warns about.
+_OWN_HALF_RIVER_BUFFER = 0.5   # GameManager.h
+_probe = CE(list(range(8)), list(range(8)), 100)
+RIVER_Y = _probe.get_own_half_max_y() + _OWN_HALF_RIVER_BUFFER
+del _probe
+
+# NOT derivable: no binding exposes board entities or their positions, so these
+# are read from GameManager::reset()'s addTower() calls and named here per the
+# same fallback rule. Both are post-2026-07-30 (King x 8.5 -> 9.0, left
+# Princess x 3.0 -> 4.0; see perception/UPSTREAM_REQUESTS.md items 1-2).
 OWN_PRINCESS = ((4.0, 6.0), (14.0, 6.0))
 OWN_KING = (9.0, 2.5)
 

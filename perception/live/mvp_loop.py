@@ -533,9 +533,10 @@ class NeuralPolicy:
                 # auxiliary head using the PREVIOUS step's state -- the mask has
                 # to exist before this step's LSTM runs).
                 o = obs[0].numpy()
-                costs = (obs[0, self.net.spatial_size + 1:
-                              self.net.spatial_size + 1 + self.net.hand_size]
-                         * 10.0).tolist()
+                # From the net, not sliced here -- see
+                # MicroRoyaleNet.hand_costs_from_obs, which replaced three
+                # copies of this offset arithmetic (this was the third).
+                costs = self.net.hand_costs_from_obs(obs)[0].tolist()
                 opp = float(self.net.predict_opp_elixir(self._hx)[0])
                 allow = torch.tensor([self._gate.mask(o, costs, opp)],
                                      dtype=torch.bool)

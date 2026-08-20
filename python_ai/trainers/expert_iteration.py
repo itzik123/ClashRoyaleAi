@@ -89,7 +89,7 @@ from python_ai.trainers.expert_distill import (  # noqa: E402
     candidate_target, freeze_trunk, train_distribution,
 )
 from python_ai.trainers.expert_metrics import (  # noqa: E402
-    conditional_lift, conditional_match_rate, critic_drift,
+    conditional_lift, conditional_match_rate, conditional_metrics, critic_drift,
     deviation_breakdown, disagreement_weights, modal_cell_baseline, noop_rate,
 )
 
@@ -452,8 +452,9 @@ def main():
             episode_filter=train_eps)
         student.eval()
 
-        lift = conditional_lift(student, data, greedy_card, device, held)
-        cond = conditional_match_rate(student, data, greedy_card, device, held)
+        # Both from ONE replay -- these were two calls with identical
+        # arguments, i.e. the same rows unrolled through the LSTM twice.
+        cond, lift = conditional_metrics(student, data, greedy_card, device, held)
         vd, ad = critic_drift(original, student, data["obs"], device)
         ci = 1.96 * lift["se"]
         print(f"\n  CONDITIONAL LIFT {lift['lift']:+.4f} +/- {ci:.4f}  "
