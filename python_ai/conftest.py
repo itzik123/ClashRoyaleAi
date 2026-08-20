@@ -16,3 +16,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import python_ai  # noqa: E402,F401
+
+
+def pytest_configure(config):
+    """Register the markers the suite uses, so an unknown-mark warning stays a
+    real signal instead of six lines of noise on every run."""
+    config.addinivalue_line(
+        "markers",
+        "slow: exercises a real environment or a real training update "
+        "(seconds, not milliseconds). Deselect with -m 'not slow'.")
