@@ -2120,6 +2120,23 @@ order in exactly one place. **No subclass may override `collect_rollout` or
   now uses the shared extractor. GAMEPLAY-AFFECTING for the exploiter, which has
   been disabled since 2026-08-11, so no run is invalidated.
 
+### One LATENT BUG the extraction removed, for free
+
+`train.py` had two hand-written `torch.save({...})` blocks: the periodic one
+persisted `ent_coef_card` / `ent_coef_place`, and the FINAL one at the stop
+point did not. So the very last checkpoint pipeline 1 wrote — the one pipeline 2
+bootstraps from, and the one any resume picks up — silently dropped the
+converged entropy controller and sent it back to its 0.05 / 0.06 seed values.
+
+That is exactly the failure already on record from the other pipeline (observed
+2026-07-30: placement reset from a converged 0.0132 to 0.06 and took ~5,600
+episodes to walk back, with nothing warning). One `save_checkpoint()` makes the
+two saves the same object by construction, and
+`test_the_final_save_carries_the_SAME_keys_as_the_periodic_one` pins it.
+
+Nothing else changed about either save. Pipeline 2's periodic cadence now also
+honours `CLASH_SAVE_EVERY` (it was a hardcoded 500); the default is identical.
+
 ### What the tests now pin that they could not before
 
 `CURRICULUM_STAGES` was a LOCAL of `train_ppo()`, so the suite parsed `train.py`

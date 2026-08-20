@@ -177,3 +177,36 @@ def test_both_pipelines_are_BaseTrainers_rather_than_two_loops():
     for cls in (Phase1Trainer, Phase2Trainer):
         assert "collect_rollout" not in vars(cls)
         assert "run_update" not in vars(cls)
+
+
+@pytest.mark.slow
+def test_the_final_save_carries_the_SAME_keys_as_the_periodic_one(workdir):
+    """A LATENT BUG the extraction removed, worth a regression.
+
+    `train.py` had two hand-written `torch.save({...})` blocks: a periodic one
+    that persisted `ent_coef_card` / `ent_coef_place`, and a FINAL one at the
+    stop point that did not. So the very last checkpoint pipeline 1 wrote --
+    the one pipeline 2 bootstraps from, and the one any resume picks up --
+    silently dropped the converged entropy controller and sent it back to its
+    0.05 / 0.06 seed values.
+
+    That is precisely the failure already on record from the other pipeline:
+    observed 2026-07-30, placement reset from a converged 0.0132 to 0.06 and
+    took ~5,600 episodes to walk back, with nothing warning. One
+    `save_checkpoint()` makes the two saves the same object by construction.
+    """
+    trainer = _phase1()
+    trainer.entropy.coef_card = 0.4242
+    trainer.entropy.coef_placement = 0.0242
+
+    trainer.save_checkpoint(verbose=False)          # the periodic path
+    periodic = torch.load("model_weights.pth", map_location="cpu",
+                          weights_only=False)
+    trainer.on_finish()                             # the final path
+    final = torch.load("model_weights.pth", map_location="cpu",
+                       weights_only=False)
+
+    assert set(periodic) == set(final), (
+        "the final save must not drop keys the periodic save persists")
+    assert final["ent_coef_card"] == pytest.approx(0.4242)
+    assert final["ent_coef_place"] == pytest.approx(0.0242)
