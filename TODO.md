@@ -20,66 +20,60 @@ Rules that apply to every item below:
 
 ---
 
-## 1. ⭐ Upgrade the Utility Teacher to evaluate MULTI-CARD COMBO placements
+## 1. ✅ DONE (2026-08-20) — Utility Teacher evaluates MULTI-CARD COMBO placements
 
-**This is the top item by expected value. It is the one thing the engine now
-rewards and no component can express.**
+**Built, tested and measured.** `UtilityTeacher` candidates are now SEQUENCES of
+placements rather than single cells, and the teacher plans, commits to and
+executes two-card combos. Full write-up with every number is in CLAUDE.md,
+"2026-08-20 (later): the MULTI-CARD teacher".
 
-### Why it is first
+The short version:
 
-The 2026-08-19 deploy-time change (`DEPLOY_TIME_TICKS = 10`) made the *escorted*
-push the correct play and the *naked* push the punished one. Measured on the
-same engine, same harness, same protocol:
+- `Candidate` carries a tuple of `PlacementStep`s; `.slot/.x/.y` still mean the
+  first step, so nothing downstream changed. Six curated families
+  (`supported_push`, `counter_push`, `defensive_stack`, `cheap_defence`,
+  `spell_then_push`, `push_then_spell`), round-robin under a `max_combos`
+  budget that is a new competence axis in `TEACHER_STAGES` (0/0/2/3/4/4).
+- **No C++ change was needed.** A 0-tick `step_self_play` places nothing and
+  `gym_wrapper` gives the teacher one action per decision, so a combo is a
+  sequence across consecutive decisions -- which is the shape the +448.5 tower
+  HP "supported push" was measured at anyway. Per-entity deploy time verified
+  from Python.
+- **The generator alone was not enough**, and that is the transferable result: a
+  pair priced at 5-6 elixir was affordable in 2 of ~2,400 decisions. What fixed
+  it was making the follow-up GAP a searched axis (1/3/5 s), because the pair's
+  cost is paid across the gap. A flat savings charge was tried first and is
+  measured DEAD -- do not re-propose it.
+- **Win rate is a measured NULL across four paired runs** (+0.000, -0.031,
+  -0.081, -0.031; every CI spans zero; pooled -0.036 at n=160 against a ~0.057
+  half-width). Kept on because it makes a play the engine rewards expressible at
+  ~4% throughput, and `max_combos = 0` is action-identical to the old teacher
+  (0 mismatches / 919 decisions). **The pooled -0.036 is the thing to
+  re-measure at higher n before this teacher fronts a long training run.**
+- **A control failed and the reason is reusable:** `--seed` does not make
+  `prove_combos.py` reproducible, because `ClashEnv::reset()`'s opening shuffle
+  is unseeded (engine request 7, still open). Within a run the snapshot pairing
+  is sound; ACROSS runs only the deltas are comparable, never the arm levels.
 
-| commitment | marginal value | 95% CI |
-|---|---|---|
-| lone win condition | **−556.3** tower HP | — |
-| supported push (tank one decision ahead) | **+448.5** tower HP | [+137.3, +760.1] |
-| escorting, in a punish window | **+650 HP** | [+429, +878] |
+### What this leaves open, and it is now an ECONOMY question
 
-`UtilityTeacher` cannot make that play. `_cells_for` proposes cells for **one
-card per decision** and `score` ranks single candidates, so its entire attack
-repertoire is "send the win condition to a bridge, alone" — precisely the play
-the new physics correctly punishes.
+Combos are chosen on well under 1% of decisions, and the binding constraint is
+no longer the candidate generator -- it is that the teacher's bar sits at a p90
+of **3.30**, so it can rarely buy a two-card play at all. It spends continuously
+because `w_pos` (20.0) credits any cheap troop merely for standing forward: a
+1-cost body scores about 1.2 utility for 1 elixir, so almost every cheap card
+beats holding.
 
-That is why the strategy-level arm still reads attack 0.490 vs cycle 0.715.
-**That number is now a property of the teacher's repertoire, not of the
-engine**, and it is the one place the two can still be confused.
+That is a SCORING question about `PROFILES`, and it should be answered the way
+the profiles were meant to be -- `prove_teacher.py --sweep` selects on win rate
+against the C++ heuristic and the winner is CONFIRMED on a fresh independent
+run. It is deliberately NOT a sixth combo family; the generator is not what is
+binding any more.
 
-### What it needs
-
-- Candidate generation over short **sequences** rather than single cells — at
-  minimum *(tank now, win condition next decision, same lane)*. Today
-  `candidates()` emits a flat list of single-card `Candidate(slot, cid, x, y,
-  role)` objects, and `_cells_for`'s own docstring says "1-3 tactically sensible
-  cells for **one card**".
-- A score that can attribute value to the pair. `score()` currently ranks one
-  candidate against the no-op baseline.
-- **The rollout machinery already supports it, and the change is small.**
-  `rollout_stats` takes `env.snapshot()`, plays the candidate with one
-  `step_self_play(slot, x, y, ..., 10)`, then no-ops the remaining horizon in
-  10-tick chunks. A two-card sequence is the same loop with the second card
-  played into one of those chunks instead of a no-op — no new engine capability
-  is needed.
-
-### The cost to watch
-
-Width is what search is expensive in — one engine step is 0.015 ms, but each
-extra candidate is a whole rollout plus a network row at ~0.13 ms. **Enumerate a
-handful of curated combos, not the cross product.** Depth is nearly free; that
-is why `TEACHER_STAGES` progresses on horizon (0 → 100 ticks) and not on width.
-
-### Do NOT confuse this with a fifth Hog mechanism
-
-Four policy-side mechanisms have been built and measured null (a reward
-multiplier, an advisor target, random forcing, gate-timed smart forcing). All
-four tried to move a **policy** toward a play the environment priced negatively.
-This is the opposite situation: the environment now prices the play
-**positively** and the teacher simply cannot express it.
-
-**Files:** `python_ai/opponents/teacher.py` (`_cells_for`, `candidates`, `score`,
-`rollout_stats`). **Harness:** `python_ai/eval/prove_environment.py --mode marginal`
-— and read the *supported* arm, never the lone-Hog arm, which is now a strawman.
+**Do not read this as "the teacher should hoard".** A flat reserve was measured
+dead here, and CLAUDE.md already records that the shipped solvency gate fixed
+bankruptcy as a statistic with no outcome gain. The open question is whether
+`w_pos` is simply too high, which is a different and cheaper experiment.
 
 ---
 
@@ -181,6 +175,12 @@ elixir advantage, not HP chipped. Long term these should anneal toward zero.
 | 3 | King Tower has no activation condition | open, **already worked around — no change requested** |
 | 7 | The engine's RNG cannot be seeded | **open** — additive, not gameplay-affecting |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **open — a decision, not a defect** |
+
+**Item 7 got more expensive to live without on 2026-08-20.** A combo A/B
+control was designed around "same `--seed`, so the OFF arm should reproduce";
+it cannot, because the opening shuffle is unseeded, and the mis-specified
+control cost a 10-minute run and nearly produced a wrong conclusion about which
+combo family was responsible for a trend. See CLAUDE.md's multi-card section.
 
 **Item 7 is worth doing and is cheap.** `env.snapshot()` (2026-08-11) removed it
 as the blocker on *paired* A/B tests, but not on **reproducible failures**. Live

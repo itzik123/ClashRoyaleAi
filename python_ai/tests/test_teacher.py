@@ -259,13 +259,28 @@ def test_teacher_stages_are_competence_not_economy():
 
     assert len(TEACHER_STAGES) == 6
     for s in TEACHER_STAGES:
-        assert set(s) == {"horizon_ticks", "epsilon", "k_cells"}, (
+        assert set(s) == {"horizon_ticks", "epsilon", "k_cells", "max_combos"}, (
             "a stage must never carry an elixir multiplier -- that is the whole "
             "point of this curriculum")
+        # The claim above is about ECONOMY, so state it directly rather than
+        # relying on the key set alone. `max_combos` was added on 2026-08-20 as
+        # a third COMPETENCE axis (how many two-card sequences the bot may
+        # simulate), and a future axis should have to pass this too.
+        for key in s:
+            assert "elixir" not in key and "multiplier" not in key, key
     eps = [s["epsilon"] for s in TEACHER_STAGES]
     hor = [s["horizon_ticks"] for s in TEACHER_STAGES]
+    combos = [s["max_combos"] for s in TEACHER_STAGES]
     assert eps == sorted(eps, reverse=True), "noise must fall monotonically"
     assert hor == sorted(hor), "lookahead must rise monotonically"
+    assert combos == sorted(combos), "combo width must rise monotonically"
+    # A combo's follow-up lands 10 ticks in, so a rung whose rollout stops
+    # before that would charge two cards and simulate one. The ladder must not
+    # be able to ask for combos it cannot score.
+    from python_ai.opponents.teacher import COMBO_MIN_HORIZON_TICKS
+    for s in TEACHER_STAGES:
+        if s["max_combos"] > 0:
+            assert s["horizon_ticks"] >= COMBO_MIN_HORIZON_TICKS
 
 
 def test_epsilon_one_still_only_emits_legal_actions():

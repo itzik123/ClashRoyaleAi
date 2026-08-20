@@ -59,7 +59,19 @@ That looks exactly like "the compile is broken" and almost never is. Check
 > means `python_ai/venv` is absent and nothing importing `clash_royale_env` can
 > run. Keep the command above for whichever machine still has the toolchain.
 >
-> **The C++ TEST SUITE does still build and run here, via WSL:**
+> **⚠ RE-VERIFIED 2026-08-20: WSL IS GONE TOO, so the C++ suite cannot be built
+> or run on this box either.** `wsl --version` reports "The Windows Subsystem for
+> Linux is not installed", and `cl`, `cmake`, `msbuild`, `g++` and `clang++` are
+> all absent from PATH. There is now NO way to compile C++ here at all. The
+> command below is kept for whichever machine still has a toolchain.
+>
+> The practical consequence for a session on this box: a change that touches
+> `include/`, `src/` or `tests/` **cannot be verified here**, so do not make one.
+> Verify instead that the C++ tree is untouched --
+> `git diff --name-only main -- include/ src/ tests/ CMakeLists.txt build_python/`
+> must be empty -- and say that, rather than claiming a suite you did not run.
+>
+> **The C++ test suite used to build and run here via WSL:**
 >
 > ```bash
 > wsl g++ -std=c++20 -Wall -Wextra \
@@ -2175,6 +2187,230 @@ moved one level down; they all read `PACKAGE_DIR` now.
 
 ---
 
+## 2026-08-20 (later): the MULTI-CARD teacher. TODO.md item 1.
+
+**Not gameplay-affecting for the agent, and no checkpoint is invalidated** — the
+observation, action space, architecture and reward are untouched. What changed
+is `UtilityTeacher`'s repertoire, so **phase 1's opponent is stronger in kind,
+and win rates measured against `teacher@stage N` before this date describe a bot
+that could only play one card per decision.**
+
+The 2026-08-19 deploy-time change made the escorted push the correct play
+(+448.5 tower HP marginally) and the naked push the punished one (−556.3), and
+`UtilityTeacher` could not express the escorted one: `_cells_for` proposed cells
+for a single card and `score` ranked single candidates. That, not the engine,
+was the remaining reason `prove_environment.py`'s strategy arm read attack 0.490
+vs cycle 0.715.
+
+### The engine fact that decided the design
+
+**`step_self_play(slot, x, y, ..., 0)` places nothing.** Placement is processed
+inside the tick loop, so a 0-tick call spends no elixir and puts no unit on the
+board (measured; pinned by
+`test_a_zero_tick_step_places_nothing_which_is_why_a_combo_is_a_SEQUENCE`). And
+`gym_wrapper.step` hands the teacher exactly one `(slot, x, y)` per decision.
+
+So there is no such thing as a simultaneous two-card placement, and a combo is a
+**sequence across consecutive decisions** — which is also the shape the +448.5
+measurement was taken at. **No C++ change was needed or made.** Deploy time is
+per-entity (`CardFactories::applyCardMetadata`), verified from Python: a card
+placed 10 ticks after another still sits out its own full second before moving.
+
+### What was built
+
+`Candidate` now carries a **tuple of `PlacementStep`s** rather than one cell;
+`.slot/.x/.y` survive and mean the first step, so every caller that unpacks
+three values is untouched. `.placements` is the `[(slot, x, y), ...]` form.
+Six curated families, taken round-robin under a `max_combos` budget:
+
+| family | shape |
+|---|---|
+| `supported_push` | tank, then the win condition behind it, same lane |
+| `counter_push` | the CHEAPEST body as escort instead of the tank |
+| `defensive_stack` | building (or the centre pull), then a body on the threat |
+| `cheap_defence` | the two cheapest bodies onto the same threat |
+| `spell_then_push` | clear the lane, then walk into it |
+| `push_then_spell` | the win condition, then the spell answering its answer |
+
+`max_combos` is a **third competence axis** in `TEACHER_STAGES` (0/0/2/3/4/4),
+zero on the two shortest rungs because their horizons cannot reach a follow-up.
+
+### The generator was necessary and NOT sufficient, and that is the useful result
+
+A first version shipped only the families, at a fixed one-decision gap. Measured
+teacher-vs-teacher at stage 5 over ~2,400 decisions:
+
+| | |
+|---|---|
+| elixir mean / p90 | **1.79 / 3.30** |
+| states where ANY combo was affordable | **2** |
+| ...and both were the 5.00 opening bar | |
+
+At a one-second gap both cards must be affordable at once — Ice Golem + Hog is
+6, Skeletons + Hog is 4.65 — against a bar whose p90 is 3.30. **The teacher
+could propose a play it could never afford.** Same shape as three other
+already-recorded traps: a mechanism whose precondition never occurs.
+
+**A FLAT SAVINGS CHARGE WAS TRIED AND IS MEASURED DEAD.** Charging every
+marginal spend while a push was within six decisions of affordable moved the bar
+**1.79 → 1.73** across reserves of 0.0 / 1.5 / 3.0 / 5.0 — not at all, and if
+anything the wrong way. A per-decision charge cannot manufacture multi-second
+saving when the bot has many attractive cheap plays and the defence exemption
+keeps firing. Removed rather than shipped, on the principle this file already
+records for back-row structure penalties: *a penalty cannot move a distribution
+with no mass to move.* Do not re-propose it.
+
+### What DID work: the gap is a searched axis
+
+The pair's cost is paid **across** the gap, not at the plan. `COMBO_FOLLOWUP_DELAYS
+= (10, 30, 50)` — 1 s, 3 s, 5 s — so 3 s of regeneration is worth 1.05 elixir and
+5 s 1.75, moving Skeletons + Hog from 4.65 to 3.95 and **3.25**, i.e. from never
+to sometimes. A gap is offered only when the rollout runs past it, so a short
+rung simply sees fewer gaps. Proposals went **2 → 94-109** per ~2,500 decisions.
+
+**And the ranking is TACTICAL, not a terminal-evaluation artifact** — worth
+checking, because `positional_advantage` is read at the END of the horizon, so a
+card placed at t=50 is fresher there than one placed at t=10 and could win for no
+tactical reason. Measured with the bar pinned at 8.0 so all three gaps are
+affordable and ONLY the gap varies, n=21 states, same pair, same cells:
+
+| gap | mean score | median |
+|---|---|---|
+| **10 (1 s)** | **+5.281** | +4.524 |
+| 30 (3 s) | +2.529 | +2.039 |
+| 50 (5 s) | +1.761 | +1.555 |
+
+Monotone toward the TIGHT escort, which is what "tank one decision ahead" says it
+should be. The 5 s gap dominates real play purely because it is the only one that
+can be paid for.
+
+### The plan, and why the follow-up is OFFERED rather than executed
+
+`act()` returns one placement, so the second half is carried as `pending` with a
+tick countdown and offered as an ordinary candidate on the decision it comes due
+— **re-scored, not executed blindly.** That is not a weaker plan: by then the
+tank is physically on the board, so a solo rollout of the win condition already
+sees the escort, and adding a synergy bonus would double-count it. A narrow
+`plan_reserve_penalty` charges other spends that would leave the committed
+follow-up unaffordable, exempted above `tactics.HOG_MAX_THREAT` so defence is
+never blocked.
+
+**Measured abandonment, 19 chosen plans:** 3 completed, 10 lost the argmax when
+due, 5 became unaffordable, 1 lost its hand slot. The dominant reason is the
+design working — the board moved and the simulator preferred something else.
+
+### PHASE 3: the lookahead sweep against the ep-31,312 net
+
+`prove_combos.py --vs-net`, 24 paired openings per horizon, sides swapped,
+teacher at stage 5 with only `horizon_ticks` varying. **The reported score is
+the TEACHER's.** (The brief asked for "ep 25202"; that checkpoint was deleted in
+the 2026-08-19 cleanup, and `model_weights_selfplay.pth` at ep 31,312 is the
+surviving descendant of the same 2.6 run.)
+
+| horizon | teacher score | 95% CI | combos chosen | completed |
+|---|---|---|---|---|
+| 30 (3 s) | 0.031 | [0.000, 0.083] | 3 | 0 |
+| 50 (5 s) | 0.094 | [0.021, 0.177] | 3 | 1 |
+| 70 (7 s) | 0.083 | [0.021, 0.167] | 18 | 4 |
+| **100 (10 s)** | **0.115** | [0.042, 0.198] | 23 | 6 |
+| 120 (12 s) | 0.083 | [0.021, 0.167] | 46 | 3 |
+
+**No depth in 3-12 s makes the teacher beat this net.** Depth helps from 3 s to
+10 s and then stops: 12 s is worse than 10 s, which independently reproduces the
+reason `TEACHER_STAGES` tops out at 100 ticks and the reason the neural search
+measured horizon 20 worse than 12 -- `rollout_stats` rolls forward with both
+sides no-oping, and past ~12 s of that a rollout stops resembling the game. The
+CIs overlap heavily at n=24, so read the 3 s -> 10 s rise as directional and the
+10 s -> 12 s fall as consistent-with-known-physics, not as resolved.
+
+**CROSS-CHECKED against the established harness**, which is the only reason
+these numbers are quotable: `prove_teacher.py --vs shipping --n 20 --stage 5`
+gives net 0.8625, CI [0.7500, 0.9500], i.e. teacher 0.1375 -- agreeing with this
+harness's 0.115 at the same horizon.
+
+**The teacher itself is not weakened. Both of `prove_teacher.py`'s bars still
+pass**, re-run after the change (n=20 per stage, vs the C++ HeuristicOpponent at
+1.0x): 0.500 / 0.600 / 0.750 / 1.000 / 0.975 / **1.000** for stages 0-5. Monotone
+in competence and saturated at the top, as before.
+
+CLAUDE.md previously recorded the net beating the teacher **0.775**; it is
+0.8625 now. That measurement predates `DEPLOY_TIME_TICKS`, which specifically
+punishes the naked bridge push that was the teacher's entire attack repertoire --
+so the widening gap is the expected consequence of the engine fix, and is the
+gap this item exists to close.
+
+### The win-rate verdict is a NULL, and it is reported as one
+
+`prove_combos.py --combo-ab`, stage 5, 40 paired openings per run, sides
+swapped, only team 0's combo width varying. **Four runs, and every one of them
+is individually a null:**
+
+| run | families on the ON arm | delta | 95% CI | sign test |
+|---|---|---|---|---|
+| 1 | 5 (no `cheap_defence`) | **+0.000** | [−0.081, +0.081] | 9/9, p = 1 |
+| 2 | 6 | −0.031 | [−0.113, +0.050] | 8/10, p = 0.815 |
+| 3 | 6 | −0.081 | [−0.175, +0.006] | 7/14, p = 0.189 |
+| 4 | 5 (`cheap_defence` ablated) | −0.031 | [−0.113, +0.050] | 8/12, p = 0.503 |
+
+Pooled: **6 families −0.056, 5 families −0.016, all four −0.036 (n=160)**, against
+a per-run 95% half-width of ~0.081 and ~0.057 for two pooled runs. So the
+difference between the two configurations is deep inside the noise and **the
+ablation neither convicts nor exonerates `cheap_defence`.** What can be said is
+that the pooled point estimate is a small negative that n=160 still cannot
+resolve.
+
+**THE METHODOLOGICAL FINDING IS THE MORE VALUABLE HALF, and it invalidated my
+own control.** Run 4 was designed with a built-in validity check: it shares
+seed 300 with run 3, so its OFF arm should have reproduced run 3's OFF arm
+exactly. It did not — **0.475 against 0.537** — and the reason is that
+`ClashEnv::reset()`'s opening-hand shuffle is **UNSEEDED** (`UPSTREAM_REQUESTS.md`
+item 7, still open). `--seed` reaches only the teachers' own RNG, which at
+stage 5 is just the lane bias, so two invocations of this harness draw entirely
+different match populations no matter what seed is passed.
+
+The consequence is specific and worth carrying:
+
+- **Within a run the pairing is sound** — both arms play the same
+  `base.snapshot()`, so the paired delta is valid and that is what is reported.
+- **Across runs only the DELTAS are comparable, never the arm levels.** Runs 2
+  and 3 both happening to report an OFF arm of 0.537 was coincidence, and
+  reading that as reproducibility is what made run 4's control look like a
+  failed comparison rather than a mis-specified one.
+- Any future "run it again at a different seed and check the baseline matches"
+  design in this repo is invalid for the same reason until item 7 lands.
+
+**Kept ON by default, with the trend stated rather than buried.** The reasons:
+every individual run is a null, stage 5 still beats the C++ heuristic 1.000, and
+the families give the teacher a repertoire the post-deploy-time engine actually
+rewards. Against that, the pooled −0.036 is the single thing most worth
+re-measuring at higher n before this teacher fronts a long training run. Two
+one-line off switches exist and both are tested: `max_combos = 0` (which is
+action-identical to the pre-2026-08-20 teacher) and `combo_families` (which
+drops a single family).
+
+Latency: **3.0-3.3 -> 4.2-5.5 ms per decision**, i.e. under a second added to a
+~22 s episode.
+
+**With `max_combos = 0` the new teacher is ACTION-IDENTICAL to the old one** --
+0 mismatches over 919 decisions across 16 matches at stages 2 and 5, compared
+against `main`'s teacher on paired snapshots. So the change is purely additive,
+and stages 0-1 are bit-identical to what the curriculum had before.
+
+### What this does and does not license
+
+It licenses: the teacher can now *express and use* the play the engine rewards,
+which is what item 1 asked for, and it costs ~1.7 ms per decision to do it.
+
+It does **not** license "the teacher is stronger". The win-rate arm is a measured
+null, and combos are chosen on well under 1% of decisions because the binding
+constraint is no longer the generator but the **economy** — a bot whose bar sits
+at p90 3.30 cannot often buy a two-card play. That is now the honest open
+question, and it is a scoring question (`w_pos` credits any cheap troop for
+standing forward, so every cheap card looks profitable), not a candidate-
+generation one.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 > **Checkpoint names in the passages below are PROVENANCE, not files.** The
@@ -2762,6 +2998,11 @@ python_ai/           READ-ONLY by default — training runs here.
   opponents/
     teacher.py         UtilityTeacher: phase 1's opponent. Rules propose,
                        simulation ranks. Difficulty is lookahead, not elixir.
+                       Since 2026-08-20 a candidate is a SEQUENCE of
+                       placements, not one cell, so it can plan the escorted
+                       push the deploy-time change made correct. The follow-up
+                       GAP is searched (1/3/5 s) because the pair's price is
+                       paid across it.
 
   advisors/
     tactics.py         The deterministic, engine-validated placement advisor.
@@ -2825,6 +3066,11 @@ python_ai/           READ-ONLY by default — training runs here.
                        harnesses each had their own copy.
     match_outcome.py   TimeoutRules' verdict, read from the engine.
     prove_*.py         Engine-scored: the engine is the oracle.
+    prove_combos.py    Multi-card usage, the combos-on/off A/B, and the
+                       lookahead sweep against a checkpoint. Reports USAGE and
+                       WIN RATE separately, because a win-rate arm alone cannot
+                       tell "the combo did not help" from "the combo never
+                       happened".
     probe_*.py         Behavioural read-outs of a policy.
     *_ab.py            Paired A/B comparisons.
 
