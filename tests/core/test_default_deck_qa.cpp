@@ -302,10 +302,16 @@ TEST_CASE("Skeletons are separated by collision while deploying, not moved by ch
 // ----------------------------------------------------------------- defence --
 
 TEST_CASE("the Cannon fully answers a lone Hog Rider", "[deck_qa][defence]") {
-    // Measured: an unanswered Hog takes 2534 tower hp; with a Cannon down it
+    // Measured: an unanswered Hog takes 2219 tower hp; with a Cannon down it
     // takes ZERO. This is the deck's whole defensive premise -- a 3-elixir
     // building neutralising a 4-elixir win condition -- and it is the single
     // most load-bearing interaction in the 2.6 matchup.
+    //
+    // That figure was 1268 until King dormancy landed on 2026-08-21
+    // (tools/audit/king_activation_audit.cpp): with the defending King asleep
+    // the Hog survives to tick 170 instead of 122 and deals 75% more. The
+    // ASSERTIONS below are deliberately relative, so they held across that
+    // change -- only this comment needed re-measuring.
     int unanswered = 0;
     {
         Match m;
@@ -347,8 +353,10 @@ TEST_CASE("Skeletons and a Musketeer both blunt a Hog, a Hog does not",
 
     // ...and the control that makes those two mean something: a Hog Rider is
     // NOT a defensive card, because it ignores troops entirely and walks the
-    // other way. Measured 315 hp prevented against the Cannon's 2534 -- and
-    // that 315 is our own tower shooting, not the Hog defending.
+    // other way. Measured 315 hp prevented against the Cannon's full answer --
+    // and that 315 is our own tower shooting, not the Hog defending. (The
+    // absolute figures moved when the King went dormant on 2026-08-21; the
+    // ordering these assertions check did not.)
     REQUIRE(hpLostAnsweringHog(HOG_RIDER) > hpLostAnsweringHog(SKELETONS));
 }
 

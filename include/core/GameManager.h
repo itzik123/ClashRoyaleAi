@@ -68,7 +68,14 @@ private:
         // only ever called for the King Tower (symbol 'R'), sourced at
         // 7.0 tiles. The Tower Troops overload below sets its own from
         // towerTroopStats() instead.
-        if (symbol == 'R') tower->sightRange = 7.0f;
+        if (symbol == 'R') {
+            tower->sightRange = 7.0f;
+            // The King starts DORMANT -- see Tower::isAwake. This is the only
+            // construction path that ever builds a King, so it is the only
+            // place the flag needs clearing; every other Tower is a Princess
+            // and stays awake.
+            tower->sleep();
+        }
         board.addEntity(tower);
     }
 
