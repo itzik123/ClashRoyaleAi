@@ -32,7 +32,7 @@ applied; 3, 7, 8, 16 and 17 are still open. There is no item 11.
 | 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | **DONE — applied (status corrected 2026-08-19)** |
 | 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | **DONE — applied (status corrected 2026-08-19)** |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
-| 7 | No way to seed the engine's RNG | every A/B test costs ~10x more than it needs to | open, proposed 2026-07-31 |
+| 7 | No way to seed the engine's RNG (TWO generators, not one) | every A/B test costs ~10x more; invalidated a control 2026-08-20 | open, **edit corrected 2026-08-21** |
 | 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
 | 12 | Bind `isValidPlacement` so the action mask stops disagreeing with the engine | 58.7% of card choices silently rejected | **DONE — `is_valid_placement` is bound in the current `.pyd`** |
 | 10 | State-estimator write half: `set_elixir_for_team` / `set_hand_for_team` | search over a reconstructed state scored a fabricated hand/elixir | **DONE — applied 2026-08-17, recorded here 2026-08-19** |
@@ -489,27 +489,52 @@ fidelity question and deliberately not bundled here.
 
 ---
 
-## 7. OPEN — the engine's RNG cannot be seeded (proposed 2026-07-31)
+## 7. OPEN — the engine's RNG cannot be seeded (proposed 2026-07-31, **edit corrected 2026-08-21**)
 
 **Not a correctness bug. A cost multiplier on every experiment this project
 runs**, including the ones `CLAUDE.md` already recommends re-running.
 
+> **⚠ 2026-08-21: THE EDIT ORIGINALLY PROPOSED BELOW WOULD NOT HAVE FIXED THE
+> OPENING HAND.** It seeds `ClashEnv::rng`, which feeds only
+> `HeuristicOpponent`. The opening-hand shuffle runs on `GameManager::rng` — a
+> **second, independent** `std::mt19937`, also seeded from `std::random_device`
+> at construction. Anyone applying the one-liner and then testing two envs for
+> an identical opening hand would have found it still random, and the natural
+> conclusion ("seeding doesn't work") would have been wrong. The corrected edit
+> is in "The change" below and covers both generators.
+
 ### What is there now
 
+TWO independent unseeded generators, neither reachable from Python:
+
 ```cpp
-// ClashEnv.h:362
-rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
+// include/core/ClashEnv.h:132 / :383   -- feeds HeuristicOpponent only
+std::mt19937 rng;
+... rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
+
+// include/core/GameManager.h:50 / :202 -- feeds the OPENING HAND
+std::mt19937 rng;
+... : gameOver(false), loserTeam(-1), rng(std::random_device{}()) {
 ```
 
-Seeded once at construction from `std::random_device`, with no setter.
-`MicroRoyaleEnv.reset(seed=...)` looks like it should help but only forwards to
-`gymnasium.Env.reset`, which seeds the *wrapper's* RNG, not the engine's.
+`GameManager::reset()` (line 589-590) is where the hand is dealt:
 
-`CLAUDE.md` already records that the engine has exactly two sources of
-randomness — the opening-hand shuffle in `PlayerState::initializeDeck` and
-`HeuristicOpponent` — and that "identical inputs give identical outcomes". That
-determinism is currently unreachable from outside, because the one thing that
-varies cannot be pinned.
+```cpp
+playerAI.initializeDeck(aiDeckConfig, rng);
+playerOpponent.initializeDeck(oppDeckConfig, rng);
+```
+
+and `PlayerState::initializeDeck` shuffles a permutation of the 8 deck indices
+with `std::shuffle(order.begin(), order.end(), rng)`, taking the first four as
+the hand and **the rest as the starting `deckQueue` order**. So the seed governs
+both the opening hand *and* the cycle order — which for 2.6 Hog Cycle is the
+more important half.
+
+`MicroRoyaleEnv.reset(seed=...)` looks like it should help but only forwards to
+`gymnasium.Env.reset`, which seeds the *wrapper's* RNG, not either engine one.
+
+`grep -c seed src/bindings.cpp` finds two hits, both in comments. There is no
+binding.
 
 ### What it costs, measured on the experiment that prompted this
 
@@ -526,41 +551,98 @@ a shared seed the same episodes become matched pairs, most of the variance is
 the shared opening hand and opponent rolls rather than the treatment, and the
 same resolution needs roughly an order of magnitude fewer games.
 
-This is not a one-off. The same shape applies to every question already on the
-project's own list: the entropy-rate ordering that `CLAUDE.md` flags as "one run
-per configuration, so this ordering may not survive replication", the deck
-choice re-opened on 2026-07-30, and the corruption ablation in
-`BOT_REQUESTS.md` item 1.
+### NEW EVIDENCE, 2026-08-20: it invalidated a control and nearly produced a wrong conclusion
+
+`env.snapshot()` (2026-08-11) removed this as the blocker on *paired* A/B tests
+**within a single process**, and `CLAUDE.md` recorded that correctly. What it
+does NOT give is comparability **across process invocations**, and that gap has
+now cost something concrete.
+
+A combo-family ablation in `python_ai/eval/prove_combos.py` was designed with a
+built-in validity check: run 4 shares `--seed 300` with run 3, so its untreated
+OFF arm should reproduce run 3's OFF arm exactly. It read **0.475 against
+0.537**. Nothing was wrong with either run — `--seed` reaches only the
+*teachers'* `numpy` RNG, so the two invocations drew entirely different match
+populations, and the arm levels were never comparable in the first place.
+
+Two runs had also happened to report the same OFF arm (0.537 twice, at different
+seeds), which made the design look sound until it was tested. **The failure mode
+is that a mis-specified control looks like a failed comparison.**
+
+Consequences carried in `CLAUDE.md` and the harness docstring: within a run the
+snapshot pairing is sound and the paired delta is valid; across runs only
+**deltas** are comparable, never arm levels. Any "re-run at the same seed and
+check the baseline matches" design in this repo is invalid until this lands.
 
 ### Second benefit: reproducible failures
 
 A self-play regression currently cannot be replayed. The 2026-07-31 team-1
-observation bug was found by running a policy against a bit-exact copy of
-itself and noticing 0.598 where 0.500 was expected — a test `CLAUDE.md` now
-recommends after any change to the observation, the board, or `stepSelfPlay`.
-That test is a coin-flip null measured over hundreds of games precisely because
-individual games cannot be reproduced.
+observation bug was found by running a policy against a bit-exact copy of itself
+and noticing 0.598 where 0.500 was expected — a test `CLAUDE.md` now recommends
+after any change to the observation, the board, or `stepSelfPlay`. That test is a
+coin-flip null measured over hundreds of games precisely because individual games
+cannot be reproduced.
 
-### The change
+Also live: `python_ai/tests` has a nondeterministic **skip count** (347-348 pass,
+1-2 skip across identical runs) because two cases depend on this shuffle.
+
+### The change — CORRECTED, both generators
 
 ```cpp
-void seed(unsigned int s) { rng.seed(s); heuristicOpponent.reset(rng); }
+// include/core/GameManager.h  (public)
+void seed(unsigned int s) { rng.seed(s); }
+
+// include/core/ClashEnv.h     (public)
+// Seeds BOTH generators and re-deals, so the opening hand and cycle order are
+// pinned as well as the heuristic's rolls. reset() is what calls
+// initializeDeck, so seeding without it would leave the CURRENT hand untouched
+// and only affect the next episode -- the surprising half of this API.
+void seed(unsigned int s) {
+    rng.seed(s);
+    heuristicOpponent.reset(rng);
+    game.seed(s ^ 0x9E3779B9u);
+    reset();
+}
 ```
 
-plus a `.def("seed", &ClashEnv::seed)` binding, and an optional forward from
-`MicroRoyaleEnv.reset(seed=...)` — which is where a caller already expects it.
+The `0x9E3779B9` offset keeps the two streams from being identical, which
+matters because both are `std::mt19937` and one of them shuffling first would
+otherwise correlate the heuristic's choices with the hand.
+
+Plus the binding:
+
+```cpp
+.def("seed", &ClashEnv::seed, py::arg("seed"))
+```
+
+and an optional forward from `MicroRoyaleEnv.reset(seed=...)`, which is where a
+caller already expects it.
+
+**The ordering subtlety is the part to get right.** `initializeDeck` runs inside
+`GameManager::reset()`, which the `GameManager` *constructor* also calls. So a
+seed applied after construction only takes effect on the next `reset()` — hence
+the explicit `reset()` in the edit above. A `seed()` that did not re-deal would
+look like it silently did nothing.
+
+### Acceptance test, already written
+
+`python_ai/tests/test_engine_seeding.py::test_two_envs_with_the_same_seed_deal_the_same_opening`
+is committed and **skips** with a clear reason while `seed` is unbound. It
+asserts that two envs seeded alike produce identical hands for BOTH teams and
+identical cycle order over a full rotation, and that two different seeds
+actually differ (so it cannot pass vacuously against a degenerate shuffle).
+Rebuild the `.pyd` and it runs.
 
 **Blast radius:** additive. Nothing existing calls it, so unseeded behaviour is
-byte-identical and no checkpoint is affected. It is not gameplay-affecting, so
+byte-identical and no checkpoint is affected. Not gameplay-affecting, so
 `model_weights.pth`'s win-rate history stands.
 
-**Note the one subtlety:** `rng` is seeded in the constructor and
-`heuristicOpponent.reset(rng)` is called there too, so a seed applied after
-construction must re-reset the opponent or the two fall out of step. Hence the
-second line above.
-
-**Confidence:** the cost is measured; the fix is proposed but the exact edit is
-the simulator owner's to make. Filed rather than done, per `CLAUDE.md`.
+**Confidence:** the cost is measured twice now; the exact edit is above and is
+the simulator owner's to apply. Filed rather than done, per `CLAUDE.md` — and
+in this case also because **the machine this was written on has no C++
+toolchain at all** (no `cl`/`cmake`/`msbuild`/`g++`/`clang++`, both Visual
+Studio directories empty, WSL not installed), so it could not have been
+compiled or tested here even if the rule allowed it.
 
 ---
 

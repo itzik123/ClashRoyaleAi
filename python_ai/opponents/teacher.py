@@ -123,6 +123,7 @@ same silent-failure shape as the 2026-07-31 team-1 observation bug.
 `test_teacher_candidates_are_all_legal_for_either_team` pins both sides.
 """
 import functools
+import itertools
 
 import numpy as np
 
@@ -156,8 +157,39 @@ ELIXIR_OVERFLOW_AT = 9.0
 # card roles -- derived from the engine, never a hardcoded id list
 # --------------------------------------------------------------------------
 @functools.lru_cache(maxsize=64)
-def _card_roles_cached(deck_key):
-    return _card_roles_uncached(list(deck_key))
+def _card_table_cached(deck_key):
+    return _card_table_uncached(list(deck_key))
+
+
+def card_peak_hp(deck):
+    """{card_id: single-body HP} for the deck's TROOPS, from the engine.
+
+    PEAK CELL, not the sum: channels 0-7 OVERWRITE rather than accumulate
+    (open problem #4), so a 3-body Skeletons spreads over 3 cells and its sum
+    reads 243 while one skeleton is 81. The tank question is "how much does ONE
+    body absorb", which is the max.
+
+    Spells and buildings are absent by construction -- neither can escort.
+    """
+    return dict(_card_table_cached(tuple(deck))["hp"])
+
+
+def tank_id(deck):
+    """The card that goes IN FRONT of the win condition, or None.
+
+    DERIVED, never a literal. `DEFAULT_DECK` has already changed twice, and a
+    hardcoded 40 would quietly mean "Ice Golem" forever -- the same failure mode
+    `card_roles` exists to avoid. The tank is simply the highest-HP troop that
+    is not itself the win condition: Ice Golem 1315 > Musketeer 721 >
+    Ice Spirit 230 > Skeletons 81 for 2.6, and the Hog's own 1697 is excluded
+    because it is the card being escorted.
+    """
+    table = _card_table_cached(tuple(deck))
+    roles, hp = table["roles"], table["hp"]
+    troops = [c for c in hp if roles.get(c) != "wincon"]
+    if not troops:
+        return None
+    return max(troops, key=lambda c: (hp[c], -c))
 
 
 def card_roles(deck):
@@ -181,11 +213,19 @@ def card_roles(deck):
     narrower question, it sits in the reward path, and changing it to serve a
     new caller is risk with no benefit.
     """
-    return dict(_card_roles_cached(tuple(deck)))
+    return dict(_card_table_cached(tuple(deck))["roles"])
 
 
-def _card_roles_uncached(deck):
+def _card_table_uncached(deck):
+    """One injection pass, two derived tables.
+
+    Roles and HP come from the SAME probe because it is the same probe: the
+    injection that reads which type channel lights up also carries the unit's
+    normalised HP in that channel. Deriving them separately would double the
+    ~8 throwaway `ClashRoyaleEnv` constructions this costs per deck.
+    """
     roles = {}
+    hp = {}
     targeters = []
     for cid in deck:
         info = E.get_card_info(cid)
@@ -202,6 +242,9 @@ def _card_roles_uncached(deck):
         obs = np.asarray(env.get_observation_for_team(0), np.float32)
         lit = [ch for ch in range(3)
                if float(obs[ch * PLANE:(ch + 1) * PLANE].max()) > 1e-6]
+        hp[cid] = float(max(
+            (obs[ch * PLANE:(ch + 1) * PLANE].max() for ch in range(3)),
+            default=0.0)) * MAX_TROOP_HP
         if 2 in lit:
             targeters.append(cid)
             roles[cid] = "melee"          # provisional; promoted below
@@ -214,7 +257,7 @@ def _card_roles_uncached(deck):
         # The win condition is the one that actually threatens a tower, i.e. the
         # most expensive -- the same tiebreak _find_win_condition uses.
         roles[max(targeters, key=lambda c: E.get_card_info(c)["cost"])] = "wincon"
-    return roles
+    return {"roles": roles, "hp": hp}
 
 
 # --------------------------------------------------------------------------
@@ -329,13 +372,19 @@ PROFILES = {
 # epsilon is the probability of substituting a uniformly random LEGAL action
 # (no-op included) for the argmax, and falls to zero at the top so the final
 # rung is fully deterministic given its profile.
+# `max_combos` is the THIRD competence axis, added 2026-08-20 with multi-card
+# planning. It is still competence and never economy: it is how many two-card
+# SEQUENCES the bot is allowed to simulate per decision. Zero on the two
+# shortest rungs is not a policy choice -- their horizons (0 and 10 ticks)
+# cannot reach the follow-up at +10 ticks, so a combo there would be scored on
+# a rollout that never plays half of it (COMBO_MIN_HORIZON_TICKS).
 TEACHER_STAGES = [
-    {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1},   # rules only
-    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1},   # 1 s
-    {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2},   # 3 s
-    {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2},   # 5 s
-    {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3},   # 7 s
-    {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3},   # 10 s -- clairvoyant
+    {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1, "max_combos": 0},  # rules only
+    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1, "max_combos": 0},  # 1 s
+    {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2, "max_combos": 2},  # 3 s
+    {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2, "max_combos": 3},  # 5 s
+    {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3, "max_combos": 4},  # 7 s
+    {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3, "max_combos": 4},  # 10 s
 ]
 
 
@@ -347,27 +396,199 @@ TEACHER_STAGES = [
 WINCON_DUD_CELLS = [(2.0, 2.0), (15.0, 2.0), (2.0, 4.0), (15.0, 4.0), (9.0, 5.0)]
 
 
-class Candidate:
-    """One (slot, cell) the teacher is willing to consider. slot == HAND_SIZE
-    is the no-op, which is always present and always scores exactly 0."""
+# --------------------------------------------------------------------------
+# multi-card combos (2026-08-20)
+# --------------------------------------------------------------------------
+# One decision = one `skip_frames` block = 10 ticks = 1.0 s. `gym_wrapper.step`
+# hands the teacher exactly ONE `(slot, x, y)` per decision, and -- measured,
+# and pinned by `test_a_zero_tick_step_places_nothing` -- a 0-tick
+# `step_self_play` places nothing at all, because placement is processed inside
+# the tick loop. So a combo is not two cards on one tick; it is a SEQUENCE of
+# placements across consecutive decisions, which is also the shape the +448.5
+# tower-HP "supported push" was measured at.
+COMBO_FOLLOWUP_DELAY_TICKS = 10
 
-    __slots__ = ("slot", "card_id", "x", "y", "role")
+# THE GAP IS A SEARCHED AXIS, not a constant, and that is the change that made
+# combos reachable at all.
+#
+# Measured 2026-08-20, teacher vs teacher at stage 5 over ~2,400 decisions: the
+# bar's mean is 1.79 and its p90 is 3.30, and a pair was affordable in exactly
+# TWO states, both of them the 5.00 opening. At a one-second gap both cards
+# have to be affordable at once (Skeletons + Hog needs 4.65), which essentially
+# never happens. The cost is really paid ACROSS the gap, so three seconds of
+# regeneration is worth 1.05 elixir and five seconds 1.75 -- which moves the
+# same pair to 3.95 and 3.25, i.e. from never to sometimes.
+#
+# And the longer gap is also the BETTER PLAY, which is what makes this a fix
+# rather than a loophole. The escort has to eat its own 1.0 s of deploy time
+# before it can move at all, so after one second it is barely half a tile ahead
+# of the win condition; the +448.5 tower-HP result is for a tank one to two
+# tiles in front, which is three to five seconds of walking.
+#
+# Which gap is right in a given state is exactly the sort of question this
+# module answers by rolling it forward rather than by arguing, so all three are
+# offered and the simulator ranks them -- the same contract `_cells_for` holds
+# for placement, extended to timing.
+#
+# AND THE RANKING IS TACTICAL, NOT AN ARTIFACT, which was worth checking rather
+# than assuming. In real play the 5 s gap is chosen 16 times out of 19, and the
+# obvious suspicion is a terminal-evaluation bias: `positional_advantage` is
+# read at the END of the horizon, so a card placed at t=50 is fresher there than
+# one placed at t=10 and might score higher for no tactical reason. Measured
+# with the bar pinned at 8.0 so that all three gaps are affordable and ONLY the
+# gap varies (n=21 states, same pair, same cells):
+#
+#     gap 10 (1 s)   mean score +5.281   median +4.524
+#     gap 30 (3 s)   mean score +2.529   median +2.039
+#     gap 50 (5 s)   mean score +1.761   median +1.555
+#
+# The preference is monotone toward the TIGHT escort, which is what the +448.5
+# "tank one decision ahead" result says it should be. The 5 s gap dominates real
+# play purely because at a bar whose p90 is 3.30 it is the only one that can be
+# paid for. That is also why the gaps are offered shortest-first.
+COMBO_FOLLOWUP_DELAYS = (10, 30, 50)
 
-    def __init__(self, slot, card_id, x, y, role):
+# A combo may only be PROPOSED when the rollout is long enough to actually
+# simulate its second card. Below this the rollout would charge both costs and
+# credit one card's value -- strictly worse than not proposing it at all, and
+# invisible, because the symptom is "the teacher never escorts". Applied
+# per-candidate against its own gap, so a short rung simply sees fewer gaps.
+COMBO_MIN_HORIZON_TICKS = 20
+
+# Elixir that regenerates during the one decision between the two cards.
+# Derived from tactics' ELIXIR_REGEN_RATE (itself named against ClashEnv.h)
+# rather than re-stating 0.35 -- measured 0.34999847 per 10 ticks.
+# Elixir regenerated across one decision. Kept as the named unit the affordability
+# arithmetic below is expressed in -- `_pairs` scales it by each candidate's own
+# gap rather than assuming one decision.
+ELIXIR_PER_DECISION = tactics.ELIXIR_REGEN_RATE * COMBO_FOLLOWUP_DELAY_TICKS
+
+# THE RESERVE THAT PROTECTS A COMMITTED PLAN, in elixir-equivalents like every
+# other weight here.
+#
+# Once the bot has paid for the first half of a combo, the second half is only
+# a plan if the money for it is still there when the gap closes. This charges
+# any OTHER spend that would leave the follow-up unaffordable. It is bounded by
+# construction to the one to five decisions a plan is actually live, which is
+# what makes it work where the first attempt did not.
+#
+# A FLAT SAVINGS CHARGE WAS TRIED FIRST AND IS MEASURED DEAD, recorded here so
+# it is not re-proposed: charging every marginal spend while a push was within
+# six decisions of affordable moved the bar from 1.79 to 1.73 across reserves
+# of 0.0 / 1.5 / 3.0 / 5.0 -- i.e. not at all, and if anything the wrong way. A
+# per-decision charge cannot manufacture multi-second saving when the bot has
+# many attractive cheap plays and the defence exemption keeps firing. Same
+# principle CLAUDE.md already records for back-row structure penalties: a
+# penalty cannot move a distribution with no mass to move.
+#
+# 1.5 is set to outbid the thing it must actually suppress -- a 1-cost cycle
+# card whose entire marginal value is positional, which at w_pos=20 scores about
+# 1.2, against a measured median of 1.37 for the spends in question. It is
+# deliberately NOT set from the +448.5 tower HP a push is worth (4.5
+# elixir-equivalents at w_twr): that is the value of EXECUTING the push, not of
+# protecting it for one more second. Pass `combo_reserve=0.0` to disable.
+COMBO_RESERVE = 1.5
+
+#: Every family `_legal_combos` can emit, in the order it offers them. Named
+#: here so one can be ABLATED by configuration rather than by editing source --
+#: the win-rate A/B came back with two of three runs pointing negative, and the
+#: only honest way to find out which family is responsible is to remove one and
+#: re-measure with the arms otherwise byte-identical.
+COMBO_FAMILIES = ("supported_push", "counter_push", "defensive_stack",
+                  "cheap_defence", "spell_then_push", "push_then_spell")
+
+
+class PlacementStep:
+    """One card going down at one cell, `delay_ticks` after the plan starts."""
+
+    __slots__ = ("slot", "card_id", "x", "y", "delay_ticks")
+
+    def __init__(self, slot, card_id, x, y, delay_ticks=0):
         self.slot = int(slot)
         self.card_id = int(card_id)
         self.x = float(x)
         self.y = float(y)
-        self.role = role
+        self.delay_ticks = int(delay_ticks)
 
     def __repr__(self):
-        if self.slot >= HAND_SIZE:
+        return (f"Step(slot={self.slot}, card={self.card_id}, "
+                f"x={self.x:.1f}, y={self.y:.1f}, +{self.delay_ticks}t)")
+
+
+class Candidate:
+    """A SEQUENCE of placements the teacher is willing to simulate.
+
+    Was one `(slot, cell)` until 2026-08-20. `.slot/.x/.y/.card_id` survive and
+    now mean THE FIRST STEP, because that is the placement `act()` returns this
+    decision and every caller downstream unpacks exactly three values.
+
+    The empty sequence is the no-op, which is always present and always scores
+    exactly 0 -- it IS the baseline every other score is marginal against.
+    """
+
+    __slots__ = ("steps", "role", "kind")
+
+    def __init__(self, steps, role, kind):
+        self.steps = tuple(steps)
+        self.role = role
+        self.kind = kind
+
+    @classmethod
+    def single(cls, slot, card_id, x, y, role, kind="single"):
+        return cls([PlacementStep(slot, card_id, x, y, 0)], role, kind)
+
+    @classmethod
+    def combo(cls, first, second, kind, role="combo"):
+        return cls([first, second], role, kind)
+
+    # -- the first step, which is what gets played THIS decision -----------
+    @property
+    def slot(self):
+        return self.steps[0].slot if self.steps else HAND_SIZE
+
+    @property
+    def card_id(self):
+        return self.steps[0].card_id if self.steps else -1
+
+    @property
+    def x(self):
+        return self.steps[0].x if self.steps else 0.0
+
+    @property
+    def y(self):
+        return self.steps[0].y if self.steps else 0.0
+
+    # -- the sequence ------------------------------------------------------
+    @property
+    def placements(self):
+        """[(slot, x, y), ...] -- the action representation, in order."""
+        return [(st.slot, st.x, st.y) for st in self.steps]
+
+    @property
+    def cards(self):
+        return [st.card_id for st in self.steps]
+
+    @property
+    def is_combo(self):
+        return len(self.steps) > 1
+
+    @property
+    def max_delay(self):
+        return max((st.delay_ticks for st in self.steps), default=0)
+
+    @property
+    def total_cost(self):
+        return float(sum(E.get_card_info(c)["cost"] for c in self.cards))
+
+    def __repr__(self):
+        if not self.steps:
             return "Candidate(no-op)"
-        return (f"Candidate(slot={self.slot}, card={self.card_id}, "
-                f"{self.role}, x={self.x:.1f}, y={self.y:.1f})")
+        body = " -> ".join(f"{st.card_id}@({st.x:.0f},{st.y:.0f})"
+                           for st in self.steps)
+        return f"Candidate[{self.kind}]({body})"
 
 
-NOOP = Candidate(HAND_SIZE, -1, 0.0, 0.0, "noop")
+NOOP = Candidate([], "noop", "noop")
 
 
 def ally_hp_map(obs):
@@ -427,24 +648,82 @@ class UtilityTeacher:
     """
 
     def __init__(self, deck, team, profile=None, horizon_ticks=30, k_cells=2,
-                 epsilon=0.0, seed=None, wincon_mode="attack"):
+                 epsilon=0.0, seed=None, wincon_mode="attack", max_combos=3,
+                 combo_reserve=None):
         self.deck = list(deck)
         self.team = int(team)
         self.wincon_mode = wincon_mode
         self.roles = card_roles(self.deck)
         self.wincon_id = next((c for c, r in self.roles.items() if r == "wincon"),
                               None)
+        self.tank_id = tank_id(self.deck)
         self.horizon_ticks = int(horizon_ticks)
         self.k_cells = int(k_cells)
+        self.max_combos = int(max_combos)
+        self.combo_reserve = float(COMBO_RESERVE if combo_reserve is None
+                                   else combo_reserve)
+        self.combo_families = COMBO_FAMILIES
         self.epsilon = float(epsilon)
-        self._fixed_profile = profile
+        # The second half of a chosen combo, carried to the NEXT decision. See
+        # `commit` for why it is offered there rather than executed there.
+        self.pending = None
+        # Ticks until the pending step is DUE. A gap that was scored at three
+        # seconds has to be played at three seconds, or the plan that ran in
+        # simulation is not the plan that reaches the board.
+        self.pending_ticks = 0
+        # Diagnostic only: which candidate KIND the last `act` settled on.
+        # Lives here rather than in the harness because a combo's first step is
+        # indistinguishable from the same card played alone once it has been
+        # reduced to a returned (slot, x, y).
+        self.last_kind = "noop"
+        # A profile is either a NAME in PROFILES or an explicit weight set.
+        # The mapping form exists for sweeps: `PROFILES` has three entries and
+        # the interesting weights are usually between or below them. Copied
+        # rather than referenced, because a sweep builds both sides of a match
+        # from one dict and a teacher that mutated it would corrupt the arm.
+        self._fixed_profile = (dict(profile) if isinstance(profile, dict)
+                               else profile)
         self.rng = np.random.default_rng(seed)
         self.cycle = CycleTracker(self.deck)
-        self.profile = PROFILES[profile] if profile else PROFILES["balanced"]
+        self.profile = self._resolve_profile(profile)
         self.lane_bias = 0
-        # A play must beat holding by more than this. Strictly positive so
-        # rollout noise on a dead board cannot talk the bot into dumping.
-        self.play_margin = 0.05
+        # A play must beat holding by more than this -- the bot's ONE economy
+        # control, and until 2026-08-21 it was set to a value that could not
+        # perform it.
+        #
+        # It was 0.05, against a MEASURED median of 1.37 for the marginal cheap
+        # plays it exists to stop (the plays actually chosen while the win
+        # condition sat in hand and nothing threatened). 27x too low, so it
+        # never bound, and the bot spent to ~1.8 elixir continuously -- which
+        # is why a 5-6 elixir escorted push was affordable on 2 decisions in
+        # ~2,400 and the combo generator had nothing to buy.
+        #
+        # 3.0 selected by sweep and CONFIRMED on a fresh independent run, both
+        # paired on shared openings within one process (the engine's shuffle is
+        # unseeded, so cross-run levels are not comparable -- see
+        # UPSTREAM_REQUESTS item 7). Head to head against the old profile,
+        # sides swapped:
+        #
+        #   margin  vs old   elixir p90   overflow   combos, % of plays
+        #   0.05    0.500       3.55        0.1%          2.2%
+        #   2.0     0.812       5.60        1.3%          6.9%
+        #   3.0     0.969       7.95        4.3%         14.4%
+        #   4.0     0.969       9.46       12.9%         18.2%
+        #
+        # 4.0 is not better -- identical strength, three times the wasted
+        # income. 3.0 is the knee.
+        #
+        # NOTE WHAT THIS IS NOT. Lowering `w_pos` was the obvious lever and is
+        # measured WRONG: across 20 -> 8 it raises elixir (1.83 -> 2.67) but
+        # combo share goes 1.1% -> 0.0/0.0/0.2/0.0/0.2%. `w_pos` prunes plays by
+        # HP-per-elixir, and an escorted push (388 HP/elixir) sits BELOW a naked
+        # Hog (424), so it kills the combo before the cheap cards it was meant
+        # to replace. The naked-unit reward and the combo reward are the same
+        # term and cannot be separated by that weight.
+        #
+        # GAMEPLAY-AFFECTING for phase 1: every win rate earned against
+        # `teacher@stage N` before this date describes a bot that dumped.
+        self.play_margin = 3.0
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self, rng=None):
@@ -455,12 +734,27 @@ class UtilityTeacher:
         if rng is not None:
             self.rng = rng
         self.cycle.reset()
+        self.pending = None
+        self.pending_ticks = 0
         if self._fixed_profile:
-            self.profile = PROFILES[self._fixed_profile]
+            self.profile = self._resolve_profile(self._fixed_profile)
         else:
             names = list(PROFILES)
             self.profile = PROFILES[names[int(self.rng.integers(len(names)))]]
         self.lane_bias = int(self.rng.integers(2))
+
+    @staticmethod
+    def _resolve_profile(profile):
+        """A name, an explicit weight set, or None -> "balanced".
+
+        Returns a COPY in every case. `reset()` re-resolves each match, and
+        without the copy a teacher that touched `self.profile` would edit the
+        module-level `PROFILES` table for the whole process -- which in a sweep
+        would silently change every later arm.
+        """
+        if isinstance(profile, dict):
+            return dict(profile)
+        return dict(PROFILES[profile] if profile else PROFILES["balanced"])
 
     def set_deck(self, deck):
         """Point the teacher at a different deck.
@@ -482,8 +776,11 @@ class UtilityTeacher:
         self.roles = card_roles(self.deck)
         self.wincon_id = next((c for c, r in self.roles.items() if r == "wincon"),
                               None)
+        self.tank_id = tank_id(self.deck)
         self.cycle = CycleTracker(self.deck)
         self.cycle.reset()
+        self.pending = None
+        self.pending_ticks = 0
 
     def set_stage(self, stage):
         """Apply one rung of TEACHER_STAGES. Difficulty is competence only --
@@ -492,6 +789,7 @@ class UtilityTeacher:
         self.horizon_ticks = cfg["horizon_ticks"]
         self.epsilon = cfg["epsilon"]
         self.k_cells = cfg["k_cells"]
+        self.max_combos = cfg["max_combos"]
 
     # -- frames ------------------------------------------------------------
     def to_absolute_y(self, y_own):
@@ -530,8 +828,335 @@ class UtilityTeacher:
             for (x, y) in self._cells_for(role, cid, obs_own):
                 xi, yi = float(int(x)), float(int(y))
                 if env.is_valid_placement(cid, xi, self.to_absolute_y(yi), self.team):
-                    out.append(Candidate(slot, cid, xi, yi, role))
+                    out.append(Candidate.single(slot, cid, xi, yi, role))
+
+        # The second half of a plan made last decision, offered as an ordinary
+        # candidate. It is RE-SCORED here rather than executed blindly -- see
+        # `commit`.
+        follow = self._followup_candidate(env, hand, elixir)
+        if follow is not None:
+            out.append(follow)
+
+        out.extend(self._legal_combos(env, obs_own, hand, elixir))
         return out
+
+    # -- the plan ----------------------------------------------------------
+    def commit(self, cand):
+        """Record a chosen combo's second step for the next decision.
+
+        WHY THE FOLLOW-UP IS OFFERED AND NOT EXECUTED. A blind commitment would
+        place the win condition into whatever the board became one second later,
+        which is the "send it alone into a counter-push" mistake with an extra
+        step. Re-scoring is not a weaker plan, it is a BETTER one: by the next
+        decision the tank is physically on the board, so an ordinary solo
+        rollout of the win condition already SEES the escort in front of it. The
+        combo's job was to make the tank's own placement look worth making --
+        the synergy does not have to be carried forward as a bonus, because the
+        simulator can observe it directly. Adding one would double-count it.
+
+        What the plan DOES carry is the exact cell, in the exact lane, which the
+        single-card rules would not otherwise propose together.
+        """
+        if not cand.is_combo:
+            # NOT a clear. A plan that is still waiting out its gap must
+            # survive the ordinary single plays made while it waits -- that is
+            # the whole point of a gap longer than one decision.
+            return
+        self.pending = cand.steps[1]
+        self.pending_ticks = self.pending.delay_ticks
+
+    def tick_plan(self):
+        """One decision passes. Returns True while a plan is still WAITING.
+
+        Called BEFORE `candidates`, because a plan committed with a 30-tick gap
+        is due three decisions later and the clock has to have advanced before
+        the follow-up can be offered. Getting this order wrong delays every plan
+        by one decision, which is invisible except as a slightly wrong escort
+        distance -- the sort of off-by-one this project has paid for before.
+        """
+        if self.pending is None:
+            return False
+        self.pending_ticks -= COMBO_FOLLOWUP_DELAY_TICKS
+        return self.pending_ticks > 0
+
+    def _followup_candidate(self, env, hand, elixir):
+        """The pending step as a candidate, or None if the world moved on."""
+        st = self.pending
+        if st is None or self.pending_ticks > 0:
+            return None
+        if st.slot >= HAND_SIZE or hand[st.slot] != st.card_id:
+            return None                       # the card left that slot
+        if E.get_card_info(st.card_id)["cost"] > elixir + 1e-6:
+            return None                       # we spent it elsewhere
+        if not env.is_valid_placement(st.card_id, st.x,
+                                      self.to_absolute_y(st.y), self.team):
+            return None
+        return Candidate.single(st.slot, st.card_id, st.x, st.y,
+                                self.roles.get(st.card_id, "melee"),
+                                kind="followup")
+
+    # -- combos ------------------------------------------------------------
+    def _legal_combos(self, env, obs, hand, elixir):
+        """Curated two-card sequences, filtered through the engine's legality.
+
+        WIDTH IS THE EXPENSIVE AXIS. One engine step is 0.015 ms but each extra
+        candidate is a whole rollout, so this enumerates a handful of named
+        tactics rather than the cross product of pairs x cells. Families are
+        taken ROUND-ROBIN under `max_combos`, so a small budget still sees one
+        of each rather than two variants of the first.
+        """
+        if self.max_combos <= 0 or self.horizon_ticks < COMBO_MIN_HORIZON_TICKS:
+            return []
+        slots = {}
+        for slot, cid in enumerate(hand[:HAND_SIZE]):
+            slots.setdefault(int(cid), slot)
+
+        families = [getattr(self, f"_combo_{name}")(obs, slots, elixir)
+                    for name in self.combo_families]
+        out = []
+        for row in itertools.zip_longest(*families):
+            for c in row:
+                if c is None or len(out) >= self.max_combos:
+                    continue
+                if self._combo_is_legal(env, c):
+                    out.append(c)
+            if len(out) >= self.max_combos:
+                break
+        return out
+
+    def _combo_is_legal(self, env, cand):
+        """EVERY step, or the whole sequence is dropped.
+
+        A combo whose second step is illegal is worse than no combo: it is
+        charged for two cards and plays one, so escorting looks bad for a reason
+        that has nothing to do with escorting.
+        """
+        if cand.steps[0].slot == cand.steps[1].slot:
+            # Playing a slot refills it from the queue, so the second step would
+            # place whatever arrived, not the card this plan was scored on.
+            return False
+        return all(env.is_valid_placement(st.card_id, st.x,
+                                          self.to_absolute_y(st.y), self.team)
+                   for st in cand.steps)
+
+    def _gaps(self):
+        """The follow-up gaps this rung can SEE, shortest first.
+
+        A gap is offerable only when the rollout runs past it -- otherwise the
+        pair is charged for two cards and simulated with one. Shortest first so
+        the round-robin's first pass takes the tightest escort available, which
+        is the one the simulator prefers whenever it is affordable.
+        """
+        return [d for d in COMBO_FOLLOWUP_DELAYS
+                if d + COMBO_FOLLOWUP_DELAY_TICKS <= self.horizon_ticks]
+
+    def _pairs(self, slots, first, second, cell1, cell2, kind, elixir):
+        """Every affordable gap for one (first -> second) tactic.
+
+        AFFORDABILITY IS PER-GAP and it is the point. The first card is paid
+        now; the second is paid `d` ticks later out of what has regenerated by
+        then, capped at the engine's own ceiling. That is why a three-second
+        gap can buy a pair a one-second gap cannot.
+        """
+        c1 = float(E.get_card_info(first)["cost"])
+        c2 = float(E.get_card_info(second)["cost"])
+        out = []
+        for d in self._gaps():
+            later = min(tactics.MAX_ELIXIR,
+                        float(elixir) - c1 + tactics.ELIXIR_REGEN_RATE * d)
+            if float(elixir) + 1e-6 < c1 or later + 1e-6 < c2:
+                continue
+            out.append(Candidate.combo(
+                PlacementStep(slots[first], first,
+                              float(int(cell1[0])), float(int(cell1[1])), 0),
+                PlacementStep(slots[second], second,
+                              float(int(cell2[0])), float(int(cell2[1])), d),
+                kind=kind))
+        return out
+
+    def _combo_supported_push(self, obs, slots, elixir):
+        """THE combo the 2026-08-19 deploy-time change made correct.
+
+        Tank first, win condition one to five seconds behind it, same lane --
+        the gap is searched, see COMBO_FOLLOWUP_DELAYS. Measured on
+        the same engine: a lone commitment is worth -556.3 tower HP marginally
+        and a supported one +448.5 [+137.3, +760.1]; escorting inside a punish
+        window is worth +650 [+429, +878].
+
+        THE ORDER IS THE WHOLE POINT and it is not symmetric. The tank has to
+        eat its own 1.0 s of deploy time BEFORE the win condition arrives, so
+        that the tower has something to lock onto when the Hog crosses. Sending
+        the win condition first is the naked push the engine now punishes -- so
+        that ordering is not offered at all.
+
+        Two variants, ranked by the simulator rather than by argument: the win
+        condition on the tank's own cell, and one tile behind it. Which is
+        better depends on the relative speeds after deploy, which is exactly the
+        kind of question a rollout answers and a comment does not.
+        """
+        wc, tank = self.wincon_id, self.tank_id
+        if (wc is None or tank is None or wc == tank
+                or self.wincon_mode != "attack"
+                or wc not in slots or tank not in slots):
+            return []
+        bx, by, _ = tactics.best_hog_cell(obs)
+        behind = max(0.0, by - 1.0)
+        return (self._pairs(slots, tank, wc, (bx, by), (bx, behind),
+                            "supported_push", elixir)
+                + self._pairs(slots, tank, wc, (bx, by), (bx, by),
+                              "supported_push", elixir))
+
+    def _combo_counter_push(self, obs, slots, elixir):
+        """The CHEAP escort, and the reason it exists is arithmetic.
+
+        Ice Golem + Hog costs 6 and this bot's bar reaches 6 on 0.3% of
+        decisions. A 1-cost body in front of the win condition costs 5, which it
+        does reach. The escort is worse at tanking and the placement is
+        otherwise identical, so this is strictly a price/quality pair and the
+        simulator is the right thing to choose between them -- which is why both
+        are offered rather than one being picked here.
+
+        Skipped when the cheapest body IS the tank, which would just duplicate
+        `_combo_supported_push` and spend a rollout on it.
+        """
+        wc = self.wincon_id
+        if (wc is None or self.wincon_mode != "attack" or wc not in slots):
+            return []
+        bodies = [c for c in slots
+                  if self.roles.get(c) in ("melee", "ranged") and c != wc]
+        if not bodies:
+            return []
+        escort = min(bodies, key=lambda c: E.get_card_info(c)["cost"])
+        if escort == self.tank_id:
+            return []
+        bx, by, _ = tactics.best_hog_cell(obs)
+        return self._pairs(slots, escort, wc, (bx, by), (bx, max(0.0, by - 1.0)),
+                           "counter_push", elixir)
+
+    def _combo_defensive_stack(self, obs, slots, elixir):
+        """Building to hold the push, a body to kill what it holds.
+
+        The 2.6 defensive pair. The building lands FIRST because it is the piece
+        whose value comes from being there early -- it has to survive its deploy
+        time and start pulling before the support arrives. The second variant is
+        the centre pull (in front of our own King, between the Princess towers),
+        which is where a Cannon drags a lane-committed win condition off its
+        path; `_cells_for` already offers that cell to the Cannon alone.
+        """
+        if tactics.threat_level(obs) <= 0.0:
+            return []
+        buildings = [c for c in slots if self.roles.get(c) == "building"]
+        bodies = [c for c in slots if self.roles.get(c) in ("melee", "ranged")]
+        if not buildings or not bodies:
+            return []
+        b = min(buildings, key=lambda c: E.get_card_info(c)["cost"])
+        # The cheapest body: playing anything advances the cycle, and a cheap
+        # one is the efficient way to pull the win condition closer.
+        body = min(bodies, key=lambda c: E.get_card_info(c)["cost"])
+        tx, ty = self._deepest_threat(obs)
+        if tx is None:
+            return []
+        body_cell = (tx, min(ty, float(tactics.BRIDGE_ROW)))
+        bx, by, _ = tactics.best_building_cell(obs)
+        return (self._pairs(slots, b, body, (bx, by), body_cell,
+                            "defensive_stack", elixir)
+                + self._pairs(slots, b, body, (tactics.OWN_KING[0], 11.0),
+                              body_cell, "defensive_stack", elixir))
+
+    def _combo_cheap_defence(self, obs, slots, elixir):
+        """Two cheap bodies onto the same threat, one gap apart.
+
+        THE FAMILY THAT EXISTS BECAUSE OF PRICE. Measured 2026-08-20: combos are
+        chosen on 0.28% of decisions and the bar's p90 is 3.30, so every family
+        that needs 5-6 elixir is priced out of nearly every state. Ice Spirit +
+        Skeletons is TWO elixir and is a real 2.6 defensive pair -- chip and
+        stall, then bodies -- so it fires in the states the expensive families
+        cannot reach. Unlike `_combo_defensive_stack` it needs no building.
+
+        The cheapest body lands first: its job is to arrive before the threat
+        does, and it is the one whose 1.0 s of deploy time is most affordable to
+        pay early. The second lands a tile back so a splash answer cannot catch
+        both at once.
+
+        The win condition is excluded -- it is not a defensive body, and sending
+        it into an incoming push is the trade `hog_should_commit` already
+        refuses.
+        """
+        if tactics.threat_level(obs) <= 0.0:
+            return []
+        bodies = [c for c in slots
+                  if self.roles.get(c) in ("melee", "ranged")
+                  and c != self.wincon_id]
+        if len(bodies) < 2:
+            return []
+        bodies.sort(key=lambda c: (E.get_card_info(c)["cost"], c))
+        first, second = bodies[0], bodies[1]
+        tx, ty = self._deepest_threat(obs)
+        if tx is None:
+            return []
+        ty = min(ty, float(tactics.BRIDGE_ROW))
+        return self._pairs(slots, first, second, (tx, ty),
+                           (tx, max(0.0, ty - 1.0)), "cheap_defence", elixir)
+
+    def _combo_spell_then_push(self, obs, slots, elixir):
+        """Clear the lane, then walk into it.
+
+        The spell goes first because its value is realized instantly and the
+        push's value depends on what is left standing. Gated on the catch map
+        actually catching something -- a spell cast at nothing is 2-4 elixir for
+        zero, and forcing Fireball once dropped win rate 97% -> 23%.
+        """
+        spells = [c for c in slots if self.roles.get(c) == "spell"]
+        if not spells:
+            return []
+        catch = tactics.spell_catch_map(obs)
+        if float(catch.max()) <= 0.0:
+            return []
+        i = int(np.argmax(catch))
+        scell = (float(i % BOARD_W), float(i // BOARD_W))
+        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
+        pusher = None
+        if (self.wincon_mode == "attack" and self.wincon_id in slots):
+            pusher = self.wincon_id
+        elif self.tank_id in slots:
+            pusher = self.tank_id
+        if pusher is None:
+            return []
+        bx, by, _ = tactics.best_hog_cell(obs)
+        return self._pairs(slots, spell, pusher, scell, (bx, by),
+                           "spell_then_push", elixir)
+
+    def _combo_push_then_spell(self, obs, slots, elixir):
+        """The win condition, then the spell that answers its answer.
+
+        This is the "Hog + predictive Log" shape, and it is stated here with its
+        own limitation because the limitation is structural rather than a bug.
+        `rollout_stats` rolls forward with BOTH SIDES NO-OPING, so the defender
+        never plays the Skeletons the Log is meant to pre-empt, and a genuinely
+        PREDICTIVE cast therefore scores zero value in simulation and can never
+        win the argmax. What is scoreable, and what this proposes, is a spell
+        aimed at defenders ALREADY on the board on the lane being attacked.
+
+        Left in rather than dropped: the family costs one rollout, it fires only
+        when the catch map is already non-empty, and it is the only shape that
+        can support a committed push. If the rollout ever gains an opponent
+        model, this is the candidate that starts paying.
+        """
+        wc = self.wincon_id
+        if (wc is None or self.wincon_mode != "attack" or wc not in slots):
+            return []
+        spells = [c for c in slots if self.roles.get(c) == "spell"]
+        if not spells:
+            return []
+        catch = tactics.spell_catch_map(obs)
+        if float(catch.max()) <= 0.0:
+            return []
+        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
+        i = int(np.argmax(catch))
+        scell = (float(i % BOARD_W), float(i // BOARD_W))
+        bx, by, _ = tactics.best_hog_cell(obs)
+        return self._pairs(slots, wc, spell, (bx, by), scell,
+                           "push_then_spell", elixir)
 
     def _cells_for(self, role, card_id, obs):
         """The rule layer: 1-3 tactically sensible cells for one card."""
@@ -622,6 +1247,86 @@ class UtilityTeacher:
         return float(xs[lead]), y
 
     # -- scoring -----------------------------------------------------------
+    def effective_play_margin(self, elixir):
+        """`play_margin`, tapered to zero as the bar approaches overflow.
+
+        A FIXED bar is wrong and the measurement that shows it is the one where
+        the opponent does nothing. Against the C++ heuristic a high bar looks
+        excellent (margin 3.0 beat the shipped profile 0.969 head to head)
+        because an active opponent constantly creates scoreable situations.
+        Against a PASSIVE opponent nothing clears a fixed 3.0, so the bot froze:
+        14 plays across 6 matches, elixir pinned at 9.56, tower damage 9143 ->
+        4063, and a dropped match it should win trivially.
+
+        An episode-0 agent IS passive. A fixed high bar would therefore hand
+        phase 1 exactly the zero-gradient environment the 2026-08-19 curriculum
+        pivot exists to remove -- while looking strong on every benchmark that
+        uses an active opponent.
+
+        The taper reuses `score`'s own overflow relief, same threshold and same
+        shape: above ELIXIR_OVERFLOW_AT the bar is discarding income, so holding
+        is not free and a marginal play no longer has to justify itself.
+        """
+        relief = max(0.0, float(elixir) - ELIXIR_OVERFLOW_AT) / (
+            10.0 - ELIXIR_OVERFLOW_AT)
+        return float(self.play_margin) * (1.0 - min(1.0, relief))
+
+    def margin_for(self, cand, elixir):
+        """The bar THIS candidate has to clear.
+
+        Zero for a plan's due second half. `play_margin` exists to stop the bot
+        DUMPING -- spending on a marginal play when holding was free -- and for
+        a follow-up holding is not free: the first card is already on the board
+        and already paid for, so declining does not bank the elixir, it wastes
+        the commitment.
+
+        Narrow by construction: the follow-up still has to be the ARGMAX over
+        every other candidate, so all this skips is the floor whose premise is
+        false. Parallel to `plan_reserve_penalty`'s exemption for the same step.
+        """
+        if cand.kind == "followup":
+            return 0.0
+        return self.effective_play_margin(elixir)
+
+    def rollout_ticks(self):
+        """How long every rollout in one decision runs.
+
+        ONE number for the whole decision, candidates and baseline alike. If a
+        combo were rolled longer than the no-op it is scored against, the
+        difference would carry the extra time as well as the extra cards, and
+        every combo would look good for the wrong reason.
+        """
+        return max(COMBO_FOLLOWUP_DELAY_TICKS, self.horizon_ticks)
+
+    def execute_steps(self, s, cand, ticks):
+        """Play `cand`'s scheduled placements while advancing `s` by `ticks`.
+
+        Chunked at 10 ticks, matching `skip_frames` -- the granularity the
+        teacher is actually driven at, so a plan that simulates well is a plan
+        it can really execute. Chunk boundaries are pulled in to land exactly on
+        any scheduled offset, so a follow-up cannot be rounded into the wrong
+        second.
+        """
+        sched = {}
+        for st in cand.steps:
+            sched.setdefault(int(st.delay_ticks), st)
+        t = 0
+        while t < ticks and not s.is_game_over():
+            st = sched.get(t)
+            slot = st.slot if st is not None else -1
+            x = st.x if st is not None else 0.0
+            y = st.y if st is not None else 0.0
+            nxt = min(ticks, t + COMBO_FOLLOWUP_DELAY_TICKS)
+            for d in sched:
+                if t < d < nxt:
+                    nxt = d
+            if self.team == 0:
+                s.step_self_play(slot, x, y, -1, 0.0, 0.0, nxt - t)
+            else:
+                s.step_self_play(-1, 0.0, 0.0, slot, x, y, nxt - t)
+            t = nxt
+        return s
+
     def rollout_stats(self, env, cand):
         """Roll one candidate forward on a SNAPSHOT and read the engine.
 
@@ -629,22 +1334,19 @@ class UtilityTeacher:
         makes. CLAUDE.md records that past ~12 s of that a rollout "stops
         resembling the game", so the 3-6 s horizons here sit well inside the
         validated regime.
+
+        A COMBO is the same loop with the second card played into one of the
+        no-op chunks instead of a no-op -- no new engine capability, which is
+        what made this the cheap half of TODO.md item 1.
         """
         s = env.snapshot()
         me, opp = self.team, 1 - self.team
-        slot = cand.slot if cand.slot < HAND_SIZE else -1
-        if self.team == 0:
-            s.step_self_play(slot, cand.x, cand.y, -1, 0.0, 0.0, 10)
-        else:
-            s.step_self_play(-1, 0.0, 0.0, slot, cand.x, cand.y, 10)
-        remaining = max(0, self.horizon_ticks - 10)
-        while remaining > 0 and not s.is_game_over():
-            step = min(10, remaining)
-            s.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, step)
-            remaining -= step
+        spent_before = float(env.get_elixir_spent(me))
+        self.execute_steps(s, cand, self.rollout_ticks())
         killed = sum(s.get_elixir_value_killed_by(c, me) for c in self.deck)
         lost = sum(s.get_elixir_value_killed_by(c, opp) for c in self.deck)
         return {
+            "elixir_spent": float(s.get_elixir_spent(me)) - spent_before,
             "tower_dealt": float(s.get_tower_damage_dealt(me)),
             "tower_taken": float(s.get_tower_damage_dealt(opp)),
             "killed": float(killed),
@@ -660,11 +1362,11 @@ class UtilityTeacher:
         Returns EXACTLY 0.0 for the no-op, by definition: it IS the baseline.
         Everything else is credited only for what it changes.
         """
-        if cand.slot >= HAND_SIZE:
+        if not cand.steps:
             return 0.0
         st = self.rollout_stats(env, cand)
         p = self.profile
-        cost = float(E.get_card_info(cand.card_id)["cost"])
+        cost = self.sequence_cost(cand)
         elixir = tactics.own_elixir(obs_own)
 
         u = (p["w_twr"] * (st["tower_dealt"] - baseline["tower_dealt"])
@@ -673,14 +1375,89 @@ class UtilityTeacher:
                                - (st["lost"] - baseline["lost"]))
              + p["w_crown"] * (st["crowns"] - baseline["crowns"])
              + p["w_pos"] * (st["pos"] - baseline["pos"])
-             + p["w_cycle"] * self.cycle_value(cand.card_id))
+             + p["w_cycle"] * self.sequence_cycle_value(cand.cards))
         # Opportunity cost. Above the overflow line the bar is discarding income,
         # so holding is not actually free and the charge is relieved -- the same
         # 9.0 threshold train.W_ELIXIR_OVERFLOW uses.
         overflow_relief = max(0.0, elixir - ELIXIR_OVERFLOW_AT) / (
             10.0 - ELIXIR_OVERFLOW_AT)
         u -= p["w_cost"] * cost * (1.0 - min(1.0, overflow_relief))
+        u -= self.plan_reserve_penalty(
+            cand, obs_own, list(env.get_hand_for_team(self.team)), elixir)
         return float(u)
+
+    def plan_reserve_penalty(self, cand, obs, hand, elixir):
+        """Elixir-equivalent charge for spending a committed plan's money.
+
+        A CHARGE, NOT A GATE. The bot still ranks by simulation and a play worth
+        more than the reserve still wins; what this removes is the marginal
+        cycle card that is worth just enough to beat holding and, in doing so,
+        makes unaffordable the follow-up whose first half has already been paid
+        for.
+
+        SCOPED TO A LIVE PLAN, which is what makes it work where the first
+        attempt did not. A flat "save toward some future push" charge was
+        measured dead -- the bar moved 1.79 -> 1.73 across reserves of 0.0 to
+        5.0. This one only has to hold elixir for the one to five decisions a
+        plan is actually waiting out its gap.
+
+        THE THREAT EXEMPTION IS THE LOAD-BEARING PART. CLAUDE.md records that a
+        FLAT solvency reserve "blocks exactly the spends that build a push", and
+        a reserve that holds elixir through an incoming push makes the same
+        mistake pointed at defence -- it does not save elixir, it loses the
+        tower. The threshold is `tactics.HOG_MAX_THREAT`, reused rather than
+        restated: it is already this project's calibrated "our half is clear
+        enough to commit the win condition" line, measured against a median
+        threat of 721 on a contested board. An earlier version used `> 0.0`,
+        which was measured to be an OFF SWITCH -- in a real match something is
+        on our half almost always.
+        """
+        st = self.pending
+        if self.combo_reserve <= 0.0 or st is None or not cand.steps:
+            return 0.0
+        if cand.kind == "followup" or st.card_id in cand.cards:
+            return 0.0                        # the plan's own second half
+        if tactics.threat_level(obs) > tactics.HOG_MAX_THREAT:
+            return 0.0                        # a real push: defence is free
+        need = float(E.get_card_info(st.card_id)["cost"])
+        regen = tactics.ELIXIR_REGEN_RATE * max(0, self.pending_ticks)
+        if float(elixir) - self.sequence_cost(cand) + regen + 1e-6 >= need:
+            return 0.0                        # affordable even after this spend
+        return float(self.combo_reserve)
+
+    def sequence_cost(self, cand):
+        """Total elixir a candidate commits -- BOTH cards of a combo.
+
+        The failure this prevents is silent: a pair charged for one card is a
+        bot that believes escorting is free, and it would then escort
+        everything. `W_COST` is the opportunity cost the no-op baseline does not
+        absorb, and a second card is a second real payment.
+        """
+        return float(sum(E.get_card_info(c)["cost"] for c in cand.cards))
+
+    def sequence_cycle_value(self, card_ids):
+        """Cycle value of a whole sequence, with the queue advancing between
+        plays.
+
+        Each play moves the win condition one place closer, so the second card
+        is credited against a SHORTER distance than the first. Summing
+        `cycle_value` twice would over-pay a combo for a cycle it only advances
+        once per card.
+        """
+        if self.wincon_id is None:
+            return 0.0
+        d = self.cycle.distance_to(self.wincon_id)
+        total = 0.0
+        for cid in card_ids:
+            if cid == self.wincon_id:
+                d = 0                      # it is being played; nothing to pull
+                continue
+            if d <= 0:
+                continue
+            cost = float(E.get_card_info(cid)["cost"])
+            total += float(d) / max(1.0, cost)
+            d -= 1
+        return float(total)
 
     def cycle_value(self, card_id):
         """2.6 is DEFINED by cycling back to the win condition faster than the
@@ -707,29 +1484,54 @@ class UtilityTeacher:
     def act(self, env, obs_own):
         """(slot, x, y) in our own frame. slot == HAND_SIZE means hold."""
         self.cycle.observe(env.get_hand_for_team(self.team))
+        self.last_kind = "noop"
+        # The clock first, so a plan that comes due this decision is offered
+        # this decision. See `tick_plan`.
+        waiting = self.tick_plan()
         cands = self.candidates(env, obs_own)
+        # SINGLE USE ONCE DUE. While a plan is still waiting out its gap it is
+        # carried (and its money is reserved); on the decision it comes due it
+        # is offered exactly once and then dropped, because a stale plan places
+        # a card against a board that no longer exists.
+        due = self.pending is not None and not waiting
 
         if self.epsilon > 0.0 and float(self.rng.random()) < self.epsilon:
             # A uniformly random LEGAL action, no-op included -- waiting is a
             # real move and must stay in the noise distribution.
             c = cands[int(self.rng.integers(len(cands)))]
+            if due:
+                self.pending, self.pending_ticks = None, 0
+            self.commit(c)
+            self.last_kind = c.kind
             return c.slot, c.x, c.y
 
-        playable = [c for c in cands if c.slot < HAND_SIZE]
+        playable = [c for c in cands if c.steps]
         if not playable:
+            if due:
+                self.pending, self.pending_ticks = None, 0
             return HAND_SIZE, 0.0, 0.0
 
         if self.horizon_ticks <= 0:
-            return self._rules_only(obs_own, playable)
+            out = self._rules_only(obs_own, playable)
+            if due:
+                self.pending, self.pending_ticks = None, 0
+            return out
 
         baseline = self.rollout_stats(env, NOOP)
-        best, best_score = None, self.play_margin
+        elixir_now = tactics.own_elixir(obs_own)
+        best, best_score = None, None
         for c in playable:
             sc = self.score(env, c, baseline, obs_own)
-            if sc > best_score:
+            if sc <= self.margin_for(c, elixir_now):
+                continue           # does not beat holding by enough to matter
+            if best is None or sc > best_score:
                 best, best_score = c, sc
+        if due:
+            self.pending, self.pending_ticks = None, 0
         if best is None:
             return HAND_SIZE, 0.0, 0.0
+        self.commit(best)
+        self.last_kind = best.kind
         return best.slot, best.x, best.y
 
     def _rules_only(self, obs_own, playable):
@@ -756,4 +1558,5 @@ class UtilityTeacher:
                 best, best_pri = c, pri
         if best is None:
             return HAND_SIZE, 0.0, 0.0
+        self.last_kind = best.kind
         return best.slot, best.x, best.y
