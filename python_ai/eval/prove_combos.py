@@ -64,7 +64,9 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env as E  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval import stats  # noqa: E402
-from python_ai.opponents.teacher import TEACHER_STAGES, UtilityTeacher  # noqa: E402
+from python_ai.opponents.teacher import (  # noqa: E402
+    PROFILES, TEACHER_STAGES, UtilityTeacher,
+)
 
 CE = E.ClashRoyaleEnv
 HAND_SIZE = CE.HAND_SIZE
@@ -73,6 +75,13 @@ MAX_STEPS = 400
 #: The families `teacher._legal_combos` can emit. Named here so a run that
 #: emits a kind nobody expected shows up as a new column rather than silently
 #: joining "other".
+#: `UtilityTeacher.play_margin`'s shipped value, so a sweep over it can pair
+#: against the current behaviour the same way a weight sweep pairs against
+#: PROFILES. READ FROM THE TEACHER, never restated -- a second copy went stale
+#: the moment the default moved 0.05 -> 3.0, and the sweep then labelled its
+#: rows against a baseline that was no longer the baseline.
+DEFAULT_PLAY_MARGIN = UtilityTeacher(DEFAULT_DECK, team=0).play_margin
+
 COMBO_KINDS = ("supported_push", "counter_push", "defensive_stack",
                "cheap_defence", "spell_then_push", "push_then_spell")
 
@@ -121,11 +130,17 @@ class Telemetry:
         n = max(1, self.decisions)
         combos = sum(self.chosen[k] for k in COMBO_KINDS)
         done = sum(self.completed.values())
+        # % of PLAYS, not of decisions. A bot that holds more has fewer
+        # decisions that do anything, so a per-decision rate rises for free
+        # when spending falls -- which would grade an economy change on the
+        # very thing it changes.
+        plays = max(1, self.plays)
         return (f"  {label:<26} dec {self.decisions:>5}  "
                 f"elixir {e.mean():.2f}/p90 {np.percentile(e, 90):.2f}  "
+                f"plays {self.plays:>4}  "
                 f"proposed {sum(self.proposed[k] for k in COMBO_KINDS):>4}  "
-                f"chosen {combos:>3}  completed {done:>3}  "
-                f"({100.0 * done / n:.2f}% of decisions)  "
+                f"chosen {combos:>3} ({100.0 * combos / plays:.1f}% of plays)  "
+                f"completed {done:>3}  "
                 f"{1000.0 * self.seconds / n:.2f} ms/dec")
 
 
@@ -291,6 +306,155 @@ def run_combo_ab(args):
 
 
 # --------------------------------------------------------------------------
+# 2b. the profile sweep -- what unlocks combos
+# --------------------------------------------------------------------------
+def teacher_vs_heuristic(env, teacher, tele=None):
+    """Teacher on team 0 through `env.step()`, so ClashEnv::opponentTurn runs
+    the C++ HeuristicOpponent for team 1. Returns the teacher's score.
+
+    Deliberately the same routing `prove_teacher.teacher_vs_heuristic` uses, so
+    a number here is comparable with the strength bar recorded there.
+    """
+    for _ in range(MAX_STEPS):
+        obs = np.asarray(env.get_observation_for_team(0), np.float32)
+        clock = time.perf_counter()
+        if tele is not None:
+            tele.decisions += 1
+            tele.elixir.append(float(env.get_elixir_for_team(0)))
+            for c in teacher.candidates(env, obs):
+                tele.proposed[c.kind] += 1
+        slot, x, y = teacher.act(env, obs)
+        if tele is not None:
+            tele.seconds += time.perf_counter() - clock
+            if slot < HAND_SIZE:
+                tele.plays += 1
+            if teacher.last_kind in COMBO_KINDS:
+                tele.chosen[teacher.last_kind] += 1
+            elif teacher.last_kind == "followup":
+                tele.completed["followup"] += 1
+        if env.step(slot, x, y, 10).done:
+            break
+    return _score(env)
+
+
+def run_profile_sweep(args):
+    """Sweep one weight against BOTH bars the profile has to clear at once.
+
+    WHY THIS IS VALID WITHOUT A SEEDABLE ENGINE. Every arm plays the SAME
+    openings, because the root envs are built once and each arm gets a
+    `snapshot()` of them -- so the comparison is paired within this one process,
+    which is exactly the guarantee `env.snapshot()` was added for. What is NOT
+    available is comparing these numbers against a different invocation's; see
+    this module's docstring and UPSTREAM_REQUESTS item 7.
+
+    TWO BARS, because moving a weight to unlock combos is trivial if the bot is
+    allowed to get worse:
+
+      STRENGTH   two of them, because the heuristic bar SATURATES. Stage 5
+                 scores 1.000 against the C++ HeuristicOpponent, so that arm can
+                 only ever say "still not broken" -- it cannot rank two profiles
+                 that both clear it. The discriminating arm is the swept profile
+                 played HEAD TO HEAD against the shipped one, sides swapped, on
+                 the same openings: 0.500 means no strength was traded away.
+      USAGE      combos as a share of PLAYS -- not of decisions. A bot that
+                 holds more has fewer decisions that do anything, so per-decision
+                 usage rises for free when spending falls, which would make this
+                 sweep grade itself on the very thing it is changing.
+    """
+    weight = args.sweep_weight
+    values = [float(v) for v in args.sweep_grid.split(",")]
+    base = dict(PROFILES[args.base_profile])
+    stage = args.stage if args.stage is not None else 5
+    print()
+    print(f"PROFILE SWEEP -- {weight} over {values}")
+    print(f"  base {args.base_profile} {base}")
+    print(f"  stage {stage}, {args.n} shared openings, vs the C++ "
+          f"HeuristicOpponent @1.0x")
+    print()
+
+    roots = []
+    for i in range(args.n):
+        env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
+        env.reset()
+        roots.append(env.snapshot())
+
+    results = {}
+    for v in values:
+        # `play_margin` is a teacher attribute rather than a profile weight,
+        # and it is the better-targeted lever of the two -- see the sweep's
+        # own write-up. Handled here rather than by pretending it is a weight,
+        # because putting it in PROFILES would make it look like one.
+        weights = dict(base)
+        if weight != "play_margin":
+            weights[weight] = v
+        def _make(team, w, margin):
+            t = UtilityTeacher(DEFAULT_DECK, team=team, profile=w,
+                               seed=args.seed, combo_reserve=args.reserve)
+            t.set_stage(stage)
+            t.reset()
+            if margin is not None:
+                t.play_margin = margin
+            return t
+
+        margin = v if weight == "play_margin" else None
+        tele = Telemetry()
+        scores, h2h = [], []
+        for root in roots:
+            env = root.snapshot()
+            scores.append(teacher_vs_heuristic(
+                env, _make(0, weights, margin), tele))
+            # Head to head against the SHIPPED profile, sides swapped -- the
+            # arm that can actually rank two profiles that both beat the
+            # heuristic. A policy once beat a bit-exact copy of itself 0.598
+            # purely by side assignment, so a one-sided duel would fold that
+            # straight into the result.
+            side = []
+            for me in (0, 1):
+                duel = root.snapshot()
+                mine = _make(me, weights, margin)
+                theirs = _make(1 - me, base, None)
+                t0, t1 = (mine, theirs) if me == 0 else (theirs, mine)
+                sc = play_match(duel, t0, t1)
+                side.append(sc if me == 0 else 1.0 - sc)
+            h2h.append(float(np.mean(side)))
+        m, lo, hi = stats.bootstrap_ci(scores)
+        plays = max(1, tele.plays)
+        combos = sum(tele.chosen[k] for k in COMBO_KINDS)
+        e = np.asarray(tele.elixir or [0.0])
+        hm, hlo, hhi = stats.bootstrap_ci(h2h)
+        results[v] = dict(score=m, lo=lo, hi=hi, combo_share=combos / plays,
+                          combos=combos, plays=plays, scores=scores,
+                          h2h=h2h, h2h_mean=hm, h2h_lo=hlo, h2h_hi=hhi,
+                          elixir=float(e.mean()), p90=float(np.percentile(e, 90)))
+        # Share of decisions spent at or above the overflow line. Raising
+        # `play_margin` buys elixir by not spending it, and past some point
+        # that stops being thrift and starts being wasted income -- the bar
+        # caps at 10.0, so regeneration above ~9 is thrown away. A win-rate arm
+        # at this n would not necessarily show that cost, so it is reported
+        # directly. 9.0 is the same threshold `score`'s overflow relief and
+        # W_ELIXIR_OVERFLOW both use.
+        waste = float((e >= 9.0).mean())
+        results[v]["overflow"] = waste
+        print(f"  {weight}={v:<6g} vsHeur {m:.3f}  vsBase {hm:.3f} "
+              f"[{hlo:.3f}, {hhi:.3f}]   "
+              f"elixir {e.mean():.2f}/p90 {np.percentile(e, 90):.2f} "
+              f"/overflow {100.0 * waste:4.1f}%   "
+              f"plays {tele.plays:>4}  combos {combos:>3} "
+              f"= {100.0 * combos / plays:5.1f}% of plays")
+
+    print()
+    print("  paired against the base value, same openings:")
+    base_v = float(base[weight]) if weight in base else DEFAULT_PLAY_MARGIN
+    if base_v in results:
+        for v in values:
+            if v == base_v:
+                continue
+            r = stats.paired(results[base_v]["scores"], results[v]["scores"])
+            print(r.format(f"{weight} {base_v} -> {v}", f"{base_v}", f"{v}"))
+    return results
+
+
+# --------------------------------------------------------------------------
 # 3. the strength benchmark
 # --------------------------------------------------------------------------
 def run_vs_net(args):
@@ -338,6 +502,10 @@ def main():
     ap.add_argument("--usage", action="store_true")
     ap.add_argument("--reserve-ab", action="store_true")
     ap.add_argument("--combo-ab", action="store_true")
+    ap.add_argument("--profile-sweep", action="store_true")
+    ap.add_argument("--sweep-weight", default="w_pos")
+    ap.add_argument("--sweep-grid", default="4,6,8,10,14,20")
+    ap.add_argument("--base-profile", default="balanced")
     ap.add_argument("--drop-family", default=None,
                     help="ablate one combo family from the ON arm, e.g. "
                          "cheap_defence")
@@ -359,10 +527,14 @@ def main():
         run_reserve_ab(args)
     if args.combo_ab:
         run_combo_ab(args)
+    if args.profile_sweep:
+        run_profile_sweep(args)
     if args.vs_net:
         run_vs_net(args)
-    if not (args.usage or args.reserve_ab or args.combo_ab or args.vs_net):
-        ap.error("pick one of --usage / --combo-ab / --reserve-ab / --vs-net")
+    if not (args.usage or args.reserve_ab or args.combo_ab or args.vs_net
+            or args.profile_sweep):
+        ap.error("pick one of --usage / --combo-ab / --reserve-ab / "
+                 "--profile-sweep / --vs-net")
 
 
 if __name__ == "__main__":

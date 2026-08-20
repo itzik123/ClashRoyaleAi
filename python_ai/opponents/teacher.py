@@ -676,14 +676,54 @@ class UtilityTeacher:
         # indistinguishable from the same card played alone once it has been
         # reduced to a returned (slot, x, y).
         self.last_kind = "noop"
-        self._fixed_profile = profile
+        # A profile is either a NAME in PROFILES or an explicit weight set.
+        # The mapping form exists for sweeps: `PROFILES` has three entries and
+        # the interesting weights are usually between or below them. Copied
+        # rather than referenced, because a sweep builds both sides of a match
+        # from one dict and a teacher that mutated it would corrupt the arm.
+        self._fixed_profile = (dict(profile) if isinstance(profile, dict)
+                               else profile)
         self.rng = np.random.default_rng(seed)
         self.cycle = CycleTracker(self.deck)
-        self.profile = PROFILES[profile] if profile else PROFILES["balanced"]
+        self.profile = self._resolve_profile(profile)
         self.lane_bias = 0
-        # A play must beat holding by more than this. Strictly positive so
-        # rollout noise on a dead board cannot talk the bot into dumping.
-        self.play_margin = 0.05
+        # A play must beat holding by more than this -- the bot's ONE economy
+        # control, and until 2026-08-21 it was set to a value that could not
+        # perform it.
+        #
+        # It was 0.05, against a MEASURED median of 1.37 for the marginal cheap
+        # plays it exists to stop (the plays actually chosen while the win
+        # condition sat in hand and nothing threatened). 27x too low, so it
+        # never bound, and the bot spent to ~1.8 elixir continuously -- which
+        # is why a 5-6 elixir escorted push was affordable on 2 decisions in
+        # ~2,400 and the combo generator had nothing to buy.
+        #
+        # 3.0 selected by sweep and CONFIRMED on a fresh independent run, both
+        # paired on shared openings within one process (the engine's shuffle is
+        # unseeded, so cross-run levels are not comparable -- see
+        # UPSTREAM_REQUESTS item 7). Head to head against the old profile,
+        # sides swapped:
+        #
+        #   margin  vs old   elixir p90   overflow   combos, % of plays
+        #   0.05    0.500       3.55        0.1%          2.2%
+        #   2.0     0.812       5.60        1.3%          6.9%
+        #   3.0     0.969       7.95        4.3%         14.4%
+        #   4.0     0.969       9.46       12.9%         18.2%
+        #
+        # 4.0 is not better -- identical strength, three times the wasted
+        # income. 3.0 is the knee.
+        #
+        # NOTE WHAT THIS IS NOT. Lowering `w_pos` was the obvious lever and is
+        # measured WRONG: across 20 -> 8 it raises elixir (1.83 -> 2.67) but
+        # combo share goes 1.1% -> 0.0/0.0/0.2/0.0/0.2%. `w_pos` prunes plays by
+        # HP-per-elixir, and an escorted push (388 HP/elixir) sits BELOW a naked
+        # Hog (424), so it kills the combo before the cheap cards it was meant
+        # to replace. The naked-unit reward and the combo reward are the same
+        # term and cannot be separated by that weight.
+        #
+        # GAMEPLAY-AFFECTING for phase 1: every win rate earned against
+        # `teacher@stage N` before this date describes a bot that dumped.
+        self.play_margin = 3.0
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self, rng=None):
@@ -697,11 +737,24 @@ class UtilityTeacher:
         self.pending = None
         self.pending_ticks = 0
         if self._fixed_profile:
-            self.profile = PROFILES[self._fixed_profile]
+            self.profile = self._resolve_profile(self._fixed_profile)
         else:
             names = list(PROFILES)
             self.profile = PROFILES[names[int(self.rng.integers(len(names)))]]
         self.lane_bias = int(self.rng.integers(2))
+
+    @staticmethod
+    def _resolve_profile(profile):
+        """A name, an explicit weight set, or None -> "balanced".
+
+        Returns a COPY in every case. `reset()` re-resolves each match, and
+        without the copy a teacher that touched `self.profile` would edit the
+        module-level `PROFILES` table for the whole process -- which in a sweep
+        would silently change every later arm.
+        """
+        if isinstance(profile, dict):
+            return dict(profile)
+        return dict(PROFILES[profile] if profile else PROFILES["balanced"])
 
     def set_deck(self, deck):
         """Point the teacher at a different deck.
@@ -1194,6 +1247,47 @@ class UtilityTeacher:
         return float(xs[lead]), y
 
     # -- scoring -----------------------------------------------------------
+    def effective_play_margin(self, elixir):
+        """`play_margin`, tapered to zero as the bar approaches overflow.
+
+        A FIXED bar is wrong and the measurement that shows it is the one where
+        the opponent does nothing. Against the C++ heuristic a high bar looks
+        excellent (margin 3.0 beat the shipped profile 0.969 head to head)
+        because an active opponent constantly creates scoreable situations.
+        Against a PASSIVE opponent nothing clears a fixed 3.0, so the bot froze:
+        14 plays across 6 matches, elixir pinned at 9.56, tower damage 9143 ->
+        4063, and a dropped match it should win trivially.
+
+        An episode-0 agent IS passive. A fixed high bar would therefore hand
+        phase 1 exactly the zero-gradient environment the 2026-08-19 curriculum
+        pivot exists to remove -- while looking strong on every benchmark that
+        uses an active opponent.
+
+        The taper reuses `score`'s own overflow relief, same threshold and same
+        shape: above ELIXIR_OVERFLOW_AT the bar is discarding income, so holding
+        is not free and a marginal play no longer has to justify itself.
+        """
+        relief = max(0.0, float(elixir) - ELIXIR_OVERFLOW_AT) / (
+            10.0 - ELIXIR_OVERFLOW_AT)
+        return float(self.play_margin) * (1.0 - min(1.0, relief))
+
+    def margin_for(self, cand, elixir):
+        """The bar THIS candidate has to clear.
+
+        Zero for a plan's due second half. `play_margin` exists to stop the bot
+        DUMPING -- spending on a marginal play when holding was free -- and for
+        a follow-up holding is not free: the first card is already on the board
+        and already paid for, so declining does not bank the elixir, it wastes
+        the commitment.
+
+        Narrow by construction: the follow-up still has to be the ARGMAX over
+        every other candidate, so all this skips is the floor whose premise is
+        false. Parallel to `plan_reserve_penalty`'s exemption for the same step.
+        """
+        if cand.kind == "followup":
+            return 0.0
+        return self.effective_play_margin(elixir)
+
     def rollout_ticks(self):
         """How long every rollout in one decision runs.
 
@@ -1424,10 +1518,13 @@ class UtilityTeacher:
             return out
 
         baseline = self.rollout_stats(env, NOOP)
-        best, best_score = None, self.play_margin
+        elixir_now = tactics.own_elixir(obs_own)
+        best, best_score = None, None
         for c in playable:
             sc = self.score(env, c, baseline, obs_own)
-            if sc > best_score:
+            if sc <= self.margin_for(c, elixir_now):
+                continue           # does not beat holding by enough to matter
+            if best is None or sc > best_score:
                 best, best_score = c, sc
         if due:
             self.pending, self.pending_ticks = None, 0

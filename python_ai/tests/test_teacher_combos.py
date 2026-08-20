@@ -701,3 +701,183 @@ def test_the_family_list_matches_what_the_generator_can_actually_emit():
     t = _teacher()
     for name in T.COMBO_FAMILIES:
         assert hasattr(t, f"_combo_{name}"), name
+
+
+# ==========================================================================
+# weight injection -- what a profile sweep needs
+# ==========================================================================
+def test_a_profile_can_be_given_as_an_explicit_WEIGHT_SET():
+    """`PROFILES` has three named entries and a sweep needs to try weights that
+    are not among them. Passing a mapping is the minimal way in; the named form
+    keeps working unchanged because everything else in the tree uses it."""
+    weights = dict(T.PROFILES["balanced"], w_pos=7.5)
+    t = T.UtilityTeacher(DECK, team=0, profile=weights, horizon_ticks=50)
+    t.reset()
+    assert t.profile["w_pos"] == 7.5
+    assert t.profile["w_cost"] == T.PROFILES["balanced"]["w_cost"]
+
+
+def test_an_injected_weight_set_SURVIVES_reset():
+    """`reset()` re-draws the profile every match unless one was pinned, and it
+    used to re-read it out of `PROFILES` by name. A swept weight set that
+    silently reverted on the first reset would make every arm of a sweep
+    measure the same thing -- and the sweep would report a flat line and look
+    like a null result rather than a broken harness."""
+    weights = dict(T.PROFILES["balanced"], w_pos=3.0)
+    t = T.UtilityTeacher(DECK, team=1, profile=weights, horizon_ticks=50)
+    for _ in range(3):
+        t.reset()
+        assert t.profile["w_pos"] == 3.0
+
+
+def test_an_injected_weight_set_is_COPIED_not_aliased():
+    """Two teachers built from one dict must not share it -- a sweep builds
+    both sides of a match from the same weights."""
+    weights = dict(T.PROFILES["balanced"], w_pos=9.0)
+    a = T.UtilityTeacher(DECK, team=0, profile=weights)
+    a.reset()
+    a.profile["w_pos"] = 1.0
+    assert weights["w_pos"] == 9.0
+    b = T.UtilityTeacher(DECK, team=1, profile=weights)
+    b.reset()
+    assert b.profile["w_pos"] == 9.0
+
+
+def test_the_named_profiles_still_work_exactly_as_before():
+    for name in T.PROFILES:
+        t = T.UtilityTeacher(DECK, team=0, profile=name)
+        t.reset()
+        assert t.profile == T.PROFILES[name]
+
+
+# ==========================================================================
+# play_margin -- the anti-dumping guard, finally set to a value that guards
+# ==========================================================================
+def test_play_margin_is_the_SWEPT_value_not_the_original_placeholder():
+    """0.05 was an OFF SWITCH, and the number that says so was measured.
+
+    `play_margin`'s own docstring says it exists "so rollout noise on a dead
+    board cannot talk the bot into dumping". The marginal cheap plays it was
+    meant to stop score a MEDIAN of 1.37 (measured 2026-08-20 over the plays
+    the teacher actually chose while its win condition sat in hand and nothing
+    threatened). A 0.05 guard is 27x below the thing it guards against, which
+    is the same shape as HOG_DEFENSIVE_RESERVE's first value of 3.0 opening its
+    gate on 0 of 542 states -- a constant chosen on plausibility that turns out
+    to be a no-op.
+
+    3.0 was selected by sweep and CONFIRMED on a fresh independent run:
+    head-to-head against the shipped profile it scores 0.969 [0.917, 1.000],
+    and 4.0 scores the same 0.969 while tripling wasted income (overflow
+    4.3% -> 12.9%). So this is the knee, not the end of a monotone climb.
+    """
+    t = T.UtilityTeacher(DECK, team=0)
+    assert t.play_margin == 3.0
+
+
+def test_a_play_worth_less_than_the_margin_is_declined():
+    """The gate itself, independent of the value. A candidate whose marginal
+    utility is below the bar must lose to holding -- which is what makes the
+    bar an economy control rather than a tiebreak."""
+    env = _env()
+    # BELOW the overflow line, or the taper zeroes the bar and the assertion
+    # would be testing the taper instead of the gate.
+    _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 6.0)
+    t = _teacher(horizon=30)
+    t.play_margin = 1e9          # nothing can clear this
+    slot, _x, _y = t.act(env, _obs(env))
+    assert slot == CE.HAND_SIZE, "an unreachable margin still let a card through"
+
+
+def test_the_margin_does_not_reach_the_rules_only_rungs():
+    """Stage 0 has horizon 0 and takes `_rules_only`, which ranks by role
+    priority and never consults `play_margin`. Worth pinning because the
+    curriculum's easiest rung must stay beatable: if raising the margin had
+    silently made stage 0 hold as well, the ladder would have lost its bottom.
+    """
+    env = _env()
+    _stage_hand(env, 0, [CANNON, SKELETONS, MUSK, ICE_SPIRIT], 6.0)
+    # `_rules_only` ranks by ROLE PRIORITY against a threat, so a threat has to
+    # exist or it correctly holds and this would pass vacuously.
+    for _ in range(6):
+        env.inject_enemy(MUSK, 9.0, 12.0)
+        env.step_self_play(-1, 0, 0, -1, 0, 0, 5)
+    assert tactics.threat_level(_obs(env)) > 0.0
+    t = _teacher(horizon=0)
+    t.play_margin = 1e9
+    assert t.act(env, _obs(env))[0] < CE.HAND_SIZE, (
+        "stage 0 declined to answer a push -- _rules_only is reading "
+        "play_margin, which it must not")
+
+
+def test_the_margin_TAPERS_as_the_bar_approaches_overflow():
+    """A FIXED margin is wrong, and the measurement that shows it is the one
+    where the opponent does nothing.
+
+    Against an active opponent a high bar looks excellent -- the C++ heuristic
+    constantly creates scoreable situations, and margin 3.0 beat the shipped
+    profile 0.969 head to head. Against a PASSIVE opponent nothing scores above
+    a fixed 3.0 at all, so the bot froze: 14 plays across 6 matches, elixir
+    pinned at 9.56 (i.e. throwing away almost all income), tower damage more
+    than halved (9143 -> 4063), and it dropped a match it should win trivially.
+
+    An episode-0 agent IS passive, so a fixed high bar would hand phase 1 the
+    zero-gradient environment the whole 2026-08-19 pivot exists to avoid.
+
+    The taper reuses `score`'s own overflow relief: above ELIXIR_OVERFLOW_AT the
+    bar is discarding income, so holding is NOT free and a marginal play stops
+    needing to justify itself. Same threshold, same shape, one idea expressed
+    once.
+    """
+    t = T.UtilityTeacher(DECK, team=0)
+    assert t.effective_play_margin(5.0) == pytest.approx(t.play_margin)
+    assert t.effective_play_margin(T.ELIXIR_OVERFLOW_AT) == pytest.approx(
+        t.play_margin)
+    mid = t.effective_play_margin(9.5)
+    assert 0.0 < mid < t.play_margin
+    assert t.effective_play_margin(10.0) == pytest.approx(0.0)
+
+
+def test_the_taper_is_monotone_so_holding_never_gets_cheaper_as_elixir_rises():
+    t = T.UtilityTeacher(DECK, team=0)
+    xs = [0.0, 3.0, 6.0, 9.0, 9.25, 9.5, 9.75, 10.0]
+    ms = [t.effective_play_margin(x) for x in xs]
+    assert ms == sorted(ms, reverse=True), ms
+
+
+def test_a_teacher_at_max_elixir_will_actually_play_something():
+    """The end-to-end version: full bar, nothing threatening, and the bot must
+    not sit there. This is the state margin 3.0 froze in."""
+    env = _env()
+    _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
+    t = _teacher(horizon=50)
+    assert t.act(env, _obs(env))[0] < CE.HAND_SIZE, (
+        "the teacher held a full bar with a free board -- it is wasting income")
+
+
+def test_a_DUE_followup_is_not_charged_the_dumping_margin():
+    """`play_margin` stops the bot DUMPING -- spending on a marginal play when
+    holding was free. For a plan's second half, holding is NOT free: the first
+    card is already on the board and already paid for, so declining the
+    follow-up does not bank the elixir, it wastes the commitment.
+
+    The exemption is narrow and this is the part that keeps it honest: the
+    follow-up still has to be the ARGMAX over every other candidate. All it
+    skips is the "beat holding by N" floor, whose premise is false here. It
+    parallels `plan_reserve_penalty`'s exemption for the plan's own second
+    half -- the same idea applied to the other gate.
+    """
+    t = T.UtilityTeacher(DECK, team=0)
+    follow = T.Candidate.single(1, HOG, 14.0, 15.0, "wincon", kind="followup")
+    single = T.Candidate.single(1, HOG, 14.0, 15.0, "wincon")
+    assert t.margin_for(follow, 5.0) == 0.0
+    assert t.margin_for(single, 5.0) == pytest.approx(t.play_margin)
+
+
+def test_the_followup_exemption_does_not_leak_to_ordinary_plays():
+    """If it did, `play_margin` would be off for everything the moment a plan
+    existed -- and the economy control this whole session is about would be
+    silently disabled."""
+    t = T.UtilityTeacher(DECK, team=0)
+    for kind in ("single", "supported_push", "counter_push", "cheap_defence"):
+        c = T.Candidate.single(0, SKELETONS, 9.0, 10.0, "melee", kind=kind)
+        assert t.margin_for(c, 5.0) == pytest.approx(t.play_margin), kind

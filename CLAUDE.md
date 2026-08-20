@@ -2355,9 +2355,41 @@ is individually a null:**
 Pooled: **6 families −0.056, 5 families −0.016, all four −0.036 (n=160)**, against
 a per-run 95% half-width of ~0.081 and ~0.057 for two pooled runs. So the
 difference between the two configurations is deep inside the noise and **the
-ablation neither convicts nor exonerates `cheap_defence`.** What can be said is
-that the pooled point estimate is a small negative that n=160 still cannot
-resolve.
+ablation neither convicts nor exonerates `cheap_defence`.**
+
+**SUPERSEDED 2026-08-21 -- POOLED OVER FIVE RUNS IT IS NOT A NULL.** A fifth run
+at the new `play_margin` came back **-0.056**, giving five independent paired
+deltas:
+
+    +0.000   -0.031   -0.081   -0.031   -0.056       4 negative / 0 positive
+
+Levels are not comparable across runs (unseeded openings), but each DELTA is an
+unbiased estimate of the same quantity, so the deltas pool. Over **200 paired
+openings**:
+
+    pooled mean  -0.0398
+    95% CI       [-0.0760, -0.0036]   from the per-run half-width
+    95% CI       [-0.0665, -0.0131]   from the observed between-run spread
+
+Both exclude zero. **The combo machinery costs the teacher about 4 win-rate
+points against a mirror.** "A measured null" was correct at n=40 and wrong at
+n=200 -- the honest statement is a small, real negative that four separate runs
+individually lacked the power to resolve. It is recorded this way round because
+the mistake is the instructive part: four non-significant results with a
+consistent sign are not four nulls.
+
+**The likely mechanism, and it is actionable:** completion is 40%, so 60% of
+chosen combos leave a first card on the board for a plan that never completes --
+paying half a push and getting none of it. Raising completion is the lever, not
+deleting families.
+
+**Kept ON, and that is a VALUES call rather than a measurement.** A sparring
+partner's worth is its REPERTOIRE, not its mirror win rate: the engine has
+rewarded escorted pushes since deploy time landed, and a teacher that cannot
+express them teaches the agent nothing about facing them. The price is ~4 points
+against itself while it still beats the C++ heuristic 1.000 and beats the
+pre-2026-08-21 teacher 95-5. `max_combos = 0` (action-identical to the old
+teacher) and `combo_families` are the one-line off switches.
 
 **THE METHODOLOGICAL FINDING IS THE MORE VALUABLE HALF, and it invalidated my
 own control.** Run 4 was designed with a built-in validity check: it shares
@@ -2408,6 +2440,221 @@ at p90 3.30 cannot often buy a two-card play. That is now the honest open
 question, and it is a scoring question (`w_pos` credits any cheap troop for
 standing forward, so every cheap card looks profitable), not a candidate-
 generation one.
+
+---
+
+## 2026-08-21: the teacher's ECONOMY. `play_margin` 0.05 -> 3.0, and two mechanisms it needed.
+
+**GAMEPLAY-AFFECTING for phase 1.** Every win rate earned against
+`teacher@stage N` before this date describes a bot that dumped its elixir
+continuously. Checkpoints are NOT invalidated -- observation, action space,
+architecture and reward are untouched.
+
+The multi-card generator (2026-08-20) worked and was never used: combos were
+chosen on well under 1% of decisions because the teacher's bar sat at a p90 of
+3.30 and an escorted push costs 5-6. This is the follow-through on that.
+
+### `w_pos` is the obvious lever and it is REFUTED
+
+The standing hypothesis was that `w_pos = 20.0` over-rewards cheap units on the
+board, so lowering it would make the bot save for a combo. Swept 20 -> 8, n=14
+shared openings, stage 5 vs the C++ heuristic:
+
+| `w_pos` | elixir | combos, % of plays |
+|---|---|---|
+| 20 | 1.83 | 1.1% |
+| 16 | 1.83 | **0.0%** |
+| 14 | 1.88 | **0.0%** |
+| 12 | 2.02 | 0.2% |
+| 10 | 2.13 | **0.0%** |
+| 8 | 2.67 | 0.2% |
+
+**Half right and half wrong.** The economy half holds -- elixir does rise. The
+combo half is backwards: usage never rises and mostly goes to zero.
+
+The mechanism, and it is arithmetic rather than a guess. A play's score is
+roughly `w_pos * (HP / MAX_TROOP_HP) * row_weight - w_cost * cost`, so lowering
+`w_pos` raises the HP-PER-ELIXIR a play must clear. Ranked:
+
+    Ice Golem  658 HP/elixir     Hog (naked)  424
+    escorted push (Skel+Hog) 388     Musketeer 240     Skeletons 243
+
+The escorted push sits **below** the naked Hog, so `w_pos` kills the combo
+BEFORE the cheap cards it was supposed to replace. The naked-unit reward and the
+combo reward are the same term; that weight cannot separate them.
+
+### The actual defect: `play_margin` was an off switch
+
+`play_margin` is the bot's one economy control -- "a play must beat holding by
+more than this" -- and its own docstring says it exists "so rollout noise on a
+dead board cannot talk the bot into dumping". It was **0.05**, against a
+**measured median of 1.37** for exactly the plays it exists to stop (the plays
+actually chosen while the win condition sat in hand and nothing threatened,
+measured 2026-08-20). 27x too low to ever bind.
+
+Same shape as `HOG_DEFENSIVE_RESERVE`'s first value of 3.0 opening its gate on
+0 of 542 states: a constant chosen on plausibility that turns out to be a no-op.
+Third instance in this file.
+
+### THE MEASUREMENT THAT NEARLY SHIPPED A ZERO-GRADIENT ENVIRONMENT
+
+Against the C++ heuristic, a fixed `play_margin = 3.0` looked excellent -- it
+beat the shipped profile **0.969 [0.917, 1.000]** head to head. Against a
+**passive** opponent it is a disaster, and an episode-0 agent is passive:
+
+| margin (fixed) | plays | tower dmg/match | wins | elixir |
+|---|---|---|---|---|
+| 0.05 | 39 (14.9%) | 9143 | 6/6 | 2.53 |
+| 1.0 | 46 (15.2%) | 9329 | 6/6 | 2.90 |
+| 2.0 | 39 (6.0%) | 8324 | 6/6 | 7.29 |
+| **3.0** | **14 (0.7%)** | **4063** | **5/6** | **9.56** |
+
+At 3.0 the bot froze at max elixir, threw away almost all income, halved its
+tower damage and dropped a match it should win trivially. Matches ran 4x longer
+(1880 decisions across 6 vs 261) because it was timing out rather than winning.
+
+**Nothing scores above a fixed high bar when the opponent does nothing** -- the
+candidate rollout and the no-op baseline look nearly identical on a quiet board.
+So the bar that makes the teacher strong against an active opponent makes it
+inert against a weak one, which is precisely the zero-gradient environment the
+2026-08-19 curriculum pivot exists to remove. **It would have passed every
+benchmark in this repo**, because every one of them uses an active opponent.
+
+**Fixed by tapering the margin to zero across the overflow line**
+(`effective_play_margin`), reusing `score`'s own relief -- same
+`ELIXIR_OVERFLOW_AT = 9.0`, same shape. Above it the bar is discarding income,
+so holding is not free and a marginal play stops having to justify itself. Same
+probe, with the taper:
+
+| margin (tapered) | plays | tower dmg/match | wins | elixir |
+|---|---|---|---|---|
+| 0.05 | 42 (14.8%) | 9319 | 6/6 | 2.63 |
+| 1.0 | 51 (14.0%) | 9378 | 6/6 | 4.07 |
+| 2.0 | 38 (13.1%) | 9257 | 6/6 | 4.33 |
+| **3.0** | **43 (11.9%)** | **9243** | **6/6** | **5.34** |
+| 4.0 | 42 (11.8%) | 8937 | 6/6 | 6.18 |
+
+### The second mechanism: a DUE follow-up is not charged the margin
+
+At 3.0 the second half of a committed combo stopped clearing the bar, so plans
+were paid for and then abandoned -- the naked-first-card outcome the whole
+multi-card change exists to avoid.
+
+`play_margin` stops DUMPING: spending on a marginal play when holding was free.
+For a follow-up holding is **not** free -- the first card is already on the board
+and already paid for, so declining does not bank the elixir, it wastes the
+commitment. `margin_for` returns 0 for `kind == "followup"`.
+
+Narrow by construction, and this is what keeps it from becoming blind
+commitment: the follow-up still has to be the ARGMAX over every other
+candidate. It skips only the floor whose premise is false. Parallel to
+`plan_reserve_penalty`'s exemption for the same step.
+
+### Why 3.0 and not 4.0
+
+Selected by sweep, confirmed on a fresh independent run, both paired on shared
+openings within one process:
+
+SELECTION, on the pre-taper code (n=24, so these rank the margin, they are not
+the shipped numbers):
+
+| margin | vs the OLD teacher | elixir p90 | overflow | combos, % of plays |
+|---|---|---|---|---|
+| 0.05 | 0.500 | 3.55 | 0.1% | 2.2% |
+| 2.0 | 0.812 | 5.60 | 1.3% | 6.9% |
+| **3.0** | **0.969 [0.917, 1.000]** | 7.95 | 4.3% | **14.4%** |
+| 4.0 | 0.969 | 9.46 | **12.9%** | 18.2% |
+
+4.0 is not better: identical strength, three times the wasted income. 3.0 is the
+knee.
+
+**SHIPPED NUMBERS, re-measured on the final code** (taper + follow-up exemption
+in place, n=20 shared openings) -- these are the ones to quote:
+
+| margin | vs heuristic | vs the other | elixir p90 | overflow | plays | combos, % of plays |
+|---|---|---|---|---|---|---|
+| 0.05 (old) | 1.000 | **0.050** [0.000, 0.113] | 3.50 | 0.0% | 831 | 2.0% |
+| **3.0 (new)** | 1.000 | 0.500 (itself) | 7.47 | 2.7% | 443 | **11.3%** |
+
+The old teacher wins **5%** of head-to-head matches against the new one.
+
+**And the cost, stated because a win rate hides it: the teacher plays roughly
+HALF as many cards** (831 -> 443 over the same openings). It is much stronger
+and much quieter. For a training opponent that is a real trade -- fewer plays
+per match is less variety for the student to face -- and it is the thing to
+watch if phase 1 ever looks like it has stopped learning. Against a PASSIVE
+opponent the taper holds the play rate at 11.9% of decisions against the old
+14.9%, so the collapse is bounded; against an active one it is a genuine halving.
+
+Latency also rose **5 -> 14.1 ms/decision**, and not because of the margin: a
+solvent teacher can AFFORD more cards, so the generator proposes ~663 combos
+per 2,000 decisions where it used to propose ~100, and each one is a rollout.
+About 13% of a 22 s episode, up from 4%. `max_combos` bounds it.
+
+### The strength ladder, re-measured with the final code
+
+`prove_teacher.py --vs heuristic --n 20`, every rung, against the C++
+HeuristicOpponent at 1.0x:
+
+| stage | before | after |
+|---|---|---|
+| 0 (rules-only) | 0.500 | 0.325 |
+| 1 | 0.600 | **0.750** |
+| 2 | 0.750 | **0.900** |
+| 3 | 1.000 | 1.000 |
+| 4 | 0.975 | **1.000** |
+| **5** | 1.000 | **1.000** |
+
+Every rung that uses the ROLLOUT path improved. Stage 0 is the one that fell,
+and it is the one rung `play_margin` provably cannot reach -- it takes
+`_rules_only`, which ranks by role priority and never reads the margin
+(pinned by `test_the_margin_does_not_reach_the_rules_only_rungs`). Its epsilon
+is 0.30, its CI is [0.150, 0.500] against the previous [0.325, 0.700], and the
+openings differ between runs because the shuffle is unseeded. Noise.
+
+### What the combos actually ARE, which the 14% aggregate hides
+
+Per family, teacher vs teacher, 10 matches -- chosen / completed:
+
+| family | chosen | completed |
+|---|---|---|
+| `cheap_defence` | 25 | 9 |
+| `spell_then_push` | 11 | 6 |
+| `defensive_stack` | 8 | 3 |
+| `supported_push` | 2 | 0 |
+| `counter_push` | 1 | 1 |
+
+**The combos that fire are mostly DEFENSIVE.** The escorted win-condition push
+-- the play this whole line of work was aimed at -- is 3 of 47. That is not a
+bug and it is not the margin: it needs the tank AND the win condition in hand at
+the same time (~4-9% of decisions) and it is the most expensive pair in the
+deck. `counter_push` is the same tactic at a lower price and is what actually
+lands.
+
+Stated explicitly because this file records the same failure four times
+already: **an aggregate that cannot see the conditional.** "14.4% of plays are
+combos" is true and would be badly misread as "the Ice Golem + Hog push is now
+standard". It is not.
+
+Completion rose 7% -> 40% (19 of 47) once a due follow-up stopped being charged
+the dumping margin. Before that fix plans were paid for and abandoned, which is
+the naked-first-card outcome the multi-card work exists to avoid.
+
+### The methodological note that made all of this measurable
+
+Every arm above is paired on **shared openings within ONE process**, because the
+engine's opening shuffle is unseeded and cross-invocation arm levels are not
+comparable (`UPSTREAM_REQUESTS.md` item 7, and the failed control recorded under
+the multi-card section). `prove_combos.py --profile-sweep` builds its root envs
+once and hands every arm a `snapshot()`, and carries a self-check: the shipped
+value must score exactly 0.500 against itself. It does.
+
+**That self-check also caught a stale constant.** The harness had its own copy
+of the default margin, which silently became wrong the moment the default moved
+0.05 -> 3.0 -- so the sweep labelled its rows against a baseline that was no
+longer the baseline. It now reads the value off `UtilityTeacher`. Same rule
+CLAUDE.md already states for engine constants, and the third time a second copy
+has gone stale here.
 
 ---
 

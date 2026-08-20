@@ -20,7 +20,7 @@ Rules that apply to every item below:
 
 ---
 
-## 1. ✅ DONE (2026-08-20) — Utility Teacher evaluates MULTI-CARD COMBO placements
+## 1. ✅ DONE (2026-08-20/21) — Utility Teacher evaluates MULTI-CARD COMBO placements, and can now afford them
 
 **Built, tested and measured.** `UtilityTeacher` candidates are now SEQUENCES of
 placements rather than single cells, and the teacher plans, commits to and
@@ -44,36 +44,39 @@ The short version:
   it was making the follow-up GAP a searched axis (1/3/5 s), because the pair's
   cost is paid across the gap. A flat savings charge was tried first and is
   measured DEAD -- do not re-propose it.
-- **Win rate is a measured NULL across four paired runs** (+0.000, -0.031,
-  -0.081, -0.031; every CI spans zero; pooled -0.036 at n=160 against a ~0.057
-  half-width). Kept on because it makes a play the engine rewards expressible at
-  ~4% throughput, and `max_combos = 0` is action-identical to the old teacher
-  (0 mismatches / 919 decisions). **The pooled -0.036 is the thing to
-  re-measure at higher n before this teacher fronts a long training run.**
+- **Win rate: SUPERSEDED. Pooled over five paired runs (200 openings) the combo
+  machinery costs about 4 points against a mirror** -- deltas +0.000/-0.031/
+  -0.081/-0.031/-0.056, pooled -0.0398, CI [-0.076, -0.004]. It was called a
+  null at n=40 and that was a power limit, not a result. Kept on as a
+  REPERTOIRE choice (the engine rewards escorted pushes; the teacher still beats
+  the C++ heuristic 1.000 and the old teacher 95-5), with `max_combos = 0` and
+  `combo_families` as one-line off switches. **The lever is completion: 60% of
+  chosen combos leave a first card down for a plan that never finishes.**
 - **A control failed and the reason is reusable:** `--seed` does not make
   `prove_combos.py` reproducible, because `ClashEnv::reset()`'s opening shuffle
   is unseeded (engine request 7, still open). Within a run the snapshot pairing
   is sound; ACROSS runs only the deltas are comparable, never the arm levels.
 
-### What this leaves open, and it is now an ECONOMY question
+### The economy follow-up: DONE 2026-08-21
 
-Combos are chosen on well under 1% of decisions, and the binding constraint is
-no longer the candidate generator -- it is that the teacher's bar sits at a p90
-of **3.30**, so it can rarely buy a two-card play at all. It spends continuously
-because `w_pos` (20.0) credits any cheap troop merely for standing forward: a
-1-cost body scores about 1.2 utility for 1 elixir, so almost every cheap card
-beats holding.
+`play_margin` 0.05 -> 3.0, plus an overflow taper and a follow-up exemption.
+Combo share of plays 2.2% -> 14.4%, the old teacher loses ~94% head to head, and
+stage 5 still scores 1.000 against the C++ heuristic. Full write-up in
+CLAUDE.md, "2026-08-21: the teacher's ECONOMY".
 
-That is a SCORING question about `PROFILES`, and it should be answered the way
-the profiles were meant to be -- `prove_teacher.py --sweep` selects on win rate
-against the C++ heuristic and the winner is CONFIRMED on a fresh independent
-run. It is deliberately NOT a sixth combo family; the generator is not what is
-binding any more.
+**`w_pos` was the obvious lever and is MEASURED WRONG -- do not re-propose it.**
+Swept 20 -> 8 it raises elixir (1.83 -> 2.67) and drives combo share to
+1.1% -> 0.0/0.0/0.2/0.0/0.2%. It prunes plays by HP-per-elixir, and an escorted
+push (388 HP/elixir) sits below a naked Hog (424), so it kills the combo before
+the cheap cards it was meant to replace.
 
-**Do not read this as "the teacher should hoard".** A flat reserve was measured
-dead here, and CLAUDE.md already records that the shipped solvency gate fixed
-bankruptcy as a statistic with no outcome gain. The open question is whether
-`w_pos` is simply too high, which is a different and cheaper experiment.
+**What is still open, and it is narrow.** The combos that actually complete are
+DEFENSIVE (`cheap_defence`, `spell_then_push`, `defensive_stack`); the escorted
+win-condition push is 3 of 47. That is a hand-co-occurrence and price problem,
+not a scoring one -- the tank and the win condition are both in hand on ~4-9% of
+decisions and the pair is the deck's most expensive. Worth knowing before
+anyone reads "14.4% of plays are combos" as "the Ice Golem + Hog push is now
+standard".
 
 ---
 
