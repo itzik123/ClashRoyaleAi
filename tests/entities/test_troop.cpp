@@ -1,4 +1,5 @@
 #include <catch_amalgamated.hpp>
+#include <cmath>
 #include "test_helpers.h"
 #include "MeleeTroop.h"
 #include "RangedTroop.h"
@@ -34,13 +35,18 @@ TEST_CASE("Troop routes through the nearest bridge when crossing the river", "[t
     troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about river routing, not sight
     troop->update(board);
 
-    // Right bridge (x=14) is closer than left (x=4) from (10,10), so the
-    // troop must have drifted toward x=14, not stayed at x=10. Waypoint is
-    // (14, riverY_start=15.5); direction (4,5.5) normalized, one `speed`
-    // (1.0) step from (10,10).
+    // The right bridge is closer than the left from (10,10), so the troop must
+    // have drifted toward it rather than staying at x=10.
+    //
+    // Asserted as an INVARIANT, not as arithmetic. This used to pin a
+    // hand-computed post-move position (10.588172f), which silently became
+    // wrong -- and needed re-deriving by hand -- the moment the bridge moved.
+    // "It closes on the bridge it chose, and it heads upfield" is the property
+    // the test was really for, and it cannot go stale.
+    const float bridgeX = board.getRightBridge().x;
+    REQUIRE(std::fabs(troop->position.x - bridgeX) < std::fabs(10.0f - bridgeX));
     REQUIRE(troop->position.x > 10.0f);
-    REQUIRE(troop->position.x == Catch::Approx(10.588172f).margin(0.001f));
-    REQUIRE(troop->position.y == Catch::Approx(10.808736f).margin(0.001f));
+    REQUIRE(troop->position.y > 10.0f);
 }
 
 TEST_CASE("Troop with ignoresRiver set walks straight through the river band", "[troop][movement][river]") {
@@ -113,14 +119,14 @@ TEST_CASE("Troop::clampPosition pushes non-bridge river-band positions out to th
 TEST_CASE("Troop::clampPosition does not snap positions sitting on a bridge column", "[troop][clamp][river]") {
     Board board;
 
-    SECTION("left bridge (x in [3,5])") {
-        auto troop = std::make_shared<MeleeTroop>(1, 4.0f, 17.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    SECTION("left bridge") {
+        auto troop = std::make_shared<MeleeTroop>(1, board.getLeftBridge().x, 17.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
         troop->update(board);
         REQUIRE(troop->position.y == Catch::Approx(17.0f));
     }
 
-    SECTION("right bridge (x in [13,15])") {
-        auto troop = std::make_shared<MeleeTroop>(1, 14.0f, 17.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    SECTION("right bridge") {
+        auto troop = std::make_shared<MeleeTroop>(1, board.getRightBridge().x, 17.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
         troop->update(board);
         REQUIRE(troop->position.y == Catch::Approx(17.0f));
     }

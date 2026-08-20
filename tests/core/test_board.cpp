@@ -24,8 +24,11 @@ TEST_CASE("clampToBoard pushes non-bridge river-band positions to the nearest ba
 
 TEST_CASE("clampToBoard does not snap positions sitting on a bridge column", "[board][clamp]") {
     Board board;
-    REQUIRE(board.clampToBoard(Vector2D{ 4.0f, 17.0f }, false).y == Catch::Approx(17.0f));  // left bridge
-    REQUIRE(board.clampToBoard(Vector2D{ 14.0f, 17.0f }, false).y == Catch::Approx(17.0f)); // right bridge
+    // Read off the board, never written down again: a literal silently turns
+    // this into an assertion about open water the moment a bridge moves, which
+    // is exactly what happened when the arena was corrected on 2026-08-21.
+    REQUIRE(board.clampToBoard(Vector2D{ board.getLeftBridge().x, 17.0f }, false).y == Catch::Approx(17.0f));
+    REQUIRE(board.clampToBoard(Vector2D{ board.getRightBridge().x, 17.0f }, false).y == Catch::Approx(17.0f));
 }
 
 TEST_CASE("clampToBoard skips the river snap entirely when ignoresRiver is true", "[board][clamp]") {
@@ -305,23 +308,23 @@ TEST_CASE("getNextWaypoint returns the target directly when both points are insi
 
 TEST_CASE("getNextWaypoint routes below-to-above via the nearest bridge's start edge", "[board][waypoint]") {
     Board board;
-    // Closer to the right bridge (x=14) than the left (x=4).
+    // Closer to the right bridge than the left.
     Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 5.0f }, Vector2D{ 10.0f, 25.0f });
-    REQUIRE(wp.x == Catch::Approx(14.0f));
+    REQUIRE(wp.x == Catch::Approx(board.getRightBridge().x));
     REQUIRE(wp.y == Catch::Approx(15.5f)); // riverY_start
 }
 
 TEST_CASE("getNextWaypoint routes above-to-below via the nearest bridge's end edge", "[board][waypoint]") {
     Board board;
     Vector2D wp = board.getNextWaypoint(Vector2D{ 10.0f, 25.0f }, Vector2D{ 10.0f, 5.0f });
-    REQUIRE(wp.x == Catch::Approx(14.0f));
+    REQUIRE(wp.x == Catch::Approx(board.getRightBridge().x));
     REQUIRE(wp.y == Catch::Approx(17.5f)); // riverY_end
 }
 
 TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][waypoint]") {
     Board board;
     Vector2D wp = board.getNextWaypoint(Vector2D{ 2.0f, 5.0f }, Vector2D{ 2.0f, 25.0f });
-    REQUIRE(wp.x == Catch::Approx(4.0f)); // leftBridge.x
+    REQUIRE(wp.x == Catch::Approx(board.getLeftBridge().x));
 }
 
 // ---------------- the bridge-mouth absorbing state ----------------
@@ -345,8 +348,8 @@ TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][wa
 TEST_CASE("getNextWaypoint does not strand a unit standing on the near bank", "[board][waypoint][regression]") {
     Board board;
     // Exactly the measured ep1007 position: on the left bridge, at riverY_start.
-    Vector2D here{ 4.0f, 15.5f };
-    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 4.0f, 27.0f });
+    Vector2D here{ board.getLeftBridge().x, 15.5f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getLeftBridge().x, 27.0f });
     // The unit still has to cross, so the waypoint must be somewhere it is not
     // already standing -- otherwise Troop::moveTowards has nothing to move to.
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
@@ -357,8 +360,8 @@ TEST_CASE("getNextWaypoint does not strand a unit standing on the near bank", "[
 TEST_CASE("getNextWaypoint does not strand a unit standing on the far bank", "[board][waypoint][regression]") {
     Board board;
     // The same trap mirrored, for a unit heading back south.
-    Vector2D here{ 14.0f, 17.5f };
-    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 14.0f, 6.0f });
+    Vector2D here{ board.getRightBridge().x, 17.5f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getRightBridge().x, 6.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
     REQUIRE(wp.y == Catch::Approx(15.5f));
 }
@@ -369,7 +372,11 @@ TEST_CASE("getNextWaypoint never returns the caller's own position while it stil
     // Sweep the whole trap disc around both bridge mouths, at a resolution
     // finer than the arrival epsilon, in both crossing directions. Any point
     // that returns itself is an absorbing state.
-    const float bridges[] = { 4.0f, 14.0f };
+    // Read off the board, not restated. These sweeps exist to prove no bridge
+    // mouth is an absorbing state; a literal turned them into a sweep of open
+    // water the moment the arena was corrected, silently retiring the
+    // regression tests for TWO shipped deadlocks.
+    const float bridges[] = { board.getLeftBridge().x, board.getRightBridge().x };
     const float banks[] = { 15.5f, 17.5f };
     for (float bx : bridges) {
         for (float by : banks) {
@@ -417,23 +424,27 @@ TEST_CASE("getNextWaypoint does not strand a unit arriving at the far bank", "[b
     Board board;
     // A hair short of the north bank, still crossing northward -- the exact
     // shape of the measured Giant/Ice Golem freeze.
-    Vector2D here{ 4.0f, 17.4995f };
-    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 4.0f, 27.0f });
+    Vector2D here{ board.getLeftBridge().x, 17.4995f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getLeftBridge().x, 27.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
 }
 
 TEST_CASE("getNextWaypoint does not strand a unit arriving at the near bank", "[board][waypoint][regression]") {
     Board board;
     // The same trap mirrored: a hair past the south bank, still heading south.
-    Vector2D here{ 14.0f, 15.5005f };
-    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 14.0f, 6.0f });
+    Vector2D here{ board.getRightBridge().x, 15.5005f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getRightBridge().x, 6.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
 }
 
 TEST_CASE("getNextWaypoint never returns the caller's own position, in EITHER crossing direction",
           "[board][waypoint][regression]") {
     Board board;
-    const float bridges[] = { 4.0f, 14.0f };
+    // Read off the board, not restated. These sweeps exist to prove no bridge
+    // mouth is an absorbing state; a literal turned them into a sweep of open
+    // water the moment the arena was corrected, silently retiring the
+    // regression tests for TWO shipped deadlocks.
+    const float bridges[] = { board.getLeftBridge().x, board.getRightBridge().x };
     const float banks[] = { 15.5f, 17.5f };
     // Both destinations at both banks -- the cross product the older sweep
     // above only covers half of.
@@ -459,12 +470,12 @@ TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge tow
     Board board;
 
     SECTION("target is above -> heads to the river end edge") {
-        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 17.0f }, Vector2D{ 4.0f, 25.0f });
+        Vector2D wp = board.getNextWaypoint(Vector2D{ board.getLeftBridge().x, 17.0f }, Vector2D{ board.getLeftBridge().x, 25.0f });
         REQUIRE(wp.y == Catch::Approx(17.5f));
     }
 
     SECTION("target is below -> heads to the river start edge") {
-        Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 17.0f }, Vector2D{ 4.0f, 5.0f });
+        Vector2D wp = board.getNextWaypoint(Vector2D{ board.getLeftBridge().x, 17.0f }, Vector2D{ board.getLeftBridge().x, 5.0f });
         REQUIRE(wp.y == Catch::Approx(15.5f));
     }
 }

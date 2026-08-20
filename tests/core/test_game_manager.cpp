@@ -1,5 +1,6 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
+#include "ArenaLayout.h"
 #include "GameManager.h"
 #include "CardStats.h"
 #include "BuildingTargeter.h"
@@ -15,46 +16,46 @@ TEST_CASE("GameManager construction sets up exactly the 6 expected towers", "[ga
     const auto& entities = game.getBoard().getEntities();
     REQUIRE(entities.size() == 6);
 
+    // Coordinates come from ArenaLayout, never restated here. They were pinned
+    // as literals (King 9.0, left Princess 4.0) and had to be hand-edited when
+    // the arena was corrected on 2026-08-21 -- the same maintenance burden the
+    // no-second-copies rule exists to remove. What this case is really for is
+    // the ROSTER: six towers, the right hp, the right names, in the order
+    // reset() spawns them.
     REQUIRE(entities[0]->symbol == 'R');
     REQUIRE(entities[0]->team == 0);
     REQUIRE(entities[0]->hp == 4008);
     REQUIRE(entities[0]->name == "King Tower");
-    // 9.0 (board's true centre) per perception/'s real-recording calibration
-    // -- see the addTower() calls in GameManager::reset() for the full
-    // measurement (UPSTREAM_REQUESTS.md item 2, corrected 2026-07-30).
-    REQUIRE(entities[0]->position.x == Catch::Approx(9.0f));
-    REQUIRE(entities[0]->position.y == Catch::Approx(2.5f));
+    REQUIRE(entities[0]->position.x == Catch::Approx(ArenaLayout::CENTER_X));
+    REQUIRE(entities[0]->position.y == Catch::Approx(ArenaLayout::kingY(0)));
 
     REQUIRE(entities[1]->symbol == 'R');
     REQUIRE(entities[1]->team == 1);
     REQUIRE(entities[1]->name == "King Tower");
-    REQUIRE(entities[1]->position.x == Catch::Approx(9.0f));
+    REQUIRE(entities[1]->position.x == Catch::Approx(ArenaLayout::CENTER_X));
     // Mirrors the ally king via (height-1) - y = 33 - 2.5 = 30.5, same
     // convention as ClashEnv::extractObservationForTeam's team-1 mirroring.
-    REQUIRE(entities[1]->position.y == Catch::Approx(30.5f));
+    REQUIRE(entities[1]->position.y == Catch::Approx(ArenaLayout::kingY(1)));
 
     REQUIRE(entities[2]->symbol == 'P');
     REQUIRE(entities[2]->team == 0);
     REQUIRE(entities[2]->hp == 2534);
     REQUIRE(entities[2]->name == "Princess Tower");
-    // Left Princess now sits flush with the left bridge (both x=4.0) --
-    // previously x=3.0, a full tile off its own bridge while the right side
-    // (both 14.0) already agreed with itself. UPSTREAM_REQUESTS.md item 1.
-    REQUIRE(entities[2]->position.x == Catch::Approx(4.0f));
-    REQUIRE(entities[2]->position.y == Catch::Approx(6.0f));
+    REQUIRE(entities[2]->position.x == Catch::Approx(ArenaLayout::LEFT_LANE_X));
+    REQUIRE(entities[2]->position.y == Catch::Approx(ArenaLayout::princessY(0)));
     REQUIRE(entities[3]->symbol == 'P');
     REQUIRE(entities[3]->team == 0);
-    REQUIRE(entities[3]->position.x == Catch::Approx(14.0f));
-    REQUIRE(entities[3]->position.y == Catch::Approx(6.0f));
+    REQUIRE(entities[3]->position.x == Catch::Approx(ArenaLayout::RIGHT_LANE_X));
+    REQUIRE(entities[3]->position.y == Catch::Approx(ArenaLayout::princessY(0)));
 
     REQUIRE(entities[4]->symbol == 'P');
     REQUIRE(entities[4]->team == 1);
-    REQUIRE(entities[4]->position.x == Catch::Approx(4.0f));
-    REQUIRE(entities[4]->position.y == Catch::Approx(27.0f));
+    REQUIRE(entities[4]->position.x == Catch::Approx(ArenaLayout::LEFT_LANE_X));
+    REQUIRE(entities[4]->position.y == Catch::Approx(ArenaLayout::princessY(1)));
     REQUIRE(entities[5]->symbol == 'P');
     REQUIRE(entities[5]->team == 1);
-    REQUIRE(entities[5]->position.x == Catch::Approx(14.0f));
-    REQUIRE(entities[5]->position.y == Catch::Approx(27.0f));
+    REQUIRE(entities[5]->position.x == Catch::Approx(ArenaLayout::RIGHT_LANE_X));
+    REQUIRE(entities[5]->position.y == Catch::Approx(ArenaLayout::princessY(1)));
 }
 
 TEST_CASE("GameManager construction gives both players starting elixir and a 4-card hand", "[game_manager][reset]") {
