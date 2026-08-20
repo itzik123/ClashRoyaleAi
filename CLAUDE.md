@@ -43,50 +43,61 @@ py -3.11
 **`cmake`, `cl` and `msbuild` are not on PATH.** Rebuild the engine with:
 
 ```bash
-"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" build_python\clash_royale_env.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" \
+  build_python\clash_royale_env.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-The MSBuild binary lives under VS "18" while the actual toolset comes from the
-VS2022 install. **The post-build copy into `python_ai/` fails (MSB3073) if any
-Python process has the `.pyd` loaded** — Windows won't overwrite a mapped DLL.
-That looks exactly like "the compile is broken" and almost never is. Check
+**Run it from the PowerShell tool, never Bash.** Git Bash's MSYS path
+translation rewrites the switches -- `/p:Configuration=Release` arrives as
+`p:Configuration=Release` and `/m` becomes `M:/` -- which fails with
+`MSBUILD : error MSB1008: Only one project can be specified`. That reads like a
+bad project argument and is purely argument mangling.
+
+**The post-build copy into `python_ai/` fails (MSB3073) if any Python process
+has the `.pyd` loaded** -- Windows won't overwrite a mapped DLL. That looks
+exactly like "the compile is broken" and almost never is. Check
 `ps -W | grep -i python` first.
 
-> **⚠ Verified 2026-08-19: that command does not work on this machine any more.**
-> `C:\Program Files\Microsoft Visual Studio\18\` and `\2022\` are both **empty
-> directories** — there is no `MSBuild.exe` anywhere on the box, and no `cl`,
-> `cmake` or `clang++` either. **The `.pyd` cannot be rebuilt here**, which also
-> means `python_ai/venv` is absent and nothing importing `clash_royale_env` can
-> run. Keep the command above for whichever machine still has the toolchain.
+The C++ test suite builds from the same generated solution and runs directly:
+
+```bash
+"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" \
+  build_python\ClashRoyaleTests.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+./build_python/Release/ClashRoyaleTests.exe
+```
+
+Measured 2026-08-21: **550 test cases, 5,341 assertions, all passing**, ~90 s to
+compile from cold.
+
+> **⚠ THE THREE WARNINGS THAT USED TO SIT HERE WERE WRONG. Corrected
+> 2026-08-21 by building the `.pyd` and the C++ suite on this machine.**
 >
-> **⚠ RE-VERIFIED 2026-08-20: WSL IS GONE TOO, so the C++ suite cannot be built
-> or run on this box either.** `wsl --version` reports "The Windows Subsystem for
-> Linux is not installed", and `cl`, `cmake`, `msbuild`, `g++` and `clang++` are
-> all absent from PATH. There is now NO way to compile C++ here at all. The
-> command below is kept for whichever machine still has a toolchain.
+> They claimed the Visual Studio directories were "both **empty**
+> directories", that there was "no `MSBuild.exe` anywhere on the box", that
+> "the `.pyd` cannot be rebuilt here", and that `python_ai/venv` was absent.
+> None of that is true. `C:\Program Files\Microsoft Visual Studio\2022\`
+> contains a full `Community` install with `cl.exe` (14.44.35207),
+> `MSBuild.exe` and its own `cmake.exe`; `python_ai/venv` exists and is what
+> every command in this file uses.
 >
-> The practical consequence for a session on this box: a change that touches
-> `include/`, `src/` or `tests/` **cannot be verified here**, so do not make one.
-> Verify instead that the C++ tree is untouched --
-> `git diff --name-only main -- include/ src/ tests/ CMakeLists.txt build_python/`
-> must be empty -- and say that, rather than claiming a suite you did not run.
+> **How the error was made, because the shape of it will recur.** The check
+> was `ls "<dir>" | wc -l`, which returned `1` for each Visual Studio
+> directory. That was read as "effectively empty". The single entry was
+> `Community` -- the entire toolchain. A count is not an inspection, and
+> `wc -l` returning a small number is not evidence of absence.
 >
-> **The C++ test suite used to build and run here via WSL:**
+> **What IS true, and is the whole reason the wrong conclusion was
+> plausible:** `cl`, `cmake`, `msbuild`, `g++` and `clang++` are genuinely
+> **not on PATH**, so `command -v` finds nothing for any of them. That is
+> exactly why the absolute paths above exist. And WSL genuinely is not
+> installed (`wsl --version` reports so), so the old `wsl g++` recipe for the
+> Catch2 suite is dead -- but it is also unnecessary, because the suite builds
+> under MSVC from the generated project.
 >
-> ```bash
-> wsl g++ -std=c++20 -Wall -Wextra \
->   -I include/core -I include/entities -I tests/entities -I <catch2-dir> \
->   tests/entities/*.cpp tests/core/*.cpp <catch2-dir>/catch_amalgamated.cpp \
->   -o clash_tests && ./clash_tests
-> ```
->
-> WSL has g++ 13.3. Catch2's amalgamated `.hpp`/`.cpp` are not vendored in the
-> repo — fetch them from the Catch2 releases page into a scratch directory. This
-> is header-only against `include/`, so it needs no MSVC and no `.pyd`, and it is
-> what the "538 cases, 0 warnings" figures in this file are measured with. Python
-> work must be verified by other means here (stubbing `clash_royale_env`,
-> `py_compile`, static reading) — see `python_ai/eval/match_outcome.py`'s tests for the
-> stub pattern.
+> **The lesson for this file specifically:** an environment claim that says
+> "X cannot be done here" earns its keep only with the command that failed and
+> its output. Three separate sessions inherited "the toolchain is gone" without
+> re-testing it, and each one restricted what it was willing to attempt.
 
 **The `claude` CLI is not on PATH either** — it's inside the desktop app, at
 `%APPDATA%\Claude\claude-code\<version>\claude.exe`. Needed for

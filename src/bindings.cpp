@@ -78,6 +78,11 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("team"), py::arg("value"))
         .def("set_hand_for_team", &ClashEnv::setHandForTeam,
              py::arg("team"), py::arg("cards"))
+        // Reproducible episodes. Seeds BOTH engine generators and re-deals,
+        // so two envs given the same seed agree on the opening hand, the
+        // cycle order and the heuristic's rolls. See ClashEnv::seed, and
+        // perception/UPSTREAM_REQUESTS.md item 7 for what it is worth.
+        .def("seed", &ClashEnv::seed, py::arg("seed"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
         // Surviving TOWER count (King + Princesses) for one team -- see
         // ClashEnv::getTowersAlive for why the Python reward needs this.

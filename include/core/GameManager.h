@@ -207,6 +207,18 @@ public:
         reset();
     }
 
+    // Pin the generator that deals the OPENING HAND.
+    //
+    // This is the one that matters and it is NOT ClashEnv::rng: that member
+    // feeds HeuristicOpponent only, while reset() below deals both players'
+    // hands -- and their starting deckQueue ORDER -- from this one via
+    // PlayerState::initializeDeck. Seeding the other generator alone leaves
+    // the hand exactly as random as before, which reads as "seeding does not
+    // work" rather than "the wrong generator was seeded".
+    //
+    // Takes effect on the NEXT reset(); ClashEnv::seed calls one for you.
+    void seed(unsigned int s) { rng.seed(s); }
+
     void setOpponentDeck(const std::vector<int>& deck) {
         std::string err = validateDeckSlots(deck);
         if (!err.empty()) throw std::invalid_argument("GameManager::setOpponentDeck: invalid deck -- " + err);

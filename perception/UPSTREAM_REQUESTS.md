@@ -32,7 +32,7 @@ applied; 3, 7, 8, 16 and 17 are still open. There is no item 11.
 | 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | **DONE — applied (status corrected 2026-08-19)** |
 | 6 | River marker row is 17 for team 0 but 16 for team 1 | same class, smaller | **DONE — applied (status corrected 2026-08-19)** |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **fidelity vs learnability — needs a decision, not a fix** | open, proposed 2026-08-06 |
-| 7 | No way to seed the engine's RNG (TWO generators, not one) | every A/B test costs ~10x more; invalidated a control 2026-08-20 | open, **edit corrected 2026-08-21** |
+| 7 | No way to seed the engine's RNG (TWO generators, not one) | every A/B test cost ~10x more; invalidated a control 2026-08-20 | **DONE 2026-08-21** |
 | 9 | **Troop movement is ~4-5x faster than the real game** | **largest measured sim-to-real gap; miscalibrates every timing the agent learns** | **DONE — applied and verified 2026-08-07** |
 | 12 | Bind `isValidPlacement` so the action mask stops disagreeing with the engine | 58.7% of card choices silently rejected | **DONE — `is_valid_placement` is bound in the current `.pyd`** |
 | 10 | State-estimator write half: `set_elixir_for_team` / `set_hand_for_team` | search over a reconstructed state scored a fabricated hand/elixir | **DONE — applied 2026-08-17, recorded here 2026-08-19** |
@@ -489,7 +489,7 @@ fidelity question and deliberately not bundled here.
 
 ---
 
-## 7. OPEN — the engine's RNG cannot be seeded (proposed 2026-07-31, **edit corrected 2026-08-21**)
+## 7. DONE — the engine can be seeded (proposed 2026-07-31, applied and verified 2026-08-21)
 
 **Not a correctness bug. A cost multiplier on every experiment this project
 runs**, including the ones `CLAUDE.md` already recommends re-running.
@@ -637,10 +637,21 @@ Rebuild the `.pyd` and it runs.
 byte-identical and no checkpoint is affected. Not gameplay-affecting, so
 `model_weights.pth`'s win-rate history stands.
 
-**Confidence:** the cost is measured twice now; the exact edit is above and is
-the simulator owner's to apply. Filed rather than done, per `CLAUDE.md` — and
-in this case also because **the machine this was written on has no C++
-toolchain at all** (no `cl`/`cmake`/`msbuild`/`g++`/`clang++`, both Visual
+**APPLIED AND VERIFIED 2026-08-21.** Both generators are seeded, `ClashEnv::seed`
+re-deals, and the binding is live. `test_engine_seeding.py` went from 4 skips to
+**5 passed / 1 skipped**, the remaining skip being the diagnosis test that
+retires itself once `seed()` exists. Full suites after the change: Python
+**364 passed / 3 skipped**, C++ **550 cases, 5,341 assertions, all passing**.
+
+The two shuffle-dependent Python tests that used to make the skip count
+nondeterministic can now be pinned; that is a follow-up, not part of this item.
+
+*Historical note on why this sat open so long:* the sessions that filed it
+believed this machine had no C++ toolchain. It does — VS 2022 Community, just
+not on PATH. See CLAUDE.md's environment section for how that error was made.
+
+**Original confidence note, kept:** the cost is measured twice; the exact edit
+was filed rather than applied, per `CLAUDE.md` (no `cl`/`cmake`/`msbuild`/`g++`/`clang++`, both Visual
 Studio directories empty, WSL not installed), so it could not have been
 compiled or tested here even if the rule allowed it.
 

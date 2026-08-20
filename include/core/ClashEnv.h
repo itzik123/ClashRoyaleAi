@@ -668,6 +668,28 @@ public:
         return game.setHand(team, cards);
     }
 
+    // Make this environment reproducible: same seed -> same opening hands,
+    // same cycle order, same heuristic rolls.
+    //
+    // BOTH generators, because there are two and they do different jobs.
+    // `rng` here drives HeuristicOpponent; `game`'s drives the opening-hand
+    // shuffle in PlayerState::initializeDeck. The XOR offset keeps the two
+    // streams from being identical -- both are std::mt19937, and seeding them
+    // alike would correlate the heuristic's choices with the hand it was
+    // dealt.
+    //
+    // THE reset() IS LOAD-BEARING. initializeDeck runs INSIDE
+    // GameManager::reset(), so a seed applied after construction would
+    // otherwise leave the hand already in play untouched and only take effect
+    // from the following episode -- a silent, surprising no-op. Seeding
+    // re-deals.
+    void seed(unsigned int s) {
+        rng.seed(s);
+        heuristicOpponent.reset(rng);
+        game.seed(s ^ 0x9E3779B9u);
+        reset();
+    }
+
     void setOpponentDeck(const std::vector<int>& deck) {
         game.setOpponentDeck(deck);
     }

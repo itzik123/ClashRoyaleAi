@@ -28,11 +28,17 @@ teachers' numpy RNG. The mis-specified control looked like a failed comparison.
 `prove_combos.py`'s docstring and CLAUDE.md now carry the rule that replaced it:
 within a run the snapshot pairing is sound, across runs only DELTAS compare.
 
-IT SKIPS, IT DOES NOT FAIL. The engine cannot be rebuilt on the machine this was
-written on -- no `cl`, `cmake`, `msbuild`, `g++` or `clang++`, both Visual Studio
-directories empty, WSL not installed. A red test nobody can turn green is noise;
-a skip that names the missing binding is a to-do with an executable definition
-of done.
+IT SKIPPED RATHER THAN FAILING, AND THEN IT WENT GREEN. Written 2026-08-20
+against an engine with no `seed` binding, gated on `hasattr` so it would light
+up by itself the moment a rebuilt `.pyd` landed. That happened 2026-08-21: the
+edit is in, and all four gated cases pass. `test_the_engine_is_currently_-
+unseedable...` now skips itself with "seed() has landed", which is the whole
+point of writing it that way -- the file records both the before and the after
+without either being a lie at the time.
+
+The skips existed because three sessions believed this machine had no C++
+toolchain. It does; it is simply not on PATH. See CLAUDE.md's environment
+section.
 """
 import os
 import sys
