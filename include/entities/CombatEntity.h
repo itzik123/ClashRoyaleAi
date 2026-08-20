@@ -1066,7 +1066,11 @@ public:
                 currentCooldown = static_cast<float>(attackCooldown);
             } else {
                 Vector2D beforeMove = position;
-                moveTowards(board, target->position);
+                // Lane-aware approach. A King objective is walked to UP THIS
+                // UNIT'S OWN LANE rather than cut diagonally across the arena;
+                // for every other target this is exactly target->position, so
+                // the common case is bit-identical. See LanePath::approachPoint.
+                moveTowards(board, LanePath::approachPoint(board, team, position, target));
                 if (chargeThreshold > 0.0f) chargeProgress += beforeMove.distanceTo(position);
             }
         } else if (wasFrozen || rampGracePeriodTicks <= 0 || ticksSinceLastHit >= rampGracePeriodTicks) {
