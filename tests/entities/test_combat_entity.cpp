@@ -63,13 +63,41 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
 TEST_CASE("findTarget never picks an enemy beyond sightRange, even if it's the only one on the board",
         "[combat_entity][targeting][sight_range]") {
     Board board;
-    auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 6.0f, 1000, 1); // dist 6.0 > default sightRange 5.5
+    // Distance 7.0. It used to be 6.0, chosen as "just past the default
+    // sightRange of 5.5" back when sight was compared CENTRE TO CENTRE. Sight
+    // is now measured surface to surface, exactly like attack range
+    // (CombatEntity::effectiveSightTo), so the default 5.5 covers
+    // 5.5 + 0.4 + 0.4 = 6.3 between these two, and 6.0 is inside it.
+    //
+    // The invariant this case exists to protect is unchanged and still the
+    // point: sightRange gates targeting on its own, and a huge attackRange does
+    // not let an attacker acquire something outside its sight. Only the
+    // constant moved, because the measurement convention was corrected -- see
+    // tests/core/test_sight_range.cpp for the free-siege bug that forced it.
+    auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 7.0f, 1000, 1);
     spawn(board, farEnemy);
 
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10); // huge attackRange
     attacker->update(board);
 
     REQUIRE(attacker->attackCount == 0); // never even acquired as a target, despite being well within attackRange
+}
+
+TEST_CASE("sight is measured surface-to-surface, the same convention as attack range",
+        "[combat_entity][targeting][sight_range]") {
+    // The positive half of the case above, and the one that would have caught
+    // the original defect: an enemy at 6.0 with the default 5.5 sightRange IS
+    // visible, because the 0.8 of body radius between the two centres is not
+    // empty space the attacker has to see across.
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 6.0f, 1000, 1);
+    spawn(board, enemy);
+
+    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+    attacker->update(board);
+
+    REQUIRE(attacker->attackCount == 1);
+    REQUIRE(attacker->lastTargetId == enemy->id);
 }
 
 TEST_CASE("sightRange is read per-instance, not a hardcoded constant", "[combat_entity][targeting][sight_range]") {

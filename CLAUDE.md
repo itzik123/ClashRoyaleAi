@@ -74,8 +74,11 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-21: **550 test cases, 5,341 assertions, all passing**, ~90 s to
-compile from cold.
+Measured 2026-08-20 after the simulator audit: **582 test cases, 5,737
+assertions**, ~90 s to compile from cold. 581 pass and **exactly one fails "as
+expected"** -- `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the
+open collision-wedge defect (see the 2026-08-20 audit section). The runner exits
+0 in that state; a non-zero exit or a second failure is a real regression.
 
 > **⚠ THE TOOLCHAIN DIFFERS BETWEEN THE MACHINES THIS REPO IS WORKED ON. Do
 > not trust any absolute claim in this section, including this one — run the
@@ -210,6 +213,13 @@ mouths at finer-than-epsilon resolution; they fail on the old code with
 The general lesson: **two independent copies of "close enough" is a deadlock
 waiting for the right step size.** Anywhere a mover's stop-condition and a
 planner's arrival-condition are separate literals, they can disagree.
+
+> **AND THIS FIX WAS INCOMPLETE. A SECOND absorbing state, in the same function,
+> was found on 2026-08-20** -- it guarded the two branches where a unit stands on
+> the bank it is LEAVING and left the branch where the unit is arriving at the
+> FAR bank unguarded, which stalled ~20% of lone ground crossings. See the
+> 2026-08-20 simulator-audit section. When a fix of this shape lands, sweep
+> EVERY branch of the function, not the one the reproduction happened to take.
 
 **Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
 its own untouched `speed`, never recalibrated alongside the movement fix.
@@ -2692,6 +2702,211 @@ has gone stale here.
 
 ---
 
+## 2026-08-20: the simulator audit. TWO absorbing states, one of them fixed.
+
+Opened on a report that "tanks and win conditions lag or get stuck on the
+bridges" before starting an AlphaZero run. The report was **correct and
+understated**, and chasing it turned up a second, unrelated defect that was
+quietly worth more.
+
+Instruments live in `tools/audit/` (standalone, compiled against the header-only
+engine by `tools/audit/build.ps1`, deliberately NOT CMake targets so they cannot
+perturb the generated solution the `.pyd` and the Catch2 suite build from).
+
+### 1. The bridge EXIT trap. FIXED. GAMEPLAY-AFFECTING.
+
+`Board::getNextWaypoint` had a second absorbing state, one branch away from the
+one fixed on 2026-08-09 and with exactly the same shape.
+
+The 2026-08-09 fix guarded the two branches where a unit is standing on the bank
+it is LEAVING (`isCurrentBelow` / `isCurrentAbove`). It did not guard the branch
+where the unit is INSIDE the river band and within epsilon of the bank it is
+ARRIVING at. That branch returned `{bridgeX, riverY_end}` with no arrival check,
+so a step landing at y = 17.4995 was handed (bridgeX, 17.5), refused to move
+because 0.0005 <= `WAYPOINT_ARRIVAL_EPS`, and never moved again. **Four exit
+traps, the mirror image of the four entry traps.**
+
+Measured with `tools/audit/bridge_audit.cpp`, a per-tick trajectory sweep of 306
+lone crossings — the Catch2 suite asserts on END STATES and the symptom is a
+property of the TRAJECTORY, which is why nothing caught it:
+
+| card | crossed before | after | longest stall before | after |
+|---|---|---|---|---|
+| Giant | 27/34 | **34/34** | 756 | 10 |
+| Musketeer | 26/34 | **34/34** | 813 | 10 |
+| Valkyrie | 26/34 | **34/34** | 813 | 10 |
+| Mini PEKKA | 28/34 | **34/34** | 843 | 10 |
+| Ice Golem | 28/34 | **34/34** | 796 | 10 |
+| Skeletons | 101/102 | **102/102** | 844 | 9 |
+| Hog Rider | 34/34 | 34/34 | 10 | 10 |
+| Ice Spirit / Minions | all | all | 10 / 9 | 10 / 9 |
+
+**~20% of lone ground crossings never completed at all.** The residual stall of
+10 ticks is `DEPLOY_TIME_TICKS` and is correct. After the fix, an analytic sweep
+of **8,661,439 board positions** against 8 destinations finds **zero** absorbing
+states anywhere on the board (`tools/audit/waypoint_probe.cpp`).
+
+Three things worth carrying:
+
+- **The existing regression test could not see it, and the reason is precise.**
+  `test_board.cpp`'s sweep pairs each bank with the one direction in which that
+  bank is the ENTRY — near bank against a northern target, far bank against a
+  southern one. The trap lives in the other two combinations. It tested exactly
+  the complement of where the bug was. The new sweep is the full cross product.
+- **Speed determined who it hit, which made it look card-specific.** The chance
+  a step lands in a 0.01 disc is about `0.01 / step size`, so slow tanks were
+  worst (Giant 0.06/tick) and fast cards escaped (Hog 0.16). That is why the
+  report named tanks and win conditions.
+- **A CROWD hides it.** 45 Skeletons, 10 Hogs and 6 Giants all crossed fine in
+  the crowd sweep, because collision jostling knocks units out of the trap. It
+  is a LONE-unit bug — which is precisely the "send the Hog to the bridge" case.
+
+### 2. Sight and attack range were measured differently. FIXED. GAMEPLAY-AFFECTING, and the bigger of the two.
+
+`findTarget` gated candidates on `dist <= sightRange`, a RAW centre-to-centre
+distance. Attacking gated on `effectiveRangeTo() = attackRange + own radius +
+target radius`. **Two conventions for the same geometric question**, so between
+them lay a band in which an attacker could hit something it could not SEE — and
+therefore never acquired, and stood idle.
+
+A Princess Tower has `attackRange == sightRange == 7.5` and radius 1.5, so it
+reached a troop at 9.4 but saw one only within 7.5. A Musketeer stops at her own
+effective range of `6.0 + 0.4 + 1.5 = 7.9` — **inside that band every time.**
+
+| Musketeer placed at | tower damage dealt | damage she took |
+|---|---|---|
+| 6.5 – 7.5 tiles | 1519 | 721 (dies) |
+| **8.0 tiles** | **5355** | **0** |
+| 10.5 tiles | 4704 | **0** |
+
+A Princess Tower has 3204 hp. So one 4-elixir card removed a tower and started on
+the next **without taking a scratch**, from any placement at 8+ tiles. Fixed by
+adding `effectiveSightTo()` alongside `effectiveRangeTo()` and using it at the
+two comparison sites (`CombatEntity::findTarget`, `BuildingTargeter::findTarget`).
+
+The invariant, now stated in the code: **as long as `sightRange >= attackRange`,
+effective sight >= effective attack range, so nothing can ever attack what it
+cannot see.** `sightRange`'s own comment already gave buildings
+`sightRange == attackRange` on the reasoning that "sight beyond attack range
+would never actually matter" — that reasoning is right, and this is what makes
+it true. Equal NUMBERS are not equal RANGES when one is measured
+surface-to-surface and the other centre-to-centre.
+
+**Measured impact, controlled A/B** (the fix stashed and restored, everything
+else identical; lone attacker at the bridge, 600 ticks):
+
+| | tower damage before | after |
+|---|---|---|
+| Hog Rider | 2534 | **1268** |
+| Musketeer | 6542 (survived) | **1302** (dies) |
+| Ice Golem | 336 | **84** |
+
+**Defence got materially stronger, and part of that is a known divergence being
+amplified — say so when quoting these.** Damage attribution against a lone Hog,
+read off `MatchStatistics` by the reserved tower cardIds:
+
+| | King | Princess | King's share |
+|---|---|---|---|
+| before | 90 | 1620 | 5.3% |
+| after | 630 | 1080 | **36.8%** |
+
+The King Tower in this engine **never sleeps** (`Tower.h`, no activation
+condition — long-standing, item 3 in `UPSTREAM_REQUESTS.md`). Widening its
+effective sight from 7.0 to 9.4 lets it join fights it previously sat out, so
+this fix makes an existing fidelity gap bite harder. The fix is right on its own
+terms; the interaction is real and is the thing to watch.
+
+**Every win rate earned before this is historical.** Checkpoints are NOT
+invalidated — no observation, action-space or architecture change.
+
+One existing test moved and it is worth knowing why:
+`test_combat_entity.cpp`'s "never picks an enemy beyond sightRange" used a
+distance of 6.0 against the default 5.5, chosen when sight was centre-to-centre.
+Surface-to-surface, 5.5 covers 6.3 between two troops, so the constant moved to
+7.0. **The invariant it protects is unchanged**; only the convention it was
+written against was corrected, and a positive companion case was added.
+
+### 3. The two-obstacle collision wedge. NOT FIXED, deliberately, and pinned.
+
+A unit pinched in the concave pocket between two buildings stops permanently.
+`Board::pushAwayFrom`'s perpendicular slide exists to stop a unit sticking on ONE
+obstacle; with two, the slides can oppose and cancel, and the post-move
+`resolveCollisions` pass returns the unit to where it started. It is an
+**attracting** fixed point — the approach converges geometrically.
+
+Measured over 60 randomized full matches, 342,563 unit-ticks
+(`tools/audit/soak.cpp`): **7 stalls, none on or near a bridge** (0.002% of
+unit-ticks), every one in a player's own back corner pinched between a friendly
+tower and either a second building or the board edge; longest ~490 ticks, i.e.
+until the match ended. It read 4 per 308,464 before the sight/attack fix in the
+same audit changed engagement geometry -- re-measured rather than carried over.
+
+**Two local fixes were implemented and measured, and both only MOVED the
+equilibrium** — 0.027 tiles per 120 ticks for a timer-flipped tangential slide,
+0.000001 tiles for a geometry-chosen wall slide, which settled at a new fixed
+point. Both reverted. The geometry says why no local rule suffices: in the
+measured case the two obstacles' minimum separations sum to 3.8 while their
+centres are 3.46 apart, so **there is no route between them at all** and escape
+needs a multi-tile detour, i.e. global planning.
+
+**ACCEPTED AS A KNOWN DEFECT, 2026-08-20** — signed off rather than fixed,
+because global path planning is too expensive for rollout throughput at present
+and the defect is rare, isolated and never on a bridge. Reopen it if the rate
+rises, if a stall is ever seen near a bridge, or if throughput stops being the
+binding constraint. Written up as `UPSTREAM_REQUESTS.md` item 18, because the
+real fix is a flow field or A* over the 18x34 grid — a redesign of the movement
+core, gameplay-affecting for every unit. `tests/core/test_navigation_wedge.cpp`
+reproduces it deterministically and is tagged **`[!shouldfail]`**: the suite
+stays green, the defect stays executable, and the case turns RED the moment
+somebody fixes it.
+
+### 4. DEFAULT_DECK behavioural QA
+
+`tests/core/test_default_deck_qa.cpp` (new, 13 cases) pins what the eight cards
+DO, not just which they are — `test_card_registry.cpp` already covers identity.
+Every assertion was measured with `tools/audit/deck_audit.cpp` first.
+
+Card stats read off spawned entities, all matching the real game closely:
+Hog 1697hp/317dmg/1.6s/Fast, Musketeer 721/217/1.0s/range 6, Cannon
+824/202/range 5.5, Ice Golem 1315/84/2.5s/Slow, Skeletons 3 bodies at 81/81,
+Ice Spirit 230/110/range 2.5. Air targeting is correct for all eight (Musketeer,
+Ice Spirit and Fireball hit air; Hog, Cannon, Ice Golem, Skeletons and The Log
+do not). Defence against a lone Hog: **a Cannon prevents all 2534 tower hp**,
+Skeletons and Musketeer prevent 2217, and a Hog "answering" a Hog prevents 315 —
+which is our own tower shooting, not the Hog defending.
+
+**Three of these tests were wrong before they were right, and all three failed
+the same way: attributing to the card something the towers did.**
+
+- The air probe reported that The Log, the Hog and the Cannon all "hit air".
+  The Minions were flying into our own towers. Same trap CLAUDE.md already
+  records for `get_troop_damage_dealt`. Fixed by differencing against a
+  no-card control — and then the control SATURATED (minions dead in both arms,
+  every card differencing to 0), which needed a placement 11 tiles from every
+  tower and a short window. The final Catch2 form abandons the scenario
+  entirely for a bare board and a stationary flying dummy.
+- The Hog-ignores-troops test first required the Hog to SURVIVE 120 ticks.
+  Three Skeletons are ~220 dps and a Princess Tower another 382; a 1697 hp Hog
+  is dead in under three seconds. Survival was never the property worth
+  pinning — "deals zero damage to them, by card" is.
+- A bare-`Board` harness that never called `commitPendingEntities` reported the
+  Ice Spirit as unable to hit air. `addEntity` queues, so a RangedTroop's
+  projectile was created and never entered the world.
+
+### 5. Latency: no problem found
+
+`tools/audit/bridge_audit.cpp latency`: **0.0023 ms/tick at 1 unit, 0.0171 at
+30.** Pathfinding is not a cost centre and never was; the "lag" in the report
+was the deadlock, not slowness.
+
+### Suite counts after this work
+
+**C++ 582 cases / 5,737 assertions** (was 550 / 5,341), of which 1 is the
+`[!shouldfail]` wedge. **Python 366 passed / 2 skipped. Perception 353 passed /
+1 skipped.**
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 > **Checkpoint names in the passages below are PROVENANCE, not files.** The
@@ -3365,6 +3580,19 @@ python_ai/           READ-ONLY by default — training runs here.
 
   tests/               The Python suite. conftest.py holds the two shared
                        fixtures, helpers.py the two shared builders.
+tools/audit/         Standalone measurement instruments for the C++ engine,
+                     built by tools/audit/build.ps1 (cl.exe directly against the
+                     header-only engine -- deliberately NOT CMake targets, so
+                     they cannot force a reconfigure of the solution the .pyd
+                     and the Catch2 suite build from).
+  bridge_audit.cpp     Per-tick crossing trajectories: stalls, jitter, latency.
+  waypoint_probe.cpp   Analytic sweep for absorbing states in getNextWaypoint.
+  soak.cpp             Randomized full matches; flags any unit stationary with
+                       nothing in its own reach. Has a `trace` mode that
+                       re-runs one seeded match and follows one entity.
+  deck_audit.cpp       Per-card behaviour: identity, offence, defence, air,
+                       deploy, and the sight/attack dead band.
+  stall_repro.cpp      Minimal deterministic reproductions.
 CLAUDE.md            This file: the knowledge base.
 TODO.md              The single, verified list of pending work.
 perception/          Screen -> placement events -> simulator as estimator.
@@ -3388,7 +3616,9 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
 
-The Python suite is **349 collected (347-348 pass, 1-2 skipped)** since the
+The Python suite is **368 collected (366 pass, 2 skipped)** as of 2026-08-20,
+re-run against the rebuilt `.pyd` after the simulator audit's engine changes. It
+was **349 collected (347-348 pass, 1-2 skipped)** since the
 multi-card teacher landed on 2026-08-20, and was **312** after the 2026-08-20
 restructuring, up from 90; the skip count varies run to run because two cases
 depend on the unseeded opening-hand shuffle. Run it with:

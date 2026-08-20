@@ -47,7 +47,10 @@ protected:
                     minTowerDistance = dist;
                     closestTower = entity;
                 }
-            } else if (dist <= sightRange && dist < minSightDistance) {
+            // effectiveSightTo, not raw sightRange -- see CombatEntity's own
+            // findTarget and the comment on effectiveSightTo for the measured
+            // free-siege bug the mismatch caused.
+            } else if (dist <= effectiveSightTo(entity) && dist < minSightDistance) {
                 minSightDistance = dist;
                 closestInSight = entity;
             }

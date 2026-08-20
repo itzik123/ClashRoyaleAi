@@ -6,7 +6,7 @@ explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
 Last updated 2026-08-20. Items 0, 1, 2, 4, 5, 6, 7, 9, 10, 12, 13, 14 and 16
-are applied; 3, 8 and 17 are still open. There is no item 11.
+are applied; 3, 8, 17 and 18 are still open. There is no item 11.
 
 > **Status audit, 2026-08-19.** Items 5, 6 and 12 were carrying `OPEN` headers
 > while the exact code they propose was already merged — verified line by line
@@ -38,6 +38,7 @@ are applied; 3, 8 and 17 are still open. There is no item 11.
 | 10 | State-estimator write half: `set_elixir_for_team` / `set_hand_for_team` | search over a reconstructed state scored a fabricated hand/elixir | **DONE — applied 2026-08-17, recorded here 2026-08-19** |
 | 13 | **State snapshot/restore, so decision-time search becomes possible** | unblocks the biggest unexploited asset | **DONE — applied and verified 2026-08-11** |
 | 14 | Offence structurally under-priced; deploy time added | win condition was unplayable by construction | **DONE — raised and applied 2026-08-19** |
+| 18 | Troops deadlock in the concave pocket between two buildings | 7 permanent stalls per 343k unit-ticks; fix means real pathfinding | **ACCEPTED AS-IS 2026-08-20 — will not fix for now** |
 | 16 | Bind `TimeoutRules::resolve` so match outcomes have one definition | **8** Python copies, all missing the HP tie-break | **DONE — signed off and applied 2026-08-20** |
 | 17 | Const accessors for internal timing state | divergence tests cannot see cooldowns/fuses | open, proposed 2026-08-19, **ergonomics not coverage** |
 
@@ -1714,3 +1715,102 @@ same framing item 13 used for its own additive surface.
 change at all. `lastAttackDistance` is already public and varies at runtime in
 the existing fixture, so it is the one cheap non-vacuous addition to `EntityRow`
 available without this request.
+
+---
+
+## 18. ACCEPTED, WILL NOT FIX FOR NOW — troops deadlock in the concave pocket between two buildings (proposed 2026-08-20)
+
+> **DECISION, 2026-08-20.** Signed off as a known, accepted defect: the
+> architectural assessment below is agreed (a reactive steering model always has
+> local minima in concave pockets), and global path planning is judged too
+> expensive for rollout throughput at present. The defect is rare
+> (7 / 342,563 unit-ticks), isolated to a player's own back corner, and never
+> touches a bridge. It stays pinned as `[!shouldfail]`.
+>
+> **This is a deferral, not a dismissal.** Reopen it if any of these change: the
+> stall rate rises, a stall is ever observed on or near a bridge, or rollout
+> throughput stops being the binding constraint on path planning.
+
+**Severity:** low frequency, permanent per occurrence. **Blast radius of the
+proposed fix: the movement core, every unit, every match — which is exactly why
+it is here rather than applied.**
+
+Found during the bridge-navigation audit. It is NOT a bridge bug and it is not
+the bug that audit was opened for (that one — the bridge-EXIT absorbing state in
+`Board::getNextWaypoint` — is fixed and verified; see CLAUDE.md).
+
+### The measurement
+
+`tools/audit/soak.cpp`, 60 randomized full matches, 308,464 unit-ticks watched.
+A stall is counted only when a unit is alive, past deploy time, and stationary
+for 50+ consecutive ticks *during every one of which nothing was inside its own
+effective attack reach*.
+
+| | |
+|---|---|
+| stalls | **7** |
+| ...on or beside a bridge | **0** |
+| longest observed | **~490 ticks**, i.e. until the match ended |
+| rate | 7 per **342,563** unit-ticks (0.002%) |
+
+(Measured at 4 per 308,464 before the sight/attack fix landed in the same audit;
+that change alters engagement geometry, so the figure is re-quoted against the
+current tree rather than carried over. Every one of the 7 is the same shape --
+a unit in its OWN back corner, pinched between a friendly tower and either a
+second building or the board edge.)
+
+Every one was a unit pinched between two buildings in its own back corner. The
+first, dumped in full:
+
+```
+Ice Golem  (11.360, 2.939)  walking north toward (14, 15.5)
+King Tower ( 9.000, 2.500)  r=2.0 -> minimum separation 2.4, actual 2.401
+Cannon     (12.032, 4.169)  r=1.0 -> minimum separation 1.4, actual 1.401
+```
+
+It is an **attracting fixed point**, not a knife edge. The trace shows the
+approach converging geometrically — y = 2.9071, 2.9244, 2.9323, 2.9359, 2.9376,
+2.9385, 2.9389, 2.9391, 2.9392 — so nearby states are pulled in rather than
+passing through.
+
+### Mechanism
+
+`Board::pushAwayFrom` adds a small perpendicular slide so a unit travels *around*
+an obstacle instead of sticking to it. That works for ONE obstacle. With two, the
+slides can point in opposing tangential directions and cancel: the unit steps
+toward its waypoint inside `moveTowards`, and the post-move `resolveCollisions`
+pass pushes it straight back. Net displacement converges to exactly zero.
+
+The geometry says no local rule can fix it here: the King's and the Cannon's
+minimum separations sum to **3.8** while their centres are **3.46** apart, so
+there is no route between them at all. Escaping requires a multi-tile detour
+around the outside of one of them.
+
+### Two fixes were implemented and MEASURED, and both are rejected
+
+Reported because the negative results are the useful part — they are what turns
+"we should nudge stuck units" into "a nudge is not enough".
+
+| attempt | movement over 120 ticks |
+|---|---|
+| tangential slide, handedness flipped every 15 ticks | **0.027 tiles** — fifteen ticks of progress undone by the next fifteen |
+| wall slide along the nearest blocker, side chosen by tangent · desired-direction | **0.000001 tiles**, settling at a NEW fixed point (11.3102, 2.96839) |
+
+Each merely relocated the equilibrium. Both were reverted; the tree contains
+neither.
+
+### What would actually fix it
+
+Global path planning instead of purely reactive steering — a flow field or A*
+over the 18×34 grid, which is small enough that the cost is negligible next to
+the 0.015 ms an engine step already takes. That is a redesign of how every unit
+moves, it is **gameplay-affecting**, and it would invalidate the win-rate
+history of every checkpoint. It needs a decision, not a patch.
+
+### Pinned meanwhile
+
+`tests/core/test_navigation_wedge.cpp` reproduces it deterministically and is
+tagged `[!shouldfail]`: the suite stays green, the defect stays on record and
+executable, and the case turns RED the moment somebody fixes it. It also carries
+a companion test asserting that unobstructed movement is still exactly
+speed-per-tick, which is the guard any future fix has to clear.

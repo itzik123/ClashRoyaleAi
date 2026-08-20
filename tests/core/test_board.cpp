@@ -388,6 +388,73 @@ TEST_CASE("getNextWaypoint never returns the caller's own position while it stil
     }
 }
 
+// ---------------- the bridge-EXIT absorbing state ----------------
+//
+// Measured 2026-08-20 by tools/audit/bridge_audit.cpp, a per-tick trajectory
+// sweep: 6-8 of every 34 lone ground units failed to cross at all, every one
+// of them frozen for 750-850 ticks a few thousandths of a tile short of the
+// river's FAR edge -- Giant 27/34, Ice Golem 28/34, Musketeer 26/34,
+// Valkyrie 26/34. Hog Rider and Ice Spirit (both fast) crossed 34/34, and
+// Minions fly, which is what made it look card-specific rather than
+// geometric.
+//
+// SAME defect as the bridge-mouth trap above, one branch over. The 2026-08-09
+// fix guarded the two branches where the unit is standing on the bank it is
+// LEAVING (isCurrentBelow / isCurrentAbove). It did not guard the branch where
+// the unit is INSIDE the river band and within epsilon of the bank it is
+// ARRIVING at -- that branch returns {bridgeX, riverY_end} (or riverY_start)
+// with no arrival check at all, so a step landing at y=17.4995 is handed
+// (bridgeX, 17.5), refuses to move because 0.0005 <= 0.01, and never moves
+// again. Four exit traps, the mirror image of the four entry traps.
+//
+// AND THE OLD SWEEP TEST BELOW COULD NOT SEE IT. It pairs each bank with the
+// one direction in which that bank is the ENTRY -- near bank against a target
+// to the north, far bank against a target to the south. The trap lives in the
+// other two combinations. The sweep here is the full cross product for that
+// reason: every bank, both directions.
+
+TEST_CASE("getNextWaypoint does not strand a unit arriving at the far bank", "[board][waypoint][regression]") {
+    Board board;
+    // A hair short of the north bank, still crossing northward -- the exact
+    // shape of the measured Giant/Ice Golem freeze.
+    Vector2D here{ 4.0f, 17.4995f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 4.0f, 27.0f });
+    REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+}
+
+TEST_CASE("getNextWaypoint does not strand a unit arriving at the near bank", "[board][waypoint][regression]") {
+    Board board;
+    // The same trap mirrored: a hair past the south bank, still heading south.
+    Vector2D here{ 14.0f, 15.5005f };
+    Vector2D wp = board.getNextWaypoint(here, Vector2D{ 14.0f, 6.0f });
+    REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+}
+
+TEST_CASE("getNextWaypoint never returns the caller's own position, in EITHER crossing direction",
+          "[board][waypoint][regression]") {
+    Board board;
+    const float bridges[] = { 4.0f, 14.0f };
+    const float banks[] = { 15.5f, 17.5f };
+    // Both destinations at both banks -- the cross product the older sweep
+    // above only covers half of.
+    const float targets[] = { 27.0f, 6.0f };
+
+    for (float bx : bridges) {
+        for (float by : banks) {
+            for (float ty : targets) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    for (int dy = -3; dy <= 3; ++dy) {
+                        Vector2D here{ bx + dx * 0.005f, by + dy * 0.005f };
+                        Vector2D wp = board.getNextWaypoint(here, Vector2D{ bx, ty });
+                        INFO("stuck at x=" << here.x << " y=" << here.y << " target y=" << ty);
+                        REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge toward the target's side", "[board][waypoint]") {
     Board board;
 

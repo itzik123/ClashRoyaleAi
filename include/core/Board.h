@@ -399,10 +399,37 @@ public:
             }
             return nearBank;
         } else {
+            // The unit is INSIDE the river band, walking toward the bank it
+            // will EXIT on. Exactly the same arrival problem as the two
+            // branches above, mirrored: once it is within
+            // WAYPOINT_ARRIVAL_EPS of that exit edge this leg is finished,
+            // and handing back the edge itself is an absorbing state --
+            // moveTowards refuses to move, so the position never changes, so
+            // the waypoint never changes, and the unit is stuck for the rest
+            // of the match a few thousandths of a tile short of dry land.
+            //
+            // Handing back targetPos instead is not a special case, it is the
+            // removal of a discontinuity: the moment the unit's y actually
+            // reaches the bank, the first `if` in this function returns
+            // targetPos anyway. This just makes the epsilon-neighbourhood
+            // agree with the point it surrounds.
+            //
+            // Measured 2026-08-20: without this, 6-8 of every 34 lone ground
+            // units never crossed at all (Giant 27/34, Musketeer 26/34),
+            // freezing for 750-850 ticks. See tests/core/test_board.cpp's
+            // bridge-EXIT regression block.
             if (isTargetAbove) {
-                return Vector2D{bridgeX, riverY_end};
+                Vector2D exitBank{bridgeX, riverY_end};
+                if (currentPos.distanceTo(exitBank) <= WAYPOINT_ARRIVAL_EPS) {
+                    return targetPos;
+                }
+                return exitBank;
             } else if (isTargetBelow) {
-                return Vector2D{bridgeX, riverY_start};
+                Vector2D exitBank{bridgeX, riverY_start};
+                if (currentPos.distanceTo(exitBank) <= WAYPOINT_ARRIVAL_EPS) {
+                    return targetPos;
+                }
+                return exitBank;
             } else {
                 return targetPos;
             }

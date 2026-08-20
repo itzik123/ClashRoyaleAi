@@ -433,3 +433,6 @@ events.out.tfevents*
 # Training console logs from long runs (kept locally, regenerable output).
 training_*.log
 training_*.log.err
+
+# Standalone audit instrument binaries (tools/audit/build.ps1 output)
+tools/audit/bin/

@@ -1112,6 +1112,34 @@ protected:
         return attackRange + myRadius + targetRadius;
     }
 
+    // Sight, measured the SAME WAY as attack range above -- surface to surface,
+    // not centre to centre. findTarget() used to compare sightRange against a
+    // raw centre distance while attacking compared attackRange against
+    // effectiveRangeTo(), and two different conventions for the same geometric
+    // question opened a band in which an attacker could hit something it could
+    // not see, so it never acquired it and simply stood there.
+    //
+    // Measured 2026-08-20: a Princess Tower (attackRange 7.5, sightRange 7.5,
+    // radius 1.5) reaches a troop at 7.5 + 1.5 + 0.4 = 9.4 but saw it only
+    // within 7.5. A Musketeer stops at her own effective range of 7.9 -- inside
+    // that band every time -- and destroyed the tower from 8 tiles taking ZERO
+    // damage in return, 5355 damage dealt over 300 ticks against a 3204 hp
+    // tower. sightRange's own comment gives buildings sightRange == attackRange
+    // on the reasoning that "sight beyond attack range would never actually
+    // matter"; that reasoning is right and this is what makes it true.
+    //
+    // Keeping the two formulas parallel is the actual invariant: as long as
+    // sightRange >= attackRange, effective sight >= effective attack range, so
+    // nothing can ever attack what it cannot see. See
+    // tests/core/test_sight_range.cpp.
+    float effectiveSightTo(const std::shared_ptr<Entity>& target) const {
+        float targetRadius = target->getCollisionRadius();
+        if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
+        float myRadius = this->getCollisionRadius();
+        if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
+        return sightRange + myRadius + targetRadius;
+    }
+
     // Re-validates the currently-locked target (by id) rather than running
     // a full closest-enemy scan -- Board has no id index, so this is still
     // a linear pass, but it's the one that lets a locked-on attacker keep
@@ -1155,7 +1183,7 @@ protected:
                     minTowerDistance = dist;
                     closestTower = entity;
                 }
-            } else if (dist <= sightRange && dist < minSightDistance) {
+            } else if (dist <= effectiveSightTo(entity) && dist < minSightDistance) {
                 minSightDistance = dist;
                 closestInSight = entity;
             }
