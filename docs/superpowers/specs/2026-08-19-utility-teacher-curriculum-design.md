@@ -153,7 +153,7 @@ nothing, or help.
 
 ## 4. Component design
 
-### 4.1 `python_ai/teacher.py` -- `UtilityTeacher`
+### 4.1 `python_ai/opponents/teacher.py` -- `UtilityTeacher`
 
 **Contract.**
 
@@ -340,7 +340,7 @@ section 6.1 passes.
 
 ## 6. Validation, in order
 
-### 6.1 Environment-property test -- `python_ai/prove_environment.py`
+### 6.1 Environment-property test -- `python_ai/eval/prove_environment.py`
 
 **The zero-training falsifier, and the cleanest version of the test `CLAUDE.md`
 asks for.** No network is involved, so no training, no checkpoint, and no policy
@@ -363,7 +363,7 @@ rate is >= 0.95 the arm is void and needs an intermediate setting -- exactly how
 the 1.00x row of the original test came out. Check the baseline before reading
 the delta.
 
-### 6.2 Teacher strength -- `python_ai/prove_teacher.py`
+### 6.2 Teacher strength -- `python_ai/eval/prove_teacher.py`
 
 Two bars, and **both** must be cleared:
 
@@ -393,7 +393,7 @@ Everything else is a guard against fixing offence by breaking defence.
 
 ### 6.4 Regression
 
-- `python_ai/test_python_ai.py` passes, plus new tests for: teacher side-agnosticism,
+- `python_ai/tests/` passes, plus new tests for: teacher side-agnosticism,
   the 1.0x pin, no-op scoring exactly 0, and candidate legality.
 - `perception/.venv/Scripts/python.exe -m pytest perception/tests -q` still passes
   (344 tests) -- the teacher shares `tactics.py`, which perception depends on.

@@ -22,6 +22,9 @@ include/, src/       C++ engine. READ-ONLY by default.
 tests/               C++ Catch2 tests (ClashRoyaleTests).
 python_ai/           PPO agent, training pipelines, measurement harnesses.
                      READ-ONLY by default -- training runs here.
+                     A package since 2026-08-20; one subpackage per
+                     responsibility (models, envs, rl, trainers, eval, ...).
+                     See CLAUDE.md's Layout section.
 perception/          Screen -> placement events -> simulator as estimator.
                      Self-contained: own venv, own requirements.txt.
 web/viewer.html      Replay viewer.
@@ -44,7 +47,7 @@ perception/.venv/Scripts/python.exe
 Tests:
 
 ```bash
-python_ai/venv/Scripts/python.exe -m pytest python_ai/test_python_ai.py -q
+python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
 ```
 ```bash
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q

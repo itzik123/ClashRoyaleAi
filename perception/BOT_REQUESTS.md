@@ -448,7 +448,7 @@ The trade this item did not price: the recorded deck is costs 3-5, avg 3.75,
 spread 2, which is the deck `gym_wrapper.py` had already documented as the one
 where **Giant was never played once across four full runs**. That risk is
 re-accepted with eyes open. First measurement after 13,520 episodes on the new
-deck, via `python_ai/probe_card_usage.py`:
+deck, via `python_ai/eval/probe_card_usage.py`:
 
 | card | cost | % of plays | % steps legal | take-up |
 |---|---|---|---|---|
@@ -474,7 +474,7 @@ The structural argument is right (cumulative fields cannot self-correct, and the
 error is one-directional). The conclusion does not follow, because **the aux head
 does not use those fields at all.**
 
-Controlled ablation (`python_ai/probe_aux_robustness.py` plus a follow-up over
+Controlled ablation (`python_ai/eval/probe_aux_robustness.py` plus a follow-up over
 every input group): clean rollouts recorded once, then the network replayed over
 the *same* observations with inputs zeroed, so trajectory and targets are fixed
 and MAEs are comparable. At episode 13,520, opponent elixir mean 2.37 / std 1.49,

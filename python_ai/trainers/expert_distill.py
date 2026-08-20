@@ -27,8 +27,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 import python_ai  # noqa: E402,F401
 
 import clash_royale_env  # noqa: E402
-import torch.nn.functional as F  # noqa: E402
-from torch.distributions import Categorical  # noqa: E402
 
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 from python_ai.trainers import bc_pretrain  # noqa: E402

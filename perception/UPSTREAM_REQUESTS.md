@@ -215,7 +215,7 @@ with a competence ladder at a symmetric 1.0x economy, on the hypothesis
 (CLAUDE.md, "The 1.5x Curriculum Overfitting Hypothesis") that a permanent
 multiplier is what priced the win condition at zero. The falsifier was run with
 NO network on either side — both players are the deterministic
-`python_ai/teacher.py` — so the historical confound between "the environment
+`python_ai/opponents/teacher.py` — so the historical confound between "the environment
 prices this badly" and "this net cannot execute it" is removed.
 
 **The hypothesis was not confirmed.** At a symmetric 1.0x economy, committing
@@ -278,13 +278,13 @@ a pattern this project has already paid for five times.
 
 The cheap next step, if it is wanted, is to measure deploy time in isolation:
 add a spawn delay behind a flag, default off, and re-run
-`python_ai/prove_environment.py --mode marginal`. That is a gameplay-affecting
+`python_ai/eval/prove_environment.py --mode marginal`. That is a gameplay-affecting
 change and would invalidate every win rate, so it is the human's call.
 
 Harnesses, all new and all read-only against the engine:
-`python_ai/prove_environment.py` (win-rate arms + marginal value),
-`python_ai/prove_wincon_trade.py` (elixir trade, supported push, punish window),
-`python_ai/prove_teacher.py` (teacher strength bars).
+`python_ai/eval/prove_environment.py` (win-rate arms + marginal value),
+`python_ai/eval/prove_wincon_trade.py` (elixir trade, supported push, punish window),
+`python_ai/eval/prove_teacher.py` (teacher strength bars).
 
 ---
 
@@ -1163,7 +1163,7 @@ collector instead. Both failure directions have their own test.
 | one `MicroRoyaleNet` forward | ~50 ms |
 
 So the simulation is free and the **scoring** is the entire budget — the
-opposite of the usual assumption, and the reason `python_ai/search_ab_test.py`
+opposite of the usual assumption, and the reason `python_ai/eval/search_ab_test.py`
 batches all K candidate evaluations into a single forward.
 
 ### This partly supersedes item 7 (RNG seeding)
@@ -1183,7 +1183,7 @@ wider than the effect**, and the honest reading was "underpowered null", not
 "search does not work".
 
 With the mechanism built, the same question answered cleanly.
-`python_ai/search_ab_test.py`, 160 **paired** trials (both arms handed a
+`python_ai/eval/search_ab_test.py`, 160 **paired** trials (both arms handed a
 bit-exact copy of one reset), 1.5x opponent elixir, ep-64k checkpoint,
 K ~= 3 candidates at a 4 s horizon, scored by the network's own critic:
 
@@ -1235,7 +1235,7 @@ A fast deterministic simulator is the project's biggest unexploited asset.
 Combat has no RNG at all (the only randomness is `PlayerState::initializeDeck`'s
 shuffle and `HeuristicOpponent`), so rolling a candidate action forward gives
 *exactly* what would happen. That is a strict policy-improvement operator, and
-`python_ai/bc_pretrain.py` — already built, schema pinned, verified end to end —
+`python_ai/trainers/bc_pretrain.py` — already built, schema pinned, verified end to end —
 is exactly the consumer needed to distil the result back into the policy.
 
 Two measurements taken 2026-08-11 size it:
@@ -1435,10 +1435,10 @@ rules:**
 
 | file | what it decides |
 |---|---|
-| `python_ai/net_ab.py` | greedy-episode win rate |
-| `python_ai/net_h2h.py` | head-to-head duel score |
-| `python_ai/net_h2h_search.py` (×2) | search leaf value, and the ship/no-ship duel number |
-| `python_ai/validate_pipeline.py` | the side-asymmetry regression check |
+| `python_ai/eval/net_ab.py` | greedy-episode win rate |
+| `python_ai/eval/net_h2h.py` | head-to-head duel score |
+| `python_ai/eval/net_h2h_search.py` (×2) | search leaf value, and the ship/no-ship duel number |
+| `python_ai/tools/validate_pipeline.py` | the side-asymmetry regression check |
 
 Each read `get_towers_alive(0/1)` and returned a draw whenever the counts
 matched. A match ending 3–3 on towers but 1200 HP against 90 HP on the weakest
@@ -1446,7 +1446,7 @@ is a clear win by the engine's own rules, and all five called it a draw — in t
 scripts whose entire output is a win rate.
 
 Fixed on the Python side in the same commit as this proposal
-(`python_ai/match_outcome.py`), by reading the six tower-HP scalars the
+(`python_ai/eval/match_outcome.py`), by reading the six tower-HP scalars the
 observation already carries and reapplying the rule by hand. That works, and it
 is tested — but it is a **hand-written mirror of engine logic**, which is the
 exact pattern CLAUDE.md records going stale twice before (`model.py`'s
@@ -1475,7 +1475,7 @@ already only reads. `ClashEnv` already includes what it needs via `GameManager`.
 
 ### What it is worth
 
-`python_ai/match_outcome.py` collapses from a hand-maintained reimplementation
+`python_ai/eval/match_outcome.py` collapses from a hand-maintained reimplementation
 (~50 lines of rule-mirroring plus the float-resolution argument for comparing
 normalised HP instead of raw ints) to a pass-through. The five call sites do not
 change again. Any future rule change propagates for free instead of silently

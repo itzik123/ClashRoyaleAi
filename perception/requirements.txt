@@ -34,8 +34,8 @@ windows-capture>=2.0 ; sys_platform == "win32"
 # default heuristic policy, for calibration, or for the test suite, which is
 # why it is not an unconditional dependency.
 #
-# That path imports python_ai/model.py (MicroRoyaleNet) and
-# python_ai/perception_encoder.py, and the latter does a MODULE-LEVEL
+# That path imports python_ai/models/net.py (MicroRoyaleNet) and
+# python_ai/models/perception_encoder.py, and the latter does a MODULE-LEVEL
 # `import clash_royale_env` -- so --policy neural additionally requires the
 # built .pyd and the 3.11 interpreter noted at the top, not just this package.
 # Pinned loosely: the checkpoint format is torch.save/load, not a

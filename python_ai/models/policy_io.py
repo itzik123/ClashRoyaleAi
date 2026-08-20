@@ -6,12 +6,17 @@ Before this module, any script that merely wanted to load a checkpoint wrote
 
     from python_ai.trainers.expert_iteration import load_net
 
-and eighteen of them did. `expert_iteration.py` is a 1,143-line experiment
-script whose own imports pull in `bc_pretrain`, `search_ab_test`, `train` and
-`gym_wrapper` -- so reading one `.pth` file dragged in both PPO trainers, the
-behaviour-cloning module and the search harness. A one-line probe paid for the
-entire training stack, and every one of those modules became impossible to
-change without considering eighteen callers that never wanted it.
+and eighteen of them did. `expert_iteration.py` was then a 1,143-line
+experiment script whose own imports pulled in `bc_pretrain`, the search harness,
+`train` and `gym_wrapper` -- so reading one `.pth` file dragged in both PPO
+trainers, the behaviour-cloning module and the search harness. A one-line probe
+paid for the entire training stack, and every one of those modules became
+impossible to change without considering eighteen callers that never wanted it.
+
+(The 2026-08-20 restructuring split that file four ways and gave the search its
+own package, so the magnet is smaller now -- but the rule that produced this
+module is unchanged, and `tests/test_package_layout.py` now enforces it: nothing
+under `models/` may import a trainer, an environment or an eval harness.)
 
 That is a dependency magnet: a module acquires a useful helper, and the helper's
 consumers inherit everything else the module happens to import. The fix is not
@@ -21,7 +26,7 @@ expert-iteration concern in the first place.
 `load_state_dict_flexible` moved here from `train.py` for the same reason. It
 was placed there because `train_selfplay.py` already imported from `train.py`
 and the reverse would have been circular -- a real constraint, but it made four
-non-training scripts import a 2,469-line trainer for one 30-line function.
+non-training scripts import a 2,400-line trainer for one 30-line function.
 Nothing here imports either trainer, so the cycle cannot recur.
 
 WHAT BELONGS HERE

@@ -4,7 +4,7 @@ WHY THIS EXISTS AND WHY IT IS WORTH MORE THAN IT LOOKS
 ------------------------------------------------------
 python_ai/replays/ holds match logs the simulator produced during training.
 GameLogger::save() writes per-tick entity positions, HP, elixir and both
-hands -- and python_ai/train.py:252-254 adds four more fields per tick that
+hands -- and python_ai/rl/replay.py's annotator adds four more fields per tick that
 GameLogger itself never writes:
 
     "actionCardId", "actionCardName", "actionX", "actionY"

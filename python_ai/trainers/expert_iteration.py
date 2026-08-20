@@ -76,24 +76,17 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env  # noqa: E402
 from python_ai.trainers import bc_pretrain  # noqa: E402
 from python_ai.trainers.bc_pretrain import action_match_rate, train_bc  # noqa: E402
-from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
-from python_ai.models.net import MicroRoyaleNet  # noqa: E402
-from python_ai.models.policy_io import LSTM_HIDDEN, load_net  # noqa: E402
+from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.eval.stats import report_paired_winrate  # noqa: E402
 from python_ai.search.config import SearchCfg  # noqa: E402
-from python_ai.search.search import (  # noqa: E402
-    greedy_from_logits, outcome_score, play_episode, policy_head,
-    search_action,
-)
+from python_ai.search.search import outcome_score, play_episode  # noqa: E402
 
 
 from python_ai.trainers.expert_collect import (  # noqa: E402
-    K_MAX, collect_expert_labels, make_env, merge_datasets,
-    verify_cell_roundtrip,
+    collect_expert_labels, make_env, merge_datasets,
 )
 from python_ai.trainers.expert_distill import (  # noqa: E402
-    POLICY_MODULES, TRUNK_MODULES, TRUNK_PARAMS, candidate_target,
-    freeze_trunk, train_distribution,
+    candidate_target, freeze_trunk, train_distribution,
 )
 from python_ai.trainers.expert_metrics import (  # noqa: E402
     conditional_lift, conditional_match_rate, critic_drift,

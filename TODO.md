@@ -77,8 +77,8 @@ four tried to move a **policy** toward a play the environment priced negatively.
 This is the opposite situation: the environment now prices the play
 **positively** and the teacher simply cannot express it.
 
-**Files:** `python_ai/teacher.py` (`_cells_for`, `candidates`, `score`,
-`rollout_stats`). **Harness:** `python_ai/prove_environment.py --mode marginal`
+**Files:** `python_ai/opponents/teacher.py` (`_cells_for`, `candidates`, `score`,
+`rollout_stats`). **Harness:** `python_ai/eval/prove_environment.py --mode marginal`
 — and read the *supported* arm, never the lone-Hog arm, which is now a strawman.
 
 ---
@@ -104,7 +104,7 @@ object `_search_action` needs to snapshot.
 *mechanism* is what transfers; re-measure the magnitude before quoting it.
 
 **Files:** `perception/live/mvp_loop.py`, `perception/forecast.py`,
-`python_ai/realtime_search.py`, `python_ai/shipping.py`.
+`python_ai/search/realtime_search.py`, `python_ai/shipping.py`.
 
 ---
 
@@ -122,7 +122,7 @@ Cannon, Fireball, Giant, Musketeer, Mini P.E.K.K.A) and `DEFAULT_DECK` is now
 2.6 Hog Cycle. This tie was knowingly given up on 2026-08-16. Either record new
 matches on 2.6, or accept cross-deck transfer as a separate question.
 
-**Files:** `python_ai/bc_pretrain.py` (`DATASET_SCHEMA`), `perception/`.
+**Files:** `python_ai/trainers/bc_pretrain.py` (`DATASET_SCHEMA`), `perception/`.
 
 ---
 

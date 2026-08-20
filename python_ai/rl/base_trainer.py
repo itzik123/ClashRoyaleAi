@@ -34,7 +34,7 @@ refactor exists to make impossible.
 import os
 import shutil
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -46,8 +46,7 @@ from python_ai.advisors import advisor_target
 from python_ai.models.net import MicroRoyaleNet
 from python_ai.models.policy_io import LSTM_HIDDEN, load_state_dict_flexible
 from python_ai.rewards.shaping import (
-    building_hp_end, compute_shaping, flawless_defense_bonus,
-    spell_value_weight,
+    compute_shaping, flawless_defense_bonus, spell_value_weight,
 )
 from python_ai.rewards.weights import DRAW_PENALTY
 from python_ai.rl import gae as gae_mod
