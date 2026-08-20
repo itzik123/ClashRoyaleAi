@@ -3,6 +3,7 @@
 #include <memory>
 #include <algorithm>
 #include <unordered_map>
+#include "ArenaLayout.h"
 #include "Entity.h"
 #include "StatsEventBus.h"
 
@@ -25,8 +26,29 @@ private:
     // becomes correct for both instead of encoding the old asymmetry.
     float riverY_start = 15.5f;
     float riverY_end = 17.5f;
-    Vector2D leftBridge{ 4.0f, 16.5f };
-    Vector2D rightBridge{ 14.0f, 16.5f };
+    // x on an 18-wide board is a CELL INDEX clamped to [0, width-1], so the
+    // board's own centre is (18-1)/2 = 8.5 and the mirror of a column is
+    // 17 - x -- exactly the convention isBackRowDeadZone() below already uses
+    // for its centre, and the x-analogue of extractObservationForTeam's
+    // y -> 33 - y.
+    //
+    // A real bridge is TWO tiles wide, and the real arena's river row reads
+    //
+    //        column  012345678901234567
+    //                WWBBWWWWWWWWWWBBWW      (W water, B bridge)
+    //
+    // i.e. columns 2-3 and 14-15. So each centre sits on the SEAM between its
+    // two tiles, not on a tile: 2.5 and 14.5, which mirror onto each other
+    // under 17 - x. Putting the centre on a tile (3.0 / 14.0) is what made
+    // clampToBoard's +/-1.0 corridor three tiles wide instead of two; with the
+    // centre on the seam that same +/-1.0 spans exactly cells 2 and 3, since
+    // cell i covers [i - 0.5, i + 0.5].
+    //
+    // These were 4.0 / 14.0 until 2026-08-20 -- symmetric about 9.0 rather
+    // than 8.5, the same half-tile convention error the river itself carried
+    // before it was re-centred on 16.5.
+    Vector2D leftBridge{ ArenaLayout::LEFT_BRIDGE_X, ArenaLayout::BRIDGE_Y };
+    Vector2D rightBridge{ ArenaLayout::RIGHT_BRIDGE_X, ArenaLayout::BRIDGE_Y };
 
     // Real-map sync: the arena is 18x34, not 18x32 -- there's one extra row
     // behind each King Tower that this engine used to just not have. Most of
@@ -35,6 +57,14 @@ private:
     // centered on the board, which is real, placeable ground. See
     // isBackRowDeadZone() below.
     static constexpr float BACK_ROW_OPENING_HALF_WIDTH = 3.0f;
+
+public:
+    // Half of a bridge's two-tile width. Named rather than repeated as a bare
+    // 1.0f at each clampToBoard comparison, because it is only correct in
+    // company with a seam-centred leftBridge/rightBridge -- see those.
+    static constexpr float BRIDGE_HALF_WIDTH = 1.0f;
+
+private:
 
 public:
     // Public, not a getter-wrapped private member: every fire site
@@ -158,6 +188,13 @@ public:
     // of re-guessing the same two numbers as a second, driftable copy.
     float getRiverStart() const { return riverY_start; }
     float getRiverEnd() const { return riverY_end; }
+    // Read-only, same rationale as getRiverStart/getRiverEnd above: the bridge
+    // columns are board geometry, and anything that needs them (lane pathing,
+    // HeuristicOpponent's own LEFT_BRIDGE_X/RIGHT_BRIDGE_X, the audit tools)
+    // should read them here rather than keep a second copy that goes stale --
+    // which is exactly what happened to HeuristicOpponent's 3.5/13.5.
+    const Vector2D& getLeftBridge() const { return leftBridge; }
+    const Vector2D& getRightBridge() const { return rightBridge; }
 
     // True for the unplaceable corners of the two new back rows (y in
     // [0,1) or (height-2, height-1], outside the BACK_ROW_OPENING_HALF_WIDTH
@@ -346,8 +383,10 @@ public:
         pos.y = std::max(0.0f, std::min(pos.y, static_cast<float>(height - 1)));
 
         if (!ignoresRiver && pos.y > riverY_start && pos.y < riverY_end) {
-            bool onLeftBridge = (pos.x >= leftBridge.x - 1.0f && pos.x <= leftBridge.x + 1.0f);
-            bool onRightBridge = (pos.x >= rightBridge.x - 1.0f && pos.x <= rightBridge.x + 1.0f);
+            bool onLeftBridge = (pos.x >= leftBridge.x - BRIDGE_HALF_WIDTH &&
+                                 pos.x <= leftBridge.x + BRIDGE_HALF_WIDTH);
+            bool onRightBridge = (pos.x >= rightBridge.x - BRIDGE_HALF_WIDTH &&
+                                  pos.x <= rightBridge.x + BRIDGE_HALF_WIDTH);
             if (!onLeftBridge && !onRightBridge) {
                 float riverMid = (riverY_start + riverY_end) / 2.0f;
                 pos.y = (pos.y < riverMid) ? riverY_start : riverY_end;

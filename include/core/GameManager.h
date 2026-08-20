@@ -1,4 +1,5 @@
 #pragma once
+#include "ArenaLayout.h"
 #include "Board.h"
 #include "PlayerState.h"
 #include "Tower.h"
@@ -626,13 +627,20 @@ public:
         // still symmetric under (height-1) - y = 33 - y, same convention as
         // every other team-mirroring formula in this engine (e.g.
         // ClashEnv::extractObservationForTeam).
-        addTower(9.0f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
-        addTower(9.0f, 30.5f, 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
+        // 8.5, not 9.0: x is a cell index in [0, 17], so the board's centre
+        // -- and the fixed point of the mirror 17 - x -- is 8.5. A King at
+        // 9.0 sat half a tile right of centre on both teams, which is also
+        // why the left Princess and the left bridge were each a half tile
+        // out. See Board::leftBridge for the same correction.
+        addTower(ArenaLayout::CENTER_X, ArenaLayout::kingY(0), 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
+        addTower(ArenaLayout::CENTER_X, ArenaLayout::kingY(1), 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        addTower(4.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
-        addTower(14.0f, 6.0f, 0, "Princess Tower", towerTroopStats(aiTowerTroop));
-        addTower(4.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
-        addTower(14.0f, 27.0f, 1, "Princess Tower", towerTroopStats(oppTowerTroop));
+        // 3.0 / 14.0: mirror images under 17 - x, and each flush with its own
+        // bridge column (Board::leftBridge / rightBridge).
+        addTower(ArenaLayout::LEFT_LANE_X,  ArenaLayout::princessY(0), 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+        addTower(ArenaLayout::RIGHT_LANE_X, ArenaLayout::princessY(0), 0, "Princess Tower", towerTroopStats(aiTowerTroop));
+        addTower(ArenaLayout::LEFT_LANE_X,  ArenaLayout::princessY(1), 1, "Princess Tower", towerTroopStats(oppTowerTroop));
+        addTower(ArenaLayout::RIGHT_LANE_X, ArenaLayout::princessY(1), 1, "Princess Tower", towerTroopStats(oppTowerTroop));
 
         board.commitPendingEntities(currentTick);
     }
