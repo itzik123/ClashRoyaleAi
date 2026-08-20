@@ -92,6 +92,11 @@ from geometry import load_geometry
 _PYTHON_AI = Path(__file__).resolve().parent.parent.parent / "python_ai"
 if str(_PYTHON_AI) not in sys.path:
     sys.path.insert(0, str(_PYTHON_AI))
+# ...and the repo root, so the `python_ai.*` package resolves too. The
+# python_ai/ entry above stays: clash_royale_env is an unpackaged .pyd
+# that lives inside it.
+if str(_PYTHON_AI.parent) not in sys.path:
+    sys.path.insert(0, str(_PYTHON_AI.parent))
 
 
 class SimUnavailableError(RuntimeError):

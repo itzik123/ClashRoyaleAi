@@ -2,7 +2,8 @@
 
 ONE PLACE that names the deployable configuration, so an evaluation and a
 deployment cannot silently drift onto different settings -- the same reason
-`expert_iteration.SearchCfg` is a class rather than an argparse namespace.
+`search.config.SearchCfg` is a frozen dataclass rather than an argparse
+namespace.
 
 READ THIS FIRST: THE WEIGHTS CHANGED AND THE EVIDENCE DID NOT MOVE WITH THEM
 ---------------------------------------------------------------------------
@@ -66,6 +67,13 @@ WHAT IS NOT INCLUDED, deliberately:
     Do not assume it composes; measure it before turning it on.
 """
 import os
+import sys
+
+# Run as a script (`python python_ai/shipping.py`) the repo root is not on
+# sys.path. See python_ai/__init__.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import python_ai  # noqa: E402,F401
 
 # --------------------------------------------------------------------------
 # the configuration
@@ -87,8 +95,8 @@ USE_SOLVENCY_GATE = False       # unmeasured on top of search -- see docstring
 
 
 def search_cfg():
-    """The validated SearchCfg, for search_ab_test / expert_iteration callers."""
-    from expert_iteration import SearchCfg
+    """The validated SearchCfg, for the search and expert-iteration callers."""
+    from python_ai.search.config import SearchCfg
     return SearchCfg(horizon=SEARCH_HORIZON,
                      k_cards=SEARCH_K_CARDS,
                      k_cells=SEARCH_K_CELLS,
@@ -96,11 +104,12 @@ def search_cfg():
 
 
 def load_shipping_net(device=None):
-    """The shipping net, loaded from this file's own directory."""
+    """The shipping net, loaded from the package directory the .pth files
+    live in -- never from the caller's cwd, which is what made a harness and a
+    deployment able to load two different checkpoints under one name."""
     import torch
-    from policy_io import load_net
-    here = os.path.dirname(os.path.abspath(__file__))
-    net = load_net(os.path.join(here, SHIPPING_WEIGHTS),
+    from python_ai.models.policy_io import load_net
+    net = load_net(os.path.join(python_ai.PACKAGE_DIR, SHIPPING_WEIGHTS),
                    device or torch.device("cpu"))
     for p in net.parameters():
         p.requires_grad_(False)

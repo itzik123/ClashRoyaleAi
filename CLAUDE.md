@@ -73,7 +73,7 @@ That looks exactly like "the compile is broken" and almost never is. Check
 > is header-only against `include/`, so it needs no MSVC and no `.pyd`, and it is
 > what the "538 cases, 0 warnings" figures in this file are measured with. Python
 > work must be verified by other means here (stubbing `clash_royale_env`,
-> `py_compile`, static reading) — see `python_ai/match_outcome.py`'s tests for the
+> `py_compile`, static reading) — see `python_ai/eval/match_outcome.py`'s tests for the
 > stub pattern.
 
 **The `claude` CLI is not on PATH either** — it's inside the desktop app, at
@@ -239,7 +239,7 @@ own plays** (the heuristic opponent's are logged nowhere), and **the training
 run rewrites that directory continuously** — observed dropping from 8 files to
 1 within minutes. Frozen fixtures live in `perception/tests/assets/`.
 
-`DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]` (`python_ai/gym_wrapper.py`)
+`DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]` (`python_ai/envs/gym_wrapper.py`)
 — **the classic 2.6 Hog Cycle**, since 2026-08-16: Hog Rider, Musketeer,
 Cannon, Ice Golem, Skeletons, Ice Spirit, The Log, Fireball. Costs 1-4, avg
 2.625, spread 3. Win condition Hog Rider (4); 3 of 8 hit air (Musketeer, Ice
@@ -893,7 +893,7 @@ placements are worth less than random**; placement quality is the binding
 constraint.
 
 **2026-08-14, the hybrid: route around the broken head rather than repair it.
-+11.8 win-rate points, p = 1.9e-05.** `python_ai/hybrid_policy.py` — the network
++11.8 win-rate points, p = 1.9e-05.** `python_ai/advisors/hybrid_policy.py` — the network
 keeps WHAT to play and WHEN; `tactics.py` decides WHERE for Cannon, Fireball and
 Giant, and `SolvencyGate` vetoes spends that would bankrupt it. Two independent
 pre-registered paired runs, opponent 1.5x:
@@ -1679,7 +1679,7 @@ them, which is what was observed.
 at `--opp-elixir 1.0`:
 
 ```bash
-python_ai/venv/Scripts/python.exe python_ai/force_hog_ab.py     --weights <net> --n 120 --opp-elixir 1.0 --force-prob 0.0 --smart-force
+python_ai/venv/Scripts/python.exe python_ai/eval/force_hog_ab.py     --weights <net> --n 120 --opp-elixir 1.0 --force-prob 0.0 --smart-force
 ```
 
 * If the penalty **shrinks or reverses** at 1.0x, the hypothesis is supported
@@ -2052,6 +2052,129 @@ search measured horizon 20 WORSE than 12 (0.875 vs 0.963) for this exact reason.
 
 ---
 
+## 2026-08-20: the structural refactor. NOT gameplay-affecting.
+
+**Read this first: no win rate is invalidated and no checkpoint is dead.** The
+observation, the action space, the architecture and the reward are untouched;
+`model_weights.pth` and `model_weights_selfplay.pth` load and behave exactly as
+before. Everything below is about where code LIVES, not what it computes.
+
+`python_ai/` was a flat directory of 45 modules. `train.py` was 2,404 lines with
+a 1,620-line `train_ppo()`; `train_selfplay.py` was 2,884 with a 1,565-line
+`train_selfplay_ppo()`. It is now a package of eleven subpackages, and those two
+files are 506 and 488 lines.
+
+### What was actually duplicated, and what replaced it
+
+The overlap between the two trainers was not incidental — it was the whole
+algorithm. Same hyperparameters, same 17-key stats extraction, same rollout with
+the same three masks, same GAE, same ~250-line minibatch update, same entropy
+controller, same replay recorder, same checkpoint cadence. The differences fit
+on one screen:
+
+| aspect | pipeline 1 | pipeline 2 |
+|---|---|---|
+| opponent | UtilityTeacher | PFSP league / scripted |
+| episode bookkeeping | curriculum + phase | scenarios + strategy ROI |
+| GAE | plain | truncation bootstrap |
+| draw penalty keyed on | `dones` | `terminateds` only |
+| entropy config | `PHASE1_ENTROPY` | `PHASE2_ENTROPY` |
+| periodic work | replay, handoff | replay, eval, exploiter |
+
+So `rl/base_trainer.py` owns the loop as a TEMPLATE METHOD and the two trainers
+own only their differences. The template shape (rather than
+composition-by-callback) is deliberate: the loop's ORDER is itself load-bearing
+in several places — the phase gate must be evaluated before the stage gate, the
+hidden state must be captured before the LSTM advances, the coverage slot must
+be drawn on the observation the action is taken from — and a template puts that
+order in exactly one place. **No subclass may override `collect_rollout` or
+`run_update`**; `tests/test_rl_base_trainer.py` asserts it.
+
+### Three couplings that were removed, each with a cost that had been paid
+
+- **`shipping.py` imported a 1,152-line experiment harness to reach a
+  dataclass.** `SearchCfg` lived in `expert_iteration.py`, so the one file that
+  names the deployable configuration pulled in `bc_pretrain`, torch and a card
+  registry probe. It is now `search/config.py` and imports nothing but
+  `dataclasses`.
+- **Five modules imported `_build_candidates` / `_search_action` /
+  `_policy_head` / `_greedy_from_logits`** — underscore-private names, across
+  module boundaries, out of an A/B harness whose `main()` runs a whole
+  experiment. The search is `search/search.py` under public names now.
+- **FOUR copies of paired-bootstrap CI + exact sign test.** For measurement code
+  that is worse than ordinary duplication: four copies is four chances for one
+  to quietly use a different tail or a one-sided test. One `eval/stats.py`, with
+  the win-rate variant (normal-approximation CI + McNemar + the power line)
+  preserved exactly, because every expert-iteration delta recorded above was
+  produced by that arithmetic.
+
+### Two behaviour changes, both stated rather than slipped in
+
+- **Pipeline 1 now also logs `Entropy/Placement_ByCard_Min`**, the conditional
+  freeze detector this file names as the cheap detector for a per-card collapse.
+  Diagnostic only — computed from tensors the update already had, and phase 1
+  previously had no per-card diagnostic at all.
+- **`exploiter.py` used a THIRD copy of the stats dict, and it was missing
+  `team0_wincon_damage`** — so the exploiter alone trained without the
+  win-condition term, optimizing a different reward from the agent it hunts. It
+  now uses the shared extractor. GAMEPLAY-AFFECTING for the exploiter, which has
+  been disabled since 2026-08-11, so no run is invalidated.
+
+### One LATENT BUG the extraction removed, for free
+
+`train.py` had two hand-written `torch.save({...})` blocks: the periodic one
+persisted `ent_coef_card` / `ent_coef_place`, and the FINAL one at the stop
+point did not. So the very last checkpoint pipeline 1 wrote — the one pipeline 2
+bootstraps from, and the one any resume picks up — silently dropped the
+converged entropy controller and sent it back to its 0.05 / 0.06 seed values.
+
+That is exactly the failure already on record from the other pipeline (observed
+2026-07-30: placement reset from a converged 0.0132 to 0.06 and took ~5,600
+episodes to walk back, with nothing warning). One `save_checkpoint()` makes the
+two saves the same object by construction, and
+`test_the_final_save_carries_the_SAME_keys_as_the_periodic_one` pins it.
+
+Nothing else changed about either save. Pipeline 2's periodic cadence now also
+honours `CLASH_SAVE_EVERY` (it was a hardcoded 500); the default is identical.
+
+### What the tests now pin that they could not before
+
+`CURRICULUM_STAGES` was a LOCAL of `train_ppo()`, so the suite parsed `train.py`
+with `ast` to recover the literal — a constant nothing can import is a constant
+nothing can check, and a parser that finds nothing is only distinguishable from
+one that finds the wrong thing by the assertion it raises. It is at module scope
+in `rl/curriculum.py` now, and the state machine's ORDERING is tested by running
+the two gates the wrong way round and watching the phase transition starve.
+
+`test_training_never_raises_the_opponent_elixir_multiplier` also grew: it is
+AST-based rather than line-based (the line scan skipped anything starting with
+`#`, which silently exempted every mention inside a DOCSTRING — exactly where a
+future author would explain the ban before reintroducing it), and it scans
+`rl/` as well as `trainers/train.py`, because the loop moved. It is still
+deliberately scoped to PIPELINE 1: `BUILTIN_TRAINING_OPPONENTS` really does put
+`heuristic@1.35` and `@1.50` in phase 2's pool, where a multiplier is the
+anchor's identity rather than a curriculum handicap.
+
+The suite went **90 -> 312 tests**. The 2,170-line `test_python_ai.py` was
+itself a monolith and had grown a cross-section dependency invisible from inside
+it (`_shaping_stats` defined in one section, used in another); it is eight files
+plus `conftest.py` and `helpers.py`.
+
+### The one trap this created, for anyone adding a script
+
+`python_ai` is a package rooted at the REPO ROOT, so a module run as a file
+(`python python_ai/eval/prove_hog.py`) does not have `python_ai.*` on its path.
+Every runnable script therefore carries a four-line bootstrap, and
+`test_package_layout.py` fails if one is added without it —
+`trainers/bc_pretrain.py` was missing it and could not be run as a script at all.
+
+The other half of the same trap: `python_ai.PACKAGE_DIR` is where the `.pth`
+files live, and it is NOT the directory a moved script sits in. Every
+`__file__`-relative checkpoint path became silently wrong the moment the file
+moved one level down; they all read `PACKAGE_DIR` now.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 > **Checkpoint names in the passages below are PROVENANCE, not files.** The
@@ -2245,7 +2368,7 @@ the teacher simply cannot express it.
    Python: **0.033 ms per snapshot**, 0.027 ms per 10-tick step, so a **K=12
    sweep at a 2 s horizon costs 1.1 ms** — against ~50 ms for the single network
    forward that scores it. Simulation is free; *scoring* is the entire budget,
-   which is why `python_ai/search_ab_test.py` batches all K candidate
+   which is why `python_ai/eval/search_ab_test.py` batches all K candidate
    evaluations into one forward.
 
    **An unexpected second payoff: this is also a seeding substitute.**
@@ -2263,7 +2386,7 @@ the teacher simply cannot express it.
    **1.5× opponent elixir**, where there is headroom on both sides.
 
    **First measurement, 2026-08-11 — search wins, and by a lot.**
-   `python_ai/search_ab_test.py`, 160 paired trials at 1.5× opponent elixir,
+   `python_ai/eval/search_ab_test.py`, 160 paired trials at 1.5× opponent elixir,
    ep-64k checkpoint, `DEFAULT_DECK`, K≈3 candidates, 4 s horizon, critic-scored:
 
    | | |
@@ -2292,7 +2415,7 @@ the teacher simply cannot express it.
    regime-specific: at 1.0× elixir it is exactly zero, by ceiling.
 
    **2026-08-12 — distilling it back does NOT work yet. Measured, negative.**
-   `python_ai/expert_iteration.py`. 80 episodes of search-labelled play (20,333
+   `python_ai/trainers/expert_iteration.py`. 80 episodes of search-labelled play (20,333
    decisions), distilled into the policy with the trunk/LSTM/critic frozen and
    only the action heads trainable (15,878 of 1.88 M params):
 
@@ -2592,39 +2715,129 @@ re-running after any change to the observation, the board, or `stepSelfPlay`.
 
 ## Layout
 
+**`python_ai/` became a PACKAGE on 2026-08-20**, one subpackage per
+responsibility. Two mechanisms replace ~30 copies of one fact: importing
+`python_ai` appends its own directory to `sys.path` (which is what makes
+`import clash_royale_env` work — the `.pyd` is unpackaged and lives there), and
+`python_ai.PACKAGE_DIR` / `REPO_ROOT` replace the `__file__`-relative
+directories the harnesses used to build checkpoint and header paths from.
+
+Entry-point scripts carry a four-line bootstrap putting the repo root on
+`sys.path`, so **both invocations keep working**:
+
+```bash
+python_ai/venv/Scripts/python.exe python_ai/eval/prove_hog.py
+python_ai/venv/Scripts/python.exe -m python_ai.eval.prove_hog
+```
+
 ```
 include/, src/       C++ engine. READ-ONLY by default.
-python_ai/           READ-ONLY by default — training runs here.
-  model.py             MicroRoyaleNet. ALL observation-layout knowledge lives
-                       here; everything is derived from the bindings. Also owns
-                       LSTM_HIDDEN, as a class attribute.
-  policy_io.py         Checkpoint -> ready net: load_net,
-                       load_state_dict_flexible, LSTM_HIDDEN.
-                       Exists so a probe does not import a 1,143-line
-                       experiment script (and through it both trainers) just to
-                       read one .pth -- see its docstring.
-  gym_wrapper.py       MicroRoyaleEnv + DEFAULT_DECK.
-  teacher.py           UtilityTeacher: phase 1's opponent. Rules propose,
-                       simulation ranks. Difficulty is lookahead, not elixir.
-  train.py             Pipeline 1 + the shaping/curriculum constants that
-                       train_selfplay.py imports.
-  train_selfplay.py    Pipeline 2: PFSP league, scripted bots, scenarios, eval.
-  exploiter.py         League exploiter, self-contained PPO loop.
-  bc_pretrain.py       Behaviour cloning + the demonstration .npz schema.
-  advisor_target.py    The advisor's score surface as a TRAINING TARGET for the
-                       placement-coverage term, plus the loss both trainers
-                       call. The only place that knows which cards have rules.
-  setup_ab_arm.py      Builds a FULL training checkpoint for an experiment arm
-                       (and remaps optimizer moments by NAME across a
-                       checkpoint that gained parameters).
-  validate_pipeline.py Pre-flight: PFSP routing, scenario contracts, advisor
-                       targeting at scale, search cost ratio, spell anneal,
-                       side null, C++ suite.
-  monitor_run.py       Health daemon for an unattended run. Read-only.
-  prove_*.py           Engine-scored measurement harnesses. Each one exists
-                       because a claim needed settling; none is imported by
-                       the training path.
 tests/               C++ Catch2 tests (ClashRoyaleTests).
+python_ai/           READ-ONLY by default — training runs here.
+  __init__.py          PACKAGE_DIR / REPO_ROOT, and the one sys.path append
+                       that makes the compiled engine importable everywhere.
+  engine_constants.py  Board/observation/HP constants + card_name(), derived
+                       ONCE from the bindings. The enforcement point for
+                       CLAUDE.md's no-second-copies rule.
+  shipping.py          The deployable configuration, named in one place.
+
+  models/
+    net.py             MicroRoyaleNet (was model.py). ALL observation-layout
+                       knowledge lives here; everything derived from the
+                       bindings. Also owns LSTM_HIDDEN, as a class attribute.
+    policy_io.py       Checkpoint -> ready net. Exists so a probe does not
+                       import an experiment script (and through it both
+                       trainers) just to read one .pth.
+    perception_encoder.py  GameState -> the net's observation layout.
+
+  envs/
+    gym_wrapper.py     MicroRoyaleEnv + DEFAULT_DECK. Phase 1's env.
+    selfplay_env.py    MicroRoyaleSelfPlayEnv + the PFSP constants. Phase 2's.
+    scripted_opponents.py  Rusher/Defender/Cycler/Counter. A POLICY, lifted
+                       out of an ENVIRONMENT's method.
+    scenarios.py       Scenario injection: reshapes the START-STATE
+                       distribution, never the reward.
+    scenario_offense.py  Proposal A, default-OFF.
+
+  opponents/
+    teacher.py         UtilityTeacher: phase 1's opponent. Rules propose,
+                       simulation ranks. Difficulty is lookahead, not elixir.
+
+  advisors/
+    tactics.py         The deterministic, engine-validated placement advisor.
+    advisor_target.py  That advisor's score surface as a TRAINING TARGET for
+                       the placement-coverage term. The only place that knows
+                       which cards have rules.
+    hybrid_policy.py   Inference-time composition of net + advisor + gate.
+
+  rewards/
+    weights.py         Every W_* and threshold, with the measurement that
+                       justifies it, and an explicit list of which terms are
+                       policy-invariant and which are DELIBERATELY biasing.
+    shaping.py         compute_shaping and the terms it composes. No torch.
+    elixir_shaping.py  The potential-based solvency term.
+
+  rl/                  THE PPO ALGORITHM, free of any Clash-specific policy
+                       decision. Direction is trainers -> rl, never back.
+    config.py          PPOConfig + EntropyConfig (frozen). PHASE1_ENTROPY and
+                       PHASE2_ENTROPY keep the two pipelines' deliberately
+                       DIFFERENT entropy settings.
+    base_trainer.py    The loop, as a template method. Subclasses supply the
+                       opponent, the bookkeeping and the periodic work — and
+                       CANNOT change the rollout's arithmetic.
+    ppo.py             PPOUpdater + UpdateStats: the ~250-line minibatch
+                       update that was duplicated verbatim.
+    gae.py             One GAE. The truncation-bootstrap form is a strict
+                       generalization of the plain one, and it is tested.
+    buffer.py          RolloutBuffer; add() refuses a partial row.
+    entropy.py         EntropyController, with the seven-instance history of
+                       normalizer bugs it exists to prevent.
+    curriculum.py      CURRICULUM_STAGES (module scope, so a test can import
+                       it) + CurriculumManager.
+    engine_stats.py    infos -> the stats dict, and why every default is the
+                       value that contributes exactly zero.
+    episode_metrics.py The rolling windows both pipelines report from.
+    coverage.py        Placement-coverage sampling.
+    checkpointing.py   The three checkpoint destinations, kept separate.
+    replay.py          Demo-replay recording and annotation.
+
+  trainers/
+    train.py           Pipeline 1: the teacher opponent + the phase machine.
+    train_selfplay.py  Pipeline 2: the league + scenario-aware bookkeeping +
+                       the live strategy read-out.
+    league.py          PFSP pool discovery, the fixed Elo roster, evaluation.
+    strategy_metrics.py  ROI / Fwd / Cards-per-game. Read them in PAIRS.
+    exploiter.py       League exploiter, self-contained PPO loop. OFF.
+    bc_pretrain.py     Behaviour cloning + the demonstration .npz schema.
+    distill_tactics.py Distilling the advisor into the placement head.
+    expert_collect.py / expert_distill.py / expert_metrics.py /
+    expert_iteration.py  Search -> labels -> student, and the CLI over them.
+
+  search/
+    config.py          SearchCfg. Imports nothing but `dataclasses`, so
+                       shipping.py can read it cheaply.
+    search.py          The lookahead itself: +0.4025 win rate at horizon 12.
+    realtime_search.py Live-loop wrapper.
+
+  eval/                Measurement harnesses. None is imported by the
+                       training path.
+    stats.py           Paired bootstrap CI + exact sign test, ONCE. Four
+                       harnesses each had their own copy.
+    match_outcome.py   TimeoutRules' verdict, read from the engine.
+    prove_*.py         Engine-scored: the engine is the oracle.
+    probe_*.py         Behavioural read-outs of a policy.
+    *_ab.py            Paired A/B comparisons.
+
+  tools/
+    validate_pipeline.py  Pre-flight: PFSP routing, scenario contracts,
+                       advisor targeting at scale, search cost ratio, spell
+                       anneal, side null, C++ suite. The 20/20 gate.
+    monitor_run.py     Health daemon for an unattended run. Read-only.
+    setup_ab_arm.py    Builds a FULL training checkpoint for an experiment arm.
+    make_replays.py    Replay generation for the viewer.
+
+  tests/               The Python suite. conftest.py holds the two shared
+                       fixtures, helpers.py the two shared builders.
 CLAUDE.md            This file: the knowledge base.
 TODO.md              The single, verified list of pending work.
 perception/          Screen -> placement events -> simulator as estimator.
@@ -2647,8 +2860,14 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
-`python_ai/test_python_ai.py` is 89 (88 pass, 1 skipped; the skip count varies
-run to run because one case depends on the unseeded opening-hand shuffle).
+
+The Python suite is **312 (311 pass, 1 skipped)** since the 2026-08-20
+restructuring, up from 90; the skip count varies run to run because two cases
+depend on the unseeded opening-hand shuffle. Run it with:
+
+```bash
+python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
+```
 
 ---
 

@@ -24,6 +24,9 @@ ASSETS = PERCEPTION_ROOT / "tests" / "assets"
 
 def _engine_or_none():
     sys.path.insert(0, str(PERCEPTION_ROOT.parent / "python_ai"))
+    # The repo root too: python_ai is a PACKAGE now, and the tests that
+    # compare against its observation encoder import it by that path.
+    sys.path.insert(0, str(PERCEPTION_ROOT.parent))
     try:
         import clash_royale_env
         return clash_royale_env

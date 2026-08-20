@@ -27,13 +27,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python_ai"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "perception"))
 
 pytest.importorskip("clash_royale_env",
                     reason="engine bindings not importable from this interpreter")
 
 import clash_royale_env as cre  # noqa: E402
-import perception_encoder as pe  # noqa: E402
+from python_ai.models import perception_encoder as pe  # noqa: E402
 from contracts import GameState, Phase, TowerObservation  # noqa: E402
 
 # Deliberately NOT gym_wrapper.DEFAULT_DECK: that module imports gymnasium,
