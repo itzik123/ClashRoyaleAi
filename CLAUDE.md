@@ -2155,7 +2155,7 @@ deliberately scoped to PIPELINE 1: `BUILTIN_TRAINING_OPPONENTS` really does put
 `heuristic@1.35` and `@1.50` in phase 2's pool, where a multiplier is the
 anchor's identity rather than a curriculum handicap.
 
-The suite went **90 -> 284 tests**. The 2,170-line `test_python_ai.py` was
+The suite went **90 -> 312 tests**. The 2,170-line `test_python_ai.py` was
 itself a monolith and had grown a cross-section dependency invisible from inside
 it (`_shaping_stats` defined in one section, used in another); it is eight files
 plus `conftest.py` and `helpers.py`.
@@ -2861,7 +2861,7 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
 
-The Python suite is **284 (282 pass, 2 skipped)** since the 2026-08-20
+The Python suite is **312 (311 pass, 1 skipped)** since the 2026-08-20
 restructuring, up from 90; the skip count varies run to run because two cases
 depend on the unseeded opening-hand shuffle. Run it with:
 
