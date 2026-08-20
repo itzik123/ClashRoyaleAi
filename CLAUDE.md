@@ -3593,6 +3593,12 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
   deck_audit.cpp       Per-card behaviour: identity, offence, defence, air,
                        deploy, and the sight/attack dead band.
   stall_repro.cpp      Minimal deterministic reproductions.
+  verify_pyd.py        Post-rebuild gate: proves python_ai/clash_royale_env.pyd
+                       actually carries the current engine, which the C++ suite
+                       cannot tell you. Run it before any training run.
+                       Uses step_self_play, never step -- step runs the
+                       HeuristicOpponent, which defends, and a Giant stopped by
+                       a defender says nothing about navigation.
 CLAUDE.md            This file: the knowledge base.
 TODO.md              The single, verified list of pending work.
 perception/          Screen -> placement events -> simulator as estimator.
