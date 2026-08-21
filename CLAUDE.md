@@ -74,11 +74,20 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-20 after the simulator audit: **582 test cases, 5,737
-assertions**, ~90 s to compile from cold. 581 pass and **exactly one fails "as
-expected"** -- `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the
-open collision-wedge defect (see the 2026-08-20 audit section). The runner exits
-0 in that state; a non-zero exit or a second failure is a real regression.
+Measured 2026-08-21 after the fidelity fixes: **619 test cases, 5,907
+assertions**. 618 pass and **exactly one fails "as expected"** --
+`test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
+collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
+second failure is a real regression.
+
+**Adding a test FILE needs the build run TWICE.** CMake globs `tests/**` with
+`CONFIGURE_DEPENDS`, so the first MSBuild re-globs and regenerates the vcxproj --
+and then links from its pre-reconfigure target list and reports **success** with
+the new file absent from the binary. The tag matches zero cases and it looks
+like the tests silently failed to register. The second invocation compiles it.
+After adding a file, confirm its tag actually matches cases before believing a
+green run. (Touching `Board.h` / `CombatEntity.h` / `Tower.h` also forces a full
+rebuild of all ~36 test TUs -- budget 8-15 minutes, not 90 seconds.)
 
 > **⚠ THE TOOLCHAIN DIFFERS BETWEEN THE MACHINES THIS REPO IS WORKED ON. Do
 > not trust any absolute claim in this section, including this one — run the
@@ -242,13 +251,32 @@ shuffle (`PlayerState::initializeDeck`) and `HeuristicOpponent`. Nothing in
 `include/entities/` is random — so identical inputs give identical outcomes,
 which is what makes the perception bridge's zero-divergence control possible.
 
-**Board geometry.** River `[15.5, 17.5)`, bridges at `(4, 16.5)` and
-`(14, 16.5)` — re-centred on 2026-07-29 to fix an asymmetry where team 1 had
-one row less placeable ground than team 0. Towers corrected 2026-07-30 per
-`perception/UPSTREAM_REQUESTS.md` items 1-2: left Princess `x` 3.0 → 4.0 (now
-flush with its own bridge, like the right side already was), Kings `x` 8.5 →
-9.0 (the board's measured true centre). Combined held-out calibration error
-dropped max 0.63 → 0.31 tiles.
+**Board geometry — all of it lives in `include/core/ArenaLayout.h` since
+2026-08-21, and is bound to Python.** River `[15.5, 17.5)`. King `x` **8.5**,
+Princess Towers **3.0 / 14.0**, bridges **2.5 / 14.5**, `BRIDGE_Y` 16.5.
+
+x is a **cell index** clamped to `[0, WIDTH-1]`, so the board's centre — the
+fixed point of the mirror `17 - x` — is **8.5**, not 9.0. That is the x-analogue
+of `extractObservationForTeam`'s `y -> 33 - y`, and the convention
+`isBackRowDeadZone` already used. Every pair mirrors: 3.0 ↔ 14.0, 2.5 ↔ 14.5,
+8.5 onto itself.
+
+**A two-tile bridge's centre sits on the SEAM between its tiles**, which is why
+2.5 and not 3.0: `clampToBoard`'s `±BRIDGE_HALF_WIDTH` then spans exactly cells
+2 and 3, reproducing the real river row `WWBBWWWWWWWWWWBBWW`. Centred on a tile
+it was three columns wide.
+
+This **reverses** the 2026-07-30 move (left Princess 3.0 → 4.0, Kings 8.5 → 9.0)
+that `perception/UPSTREAM_REQUESTS.md` items 1-2 recorded. That fit was anchored
+on the same half-tile convention error, which is why its residual looked small
+(0.63 → 0.31 tiles) while the layout was symmetric about the wrong centre.
+
+**Nothing may keep a second copy.** Four did, and all four were stale:
+`HeuristicOpponent`'s bridges (3.5/13.5 — already wrong against Board's own
+4.0/14.0 before the correction), `tactics.py`, `perception/geometry.py`, and
+`test_sim_driver.py`'s observation reads. `ArenaLayout` is bound as
+`clash_royale_env.ARENA_*` plus `arena_king_y(team)` / `arena_princess_y(team)`,
+surfaced through `python_ai/engine_constants.py`. Derive; do not restate.
 
 **The team-1 observation was displaced one row until 2026-07-31.**
 `extractObservationForTeam` mirrored the *truncated row* rather than the
@@ -269,9 +297,38 @@ blind. The test that found it is worth keeping — run a policy against a
 bit-exact copy of itself and check the score is 0.50. It measured **0.598**
 before the fix and **0.520** after (n=400, 95% CI [0.471, 0.569]).
 
-**The King Tower never sleeps.** `Tower.h` gives it no activation condition, so
-it fires from tick 0 while the real King is dormant until activated. Any
-comparison against real footage must exclude the Kings.
+**The King Tower sleeps, since 2026-08-21.** It was dormant-less for this
+project's whole history — `Tower.h` gave it no activation condition and it fired
+from tick 0, which is why every earlier passage says to exclude the Kings when
+comparing against real footage. **That caveat no longer applies.**
+
+`Tower::awake` is a latching flag: Princess Towers construct awake, the King
+asleep (only `GameManager::addTower`'s `symbol == 'R'` branch ever builds one).
+It wakes permanently on either real-game trigger — any damage, or any Princess
+Tower on its own team being destroyed — and while asleep `Tower::findTarget`
+returns `nullptr`, so it can neither acquire nor fire. It stays targetable and
+damageable throughout, which is what lets the damage trigger fire at all.
+
+Two implementation choices worth not undoing. The damage trigger latches on the
+HP invariant `hp < maxHp` rather than overriding a damage entry point, because
+damage reaches a tower through five of them (`Projectile::applyHit`,
+`AreaSpell::update`, direct `performAttack`, splash, poison DoT) and hooking one
+would silently miss the rest; being a latch, a heal cannot re-sleep it. And the
+Princess trigger records the team's living Princess count on its FIRST update
+rather than testing `< 2`, because a King on a bare board — which every unit
+test builds — has zero Princesses and the naive rule wakes it on tick one.
+
+**Measured** (`tools/audit/king_activation_audit.cpp`), lone Hog, identical
+placement, only the Kings' dormancy varying:
+
+| | tower damage | Hog dies at |
+|---|---|---|
+| Kings awake (old) | 1268 | tick 122 |
+| **Kings dormant (new)** | **2219** | tick 170 |
+
+**+951 damage, +75%.** The 1268 reproduces the figure the 2026-08-20 audit
+recorded, which is the cross-check that makes the pair trustworthy. Defence is
+materially weaker than every win rate in this file was earned against.
 
 **Card registry**: 132 playable ids (max 175) plus 41 Evolutions at ids
 123-163, so 173 entries total. `getAllCardIds()` filters Evolutions out.
@@ -2903,6 +2960,143 @@ was the deadlock, not slowness.
 
 **C++ 582 cases / 5,737 assertions** (was 550 / 5,341), of which 1 is the
 `[!shouldfail]` wedge. **Python 366 passed / 2 skipped. Perception 353 passed /
+1 skipped.** (Superseded by the 2026-08-21 section below: 619 / 5,907, Python
+367 / 2.)
+
+---
+
+## 2026-08-21: four fidelity fixes from a professional player's audit
+
+**GAMEPLAY-AFFECTING (items 1-3). Every win rate, Elo figure and placement score
+in this file is now historical.** Checkpoints still LOAD — no observation,
+action-space, reward or architecture change — but their measured strength no
+longer means anything. The `phase1_v5` run in progress when this started was
+stopped for exactly that reason.
+
+**Two of the four requested items turned out to be already implemented**, and
+the investigation is recorded because assuming otherwise would have wasted a
+day. Rule A (strict sight) already shipped: 58 per-card `withSightRange` values
+matching the player's catalog, filtered through `effectiveSightTo`. And
+`TimeoutRules` already implemented both tiebreakers and was wired into the
+reward path — measured with `tools/audit/timeout_audit.cpp`, both sides passive
+reaches tick 3600 and resolves, and against the heuristic 0 of 6 matches even
+reach the limit.
+
+### 1. The arena's coordinates
+
+See "Board geometry" above for the layout and the convention error behind it.
+The short version: x is a cell index, so the centre is 8.5, not 9.0; and a
+two-tile bridge is centred on the seam between its tiles, not on a tile.
+Confirmed against the player's own map of the river row before anything else was
+touched, using `tools/audit/board_map.cpp`, which renders the arena FROM THE
+LIVE ENGINE rather than from a hardcoded copy.
+
+### 2. King Tower activation
+
+See "The King Tower sleeps" above. Largest gameplay effect of the four.
+
+### 3. Blind lane pathing — Rule B, the only genuinely missing behaviour
+
+`findTarget`'s fallback with nothing in sight was *closest enemy Tower by raw
+distance*. With one enemy Princess destroyed that sends a unit diagonally across
+the arena to the OTHER lane's Princess. `include/core/LanePath.h` replaces it:
+the objective is **my own lane's** enemy Princess if alive, else the enemy King,
+and a King objective is APPROACHED up the lane (via the empty Princess slot)
+rather than cut diagonally from the bridge.
+
+Lane is nearest-bridge re-evaluated per call — the same rule `getNextWaypoint`
+uses to pick a crossing, so objective and crossing agree by construction and
+nothing new is carried through `deepCopy`/`snapshot`. Shared by `CombatEntity`
+and `BuildingTargeter` so a building-targeter cannot disagree with a troop about
+where its lane leads.
+
+**THE REPRODUCTION IS POSITION-DEPENDENT, and that is the part to remember.**
+With team 1's left Princess dead, a unit in the left lane measures:
+
+| unit at | → right Princess | → King | closest-tower picks |
+|---|---|---|---|
+| (2.5, 12.0) | 18.90 | 19.45 | **right Princess — wrong** |
+| (2.5, 14.0) | 17.36 | 17.56 | **right Princess — wrong** |
+| (2.5, 15.0) | 16.62 | 16.62 | tie |
+| (2.5, 16.5) — the bridge | 15.57 | 15.23 | King — *right, by accident* |
+
+Crossover at y ≈ 15.0. **At the bridge mouth the broken rule already answers
+correctly**, so a test written there passes against unfixed code and proves
+nothing — the same "cross-check anchored where the error is zero" trap as the
+2026-08-05 tile-grid refit. `test_lane_pathing.cpp` anchors at y = 13.0 and
+pins BOTH halves of that table so the anchor cannot silently drift back.
+
+Blast radius is smaller than it sounds: with both Princesses alive, "my lane's
+Princess" and "closest tower" agree. Behaviour only diverges once one is down.
+
+### 4. The timeout verdict — a CONSUMER defect, not a rule defect
+
+`web/viewer.html` re-derived the outcome from "are both King Towers alive?" and
+called everything else a draw, so a timed-out match with a badly damaged
+Princess displayed **"Draw. Timeout — both King Towers still standing"**. Its
+comment said it "mirrors `MatchRules::evaluate` exactly" — which was TRUE and was
+the bug: `MatchRules` answers *"has a King died yet?"* and correctly says no
+right up to the limit. Who WON at the limit is `TimeoutRules`.
+
+`TimeoutRules::decide()` now splits the RULE from the data gathering, so
+`GameLogger` (const, holds no Board) can reach the same verdict from its own tick
+snapshots instead of reimplementing it. The replay JSON carries
+`"result": {loserTeam, timedOut, reason}` and the viewer reads it, with a
+fallback for older replays that is a PORT of TimeoutRules rather than the
+king-alive shortcut.
+
+**The Python guard against this exact pattern walks `.py` files only, which is
+precisely why it never saw a `.html` file.** It now checks the viewer directly.
+
+Absolute HP, not percentage — the real game breaks this tie on fraction, and
+King 4008 vs Princess 2534 makes the two disagree often. A deliberate, known
+divergence, specified by the audit.
+
+### What the audit turned up that nobody asked for
+
+**Two more cards had the 2026-08-20 sight/attack dead band.** Pinning the
+catalog was meant to be a tests-only task; sweeping the invariant "no card can
+attack further than it can see" across all 132 playable cards found **Bomb
+Tower** and **Three Musketeers**, both with `attackRange` 6.0 against the 5.5
+default sight. Both could hit what they could not see, so they never acquired it
+and stood idle. Neither is in `DEFAULT_DECK` — which is why 582 passing tests
+never noticed — but both appear in random-deck opponents, so phase 1's
+`random_opponent` stage has been training against two broken cards.
+
+Two things about that test worth copying: it reads `sightRange` off the SPAWNED
+ENTITY rather than the registry literal, so it also proves `applyCardMetadata`
+copies the value across; and it collects EVERY offender before asserting. The
+first run reported only the Bomb Tower and looked like one isolated bug — Three
+Musketeers appeared only after that was fixed.
+
+**The `[!shouldfail]` collision-wedge case stopped failing**, which reads like
+the defect being fixed and is not: one wall of the measured pocket was the King
+Tower, and the King moved. `pushAwayFrom`'s opposing-slide cancellation is
+untouched. Re-anchored by translating the pocket by the same −0.5;
+`tools/audit/soak.cpp` re-measured **3 stalls per 363,249 unit-ticks, none on or
+near a bridge** against 7 per 342,563 before. Same defect, same kind.
+UPSTREAM item 18 stands.
+
+### Absorbing states: the bar this work had to clear
+
+Lane pathing adds a new intermediate waypoint, which is exactly how both of this
+engine's shipped deadlocks were born. Four guards, all measured after the change:
+
+| instrument | result |
+|---|---|
+| `waypoint_probe` original sweep | **0** absorbing / 8,661,439 positions |
+| `waypoint_probe` lane composition | **0** absorbing / 2,584,034 positions, under 3 tower configurations |
+| `bridge_audit` | **34/34** crossings every card (squads 102/102), both directions, longest stall == `DEPLOY_TIME_TICKS` |
+| `soak` | 3 / 363,249 unit-ticks, none near a bridge |
+
+The composition sweep runs with all towers alive AND with each enemy Princess
+dead in turn, because with both alive `approachPoint` is the identity and a
+sweep of only that case measures nothing while looking exhaustive.
+
+### Suite counts after this work
+
+**C++ 619 cases / 5,907 assertions**, of which 1 is the `[!shouldfail]` wedge;
+runner exits 0. **Python 367 passed / 2 skipped. Perception 353 passed /
 1 skipped.**
 
 ---
@@ -3622,7 +3816,7 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
 
-The Python suite is **368 collected (366 pass, 2 skipped)** as of 2026-08-20,
+The Python suite is **369 collected (367 pass, 2 skipped)** as of 2026-08-21,
 re-run against the rebuilt `.pyd` after the simulator audit's engine changes. It
 was **349 collected (347-348 pass, 1-2 skipped)** since the
 multi-card teacher landed on 2026-08-20, and was **312** after the 2026-08-20

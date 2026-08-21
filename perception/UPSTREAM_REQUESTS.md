@@ -26,7 +26,7 @@ are applied; 3, 8, 17 and 18 are still open. There is no item 11.
 |---|---|---|---|
 | 0 | River band `[16,18)` → `[15.5,17.5)` | was blocking training | **DONE — verified** |
 | 1 | Left Princess towers `x = 3.0` → `4.0` | blocks a stage-0 acceptance target | **DONE — verified** |
-| 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | **DONE — verified (landed with item 1)** |
+| 2 | Kings `x = 8.5` → `9.0` | cosmetic accuracy | **DONE, then REVERSED 2026-08-21 — see item 2** |
 | 3 | King Tower has no activation condition | fidelity gap | open, **already worked around, no change needed** |
 | 4 | `inject(..., team)` + `get_hand(team)` | convenience | **DONE — already landed 2026-07-29, see below** |
 | 5 | Team-1 observation mirrors the truncated row, not the position | **corrupts all self-play** | **DONE — applied (status corrected 2026-08-19)** |
@@ -92,6 +92,18 @@ spent on an action that could never do anything, and only when playing team 1.
 
 ## 1. DONE — left Princess towers, `x = 3.0` → `4.0` (verified 2026-07-30)
 
+> **REVERSED 2026-08-21.** A professional player's audit put the King back at
+> **8.5** and the left Princess back at **3.0**, and the reason this fit looked
+> good is worth keeping: x is a CELL INDEX clamped to [0, 17], so the board's
+> centre -- the fixed point of the mirror `17 - x` -- is 8.5, not 9.0. The
+> landmark fit was anchored on that half-tile convention error, which is why its
+> residual improved (0.63 -> 0.31 tiles) while the layout became symmetric about
+> the WRONG centre. The corrected arena is symmetric about 8.5 and matches the
+> real game's river row `WWBBWWWWWWWWWWBBWW`. All of it now lives in
+> `include/core/ArenaLayout.h` and is bound to Python, so no consumer keeps a
+> copy. See CLAUDE.md's "Board geometry".
+
+
 **Landed exactly as requested**, two lines in `GameManager.h`:
 
 ```cpp
@@ -146,6 +158,18 @@ caveat as the river fix.
 
 ## 2. DONE — Kings `x = 8.5` → `9.0` (verified 2026-07-30, landed with item 1)
 
+> **REVERSED 2026-08-21.** A professional player's audit put the King back at
+> **8.5** and the left Princess back at **3.0**, and the reason this fit looked
+> good is worth keeping: x is a CELL INDEX clamped to [0, 17], so the board's
+> centre -- the fixed point of the mirror `17 - x` -- is 8.5, not 9.0. The
+> landmark fit was anchored on that half-tile convention error, which is why its
+> residual improved (0.63 -> 0.31 tiles) while the layout became symmetric about
+> the WRONG centre. The corrected arena is symmetric about 8.5 and matches the
+> real game's river row `WWBBWWWWWWWWWWBBWW`. All of it now lives in
+> `include/core/ArenaLayout.h` and is bound to Python, so no consumer keeps a
+> copy. See CLAUDE.md's "Board geometry".
+
+
 Board `[0, 18)` has centre 9.0. `addTower` put both Kings at 8.5, so a
 4-tile-wide King spanned `[6.5, 10.5)` instead of `[7, 11)`. Measured king
 centre 955.75 px sits at 8.79 in bridge-calibrated coordinates — between the
@@ -161,18 +185,38 @@ to match.
 
 ---
 
-## 3. OPEN — King Tower has no activation condition. **No change requested.**
+## 3. APPLIED 2026-08-21 — King Tower activation
 
-`Tower.h` builds the King like any other tower; `GameManager::reset()` gives
-it range 7.0 and a 10-tick cooldown. Nothing makes it dormant, so it fires
+> **Applied.** `Tower` carries a latching `awake` flag: Princess Towers
+> construct awake, the King asleep (only `GameManager::addTower`'s
+> `symbol == 'R'` branch builds one). It wakes permanently on any damage or on
+> any friendly Princess Tower being destroyed, and while asleep
+> `Tower::findTarget` returns `nullptr` so it can neither acquire nor fire. It
+> stays targetable and damageable throughout.
+>
+> Measured with `tools/audit/king_activation_audit.cpp` — lone Hog, identical
+> placement, only dormancy varying: **1268 tower damage with the Kings awake,
+> 2219 with them dormant**, and the Hog survives to tick 170 instead of 122.
+> The 1268 reproduces the figure the 2026-08-20 sight audit recorded.
+>
+> **This was requested only as a note, explicitly with "no change requested",
+> and was implemented anyway** because the 2026-08-21 player audit asked for it
+> directly. GAMEPLAY-AFFECTING: every win rate earned before it is historical.
+> Checkpoints are unaffected.
+>
+> The perception-side workarounds below are now unnecessary but harmless, and
+> are left in place: excluding the Kings from `divergence` still measures
+> perception rather than engine fidelity, which is what that metric is for.
+
+`Tower.h` built the King like any other tower; `GameManager::reset()` gave
+it range 7.0 and a 10-tick cooldown. Nothing made it dormant, so it fired
 from tick 0. The real King is inert until activated.
 
-**Already handled on this side and no change is being asked for.**
 `SimDriver.divergence` excludes both Kings and `readers/towers.king_divergence`
 reports them separately, so the pipeline's quality metric measures perception
-rather than this known gap.
+rather than this gap.
 
-Recorded here only because it is a real behavioural difference that also
+Recorded originally only because it is a real behavioural difference that also
 affects training: an agent learns that chip damage to the King is punished
 immediately, which is not true of the real game.
 
