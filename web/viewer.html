@@ -10,29 +10,40 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --bg-primary: #0f1117;
-    --bg-secondary: #1a1d27;
-    --bg-card: #222533;
-    --bg-hover: #2a2e3f;
-    --border: #2e3347;
-    --text-primary: #e8eaed;
-    --text-secondary: #9aa0b2;
-    --text-muted: #5f6577;
+    /* Chrome is strictly greyscale. The ONLY colour outside the arena is
+       team identity (blue/red) and the two status accents below, both of
+       which carry meaning rather than decoration. */
+    --bg-primary: #0B0B0C;
+    --bg-secondary: #101012;
+    --bg-panel: #141416;
+    --bg-card: #1C1C1F;
+    --bg-hover: #26262A;
+    --border: #26262A;
+    --text-primary: #F5F5F5;
+    --text-secondary: #A1A1A6;
+    --text-muted: #6E6E73;
     --blue-team: #4a9eff;
     --blue-team-dim: #2a5a99;
     --red-team: #ff5252;
     --red-team-dim: #992a2a;
-    --elixir-purple: #c471ed;
     --accent-green: #4ade80;
     --accent-yellow: #facc15;
-    --river-blue: #1e3a5f;
-    --bridge-brown: #8b6914;
-    --grass-dark: #1a2e1a;
-    --grass-light: #223322;
-    --badge-ground: #b98b4e;
-    --badge-air: #38bdf8;
-    --badge-building: #94a3b8;
-    --badge-spell: #c471ed;
+    /* Arena palette, matched to the real game: one continuous lawn with a
+       two-tone mown checker, a cyan river, wood bridges and tan lane paths.
+       Deliberately the ONLY saturated colour on the page -- the chrome around
+       it is greyscale, so the board is what the eye goes to. */
+    --grass-light: #93C756;
+    --grass-dark: #84BC46;
+    --river: #37BEDC;
+    --river-edge: #2AA5C2;
+    --bridge-deck: #B4813F;
+    --bridge-seam: #8A5F2B;
+    --lane-path: #CFC08F;
+    --arena-surround: #2E4A1C;
+    --badge-ground: #C9C9CE;
+    --badge-air: #8E8E93;
+    --badge-building: #6E6E73;
+    --badge-spell: #B9B9C0;
   }
 
   body {
@@ -58,11 +69,10 @@
   }
   .header-left { display: flex; align-items: center; gap: 12px; }
   .header h1 {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 600;
-    background: linear-gradient(135deg, var(--blue-team), var(--elixir-purple));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.2px;
+    color: var(--text-primary);
   }
   .header .badge {
     font-size: 11px;
@@ -248,71 +258,82 @@
     margin-bottom: 10px;
   }
 
-  /* Elixir bars */
-  .elixir-row {
-    display: flex;
+  /* Panel primitives, on an 8px scale ---------------------------------- */
+  .stat-row {
+    display: grid;
+    grid-template-columns: 38px 1fr 40px;
     align-items: center;
     gap: 8px;
-    margin-bottom: 6px;
+    height: 24px;
   }
-  .elixir-label {
-    font-size: 12px;
-    font-weight: 500;
-    width: 55px;
-    flex-shrink: 0;
+  .stat-key {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
   }
-  .elixir-bar-bg {
-    flex: 1;
-    height: 8px;
-    background: var(--bg-primary);
-    border-radius: 4px;
+  .stat-num {
+    font-size: 13px;
+    font-weight: 600;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+  }
+  .meter {
+    height: 6px;
+    background: var(--bg-card);
+    border-radius: 3px;
     overflow: hidden;
   }
-  .elixir-bar-fill {
+  .meter-fill {
     height: 100%;
-    border-radius: 4px;
-    background: linear-gradient(90deg, #9b59b6, var(--elixir-purple));
-    transition: width 0.1s;
-  }
-  .elixir-value {
-    font-size: 12px;
-    font-weight: 600;
-    width: 35px;
-    text-align: right;
-    color: var(--elixir-purple);
-    font-variant-numeric: tabular-nums;
+    border-radius: 3px;
+    background: var(--text-primary);
+    transition: width 0.12s linear;
   }
 
-
-  /* Hand panels */
-  .hand-cards {
+  /* Hands */
+  .hand-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .card-tile {
     display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-  }
-  .hand-card {
-    flex: 1;
-    min-width: 55px;
-    background: var(--bg-primary);
-    border-radius: 5px;
-    padding: 5px 6px;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-card);
     border: 1px solid var(--border);
-    text-align: center;
-    font-size: 10px;
-    line-height: 1.3;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 11px;
+    min-width: 0;
   }
-  .hand-card-name {
-    font-weight: 600;
-    color: var(--text-primary);
-    white-space: nowrap;
+  .card-tile .nm {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
   }
+  .card-tile .cost {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  /* Dimmed when the card costs more than that side's current elixir. */
+  .card-tile.unaffordable { opacity: 0.34; }
   .hand-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+  }
+  .empty-note {
     font-size: 11px;
-    font-weight: 500;
-    margin-bottom: 4px;
-    margin-top: 6px;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   /* Tower HP */
@@ -342,17 +363,6 @@
     font-size: 12px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-  }
-  .tower-hp-bar {
-    height: 4px;
-    background: var(--bg-card);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .tower-hp-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.1s;
   }
   .tower-card.destroyed { opacity: 0.45; }
 
@@ -423,7 +433,7 @@
   .drop-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
   .drop-subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 20px; }
   .file-input-btn {
-    background: linear-gradient(135deg, var(--blue-team), var(--elixir-purple));
+    background: var(--text-secondary);
     border: none;
     color: #fff;
     padding: 10px 24px;
@@ -539,28 +549,28 @@
   </div>
 
   <div class="sidebar">
-    <!-- Elixir -->
+    <!-- Match state -->
     <div class="panel">
       <div class="panel-title">Elixir</div>
-      <div class="elixir-row">
-        <div class="elixir-label" style="color:var(--blue-team)">Blue</div>
-        <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarAI"></div></div>
-        <div class="elixir-value" id="elixirValAI">5.0</div>
+      <div class="stat-row">
+        <span class="stat-key" style="color:var(--blue-team)">BLUE</span>
+        <div class="meter"><div class="meter-fill" id="elixirBarAI"></div></div>
+        <span class="stat-num" id="elixirValAI">5.0</span>
       </div>
-      <div class="elixir-row">
-        <div class="elixir-label" style="color:var(--red-team)">Red</div>
-        <div class="elixir-bar-bg"><div class="elixir-bar-fill" id="elixirBarOpp"></div></div>
-        <div class="elixir-value" id="elixirValOpp">5.0</div>
+      <div class="stat-row">
+        <span class="stat-key" style="color:var(--red-team)">RED</span>
+        <div class="meter"><div class="meter-fill" id="elixirBarOpp"></div></div>
+        <span class="stat-num" id="elixirValOpp">5.0</span>
       </div>
     </div>
 
     <!-- Player Hands -->
     <div class="panel">
-      <div class="panel-title">Player Hands</div>
-      <div class="hand-label" style="color:var(--blue-team)">Blue Hand</div>
-      <div class="hand-cards" id="handCardsAI"></div>
-      <div class="hand-label" style="color:var(--red-team)">Red Hand</div>
-      <div class="hand-cards" id="handCardsOpp"></div>
+      <div class="panel-title">Hands</div>
+      <div class="hand-label" style="color:var(--blue-team)">BLUE</div>
+      <div class="hand-grid" id="handCardsAI"></div>
+      <div class="hand-label" style="color:var(--red-team)">RED</div>
+      <div class="hand-grid" id="handCardsOpp"></div>
     </div>
 
     <!-- Tower HP -->
@@ -701,10 +711,10 @@ function isEntityFlying(ent) {
 // entity's own symbol letter (e.g. Giant's symbol is 'G', same letter the
 // "ground" badge would have used), which read as a confusing double-label.
 const TYPE_BADGE = {
-  ground: { color: '#b98b4e' },
-  air: { color: '#38bdf8' },
-  building: { color: '#94a3b8' },
-  spell: { color: '#c471ed' }
+  ground: { color: '#C9C9CE' },
+  air: { color: '#8E8E93' },
+  building: { color: '#6E6E73' },
+  spell: { color: '#B9B9C0' }
 };
 
 // Actual tower IDs assigned by Board::allocateId() (idCounter starts at 1000,
@@ -722,6 +732,42 @@ const TOWER_DEFS = [
 
 const CELL_SIZE = 22;
 const PADDING = 12;
+
+// Arena geometry. NOT derivable from the replay JSON, so hardcoded here with
+// the header that owns each value NAMED -- the pattern CLAUDE.md requires and
+// perception/geometry.py already follows ("live where derivable, hardcoded
+// with a comment naming the header where not").
+//
+//   include/core/ArenaLayout.h : LEFT_BRIDGE_X = 2.5, RIGHT_BRIDGE_X = 14.5
+//   include/core/Board.h       : BRIDGE_HALF_WIDTH = 1.0
+//
+// A bridge centre sits on the SEAM between two tiles, so 2.5 +/- 1.0 spans
+// exactly cells 2 and 3, reproducing the real river row WWBBWWWWWWWWWWBBWW.
+//
+// This file previously said [[3,4],[13,14]] -- the arena as it stood BEFORE
+// the 2026-08-21 re-centring -- and so painted four of the eighteen columns
+// wrong in both directions: 2 and 15 are real bridge and were drawn as water,
+// 4 and 13 are water and were drawn as bridge. Exactly the same stale-copy
+// failure that hit ClashEnv::extractObservationForTeam's channel 8, which was
+// fixed the same day; this was the copy nobody checked.
+const BRIDGE_CELLS = [[2, 3], [14, 15]];
+
+// include/core/Board.h : riverY_start = 15.5, riverY_end = 17.5. A cell i
+// covers [i-0.5, i+0.5], so the band is exactly integer rows 16 and 17.
+const RIVER_ROWS = [16, 17];
+
+// CSS custom properties, read once and cached. The palette is static at
+// runtime, and drawBoard paints 18*34 = 612 lawn tiles per frame -- calling
+// getComputedStyle inside that loop would dominate the frame.
+const _cssCache = {};
+function cssVar(name) {
+  let v = _cssCache[name];
+  if (v === undefined) {
+    v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    _cssCache[name] = v;
+  }
+  return v;
+}
 
 // A render context bundles everything a board drawing needs, so the main arena
 // and the Simulation View's mini-boards can share one drawing path instead of
@@ -993,6 +1039,85 @@ function renderTick() {
   });
 }
 
+// Cached static board layer. Keyed on the geometry it depends on, so a replay
+// with a different board size (or a mini-board at another scale) gets its own.
+const _bgCache = {};
+function boardBackground(rc) {
+  const key = rc.boardWidth + 'x' + rc.boardHeight + '@' + rc.cellSize + '+' + rc.padding;
+  if (_bgCache[key]) return _bgCache[key];
+
+  const cv = document.createElement('canvas');
+  cv.width = rc.width;
+  cv.height = rc.height;
+  const ctx2 = cv.getContext('2d');
+  const cs = rc.cellSize, pad = rc.padding, w = rc.width, h = rc.height;
+  const C = cssVar;
+
+
+  // Surround: the treeline the arena island sits on.
+  ctx2.fillStyle = C('--arena-surround');
+  ctx2.fillRect(0, 0, w, h);
+
+  // The lawn, as a mown checker. NO team territory tint: the real arena is one
+  // green field, and tinting each half red/blue was the single biggest reason
+  // this viewer did not read as Clash Royale. Team identity comes from tower
+  // and unit colour instead.
+  for (let x = 0; x < rc.boardWidth; x++) {
+    for (let y = 0; y < rc.boardHeight; y++) {
+      ctx2.fillStyle = ((x + y) % 2 === 0) ? C('--grass-light') : C('--grass-dark');
+      ctx2.fillRect(pad + x * cs, pad + y * cs, cs, cs);
+    }
+  }
+
+  // Lane paths, bridge column to board edge. Drawn BEFORE the river so the
+  // water covers them, and before the bridges so the decks sit on top.
+  ctx2.fillStyle = C('--lane-path');
+  for (const [c0, c1] of BRIDGE_CELLS) {
+    ctx2.fillRect(pad + c0 * cs, pad, (c1 - c0 + 1) * cs, h - pad * 2);
+  }
+
+  // River. RIVER_ROWS are GAME rows; canvas row = boardHeight - 1 - gameRow,
+  // so the band's top edge comes from the HIGHER game row.
+  const riverTop = pad + (rc.boardHeight - 1 - RIVER_ROWS[1]) * cs;
+  const riverBottom = pad + (rc.boardHeight - RIVER_ROWS[0]) * cs;
+  ctx2.fillStyle = C('--river');
+  ctx2.fillRect(pad, riverTop, w - pad * 2, riverBottom - riverTop);
+  ctx2.fillStyle = C('--river-edge');
+  ctx2.fillRect(pad, riverTop, w - pad * 2, Math.max(1, cs * 0.12));
+
+  // Bridges, over the river band.
+  for (const [c0, c1] of BRIDGE_CELLS) {
+    const bleft = pad + c0 * cs;
+    const bright = pad + (c1 + 1) * cs;
+    ctx2.fillStyle = C('--bridge-deck');
+    ctx2.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
+    ctx2.strokeStyle = C('--bridge-seam');
+    ctx2.lineWidth = Math.max(1, cs * 0.06);
+    for (let pl = 1; pl < 4; pl++) {
+      const py = riverTop + (riverBottom - riverTop) * (pl / 4);
+      ctx2.beginPath();
+      ctx2.moveTo(bleft, py); ctx2.lineTo(bright, py);
+      ctx2.stroke();
+    }
+  }
+
+  // Faint tile grid, for judging placement. Over the lawn, under the units.
+  ctx2.strokeStyle = 'rgba(0,0,0,0.055)';
+  ctx2.lineWidth = 1;
+  for (let x = 0; x <= rc.boardWidth; x++) {
+    const px = pad + x * cs;
+    ctx2.beginPath(); ctx2.moveTo(px, pad); ctx2.lineTo(px, h - pad); ctx2.stroke();
+  }
+  for (let y = 0; y <= rc.boardHeight; y++) {
+    const py = pad + y * cs;
+    ctx2.beginPath(); ctx2.moveTo(pad, py); ctx2.lineTo(w - pad, py); ctx2.stroke();
+  }
+
+
+  _bgCache[key] = cv;
+  return cv;
+}
+
 // The ONE board renderer. The main arena and the Simulation View's mini-boards
 // both come through here, so a palette or geometry change cannot apply to one
 // and not the other -- the failure mode this file already suffered when its
@@ -1004,50 +1129,23 @@ function drawBoard(rc, tickData, opts) {
   const w = rc.width;
   const h = rc.height;
 
+  const cs = rc.cellSize, pad = rc.padding;
+
+  // The lawn, paths, river, bridges and grid are STATIC for a given board size
+  // -- nothing about them changes while scrubbing. Painting them per frame
+  // means 612 fillRects plus 52 strokes every tick, which measured 127 ms/frame
+  // on this box. Rendered once into an offscreen canvas and blitted, the same
+  // background costs one drawImage.
   rc.ctx.clearRect(0, 0, w, h);
+  rc.ctx.drawImage(boardBackground(rc), 0, 0);
 
-  // Background -- a calmer two-tone split instead of a busy 4-stop gradient.
-  const grad = rc.ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#1c1210');
-  grad.addColorStop(1, '#10121c');
-  rc.ctx.fillStyle = grad;
-  rc.ctx.fillRect(0, 0, w, h);
-
-  // Grid lines (kept faint -- useful for judging placement, not meant to draw the eye)
-  rc.ctx.strokeStyle = 'rgba(255,255,255,0.025)';
-  rc.ctx.lineWidth = 1;
-  for (let x = 0; x <= rc.boardWidth; x++) {
-    const px = rc.padding + x * rc.cellSize;
-    rc.ctx.beginPath(); rc.ctx.moveTo(px, rc.padding); rc.ctx.lineTo(px, h - rc.padding); rc.ctx.stroke();
-  }
-  for (let y = 0; y <= rc.boardHeight; y++) {
-    const py = rc.padding + y * rc.cellSize;
-    rc.ctx.beginPath(); rc.ctx.moveTo(rc.padding, py); rc.ctx.lineTo(w - rc.padding, py); rc.ctx.stroke();
-  }
-
-  // River (y = 16 to 18)
-  const riverTop = rc.padding + (rc.boardHeight - 18) * rc.cellSize;
-  const riverBottom = rc.padding + (rc.boardHeight - 16) * rc.cellSize;
-  rc.ctx.fillStyle = 'rgba(35, 90, 150, 0.45)';
-  rc.ctx.fillRect(rc.padding, riverTop, w - rc.padding * 2, riverBottom - riverTop);
-
-  // Bridges (2 tiles wide each)
-  const bridgePositions = [[3, 4], [13, 14]];
-  for (const [bx1, bx2] of bridgePositions) {
-    const bleft = rc.padding + bx1 * rc.cellSize;
-    const bright = rc.padding + (bx2 + 1) * rc.cellSize;
-    rc.ctx.fillStyle = 'rgba(139, 105, 20, 0.5)';
-    rc.ctx.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
-  }
-
-  // Territory divider labels
   if (opts.showLabels) {
-  rc.ctx.font = '10px Inter, sans-serif';
-  rc.ctx.fillStyle = 'rgba(74, 158, 255, 0.3)';
-  rc.ctx.textAlign = 'center';
-  rc.ctx.fillText('BLUE TERRITORY', w / 2, h - rc.padding + 9);
-  rc.ctx.fillStyle = 'rgba(255, 82, 82, 0.3)';
-  rc.ctx.fillText('RED TERRITORY', w / 2, rc.padding - 4);
+    rc.ctx.font = '10px Inter, sans-serif';
+    rc.ctx.textAlign = 'center';
+    rc.ctx.fillStyle = 'rgba(74, 158, 255, 0.55)';
+    rc.ctx.fillText('BLUE', w / 2, h - pad + 9);
+    rc.ctx.fillStyle = 'rgba(255, 82, 82, 0.55)';
+    rc.ctx.fillText('RED', w / 2, pad - 4);
   }
 
   // Entities
@@ -1156,14 +1254,25 @@ function drawEntity(rc, ent, isSelected) {
   if (meta.isBuilding) {
     const sizeInTiles = ent.symbol === 'R' ? 4 : (ent.symbol === 'P' ? 3 : 2);
     const sz = sizeInTiles * rc.cellSize;
-    rc.ctx.fillStyle = dimColor;
-    rc.ctx.fillRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+    const x0 = pos.x - sz / 2, y0 = pos.y - sz / 2;
+    const r = Math.max(2, rc.cellSize * 0.18);
+
+    // Stone body with a team-tinted face, rounded rather than a hard square --
+    // a flat rect read as a debug overlay against the new arena art.
+    rc.ctx.beginPath();
+    if (rc.ctx.roundRect) rc.ctx.roundRect(x0, y0, sz, sz, r);
+    else rc.ctx.rect(x0, y0, sz, sz);
+    const g = rc.ctx.createLinearGradient(x0, y0, x0, y0 + sz);
+    g.addColorStop(0, isBlue ? '#3E6E9E' : '#9E4444');
+    g.addColorStop(1, dimColor);
+    rc.ctx.fillStyle = g;
+    rc.ctx.fill();
     rc.ctx.strokeStyle = mainColor;
     rc.ctx.lineWidth = 2;
-    rc.ctx.strokeRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+    rc.ctx.stroke();
 
     // Inner icon
-    rc.ctx.fillStyle = mainColor;
+    rc.ctx.fillStyle = '#fff';
     rc.ctx.font = `bold ${radius}px Inter, sans-serif`;
     rc.ctx.textAlign = 'center';
     rc.ctx.textBaseline = 'middle';
@@ -1266,8 +1375,8 @@ function updateTowerPanel(tickData) {
         <span class="tower-name">${td.name}</span>
         <span class="tower-hp-num" style="color:${teamColor}">${hp}</span>
       </div>
-      <div class="tower-hp-bar">
-        <div class="tower-hp-fill" style="width:${ratio*100}%; background:${teamColor}"></div>
+      <div class="meter">
+        <div class="meter-fill" style="width:${Math.max(0, ratio)*100}%; background:${teamColor}"></div>
       </div>`;
     grid.appendChild(card);
   }
@@ -1415,28 +1524,41 @@ function updateEventLog() {
   }
 }
 
+// cardNames values are formatted "Hog Rider (4)" by GameLogger::save(), so the
+// cost is recoverable from the name and needs no extra field in the replay.
+function splitCardLabel(raw) {
+  const m = /^(.*)\s\((\d+)\)$/.exec(raw || '');
+  return m ? { name: m[1], cost: parseInt(m[2], 10) } : { name: raw, cost: null };
+}
+
 function updateHandPanel(tickData) {
   const cardNames = gameData.cardNames || {};
-  const aiHandEl = document.getElementById('handCardsAI');
-  const oppHandEl = document.getElementById('handCardsOpp');
 
-  function renderHand(container, handIds) {
+  function renderHandTile(container, handIds, elixir) {
     container.innerHTML = '';
     if (!handIds || handIds.length === 0) {
-      container.innerHTML = '<span style="color:var(--text-muted);font-size:11px">No data</span>';
+      container.innerHTML = '<span class="empty-note">No data</span>';
       return;
     }
     for (const id of handIds) {
-      const name = cardNames[id] || `Card #${id}`;
-      const card = document.createElement('div');
-      card.className = 'hand-card';
-      card.innerHTML = `<div class="hand-card-name">${name}</div>`;
-      container.appendChild(card);
+      const raw = cardNames[id] || `Card #${id}`;
+      const { name, cost } = splitCardLabel(raw);
+      const tile = document.createElement('div');
+      const broke = (cost !== null && elixir !== null && cost > elixir);
+      tile.className = 'card-tile' + (broke ? ' unaffordable' : '');
+      tile.title = raw;
+      tile.innerHTML = `<span class="nm">${name}</span>`
+        + (cost !== null ? `<span class="cost">${cost}</span>` : '');
+      container.appendChild(tile);
     }
   }
 
-  renderHand(aiHandEl, tickData.aiHand);
-  renderHand(oppHandEl, tickData.oppHand);
+  renderHandTile(document.getElementById('handCardsAI'),
+                 tickData.aiHand,
+                 tickData.elixirAI === undefined ? null : tickData.elixirAI);
+  renderHandTile(document.getElementById('handCardsOpp'),
+                 tickData.oppHand,
+                 tickData.elixirOpp === undefined ? null : tickData.elixirOpp);
 }
 
 // Playback controls
@@ -1588,6 +1710,8 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
+  bridgeCells: () => BRIDGE_CELLS,
+  riverRows: () => RIVER_ROWS,
   loadJson: (text, name) => loadFile(new File([text], name || 'test.json',
                                               { type: 'application/json' })),
   state: () => ({
