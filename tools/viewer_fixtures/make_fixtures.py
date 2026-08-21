@@ -59,7 +59,9 @@ def play_match_with_debug(path, seed=17, decisions=220, top_k=4):
     """The same match, with team 1's candidate rollouts captured."""
     import numpy as np
     from python_ai.opponents.teacher import UtilityTeacher
-    from teacher_debug_capture import CapturingTeacher, attach_teacher_debug
+    # From the PACKAGE, not a local copy. This module held its own version
+    # while a training run made python_ai/ unwritable; that copy is gone.
+    from python_ai.rl.teacher_debug import CapturingTeacher, attach_teacher_debug
 
     env = E.ClashRoyaleEnv(DECK, DECK, 3600)
     env.seed(seed)
