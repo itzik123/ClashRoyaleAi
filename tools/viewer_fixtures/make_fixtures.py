@@ -145,6 +145,11 @@ def main():
         if os.path.exists(p):
             print(f"{name}: {os.path.getsize(p) / 1024:.0f} KB")
 
+    # Trimmed copies for automated browser checks -- the full teacher.json is
+    # ~3 MB, which a throttled automation renderer cannot parse in time.
+    import make_small
+    make_small.main()
+
 
 if __name__ == "__main__":
     main()

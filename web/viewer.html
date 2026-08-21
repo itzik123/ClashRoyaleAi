@@ -454,6 +454,134 @@
   .file-input-btn:hover { opacity: 0.9; }
   #fileInput { display: none; }
 
+
+  /* Simulation View ------------------------------------------------------
+     A slide-over, NOT a modal: the arena shrinks beside it rather than being
+     covered, because the whole point is comparing the prediction against what
+     actually happened next. */
+  .sim-panel {
+    /* Sized by flex-basis, NOT width. A flex item's `width` was measured to be
+       ignored here while `flex: 0 0 <n>` applied immediately, and flex-basis is
+       the property that actually feeds the flex algorithm for a flex item, so
+       this is both the working and the correct spelling. */
+    flex: 0 0 0px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    /* NO transition on the sizing property, deliberately. A transition is
+       driven by the same clock as requestAnimationFrame, so it does not
+       advance while the page is not being painted -- measured here: with a
+       transition the panel stayed at its 0 start value indefinitely, and with
+       `transition: none` it opened to 400px immediately. That failure mode
+       (the panel never opens) is severe enough that it is not worth an
+       animation which cannot be verified. Snapping open always works. */
+  }
+  .sim-panel.open { flex-basis: 400px; }
+  .sim-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .sim-close {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-muted); font-size: 13px; padding: 2px 6px;
+  }
+  .sim-close:hover { color: var(--text-primary); }
+  .sim-body {
+    overflow-y: auto;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sim-chip { font-size: 12px; }
+  .sim-chip[disabled] { opacity: 0.35; cursor: default; }
+  .sim-chip.active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); }
+
+  .sim-baseline {
+    font-size: 11px;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    line-height: 1.5;
+  }
+  .sim-baseline strong { color: var(--text-primary); }
+  .sim-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .sim-row {
+    border: 1px solid var(--border);
+    border-left: 3px solid transparent;
+    border-radius: 8px;
+    padding: 9px 10px;
+    background: var(--bg-card);
+  }
+  .sim-row.chosen {
+    border-left-color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .sim-row.rejected { opacity: 0.62; }
+  .sim-row-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 11px;
+    margin-bottom: 7px;
+  }
+  .sim-row-head .lbl { color: var(--text-primary); min-width: 0; }
+  .sim-score {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  .sim-boards {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .sim-boards canvas {
+    border-radius: 4px;
+    flex: 1;
+    min-width: 0;
+    height: auto;
+  }
+  .sim-arrow { color: var(--text-muted); font-size: 15px; flex-shrink: 0; }
+  .sim-strip {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .sim-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    text-align: center;
+    padding: 24px 10px;
+    line-height: 1.6;
+  }
+  .sim-divider {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    text-align: center;
+    padding: 2px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 2px;
+  }
+
   /* Tooltip */
   .tooltip {
     position: absolute;
@@ -598,6 +726,14 @@
       <div class="event-log-inner" id="eventLog"></div>
     </div>
   </div>
+
+  <aside class="sim-panel" id="simPanel" aria-hidden="true">
+    <div class="sim-head">
+      <span class="panel-title" style="margin:0">Simulation View</span>
+      <button class="sim-close" id="simClose" title="Close (T)">&#10005;</button>
+    </div>
+    <div class="sim-body" id="simBody"></div>
+  </aside>
 </div>
 
 <!-- Playback controls -->
@@ -608,6 +744,9 @@
   <div class="scrubber-container">
     <input type="range" class="scrubber" id="scrubber" min="0" max="0" value="0">
   </div>
+  <button id="btnSimView" class="sim-chip" style="display:none" title="Simulation View (T)">
+    &#129504; <span id="simChipCount">0</span>
+  </button>
   <div class="tick-display" id="tickDisplay">Tick 0 / 0</div>
   <span class="speed-label">Speed:</span>
   <select class="speed-select" id="speedSelect">
@@ -911,6 +1050,12 @@ function initViewer() {
   scrubber.max = gameData.ticks.length - 1;
   scrubber.value = 0;
 
+  // A newly loaded replay may have no teacher data at all, so the panel
+  // must not stay open across a load.
+  simViewOpen = false;
+  document.getElementById('simPanel').classList.remove('open');
+  document.getElementById('btnSimView').classList.remove('active');
+
   detectAllEvents();
   matchResult = computeMatchResult();
   updateResultBadge();
@@ -1097,6 +1242,39 @@ function renderTick() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Teacher debug (the Simulation View's data)
+//
+// EVERY accessor here returns null/false rather than throwing when the data is
+// absent, because most replays do not have it: it is written only by a run
+// generated with rollout capture enabled. A viewer that errored on an ordinary
+// replay would be worse than one without the feature.
+//
+// Decisions are stored ONCE at top level and indexed by decision window, not
+// stamped onto every tick -- a record carries up to five predicted boards, and
+// stamping made the fixture 11 MB against 2.97 MB.
+// ---------------------------------------------------------------------------
+function hasTeacherDebug(data) {
+  const td = data && data.teacherDebug;
+  return !!(td && Array.isArray(td.decisions) && td.decisions.length);
+}
+
+function teacherDebugForTick(tickIndex) {
+  if (!hasTeacherDebug(gameData)) return null;
+  const td = gameData.teacherDebug;
+  const skip = td.skipFrames > 0 ? td.skipFrames : 10;
+  const rec = td.decisions[Math.floor(tickIndex / skip)];
+  if (!rec || typeof rec !== 'object') return null;
+  // Damaged or partial records are normal input, not an error: normalise the
+  // shape here so no consumer has to re-check it.
+  if (!Array.isArray(rec.candidates)) rec.candidates = [];
+  return rec;
+}
+
+// How many candidates carry a predicted board. Also the ring count, so the
+// arena annotation and the panel can never disagree about "the top N".
+const SIM_TOP_K = 4;
+
 // Cached static board layer. Keyed on the geometry it depends on, so a replay
 // with a different board size (or a mini-board at another scale) gets its own.
 const _bgCache = {};
@@ -1220,8 +1398,68 @@ function drawBoard(rc, tickData, opts) {
       drawEntity(rc, ent, ent.id === opts.selectedEntityId);
     }
   }
+
+  // Mini-boards never draw rings: they ARE the candidates.
+  if (!opts.ghost) {
+    drawCandidateRings(rc, teacherDebugForTick(currentTick));
+  }
 }
 
+
+// Deliberately minimal: a hollow numbered ring per candidate cell, the chosen
+// one filled. At most SIM_TOP_K of them. Anything more elaborate ON THE ARENA
+// is the clutter the slide-over Simulation View exists to avoid.
+function drawCandidateRings(rc, record) {
+  if (!record || !record.candidates.length) return;
+  const shown = record.candidates.slice(0, SIM_TOP_K);
+
+  // GROUP BY CELL. Several candidates routinely propose the same cell -- a
+  // measured decision had ranks 1, 2 and 4 all on (2,15) -- and drawing one
+  // ring per candidate meant the last one painted hid the rest, including the
+  // chosen one. One ring per cell, labelled with the BEST rank there and a
+  // xN when more than one candidate shares it.
+  const byCell = new Map();
+  shown.forEach(function (cand, i) {
+    const step = cand.steps && cand.steps[0];
+    if (!step) return;                       // a candidate with no placement
+    const key = step.x + ',' + step.y;
+    const g = byCell.get(key);
+    if (g) {
+      g.count++;
+      g.chosen = g.chosen || (i === record.chosenIndex);
+    } else {
+      byCell.set(key, { x: step.x, y: step.y, rank: i + 1, count: 1,
+                        chosen: i === record.chosenIndex });
+    }
+  });
+
+  // Chosen last, so it is never painted over.
+  const groups = [...byCell.values()].sort(function (a, b) {
+    return (a.chosen ? 1 : 0) - (b.chosen ? 1 : 0);
+  });
+
+  const cs = rc.cellSize;
+  rc.ctx.save();
+  rc.ctx.textAlign = 'center';
+  rc.ctx.textBaseline = 'middle';
+  for (const g of groups) {
+    const p = gameToCanvas(rc, g.x, g.y);
+    const r = cs * 0.62;
+    rc.ctx.beginPath();
+    rc.ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    rc.ctx.fillStyle = g.chosen ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.38)';
+    rc.ctx.fill();
+    rc.ctx.lineWidth = g.chosen ? 2.5 : 1.5;
+    rc.ctx.strokeStyle = g.chosen ? '#FFFFFF' : 'rgba(255,255,255,0.75)';
+    rc.ctx.stroke();
+
+    const label = String(g.rank) + (g.count > 1 ? '\u00D7' + g.count : '');
+    rc.ctx.font = '600 ' + Math.round(cs * (g.count > 1 ? 0.38 : 0.5)) + 'px Inter, sans-serif';
+    rc.ctx.fillStyle = g.chosen ? '#111111' : '#FFFFFF';
+    rc.ctx.fillText(label, p.x, p.y);
+  }
+  rc.ctx.restore();
+}
 
 function drawTypeBadge(rc, ent, pos, radius) {
   if (ent.symbol === '-') return; // raw projectile is too small for a badge to read
@@ -1417,6 +1655,7 @@ function updateUI() {
   updateInspector(tickData);
   updateEventLog();
   updateWinnerOverlay();
+  updateSimUI();
 }
 
 function updateTowerPanel(tickData) {
@@ -1629,6 +1868,163 @@ function updateHandPanel(tickData) {
                  tickData.elixirOpp === undefined ? null : tickData.elixirOpp);
 }
 
+// ---------------------------------------------------------------------------
+// Simulation View
+// ---------------------------------------------------------------------------
+const SIM_MINI_CELL = 5;    // px per tile in a mini-board
+let simViewOpen = false;
+
+// A candidate's label: "Ice Golem -> (3,15)", or both halves of a combo.
+function candidateLabel(cand) {
+  const steps = (cand && cand.steps) || [];
+  if (!steps.length) return 'Hold';
+  const names = gameData.cardNames || {};
+  return steps.map(function (st) {
+    const raw = names[st.cardId];
+    const nm = raw ? splitCardLabel(raw).name : ('Card #' + st.cardId);
+    return nm + ' \u2192 (' + st.x + ', ' + st.y + ')';
+  }).join('  \u25B8  ');
+}
+
+// A mini-board reuses drawBoard at a smaller cellSize, so the arena palette and
+// the corrected bridge geometry apply automatically -- there is no second
+// renderer to keep in sync.
+function miniBoard(entities) {
+  const cv = document.createElement('canvas');
+  const rc = makeRenderCtx(cv.getContext('2d'), gameData.boardWidth,
+                           gameData.boardHeight, SIM_MINI_CELL, 2);
+  cv.width = rc.width;
+  cv.height = rc.height;
+  drawBoard(rc, { entities: entities || [] },
+            { selectedEntityId: null, showLabels: false, ghost: true });
+  return cv;
+}
+
+function renderSimView(record) {
+  const body = document.getElementById('simBody');
+  if (!body) return;
+  body.innerHTML = '';
+
+  // Every one of these is a NORMAL state, not an error. Each gets a sentence
+  // rather than an empty framed region.
+  if (!record) {
+    body.innerHTML = '<div class="sim-note">No teacher decision on this tick.</div>';
+    return;
+  }
+  if (record.kind === 'no_candidates') {
+    body.innerHTML = '<div class="sim-note">Nothing affordable this decision.<br>'
+      + 'The teacher had no legal play to simulate.</div>';
+    return;
+  }
+  if (record.kind === 'rules_only' || record.kind === 'epsilon') {
+    body.innerHTML = '<div class="sim-note">Decided by the '
+      + (record.kind === 'epsilon'
+          ? 'exploration (epsilon) branch'
+          : 'rules-only branch \u2014 this stage does no lookahead')
+      + '.<br>No rollout scores exist for this decision.</div>';
+    return;
+  }
+
+  const secs = ((record.horizonTicks || 0) / 10).toFixed(1);
+
+  const base = document.createElement('div');
+  base.className = 'sim-baseline';
+  base.innerHTML =
+    '<div class="sim-meta">Baseline &middot; horizon ' + secs + 's</div>'
+    + 'Hold (no-op) scores <strong>0.00</strong> by definition. '
+    + 'Every score below is marginal against it.'
+    + (record.held
+        ? '<br><strong>The teacher held</strong> \u2014 nothing below beat its margin.'
+        : '');
+  if (record.baseline && record.baseline.entities) {
+    base.appendChild(miniBoard(record.baseline.entities));
+  }
+  body.appendChild(base);
+
+  const nowEntities = gameData.ticks[currentTick].entities;
+  let dividerDone = false;
+
+  record.candidates.forEach(function (cand, i) {
+    const hasBoard = !!(cand.final && cand.final.entities);
+    if (!hasBoard && !dividerDone) {
+      const d = document.createElement('div');
+      d.className = 'sim-divider';
+      d.textContent = 'scored, not simulated';
+      body.appendChild(d);
+      dividerDone = true;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'sim-row'
+      + (i === record.chosenIndex ? ' chosen' : '')
+      + (cand.rejected ? ' rejected' : '');
+
+    const score = (typeof cand.score === 'number') ? cand.score : 0;
+    const head = document.createElement('div');
+    head.className = 'sim-row-head';
+    head.innerHTML =
+      '<span class="lbl">#' + (i + 1) + ' ' + candidateLabel(cand) + '</span>'
+      + '<span class="sim-score">' + (score >= 0 ? '+' : '') + score.toFixed(2) + '</span>';
+    row.appendChild(head);
+
+    if (hasBoard) {
+      const wrap = document.createElement('div');
+      wrap.className = 'sim-boards';
+      wrap.appendChild(miniBoard(nowEntities));
+      const arrow = document.createElement('span');
+      arrow.className = 'sim-arrow';
+      arrow.textContent = '\u2192';
+      arrow.title = '+' + secs + 's';
+      wrap.appendChild(arrow);
+      wrap.appendChild(miniBoard(cand.final.entities));
+      row.appendChild(wrap);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'sim-strip';
+    foot.style.marginTop = hasBoard ? '7px' : '0';
+    const left = (i === record.chosenIndex)
+      ? '\u2713 chosen'
+      : (cand.rejected ? '\u2717 below margin ' + (cand.margin || 0).toFixed(2) : '');
+    foot.innerHTML = '<span>' + left + '</span><span>'
+      + (hasBoard ? 'now \u2192 +' + secs + 's' : '') + '</span>';
+    row.appendChild(foot);
+
+    body.appendChild(row);
+  });
+}
+
+function toggleSimView(force) {
+  if (!hasTeacherDebug(gameData)) return;
+  simViewOpen = (force === undefined) ? !simViewOpen : !!force;
+  const panel = document.getElementById('simPanel');
+  panel.classList.toggle('open', simViewOpen);
+  panel.setAttribute('aria-hidden', String(!simViewOpen));
+  document.getElementById('btnSimView').classList.toggle('active', simViewOpen);
+  if (simViewOpen) renderSimView(teacherDebugForTick(currentTick));
+  // No canvas resize call is needed: .canvas-wrapper and canvas already carry
+  // max-width:100% / object-fit:contain, so the arena CSS-scales down when the
+  // panel takes width. The backing store is unchanged and the hover handler
+  // converts through getBoundingClientRect, so hit-testing still works.
+}
+
+// Reflects the CURRENT tick's data onto the chip and the open panel.
+function updateSimUI() {
+  const chip = document.getElementById('btnSimView');
+  if (!hasTeacherDebug(gameData)) {
+    // An inert control is worse than an absent one.
+    chip.style.display = 'none';
+    return;
+  }
+  chip.style.display = 'flex';
+  const rec = teacherDebugForTick(currentTick);
+  const n = rec ? rec.candidates.length : 0;
+  document.getElementById('simChipCount').textContent =
+    n + (n === 1 ? ' candidate' : ' candidates');
+  chip.disabled = !rec;
+  if (simViewOpen) renderSimView(rec);
+}
+
 // Playback controls
 function setPlaying(val) {
   playing = val;
@@ -1756,12 +2152,16 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 
+document.getElementById('btnSimView').addEventListener('click', () => toggleSimView());
+document.getElementById('simClose').addEventListener('click', () => toggleSimView(false));
+
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   if (!gameData) return;
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
   if (e.code === 'ArrowRight') { e.preventDefault(); btnStepFwd.click(); }
   if (e.code === 'ArrowLeft') { e.preventDefault(); btnStepBack.click(); }
+  if (e.key === 't' || e.key === 'T') { e.preventDefault(); toggleSimView(); }
 });
 
 // ---------------------------------------------------------------------------
@@ -1778,6 +2178,10 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
+  teacherDebugForTick,
+  hasTeacherDebug,
+  toggleSimView: (f) => toggleSimView(f),
+  simOpen: () => simViewOpen,
   buildSymbolIndex,
   formatMaxHp,
   symbolIndex: () => SYMBOL_INDEX,
@@ -1785,6 +2189,16 @@ window.__viewerTests = {
   riverRows: () => RIVER_ROWS,
   loadJson: (text, name) => loadFile(new File([text], name || 'test.json',
                                               { type: 'application/json' })),
+  // Synchronous variant. loadFile goes through FileReader, which does not fire
+  // in a throttled/non-painting renderer, so an automated check cannot use it.
+  // This skips only the file decode -- initViewer and everything after it are
+  // the same code path.
+  loadData: (obj, name) => {
+    gameData = obj;
+    initViewer();
+    dropOverlay.classList.add('hidden');
+    document.getElementById('fileNameBadge').textContent = name || 'test.json';
+  },
   state: () => ({
     loaded: !!gameData,
     tick: currentTick,
