@@ -179,13 +179,20 @@ private:
         // are as team 0 saw them one row nearer when driving team 1: 36
         // differing cells in this channel at reset, on an empty board.
         // See perception/UPSTREAM_REQUESTS.md item 6.
+        //
+        // The bridge columns come from Board::isOnBridge, NOT from a literal
+        // here. They were `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)` until
+        // 2026-08-21, and when the arena was corrected the physics moved and
+        // this did not: the network was told columns 2 and 15 (real bridge)
+        // were water and columns 4 and 13 (real water) were bridge. Half of
+        // the crossing map it learns from was wrong, in both directions, while
+        // every C++ test still passed -- because nothing compared this channel
+        // against the movement rule it is supposed to describe.
         constexpr int riverRow = 17;
+        const Board& board = game.getBoard();
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
-                obs[getIndex(8, riverRow, x)] = 1.0f;
-            } else {
-                obs[getIndex(8, riverRow, x)] = -1.0f;
-            }
+            obs[getIndex(8, riverRow, x)] =
+                board.isOnBridge(static_cast<float>(x)) ? 1.0f : -1.0f;
         }
 
         for (const auto& entity : game.getBoard().getEntities()) {

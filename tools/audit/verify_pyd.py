@@ -122,6 +122,28 @@ if _hog_dmg < 1700:
     failures.append(f"stale .pyd: lone Hog dealt {_hog_dmg}, expected ~2219 with a "
                     f"dormant King (~1268 means the King is still firing from tick 0)")
 
+# The observation's river mask must agree with the PHYSICS.
+#
+# Channel 8 is the only thing telling the network where it can cross, and it was
+# painted from a hardcoded `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)` while
+# movement used Board's bridges. When the arena was corrected only the physics
+# followed, so the net was told columns 2 and 15 (real bridge) were water and
+# columns 4 and 13 (real water) were bridge -- half the crossing map wrong in
+# both directions, on every tick of every episode, with the whole C++ suite
+# green. Checked here as well as in C++ because this is the artifact TRAINING
+# loads, and a stale .pyd is exactly how a fixed engine still trains wrong.
+_W = cre.ClashRoyaleEnv.BOARD_WIDTH
+_plane = _W * cre.ClashRoyaleEnv.BOARD_HEIGHT
+_menv = cre.ClashRoyaleEnv(DECK, DECK)
+_menv.reset()
+for _team in (0, 1):
+    _obs = _menv.get_observation_for_team(_team)
+    _row = "".join("B" if _obs[8 * _plane + 17 * _W + x] > 0 else "W" for x in range(_W))
+    print(f"team {_team} observation river row: {_row}")
+    if _row != "WWBBWWWWWWWWWWBBWW":
+        failures.append(f"team {_team} river mask is {_row}, expected WWBBWWWWWWWWWWBBWW "
+                        f"(the old encoder painted WWWBBWWWWWWWWBBWWW)")
+
 if failures:
     print("\nFAILED -- the .pyd does not match the current engine source:")
     for f in failures:

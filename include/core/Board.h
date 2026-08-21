@@ -193,6 +193,30 @@ public:
     // HeuristicOpponent's own LEFT_BRIDGE_X/RIGHT_BRIDGE_X, the audit tools)
     // should read them here rather than keep a second copy that goes stale --
     // which is exactly what happened to HeuristicOpponent's 3.5/13.5.
+    // Is this column a bridge? THE single definition of that question.
+    //
+    // Both the physics and the observation encoder need it, and until
+    // 2026-08-21 they each answered it their own way: clampToBoard compared
+    // against leftBridge/rightBridge +/- BRIDGE_HALF_WIDTH, while
+    // ClashEnv::extractObservationForTeam painted channel 8 from a hardcoded
+    // `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)`. The arena correction moved
+    // the bridges and only the physics followed, so the network was being told
+    // two of the four real bridge columns were water (2 and 15) and two water
+    // columns were bridge (4 and 13) -- the agent's map of where it can cross
+    // disagreed with where it actually could.
+    //
+    // A shared FORMULA would not have prevented that; a shared FUNCTION does.
+    //
+    // Takes a float so it serves both callers unchanged: continuous positions
+    // from clampToBoard, and integer cell centres from the encoder. Cell i
+    // covers [i-0.5, i+0.5], so passing the integer i asks "is the centre of
+    // cell i on a bridge", which for a seam-centred 2.5 with half-width 1.0
+    // selects exactly cells 2 and 3 -- the real river row's `WWBB...`.
+    bool isOnBridge(float x) const {
+        return (x >= leftBridge.x - BRIDGE_HALF_WIDTH && x <= leftBridge.x + BRIDGE_HALF_WIDTH)
+            || (x >= rightBridge.x - BRIDGE_HALF_WIDTH && x <= rightBridge.x + BRIDGE_HALF_WIDTH);
+    }
+
     const Vector2D& getLeftBridge() const { return leftBridge; }
     const Vector2D& getRightBridge() const { return rightBridge; }
 
@@ -383,11 +407,10 @@ public:
         pos.y = std::max(0.0f, std::min(pos.y, static_cast<float>(height - 1)));
 
         if (!ignoresRiver && pos.y > riverY_start && pos.y < riverY_end) {
-            bool onLeftBridge = (pos.x >= leftBridge.x - BRIDGE_HALF_WIDTH &&
-                                 pos.x <= leftBridge.x + BRIDGE_HALF_WIDTH);
-            bool onRightBridge = (pos.x >= rightBridge.x - BRIDGE_HALF_WIDTH &&
-                                  pos.x <= rightBridge.x + BRIDGE_HALF_WIDTH);
-            if (!onLeftBridge && !onRightBridge) {
+            // isOnBridge(), not an inline comparison: the observation encoder
+            // asks the same question and must get the same answer. See that
+            // function for the divergence this is preventing.
+            if (!isOnBridge(pos.x)) {
                 float riverMid = (riverY_start + riverY_end) / 2.0f;
                 pos.y = (pos.y < riverMid) ? riverY_start : riverY_end;
             }

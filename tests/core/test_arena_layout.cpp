@@ -2,6 +2,9 @@
 #include "ArenaLayout.h"
 #include "Board.h"
 #include "GameManager.h"
+#include "ClashEnv.h"
+#include <string>
+#include <cmath>
 
 // The arena is symmetric about the CELL-INDEX centre (WIDTH-1)/2 = 8.5, which is
 // the x-analogue of ClashEnv::extractObservationForTeam's y -> 33 - y. Every pair
@@ -105,4 +108,80 @@ TEST_CASE("lane selection splits at the board centre and matches the bridges",
     REQUIRE(ArenaLayout::bridgeXFor(16.0f) == Catch::Approx(ArenaLayout::RIGHT_BRIDGE_X));
     REQUIRE(ArenaLayout::laneXFor(1.0f) == Catch::Approx(ArenaLayout::LEFT_LANE_X));
     REQUIRE(ArenaLayout::laneXFor(16.0f) == Catch::Approx(ArenaLayout::RIGHT_LANE_X));
+}
+
+// ---------------- the observation must describe the PHYSICS ----------------
+//
+// Observation channel 8 is the river/bridge mask: the only thing telling the
+// network where it can cross. It was painted from a hardcoded
+// `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)` while the physics used
+// Board's leftBridge/rightBridge, and when the arena was corrected on
+// 2026-08-21 only the physics moved.
+//
+// The result was not a small offset. Of the four real bridge columns the
+// network was told TWO were water (2 and 15), and it was told two water
+// columns were bridge (4 and 13) -- so the agent's map of where it could cross
+// was half wrong in BOTH directions, on every observation of every tick of
+// every episode. Every C++ test still passed, because nothing compared this
+// channel against the rule it is supposed to describe.
+//
+// These cases compare it against MOVEMENT, not against a literal. A test that
+// pinned the expected columns would have to be hand-edited on the next arena
+// change and would go stale exactly the way the encoder did.
+
+TEST_CASE("the river mask marks a column passable iff a unit can actually stand there",
+          "[arena][observation][regression]") {
+    Board board;
+    ClashEnv env({ 15, 6, 25, 40, 24, 72, 33, 7 }, { 15, 6, 25, 40, 24, 72, 33, 7 });
+    env.reset();
+
+    const int W = ClashEnv::BOARD_WIDTH;
+    const int plane = W * ClashEnv::BOARD_HEIGHT;
+    constexpr int riverRow = 17;
+    const float midRiver = 16.5f;
+
+    for (int team = 0; team < 2; ++team) {
+        std::vector<float> obs = env.getObservationForTeam(team);
+        for (int x = 0; x < W; ++x) {
+            // Ground truth: can a non-river-ignoring unit hold this position
+            // inside the river band? That is clampToBoard's own rule, i.e. the
+            // physics the mask is meant to advertise.
+            Vector2D probe{ static_cast<float>(x), midRiver };
+            const bool passable = std::abs(board.clampToBoard(probe, false).y - midRiver) < 1e-4f;
+            const float marked = obs[8 * plane + riverRow * W + x];
+
+            INFO("team " << team << " column " << x
+                 << ": physics says " << (passable ? "BRIDGE" : "water")
+                 << ", observation says " << (marked > 0.0f ? "BRIDGE" : "water"));
+            REQUIRE((marked > 0.0f) == passable);
+        }
+    }
+}
+
+TEST_CASE("both teams see the bridge mask on the same row and columns",
+          "[arena][observation]") {
+    ClashEnv env({ 15, 6, 25, 40, 24, 72, 33, 7 }, { 15, 6, 25, 40, 24, 72, 33, 7 });
+    env.reset();
+    const int W = ClashEnv::BOARD_WIDTH;
+    const int plane = W * ClashEnv::BOARD_HEIGHT;
+    constexpr int riverRow = 17;
+
+    std::vector<float> a = env.getObservationForTeam(0);
+    std::vector<float> b = env.getObservationForTeam(1);
+    for (int x = 0; x < W; ++x) {
+        INFO("column " << x);
+        REQUIRE(a[8 * plane + riverRow * W + x] == b[8 * plane + riverRow * W + x]);
+    }
+}
+
+// Board::isOnBridge is the shared definition. Pin that it selects exactly the
+// player's river row, so a future edit to either caller cannot quietly widen it.
+TEST_CASE("isOnBridge reproduces the real river row WWBBWWWWWWWWWWBBWW",
+          "[arena][geometry]") {
+    Board board;
+    std::string row;
+    for (int x = 0; x < ArenaLayout::WIDTH; ++x)
+        row += board.isOnBridge(static_cast<float>(x)) ? 'B' : 'W';
+    INFO("engine row: " << row);
+    REQUIRE(row == "WWBBWWWWWWWWWWBBWW");
 }

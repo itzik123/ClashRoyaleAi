@@ -70,13 +70,16 @@ OWN_HALF_RIVER_BUFFER = 0.5
 # any binding -- see module docstring.
 RIVER_Y_END = 17.5
 
-# Board.h:17-18 (post river-recentring fix -- was {4.0,17.0}/{14.0,17.0}).
-# leftBridge{4.0, 16.5}, rightBridge{14.0, 16.5}. These are the single points
-# river-crossing pathing actually uses. NOT to be confused with the x in
-# {3,4} and {13,14} band that ClashEnv::extractObservationForTeam paints
-# into observation channel 8 -- that is a wider visual hint for the
-# network, not the geometry, and using it as a calibration anchor would put
-# every bridge landmark half a tile off.
+# The bridge CENTRES river-crossing pathing actually uses.
+#
+# This comment used to warn that observation channel 8 painted a DIFFERENT,
+# wider band ({3,4} and {13,14}) and must not be used as a calibration anchor.
+# That divergence was a BUG, not a design choice, and it was fixed on
+# 2026-08-21: both the mask and the movement rule now go through
+# Board::isOnBridge, so channel 8 marks exactly the columns a unit can stand in
+# (WWBBWWWWWWWWWWBBWW). It is still not the right calibration anchor -- a
+# two-column band cannot locate a seam-centred point better than the centres
+# below can -- but it is no longer WRONG, and the two can now be compared.
 # Defined further down, once _engine_module() exists: as of 2026-08-21 these
 # ARE derivable (ArenaLayout.h is bound), and every one of them had gone stale
 # before that -- see _load_arena_landmarks().

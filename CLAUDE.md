@@ -3052,6 +3052,49 @@ Absolute HP, not percentage — the real game breaks this tie on fraction, and
 King 4008 vs Princess 2534 makes the two disagree often. A deliberate, known
 divergence, specified by the audit.
 
+### 5. The observation encoder was NOT updated with the arena, and that is the
+### most dangerous bug of the batch
+
+Found by another session's RL tests after everything above had shipped.
+`ClashEnv::extractObservationForTeam` painted observation **channel 8** -- the
+river/bridge mask, the only thing telling the network where it can cross --
+from a hardcoded `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)`, while the physics
+used `Board`'s bridges. The arena correction moved the bridges and only the
+physics followed:
+
+```
+column        012345678901234567
+physics       WWBBWWWWWWWWWWBBWW
+old encoder   WWWBBWWWWWWWWBBWWW
+mismatch        ^ ^        ^ ^
+```
+
+**Four of the eighteen columns were wrong, in BOTH directions**: columns 2 and
+15 are real bridge and were shown as water; 4 and 13 are water and were shown as
+bridge. So the agent's map of where it could cross was half wrong, on every
+observation of every tick of every episode -- while the entire C++ suite stayed
+green, because nothing compared that channel against the movement rule it is
+supposed to describe.
+
+Fixed by `Board::isOnBridge(float x)`, called from BOTH `clampToBoard` and the
+encoder. **A shared formula would not have prevented this; a shared function
+does** -- the original bug is precisely two correct-looking expressions of the
+same question drifting apart. It takes a float so one function serves the
+continuous positions physics uses and the integer cell centres the encoder uses;
+cell `i` covers `[i-0.5, i+0.5]`, so asking about cell centre `i` against a
+seam-centred 2.5 selects exactly cells 2 and 3.
+
+The regression test compares channel 8 against **`clampToBoard`**, for both
+teams, rather than against expected columns -- a test pinning the columns would
+need hand-editing on the next arena change and would go stale exactly the way
+the encoder did. `verify_pyd.py` checks the same row, because the `.pyd` is what
+TRAINING loads and a stale one is how a fixed engine still trains wrong.
+
+**The general lesson, and it is the fourth instance in this file:** when the
+same fact is encoded for the SIMULATION and for the OBSERVATION, they are two
+copies, and the observation copy is the one no test looks at. The team-1 row
+displacement (2026-07-31), the river marker row, and this are the same failure.
+
 ### What the audit turned up that nobody asked for
 
 **Two more cards had the 2026-08-20 sight/attack dead band.** Pinning the
@@ -3095,8 +3138,9 @@ sweep of only that case measures nothing while looking exhaustive.
 
 ### Suite counts after this work
 
-**C++ 619 cases / 5,907 assertions**, of which 1 is the `[!shouldfail]` wedge;
-runner exits 0. **Python 367 passed / 2 skipped. Perception 353 passed /
+**C++ 622 cases / 5,962 assertions**, of which 1 is the `[!shouldfail]` wedge;
+runner exits 0. **Python 369 collected (366-367 pass, 2-3 skipped -- the skip
+count varies with the unseeded opening-hand shuffle). Perception 353 passed /
 1 skipped.**
 
 ---
