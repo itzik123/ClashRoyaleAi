@@ -1858,3 +1858,163 @@ tagged `[!shouldfail]`: the suite stays green, the defect stays on record and
 executable, and the case turns RED the moment somebody fixes it. It also carries
 a companion test asserting that unobstructed movement is still exactly
 speed-per-tick, which is the guard any future fix has to clear.
+
+---
+
+## 19. APPLIED 2026-08-21 — the observation's bridge marker was not re-centred with the board
+
+> **Applied, the same day it was proposed.** Fixed with the stronger of the two
+> options this item offers: `Board::isOnBridge(float x)` is now the single
+> definition of "is this column a bridge", called from BOTH `clampToBoard` and
+> `extractObservationForTeam`. A shared FORMULA would not have prevented the
+> drift -- the bug IS two correct-looking expressions of one question drifting
+> apart -- so the two callers share a FUNCTION.
+>
+> It takes a float so one function serves both: physics passes continuous
+> positions, the encoder passes integer cell centres. Cell `i` covers
+> `[i-0.5, i+0.5]`, so asking about centre `i` against a seam-centred 2.5
+> selects exactly cells 2 and 3.
+>
+> Verified end to end: both teams' channel 8 now reads `WWBBWWWWWWWWWWBBWW`,
+> matching `clampToBoard` column for column. The regression test in
+> `tests/core/test_arena_layout.cpp` compares the channel against
+> `clampToBoard` rather than against expected columns, so it cannot go stale the
+> way the encoder did; `tools/audit/verify_pyd.py` checks the same row on the
+> built `.pyd`, since that is the artifact training loads.
+>
+> Sensitivity was measured rather than assumed
+> (`tools/audit/bridge_mask_probe.cpp`): the old predicate differs from the
+> physics at 4 of 18 columns, so the new test genuinely fails against it.
+>
+> **This item's measurement was right and its severity assessment was right.**
+> The "zero overlap on the left bridge" finding is exactly what makes it worse
+> than a half-tile cosmetic drift.
+
+
+**The arena re-centring removed three stale copies of the bridge columns and
+left a fourth, inside `extractObservationForTeam` itself.** `ArenaLayout.h` now
+owns the geometry and `Board`, `HeuristicOpponent`, `tactics.py` and
+`perception/geometry.py` all derive from it. The observation encoder does not.
+
+This is the **second** time channel 8 has been wrong (item 6 was the row; this
+is the columns), and the first time it has disagreed with the engine's own
+pathing.
+
+### What is there now
+
+`include/core/ClashEnv.h:183`, inside the river/bridge marker loop:
+
+```cpp
+constexpr int riverRow = 17;
+for (int x = 0; x < BOARD_WIDTH; ++x) {
+    if ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) {
+        obs[getIndex(8, riverRow, x)] = 1.0f;
+```
+
+Those literals were correct for the old bridge centres 4.0 / 14.0. They are a
+hand-truncated copy of `centre ± 1.0`, and nothing ties them to the centre.
+
+### The engine's actual bridges
+
+`ArenaLayout::LEFT_BRIDGE_X = 2.5f`, `RIGHT_BRIDGE_X = 14.5f` (seam-centred, so
+`± BRIDGE_HALF_WIDTH = 1.0` spans exactly two tiles), consumed by
+`Board::clampToBoard`:
+
+```
+walkable   x in [1.5, 3.5]   and  [13.5, 15.5]
+i.e. cells      2, 3               14, 15
+marker says     3, 4               13, 14
+```
+
+### Measured, not inferred
+
+A ground troop (Giant) was injected at each of the 18 columns on the own side
+and stepped until it crossed; the columns it was ever observed occupying at
+river rows 16/17 were recorded:
+
+```
+troops actually cross at columns:  [2, 14]
+observation channel 8 marks:       [3, 4] and [13, 14]
+```
+
+**The LEFT bridge marker has ZERO overlap with where units actually cross.** It
+marks column 4, which is now water, and omits column 2 entirely. The right
+bridge is half right — 14 is correct, 13 is water.
+
+(Units funnel to the bridge centre, so they occupy the truncated centre cell
+rather than both bridge cells; the point is that 4 and 13 are unreachable and 2
+is unmarked.)
+
+### Why this one is worth fixing promptly
+
+Channel 8 is the network's **only** spatial cue for where the bridges are, and
+`DEFAULT_DECK` is the 2.6 Hog Cycle, in which bridge placement is the entire win
+condition. A net reading this channel is told the left lane crosses at a column
+no unit can occupy.
+
+It also silently confounds any measurement taken between the re-centring and the
+fix, because `UtilityTeacher` and `tactics.py` read observations by contract
+(`perception/tests/test_encoder_matches_engine.py` pins that contract) while the
+engine paths on the geometry.
+
+### Proposed edit
+
+Derive the test from `ArenaLayout` rather than adding a fifth literal:
+
+```cpp
+constexpr int riverRow = 17;
+for (int x = 0; x < BOARD_WIDTH; ++x) {
+    const float fx = static_cast<float>(x);
+    const bool onBridge =
+        (fx >= ArenaLayout::LEFT_BRIDGE_X  - Board::BRIDGE_HALF_WIDTH &&
+         fx <= ArenaLayout::LEFT_BRIDGE_X  + Board::BRIDGE_HALF_WIDTH) ||
+        (fx >= ArenaLayout::RIGHT_BRIDGE_X - Board::BRIDGE_HALF_WIDTH &&
+         fx <= ArenaLayout::RIGHT_BRIDGE_X + Board::BRIDGE_HALF_WIDTH);
+    obs[getIndex(8, riverRow, x)] = onBridge ? 1.0f : -1.0f;
+}
+```
+
+This reproduces `clampToBoard`'s own predicate on cell centres, so the two can
+no longer disagree. Cell `i` covers `[i - 0.5, i + 0.5]`, so testing the integer
+centre marks cells 2, 3, 14, 15 — the walkable set.
+
+**Alternative worth considering instead:** expose the predicate once on `Board`
+(`bool isOnBridge(float x) const`) and call it from both sites. That is the
+stronger fix, since `clampToBoard` and the encoder would then share code rather
+than share a formula. Slightly larger blast radius.
+
+### Blast radius
+
+**GAMEPLAY-AFFECTING for learning, not for simulation.** No unit moves
+differently — `clampToBoard` is untouched. What changes is what the network is
+told, on 4 cells of one channel on one row.
+
+**Checkpoints are not architecturally invalidated** (no shape change, `NUM_CHANNELS`
+and `observation_size()` unchanged), but any policy that learned bridge
+positions from this channel learned them from the wrong columns, so **win rates
+earned between the re-centring and this fix are not comparable** to either side.
+
+**No Python change is needed, which was worth checking rather than assuming.**
+An earlier draft of this item claimed `perception/geometry.py` and the
+round-trip test would have to move with it. Both are already derived:
+
+* `perception/geometry.py` reads `engine.ARENA_LEFT_BRIDGE_X` /
+  `ARENA_RIGHT_BRIDGE_X` / `ARENA_BRIDGE_Y` off the binding, with a fallback
+  only for when the binding is absent.
+* `python_ai/models/perception_encoder.py`'s `base_spatial()` takes the whole
+  river/tower plane from `_probe(None)` -- the engine's own fresh-board
+  observation -- explicitly so that "a future move propagates instead of
+  diverging".
+
+So `perception/tests/test_encoder_matches_engine.py` keeps passing without
+edits, and this really is a ONE-SITE fix. The mechanism that was supposed to
+prevent this class of drift worked everywhere except in the encoder that
+produces the number in the first place.
+
+### Verification
+
+1. Re-run the injection sweep above: the marked columns must equal the columns a
+   ground troop can occupy at rows 16/17.
+2. `perception/.venv/Scripts/python.exe -m pytest perception/tests -q`.
+3. `python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q`.
+4. The Catch2 suite (582 cases, exactly one `[!shouldfail]`).
