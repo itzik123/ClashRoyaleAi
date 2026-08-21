@@ -3,6 +3,7 @@
 #include <random>
 #include <vector>
 
+#include "ArenaLayout.h"
 #include "Board.h"
 #include "CardRegistry.h"
 #include "GameManager.h"
@@ -117,9 +118,15 @@ public:
     }
 
 private:
-    // Bridge columns (Board's gaps sit at x 3-4 and 13-14).
-    static constexpr float LEFT_BRIDGE_X = 3.5f;
-    static constexpr float RIGHT_BRIDGE_X = 13.5f;
+    // Bridge columns, read from ArenaLayout rather than restated.
+    //
+    // These were 3.5f / 13.5f and had ALREADY drifted before the 2026-08-21
+    // arena correction: Board's own bridges were at 4.0 / 14.0 at the time, so
+    // this bot had been aiming half a tile off its own engine's bridges for as
+    // long as the constants existed. Nothing caught it because nothing compared
+    // the two numbers -- which is the whole argument for not having two.
+    static constexpr float LEFT_BRIDGE_X = ArenaLayout::LEFT_BRIDGE_X;
+    static constexpr float RIGHT_BRIDGE_X = ArenaLayout::RIGHT_BRIDGE_X;
     // Elixir held before starting a push of its own. Above a single card's
     // cost on purpose: the old bot dumped at 4 and could never follow up.
     static constexpr float PUSH_ELIXIR_THRESHOLD = 7.0f;

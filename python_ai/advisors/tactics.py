@@ -53,6 +53,8 @@ import numpy as np
 
 import clash_royale_env as E
 
+from python_ai import engine_constants as EC
+
 CE = E.ClashRoyaleEnv
 
 # --- engine geometry / normalizers, pulled live -----------------------------
@@ -92,12 +94,13 @@ _probe = CE(list(range(8)), list(range(8)), 100)
 RIVER_Y = _probe.get_own_half_max_y() + _OWN_HALF_RIVER_BUFFER
 del _probe
 
-# NOT derivable: no binding exposes board entities or their positions, so these
-# are read from GameManager::reset()'s addTower() calls and named here per the
-# same fallback rule. Both are post-2026-07-30 (King x 8.5 -> 9.0, left
-# Princess x 3.0 -> 4.0; see perception/UPSTREAM_REQUESTS.md items 1-2).
-OWN_PRINCESS = ((4.0, 6.0), (14.0, 6.0))
-OWN_KING = (9.0, 2.5)
+# DERIVED, as of 2026-08-21. These used to be hardcoded here under the "no
+# binding exposes board entities" escape hatch -- and they went stale the moment
+# the arena was corrected, holding King x=9.0 and left Princess x=4.0 against an
+# engine that had moved to 8.5 and 3.0. ArenaLayout.h is bound now, so read it.
+OWN_PRINCESS = ((EC.LEFT_LANE_X, EC.princess_y(0)),
+                (EC.RIGHT_LANE_X, EC.princess_y(0)))
+OWN_KING = (EC.BOARD_CENTER_X, EC.king_y(0))
 
 # Fireball, read from the registry.
 FIREBALL_ID = 7
@@ -248,7 +251,10 @@ GIANT_ID = 2
 # Our side of the river (the river is [15.5, 17.5)), so a Giant placed here
 # starts crossing immediately instead of walking the length of our own half.
 BRIDGE_ROW = 15
-BRIDGE_XS = (4, 14)          # Board.h: leftBridge{4.0f, 16.5f}, rightBridge{14.0f, 16.5f}
+# Bridge CELLS, truncated from the engine's bridge centres the same way
+# cell_to_xy does it (never round() -- see CLAUDE.md's discretization note).
+# A two-tile bridge centred on 2.5 spans cells 2 and 3; int() picks 2.
+BRIDGE_XS = (int(EC.LEFT_BRIDGE_X), int(EC.RIGHT_BRIDGE_X))
 
 
 def best_giant_cell(obs, legal=None):

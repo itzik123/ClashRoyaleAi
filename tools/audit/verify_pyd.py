@@ -27,7 +27,7 @@ import python_ai  # noqa: F401  -- appends PACKAGE_DIR so the .pyd is importable
 import clash_royale_env as cre
 
 DECK = [15, 6, 25, 40, 24, 72, 33, 7]
-MUSKETEER, GIANT = 6, 2
+MUSKETEER, GIANT, HOG = 6, 2, 15
 NOOP = 4
 
 failures = []
@@ -71,6 +71,57 @@ print(f"lone Giants reaching an enemy tower: {crossed}/{trials}")
 if crossed != trials:
     failures.append(f"bridge exit trap: only {crossed}/{trials} Giants crossed")
 
+# ---------------------------------------------------------------------------
+# The 2026-08-21 arena correction, and the bindings that ended three stale
+# copies of it.
+#
+# This is the cheapest possible staleness check: a .pyd built before that date
+# reports the old columns (King 9.0, left Princess 4.0, bridges 4.0/14.0) or
+# lacks the ARENA_* attributes entirely. The C++ suite cannot tell you any of
+# this -- it never loads the .pyd -- and the copy has silently failed twice.
+missing = [n for n in ("ARENA_CENTER_X", "ARENA_LEFT_LANE_X", "ARENA_RIGHT_LANE_X",
+                       "ARENA_LEFT_BRIDGE_X", "ARENA_RIGHT_BRIDGE_X", "ARENA_BRIDGE_Y")
+           if not hasattr(cre, n)]
+if missing:
+    failures.append("stale .pyd: missing arena bindings " + ", ".join(missing))
+else:
+    expected = {
+        "ARENA_CENTER_X": 8.5,
+        "ARENA_LEFT_LANE_X": 3.0,
+        "ARENA_RIGHT_LANE_X": 14.0,
+        "ARENA_LEFT_BRIDGE_X": 2.5,
+        "ARENA_RIGHT_BRIDGE_X": 14.5,
+    }
+    got = {n: getattr(cre, n) for n in expected}
+    print("arena geometry: " + "  ".join(f"{k.replace('ARENA_', '')}={v}" for k, v in got.items()))
+    for name, want in expected.items():
+        if abs(got[name] - want) > 1e-6:
+            failures.append(f"arena drift: {name} is {got[name]}, expected {want}")
+    # Symmetry is the property that actually matters -- one lane playing
+    # differently from the other is the failure this geometry exists to prevent.
+    mirror = (cre.ARENA_WIDTH - 1) - cre.ARENA_LEFT_LANE_X
+    if abs(mirror - cre.ARENA_RIGHT_LANE_X) > 1e-6:
+        failures.append(f"arena asymmetry: lanes {cre.ARENA_LEFT_LANE_X}/{cre.ARENA_RIGHT_LANE_X}")
+    mirror_b = (cre.ARENA_WIDTH - 1) - cre.ARENA_LEFT_BRIDGE_X
+    if abs(mirror_b - cre.ARENA_RIGHT_BRIDGE_X) > 1e-6:
+        failures.append(f"arena asymmetry: bridges {cre.ARENA_LEFT_BRIDGE_X}/{cre.ARENA_RIGHT_BRIDGE_X}")
+
+# The King Tower starts DORMANT (2026-08-21). A .pyd predating that has a King
+# firing from tick 0, which is worth ~950 tower damage against a lone Hog -- a
+# large gameplay difference that nothing else here would notice.
+_env = cre.ClashRoyaleEnv(DECK, DECK)
+_env.reset()
+_env.inject(HOG, 2.5, 17.5, 1)
+for _ in range(600):
+    _env.step_self_play(NOOP, 0, 0, NOOP, 0, 0, 1)
+_hog_dmg = _env.get_tower_damage_dealt(1)
+print(f"lone Hog tower damage against dormant Kings: {_hog_dmg}")
+# Measured 2219 with the King asleep, 1268 with it awake. The midpoint is a
+# generous bar that still separates the two engines unambiguously.
+if _hog_dmg < 1700:
+    failures.append(f"stale .pyd: lone Hog dealt {_hog_dmg}, expected ~2219 with a "
+                    f"dormant King (~1268 means the King is still firing from tick 0)")
+
 if failures:
     print("\nFAILED -- the .pyd does not match the current engine source:")
     for f in failures:
@@ -78,4 +129,4 @@ if failures:
     print("\nRebuild it (see CLAUDE.md) and check no Python process holds it open.")
     sys.exit(1)
 
-print("\nOK: the deployed .pyd carries both 2026-08-20 engine fixes.")
+print("\nOK: the deployed .pyd carries the 2026-08-20 and 2026-08-21 engine fixes.")

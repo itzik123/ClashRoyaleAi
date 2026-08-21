@@ -1,11 +1,39 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include "ArenaLayout.h"
 #include "ClashEnv.h"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(clash_royale_env, m) {
     m.doc() = "Clash Royale RL Environment with Pybind11";
+
+    // ---- arena geometry, so nothing has to keep its own copy ----
+    //
+    // Until 2026-08-21 no binding exposed a board entity's position, so every
+    // Python consumer that needed a tower or bridge column hardcoded one with a
+    // comment naming the header. THREE of them went stale the moment the arena
+    // was corrected -- advisors/tactics.py (OWN_KING 9.0, OWN_PRINCESS 4.0,
+    // BRIDGE_XS (4,14)), perception/geometry.py, and on the C++ side
+    // HeuristicOpponent's own LEFT_BRIDGE_X/RIGHT_BRIDGE_X, which had already
+    // been wrong before that. Same failure CLAUDE.md records for the river in
+    // 2026-07-29 and the towers in 2026-07-30.
+    //
+    // These are the ArenaLayout.h constants, exposed read-only so Python can
+    // DERIVE instead. Module-level rather than class-static because the arena
+    // is a property of the game, not of an env instance.
+    m.attr("ARENA_WIDTH") = ArenaLayout::WIDTH;
+    m.attr("ARENA_HEIGHT") = ArenaLayout::HEIGHT;
+    m.attr("ARENA_CENTER_X") = ArenaLayout::CENTER_X;
+    m.attr("ARENA_LEFT_LANE_X") = ArenaLayout::LEFT_LANE_X;
+    m.attr("ARENA_RIGHT_LANE_X") = ArenaLayout::RIGHT_LANE_X;
+    m.attr("ARENA_LEFT_BRIDGE_X") = ArenaLayout::LEFT_BRIDGE_X;
+    m.attr("ARENA_RIGHT_BRIDGE_X") = ArenaLayout::RIGHT_BRIDGE_X;
+    m.attr("ARENA_BRIDGE_Y") = ArenaLayout::BRIDGE_Y;
+    m.def("arena_king_y", &ArenaLayout::kingY, py::arg("team"),
+          "Row of `team`'s King Tower.");
+    m.def("arena_princess_y", &ArenaLayout::princessY, py::arg("team"),
+          "Row of `team`'s two Princess Towers.");
 
     py::class_<StepResult>(m, "StepResult")
         .def_readonly("observation", &StepResult::observation)

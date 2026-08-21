@@ -77,18 +77,9 @@ RIVER_Y_END = 17.5
 # into observation channel 8 -- that is a wider visual hint for the
 # network, not the geometry, and using it as a calibration anchor would put
 # every bridge landmark half a tile off.
-LEFT_BRIDGE = (4.0, 16.5)
-RIGHT_BRIDGE = (14.0, 16.5)
-
-# GameManager::reset() (post 2026-07-30 fix -- was King x=8.5, left
-# Princess x=3.0). Kings sit on the board's measured true centre 9.0;
-# Princess towers are 3-wide and flush with their own bridge (4.0/14.0).
-OWN_KING = (9.0, 2.5)
-OPP_KING = (9.0, 30.5)
-OWN_PRINCESS_LEFT = (4.0, 6.0)
-OWN_PRINCESS_RIGHT = (14.0, 6.0)
-OPP_PRINCESS_LEFT = (4.0, 27.0)
-OPP_PRINCESS_RIGHT = (14.0, 27.0)
+# Defined further down, once _engine_module() exists: as of 2026-08-21 these
+# ARE derivable (ArenaLayout.h is bound), and every one of them had gone stale
+# before that -- see _load_arena_landmarks().
 
 # Fallbacks used only when the engine cannot be imported (ClashEnv.h:43,48).
 # load_geometry() prefers the live values every time; these exist so
@@ -116,6 +107,54 @@ def _engine_module():
     except Exception:
         return None
     return clash_royale_env
+
+
+# ---------------------------------------------------------------------------
+# Arena landmarks.
+#
+# These were hardcoded here for as long as the file existed, under a comment
+# saying no binding exposed them. That was true, and all six went STALE the
+# moment the arena was corrected on 2026-08-21 -- this file still held King
+# x=9.0 and left Princess x=4.0 against an engine that had moved to 8.5 and 3.0,
+# which would have silently thrown off every calibration fit that uses them as
+# landmarks.
+#
+# ArenaLayout.h is bound now (src/bindings.cpp), so they are read live. The
+# fallbacks are the CURRENT values and exist only for the case this file already
+# handles everywhere else: perception is a separate venv that may not be able to
+# load a .pyd built for Python 3.11.
+def _load_arena_landmarks():
+    engine = _engine_module()
+    if engine is None or not hasattr(engine, "ARENA_LEFT_BRIDGE_X"):
+        cx, ll, rl, lb, rb, by = 8.5, 3.0, 14.0, 2.5, 14.5, 16.5
+        king_y = (2.5, 30.5)
+        princess_y = (6.0, 27.0)
+    else:
+        cx = engine.ARENA_CENTER_X
+        ll = engine.ARENA_LEFT_LANE_X
+        rl = engine.ARENA_RIGHT_LANE_X
+        lb = engine.ARENA_LEFT_BRIDGE_X
+        rb = engine.ARENA_RIGHT_BRIDGE_X
+        by = engine.ARENA_BRIDGE_Y
+        king_y = (engine.arena_king_y(0), engine.arena_king_y(1))
+        princess_y = (engine.arena_princess_y(0), engine.arena_princess_y(1))
+    return {
+        # The single points river-crossing pathing actually uses. NOT the wider
+        # band ClashEnv::extractObservationForTeam paints into observation
+        # channel 8 -- that is a visual hint for the network, and using it as a
+        # calibration anchor would put every bridge landmark half a tile off.
+        "LEFT_BRIDGE": (lb, by),
+        "RIGHT_BRIDGE": (rb, by),
+        "OWN_KING": (cx, king_y[0]),
+        "OPP_KING": (cx, king_y[1]),
+        "OWN_PRINCESS_LEFT": (ll, princess_y[0]),
+        "OWN_PRINCESS_RIGHT": (rl, princess_y[0]),
+        "OPP_PRINCESS_LEFT": (ll, princess_y[1]),
+        "OPP_PRINCESS_RIGHT": (rl, princess_y[1]),
+    }
+
+
+globals().update(_load_arena_landmarks())
 
 
 def load_geometry() -> BoardGeometry:

@@ -120,31 +120,42 @@ def test_board_geometry_constants_match_their_headers():
     assert CE(list(gym_wrapper.DEFAULT_DECK), list(gym_wrapper.DEFAULT_DECK),
               100).get_own_half_max_y() == river_start - buffer
 
-    # Board.h: the two bridge x's, which tactics.BRIDGE_XS copies.
-    xs = [float(x) for x in re.findall(r"(?:left|right)Bridge\s*\{\s*([0-9.]+)f", board)]
-    assert len(xs) == 2, f"expected 2 bridge x's in Board.h, found {xs}"
-    assert tuple(xs) == tuple(float(v) for v in tactics.BRIDGE_XS), (
-        f"Board.h bridges at x={xs} but tactics.BRIDGE_XS={tactics.BRIDGE_XS}")
+    # ---- bridges and towers: compared against the BINDINGS, not scraped ----
+    #
+    # This block used to regex GameManager.h's addTower() calls and Board.h's
+    # leftBridge/rightBridge initialisers, because "nothing exposes entity
+    # positions through the bindings, so these are the last hand-typed geometry
+    # in the module". That stopped being true on 2026-08-21: ArenaLayout.h is
+    # bound, tactics.py derives from it, and the initialisers no longer contain a
+    # numeric literal to scrape -- the regex found zero matches and this test
+    # failed for the best possible reason, the copy it guarded being deleted.
+    #
+    # Comparing against the live bindings is strictly stronger anyway. Header
+    # scraping only ever proved the SOURCE agreed with Python; it could not see a
+    # stale .pyd sitting between them, which is a failure this repo has had twice.
+    import clash_royale_env as _E
 
-    # GameManager::reset()'s addTower() calls -- team 0's King and its two
-    # Princesses, which tactics.OWN_KING / OWN_PRINCESS copy. Nothing exposes
-    # entity positions through the bindings, so these are the last hand-typed
-    # geometry in the module. Both moved on 2026-07-30 (King x 8.5 -> 9.0, left
-    # Princess x 3.0 -> 4.0), which is precisely why they are pinned.
-    king = re.search(r"addTower\(\s*([0-9.]+)f,\s*([0-9.]+)f,\s*4008,\s*0,", gm)
-    assert king, "team-0 King addTower() call not found in GameManager.h -- changed shape?"
-    assert (float(king.group(1)), float(king.group(2))) == tactics.OWN_KING, (
-        f"GameManager.h King at {king.group(1)},{king.group(2)} but "
+    assert tuple(tactics.BRIDGE_XS) == (int(_E.ARENA_LEFT_BRIDGE_X),
+                                        int(_E.ARENA_RIGHT_BRIDGE_X)), (
+        f"engine bridges at x={_E.ARENA_LEFT_BRIDGE_X}/{_E.ARENA_RIGHT_BRIDGE_X} "
+        f"but tactics.BRIDGE_XS={tactics.BRIDGE_XS}")
+
+    assert tactics.OWN_KING == (_E.ARENA_CENTER_X, _E.arena_king_y(0)), (
+        f"engine King at ({_E.ARENA_CENTER_X}, {_E.arena_king_y(0)}) but "
         f"tactics.OWN_KING={tactics.OWN_KING}")
 
-    princesses = re.findall(
-        r'addTower\(\s*([0-9.]+)f,\s*([0-9.]+)f,\s*0,\s*"Princess Tower"', gm)
-    assert len(princesses) == 2, (
-        f"expected 2 team-0 Princess addTower() calls, found {princesses}")
-    found = tuple((float(x), float(y)) for x, y in princesses)
-    assert found == tactics.OWN_PRINCESS, (
-        f"GameManager.h Princesses at {found} but "
-        f"tactics.OWN_PRINCESS={tactics.OWN_PRINCESS}")
+    assert tactics.OWN_PRINCESS == ((_E.ARENA_LEFT_LANE_X, _E.arena_princess_y(0)),
+                                    (_E.ARENA_RIGHT_LANE_X, _E.arena_princess_y(0))), (
+        f"engine Princesses at x={_E.ARENA_LEFT_LANE_X}/{_E.ARENA_RIGHT_LANE_X}, "
+        f"y={_E.arena_princess_y(0)} but tactics.OWN_PRINCESS={tactics.OWN_PRINCESS}")
+
+    # The arena must stay mirror-symmetric. One lane playing differently from the
+    # other is the failure this geometry exists to prevent, and it is invisible
+    # in any single-value check.
+    mirror = (_E.ARENA_WIDTH - 1)
+    assert mirror - _E.ARENA_LEFT_LANE_X == _E.ARENA_RIGHT_LANE_X
+    assert mirror - _E.ARENA_LEFT_BRIDGE_X == _E.ARENA_RIGHT_BRIDGE_X
+    assert mirror - _E.ARENA_CENTER_X == _E.ARENA_CENTER_X
 
 
 def test_geometry_matches_engine():

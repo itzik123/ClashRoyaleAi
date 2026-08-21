@@ -121,15 +121,28 @@ def _tower_hp_from_env(env, engine):
     def read(ch, x, y):
         return int(round(obs[ch * plane + int(y) * W + int(x)] * mx))
 
-    # Tower x's match GameManager::reset() post 2026-07-30 (King 8.5->9.0,
-    # left Princess 3.0->4.0 -- see geometry.py's module docstring).
+    # Tower cells, DERIVED from the engine rather than written down again.
+    #
+    # These were hardcoded at the post-2026-07-30 positions (King 9.0, left
+    # Princess 4.0) and silently became reads of EMPTY CELLS when the arena was
+    # corrected on 2026-08-21 -- every tower came back 0, and because the
+    # comparison is against driver.tower_hp() (which derives from geometry.py,
+    # and was correct), the failure looked like a bridge divergence defect
+    # rather than a stale constant in the test's own helper.
+    #
+    # geometry.py is the perception-side single source for this, and it now
+    # reads ArenaLayout.h through the bindings.
+    from perception.geometry import (
+        OWN_KING, OWN_PRINCESS_LEFT, OWN_PRINCESS_RIGHT,
+        OPP_KING, OPP_PRINCESS_LEFT, OPP_PRINCESS_RIGHT,
+    )
     return {
-        "own_king": read(3, 9.0, 2.5),
-        "own_princess_left": read(3, 4.0, 6.0),
-        "own_princess_right": read(3, 14.0, 6.0),
-        "opp_king": read(7, 9.0, 30.5),
-        "opp_princess_left": read(7, 4.0, 27.0),
-        "opp_princess_right": read(7, 14.0, 27.0),
+        "own_king": read(3, *OWN_KING),
+        "own_princess_left": read(3, *OWN_PRINCESS_LEFT),
+        "own_princess_right": read(3, *OWN_PRINCESS_RIGHT),
+        "opp_king": read(7, *OPP_KING),
+        "opp_princess_left": read(7, *OPP_PRINCESS_LEFT),
+        "opp_princess_right": read(7, *OPP_PRINCESS_RIGHT),
     }
 
 

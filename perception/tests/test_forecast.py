@@ -142,7 +142,26 @@ def test_the_heuristic_opponent_never_plays_during_a_forecast(forecaster):
 # --- dynamics ---------------------------------------------------------------
 
 def test_units_actually_move(forecaster):
-    start, later = forecaster.forecast(board(unit(GIANT, 9, 8)), [0.1, 2.0])
+    """A forecast horizon must actually advance the world.
+
+    The horizon is 5.0 s, not the 2.0 s this used to use, and the reason is
+    worth keeping. `cells()` reads the observation's integer grid, so this can
+    only see movement once a unit crosses a CELL boundary -- and a Giant spawned
+    at x=9.0 sits exactly on one.
+
+    Which way it then steps changed on 2026-08-21. The old "walk to the closest
+    enemy tower" rule tie-broke between the two Princess Towers by iteration
+    order and sent it LEFT, immediately off the boundary into cell 8. Lane
+    pathing sends it RIGHT, because 9.0 is 5.5 tiles from the right bridge and
+    6.5 from the left -- correct, and it means x has to climb a whole tile to
+    9.0 -> 10.0 before this assertion can see anything. Measured: the Giant is at
+    (9.36, 8.48) at 2.0 s and reaches cell (10, 9) at 4.0 s, having moved
+    normally the whole time at 0.0355/0.0484 per tick after its 10-tick deploy.
+
+    So the old 2.0 s bound was passing on an accident of tie-break order, not on
+    a property of the engine. 5.0 s clears the boundary from any start.
+    """
+    start, later = forecaster.forecast(board(unit(GIANT, 9, 8)), [0.1, 5.0])
     assert cells(start.observation, 0) != cells(later.observation, 0)
 
 
