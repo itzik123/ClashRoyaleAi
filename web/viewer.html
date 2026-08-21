@@ -382,6 +382,13 @@
   .inspector-detail strong {
     color: var(--text-primary);
   }
+  .inspector-note {
+    margin-top: 8px;
+    font-size: 10px;
+    color: var(--text-muted);
+    font-style: italic;
+    line-height: 1.4;
+  }
 
   /* Event log */
   .event-log {
@@ -677,6 +684,36 @@ const FLYING_SYMBOLS_FALLBACK = new Set(['m', 'h', 'F', 'y', 'a']);
 // above directly.
 let CARD_META = {};
 
+// Symbol -> meta, derived from the replay's OWN cardMeta block. This is the
+// fallback for entities carrying cardId -1 (Entity.h:45's default -- nothing
+// assigns one for death-spawns, spawner buildings or tower troops), which the
+// id-keyed lookup cannot resolve.
+//
+// Symbols genuinely collide: 'M' is both Mini PEKKA (1390 hp) and Monk (2214).
+// For a cardId -1 entity that collision is not resolvable, so the ambiguous
+// set is recorded and such a resolution is flagged `inferred` rather than
+// silently presenting whichever card happened to load last as certain.
+let SYMBOL_INDEX = { bySymbol: {}, ambiguous: new Set() };
+
+function buildSymbolIndex(cardMeta) {
+  const bySymbol = {}, ambiguous = new Set();
+  for (const id of Object.keys(cardMeta || {})) {
+    const meta = cardMeta[id];
+    if (!meta || !meta.symbol) continue;
+    const seen = bySymbol[meta.symbol];
+    if (seen && seen.name !== meta.name) ambiguous.add(meta.symbol);
+    else if (!seen) bySymbol[meta.symbol] = meta;
+  }
+  return { bySymbol, ambiguous };
+}
+
+// maxHp 0 means a spell (no persistent HP to bar-render) or a card the legacy
+// table never knew. Render an em dash -- NEVER '?', which is what the old
+// `meta.maxHp || '?'` produced for every spell in the deck.
+function formatMaxHp(meta) {
+  return (meta && meta.maxHp > 0) ? String(meta.maxHp) : '—';
+}
+
 // Single source of truth for "what is this entity" from here on. Prefers,
 // in order: (1) TOWER_DEFS by entity id (towers aren't cards, so cardMeta
 // never covers them -- this table's own per-corner names/HP are already
@@ -688,14 +725,34 @@ let CARD_META = {};
 // only reached for a replay saved before cardId/cardMeta existed.
 function getEntityMeta(ent) {
   const towerDef = TOWER_DEFS.find(td => td.id === ent.id);
-  if (towerDef) return { name: towerDef.name, maxHp: towerDef.maxHp, isBuilding: true, isSpell: false, isFlying: false };
-  if (ent.cardId !== undefined && CARD_META[ent.cardId]) return CARD_META[ent.cardId];
+  if (towerDef) return { name: towerDef.name, maxHp: towerDef.maxHp, isBuilding: true,
+                         isSpell: false, isFlying: false, inferred: false };
+  if (ent.cardId !== undefined && CARD_META[ent.cardId]) {
+    return Object.assign({ inferred: false }, CARD_META[ent.cardId]);
+  }
+  // cardId missing or -1: resolve by symbol against the replay's OWN registry
+  // data before falling through to the legacy hardcoded tables, which cover
+  // only ~45 of the 173 registry entries.
+  const fromSym = SYMBOL_INDEX.bySymbol[ent.symbol];
+  if (fromSym) {
+    return Object.assign({}, fromSym, {
+      inferred: true,
+      ambiguous: SYMBOL_INDEX.ambiguous.has(ent.symbol),
+    });
+  }
   return {
-    name: SYMBOL_NAMES[ent.symbol] || ent.symbol,
-    maxHp: MAX_HP[ent.symbol] || ent.hp,
+    // NEVER the bare symbol. CardDefinition's default symbol is '?'
+    // (CardRegistry.h:100) and two registry cards ship it explicitly -- Cannon
+    // Cart (69) and Guards (76) -- so `|| ent.symbol` rendered a literal '?'
+    // as a card NAME. That is the reported bug.
+    name: SYMBOL_NAMES[ent.symbol] || `Unknown (symbol '${ent.symbol}')`,
+    // 0, not `|| ent.hp`: the old fallback made hpRatio = hp/hp = 1.0 forever,
+    // so an unrecognised card's HP bar never moved however much damage it took.
+    maxHp: MAX_HP[ent.symbol] || 0,
     isBuilding: BUILDING_SYMBOLS.has(ent.symbol),
     isSpell: SPELL_SYMBOLS.has(ent.symbol),
     isFlying: FLYING_SYMBOLS_FALLBACK.has(ent.symbol),
+    inferred: true,
   };
 }
 
@@ -843,6 +900,7 @@ function initViewer() {
   // replay saved before cardMeta existed, which just means every entity
   // falls through to the legacy symbol-keyed tables instead.
   CARD_META = gameData.cardMeta || {};
+  SYMBOL_INDEX = buildSymbolIndex(CARD_META);
 
   const w = gameData.boardWidth * CELL_SIZE + PADDING * 2;
   const h = gameData.boardHeight * CELL_SIZE + PADDING * 2;
@@ -1312,8 +1370,11 @@ function drawEntity(rc, ent, isSelected) {
   drawTypeBadge(rc, ent, pos, radius);
 
   if (!meta.isSpell) {
-    const maxHp = meta.maxHp || ent.hp;
-    const hpRatio = Math.min(1, ent.hp / maxHp);
+    // maxHp can be 0 for an unrecognised card; a full bar is the honest
+    // rendering there, since the true maximum is genuinely unknown.
+    const hpRatio = meta.maxHp > 0
+      ? Math.max(0, Math.min(1, ent.hp / meta.maxHp))
+      : 1;
     const barWidth = radius * 2.2;
     const barHeight = 3;
     const barX = pos.x - barWidth / 2;
@@ -1492,20 +1553,27 @@ function updateInspector(tickData) {
     return;
   }
   const meta = getEntityMeta(ent);
-  const name = meta.name;
   const teamStr = ent.team === 0 ? '<span style="color:var(--blue-team)">Blue</span>' : '<span style="color:var(--red-team)">Red</span>';
-  const maxHp = meta.maxHp || '?';
   const type = getEntityType(ent);
   const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[type];
+  // A spell has no persistent HP at all, so "1 / -" is meaningless for it.
+  const hpLine = meta.isSpell
+    ? '<div class="inspector-detail"><span>HP:</span> <strong>n/a</strong> <span>(spell)</span></div>'
+    : `<div class="inspector-detail"><span>HP:</span> <strong>${ent.hp}</strong> / ${formatMaxHp(meta)}</div>`;
 
   el.innerHTML = `
-    <div class="inspector-detail"><span>Name:</span> <strong>${name}</strong></div>
+    <div class="inspector-detail"><span>Name:</span> <strong>${meta.name}</strong></div>
     <div class="inspector-detail"><span>ID:</span> <strong>${ent.id}</strong></div>
     <div class="inspector-detail"><span>Team:</span> ${teamStr}</div>
     <div class="inspector-detail"><span>Type:</span> <strong>${typeLabel}</strong></div>
-    <div class="inspector-detail"><span>HP:</span> <strong>${ent.hp}</strong> / ${maxHp}</div>
+    ${hpLine}
     <div class="inspector-detail"><span>Position:</span> <strong>(${ent.x.toFixed(1)}, ${ent.y.toFixed(1)})</strong></div>
-    <div class="inspector-detail"><span>Symbol:</span> <strong>${ent.symbol}</strong></div>`;
+    <div class="inspector-detail"><span>Symbol:</span> <strong>${ent.symbol}</strong></div>`
+    + (meta.inferred
+        ? `<div class="inspector-note">identified by symbol${
+             meta.ambiguous ? ' — this symbol is shared by more than one card' : ''
+           }</div>`
+        : '');
 }
 
 function updateEventLog() {
@@ -1710,6 +1778,9 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
+  buildSymbolIndex,
+  formatMaxHp,
+  symbolIndex: () => SYMBOL_INDEX,
   bridgeCells: () => BRIDGE_CELLS,
   riverRows: () => RIVER_ROWS,
   loadJson: (text, name) => loadFile(new File([text], name || 'test.json',
