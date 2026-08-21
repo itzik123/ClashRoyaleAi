@@ -436,3 +436,8 @@ training_*.log.err
 
 # Standalone audit instrument binaries (tools/audit/build.ps1 output)
 tools/audit/bin/
+
+# Viewer development fixtures (~9 MB, regenerable and SEEDED, so a fresh
+# checkout reproduces them byte-for-byte):
+#   python_ai/venv/Scripts/python.exe tools/viewer_fixtures/make_fixtures.py
+web/fixtures/
