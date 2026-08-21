@@ -582,28 +582,6 @@
     margin-top: 2px;
   }
 
-  /* Tooltip */
-  .tooltip {
-    position: absolute;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 12px;
-    pointer-events: none;
-    z-index: 50;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-    display: none;
-  }
-  .tooltip-name {
-    font-weight: 600;
-    margin-bottom: 2px;
-  }
-  .tooltip-stat {
-    color: var(--text-secondary);
-    font-size: 11px;
-  }
-
   /* Winner overlay */
   .winner-overlay {
     position: absolute;
@@ -668,10 +646,6 @@
       </div>
       <div class="canvas-wrapper">
         <canvas id="gameCanvas"></canvas>
-        <div class="tooltip" id="tooltip">
-          <div class="tooltip-name" id="tooltipName"></div>
-          <div class="tooltip-stat" id="tooltipStat"></div>
-        </div>
         <div class="winner-overlay" id="winnerOverlay">
           <div class="winner-card">
             <div class="winner-icon" id="winnerIcon">🏆</div>
@@ -1001,9 +975,6 @@ const speedSelect = document.getElementById('speedSelect');
 const dropOverlay = document.getElementById('dropOverlay');
 const dropBox = document.getElementById('dropBox');
 const fileInput = document.getElementById('fileInput');
-const tooltip = document.getElementById('tooltip');
-const tooltipName = document.getElementById('tooltipName');
-const tooltipStat = document.getElementById('tooltipStat');
 const winnerOverlay = document.getElementById('winnerOverlay');
 
 // File loading
@@ -1171,6 +1142,47 @@ function gameToCanvas(rc, gx, gy) {
     x: rc.padding + gx * rc.cellSize + rc.cellSize / 2,
     y: rc.padding + (rc.boardHeight - 1 - gy) * rc.cellSize + rc.cellSize / 2
   };
+}
+
+// Screen point -> canvas BACKING-STORE point.
+//
+// This is not `(clientX - rect.left) * (canvas.width / rect.width)`, and the
+// difference is the whole bug it replaces. The canvas carries
+// `max-width/max-height: 100%` plus `object-fit: contain`, and its element box
+// does NOT keep the backing store's aspect ratio: measured at 420x772 backing
+// inside a 420x580 box, so the content renders 315x580 with ~52px letterbox
+// bars either side. The old mapping used a per-axis scale (1.00 across, 1.33
+// down) and ignored the bars entirely, so a click was displaced by up to half
+// the board. Measured 21.2% of dead-centre clicks on an entity selected
+// nothing at all.
+//
+// object-fit: contain scales UNIFORMLY by min(...) and centres the remainder,
+// so both must be undone in that order.
+function eventToCanvas(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+  const offX = rect.left + (rect.width - canvas.width * scale) / 2;
+  const offY = rect.top + (rect.height - canvas.height * scale) / 2;
+  return { x: (evt.clientX - offX) / scale, y: (evt.clientY - offY) / scale, scale };
+}
+
+// Backing-store radius within which a click counts as hitting `ent`.
+//
+// The floor is the second half of the flaky-click fix. SYMBOL_RADIUS is the
+// DRAWN radius, and for the small cards it is tiny: Skeletons are 5, which is
+// a 9px target inside a 22px cell and only 3.8px ON SCREEN once the board is
+// scaled to fit. Nobody can reliably hit that.
+//
+// 0.75 of a cell = 16.5px, chosen against two measured quantities rather than
+// picked: a tile's half-diagonal is 15.6px (so the whole tile is clickable),
+// and an 8px diagonal slip of the mouse is 15.1px at the measured 0.75 display
+// scale. It does not swallow neighbours, because the caller resolves overlaps
+// by taking the CLOSEST match -- a unit one tile away is 22px off.
+function hitRadiusFor(ent, rc) {
+  if (ent.symbol === 'R') return (4 * rc.cellSize) / 2;   // King, 4x4 tiles
+  if (ent.symbol === 'P') return (3 * rc.cellSize) / 2;   // Princess, 3x3
+  const drawn = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
+  return Math.max(drawn, rc.cellSize * 0.75);
 }
 
 function canvasToGame(rc, cx, cy) {
@@ -2078,29 +2090,19 @@ speedSelect.addEventListener('change', () => {
 // Canvas interaction
 canvas.addEventListener('click', (e) => {
   if (!gameData) return;
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  const cx = (e.clientX - rect.left) * scaleX;
-  const cy = (e.clientY - rect.top) * scaleY;
-  const tickData = gameData.ticks[currentTick];
+  const p = eventToCanvas(e);
   const rc = mainRc();
+  const tickData = gameData.ticks[currentTick];
 
   let closest = null;
   let closestDist = Infinity;
-
   for (const ent of tickData.entities) {
-    if (ent.symbol === '-') continue;
+    if (ent.symbol === '-') continue;          // projectiles are not selectable
     const pos = gameToCanvas(rc, ent.x, ent.y);
-    const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
-    const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
-
-    // For buildings, use a larger hit area based on their tile size
-    let checkRadius = hitRadius;
-    if (ent.symbol === 'P') checkRadius = (3 * rc.cellSize) / 2;
-    if (ent.symbol === 'R') checkRadius = (4 * rc.cellSize) / 2;
-
-    if (dist < checkRadius && dist < closestDist) {
+    const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
+    // Closest wins, so a generous radius on a big tower cannot steal a click
+    // from a troop standing on it.
+    if (dist < hitRadiusFor(ent, rc) && dist < closestDist) {
       closest = ent;
       closestDist = dist;
     }
@@ -2111,46 +2113,15 @@ canvas.addEventListener('click', (e) => {
   updateUI();
 });
 
-canvas.addEventListener('mousemove', (e) => {
-  if (!gameData) return;
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  const cx = (e.clientX - rect.left) * scaleX;
-  const cy = (e.clientY - rect.top) * scaleY;
-  const tickData = gameData.ticks[currentTick];
-  const rc = mainRc();
-
-  let hovered = null;
-  for (const ent of tickData.entities) {
-    if (ent.symbol === '-') continue;
-    const pos = gameToCanvas(rc, ent.x, ent.y);
-    const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
-    const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
-
-    // For buildings, use a larger hit area based on their tile size
-    let checkRadius = hitRadius;
-    if (ent.symbol === 'P') checkRadius = (3 * rc.cellSize) / 2;
-    if (ent.symbol === 'R') checkRadius = (4 * rc.cellSize) / 2;
-
-    if (dist < checkRadius) { hovered = ent; break; }
-  }
-
-  if (hovered) {
-    const name = getEntityMeta(hovered).name;
-    const teamStr = hovered.team === 0 ? 'Blue' : 'Red';
-    const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[getEntityType(hovered)];
-    tooltipName.textContent = `${name} (${teamStr})`;
-    tooltipStat.textContent = `${typeLabel} | HP: ${hovered.hp} | Pos: (${hovered.x.toFixed(1)}, ${hovered.y.toFixed(1)})`;
-    tooltip.style.display = 'block';
-    tooltip.style.left = (cx + 15) + 'px';
-    tooltip.style.top = (cy - 10) + 'px';
-  } else {
-    tooltip.style.display = 'none';
-  }
-});
-
-canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+// NO hover tooltip on the arena, deliberately. The Entity Inspector in the
+// sidebar shows the same information on CLICK, which is a better debugging
+// flow (it persists while you scrub) and avoids a floating box over the
+// board. The tooltip that used to live here also had two real defects worth
+// not reintroducing: it positioned itself in CSS pixels from canvas
+// backing-store coordinates, which diverge whenever the canvas is
+// CSS-scaled -- and it always is, via max-width/object-fit -- so it drifted
+// away from the cursor; and its hit-test took the first array match using
+// radii that do not match the drawn sizes, so some entities never hit.
 
 document.getElementById('btnSimView').addEventListener('click', () => toggleSimView());
 document.getElementById('simClose').addEventListener('click', () => toggleSimView(false));
@@ -2178,6 +2149,9 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
+  eventToCanvas,
+  hitRadiusFor: (ent) => hitRadiusFor(ent, mainRc()),
+  selectedId: () => selectedEntityId,
   teacherDebugForTick,
   hasTeacherDebug,
   toggleSimView: (f) => toggleSimView(f),
