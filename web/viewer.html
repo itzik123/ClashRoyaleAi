@@ -723,6 +723,23 @@ const TOWER_DEFS = [
 const CELL_SIZE = 22;
 const PADDING = 12;
 
+// A render context bundles everything a board drawing needs, so the main arena
+// and the Simulation View's mini-boards can share one drawing path instead of
+// growing a second renderer that drifts from the first.
+function makeRenderCtx(ctx2d, boardWidth, boardHeight, cellSize, padding) {
+  return {
+    ctx: ctx2d,
+    boardWidth, boardHeight, cellSize, padding,
+    width: boardWidth * cellSize + padding * 2,
+    height: boardHeight * cellSize + padding * 2,
+  };
+}
+
+function mainRc() {
+  return makeRenderCtx(ctx, gameData.boardWidth, gameData.boardHeight,
+                       CELL_SIZE, PADDING);
+}
+
 let gameData = null;
 let currentTick = 0;
 let playing = false;
@@ -900,23 +917,21 @@ function updateWinnerOverlay() {
 }
 
 // Coordinate conversion
-function gameToCanvas(gx, gy) {
+function gameToCanvas(rc, gx, gy) {
   return {
-    x: PADDING + gx * CELL_SIZE + CELL_SIZE / 2,
-    y: PADDING + (gameData.boardHeight - 1 - gy) * CELL_SIZE + CELL_SIZE / 2
+    x: rc.padding + gx * rc.cellSize + rc.cellSize / 2,
+    y: rc.padding + (rc.boardHeight - 1 - gy) * rc.cellSize + rc.cellSize / 2
   };
 }
 
-function canvasToGame(cx, cy) {
+function canvasToGame(rc, cx, cy) {
   return {
-    gx: (cx - PADDING) / CELL_SIZE,
-    gy: gameData.boardHeight - 1 - (cy - PADDING) / CELL_SIZE
+    gx: (cx - rc.padding) / rc.cellSize,
+    gy: rc.boardHeight - 1 - (cy - rc.padding) / rc.cellSize
   };
 }
 
-// Entity type classification -- ground/air/building/spell -- used to draw a
-// small consistent badge on every entity so ground and air troops (which
-// look identical otherwise now that flying units exist) are never confused.
+
 function getEntityType(ent) {
   const meta = getEntityMeta(ent);
   if (meta.isSpell) return 'spell';
@@ -971,114 +986,131 @@ function renderTick() {
   if (!gameData) return;
   const tickData = gameData.ticks[currentTick];
   if (!tickData) return;
+  drawBoard(mainRc(), tickData, {
+    selectedEntityId: selectedEntityId,
+    showLabels: true,
+    ghost: false,
+  });
+}
 
-  const w = canvas.width;
-  const h = canvas.height;
+// The ONE board renderer. The main arena and the Simulation View's mini-boards
+// both come through here, so a palette or geometry change cannot apply to one
+// and not the other -- the failure mode this file already suffered when its
+// bridge columns drifted from the engine's.
+//
+//   rc    -- from makeRenderCtx: canvas context plus board dims and scale
+//   opts  -- { selectedEntityId, showLabels, ghost }
+function drawBoard(rc, tickData, opts) {
+  const w = rc.width;
+  const h = rc.height;
 
-  ctx.clearRect(0, 0, w, h);
+  rc.ctx.clearRect(0, 0, w, h);
 
   // Background -- a calmer two-tone split instead of a busy 4-stop gradient.
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  const grad = rc.ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, '#1c1210');
   grad.addColorStop(1, '#10121c');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+  rc.ctx.fillStyle = grad;
+  rc.ctx.fillRect(0, 0, w, h);
 
   // Grid lines (kept faint -- useful for judging placement, not meant to draw the eye)
-  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
-  ctx.lineWidth = 1;
-  for (let x = 0; x <= gameData.boardWidth; x++) {
-    const px = PADDING + x * CELL_SIZE;
-    ctx.beginPath(); ctx.moveTo(px, PADDING); ctx.lineTo(px, h - PADDING); ctx.stroke();
+  rc.ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+  rc.ctx.lineWidth = 1;
+  for (let x = 0; x <= rc.boardWidth; x++) {
+    const px = rc.padding + x * rc.cellSize;
+    rc.ctx.beginPath(); rc.ctx.moveTo(px, rc.padding); rc.ctx.lineTo(px, h - rc.padding); rc.ctx.stroke();
   }
-  for (let y = 0; y <= gameData.boardHeight; y++) {
-    const py = PADDING + y * CELL_SIZE;
-    ctx.beginPath(); ctx.moveTo(PADDING, py); ctx.lineTo(w - PADDING, py); ctx.stroke();
+  for (let y = 0; y <= rc.boardHeight; y++) {
+    const py = rc.padding + y * rc.cellSize;
+    rc.ctx.beginPath(); rc.ctx.moveTo(rc.padding, py); rc.ctx.lineTo(w - rc.padding, py); rc.ctx.stroke();
   }
 
   // River (y = 16 to 18)
-  const riverTop = PADDING + (gameData.boardHeight - 18) * CELL_SIZE;
-  const riverBottom = PADDING + (gameData.boardHeight - 16) * CELL_SIZE;
-  ctx.fillStyle = 'rgba(35, 90, 150, 0.45)';
-  ctx.fillRect(PADDING, riverTop, w - PADDING * 2, riverBottom - riverTop);
+  const riverTop = rc.padding + (rc.boardHeight - 18) * rc.cellSize;
+  const riverBottom = rc.padding + (rc.boardHeight - 16) * rc.cellSize;
+  rc.ctx.fillStyle = 'rgba(35, 90, 150, 0.45)';
+  rc.ctx.fillRect(rc.padding, riverTop, w - rc.padding * 2, riverBottom - riverTop);
 
   // Bridges (2 tiles wide each)
   const bridgePositions = [[3, 4], [13, 14]];
   for (const [bx1, bx2] of bridgePositions) {
-    const bleft = PADDING + bx1 * CELL_SIZE;
-    const bright = PADDING + (bx2 + 1) * CELL_SIZE;
-    ctx.fillStyle = 'rgba(139, 105, 20, 0.5)';
-    ctx.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
+    const bleft = rc.padding + bx1 * rc.cellSize;
+    const bright = rc.padding + (bx2 + 1) * rc.cellSize;
+    rc.ctx.fillStyle = 'rgba(139, 105, 20, 0.5)';
+    rc.ctx.fillRect(bleft, riverTop, bright - bleft, riverBottom - riverTop);
   }
 
   // Territory divider labels
-  ctx.font = '10px Inter, sans-serif';
-  ctx.fillStyle = 'rgba(74, 158, 255, 0.3)';
-  ctx.textAlign = 'center';
-  ctx.fillText('BLUE TERRITORY', w / 2, h - PADDING + 9);
-  ctx.fillStyle = 'rgba(255, 82, 82, 0.3)';
-  ctx.fillText('RED TERRITORY', w / 2, PADDING - 4);
+  if (opts.showLabels) {
+  rc.ctx.font = '10px Inter, sans-serif';
+  rc.ctx.fillStyle = 'rgba(74, 158, 255, 0.3)';
+  rc.ctx.textAlign = 'center';
+  rc.ctx.fillText('BLUE TERRITORY', w / 2, h - rc.padding + 9);
+  rc.ctx.fillStyle = 'rgba(255, 82, 82, 0.3)';
+  rc.ctx.fillText('RED TERRITORY', w / 2, rc.padding - 4);
+  }
 
   // Entities
   const entities = tickData.entities;
 
   for (const ent of entities) {
     if (getEntityMeta(ent).isSpell) {
-      drawEntity(ent, false);
+      drawEntity(rc, ent, false);
     }
   }
 
   for (const ent of entities) {
     if (!getEntityMeta(ent).isSpell) {
-      drawEntity(ent, ent.id === selectedEntityId);
+      drawEntity(rc, ent, ent.id === opts.selectedEntityId);
     }
   }
 }
 
-function drawTypeBadge(ent, pos, radius) {
+
+function drawTypeBadge(rc, ent, pos, radius) {
   if (ent.symbol === '-') return; // raw projectile is too small for a badge to read
   const type = getEntityType(ent);
   const badge = TYPE_BADGE[type];
   const bx = pos.x + radius * 0.62;
   const by = pos.y - radius * 0.62;
 
-  ctx.beginPath();
-  ctx.arc(bx, by, 6, 0, Math.PI * 2);
-  ctx.fillStyle = badge.color;
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  rc.ctx.beginPath();
+  rc.ctx.arc(bx, by, 6, 0, Math.PI * 2);
+  rc.ctx.fillStyle = badge.color;
+  rc.ctx.fill();
+  rc.ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  rc.ctx.lineWidth = 1;
+  rc.ctx.stroke();
 
   // Shape glyph, not a letter -- ground: dot, air: chevron, building: square, spell: diamond
-  ctx.fillStyle = '#0b0d13';
-  ctx.strokeStyle = '#0b0d13';
-  ctx.lineWidth = 1.4;
+  rc.ctx.fillStyle = '#0b0d13';
+  rc.ctx.strokeStyle = '#0b0d13';
+  rc.ctx.lineWidth = 1.4;
   if (type === 'ground') {
-    ctx.beginPath();
-    ctx.arc(bx, by, 2, 0, Math.PI * 2);
-    ctx.fill();
+    rc.ctx.beginPath();
+    rc.ctx.arc(bx, by, 2, 0, Math.PI * 2);
+    rc.ctx.fill();
   } else if (type === 'air') {
-    ctx.beginPath();
-    ctx.moveTo(bx - 3, by + 1.5);
-    ctx.lineTo(bx, by - 2.5);
-    ctx.lineTo(bx + 3, by + 1.5);
-    ctx.stroke();
+    rc.ctx.beginPath();
+    rc.ctx.moveTo(bx - 3, by + 1.5);
+    rc.ctx.lineTo(bx, by - 2.5);
+    rc.ctx.lineTo(bx + 3, by + 1.5);
+    rc.ctx.stroke();
   } else if (type === 'building') {
-    ctx.strokeRect(bx - 2.5, by - 2.5, 5, 5);
+    rc.ctx.strokeRect(bx - 2.5, by - 2.5, 5, 5);
   } else {
-    ctx.beginPath();
-    ctx.moveTo(bx, by - 3);
-    ctx.lineTo(bx + 3, by);
-    ctx.lineTo(bx, by + 3);
-    ctx.lineTo(bx - 3, by);
-    ctx.closePath();
-    ctx.fill();
+    rc.ctx.beginPath();
+    rc.ctx.moveTo(bx, by - 3);
+    rc.ctx.lineTo(bx + 3, by);
+    rc.ctx.lineTo(bx, by + 3);
+    rc.ctx.lineTo(bx - 3, by);
+    rc.ctx.closePath();
+    rc.ctx.fill();
   }
 }
 
-function drawEntity(ent, isSelected) {
-  const pos = gameToCanvas(ent.x, ent.y);
+function drawEntity(rc, ent, isSelected) {
+  const pos = gameToCanvas(rc, ent.x, ent.y);
   const radius = SYMBOL_RADIUS[ent.symbol] || 8;
   const isBlue = ent.team === 0;
   const mainColor = isBlue ? '#4a9eff' : '#ff5252';
@@ -1087,88 +1119,88 @@ function drawEntity(ent, isSelected) {
 
   if (meta.isSpell && ent.symbol !== '-') {
     const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
-    const pixelRadius = spellRadius * CELL_SIZE;
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, pixelRadius, 0, Math.PI * 2);
-    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.08)' : 'rgba(255, 82, 82, 0.08)';
-    ctx.fill();
-    ctx.strokeStyle = isBlue ? 'rgba(74, 158, 255, 0.25)' : 'rgba(255, 82, 82, 0.25)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    const pixelRadius = spellRadius * rc.cellSize;
+    rc.ctx.beginPath();
+    rc.ctx.arc(pos.x, pos.y, pixelRadius, 0, Math.PI * 2);
+    rc.ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.08)' : 'rgba(255, 82, 82, 0.08)';
+    rc.ctx.fill();
+    rc.ctx.strokeStyle = isBlue ? 'rgba(74, 158, 255, 0.25)' : 'rgba(255, 82, 82, 0.25)';
+    rc.ctx.lineWidth = 1;
+    rc.ctx.stroke();
   }
 
   // Projectiles: small dot with trail
   if (ent.symbol === '-') {
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = mainColor;
-    ctx.fill();
+    rc.ctx.beginPath();
+    rc.ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+    rc.ctx.fillStyle = mainColor;
+    rc.ctx.fill();
     return;
   }
 
   // Selection ring
   if (isSelected) {
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
-    ctx.strokeStyle = '#facc15';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    rc.ctx.beginPath();
+    rc.ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
+    rc.ctx.strokeStyle = '#facc15';
+    rc.ctx.lineWidth = 2;
+    rc.ctx.stroke();
   }
 
   // Shadow (single, subtle -- previously stacked with an extra glow ring)
-  ctx.beginPath();
-  ctx.arc(pos.x + 1, pos.y + 2, radius, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  ctx.fill();
+  rc.ctx.beginPath();
+  rc.ctx.arc(pos.x + 1, pos.y + 2, radius, 0, Math.PI * 2);
+  rc.ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  rc.ctx.fill();
 
   if (meta.isBuilding) {
     const sizeInTiles = ent.symbol === 'R' ? 4 : (ent.symbol === 'P' ? 3 : 2);
-    const sz = sizeInTiles * CELL_SIZE;
-    ctx.fillStyle = dimColor;
-    ctx.fillRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
-    ctx.strokeStyle = mainColor;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+    const sz = sizeInTiles * rc.cellSize;
+    rc.ctx.fillStyle = dimColor;
+    rc.ctx.fillRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
+    rc.ctx.strokeStyle = mainColor;
+    rc.ctx.lineWidth = 2;
+    rc.ctx.strokeRect(pos.x - sz/2, pos.y - sz/2, sz, sz);
 
     // Inner icon
-    ctx.fillStyle = mainColor;
-    ctx.font = `bold ${radius}px Inter, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(ent.symbol, pos.x, pos.y + 1);
+    rc.ctx.fillStyle = mainColor;
+    rc.ctx.font = `bold ${radius}px Inter, sans-serif`;
+    rc.ctx.textAlign = 'center';
+    rc.ctx.textBaseline = 'middle';
+    rc.ctx.fillText(ent.symbol, pos.x, pos.y + 1);
   }
   // Troops: flat-ish circle (dropped the extra outer glow ring -- with many
   // units on screen the overlapping halos were the main source of visual
   // clutter)
   else if (!meta.isSpell) {
-    const bodyGrad = ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
+    const bodyGrad = rc.ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
     bodyGrad.addColorStop(0, mainColor);
     bodyGrad.addColorStop(1, dimColor);
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = bodyGrad;
-    ctx.fill();
-    ctx.strokeStyle = mainColor;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    rc.ctx.beginPath();
+    rc.ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+    rc.ctx.fillStyle = bodyGrad;
+    rc.ctx.fill();
+    rc.ctx.strokeStyle = mainColor;
+    rc.ctx.lineWidth = 1.5;
+    rc.ctx.stroke();
 
     // Symbol text
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold ${Math.max(9, radius - 1)}px Inter, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(ent.symbol, pos.x, pos.y + 1);
+    rc.ctx.fillStyle = '#fff';
+    rc.ctx.font = `bold ${Math.max(9, radius - 1)}px Inter, sans-serif`;
+    rc.ctx.textAlign = 'center';
+    rc.ctx.textBaseline = 'middle';
+    rc.ctx.fillText(ent.symbol, pos.x, pos.y + 1);
   }
   // Spells: pulsing circle
   else {
     const pulse = 1 + Math.sin(currentTick * 0.3) * 0.15;
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, radius * pulse, 0, Math.PI * 2);
-    ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.6)' : 'rgba(255, 82, 82, 0.6)';
-    ctx.fill();
+    rc.ctx.beginPath();
+    rc.ctx.arc(pos.x, pos.y, radius * pulse, 0, Math.PI * 2);
+    rc.ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.6)' : 'rgba(255, 82, 82, 0.6)';
+    rc.ctx.fill();
   }
 
-  drawTypeBadge(ent, pos, radius);
+  drawTypeBadge(rc, ent, pos, radius);
 
   if (!meta.isSpell) {
     const maxHp = meta.maxHp || ent.hp;
@@ -1179,8 +1211,8 @@ function drawEntity(ent, isSelected) {
     const barY = pos.y - radius - 8;
 
     // HP bar background
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+    rc.ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    rc.ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
 
     // HP bar fill
     let hpColor;
@@ -1188,8 +1220,8 @@ function drawEntity(ent, isSelected) {
     else if (hpRatio > 0.25) hpColor = '#facc15';
     else hpColor = '#ff5252';
 
-    ctx.fillStyle = hpColor;
-    ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+    rc.ctx.fillStyle = hpColor;
+    rc.ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
   }
 }
 
@@ -1466,20 +1498,21 @@ canvas.addEventListener('click', (e) => {
   const cx = (e.clientX - rect.left) * scaleX;
   const cy = (e.clientY - rect.top) * scaleY;
   const tickData = gameData.ticks[currentTick];
+  const rc = mainRc();
 
   let closest = null;
   let closestDist = Infinity;
 
   for (const ent of tickData.entities) {
     if (ent.symbol === '-') continue;
-    const pos = gameToCanvas(ent.x, ent.y);
+    const pos = gameToCanvas(rc, ent.x, ent.y);
     const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
     const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
 
     // For buildings, use a larger hit area based on their tile size
     let checkRadius = hitRadius;
-    if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
-    if (ent.symbol === 'R') checkRadius = (4 * CELL_SIZE) / 2;
+    if (ent.symbol === 'P') checkRadius = (3 * rc.cellSize) / 2;
+    if (ent.symbol === 'R') checkRadius = (4 * rc.cellSize) / 2;
 
     if (dist < checkRadius && dist < closestDist) {
       closest = ent;
@@ -1500,18 +1533,19 @@ canvas.addEventListener('mousemove', (e) => {
   const cx = (e.clientX - rect.left) * scaleX;
   const cy = (e.clientY - rect.top) * scaleY;
   const tickData = gameData.ticks[currentTick];
+  const rc = mainRc();
 
   let hovered = null;
   for (const ent of tickData.entities) {
     if (ent.symbol === '-') continue;
-    const pos = gameToCanvas(ent.x, ent.y);
+    const pos = gameToCanvas(rc, ent.x, ent.y);
     const dist = Math.sqrt((cx - pos.x) ** 2 + (cy - pos.y) ** 2);
     const hitRadius = (SYMBOL_RADIUS[ent.symbol] || 8) + 4;
 
     // For buildings, use a larger hit area based on their tile size
     let checkRadius = hitRadius;
-    if (ent.symbol === 'P') checkRadius = (3 * CELL_SIZE) / 2;
-    if (ent.symbol === 'R') checkRadius = (4 * CELL_SIZE) / 2;
+    if (ent.symbol === 'P') checkRadius = (3 * rc.cellSize) / 2;
+    if (ent.symbol === 'R') checkRadius = (4 * rc.cellSize) / 2;
 
     if (dist < checkRadius) { hovered = ent; break; }
   }
@@ -1539,6 +1573,33 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'ArrowRight') { e.preventDefault(); btnStepFwd.click(); }
   if (e.code === 'ArrowLeft') { e.preventDefault(); btnStepBack.click(); }
 });
+
+// ---------------------------------------------------------------------------
+// Test surface.
+//
+// Everything above is declared with `let`/`const`/`function` at script top
+// level, which in a classic script creates LEXICAL bindings that are NOT
+// properties of `window` -- so none of it is reachable from the console or
+// from a driving harness. This block is the deliberate, single place that
+// exposes what the checks in docs/superpowers/plans/ need.
+//
+// Read-only by intent: `state()` returns a snapshot, not live references to
+// mutate. Nothing here runs on load, so it cannot affect normal use.
+// ---------------------------------------------------------------------------
+window.__viewerTests = {
+  getEntityMeta,
+  loadJson: (text, name) => loadFile(new File([text], name || 'test.json',
+                                              { type: 'application/json' })),
+  state: () => ({
+    loaded: !!gameData,
+    tick: currentTick,
+    totalTicks: gameData ? gameData.ticks.length : 0,
+    entities: gameData ? gameData.ticks[currentTick].entities.length : 0,
+  }),
+  entitiesAt: (i) => gameData ? gameData.ticks[i].entities : [],
+  gotoTick: (i) => { currentTick = i; renderTick(); updateUI(); },
+  cardMeta: () => CARD_META,
+};
 </script>
 </body>
 </html>
