@@ -39,6 +39,8 @@ Run:
     python_ai/venv/Scripts/python.exe python_ai/make_replays.py --n 5
 """
 import argparse
+import time
+from collections import Counter
 import json
 import os
 import sys
@@ -57,8 +59,20 @@ import python_ai  # noqa: E402,F401
 import clash_royale_env  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.search.config import SearchCfg  # noqa: E402
-from python_ai.models.policy_io import load_net  # noqa: E402
+from python_ai.models.policy_io import load_net, LSTM_HIDDEN  # noqa: E402
 from python_ai.rl.replay import annotate_replay_with_agent_info  # noqa: E402
+# These four were USED by play_and_log but never imported, so this script died
+# with `NameError: LSTM_HIDDEN` on its first episode and could not be run at
+# all. Lost in the 2026-08-20 package restructuring, the same way
+# trainers/bc_pretrain.py lost its script bootstrap; found 2026-08-21 while
+# adding --teacher-debug.
+from python_ai.search.search import (  # noqa: E402
+    policy_head, greedy_from_logits, search_action, outcome_score,
+)
+from python_ai.opponents.teacher import UtilityTeacher  # noqa: E402
+from python_ai.rl.teacher_debug import (  # noqa: E402
+    CapturingTeacher, attach_teacher_debug,
+)
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10  # matches rl.replay.REPLAY_SKIP_FRAMES; 1 decision -> 10 ticks
@@ -104,6 +118,98 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
     return reward, steps, plays
 
 
+@torch.no_grad()
+def play_and_log_vs_teacher(net, env, device, path, stage=5, top_k=4,
+                            seed=None, max_steps=400):
+    """One episode of `net` against the UtilityTeacher, with the teacher's
+    candidate rollouts recorded into the replay for the viewer.
+
+    A SEPARATE FUNCTION FROM play_and_log, because the opponent is genuinely
+    different plumbing rather than a parameter: play_and_log calls env.step(),
+    which runs the C++ HeuristicOpponent internally, and there is no teacher in
+    that path to record. Here team 1's move comes from the teacher and both
+    sides go through step_self_play.
+
+    The teacher's (x, y) is passed through UNCONVERTED. It returns coordinates
+    in its own mirrored frame and stepSelfPlay mirrors y back itself
+    (realY1 = BOARD_HEIGHT - 1 - y1); converting here would double-mirror and
+    put every opponent placement in its own back corner.
+    """
+    teacher = CapturingTeacher(list(DEFAULT_DECK), team=1, seed=seed, top_k=top_k)
+    teacher.set_stage(stage)
+    teacher.reset()
+
+    hidden = (torch.zeros(1, LSTM_HIDDEN, device=device),
+              torch.zeros(1, LSTM_HIDDEN, device=device))
+    obs = env.get_observation_for_team(0)
+    decisions, plays = [], []
+    reward, steps, done = 0.0, 0, False
+
+    while not done and steps < max_steps:
+        obs_t = torch.tensor(np.asarray(obs, dtype=np.float32), device=device).unsqueeze(0)
+        card_logits, card_embeds, spatial_map, value, hidden_next = policy_head(net, obs_t, hidden)
+        action = greedy_from_logits(net, obs_t, card_logits, card_embeds,
+                                    spatial_map, hidden_next)
+
+        hand = list(env.get_hand())
+        idx = action[0]
+        card_id = hand[idx] if idx < len(hand) else -1
+        decisions.append({"stateValue": float(value.item()),
+                          "actionCardId": int(card_id),
+                          "actionX": float(action[1]),
+                          "actionY": float(action[2])})
+        if card_id != -1:
+            plays.append((steps, int(card_id), round(action[1], 1), round(action[2], 1)))
+
+        obs1 = np.asarray(env.get_observation_for_team(1), dtype=np.float32)
+        slot1, x1, y1 = teacher.act(env, obs1)
+
+        hidden = hidden_next
+        r = env.step_self_play(action[0], action[1], action[2],
+                               slot1, x1, y1, SKIP)
+        obs, reward, done = r.observation0, float(r.reward0), bool(r.done)
+        steps += 1
+
+    env.save_log(path)
+    annotate_replay_with_agent_info(path, decisions, SKIP)
+    attach_teacher_debug(path, teacher.debug_records, SKIP)
+    return reward, steps, plays, teacher
+
+
+def _run_teacher_debug(args, net, device, outdir):
+    """--teacher-debug: one replay per opening, teacher reasoning recorded.
+
+    Deliberately NOT paired. The paired A/B above exists to compare two nets
+    against a fixed opponent; this mode exists to watch ONE net against an
+    opponent whose reasoning is visible, which is a different question and a
+    different artifact.
+    """
+    print(f"\nopponent : UtilityTeacher @ stage {args.teacher_stage}")
+    print(f"net      : {args.original} (greedy)")
+    print(f"capture  : top {args.teacher_top_k} candidates get a predicted board")
+    print(f"out      : {outdir}\n")
+
+    for i in range(args.n):
+        env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), args.max_ticks)
+        env.seed(i)
+        env.reset()
+        path = os.path.join(outdir, f"replay_{i}_teacher_debug.json")
+        t0 = time.time()
+        reward, steps, plays, teacher = play_and_log_vs_teacher(
+            net, env, device, path, stage=args.teacher_stage,
+            top_k=args.teacher_top_k, seed=i)
+        recs = teacher.debug_records
+        kinds = Counter(r["kind"] for r in recs)
+        boards = sum(1 for r in recs for c in r["candidates"] if "final" in c)
+        size_mb = os.path.getsize(path) / 1e6
+        print(f"  replay {i}: {steps} decisions, {len(plays)} plays by the net | "
+              f"teacher {dict(kinds)} | {boards} predicted boards | "
+              f"{size_mb:.1f} MB | {time.time() - t0:.0f}s")
+
+    print(f"\nOpen web/viewer.html, drop a JSON from {args.outdir} onto it,")
+    print("and press T (or click the brain chip) for the Simulation View.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--n", type=int, default=5, help="paired openings")
@@ -114,6 +220,16 @@ def main():
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--search", action="store_true",
                     help="arm B uses 1-ply search instead of the distilled net")
+    ap.add_argument("--teacher-debug", action="store_true",
+                    help="play --original against the UtilityTeacher instead of "
+                         "the heuristic, and record the teacher's candidate "
+                         "rollouts into the replay for the viewer's Simulation "
+                         "View. Not paired: one replay per opening.")
+    ap.add_argument("--teacher-stage", type=int, default=5,
+                    help="teacher competence rung for --teacher-debug (0-5)")
+    ap.add_argument("--teacher-top-k", type=int, default=4,
+                    help="candidates per decision that get a predicted board. "
+                         "Each costs ~32 ms; the rest are recorded score-only.")
     args = ap.parse_args()
 
     device = torch.device("cpu")
@@ -126,6 +242,10 @@ def main():
     net_b = net_a if args.search else load_net(os.path.join(here, args.distilled), device)
     cfg = SearchCfg()
     label_b = "search" if args.search else "distilled"
+
+    if args.teacher_debug:
+        _run_teacher_debug(args, net_a, device, outdir)
+        return
 
     print(f"\nopponent : HeuristicOpponent at {args.opp_elixir}x elixir")
     print(f"arm A    : {args.original} (greedy)")

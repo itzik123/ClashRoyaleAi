@@ -398,6 +398,9 @@ replays_sample/
 # (each is 1-4 MB of per-tick board state).
 replays_e3/
 replays_search/
+# make_replays.py --teacher-debug output. Same rule: regenerable, and larger
+# still because each decision carries up to five predicted boards.
+replays_teacher_debug/
 
 # Session working directories: isolated trainer CWDs and checkpoint backups
 _runs/
