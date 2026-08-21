@@ -278,6 +278,55 @@ on the same half-tile convention error, which is why its residual looked small
 `clash_royale_env.ARENA_*` plus `arena_king_y(team)` / `arena_princess_y(team)`,
 surfaced through `python_ai/engine_constants.py`. Derive; do not restate.
 
+**...and there were SIX, not four. `web/viewer.html` was the sixth, found
+2026-08-21.** It hardcoded `[[3, 4], [13, 14]]` — the arena as it stood BEFORE
+the re-centring — and painted **four of the eighteen columns wrong in both
+directions**: 2 and 15 are real bridge and were drawn as water, 4 and 13 are
+water and were drawn as bridge. Same shape as the observation-encoder bug
+(§ "The observation encoder was NOT updated with the arena"), found the same
+day; this was the copy nobody thought to check after that one was fixed.
+
+Order of discovery, since the count in this file has now moved twice: the four
+above, then `extractObservationForTeam`'s channel 8, then the viewer.
+
+**THE VIEWER IS A DIFFERENT KIND OF COPY, AND THAT IS THE PART WORTH
+CARRYING.** The other five were all reachable by the rule this section states.
+`ArenaLayout` is bound to Python, so `geometry.py`, `tactics.py` and
+`engine_constants.py` *can* derive, and the encoder lives in the engine itself
+and could be made to share `Board::isOnBridge`. **The viewer can do neither.**
+It is a `file://` HTML page whose only input is a replay JSON, and
+
+    the replay JSON carries no arena geometry at all.
+
+So "derive; do not restate" is not advice the viewer is able to follow. It is
+*structurally required* to restate, and therefore structurally guaranteed to go
+stale — it was simply a question of which arena change would do it. Discipline
+was never going to prevent this one.
+
+Two consequences:
+
+- **The honest fix is to put the geometry in the replay** — `GameLogger::save`
+  already writes a live `cardMeta` block from `CardRegistry` for exactly this
+  reason, and an `arena` block from `ArenaLayout` would close the hole the same
+  way. That is a C++ change and so a proposal, not a change made in passing.
+- **Until then the viewer's copy is annotated with the header that owns each
+  value** (`ArenaLayout.h`'s `LEFT_BRIDGE_X`, `Board.h`'s `BRIDGE_HALF_WIDTH`
+  and river band), which is the fallback `perception/geometry.py` already uses
+  and the best available when derivation is impossible.
+
+**And the detector is cheap: compare RENDERED PIXELS against the engine's own
+river row.** Sampling the drawn canvas across the river band and classifying
+each column warm/cool must reproduce `WWBBWWWWWWWWWWBBWW` — the same string the
+encoder fix was verified against. A test that pins the expected *columns*
+instead would need hand-editing on the next arena change and would go stale
+exactly the way the thing it checks did.
+
+**The general rule this adds:** a second copy is unavoidable wherever a
+consumer cannot reach the source of truth. Ask of every such copy not "is it
+correct" but *"could this consumer derive it if it wanted to?"* — where the
+answer is no, the copy is a scheduled defect, and the fix belongs in the
+FORMAT, not in the consumer.
+
 **The team-1 observation was displaced one row until 2026-07-31.**
 `extractObservationForTeam` mirrored the *truncated row* rather than the
 *mirrored position* — `33 - int(y)` instead of `int(33 - y)`, which agree only
