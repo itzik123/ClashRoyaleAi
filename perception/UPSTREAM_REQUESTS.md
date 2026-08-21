@@ -2018,3 +2018,81 @@ produces the number in the first place.
 2. `perception/.venv/Scripts/python.exe -m pytest perception/tests -q`.
 3. `python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q`.
 4. The Catch2 suite (582 cases, exactly one `[!shouldfail]`).
+
+---
+
+## 20. OPEN — spawned entities carry no `cardId`, so a replay cannot name them
+
+**Found 2026-08-21 while fixing `web/viewer.html`'s entity inspector.** The
+viewer-side half is fixed and shipped; this item is the engine-side half, which
+is a C++ change and therefore a proposal rather than an edit.
+
+### What is there now
+
+`Entity.h:45` declares `int cardId = -1`. `CardFactories::applyCardMetadata`
+assigns a real id for a card played from hand, and nothing assigns one for an
+entity spawned by another entity — death-spawns (`SpawnOnDeath`,
+`SpawnOnDeathForEnemyTeam`), spawner buildings (`PeriodicSpawnEffect`,
+`ProximityGatedPeriodicSpawnEffect`, `CappedSpawnOnHitEffect`) and tower troops
+(`TowerTroops.h`). Those keep the `-1`.
+
+### Consequence
+
+`GameLogger` writes `cardId` per entity plus an id-keyed `cardMeta` block, so a
+replay is self-describing for every card played from hand **and for nothing
+else**. A `-1` entity cannot use the id lookup and falls through to the
+viewer's symbol-keyed tables, which cover ~45 of the 173 registry entries.
+
+Where that missed, the last resort was the RAW SYMBOL — and `'?'` is
+`CardDefinition`'s default symbol (`CardRegistry.h:100`) as well as the explicit
+symbol of Cannon Cart (69) and Guards (76). So a card could be displayed to the
+user as a literal `?`. That is the reported bug.
+
+### Measured
+
+Built from a live replay's own `cardMeta` (132 playable + 41 Evolution entries):
+
+| | |
+|---|---|
+| distinct symbols in the registry | **90** |
+| symbols shared by more than one card | **36 (40%)** |
+| cards whose symbol is `'?'` | Cannon Cart (69), Guards (76) |
+
+So symbol is not a safe key even as a fallback: for a `-1` entity a collision is
+not resolvable, which is why the viewer now flags such a resolution as
+"identified by symbol" rather than presenting it as certain.
+
+### Blast radius — NOT physics-affecting, but IS reward-affecting
+
+`cardId` is read by stats attribution (`StatsEvents`, `MatchStatistics`) and by
+the logger. Nothing in `include/entities/` branches on it to decide movement,
+targeting or damage, so propagating it **cannot change a simulation outcome**.
+
+It WOULD change per-card stats attribution: a Skeleton spawned by a Tombstone
+would begin attributing its damage to a card rather than to nothing, and
+`get_elixir_value_killed_by` / `get_damage_dealt_by_card` both read those — and
+those feed reward shaping. That makes it reward-affecting even though it is not
+physics-affecting, which is precisely why it is worth deciding deliberately
+rather than patching in passing.
+
+### Options
+
+1. **Propagate a `cardId` to spawned entities.** Simplest. Changes stats
+   attribution as described above, so every reward-shaped number earned before
+   it would be earned under a different attribution.
+2. **Add a separate `spawnedByCardId`** and leave `cardId` alone. The logger
+   gains one field and the viewer one fallback; stats attribution is untouched.
+   **This is the option that fixes the display without touching the reward
+   path**, and is the recommendation.
+3. **Do nothing.** What shipped: the viewer resolves these by symbol against the
+   replay's own `cardMeta` and never renders a bare `?`. Residual defect is the
+   40% symbol collision rate above — a `-1` entity on a shared symbol may be
+   shown under the wrong name and HP maximum, flagged as inferred.
+
+### Verification if option 2 is taken
+
+1. A replay containing a Tombstone or Witch must show every spawned body with a
+   real name in the viewer's inspector, with no "identified by symbol" note.
+2. `get_elixir_value_killed_by` totals must be **unchanged** against a
+   pre-change run on the same seed — that is the whole point of option 2.
+3. The Catch2 suite (619 cases, exactly one `[!shouldfail]`).
