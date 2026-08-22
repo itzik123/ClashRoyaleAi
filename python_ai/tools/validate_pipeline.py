@@ -507,22 +507,66 @@ def validate_side_null(net_path, episodes=300):
 
 
 # --------------------------------------------------------- 7. the C++ suite --
+#: Where to look for ClashRoyaleTests.exe, in preference order. `build_python`
+#: is the LIVE directory -- it is what both the .pyd and the Catch2 suite are
+#: built from (CLAUDE.md's toolchain box). The other two are leftovers that at
+#: least one machine still carries.
+#:
+#: This used to walk `build_test` ONLY, and on 2026-08-20 that directory held a
+#: binary 18 h older than the engine it claimed to cover: the gate reported a
+#: green "546 test cases / 5,316 assertions" and PASSED, while the current
+#: binary reports 582 / 5,737 with one [!shouldfail] case. It was measuring the
+#: pre-audit engine. A green suite is not evidence it was the RIGHT suite, so
+#: the binary's IDENTITY is now checked alongside its exit code.
+CPP_BUILD_DIRS = ("build_python", "build", "build_test")
+
+#: Source trees whose newest mtime the test binary must post-date. A binary
+#: older than the code it links is the stale-glob trap wearing another costume,
+#: and it fails silently in the direction of false confidence.
+CPP_SOURCE_DIRS = ("include", "src", "tests")
+
+
+def _newest_source_mtime():
+    newest = 0.0
+    for d in CPP_SOURCE_DIRS:
+        for root, _dirs, files in os.walk(os.path.join(python_ai.REPO_ROOT, d)):
+            for f in files:
+                if f.endswith((".h", ".hpp", ".cpp")):
+                    newest = max(newest, os.path.getmtime(os.path.join(root, f)))
+    return newest
+
+
+def _find_cpp_suite():
+    """Newest ClashRoyaleTests.exe in the most-preferred dir that holds one."""
+    for d in CPP_BUILD_DIRS:
+        found = []
+        for root, _dirs, files in os.walk(os.path.join(python_ai.REPO_ROOT, d)):
+            for f in files:
+                if f.lower() == "clashroyaletests.exe":
+                    found.append(os.path.join(root, f))
+        if found:
+            return max(found, key=os.path.getmtime), d
+    return None, None
+
+
 def validate_cpp():
     banner("7. C++ engine test suite")
-    exe = None
-    for root, _dirs, files in os.walk(
-            os.path.join(python_ai.REPO_ROOT, "build_test")):
-        for f in files:
-            if f.lower() == "clashroyaletests.exe":
-                exe = os.path.join(root, f)
+    exe, where = _find_cpp_suite()
     if exe is None:
-        check("C++ suite", False, "ClashRoyaleTests.exe not found in build_test/")
+        check("C++ suite", False,
+              "ClashRoyaleTests.exe not found in " + "/".join(CPP_BUILD_DIRS))
         return
+
+    built, newest = os.path.getmtime(exe), _newest_source_mtime()
+    stamp = lambda t: time.strftime("%m-%d %H:%M", time.localtime(t))  # noqa: E731
+    check("the test binary post-dates the engine source", built >= newest,
+          f"{where}/ built {stamp(built)}, newest source {stamp(newest)}")
+
     t0 = time.time()
     p = subprocess.run([exe], capture_output=True, text=True, timeout=1800)
     tail = (p.stdout or "").strip().splitlines()[-3:]
     check("Catch2 suite passes", p.returncode == 0,
-          f"{time.time() - t0:.0f}s | " + " | ".join(tail))
+          f"{where}/ | {time.time() - t0:.0f}s | " + " | ".join(tail))
 
 
 def main():
