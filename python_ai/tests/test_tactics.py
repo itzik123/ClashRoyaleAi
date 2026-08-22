@@ -271,13 +271,27 @@ def test_override_rate_limits_the_cannon(net):
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
     env.reset()
+    # The hand is DEALT, not drawn from a shuffle. This used to read whatever
+    # `reset()` happened to deal and `pytest.skip` when the Cannon was absent,
+    # so the assertions below silently did not run on a fair fraction of
+    # invocations -- a coverage hole that moved run to run and was visible only
+    # as the suite's skip count drifting between 2 and 3.
+    #
+    # An ASSERT rather than a skip on the result, deliberately: if
+    # `set_hand_for_team` ever stops working, this test must fail loudly
+    # instead of quietly excusing itself, which is the failure mode being
+    # removed. Card index 4 is the no-op, so the `step` below does not cycle
+    # the hand back out.
+    env.set_hand_for_team(
+        0, [tactics.CANNON_ID] + [c for c in deck if c != tactics.CANNON_ID][:3])
     env.inject_enemy(2, 9.0, 17.0)
     env.step(4, 0.0, 0.0, 1)
     obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
     obs[tactics.SPATIAL] = 1.0
     hand = list(env.get_hand())
-    if tactics.CANNON_ID not in hand:
-        pytest.skip("Cannon not in the opening hand this shuffle")
+    assert tactics.CANNON_ID in hand, (
+        "set_hand_for_team did not put the Cannon in hand -- this test cannot "
+        "exercise the rate limiter without it")
 
     ov = tactics.TacticalOverride(net._placement_legal.numpy(), reserve=0.0,
                                   cannon_min_cover=1.0, fireball_min_catch=1e12)
