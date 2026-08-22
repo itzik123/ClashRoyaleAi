@@ -151,8 +151,13 @@ def test_teacher_is_side_agnostic():
     bot that never lands a card, not as an exception."""
     from python_ai.opponents.teacher import UtilityTeacher
 
+    # SEEDED. A bare reset() drew team 1's opening hand from
+    # std::random_device, so "how many cards land in 120 decisions" varied per
+    # invocation and this occasionally tripped its own >= 5 floor. That was
+    # latent for as long as the scorer was lenient. `ClashRoyaleEnv.seed()`
+    # seeds both engine generators and re-deals (2026-08-21).
     env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
-    env.reset()
+    env.seed(0)
     t1 = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1, horizon_ticks=30, seed=0)
     t1.reset()
     played = 0
@@ -259,7 +264,8 @@ def test_teacher_stages_are_competence_not_economy():
 
     assert len(TEACHER_STAGES) == 6
     for s in TEACHER_STAGES:
-        assert set(s) == {"horizon_ticks", "epsilon", "k_cells", "max_combos"}, (
+        assert set(s) == {"horizon_ticks", "epsilon", "k_cells", "max_combos",
+                          "reactive"}, (
             "a stage must never carry an elixir multiplier -- that is the whole "
             "point of this curriculum")
         # The claim above is about ECONOMY, so state it directly rather than

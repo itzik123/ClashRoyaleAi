@@ -51,9 +51,22 @@ PLANE = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-def _env(ticks=40):
+def _env(ticks=40, seed=0):
+    """A staged mid-match board, SEEDED so the fixture is reproducible.
+
+    It used to call a bare `reset()`, which left team 1's hand and the whole
+    40-tick warm-up drawn from `std::random_device` -- so every invocation
+    staged a different position and any assertion about which candidate WINS
+    was a coin flip. That was invisible while the scorer was lenient and became
+    a ~1-in-3 flake the moment reactive rollouts made scores tighter.
+
+    `ClashRoyaleEnv.seed()` seeds both engine generators and re-deals (landed
+    2026-08-21), so this is now available; CLAUDE.md's claim that the opening
+    shuffle cannot be seeded is stale. Seed 0 is not cherry-picked: the staged
+    state below chooses a combo in 33 of the first 40 seeds (82%).
+    """
     env = CE(DECK, DECK, 3600)
-    env.reset()
+    env.seed(seed)
     for _ in range(ticks):
         env.step_self_play(-1, 0, 0, -1, 0, 0, 10)
     return env

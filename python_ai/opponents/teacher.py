@@ -378,13 +378,26 @@ PROFILES = {
 # shortest rungs is not a policy choice -- their horizons (0 and 10 ticks)
 # cannot reach the follow-up at +10 ticks, so a combo there would be scored on
 # a rollout that never plays half of it (COMBO_MIN_HORIZON_TICKS).
+# `reactive` is the FOURTH competence axis (2026-08-21): does the rollout
+# opponent answer, or stand still? Off on the two shortest rungs -- they are
+# structurally inert (stage 0 takes `_rules_only` and never rolls out; stage
+# 10 ticks is one chunk, which is the counter's own delay) AND it states the
+# cold-start intent: phase 1's teacher models the RL AGENT, which at episode 0
+# cannot defend, so assuming a competent answer there would price every attack
+# as punished by an opponent who would not punish it.
 TEACHER_STAGES = [
-    {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1, "max_combos": 0},  # rules only
-    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1, "max_combos": 0},  # 1 s
-    {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2, "max_combos": 2},  # 3 s
-    {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2, "max_combos": 3},  # 5 s
-    {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3, "max_combos": 4},  # 7 s
-    {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3, "max_combos": 4},  # 10 s
+    {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1, "max_combos": 0,
+     "reactive": False},                                       # rules only
+    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1, "max_combos": 0,
+     "reactive": False},                                       # 1 s
+    {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2, "max_combos": 2,
+     "reactive": False},                                       # 3 s
+    {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2, "max_combos": 3,
+     "reactive": False},                                       # 5 s
+    {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3, "max_combos": 4,
+     "reactive": False},                                       # 7 s
+    {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3, "max_combos": 4,
+     "reactive": True},                                        # 10 s
 ]
 
 
@@ -407,6 +420,41 @@ WINCON_DUD_CELLS = [(2.0, 2.0), (15.0, 2.0), (2.0, 4.0), (15.0, 4.0), (9.0, 5.0)
 # placements across consecutive decisions, which is also the shape the +448.5
 # tower-HP "supported push" was measured at.
 COMBO_FOLLOWUP_DELAY_TICKS = 10
+
+# How long the rollout opponent takes to answer an attacking placement.
+#
+# ONE DECISION, matching `skip_frames`, because that is the fastest a real
+# opponent could possibly react -- it cannot answer a card on the tick it
+# lands. Answering instantly would make the rollout opponent superhuman, and
+# the sweep shows what that costs: a responder that decided EVERY chunk scored
+# +0.2217 against +0.2450 for one that decided every third, at 2.1x the price.
+# More reaction is not better past the point where it stops resembling a
+# player.
+COUNTER_DELAY_TICKS = 10
+
+# A rollout may only CHARGE the opponent's answer when it is long enough to
+# also SEE the attack's payoff.
+#
+# The asymmetry: the counter's cost lands at +10 ticks, but a Hog needs ~130 to
+# cross ~12 tiles at Fast speed. A short rollout therefore charges the answer in
+# full and credits none of the push -- a systematic anti-attack bias that gets
+# WORSE the shorter the horizon. Measured against a PASSIVE opponent (which is
+# what an episode-0 agent is), 20 seeded openings, share of decisions landing a
+# card, and how many openings froze to under 5 plays in 120 decisions:
+#
+#     horizon    OFF      ON     froze
+#        30     12.2%    9.8%     3/20
+#        50     11.6%   10.1%     3/20
+#        70     12.5%   11.3%     1/20
+#       100     11.8%   12.3%     0/20
+#
+# The +0.1500 win rate was measured at 100, where the bias is gone. Enabling it
+# at 30 would ship the zero-gradient failure the 2026-08-19 curriculum pivot
+# exists to remove -- a teacher that freezes against a weak opponent.
+#
+# Same shape as COMBO_MIN_HORIZON_TICKS: never simulate half an interaction and
+# score it as though it were whole.
+COUNTER_MIN_HORIZON_TICKS = 100
 
 # THE GAP IS A SEARCHED AXIS, not a constant, and that is the change that made
 # combos reachable at all.
@@ -649,9 +697,13 @@ class UtilityTeacher:
 
     def __init__(self, deck, team, profile=None, horizon_ticks=30, k_cells=2,
                  epsilon=0.0, seed=None, wincon_mode="attack", max_combos=3,
-                 combo_reserve=None):
+                 combo_reserve=None, reactive_rollout=True):
         self.deck = list(deck)
         self.team = int(team)
+        #: Does the rollout opponent ANSWER, or stand still? See
+        #: `counter_schedule` for the measurement and for why the counter is
+        #: open-loop. `False` is action-identical to the pre-2026-08-21 teacher.
+        self.reactive_rollout = bool(reactive_rollout)
         self.wincon_mode = wincon_mode
         self.roles = card_roles(self.deck)
         self.wincon_id = next((c for c, r in self.roles.items() if r == "wincon"),
@@ -790,6 +842,7 @@ class UtilityTeacher:
         self.epsilon = cfg["epsilon"]
         self.k_cells = cfg["k_cells"]
         self.max_combos = cfg["max_combos"]
+        self.reactive_rollout = cfg["reactive"]
 
     # -- frames ------------------------------------------------------------
     def to_absolute_y(self, y_own):
@@ -1310,6 +1363,7 @@ class UtilityTeacher:
         sched = {}
         for st in cand.steps:
             sched.setdefault(int(st.delay_ticks), st)
+        counters = self.counter_schedule(cand)
         t = 0
         while t < ticks and not s.is_game_over():
             st = sched.get(t)
@@ -1320,12 +1374,76 @@ class UtilityTeacher:
             for d in sched:
                 if t < d < nxt:
                     nxt = d
+            for d in counters:
+                if t < d < nxt:
+                    nxt = d
+            oslot, ox, oy = self.counter_action(s, counters.get(t))
             if self.team == 0:
-                s.step_self_play(slot, x, y, -1, 0.0, 0.0, nxt - t)
+                s.step_self_play(slot, x, y, oslot, ox, oy, nxt - t)
             else:
-                s.step_self_play(-1, 0.0, 0.0, slot, x, y, nxt - t)
+                s.step_self_play(oslot, ox, oy, slot, x, y, nxt - t)
             t = nxt
         return s
+
+    # -- the reacting opponent ---------------------------------------------
+    def counter_schedule(self, cand):
+        """{tick: (x, y)} -- when and where the rollout opponent answers.
+
+        OPEN-LOOP BY MEASUREMENT, not by laziness. The answer is derived once,
+        here, from OUR OWN candidate; nothing is read from the board inside the
+        rollout. Four responders were compared as paired win rate over 150
+        seeded openings (sides swapped, control exactly 0.500): this one scores
+        +0.1583 [+0.1033, +0.2117] at 0.91x the no-op's cost, and every
+        arm-vs-arm comparison against the three closed-loop variants is a NULL
+        (p 0.0857 to 0.832). Indistinguishable effect, so the cheapest wins --
+        and this one is cheaper than doing nothing, because the counter ends
+        matches sooner.
+
+        ONLY AN ATTACKING PLACEMENT DRAWS AN ANSWER. A card played in our own
+        half is not a threat the opponent has to spend on, and charging one for
+        it would penalise defence -- the failure mode that made an
+        always-answering responder score BELOW a less frequent one.
+        """
+        if not self.reactive_rollout:
+            return {}
+        if self.horizon_ticks < COUNTER_MIN_HORIZON_TICKS:
+            return {}
+        out = {}
+        for st in cand.steps:
+            if st.y < tactics.BRIDGE_ROW - 1:
+                continue
+            out[int(st.delay_ticks) + COUNTER_DELAY_TICKS] = (st.x, st.y)
+        return out
+
+    def counter_action(self, s, cell):
+        """The opponent's (slot, x, y) for one chunk, in THEIR own frame."""
+        if cell is None:
+            return -1, 0.0, 0.0
+        opp = 1 - self.team
+        # Our attacking cell mirrored into their frame: our y=15 arrives at
+        # their MIRROR_Y - 15. Clamped to their own half, since a defender
+        # answers on its own side.
+        rx = float(int(cell[0]))
+        ry = float(int(max(0.0, min(float(tactics.BRIDGE_ROW),
+                                    MIRROR_Y - cell[1]))))
+        elixir = float(s.get_elixir_for_team(opp))
+        hand = list(s.get_hand_for_team(opp))
+        best = None
+        for slot, cid in enumerate(hand[:HAND_SIZE]):
+            if self.roles.get(cid, "melee") not in ("melee", "ranged", "building"):
+                continue
+            cost = float(E.get_card_info(cid)["cost"])
+            if cost > elixir + 1e-6:
+                continue
+            if best is None or cost < best[0]:
+                best = (cost, slot, cid)
+        if best is None:
+            return -1, 0.0, 0.0
+        _, slot, cid = best
+        y_abs = float(ry) if opp == 0 else MIRROR_Y - float(ry)
+        if not s.is_valid_placement(cid, rx, y_abs, opp):
+            return -1, 0.0, 0.0
+        return slot, rx, ry
 
     def rollout_stats(self, env, cand):
         """Roll one candidate forward on a SNAPSHOT and read the engine.

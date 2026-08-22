@@ -2808,6 +2808,166 @@ has gone stale here.
 
 ---
 
+## 2026-08-21: REACTIVE ROLLOUTS. The rollout opponent stopped standing still.
+
+**GAMEPLAY-AFFECTING for phase 1.** Every win rate earned against
+`teacher@stage N` before this date describes a bot whose scorer was blind to
+being answered. Checkpoints are NOT invalidated -- observation, action space,
+architecture and reward are untouched.
+
+`rollout_stats` rolled every candidate forward with BOTH SIDES NO-OPING, so a
+naked bridge push was scored against an opponent who never dropped a Cannon.
+`UtilityTeacher.counter_schedule` / `counter_action` now place a defensive
+answer inside the rollout; `reactive` is a fourth axis in `TEACHER_STAGES`
+(**stage 5 only** -- see the horizon gate below) and `reactive_rollout=False`
+is the one-line off switch.
+
+### The bias was real, large and ONE-DIRECTIONAL
+
+Ground truth = a full stage-5 `UtilityTeacher` playing the other side, which is
+a DIFFERENT policy from any candidate responder, so the comparison is not
+circular. Over 150 naked bridge pushes, paired on the same snapshots:
+
+| | no-op rollout predicts | truth | bias |
+|---|---|---|---|
+| tower damage dealt | 587.5 | 139.5 | **+448.0** |
+| elixir lost | 0.09 | 2.84 | -2.75 |
+| **says PLAY** | **90.7%** | **7.3%** | **125 false GO / 0 false HOLD** |
+
+Reacting cuts the tower-damage bias to +19.0 (MAE 448 -> 108; paired -340.3,
+CI [-395.2, -285.3], 94 closer / 9 further, p = 5.5e-19).
+
+### WHAT IT FIXES IS NARROWER THAN IT SOUNDS, and the headline metric was CONFOUNDED
+
+Overall argmax agreement with truth goes 36.4% -> 52.7%, and **that number is
+not the result.** Truth holds on 45% of decisions and the responder holds on
+78%, so declining more scores on it for free. Decomposed over 110 decisions
+(truth plays 60, holds 50):
+
+| estimator | hold+hold | SAME PLAY | missed | false GO | **P(same \| truth plays)** |
+|---|---|---|---|---|---|
+| no-op | 23 | 17 | 26 | **27** | **28.3%** |
+| reflex | 46 | 12 | 40 | **4** | 20.0% |
+| reflex, bar 0 | 17 | 17 | 17 | 33 | 28.3% |
+| rules (attacking) | 45 | 11 | 38 | 5 | 18.3% |
+| rules, bar 0 | 28 | 17 | 23 | 22 | 28.3% |
+
+**Every estimator tops out at exactly 28.3% -- none ever beats the BLIND one at
+picking WHICH play to make**, at any responder fidelity or any margin. What is
+bought is `false GO 27 -> 4` and win-condition plays 8 -> 3. Two repairs of the
+resulting passivity were tried and both traded quality for play-rate 1:1: an
+answer budget (rate 21.8% -> 49.1%, rho +0.292 -> +0.007) and re-sweeping
+`play_margin` (rate restored, agreement falls with it).
+
+What DOES improve is the RANKING: rho vs truth -0.003 (no-op) -> +0.292
+(reflex, p = 0.0022) -> +0.434 (rules, p = 0.00026). **The shipped scorer's
+ordering over candidates was uncorrelated with what a real opponent would make
+of them.**
+
+### The responder is OPEN-LOOP because the cost knee said so
+
+Four responders, paired win rate, 150 seeded openings each, sides swapped,
+control `noop vs noop == 0.5000` exactly:
+
+| arm | cost/decision | delta vs no-op | 95% CI | p |
+|---|---|---|---|---|
+| **scripted (open-loop)** | **0.91x** | **+0.1583** | [+0.1033, +0.2117] | 1.9e-07 |
+| reflex, stride 50 | 1.95x | +0.2050 | [+0.1500, +0.2567] | 3.3e-11 |
+| reflex, stride 30 | 2.63x | +0.2450 | [+0.1933, +0.2933] | 1.4e-15 |
+| reflex, stride 10 | 5.50x | +0.2217 | [+0.1667, +0.2733] | 4.4e-12 |
+
+**All four beat the control. Paired ARM vs ARM on the same openings, all SIX
+comparisons are NULL** (p from 0.0857 to 0.832) -- ~60 of 150 openings tie, so
+only ~88 pairs carry signal. The decision therefore collapsed to cost and the
+cheapest arm won. **Four overlapping marginal CIs are not a ranking**; the
+point estimates were read as one three separate times during this work and the
+pairwise test refuted each reading.
+
+**Note the NON-MONOTONICITY**, since it is why "more is better" was rejected:
+stride 10 costs 2.1x stride 30 and scores BELOW it. Deciding every chunk makes
+the rollout opponent superhuman -- observed dumping Skeletons, Ice Spirit,
+Cannon AND Ice Golem onto one Hog. Same shape as the neural search measuring
+horizon 20 worse than 12, and the teacher's ladder topping out at 10 s.
+
+**The numpy-observation binding was proposed and then NOT filed.** 81% of a
+CLOSED-LOOP responder's cost is marshalling 13,606 floats across pybind
+(0.611 ms of a 0.752 ms decision, against a 0.0023 ms memcpy floor). The
+open-loop responder reads no observation at all, so the binding buys nothing
+here. Do not re-propose it for this reason.
+
+### Verified on the SHIPPED code, not on the prototype
+
+TDD had the feature implemented fresh from tests, so the production class is
+not the measured prototype and was re-measured rather than assumed:
+
+    reactive ON vs OFF   0.6500   +0.1500  [+0.0896, +0.2104]  p = 1.41e-05
+                                  52 better / 16 worse / 52 level
+
+Cost, production class: **1.10x per decision**, measured interleaved,
+min-of-repeats, over 60 shared states. **Do not quote a per-MATCH figure from
+that harness** -- it times a 20-opening control against a 100-opening treatment,
+so its ratio moved 1.71x / 0.90x / 1.34x across three runs of the same code and
+is measuring the sample, not the arm. The per-decision number is the one taken
+under a controlled protocol.
+
+### THE HORIZON GATE, found in pre-merge verification and not before
+
+The first wiring turned `reactive` on at stages 2-5 on a cold-start argument.
+That is measured WRONG, and the mechanism is an asymmetry between when the two
+halves of an exchange land: **the counter is charged at +10 ticks, while the
+attack's payoff needs ~130** (a Hog crossing ~12 tiles at Fast speed). A rollout
+shorter than the crossing therefore charges the answer in full and credits none
+of the push. Against a PASSIVE opponent -- which is exactly what an episode-0
+agent is -- 20 seeded openings, share of decisions that landed a card, and how
+many openings froze to under 5 plays in 120 decisions:
+
+| horizon | reactive OFF | ON | froze |
+|---|---|---|---|
+| 30 | 12.2% | 9.8% | **3/20** |
+| 50 | 11.6% | 10.1% | **3/20** |
+| 70 | 12.5% | 11.3% | 1/20 |
+| **100** | 11.8% | **12.3%** | **0/20** |
+
+So enabling it below 100 ships the zero-gradient failure the 2026-08-19
+curriculum pivot exists to remove. `COUNTER_MIN_HORIZON_TICKS = 100` gates it,
+and only stage 5 clears the gate -- which is also the only rung the +0.1500 was
+ever measured at. After the gate, horizon 30 returns to min 6 / median 9 plays
+and 0/25 frozen, identical to reactive OFF.
+
+**How it surfaced is the transferable part.** It did not appear in any
+aggregate: the stage-5 passive probe reads 12.3% both ways, and the win-rate
+A/B is run at stage 5 where the bias is gone. It surfaced as a FLAKY TEST --
+`test_teacher_is_side_agnostic`, which happens to drive a horizon-30 teacher
+against a do-nothing opponent, i.e. precisely the unmeasured corner. Ninth
+instance of this file's recurring lesson: an aggregate cannot see a conditional,
+and here the conditional was the horizon.
+
+**Combos are REINFORCED, not suppressed**, which was worth checking because an
+escorted push draws two counters where a naked one draws one. Measured over 12
+seeded matches: combo share of plays **10.0% -> 14.3%**. The naked push is
+penalised harder than the escorted one, so the escort becomes relatively more
+attractive -- the direction the deploy-time physics say it should go.
+
+### Two things found on the way
+
+**`test_the_teacher_actually_executes_a_planned_pair_end_to_end` was FLAKY and
+had been all along.** `test_teacher_combos._env()` called a bare `reset()`, so
+team 1's hand and the whole 40-tick warm-up came from `std::random_device` and
+every invocation staged a different position. Invisible while the scorer was
+lenient; a 1-in-3 flake once reactive rollouts tightened the margins. Now
+seeded -- the staged state picks a combo in 33 of the first 40 seeds, so seed 0
+is not cherry-picked.
+
+**`env.seed()` works and this file was stale about it.** It seeds BOTH
+`std::mt19937`s and re-deals; `UPSTREAM_REQUESTS.md` item 7 is DONE. Arm levels
+reproduced to four decimals across two independent invocations of the win-rate
+harness. The old rule -- "across runs only DELTAS are comparable, never arm
+levels" -- no longer holds for a harness that calls `seed()`. Most `prove_*.py`
+harnesses still do not.
+
+---
+
+
 ## 2026-08-20: the simulator audit. TWO absorbing states, one of them fixed.
 
 Opened on a report that "tanks and win conditions lag or get stuck on the
