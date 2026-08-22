@@ -467,7 +467,7 @@
     flex: 0 0 0px;
     overflow: hidden;
     background: var(--bg-secondary);
-    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     /* NO transition on the sizing property, deliberately. A transition is
@@ -636,6 +636,13 @@
 </div>
 
 <div class="main-layout">
+  <aside class="sim-panel" id="simPanel" aria-hidden="true">
+    <div class="sim-head">
+      <span class="panel-title" style="margin:0">Simulation View</span>
+      <button class="sim-close" id="simClose" title="Close (T)">&#10005;</button>
+    </div>
+    <div class="sim-body" id="simBody"></div>
+  </aside>
   <div class="arena-panel">
     <div class="arena-row">
       <div class="gauge-panel">
@@ -701,13 +708,6 @@
     </div>
   </div>
 
-  <aside class="sim-panel" id="simPanel" aria-hidden="true">
-    <div class="sim-head">
-      <span class="panel-title" style="margin:0">Simulation View</span>
-      <button class="sim-close" id="simClose" title="Close (T)">&#10005;</button>
-    </div>
-    <div class="sim-body" id="simBody"></div>
-  </aside>
 </div>
 
 <!-- Playback controls -->
@@ -719,7 +719,7 @@
     <input type="range" class="scrubber" id="scrubber" min="0" max="0" value="0">
   </div>
   <button id="btnSimView" class="sim-chip" style="display:none" title="Simulation View (T)">
-    &#129504; <span id="simChipCount">0</span>
+<span id="simChipCount">Simulation View</span>
   </button>
   <div class="tick-display" id="tickDisplay">Tick 0 / 0</div>
   <span class="speed-label">Speed:</span>
@@ -1283,6 +1283,28 @@ function teacherDebugForTick(tickIndex) {
   return rec;
 }
 
+// A recorded placement -> ABSOLUTE board coordinates.
+//
+// The teacher plays team 1 and returns its cells in its OWN mirrored frame:
+// ClashEnv::stepSelfPlay does `realY1 = (BOARD_HEIGHT - 1) - targetY1` itself,
+// and UtilityTeacher.to_absolute_y is `MIRROR_Y - y_own`. So a record's y is
+// own-frame while everything else the viewer draws -- every entity position
+// from GameLogger -- is absolute. Rendering the raw value put every red
+// candidate on the blue half.
+//
+// ONLY y is mirrored; x is already absolute. Measured against 8 real
+// placements in a captured replay: mean |dx| = 0.01, mean |dy| as-recorded
+// = 8.25, mean |dy| after mirroring = 0.00.
+//
+// One helper so the arena rings and the mini-board markers cannot disagree.
+function stepToBoard(record, step) {
+  const mirrored = record && record.team === 1;
+  return {
+    x: step.x,
+    y: mirrored ? (gameData.boardHeight - 1) - step.y : step.y,
+  };
+}
+
 // How many candidates carry a predicted board. Also the ring count, so the
 // arena annotation and the panel can never disagree about "the top N".
 const SIM_TOP_K = 4;
@@ -1415,12 +1437,64 @@ function drawBoard(rc, tickData, opts) {
   if (!opts.ghost) {
     drawCandidateRings(rc, teacherDebugForTick(currentTick));
   }
+
+  // The "NOW" mini-board shows WHERE the candidate is about to be dropped.
+  // Without this the left board is just the live position and the placement
+  // exists only as text, so there is nothing to compare the "+Ns" board
+  // against. Drawn as a ghost because the unit is not on the board yet.
+  if (opts.placements && opts.placements.length) {
+    drawGhostPlacements(rc, opts.placements);
+  }
 }
 
 
 // Deliberately minimal: a hollow numbered ring per candidate cell, the chosen
 // one filled. At most SIM_TOP_K of them. Anything more elaborate ON THE ARENA
 // is the clutter the slide-over Simulation View exists to avoid.
+// A candidate's placement, drawn on a board where it has NOT happened yet:
+// dashed outline, the card's own symbol, and an order number when a combo
+// places more than one card.
+function drawGhostPlacements(rc, placements) {
+  const cs = rc.cellSize;
+  const r = Math.max(3.5, cs * 0.62);
+  rc.ctx.save();
+  rc.ctx.textAlign = 'center';
+  rc.ctx.textBaseline = 'middle';
+  placements.forEach((p, i) => {
+    const at = gameToCanvas(rc, p.x, p.y);
+    // WHITE core with a team-coloured ring, not a team-coloured fill. The
+    // board is already full of red and blue discs, so a team-tinted ghost
+    // vanishes into them; white is the one colour nothing else on the arena
+    // uses, and the dark halo keeps it readable over lawn, path and water
+    // alike.
+    rc.ctx.beginPath();
+    rc.ctx.arc(at.x, at.y, r + Math.max(1, cs * 0.1), 0, Math.PI * 2);
+    rc.ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    rc.ctx.fill();
+
+    rc.ctx.beginPath();
+    rc.ctx.arc(at.x, at.y, r, 0, Math.PI * 2);
+    rc.ctx.fillStyle = '#FFFFFF';
+    rc.ctx.fill();
+
+    rc.ctx.setLineDash([Math.max(2, cs * 0.3), Math.max(1.5, cs * 0.22)]);
+    rc.ctx.lineWidth = Math.max(1.5, cs * 0.22);
+    rc.ctx.strokeStyle = p.team === 0 ? '#4a9eff' : '#ff5252';
+    rc.ctx.stroke();
+    rc.ctx.setLineDash([]);
+    if (cs >= 14) {                       // unreadable on a mini-board
+      rc.ctx.fillStyle = '#FFFFFF';
+      rc.ctx.font = `700 ${Math.round(cs * 0.5)}px Inter, sans-serif`;
+      rc.ctx.fillText(p.symbol || '?', at.x, at.y);
+    } else if (placements.length > 1) {
+      rc.ctx.fillStyle = '#111111';
+      rc.ctx.font = `700 ${Math.max(7, Math.round(cs * 0.95))}px Inter, sans-serif`;
+      rc.ctx.fillText(String(i + 1), at.x, at.y);
+    }
+  });
+  rc.ctx.restore();
+}
+
 function drawCandidateRings(rc, record) {
   if (!record || !record.candidates.length) return;
   const shown = record.candidates.slice(0, SIM_TOP_K);
@@ -1434,13 +1508,14 @@ function drawCandidateRings(rc, record) {
   shown.forEach(function (cand, i) {
     const step = cand.steps && cand.steps[0];
     if (!step) return;                       // a candidate with no placement
-    const key = step.x + ',' + step.y;
+    const b = stepToBoard(record, step);
+    const key = b.x + ',' + b.y;
     const g = byCell.get(key);
     if (g) {
       g.count++;
       g.chosen = g.chosen || (i === record.chosenIndex);
     } else {
-      byCell.set(key, { x: step.x, y: step.y, rank: i + 1, count: 1,
+      byCell.set(key, { x: b.x, y: b.y, rank: i + 1, count: 1,
                         chosen: i === record.chosenIndex });
     }
   });
@@ -1883,7 +1958,10 @@ function updateHandPanel(tickData) {
 // ---------------------------------------------------------------------------
 // Simulation View
 // ---------------------------------------------------------------------------
-const SIM_MINI_CELL = 5;    // px per tile in a mini-board
+// px per tile in a mini-board. 7 rather than 5 so the ghost placement is
+// actually legible: two boards plus the arrow come to ~290px inside a
+// 400px panel, which still fits without horizontal scrolling.
+const SIM_MINI_CELL = 7;
 let simViewOpen = false;
 
 // A candidate's label: "Ice Golem -> (3,15)", or both halves of a combo.
@@ -1901,15 +1979,26 @@ function candidateLabel(cand) {
 // A mini-board reuses drawBoard at a smaller cellSize, so the arena palette and
 // the corrected bridge geometry apply automatically -- there is no second
 // renderer to keep in sync.
-function miniBoard(entities) {
+function miniBoard(entities, placements) {
   const cv = document.createElement('canvas');
   const rc = makeRenderCtx(cv.getContext('2d'), gameData.boardWidth,
                            gameData.boardHeight, SIM_MINI_CELL, 2);
   cv.width = rc.width;
   cv.height = rc.height;
   drawBoard(rc, { entities: entities || [] },
-            { selectedEntityId: null, showLabels: false, ghost: true });
+            { selectedEntityId: null, showLabels: false, ghost: true,
+              placements: placements || [] });
   return cv;
+}
+
+// A candidate's steps as ghost-placement descriptors in ABSOLUTE coordinates.
+function ghostsFor(record, cand) {
+  return (cand.steps || []).map(st => {
+    const b = stepToBoard(record, st);
+    const meta = CARD_META[st.cardId];
+    return { x: b.x, y: b.y, team: record.team,
+             symbol: meta ? meta.symbol : '?' };
+  });
 }
 
 function renderSimView(record) {
@@ -1949,7 +2038,7 @@ function renderSimView(record) {
         ? '<br><strong>The teacher held</strong> \u2014 nothing below beat its margin.'
         : '');
   if (record.baseline && record.baseline.entities) {
-    base.appendChild(miniBoard(record.baseline.entities));
+    base.appendChild(miniBoard(record.baseline.entities));   // no-op: no placement
   }
   body.appendChild(base);
 
@@ -1982,7 +2071,9 @@ function renderSimView(record) {
     if (hasBoard) {
       const wrap = document.createElement('div');
       wrap.className = 'sim-boards';
-      wrap.appendChild(miniBoard(nowEntities));
+      // LEFT board: the live position plus this candidate's placement drawn
+      // on it, so the "before" is visibly the setup being scored.
+      wrap.appendChild(miniBoard(nowEntities, ghostsFor(record, cand)));
       const arrow = document.createElement('span');
       arrow.className = 'sim-arrow';
       arrow.textContent = '\u2192';
@@ -2032,7 +2123,7 @@ function updateSimUI() {
   const rec = teacherDebugForTick(currentTick);
   const n = rec ? rec.candidates.length : 0;
   document.getElementById('simChipCount').textContent =
-    n + (n === 1 ? ' candidate' : ' candidates');
+    rec ? `Simulation View (${n})` : 'Simulation View';
   chip.disabled = !rec;
   if (simViewOpen) renderSimView(rec);
 }
@@ -2149,6 +2240,8 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
+  stepToBoard,
+  ghostsFor,
   eventToCanvas,
   hitRadiusFor: (ent) => hitRadiusFor(ent, mainRc()),
   selectedId: () => selectedEntityId,
