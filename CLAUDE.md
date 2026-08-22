@@ -379,6 +379,36 @@ placement, only the Kings' dormancy varying:
 recorded, which is the cross-check that makes the pair trustworthy. Defence is
 materially weaker than every win rate in this file was earned against.
 
+**Sight range is per-card, complete, and 5.5 is a SOURCED value — not a
+fallback.** 46 of the 148 non-spell cards carry an explicit `withSightRange`
+across 9 values (4.0–11.5); the other 102 read `CardStats::sightRange`'s 5.5,
+which commit `1b17844` established IS the catalogue's value for them ("the main
+standard for most cards") after cross-referencing the whole registry. Do not
+read a default as an omission here — that hypothesis was raised and refuted.
+
+**For a building-targeter, `sightRange` IS the Cannon-pull radius.**
+`BuildingTargeter::findTarget` diverts to the closest non-tower building within
+`effectiveSightTo`, so this one number decides how far off-lane a defensive
+building can sit and still drag a win condition off the tower — the interaction
+`tactics.py`'s entire Cannon rule is built on. Measured by trajectory deviation
+against a no-Cannon control (`tools/audit/pull_range_probe.cpp`): Hog Rider
+(9.5) pulls at **10.5** tiles, Balloon (7.7) at 8.75, Giant (7.5) at 7.25, and
+every card on the 5.5 default at **~5.25** — half the Hog's. Read the pull
+BEHAVIOURALLY, never as "the Cannon lost hp": `Building::update` decays it every
+10 ticks on its own, so a damage test reports a pull at every offset and the
+sweep saturates.
+
+**The `sight >= attack` invariant is BLIND to a missing value for most cards.**
+It only fires when `sightRange < attackRange`, and **130 of 148** non-spell cards
+have `attackRange <= 5.5` — every one of the 102 default cards is inside that
+blind spot by definition. That is how Bomb Tower and Three Musketeers survived
+until 2026-08-21: both were caught only because their `attackRange` was 6.0. So
+a decision and an omission were indistinguishable in the code. Closed on
+2026-08-23 by a catalogue pinning all 148 (`tests/core/test_sight_range.cpp`,
+generated from the engine by `tools/audit/sight_audit.cpp`) plus a completeness
+check — a new card must state a sight range, and choosing 5.5 is a fine answer.
+Base↔Evolution agree 38/38, and the evolved spawn path 0/41.
+
 **Card registry**: 132 playable ids (max 175) plus 41 Evolutions at ids
 123-163, so 173 entries total. `getAllCardIds()` filters Evolutions out.
 **Evolutions reuse the base card's name verbatim** — id 1 and id 128 are both
