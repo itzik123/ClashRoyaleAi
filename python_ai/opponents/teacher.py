@@ -132,6 +132,27 @@ from python_ai.advisors import tactics
 
 CE = E.ClashRoyaleEnv
 
+# `execute_steps` steps candidate rollouts with the OBSERVATION-FREE binding
+# (perception/UPSTREAM_REQUESTS.md item 21). Probed once, here, and fatally --
+# NOT with a getattr fallback.
+#
+# A fallback would keep running on a stale `.pyd` while silently handing back
+# the entire speedup, and "the .pyd was stale" is a trap this project has
+# already been bitten by once: it predated the commit adding
+# set_elixir_for_team / set_hand_for_team and silently blocked two measurements.
+# The failure mode of a fallback is a performance regression nobody can see; the
+# failure mode of this is one line naming the fix.
+if not hasattr(CE, "step_self_play_fast"):
+    raise ImportError(
+        "clash_royale_env is missing step_self_play_fast, so it predates "
+        "UPSTREAM_REQUESTS item 21. The .pyd is stale -- rebuild it:\n"
+        '  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community'
+        '\\MSBuild\\Current\\Bin\\MSBuild.exe" '
+        "build_python\\clash_royale_env.vcxproj "
+        "/p:Configuration=Release /p:Platform=x64 /m\n"
+        "(from the PowerShell tool, never Bash -- see CLAUDE.md), then "
+        "tools/audit/verify_pyd.py to confirm the copy landed.")
+
 BOARD_H = CE.BOARD_HEIGHT
 BOARD_W = CE.BOARD_WIDTH
 HAND_SIZE = CE.HAND_SIZE
@@ -1378,10 +1399,16 @@ class UtilityTeacher:
                 if t < d < nxt:
                     nxt = d
             oslot, ox, oy = self.counter_action(s, counters.get(t))
+            # step_self_play_FAST: same advance, without building the two
+            # 13,606-float observations this loop has always thrown away.
+            # Measured at teacher stage 5: ~9.7 chunks per rollout x ~6.5
+            # rollouts per decision = 1,000,152 vectors built per 48 episodes
+            # against 51,566 read. The ONE observation a rollout does read is
+            # `rollout_stats`'s own get_observation_for_team, below.
             if self.team == 0:
-                s.step_self_play(slot, x, y, oslot, ox, oy, nxt - t)
+                s.step_self_play_fast(slot, x, y, oslot, ox, oy, nxt - t)
             else:
-                s.step_self_play(oslot, ox, oy, slot, x, y, nxt - t)
+                s.step_self_play_fast(oslot, ox, oy, slot, x, y, nxt - t)
             t = nxt
         return s
 

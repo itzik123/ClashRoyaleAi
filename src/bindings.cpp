@@ -46,6 +46,15 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly("reward0", &SelfPlayStepResult::reward0)
         .def_readonly("done", &SelfPlayStepResult::done);
 
+    // No observation fields, deliberately: this is what a rollout gets back, and
+    // the whole point is that neither vector was built. `def_readonly` on the
+    // pair above converts to a Python list ON ATTRIBUTE ACCESS, so a caller
+    // ignoring them already skipped the marshalling -- what it could not skip,
+    // until this type existed, was the C++ construction.
+    py::class_<SelfPlayFastResult>(m, "SelfPlayFastResult")
+        .def_readonly("reward0", &SelfPlayFastResult::reward0)
+        .def_readonly("done", &SelfPlayFastResult::done);
+
     py::enum_<TowerTroopType>(m, "TowerTroopType")
         .value("NONE", TowerTroopType::None)
         .value("TOWER_PRINCESS", TowerTroopType::TowerPrincess)
@@ -62,6 +71,15 @@ PYBIND11_MODULE(clash_royale_env, m) {
             py::arg("skip_frames") = 10,
             py::arg("activate_ability_slot1") = false, py::arg("activate_ability_slot2") = false)
         .def("step_self_play", &ClashEnv::stepSelfPlay,
+            py::arg("card_index0"), py::arg("target_x0"), py::arg("target_y0"),
+            py::arg("card_index1"), py::arg("target_x1"), py::arg("target_y1"),
+            py::arg("skip_frames") = 10,
+            py::arg("activate_ability0_slot1") = false, py::arg("activate_ability0_slot2") = false,
+            py::arg("activate_ability1_slot1") = false, py::arg("activate_ability1_slot2") = false)
+        // Same advance, no observations built. For rollouts that step a
+        // snapshot and throw the result away -- see SelfPlayFastResult in
+        // ClashEnv.h and perception/UPSTREAM_REQUESTS.md item 21.
+        .def("step_self_play_fast", &ClashEnv::stepSelfPlayFast,
             py::arg("card_index0"), py::arg("target_x0"), py::arg("target_y0"),
             py::arg("card_index1"), py::arg("target_x1"), py::arg("target_y1"),
             py::arg("skip_frames") = 10,

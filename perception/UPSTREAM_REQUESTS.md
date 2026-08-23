@@ -2096,3 +2096,210 @@ rather than patching in passing.
 2. `get_elixir_value_killed_by` totals must be **unchanged** against a
    pre-change run on the same seed — that is the whole point of option 2.
 3. The Catch2 suite (619 cases, exactly one `[!shouldfail]`).
+
+---
+
+## 21. APPLIED 2026-08-23 — a self-play step that does not build observations, because teacher rollouts build 1,000,152 of them per 48 episodes and read 51,566 (proposed 2026-08-23)
+
+### What is there now
+
+`ClashEnv::stepSelfPlay` ends with
+
+```cpp
+return { extractObservationForTeam(0), extractObservationForTeam(1), totalReward, isDone };
+```
+
+so **every call constructs both teams' 13,606-float observation vectors**, whatever
+the caller wants. `SelfPlayStepResult`'s fields are bound with `def_readonly`,
+which converts to a Python list on ATTRIBUTE ACCESS — so a caller that ignores
+the fields pays the full C++ construction and none of the pybind marshalling.
+
+`UtilityTeacher.execute_steps` (`python_ai/opponents/teacher.py:1382`, `:1384`)
+is that caller. It rolls a candidate forward in 10-tick chunks and **discards
+the returned object every time**:
+
+```python
+if self.team == 0:
+    s.step_self_play(slot, x, y, oslot, ox, oy, nxt - t)
+else:
+    s.step_self_play(oslot, ox, oy, slot, x, y, nxt - t)
+```
+
+The one observation a rollout actually reads is the single
+`s.get_observation_for_team(me)` at the end of `rollout_stats`, for
+`positional_advantage`.
+
+### Measured — on the training box, not inferred
+
+`python_ai/tools/profile_training.py --mode sync --episodes 40 --teacher-stage 5`,
+i5-13420H, real `.pyd`, 48 episodes, 268.93 s wall:
+
+| span | calls | self s | us/call |
+|---|---|---|---|
+| `rollout.step` | **500,076** | 40.064 | 80.11 |
+| `rollout.obs` | 51,566 | 11.850 | 229.79 |
+| `live.snapshot` | 51,566 | 2.015 | 39.07 |
+| `live.step` | 7,952 | 0.839 | 105.56 |
+| `rollout.info` | 1,682,847 | 4.837 | 2.87 |
+
+Derived from those counts:
+
+* 51,566 snapshots / 7,952 decisions = **6.49 candidate rollouts per decision**
+* 500,076 rollout steps / 51,566 rollouts = **9.70 chunks per rollout** (horizon
+  100 in 10-tick chunks, minus early game-over breaks)
+* every chunk builds TWO observations, so rollouts construct
+  **1,000,152 observation vectors** and read **51,566**
+
+**A 19.4 : 1 build-to-read ratio.** `rollout.step` is 14.9% of wall clock in the
+sync profile, and the async profile puts the whole environment at 39.6%.
+
+C++-side cost of the pieces, measured with no interpreter in the process
+(`tools/audit/engine_profile.cpp`, WSL g++ -O2 — ratios transfer, absolute ms
+do not):
+
+```
+extractObservationForTeam   0.0106 ms      GameManager::step()  0.0006 ms/tick
+stepSelfPlay(skip=10)       0.0543 ms      of which 2 observations = 39%
+skipFrames sweep:  slope 0.0008 ms/TICK,  intercept 0.0436 ms/CALL
+                   -> 49% of the per-call intercept is the two vectors
+```
+
+A stage-5 candidate rollout measures **0.522 ms** against a **0.090 ms** floor
+(snapshot + 100 ticks + the one observation it reads) — **5.8x**.
+
+### Mechanism
+
+Observation construction is `O(entities)` plus a 13,606-float allocate-and-zero.
+Physics is 0.0006 ms/tick. So a rollout chunk spends more time describing the
+board to nobody than it spends simulating it.
+
+### Proposed edit
+
+Extract the tick loop, so the two entry points cannot diverge in what they
+simulate — the only difference is what they RETURN.
+
+```cpp
+// NEW, next to SelfPlayStepResult
+struct SelfPlayFastResult { float reward0; bool done; };
+
+private:
+    struct SelfPlayTickOutcome { float reward; bool done; };
+    // The self-play tick loop, with NO observation construction. Shared, so
+    // stepSelfPlay and stepSelfPlayFast can never disagree about the physics.
+    SelfPlayTickOutcome runSelfPlayTicks(<the existing 11 parameters>);
+
+public:
+    SelfPlayStepResult stepSelfPlay(<unchanged signature>) {
+        SelfPlayTickOutcome o = runSelfPlayTicks(...);
+        return { extractObservationForTeam(0), extractObservationForTeam(1),
+                 o.reward, o.done };
+    }
+    // NEW
+    SelfPlayFastResult stepSelfPlayFast(<same signature>) {
+        return { runSelfPlayTicks(...).reward, runSelfPlayTicks(...).done };  // one call, see impl
+    }
+```
+
+plus `src/bindings.cpp`:
+
+```cpp
+py::class_<SelfPlayFastResult>(m, "SelfPlayFastResult")
+    .def_readonly("reward0", &SelfPlayFastResult::reward0)
+    .def_readonly("done", &SelfPlayFastResult::done);
+...
+.def("step_self_play_fast", &ClashEnv::stepSelfPlayFast, ...)
+```
+
+and one call-site change in `python_ai/opponents/teacher.py::execute_steps`.
+
+### Blast radius
+
+* **`stepSelfPlay` is behaviour-identical.** The loop body moves verbatim; the
+  return statement is unchanged. Nothing that calls it can observe a difference.
+* **NOT gameplay-affecting.** No observation, action space, reward or physics
+  change. `model_weights.pth` and `model_weights_selfplay.pth` stay valid, and
+  win rates remain comparable across this change.
+* **The RL learning signal cannot change**, and that is provable rather than
+  argued: the vectors being removed are never read by anything. The teacher's
+  chosen action is a function of `rollout_stats`, which reads
+  `get_observation_for_team` separately and is untouched.
+* **Additive binding.** An older `.pyd` simply lacks `step_self_play_fast`.
+  Because a silent fallback would hide a stale `.pyd` — a trap this repo has
+  already been bitten by — the Python side probes ONCE at import and raises with
+  a message naming the rebuild, rather than degrading quietly.
+* Other discard-the-result callers exist and can adopt it later:
+  `envs/selfplay_env.py:368,380` (phase-2 warm-up), `envs/scenario_offense.py:124`,
+  and several `eval/` harnesses. **This proposal changes only the teacher**, the
+  one on the training hot path.
+
+### What it does NOT address
+
+`gym_wrapper.step` reads `observation0` and never touches `observation1`, so it
+also builds one vector per decision for nothing — but it needs the other, so it
+needs a *different* fix (a team-selective step) and is 7,952 calls against
+500,076. Out of scope here; noted so it is not forgotten.
+
+### Verification
+
+1. C++ suite green, with the `[!shouldfail]` navigation-wedge case still the
+   only failure and the runner exiting 0.
+2. A new Catch2 case asserting `stepSelfPlayFast` and `stepSelfPlay` leave the
+   env in the SAME state from the same snapshot — same tick, same reward, same
+   done, same subsequent observation. That is the property the refactor must
+   preserve, and it is the one a shared tick loop makes true by construction.
+3. `tools/audit/engine_profile.cpp` before/after on the rollout block.
+4. `profile_training.py --mode sync/--mode async` on the training box.
+
+### APPLIED — measured result
+
+`ClashEnv::stepSelfPlayFast` + `SelfPlayFastResult`, both entry points sharing
+`runSelfPlayTicks`. The diff proves the claim that matters: inside the moved
+code the ONLY changed line is the return statement.
+
+**Correctness.**
+
+* C++ suite **627 cases / 626 passed / 1 failed as expected**, runner exit 0,
+  against a **625 / 624 / 1** baseline — the two new cases, no regression.
+  (`tests/core/test_selfplay_fast_step.cpp`; built under wsl g++ on the box with
+  no MSVC.)
+* **The teacher's decisions are unchanged**: 12/12 configurations
+  action-identical over stages 2-5 x 3 seeds, comparing full action sequences
+  from identically-seeded runs. That is the property that would actually hurt if
+  it broke, since every candidate score now flows through the new path.
+
+**Speed** — paired, both arms alternating inside ONE process, only the engine
+method differing (the slow arm routes `step_self_play_fast` back to
+`step_self_play` at the boundary, so the teacher's Python is byte-identical):
+
+| | ms per teacher decision |
+|---|---|
+| observations built (old) | 8.690 |
+| **not built (new)** | **7.851** |
+| saving | **0.839 (9.7%), 1.11x** |
+
+**23 of 24 trials favour the fast arm, exact sign test p = 3e-06.** 27,298
+observation vectors are no longer built per trial.
+
+Cross-checked against the component measurement rather than trusted alone:
+13,649 chunk steps x 2 observations x 0.0106 ms = 0.79 ms/decision predicted,
+0.839 measured.
+
+**Two measurement traps this hit, both recorded because they nearly produced
+false results.**
+
+1. **A background compile made the fix look 5.6x SLOWER.** Run as two separate
+   invocations while the C++ suite was building on the same 4 cores, every span
+   moved together — including `live.snapshot`, which the change does not touch.
+   That uniformity is the signature of machine state, not of a code difference.
+   Alternating arms inside one process removes it, and is now how the harness
+   works.
+2. **`UtilityTeacher` defaults to `seed=None`**, i.e. `np.random.default_rng(None)`,
+   which is entropy-seeded. The first equivalence run reported **10 of 12
+   configurations "diverged"** when the only difference was the teacher's own
+   lane bias. Any A/B over this class must pass `seed=`.
+
+**Scope, restated.** ~9.7% of teacher decision time. The teacher is roughly 59%
+of the sync profile's wall clock, and the environment as a whole is 39.6% of the
+async one at ~2.6x parallel efficiency, so the expected end-to-end throughput
+effect is **low single digits** — this is the safe, zero-risk win, not the
+answer to phase-1 throughput. The async profile puts the MODEL at 55.8%.

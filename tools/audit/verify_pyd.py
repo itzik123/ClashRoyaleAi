@@ -79,6 +79,16 @@ if crossed != trials:
 # reports the old columns (King 9.0, left Princess 4.0, bridges 4.0/14.0) or
 # lacks the ARENA_* attributes entirely. The C++ suite cannot tell you any of
 # this -- it never loads the .pyd -- and the copy has silently failed twice.
+# step_self_play_fast (UPSTREAM_REQUESTS item 21, 2026-08-23) belongs in the
+# same check for the same reason: `opponents/teacher.py` refuses to import
+# without it, so a .pyd that predates it turns every phase-1 run into an
+# ImportError at startup. Catching it HERE, in the post-build gate, names the
+# cause before a training run does.
+if not hasattr(cre, "step_self_play_fast"):
+    failures.append("stale .pyd: missing step_self_play_fast -- rebuild, and "
+                    "check the post-build copy into python_ai/ actually landed "
+                    "(MSB3073 if any Python process has the .pyd loaded)")
+
 missing = [n for n in ("ARENA_CENTER_X", "ARENA_LEFT_LANE_X", "ARENA_RIGHT_LANE_X",
                        "ARENA_LEFT_BRIDGE_X", "ARENA_RIGHT_BRIDGE_X", "ARENA_BRIDGE_Y")
            if not hasattr(cre, n)]

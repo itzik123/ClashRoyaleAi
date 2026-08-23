@@ -37,6 +37,25 @@ struct SelfPlayStepResult {
     bool done;
 };
 
+// The same advance, for a caller that is going to throw both observations away.
+//
+// A candidate rollout wants the SIMULATION, not a description of it:
+// `UtilityTeacher.execute_steps` steps a snapshot in 10-tick chunks and
+// discards the result object every time, while `rollout_stats` reads exactly
+// ONE observation at the end. Measured on the training box (48 episodes,
+// teacher stage 5): 1,000,152 observation vectors built inside rollouts against
+// 51,566 read -- 19.4 : 1. Each is a 13,606-float allocate-fill-and-free whose
+// cost is O(entities), against 0.0006 ms for the physics tick it accompanies.
+// See perception/UPSTREAM_REQUESTS.md item 21.
+//
+// Not a different simulation: both entry points run ONE shared tick loop
+// (runSelfPlayTicks), so they cannot diverge in what they simulate. The only
+// difference is what they RETURN.
+struct SelfPlayFastResult {
+    float reward0;
+    bool done;
+};
+
 class ClashEnv {
 public:
     // Structural constants the observation/action encoding is actually built
@@ -611,11 +630,31 @@ public:
     // converted back to real board Y before actually placing anything;
     // mirroring twice is the identity, so the same formula that produced the
     // observation also inverts it here.
-    SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
-                                     int cardIndex1, float targetX1, float targetY1,
-                                     int skipFrames = 10,
-                                     bool activateAbility0Slot1 = false, bool activateAbility0Slot2 = false,
-                                     bool activateAbility1Slot1 = false, bool activateAbility1Slot2 = false) {
+private:
+    // What the self-play tick loop produces, before anybody decides whether an
+    // observation is wanted.
+    struct SelfPlayTickOutcome {
+        float reward;
+        bool done;
+    };
+
+    // THE self-play tick loop -- one copy, shared by stepSelfPlay and
+    // stepSelfPlayFast. Extracted 2026-08-23 so that a rollout can skip
+    // building two 13,606-float observations it never reads (see
+    // SelfPlayFastResult above).
+    //
+    // Extracted rather than duplicated on purpose. This project has been bitten
+    // four separate times by the same fact encoded twice and drifting apart --
+    // the river band, the arena bridges, "close enough" in two waypoint sites,
+    // and the observation encoder against the movement rule. Two step functions
+    // with two copies of this loop would be the fifth, and the drift would be
+    // invisible: the fast path is used only inside rollouts, whose results are
+    // never compared against anything.
+    SelfPlayTickOutcome runSelfPlayTicks(int cardIndex0, float targetX0, float targetY0,
+                                          int cardIndex1, float targetX1, float targetY1,
+                                          int skipFrames,
+                                          bool activateAbility0Slot1, bool activateAbility0Slot2,
+                                          bool activateAbility1Slot1, bool activateAbility1Slot2) {
         float totalReward = 0.0f;
         bool isDone = false;
 
@@ -652,7 +691,41 @@ public:
             if (isDone) break;
         }
 
-        return { extractObservationForTeam(0), extractObservationForTeam(1), totalReward, isDone };
+        return { totalReward, isDone };
+    }
+
+public:
+    // Unchanged in behaviour: the loop above is the same loop this used to
+    // contain, and the return below is the same return it always had.
+    SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
+                                     int cardIndex1, float targetX1, float targetY1,
+                                     int skipFrames = 10,
+                                     bool activateAbility0Slot1 = false, bool activateAbility0Slot2 = false,
+                                     bool activateAbility1Slot1 = false, bool activateAbility1Slot2 = false) {
+        SelfPlayTickOutcome out = runSelfPlayTicks(
+            cardIndex0, targetX0, targetY0, cardIndex1, targetX1, targetY1, skipFrames,
+            activateAbility0Slot1, activateAbility0Slot2,
+            activateAbility1Slot1, activateAbility1Slot2);
+        return { extractObservationForTeam(0), extractObservationForTeam(1),
+                 out.reward, out.done };
+    }
+
+    // Identical advance, no observations built. For decision-time search and
+    // for UtilityTeacher's candidate rollouts -- anything that steps a snapshot
+    // and reads the board through a separate, deliberate
+    // getObservationForTeam() call at the end, if at all.
+    //
+    // If you need an observation from this, you wanted stepSelfPlay.
+    SelfPlayFastResult stepSelfPlayFast(int cardIndex0, float targetX0, float targetY0,
+                                         int cardIndex1, float targetX1, float targetY1,
+                                         int skipFrames = 10,
+                                         bool activateAbility0Slot1 = false, bool activateAbility0Slot2 = false,
+                                         bool activateAbility1Slot1 = false, bool activateAbility1Slot2 = false) {
+        SelfPlayTickOutcome out = runSelfPlayTicks(
+            cardIndex0, targetX0, targetY0, cardIndex1, targetX1, targetY1, skipFrames,
+            activateAbility0Slot1, activateAbility0Slot2,
+            activateAbility1Slot1, activateAbility1Slot2);
+        return { out.reward, out.done };
     }
 
     void injectEnemy(int cardId, float x, float y) {

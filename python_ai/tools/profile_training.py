@@ -140,7 +140,7 @@ class Ledger:
 # `<prefix>.other`, which is deliberate -- a new binding shows up as an unnamed
 # line rather than being silently folded into an existing one.
 _OBS_METHODS = {"get_observation_for_team", "get_observation", "extract_observation"}
-_STEP_METHODS = {"step", "step_self_play"}
+_STEP_METHODS = {"step", "step_self_play", "step_self_play_fast"}
 _SNAPSHOT_METHODS = {"snapshot"}
 _RESET_METHODS = {"reset", "seed"}
 
