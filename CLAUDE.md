@@ -2575,8 +2575,10 @@ teacher) and `combo_families` are the one-line off switches.
 own control.** Run 4 was designed with a built-in validity check: it shares
 seed 300 with run 3, so its OFF arm should have reproduced run 3's OFF arm
 exactly. It did not — **0.475 against 0.537** — and the reason is that
-`ClashEnv::reset()`'s opening-hand shuffle is **UNSEEDED** (`UPSTREAM_REQUESTS.md`
-item 7, still open). `--seed` reaches only the teachers' own RNG, which at
+`ClashEnv::reset()`'s opening-hand shuffle was **UNSEEDED** (`UPSTREAM_REQUESTS.md`
+item 7 — **since FIXED, applied and verified 2026-08-21**; see "`env.seed()`
+works and this file was stale about it" below, which supersedes the bullet at
+the end of this list). `--seed` reaches only the teachers' own RNG, which at
 stage 5 is just the lane bias, so two invocations of this harness draw entirely
 different match populations no matter what seed is passed.
 
@@ -2590,6 +2592,12 @@ The consequence is specific and worth carrying:
   failed comparison rather than a mis-specified one.
 - Any future "run it again at a different seed and check the baseline matches"
   design in this repo is invalid for the same reason until item 7 lands.
+  **ITEM 7 HAS SINCE LANDED (2026-08-21), so this bullet no longer applies to a
+  harness that actually calls `seed()`** — arm levels reproduce to four decimals
+  across independent invocations. It still applies to every harness that does
+  not, which is most of `prove_*.py`. Check the harness before assuming either
+  way; the failed run-4 control above remains a correct account of what happened
+  at the time, not a live constraint.
 
 **Kept ON by default, with the trend stated rather than buried.** The reasons:
 every individual run is a null, stage 5 still beats the C++ heuristic 1.000, and

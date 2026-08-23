@@ -5,8 +5,20 @@ Written from `perception/`, which modifies nothing outside itself. Items are
 explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-08-20. Items 0, 1, 2, 4, 5, 6, 7, 9, 10, 12, 13, 14 and 16
-are applied; 3, 8, 17 and 18 are still open. There is no item 11.
+Last updated 2026-08-23. Items 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 16,
+19 and 21 are applied; 8, 17 and 20 are still open; 18 is ACCEPTED, WILL NOT FIX
+FOR NOW. There is no item 11.
+
+> **Second status audit, 2026-08-23.** This line had drifted again, in all four
+> possible directions at once: item 3 was listed OPEN while `Tower.h` already
+> carries its activation logic, items 19 and 21 were applied and missing from
+> the applied list, item 20 was OPEN and missing from the open list entirely,
+> and 18 was filed under "open" when its own header says it is accepted and
+> deliberately unfixed. A summary that has to be updated by hand alongside the
+> header it summarises is a second copy of the same fact -- the exact pattern
+> CLAUDE.md warns about for engine constants, and the second time this specific
+> line has gone stale. The per-item headers are authoritative; if the two
+> disagree, believe the headers and fix this line.
 
 > **Status audit, 2026-08-19.** Items 5, 6 and 12 were carrying `OPEN` headers
 > while the exact code they propose was already merged — verified line by line
