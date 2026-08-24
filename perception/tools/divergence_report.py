@@ -1,17 +1,23 @@
 """Stage 5's deliverable: how far the estimator drifts from ground truth.
 
 Replays a match through SimDriver and plots predicted tower HP against actual
-tower HP over time. Two input modes, and the difference matters:
+tower HP over time.
 
   --replay  Ground truth comes from a simulator replay JSON. There is no
             vision in the loop at all, so any divergence is attributable to
             the BRIDGE alone -- injection semantics, tick alignment, cycle
             reconstruction. This is the control experiment, and it has to be
             near-zero before a vision number means anything.
+  --all     Every replay in python_ai/replays, reported together.
+  --json    Write the per-tick series out instead of only summarising.
 
-  --video   Ground truth comes from readers/towers.py reading HP bars off the
-            screen. Divergence then folds in every vision error too. Not
-            available until calibration exists.
+NOT IMPLEMENTED: a video mode. The intent is that ground truth would come from
+`readers/towers.py` reading HP bars off the screen, folding every vision error
+into the number. This file described it as one of "two input modes" until
+2026-08-24, but no such flag is defined and `readers.towers` is not imported
+here -- it needs the calibration that `readers/towers.py` raises
+`TowerCalibrationMissing` for. Stated as pending so the gap is visible rather
+than looking like a mode someone forgot how to invoke.
 
 No target is asserted. The instruction was to measure and report, and a
 threshold invented before the first measurement would be a number pulled from

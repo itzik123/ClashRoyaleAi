@@ -3,7 +3,7 @@
 This is the module that can place a real card in a real match, and a mistake in
 it is invisible downstream: a tap on the wrong tile produces a perfectly valid
 GameState next frame, showing a unit somewhere nobody intended. So the geometry
-is checked against ClashRoyaleBuildABot's own methods -- the ones upstream runs
+is checked against ClashRoyaleBuildABot's own mapping -- the one upstream runs
 against the real game -- rather than against numbers re-derived here.
 """
 from __future__ import annotations
@@ -21,29 +21,71 @@ from live.adapter import TILE_Y_OFFSET
 
 pytest.importorskip("clashroyalebuildabot", reason="vendored bot not importable")
 
+from clashroyalebuildabot.constants import (  # noqa: E402
+    DISPLAY_CARD_DELTA_X,
+    DISPLAY_CARD_HEIGHT,
+    DISPLAY_CARD_INIT_X,
+    DISPLAY_CARD_WIDTH,
+    DISPLAY_CARD_Y,
+    DISPLAY_HEIGHT,
+    TILE_HEIGHT,
+    TILE_INIT_X,
+    TILE_INIT_Y,
+    TILE_WIDTH,
+)
+
+# Upstream's mapping, transcribed VERBATIM from `Bot._get_tile_centre` and
+# `Bot._get_card_centre` (clashroyalebuildabot/bot/bot.py) before that module
+# was deleted in the 2026-08-24 cleanup. `bot.py` was ~250 lines of live-play
+# loop of which these two pure formulas were the only part this project ever
+# used, and importing it dragged PyQt6, `keyboard` and the ADB Emulator into a
+# sensor whose requirements.txt states it never opens a window.
+#
+# This is a deliberate SECOND COPY, and the case CLAUDE.md's no-second-copies
+# rule explicitly allows: a cross-check needs two independent expressions of
+# the mapping, so deriving this side from live/actuator.py is exactly the
+# circularity that would make the test vacuous ("never validate a mask against
+# the predicate that generated it").
+#
+# It reads the SAME constants, deliberately. A legitimate re-fit of the tile
+# grid (tools/fit_tile_grid.py, which exists because upstream's defaults are
+# ~10% off on this emulator) moves both sides together and raises no false
+# alarm; only a drift in the ARITHMETIC fails these, which is the bug class
+# being guarded against.
+def _upstream_tile_centre(tile_x, tile_y):
+    x = TILE_INIT_X + (tile_x + 0.5) * TILE_WIDTH
+    y = DISPLAY_HEIGHT - TILE_INIT_Y - (tile_y + 0.5) * TILE_HEIGHT
+    return x, y
+
+
+def _upstream_card_centre(card_n):
+    x = (
+        DISPLAY_CARD_INIT_X
+        + DISPLAY_CARD_WIDTH / 2
+        + card_n * DISPLAY_CARD_DELTA_X
+    )
+    y = DISPLAY_CARD_Y + DISPLAY_CARD_HEIGHT / 2
+    return x, y
+
 
 @pytest.mark.parametrize("tile_x", [0, 4, 9, 14, 17])
 @pytest.mark.parametrize("tile_y", [0, 5, 15, 16, 31])
 def test_tile_centre_matches_crbabs_own(tile_x, tile_y):
-    """Agreement with the implementation upstream ships against the real game.
+    """Agreement with the mapping upstream ships against the real game.
 
-    Not a tautology: this module re-implements the mapping so the actuator does
-    not import from `bot.py`, which drags in the whole bot. A drift between the
-    two would put every placement in the wrong square.
+    Not a tautology: live/actuator.py expresses the mapping independently of
+    the reference above. A drift between the two would put every placement in
+    the wrong square.
     """
-    from clashroyalebuildabot.bot.bot import Bot
-
     mine = tile_centre(tile_x, tile_y)
-    theirs = Bot._get_tile_centre(tile_x, tile_y)
+    theirs = _upstream_tile_centre(tile_x, tile_y)
     assert (mine.x, mine.y) == (round(theirs[0]), round(theirs[1]))
 
 
 @pytest.mark.parametrize("slot", [0, 1, 2, 3])
 def test_card_centre_matches_crbabs_own(slot):
-    from clashroyalebuildabot.bot.bot import Bot
-
     mine = card_centre(slot)
-    theirs = Bot._get_card_centre(slot)
+    theirs = _upstream_card_centre(slot)
     assert (mine.x, mine.y) == (round(theirs[0]), round(theirs[1]))
 
 

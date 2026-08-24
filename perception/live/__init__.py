@@ -1,8 +1,14 @@
 """Live-sensor layer built on top of the vendored ClashRoyaleBuildABot.
 
-Deliberately additive: nothing in `clashroyalebuildabot/` is edited, so it
-stays updatable from upstream. What lives here is what CRBAB does not provide
+Deliberately additive: no vendored file is *modified*, so the parts we keep
+stay diffable against upstream. What lives here is what CRBAB does not provide
 and the engine's observation requires.
+
+Upstream's own rule-based agent has been REMOVED (2026-08-24) -- `main.py`,
+`gui/`, `actions/`, `utils/` and `config.yaml`. We supply the agent; CRBAB is
+retained purely as a sensor (`detectors/`, `namespaces/`, `constants.py`,
+`models/`, `images/`) plus `bot.py`, which survives only as the coordinate
+oracle `tests/test_live_actuator.py` checks our tile mapping against.
 
   adapter       CRBAB `State` -> `contracts.GameState`. The join everything
                 else feeds into; start here.

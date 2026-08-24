@@ -1,27 +1,28 @@
 """Get the game into a Training Camp match, from wherever it currently is.
 
-`enter_training_camp.py` already does the lobby -> Training Camp hop, but it
-assumes it starts in the lobby with the menu closed, and it does not answer the
-"Do you want to start a training match?" confirmation. Both assumptions break
-the moment a script runs unattended: a probe that takes longer than a match
-comes back to `bypass_end_of_game`, not to the lobby.
+THE single navigation path. A narrower `enter_training_camp.py` did the
+lobby -> Training Camp hop until 2026-08-24, but it assumed it started in the
+lobby with the menu closed and never answered the "Do you want to start a
+training match?" confirmation -- both of which break the moment a script runs
+unattended, since a probe that outlasts a match comes back to
+`bypass_end_of_game`, not to the lobby. It also kept its OWN copy of the
+Training Camp coordinate, so a UI move would have had to be found twice.
 
-This is the unattended version -- a state machine over the screens the detector
-already recognises, with an overall deadline, so an automated experiment can
-say "put me in a match" and get one or a clean failure.
+This is a state machine over the screens the detector already recognises, with
+an overall deadline, so an automated experiment can say "put me in a match"
+and get one or a clean failure.
 
 WHY IT NEVER TAPS THE LOBBY'S OWN CLICK POINT
 ---------------------------------------------
 `Screens.LOBBY.click_xy` is (360, 1000): the BATTLE button, which queues a
 LADDER match and puts trophies on a debugging run. The lobby is left via the
-hamburger menu instead, exactly as `enter_training_camp.py` does it.
+hamburger menu instead.
 
 CAPTURE IS VIA adb, NOT THE WINDOW
 ----------------------------------
-`enter_training_camp.read_screen()` grabs the BlueStacks window through WGC,
-which needs the window visible and unoccluded. `adb exec-out screencap` does
-not, so this keeps working while the desktop is doing something else -- which
-is the whole point of an unattended loop.
+Grabbing the BlueStacks window through WGC needs it visible and unoccluded.
+`adb exec-out screencap` does not, so this keeps working while the desktop is
+doing something else -- which is the whole point of an unattended loop.
 """
 from __future__ import annotations
 

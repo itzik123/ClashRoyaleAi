@@ -164,42 +164,6 @@ class CycleState:
     confidence: float = 1.0
 
 
-@dataclass
-class PerceptionFrame:
-    """Everything perception believes at one instant.
-
-    This is the unit the bridge consumes. `new_events` is the only field the
-    simulator is actually driven by; the rest is state that either verifies
-    it or is carried for downstream consumers and diagnostics.
-    """
-
-    clock: ClockState
-    my_elixir: float
-    opp_elixir: float
-    """DERIVED, never observed -- the opponent's elixir bar is not on screen.
-    Computed from a known start value, a known regen rate, and the cost of
-    every detected placement. See track/opp_elixir.py."""
-
-    my_cycle: CycleState
-    opp_cycle: CycleState
-    opp_known_deck: frozenset[int]
-    new_events: list[PlacementEvent]
-
-    sim_divergence: float = 0.0
-    """0.0 = the simulator's predicted tower HP matches the screen. Grows as
-    they disagree. This is the pipeline's single quality number: a missed
-    placement, a misclassified card, and a mislocalised tile all surface
-    here, with no hand-labelled ground truth required. See
-    readers/towers.py -- which is VALIDATION ONLY and never feeds the
-    engine."""
-
-    flags: tuple[str, ...] = ()
-    """Machine-readable anomaly markers raised this frame, e.g.
-    "opp_elixir_negative" (a certain sign that a placement was missed) or
-    "unmapped_placement". Consumers gate on these rather than re-deriving
-    the same conditions from the numeric fields."""
-
-
 @dataclass(frozen=True)
 class UnitObservation:
     """One unit visible on the board, as the live sensor sees it.

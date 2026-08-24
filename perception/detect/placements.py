@@ -19,7 +19,13 @@ THE OPPONENT'S SIDE NEEDS RECORDED DATA, AND THERE IS NONE
 -----------------------------------------------------------
 Detecting an opponent placement means finding the moment and screen position
 where a unit appears, then classifying it. Both halves need frames from the
-real game to build or train anything at all, and no recording exists yet.
+real game to build or train anything at all.
+
+("no recording exists yet" was true when this was written and is not now --
+`assets/recordings/` holds 8 matches. README.md's stage 3 still reports this
+blocked on data and asks for a further batch, so the shortfall is in what the
+existing footage covers, not in whether footage exists. Corrected 2026-08-24
+so the file does not read as blocked on something already delivered.)
 
 So `OpponentPlacementDetector.detect` raises NotImplementedError rather than
 shipping a plausible-looking heuristic. A frame-differencing stub would

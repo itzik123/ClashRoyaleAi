@@ -1,9 +1,17 @@
 """Does a reconstructed board's WRONG tower HP change which action search picks?
 
-The live loop cannot write tower HP into the engine -- perception measures it
-(hp_fraction 0.87 on our right princess, 0.81 on the enemy king in one sampled
-frame) but there is no setter, so a reconstructed board always reports both
-sides untouched and symmetric.
+ORIGINAL PREMISE, NOW SUPERSEDED: there was no way to write tower HP into the
+engine, so a reconstructed board always reported both sides untouched and
+symmetric. `set_tower_hp` / `destroy_tower` landed 2026-08-24 (item 22), so
+that is no longer true.
+
+The question did not go away with it -- it got sharper. Stage 2 injects a
+tower HP that perception MEASURED (hp_fraction 0.87 on our right princess,
+0.81 on the enemy king in one sampled frame), and that measurement is known to
+be unreliable: `live/adapter.py` still reads the BAR (TODO.md), and CRBAB's
+`_calculate_hp` returns 0.0 both for "empty" and for "could not match the
+colours". So the board will now carry tower HP that is sometimes WRONG rather
+than uniformly full, and this probe prices exactly that error.
 
 Whether that MATTERS is a separate question from whether it is wrong. Search
 compares candidates on one board, so a bias shared by every candidate cancels;
