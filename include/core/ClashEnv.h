@@ -741,10 +741,51 @@ public:
     // as a state-estimator primitive: spawns directly, bypassing hand/
     // elixir/placement legality entirely, which is correct for an
     // estimator replaying placements the real game already validated.
-    void inject(int cardId, float x, float y, int team) {
+    // hp < 0 keeps the card's full health and deployTicks < 0 keeps
+    // DEPLOY_TIME_TICKS, so every pre-item-22 call site is bit-identical.
+    //
+    // WHY deployTicks EXISTS, since it looks like a detail and is not:
+    // spawnEntity routes through CardFactories::applyCardMetadata, which sets
+    // deployTicksRemaining = DEPLOY_TIME_TICKS unconditionally. A mirror
+    // rebuilt from perception therefore handed EVERY unit a fresh deploy
+    // second -- including one that had been walking for six -- so every
+    // rollout believed it had an extra second before anything could act. The
+    // 2026-08-19 audit measured that same second in the other direction at
+    // ~520 tower HP on a supported push. Passing 0 says "this unit is already
+    // on the board", which is what perception can actually see.
+    void inject(int cardId, float x, float y, int team,
+                float hp = -1.0f, int deployTicks = -1) {
         const auto* card = CardRegistry::getInstance().getCard(cardId);
-        if (card) {
-            card->spawnEntity(x, y, team, game.getBoard());
+        if (!card) return;
+        Board& board = game.getBoard();
+        // spawnEntity is void-returning, so the pending queue is the only
+        // handle back to what it just created -- the same route
+        // GameManager::playCard uses to reach a Champion it just deployed.
+        //
+        // Taking the whole RANGE rather than one index is what makes a
+        // multi-body card come back right: Skeletons spawn three entities
+        // from one call, and applying the reading to the first alone would
+        // leave two at full health, i.e. a threat three times fresher than
+        // the one on screen.
+        const size_t before = board.pendingEntityCount();
+        card->spawnEntity(x, y, team, board);
+        if (hp < 0.0f && deployTicks < 0) return;   // nothing to override
+        for (size_t i = before; i < board.pendingEntityCount(); ++i) {
+            const std::shared_ptr<Entity>& e = board.getPendingEntity(i);
+            if (hp >= 0.0f) {
+                // e->hp is still the card's own full health here, so it is
+                // the correct per-card ceiling -- no registry lookup needed,
+                // and it stays right for every card automatically.
+                int want = static_cast<int>(hp + 0.5f);
+                if (want > e->hp) want = e->hp;
+                if (want < 1) want = 1;
+                e->hp = want;
+            }
+            if (deployTicks >= 0) {
+                if (auto* combat = dynamic_cast<CombatEntity*>(e.get())) {
+                    combat->deployTicksRemaining = deployTicks;
+                }
+            }
         }
     }
 
@@ -770,6 +811,28 @@ public:
     void setElixirForTeam(int team, float value) { game.setElixir(team, value); }
     bool setHandForTeam(int team, const std::vector<int>& cards) {
         return game.setHand(team, cards);
+    }
+
+    // --- item 22 (2026-08-24): tower HP and the match clock ---------------
+    // Thin wrappers; the contracts (slot convention, the hp <= 0 refusal, why
+    // hp is engine-absolute) live on GameManager beside the implementations.
+    bool setTowerHp(int team, int slot, float hp) { return game.setTowerHp(team, slot, hp); }
+    bool destroyTower(int team, int slot) { return game.destroyTower(team, slot); }
+    int getTowerHp(int team, int slot) const { return game.getTowerHp(team, slot); }
+    int getTowerMaxHp(int team, int slot) const { return game.getTowerMaxHp(team, slot); }
+
+    // The one field no combination of the others can reconstruct. Clamped to
+    // [0, maxTicks] -- maxTicks IS reachable and means the match has run out,
+    // so it is not excluded.
+    //
+    // Sets BOTH clocks. ClashEnv::currentTick drives the observation's time
+    // scalar and the done condition; GameManager::currentTick stamps spawn
+    // events and drives ability cooldown arithmetic. They are incremented
+    // together everywhere else, and a setter that moved one would create
+    // exactly the second, driftable copy this codebase removes elsewhere.
+    void setCurrentTick(int tick) {
+        currentTick = std::max(0, std::min(tick, maxTicks));
+        game.setCurrentTick(currentTick);
     }
 
     // Make this environment reproducible: same seed -> same opening hands,

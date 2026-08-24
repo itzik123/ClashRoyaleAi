@@ -97,7 +97,13 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("is_game_over", &ClashEnv::isGameOver)
         .def("observation_size", &ClashEnv::observationSize)
         .def("inject_enemy", &ClashEnv::injectEnemy, py::arg("card_id"), py::arg("x"), py::arg("y"))
-        .def("inject", &ClashEnv::inject, py::arg("card_id"), py::arg("x"), py::arg("y"), py::arg("team"))
+        // hp and deploy_ticks default to the pre-item-22 behaviour (full
+        // health, a full DEPLOY_TIME_TICKS delay), so every existing caller is
+        // unchanged. Pass deploy_ticks=0 for a unit perception can already SEE
+        // on the board -- otherwise the mirror re-charges it a deploy second
+        // and every rollout believes it has an extra second to react.
+        .def("inject", &ClashEnv::inject, py::arg("card_id"), py::arg("x"), py::arg("y"),
+             py::arg("team"), py::arg("hp") = -1.0f, py::arg("deploy_ticks") = -1)
         .def("set_opponent_deck", &ClashEnv::setOpponentDeck, py::arg("deck"))
         .def("set_opponent_elixir_multiplier", &ClashEnv::setOpponentElixirMultiplier, py::arg("multiplier"))
         .def("save_log", &ClashEnv::saveLog, py::arg("filepath"))
@@ -124,6 +130,33 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("team"), py::arg("value"))
         .def("set_hand_for_team", &ClashEnv::setHandForTeam,
              py::arg("team"), py::arg("cards"))
+        // Tower HP, the match clock, and destruction -- item 22 (2026-08-24),
+        // the rest of the same interface.
+        //
+        // slot is 0 = King, 1 = LEFT Princess, 2 = RIGHT Princess, in BOARD
+        // coordinates for both teams (never team-relative -- the caller is a
+        // sensor reading a screen, and asking it to mirror its own coordinates
+        // is the convention error that put the arena half a tile off-centre).
+        //
+        // set_tower_hp takes ENGINE-ABSOLUTE hp and returns False, changing
+        // nothing, on hp <= 0. Tower levels do not match between this engine
+        // (level 9: 2534/4008) and a real account (often level 4-5:
+        // 1750/1890), i.e. wrong by a DIFFERENT factor per player -- so
+        // perception reports a FRACTION and multiplies by get_tower_max_hp.
+        // Destroying a tower is destroy_tower's job, because it has side
+        // effects a clamp cannot express: the crown, the King's
+        // princess-count wake trigger, and LanePath's retargeting.
+        .def("set_tower_hp", &ClashEnv::setTowerHp,
+             py::arg("team"), py::arg("slot"), py::arg("hp"))
+        .def("destroy_tower", &ClashEnv::destroyTower,
+             py::arg("team"), py::arg("slot"))
+        .def("get_tower_hp", &ClashEnv::getTowerHp,
+             py::arg("team"), py::arg("slot"))
+        .def("get_tower_max_hp", &ClashEnv::getTowerMaxHp,
+             py::arg("team"), py::arg("slot"))
+        // Clamped to [0, max_ticks]. Sets BOTH engine clocks so they cannot
+        // drift; see ClashEnv::setCurrentTick.
+        .def("set_current_tick", &ClashEnv::setCurrentTick, py::arg("tick"))
         // Reproducible episodes. Seeds BOTH engine generators and re-deals,
         // so two envs given the same seed agree on the opening hand, the
         // cycle order and the heuristic's rolls. See ClashEnv::seed, and
