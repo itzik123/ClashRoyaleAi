@@ -43,6 +43,40 @@ enum class Archetype {
 // perception/tools/sim_fidelity.py can settle it after this lands.
 inline constexpr float MOVEMENT_SPEED_SCALE = 0.2f;
 
+// SPEED TIERS (2026-08-24). The comment above says the Slow:Medium ratio was
+// left wrong on purpose because "the measurement bracket is too wide to justify
+// per-tier constants". It is no longer too wide, so the tiers are constants now.
+//
+// The real game publishes ONE speed number per card, in tiles per MINUTE, and it
+// only ever takes five values: 30 / 45 / 60 / 90 / 120 (Very Slow .. Very Fast).
+// Verified against Supercell's own exported table, which has exactly those five
+// values across 119 characters -- see perception/UPSTREAM_REQUESTS.md item 25.
+//
+// A REAL tile is not an ENGINE tile: this board's tower layout differs from the
+// real arena's, so the conversion is a measured factor and not 1/60. It is
+// pinned by two cards tracked frame by frame through perception/videos/:
+//
+//     Giant          real 45   ->  0.987 engine tiles/s   (two recordings, 2.5% apart)
+//     Mini P.E.K.K.A real 90   ->  2.003 engine tiles/s
+//
+// Those give 0.02193 and 0.02226 tiles/s per stat unit -- agreeing to 1.5%,
+// which is the check that matters: two cards, two tiers, one constant. The
+// footage also reproduces the published Fast:Slow ratio (2.03 against 2.00),
+// so the recordings and Supercell's table independently agree.
+//
+// WHY A SCALE COULD NOT HAVE DONE THIS. MOVEMENT_SPEED_SCALE is a global
+// multiplier and preserves ratios by construction. Before this, cards sharing
+// one real tier were spread across four different engine speeds -- every one of
+// Giant, Golem, P.E.K.K.A, Royal Giant and Lava Hound is Slow (45) in the real
+// game, and this engine had them at 0.4, 0.6, 0.8 and 1.0 tiles/s. No value of
+// the scale fixes that; only naming the tiers does.
+inline constexpr float REAL_TILES_PER_MIN_TO_ENGINE = 0.011045f;
+inline constexpr float SPEED_VERY_SLOW = 30.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
+inline constexpr float SPEED_SLOW      = 45.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
+inline constexpr float SPEED_MEDIUM    = 60.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
+inline constexpr float SPEED_FAST      = 90.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
+inline constexpr float SPEED_VERY_FAST = 120.0f * REAL_TILES_PER_MIN_TO_ENGINE;
+
 // DEPLOY TIME (2026-08-19). Ticks a freshly placed troop or building spends
 // inert: on the board, targetable and damageable, but unable to move, target
 // or attack. 10 ticks = 1.0 s at this engine's 10 ticks/second.

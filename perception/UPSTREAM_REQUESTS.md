@@ -5,8 +5,8 @@ Written from `perception/`, which modifies nothing outside itself. Items are
 explicit sign-off — see CLAUDE.md's rule on never changing C++ without
 confirming the exact diagnosis and the exact edit first.
 
-Last updated 2026-08-23. Items 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 16,
-19 and 21 are applied; 8, 17 and 20 are still open; 18 is ACCEPTED, WILL NOT FIX
+Last updated 2026-08-24. Items 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 16,
+19, 21, 22, 24 and 25 are applied; 8, 17, 20 and 23 are still open; 18 is ACCEPTED, WILL NOT FIX
 FOR NOW. There is no item 11.
 
 > **Second status audit, 2026-08-23.** This line had drifted again, in all four
@@ -2819,3 +2819,222 @@ report the **same level**, not merely the same delta — the check that failed i
 2026-08-20 and produced the evidence item 7 was argued from. Until someone with
 a 3.11 environment runs both, §A and §B are *plausible and unverified*, and this
 file should keep saying so.
+## 24. APPLIED 2026-08-23 — the Giant walks at 0.600 tiles/s and the real one walks at 0.99, measured on two independent recordings (proposed 2026-08-23)
+
+**GAMEPLAY-AFFECTING. Every win rate earned before this is historical.** Checkpoints
+are NOT invalidated: the observation, action space and architecture are untouched, and
+`sightRange`/`speed` are not observation channels (`CH_RANGE` carries attackRange, and
+`CH_SPEED` carries the value being changed, so the OBSERVATION still describes whatever
+the entity actually has -- no tensor changes shape).
+
+### The measurement
+
+`perception/videos/` was read frame by frame: the arena homography in
+`config/profile_gpg_1920x1080.json` re-validated against these files (worst anchor error
+**0.312 tiles**), units located with `units_M_480x352.onnx`, positions taken at the
+sprite's FEET and mapped through the homography. A stationary Cannon read (8.5, 9.2)
+across five samples with a spread of +/-0.05 tiles, which is the independent check that
+the mapping is stable.
+
+| | speed | window | residual sd |
+|---|---|---|---|
+| video 1 (`20-45-03`), Giant | **0.999** tiles/s | 26 frames, 6.8 s | 0.174 tiles |
+| video 2 (`20-48-33`), Giant | **0.974** tiles/s | 140 frames, 13.7 s | 0.298 tiles |
+| engine | **0.600** tiles/s | -- | -- |
+
+Two different matches, opposite lanes, opposite directions of travel, agreeing to 2.5%.
+The engine is **1.64x too slow** for this card.
+
+### CORRECTION, same day: the Fast tier is too slow as well
+
+This item first claimed the defect was Giant-specific, on a Mini P.E.K.K.A fit that
+matched the engine. **That fit was contaminated and the claim was wrong.** Its window
+(118.8-122.4 s) began and ended while the unit was STALLED -- visible in the trace as a
+flat y ~= 17.9 for the first 0.8 s -- which pulled the fitted speed down to 1.528 and
+made the engine's 1.600 look correct. Refitted on the clean descent alone:
+
+| | window | speed | residual sd |
+|---|---|---|---|
+| Mini P.E.K.K.A, contaminated | 118.8-122.4 s | 1.528 | 0.373 |
+| Mini P.E.K.K.A, **clean descent** | 120.3-124.5 s, 40 frames | **2.003** | 0.195 |
+
+*A fit window is part of the measurement. Choosing one that spans combat measures the
+combat.* Same failure shape as the "three rising samples" walk-start estimator and the
+p90 speed estimator, both discarded earlier in the same session.
+
+### What the corrected numbers say
+
+| card | tier | video | engine | video/engine |
+|---|---|---|---|---|
+| Giant | Slow | 0.987 | 0.600 | **1.65x** |
+| Mini P.E.K.K.A | Fast | 2.003 | 1.600 | **1.25x** |
+
+**Both are too slow, by different factors** -- so this is not one card, and it is not a
+uniform clock error either. The invariant that survives is the RATIO, and it is where
+the engine actually breaks:
+
+| | Fast : Slow |
+|---|---|
+| the recordings | **2.03** |
+| real game, published tiers (90 / 45 tiles per minute) | **2.00** |
+| **this engine** | **2.67** |
+
+The footage reproduces the published tier ratio to 1.5%, which is strong independent
+corroboration that the measurement pipeline is sound -- the two cards were tracked in
+different matches, different lanes, opposite directions. The engine is the outlier.
+
+Note the units: the published figure is tiles per MINUTE in REAL-game tiles, while
+everything measured here is in ENGINE tiles (the homography is fitted to the engine's
+own tower layout). Absolute tiles/second therefore are NOT comparable across the two,
+and the ratio is -- which is why the ratio is the claim.
+
+### Why MOVEMENT_SPEED_SCALE cannot fix a ratio
+
+`CardStats.h`'s `MOVEMENT_SPEED_SCALE = 0.2f` is a **global multiplier**, and a global
+multiplier preserves ratios by construction. CLAUDE.md records the ratio as wrong -- "the
+engine's own Slow:Medium tier ratio (0.60 against the real 0.75)" -- and cites it as one
+of the three pieces of evidence justifying the 2026-08-07 movement fix. That fix applied
+one scale to every card, so it could move the average and could not touch the per-tier
+error. The ratio is still wrong today, in the same direction.
+
+### The edit
+
+`include/core/CardRegistry.h:695`, the sixth argument (speed):
+
+```cpp
+-  add(troop(2, "Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G')...
++  add(troop(2, "Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.5f, 1.2f, 253, 15, 'G')...
+```
+
+`0.5f * MOVEMENT_SPEED_SCALE * 10 ticks/s = 1.000 tiles/s`, against 0.987 measured
+(1.3% high). The neighbouring literal 0.4f gives 0.800, which is 19% low.
+
+### Blast radius, and what was deliberately NOT changed
+
+Six other cards share the `0.3f` literal because they share a tier -- **Royal Giant,
+Sparky, Electro Giant, Elixir Golem, Lava Hound, Hero Giant**. Only the Giant was
+measured, so only the Giant was changed. The **17 cards on `0.8f`** (the Fast band) are
+~1.25x slow by the corrected Mini P.E.K.K.A measurement and were also left alone.
+
+**This edit therefore does not make the tier structure correct.** It puts one measured
+card on its measured value. Applying it moves the engine's Fast:Slow ratio from 2.67 to
+1.60, against a real 2.00 -- closer in magnitude, wrong in the other direction. Making
+the ratio right needs the Fast band moved too (0.8f -> 1.0f, giving 2.000 tiles/s against
+2.003 measured), which is 17 further cards and was not done unilaterally.
+
+That leaves a real, deliberate inconsistency, and the reason for accepting it is the
+part worth reading. Setting the Giant to `0.5f` puts it on the SAME literal as the 80
+cards in the middle band, i.e. it collapses "Slow" into "Medium". That may be correct --
+or it may mean the middle band is itself mislabelled -- and the data cannot currently
+tell the two apart: the two Medium units measurable in these recordings gave **0.749**
+(Valkyrie) and **1.183** (Musketeer), a 1.6x spread inside one tier, because both were
+in combat rather than walking cleanly. Sweeping six unmeasured cards onto a number
+derived from one card, while the anchor that would justify it is that noisy, is exactly
+the extrapolation this document exists to prevent.
+
+**To close it properly**, measure a clean walking segment for a Medium card and for a
+second Slow card (Golem or P.E.K.K.A) on these same recordings, then either sweep the
+tier or split it deliberately.
+
+### Reproducing it
+
+```bash
+tools/audit/video_replay.cpp        # one card's trajectory, tick by tick
+tools/audit/video_scenario.cpp      # a multi-card push vs a defending tower's HP
+tools/audit/video_replay_log.cpp    # the same push as a web/viewer.html replay
+```
+
+**SUPERSEDED by item 25**, which replaced the whole speed model rather than this one
+card. The measurement above stands; the single-literal edit it describes was folded into
+the tier rewrite.
+
+---
+
+## 25. APPLIED 2026-08-24 — the whole speed model: the engine had no tiers, and 104 of 131 troops were wrong (proposed 2026-08-24)
+
+**GAMEPLAY-AFFECTING, AND THE LARGEST SUCH CHANGE IN THIS FILE. Every win rate, every
+Elo anchor and every reward curve earned before today describes a different game.**
+`model_weights_selfplay.pth` now plays an environment it did not train in and will be
+weaker until retrained. Checkpoints still LOAD — observation, action space and
+architecture are untouched — but their measured strength is void.
+
+### What was wrong
+
+The real game gives every card ONE speed number, in tiles per MINUTE, and it takes only
+five values: **30 / 45 / 60 / 90 / 120**. Confirmed against Supercell's own exported
+table (`cards_stats_characters.json` in RoyaleAPI/cr-api-data): exactly those five values
+across 119 characters, no others.
+
+This engine had **nine** ad-hoc literals and no tier concept at all, so cards sharing one
+real tier were scattered across different speeds. Every one of these is Slow (45):
+
+| card | before | after |
+|---|---|---|
+| Golem | 0.400 tiles/s | 0.994 |
+| Giant, Royal Giant, Lava Hound, Electro Giant, Elixir Golem | 0.600 | 0.994 |
+| P.E.K.K.A. | 0.800 | 0.994 |
+
+**No value of `MOVEMENT_SPEED_SCALE` could ever have fixed that.** It is a global
+multiplier and preserves ratios by construction — which is exactly why the ratio
+CLAUDE.md flagged as wrong on 2026-08-07 ("Slow:Medium 0.60 against the real 0.75")
+survived that fix untouched, and why `CardStats.h` still carried a comment saying the
+tiers were "left uncorrected on purpose".
+
+Measured over the whole registry: **only 5 of 109 resolvable troops were within 5% of
+correct. 104 were not.** The dominant error was a uniform **×1.33 on 53 cards** (the
+Medium band) with tier-assignment errors layered on top, ranging to ×2.49.
+
+### The calibration, and why it is not 1/60
+
+A REAL tile is not an ENGINE tile — this board's tower layout differs from the real
+arena's — so the conversion is measured, not assumed. Two cards tracked frame by frame
+through `perception/videos/` with the homography in `config/profile_gpg_1920x1080.json`
+(re-validated on these files, worst anchor error 0.312 tiles):
+
+| card | real stat | engine tiles/s | implied factor |
+|---|---|---|---|
+| Giant | 45 | 0.987 (two recordings, 2.5% apart) | 0.02193 |
+| Mini P.E.K.K.A | 90 | 2.003 | 0.02226 |
+
+**Two cards, two different tiers, one constant, agreeing to 1.5%.** The footage also
+reproduces the published Fast:Slow ratio — 2.03 measured against 2.00 published — so the
+recordings and Supercell's table corroborate each other independently.
+
+`REAL_TILES_PER_MIN_TO_ENGINE = 0.011045f`, and the five tiers derive from it.
+
+### Verification, which is the part that makes this safe
+
+The rewrite was scripted, so it was round-tripped rather than trusted: rebuild, re-dump
+every spawned troop's actual speed, and assert it equals its official tier times the
+calibration. **109 / 109 match, 0 mismatches.**
+
+A first attempt was DISCARDED and is worth recording. It replaced only the first regex
+match per card, and several cards appear more than once — `troop(24, "Skeletons", ...)`
+exists both as a death-spawn helper and as the playable card. It silently edited the
+helper and left the real card alone. The round-trip check is what caught it; reverting
+and redoing with all-occurrences replacement is what fixed it.
+
+### What was deliberately NOT changed
+
+**13 cards have no official row** and keep their previous values: Berserker, Ronin,
+Goblin Machine, Goblin Demolisher, Furnace, Heal Spirit, Suspicious Bush, Rune Giant,
+Little Prince, Goblinstein, Boss Bandit, Spirit Empress. They are newer than the exported
+table. They now sit off-tier (1.000 / 1.400 / 1.700 tiles/s) and should be assigned once
+a source covers them.
+
+The **9 Hero variants** WERE changed, by mirroring their base card's tier rather than by
+guessing: "Hero Giant" takes Giant's tier, "Hero Knight" takes Knight's. They are
+engine-invented and have no real counterpart, but the naming makes the intent explicit,
+and leaving them behind would have put Hero Giant at 0.600 against Giant's 0.994.
+
+### What this does not settle
+
+The calibration rests on **two** measured cards. It is strongly corroborated — different
+tiers, different matches, and it reproduces the published ratio — but a third measurement
+in the Medium band would make it three-point. The two Medium units available in these
+recordings were both in combat rather than walking cleanly (0.749 and 1.183, a 1.6×
+spread inside one tier) and were discarded rather than averaged.
+
+`perception/tools/sim_fidelity.py` is the harness the old `CardStats.h` comment named for
+settling this, and it has NOT been re-run against the new tiers.
+

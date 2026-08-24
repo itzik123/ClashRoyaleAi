@@ -14,6 +14,11 @@
 #include <string>
 #include <stdexcept>
 #include <random>
+// std::as_const, used by the non-const findTower below. It was reaching this
+// header transitively and compiled inside the Catch2 suite by luck; any
+// translation unit that does not pull <utility> in some other way failed with
+// "'as_const' is not a member of 'std'" -- tools/audit/*.cpp did, immediately.
+#include <utility>
 
 class GameManager {
 public:

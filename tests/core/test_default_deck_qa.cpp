@@ -228,10 +228,22 @@ TEST_CASE("the Hog Rider ignores troops entirely and goes for the tower",
 
     m.step(60);
 
-    // Whatever happened to the Hog, it must never have swung at them. Damage
-    // dealt is read by card, so our own towers' shooting cannot be credited to
-    // the Hog by accident.
-    REQUIRE(m.game.getStatistics().damageDealtByCard(HOG_RIDER, 0) == 0);
+    // Whatever happened to the Hog, it must never have swung at THEM -- which
+    // is what the comment above says this case asserts, and what it now does.
+    //
+    // It used to read damageDealtByCard(HOG_RIDER, 0) == 0, i.e. the Hog's
+    // TOTAL damage, and that is a different claim: it also forbids the Hog
+    // hitting the enemy tower, which is the one thing a win condition is
+    // supposed to do. It passed only because the pre-2026-08-24 Hog was too
+    // slow to cross 11 tiles inside this 60-tick window. Once the speed tiers
+    // were corrected (UPSTREAM item 25, Hog Rider is Very Fast / 120) it
+    // arrives and lands one 317-damage hit, and the case failed -- for the
+    // right behaviour. The timing accident was doing the work, not the
+    // assertion.
+    int skeletonHpAfter = 0;
+    for (const auto& e : m.game.getBoard().getEntities())
+        if (e->cardId == SKELETONS && e->team == 1) skeletonHpAfter += e->hp;
+    REQUIRE(skeletonHpAfter == skeletonHpBefore);
     REQUIRE(m.game.getStatistics().killsByCard(HOG_RIDER, 0) == 0);
 }
 
@@ -302,10 +314,13 @@ TEST_CASE("Skeletons are separated by collision while deploying, not moved by ch
 // ----------------------------------------------------------------- defence --
 
 TEST_CASE("the Cannon fully answers a lone Hog Rider", "[deck_qa][defence]") {
-    // Measured: an unanswered Hog takes 2219 tower hp; with a Cannon down it
-    // takes ZERO. This is the deck's whole defensive premise -- a 3-elixir
-    // building neutralising a 4-elixir win condition -- and it is the single
-    // most load-bearing interaction in the 2.6 matchup.
+    // Measured: an unanswered Hog takes 2534 tower hp; with a Cannon down it
+    // takes 317 -- one swing. This is the deck's whole defensive premise -- a
+    // 3-elixir building neutralising a 4-elixir win condition -- and it is the
+    // single most load-bearing interaction in the 2.6 matchup.
+    //
+    // "with a Cannon it takes ZERO" was true until the speed tiers landed on
+    // 2026-08-24 and is not any more; see the assertion at the bottom.
     //
     // That figure was 1268 until King dormancy landed on 2026-08-21
     // (tools/audit/king_activation_audit.cpp): with the defending King asleep
@@ -332,7 +347,19 @@ TEST_CASE("the Cannon fully answers a lone Hog Rider", "[deck_qa][defence]") {
 
     INFO("unanswered " << unanswered << " hp lost, with a Cannon " << withCannon);
     REQUIRE(withCannon < unanswered);
-    REQUIRE(withCannon == 0);
+    // The Cannon must absorb the overwhelming majority of the push, not
+    // literally all of it.
+    //
+    // This was `withCannon == 0` -- an ABSOLUTE assertion, directly against
+    // this case's own comment that "the assertions below are deliberately
+    // relative". It broke when the speed tiers were corrected (UPSTREAM item
+    // 25): the Hog Rider is Very Fast (120) in the real game and was running at
+    // the Fast value, so it now reaches the tower and lands exactly ONE hit --
+    // 317 damage, one swing -- before the Cannon kills it. That is the real
+    // game's behaviour; a reactively-placed Cannon does not always deny a Hog
+    // outright. The premise being pinned is "a 3-elixir building neutralises a
+    // 4-elixir win condition", and one swing out of 2534 is neutralised.
+    REQUIRE(withCannon * 5 < unanswered);
 }
 
 TEST_CASE("Skeletons and a Musketeer both blunt a Hog, a Hog does not",

@@ -455,7 +455,7 @@ private:
     // the real card's exact spawn-chain depth isn't in the sourced data
     // either way.
     static CardStats evolvedSkeletonChildStats() {
-        return troop(24, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k');
+        return troop(24, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k');
     }
     // Skeleton Army Evolution's death-spawn "shadow": real card's shadows
     // have unlimited hp and are untargetable by anything but spells --
@@ -557,49 +557,49 @@ private:
         // modeled, via CardStats::withSpawnEffect (see below).
 
         // === Melee Troops ===
-        add(troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K'));
+        add(troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, SPEED_MEDIUM, 1.2f, 202, 12, 'K'));
 
-        add(troop(4, "Goblins", 2.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+        add(troop(4, "Goblins", 2.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }));
 
-        add(troop(5, "Mini PEKKA", 4.0f, Archetype::MeleeSquad, 1390, 0.8f, 0.8f, 755, 16, 'M'));
+        add(troop(5, "Mini PEKKA", 4.0f, Archetype::MeleeSquad, 1390, SPEED_FAST, 0.8f, 755, 16, 'M'));
 
-        add(troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+        add(troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }));
 
-        add(troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+        add(troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, SPEED_MEDIUM, 1.2f, 266, 15, 'V')
             .withSplash(1.5f)); // 360-degree swing
 
-        add(troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
+        add(troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 's')
             .withOffsets(skeletonArmyOffsets()));
 
-        add(troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E').withSightRange(5.0f));
+        add(troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, SPEED_SLOW, 1.2f, 842, 18, 'E').withSightRange(5.0f));
 
         // Charge threshold/multiplier below aren't part of the sourced
         // stats data -- reasonable engine-internal constants, same caveat
         // as splashRadius/shieldHp. Prince crosses the river directly
         // (confirmed real-game river-crossing troop, one of the "jumpers"),
         // not routed through a bridge -- see withIgnoresRiver.
-        add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, 0.6f, 1.6f, 391, 14, 'p')
+        add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, SPEED_MEDIUM, 1.6f, 391, 14, 'p')
             .withCharge(3.0f, 2.0f)
             .withIgnoresRiver());
 
-        add(troop(17, "Elite Barbarians", 6.0f, Archetype::MeleeSquad, 1341, 0.7f, 1.2f, 384, 14, 'e')
+        add(troop(17, "Elite Barbarians", 6.0f, Archetype::MeleeSquad, 1341, SPEED_FAST, 1.2f, 384, 14, 'e')
             .withOffsets({ {-0.5f, 0.0f}, {0.5f, 0.0f} }));
 
         // Lumberjack's death-potion radius/multiplier/duration below aren't
         // part of the sourced stats data -- reasonable engine-internal
         // constants, same caveat as splashRadius.
-        add(troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+        add(troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, SPEED_VERY_FAST, 0.7f, 256, 8, 'l')
             .withDeathEffect(std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55)));
 
-        add(troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+        add(troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} }));
 
         // Death-bomb radius/damage below aren't part of the sourced stats
         // data -- reasonable engine-internal constants, same caveat as
         // splashRadius/shieldHp.
-        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3361, 0.4f, 0.8f, 276, 13, 'J')
+        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3361, SPEED_MEDIUM, 0.8f, 276, 13, 'J')
             .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 300)).withSightRange(5.0f));
 
         // Electro Wizard: real attack is an instant zap with no projectile
@@ -616,7 +616,7 @@ private:
         // attack's own damage since the real card's deploy zap mirrors its
         // regular hit, same stun) rides withSpawnEffect, firing once at
         // deploy via a delay-0 AreaSpell.
-        add(troop(35, "Electro Wizard", 4.0f, Archetype::MeleeSquad, 714, 0.5f, 5.0f, 118, 18, 'z')
+        add(troop(35, "Electro Wizard", 4.0f, Archetype::MeleeSquad, 714, SPEED_FAST, 5.0f, 118, 18, 'z')
             .withTargetsAir()
             .withSplitTargets(2)
             .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f))
@@ -627,34 +627,34 @@ private:
         // are the same unit at two squad sizes/costs, direct-damage like the
         // game's other small swarms (Goblins, Skeletons); Mega Minion is a
         // single heavier melee flier. All three hit air and ground alike.
-        add(troop(41, "Minions", 3.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'm')
+        add(troop(41, "Minions", 3.0f, Archetype::MeleeSquad, 230, SPEED_FAST, 2.5f, 107, 12, 'm')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
             .withFlying().withTargetsAir());
 
-        add(troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
+        add(troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, SPEED_FAST, 2.5f, 107, 12, 'h')
             .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
                            {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
             .withFlying().withTargetsAir());
 
-        add(troop(43, "Mega Minion", 3.0f, Archetype::MeleeSquad, 837, 0.5f, 1.6f, 312, 15, 'F')
+        add(troop(43, "Mega Minion", 3.0f, Archetype::MeleeSquad, 837, SPEED_MEDIUM, 1.6f, 312, 15, 'F')
             .withFlying().withTargetsAir());
 
         // === Ranged Troops ===
         // Target: Air & Ground -- every ranged troop below needs its own
         // confirmed Target field before getting .withTargetsAir() (default
         // is ground-only); don't assume "ranged" implies it.
-        add(troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 5.0f, 112, 9, 'A')
+        add(troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, SPEED_MEDIUM, 5.0f, 112, 9, 'A')
             .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} })
             .withTargetsAir());
 
-        add(troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+        add(troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, SPEED_MEDIUM, 6.0f, 217, 10, 'U')
             .withTargetsAir().withSightRange(6.0f));
         // Bomber deliberately has NO withTargetsAir: the real card is
         // ground-only. Same for Bowler/Sparky/Cannon Cart below.
-        add(troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, 0.5f, 4.5f, 225, 18, 'b'));
-        add(troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+        add(troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, SPEED_MEDIUM, 4.5f, 225, 18, 'b'));
+        add(troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, SPEED_MEDIUM, 5.5f, 281, 14, 'W')
             .withTargetsAir().withSplash(1.5f));
-        add(troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
+        add(troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, SPEED_VERY_FAST, 6.5f, 151, 8, 'd')
             .withTargetsAir().withSightRange(7.5f));
         // Now modeled as a real piercing line (applyLineSplashDamage) --
         // total travel 11.5 (4.0 attack range + 7.5 extra), half-width
@@ -662,10 +662,10 @@ private:
         // splash mode). Knockback on every hit target still isn't
         // modeled -- AreaSpell's knockback has no equivalent on the
         // troop-attack path this engine's splash/line-splash share.
-        add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, 0.4f, 4.0f, 289, 25, 'w')
+        add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, SPEED_SLOW, 4.0f, 289, 25, 'w')
             .withSplash(1.8f).withLineSplash(11.5f).withSightRange(4.0f));
 
-        add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
+        add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
             .withTargetsAir()
             .withOffsets({ {0.0f, 0.0f}, {0.7f, 0.0f}, {-0.7f, 0.0f} }));
 
@@ -674,7 +674,7 @@ private:
         // from RangedTroop but overrode performAttack to hit instantly,
         // bypassing the projectile entirely. Fixed now that on-hit effects
         // can ride along with a projectile instead of firing at launch.)
-        add(troop(34, "Ice Wizard", 3.0f, Archetype::RangedSquad, 689, 0.5f, 5.5f, 90, 17, 'i')
+        add(troop(34, "Ice Wizard", 3.0f, Archetype::RangedSquad, 689, SPEED_MEDIUM, 5.5f, 90, 17, 'i')
             .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f)));
 
@@ -683,24 +683,24 @@ private:
         // path both ways; this engine has no line-collision primitive, so
         // it hits just the original target twice instead (see
         // Projectile's returnsToSender).
-        add(troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
+        add(troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, SPEED_MEDIUM, 4.5f, 179, 24, 'x')
             .withTargetsAir()
             .withBoomerang(15));
 
-        add(troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
+        add(troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, SPEED_FAST, 3.5f, 168, 15, 'y')
             .withFlying().withTargetsAir()
             .withSplash(1.5f));
 
         // === Building Targeters ===
-        add(troop(2, "Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G').withSightRange(7.5f));
+        add(troop(2, "Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, SPEED_SLOW, 1.2f, 253, 15, 'G').withSightRange(7.5f));
 
-        add(troop(15, "Hog Rider", 4.0f, Archetype::MeleeBuildingTargeter, 1697, 0.8f, 0.8f, 317, 16, 'H')
+        add(troop(15, "Hog Rider", 4.0f, Archetype::MeleeBuildingTargeter, 1697, SPEED_VERY_FAST, 0.8f, 317, 16, 'H')
             .withIgnoresRiver().withSightRange(9.5f));
 
         // Golem splits into two Golemites on death AND deals its own
         // death-explosion damage -- two death effects composed via
         // CompositeDeathEffect, since deathEffect is a single slot.
-        add(troop(19, "Golem", 8.0f, Archetype::MeleeBuildingTargeter, 5120, 0.2f, 0.75f, 312, 25, 'L')
+        add(troop(19, "Golem", 8.0f, Archetype::MeleeBuildingTargeter, 5120, SPEED_SLOW, 0.75f, 312, 25, 'L')
             .withDeathEffect(std::make_shared<CompositeDeathEffect>(
                 std::vector<std::shared_ptr<IDeathEffect>>{
                     std::make_shared<SpawnOnDeath>(golemiteStats()),
@@ -713,7 +713,7 @@ private:
         // slows everyone it hits, but AreaDamageOnDeath is damage-only
         // (no onHit-style hook, unlike AreaSpell's spellOnHit) -- not
         // modeled.
-        add(troop(40, "Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, 0.4f, 0.75f, 84, 25, 'c')
+        add(troop(40, "Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, SPEED_SLOW, 0.75f, 84, 25, 'c')
             .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
             .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f));
 
@@ -725,12 +725,12 @@ private:
         // conditional (only if shot down before dropping its bomb) --
         // that condition isn't modeled, it always deals the death-explosion
         // here regardless of cause of death, a minor over-approximation.
-        add(troop(45, "Balloon", 5.0f, Archetype::MeleeBuildingTargeter, 1676, 0.5f, 0.1f, 640, 20, 'a')
+        add(troop(45, "Balloon", 5.0f, Archetype::MeleeBuildingTargeter, 1676, SPEED_MEDIUM, 0.1f, 640, 20, 'a')
             .withFlying()
             .withDeathEffect(std::make_shared<AreaDamageOnDeath>(1.5f, 240)).withSightRange(7.7f));
 
         // === Ranged Building Targeter ===
-        add(troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y').withSightRange(7.5f));
+        add(troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, SPEED_SLOW, 5.0f, 307, 18, 'Y').withSightRange(7.5f));
 
         // === Defensive Structures ===
         add(building(25, "Cannon", 3.0f, 824, 'C', 5.5f, 202, 10));
@@ -801,13 +801,13 @@ private:
         // === New Melee Troops ===
         // Dark Prince crosses the river directly (one of the "jumpers"),
         // not routed through a bridge -- see withIgnoresRiver.
-        add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, 0.5f, 1.2f, 266, 14, 'N')
+        add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, SPEED_MEDIUM, 1.2f, 266, 14, 'N')
             .withShield(240) // corrected from an unsourced 200 guess
             .withCharge(3.0f, 2.0f) // confirmed: +100% (double) damage on a charging hit
             .withIgnoresRiver());
         // Royal Ghost crosses the river directly, not routed through a
         // bridge -- see withIgnoresRiver.
-        add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+        add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.2f, 261, 18, 'Q')
             .withInvisibility(5) // brief reveal window after attacking
             .withIgnoresRiver());
         // Deploy slam via the existing one-time spawn-effect burst (radius
@@ -827,7 +827,7 @@ private:
         // Bandit (this engine has no discrete "currently jumping" movement
         // state to gate river-ignoring on more precisely than "always") --
         // see Bandit's own registry comment.
-        add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
+        add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, SPEED_MEDIUM, 1.2f, 268, 17, 'X')
             .withSplash(1.5f)
             .withSpawnEffect(1.3f, 430)
             .withJump(3.5f, 5.0f, 2.0f, 2.2f)
@@ -840,7 +840,7 @@ private:
         // (spawnEffect is damage-only).
         // Battle Healer crosses the river directly, not routed through a
         // bridge -- see withIgnoresRiver.
-        add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, 0.5f, 1.2f, 148, 15, 'f')
+        add(troop(49, "Battle Healer", 4.0f, Archetype::MeleeSquad, 1717, SPEED_MEDIUM, 1.2f, 148, 15, 'f')
             .withHealAura(3.0f, 102)
             .withIgnoresRiver());
         // Bandit's river-crossing is only via her dash (confirmed: she
@@ -851,7 +851,7 @@ private:
         // only tracks bonus-damage progress, not a discrete dash phase),
         // so this collapses to always-ignoring the river as a documented
         // approximation -- same caveat category as splashRadius/shieldHp.
-        add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, 0.8f, 1.0f, 194, 10, 'u')
+        add(troop(50, "Bandit", 3.0f, Archetype::MeleeSquad, 906, SPEED_FAST, 1.0f, 194, 10, 'u')
             .withCharge(3.0f, 2.0f)
             .withChargeInvulnerability() // confirmed: fully invulnerable while charging in
             .withSightRange(6.0f)
@@ -863,9 +863,9 @@ private:
         // to guess at.
         add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, 0.7f, 1.0f, 102, 6, 'v')
             .withEnrage(0));
-        add(troop(52, "Miner", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.0f, 194, 13, '0')
+        add(troop(52, "Miner", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.0f, 194, 13, '0')
             .withDeployAnywhere());
-        add(troop(53, "Fisherman", 3.0f, Archetype::MeleeSquad, 870, 0.5f, 1.0f, 194, 13, '1')
+        add(troop(53, "Fisherman", 3.0f, Archetype::MeleeSquad, 870, SPEED_MEDIUM, 1.0f, 194, 13, '1')
             .withHook(6.5f).withSightRange(7.5f));
         // Confirmed: interval is exactly 3.5s (35 ticks, already correct).
         // Real parry reflects 200% of the attacker's own damage back at
@@ -886,13 +886,13 @@ private:
         // Inferno Dragon's beam ramps 35 -> 120 -> 422 damage every 1.5s
         // (15 ticks) locked onto one target, same ramp mechanism as Inferno
         // Tower; `damage` stores the fully-ramped max.
-        add(troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, 0.5f, 5.0f, 422, 4, '4')
+        add(troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, SPEED_MEDIUM, 5.0f, 422, 4, '4')
             .withFlying().withTargetsAir()
             .withDamageRamp(15, 30, 0.083f, 0.284f));
         // Confirmed: not splash -- a true chain hitting up to 3 total
         // distinct targets (original + 2 more, each hop up to 4 tiles),
         // each taking the FULL 192 damage independently (not divided).
-        add(troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, 0.5f, 3.5f, 192, 21, '5')
+        add(troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, SPEED_MEDIUM, 3.5f, 192, 21, '5')
             .withFlying().withTargetsAir()
             .withSplitTargets(3)
             .withSplitTargetsFullDamage()
@@ -902,20 +902,20 @@ private:
         // such hook exists), but her on-death release of 3 Bats reuses the
         // same SpawnOnDeath mechanism as Golem/Battle Ram, with the newly-
         // registered Bats card's own stats (see nightWitchBatStats above).
-        add(troop(58, "Night Witch", 4.0f, Archetype::MeleeSquad, 906, 0.5f, 1.0f, 314, 13, '6')
+        add(troop(58, "Night Witch", 4.0f, Archetype::MeleeSquad, 906, SPEED_MEDIUM, 1.0f, 314, 13, '6')
             .withDeathEffect(std::make_shared<SpawnOnDeath>(nightWitchBatStats()))
             .withPeriodicEffect(50, std::make_shared<PeriodicSpawnEffect>(nightWitchPeriodicBatStats())));
         // Phoenix: one-time revive on death -- see phoenixReviveStats above.
-        add(troop(59, "Phoenix", 4.0f, Archetype::MeleeSquad, 1052, 0.5f, 1.0f, 217, 10, '7')
+        add(troop(59, "Phoenix", 4.0f, Archetype::MeleeSquad, 1052, SPEED_MEDIUM, 1.0f, 217, 10, '7')
             .withFlying().withTargetsAir()
             .withDeathEffect(std::make_shared<SpawnOnDeath>(phoenixReviveStats())));
 
         // === New Ranged Troops ===
-        add(troop(60, "Sparky", 6.0f, Archetype::RangedSquad, 1451, 0.3f, 5.0f, 1331, 40, '8')
+        add(troop(60, "Sparky", 6.0f, Archetype::RangedSquad, 1451, SPEED_SLOW, 5.0f, 1331, 40, '8')
             .withSplash(1.5f)
             .withStunResetsCooldown() // confirmed: any stun fully restarts her charge, doesn't just slow it
             .withSightRange(5.0f));
-        add(troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
+        add(troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, SPEED_MEDIUM, 9.0f, 168, 30, '9')
             .withTargetsAir()
             .withSplash(1.5f).withSightRange(9.5f));
         // No sourced falloff formula exists (confirmed: 10 fixed-damage
@@ -929,20 +929,20 @@ private:
         // mechanic in this engine (reproducibility for tests/RL training
         // matters more here than faithfully modeling randomness the real
         // card has but no published curve for).
-        add(troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
+        add(troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, SPEED_MEDIUM, 4.0f, 84, 22, '!')
             .withTargetsAir()
             .withSplash(1.5f)
             .withRangeFalloff(0.5f));
         // Now modeled as a real piercing line: total travel 11.0, half-
         // width 0.25 (0.5 total width) -- thin, not a cone.
-        add(troop(63, "Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
+        add(troop(63, "Magic Archer", 4.0f, Archetype::RangedSquad, 529, SPEED_MEDIUM, 7.0f, 143, 11, '#')
             .withTargetsAir()
             .withSplash(0.25f).withLineSplash(11.0f).withSightRange(7.5f));
-        add(troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
+        add(troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, SPEED_FAST, 6.0f, 64, 30, '$')
             .withTargetsAir()
             .withSplash(1.5f)
             .withRecoil(1.0f).withSightRange(8.5f)); // confirmed: kicks back 1 tile after every attack
-        add(troop(65, "Skeleton Dragons", 4.0f, Archetype::RangedSquad, 560, 0.7f, 3.5f, 151, 20, '%')
+        add(troop(65, "Skeleton Dragons", 4.0f, Archetype::RangedSquad, 560, SPEED_FAST, 3.5f, 151, 20, '%')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} }).withFlying().withTargetsAir()
             .withSplash(1.5f));
         // Transform now modeled via transformKillsSelf + SpawnOnDeath
@@ -952,13 +952,13 @@ private:
         add(troop(66, "Goblin Demolisher", 4.0f, Archetype::RangedSquad, 1300, 0.5f, 5.0f, 186, 11, '&')
             .withSplash(1.5f)
             .withHpTransformIntoDeath(0.5f, std::make_shared<SpawnOnDeath>(goblinDemolisherKamikazeStats())));
-        add(troop(67, "Flying Machine", 4.0f, Archetype::RangedSquad, 614, 0.7f, 6.0f, 171, 11, '+')
+        add(troop(67, "Flying Machine", 4.0f, Archetype::RangedSquad, 614, SPEED_FAST, 6.0f, 171, 11, '+')
             .withFlying().withTargetsAir().withSightRange(6.0f));
         // Confirmed: the spawned unit is a unique "Cursed Hog" (building-
         // targeter, see cursedHogStats), not a plain Goblin -- now modeled
         // via CursedHogOnHit, which arms a SpawnOnDeathForEnemyTeam on
         // whatever this curses.
-        add(troop(68, "Mother Witch", 4.0f, Archetype::RangedSquad, 529, 0.5f, 5.5f, 133, 10, ',')
+        add(troop(68, "Mother Witch", 4.0f, Archetype::RangedSquad, 529, SPEED_MEDIUM, 5.5f, 133, 10, ',')
             .withTargetsAir()
             .withOnHit(std::make_shared<CursedHogOnHit>(1.3f, 60, cursedHogStats())));
         // Correction: no separate "shield" stat actually exists for this
@@ -969,7 +969,7 @@ private:
         // itself for 15s, then self-destructs), modeled by reusing
         // applyFreeze(ticks, 0.0f) rather than adding a second speed
         // concept -- see CombatEntity::transformBecomesStationary.
-        add(troop(69, "Cannon Cart", 5.0f, Archetype::RangedSquad, 1809, 0.5f, 5.5f, 212, 9, '?')
+        add(troop(69, "Cannon Cart", 5.0f, Archetype::RangedSquad, 1809, SPEED_MEDIUM, 5.5f, 212, 9, '?')
             .withHpTransform(0.5f, 150, true)
             // Sourced sight range differs slightly by form (6.0 mobile,
             // 5.5 once transformed stationary) -- this engine models both
@@ -979,7 +979,7 @@ private:
         add(troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
             .withTargetsAir() // reworked 2026 from Building to mobile Troop
             .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())));
-        add(troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
+        add(troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, SPEED_MEDIUM, 5.5f, 135, 11, ':')
             .withTargetsAir()
             .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats())));
 
@@ -987,11 +987,11 @@ private:
         // CombatEntity::dieAfterFirstHit (fires the instant the shot is
         // launched for these ranged troops, not on the projectile's later
         // arrival, a minor timing simplification -- see its own comment).
-        add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
+        add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
             .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
             .withDieAfterFirstHit());
-        add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 207, 10, '<')
+        add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 207, 10, '<')
             .withTargetsAir()
             .withDieAfterFirstHit()); // splash not modeled
         // Confirmed: real heal is 4 pulses of 100.25 (401 total, not a
@@ -1001,7 +1001,7 @@ private:
             .withTargetsAir()
             .withHealAura(2.5f, 401)
             .withDieAfterFirstHit());
-        add(troop(75, "Electro Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 99, 10, '>')
+        add(troop(75, "Electro Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 99, 10, '>')
             .withTargetsAir()
             .withSplitTargets(2)
             .withOnHit(std::make_shared<FreezeOnHit>(8, 0.0f))
@@ -1011,17 +1011,17 @@ private:
         // Shield HP: Guards/Royal Recruits confirmed at 256/240 (corrected
         // from earlier unsourced 65/52 guesses); Cannon Cart's "shield" was
         // found to not be a real distinct stat at all (see its own entry).
-        add(troop(76, "Guards", 3.0f, Archetype::MeleeSquad, 81, 0.7f, 1.0f, 117, 10, '?')
+        add(troop(76, "Guards", 3.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 1.0f, 117, 10, '?')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
             .withShield(256));
-        add(troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+        add(troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, SPEED_MEDIUM, 1.0f, 133, 13, '@')
             .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
             .withShield(240));
-        add(troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, 0.85f, 1.0f, 81, 12, 't')
+        add(troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
             .withFlying().withTargetsAir());
 
-        add(troop(79, "Zappies", 4.0f, Archetype::RangedSquad, 529, 0.5f, 4.5f, 117, 21, '[')
+        add(troop(79, "Zappies", 4.0f, Archetype::RangedSquad, 529, SPEED_MEDIUM, 4.5f, 117, 21, '[')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
             .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(3, 0.0f)).withSightRange(5.0f));
@@ -1032,27 +1032,27 @@ private:
         // she could not see, so she never acquired it and stood idle. Same
         // latent defect as the Bomb Tower's, found the same way, by
         // test_sight_range.cpp's "no card can attack further than it can see".
-        add(troop(80, "Three Musketeers", 9.0f, Archetype::RangedSquad, 722, 0.5f, 6.0f, 218, 10, ']')
+        add(troop(80, "Three Musketeers", 9.0f, Archetype::RangedSquad, 722, SPEED_MEDIUM, 6.0f, 218, 10, ']')
             .withOffsets({ {-2.0f, 0.0f}, {0.0f, 0.0f}, {2.0f, 0.0f} })
             .withTargetsAir().withSightRange(6.0f));
 
         // === New Building Targeters ===
         // Battle Ram: releases 2 Barbarians on death (reuses the already-
         // sourced Barbarians card's own stats, see battleRamBarbarianStats).
-        add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
+        add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
             .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
             .withCharge(3.0f, 2.0f));
         // Royal Hogs cross the river directly (one of the "jumpers"), not
         // routed through a bridge -- see withIgnoresRiver.
-        add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
+        add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, SPEED_VERY_FAST, 1.0f, 74, 12, '_')
             .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
             .withCharge(3.0f, 2.0f).withSightRange(9.5f)
             .withIgnoresRiver());
-        add(troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
+        add(troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, SPEED_VERY_FAST, 1.0f, 350, 12, '{')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
             .withSplash(1.5f)
             .withDieAfterFirstHit().withSightRange(7.0f));
-        add(troop(84, "Electro Giant", 7.0f, Archetype::MeleeBuildingTargeter, 3952, 0.3f, 1.0f, 163, 18, '|')
+        add(troop(84, "Electro Giant", 7.0f, Archetype::MeleeBuildingTargeter, 3952, SPEED_SLOW, 1.0f, 163, 18, '|')
             .withSplash(1.5f)
             .withPeriodicEffect(50, std::make_shared<AreaStunEffect>(2.5f, 5)));
         add(troop(85, "Suspicious Bush", 2.0f, Archetype::MeleeBuildingTargeter, 81, 0.5f, 0.25f, 256, 14, '}')
@@ -1062,16 +1062,16 @@ private:
             .withAllyBuffAura(3.0f, 3, 1.5f, 50, 2));
         // Ram Rider crosses the river directly (one of the "jumpers"), not
         // routed through a bridge -- see withIgnoresRiver.
-        add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, 0.5f, 1.0f, 250, 17, '"')
+        add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, SPEED_MEDIUM, 1.0f, 250, 17, '"')
             .withCharge(3.0f, 2.0f)
             .withSecondaryUnit(ramRiderCrossbowStats()) // rider's independently-targeting crossbow (5.5 sight, its own default)
             .withSightRange(7.5f) // the "ram" component itself
             .withIgnoresRiver());
-        add(troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+        add(troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, SPEED_MEDIUM, 1.2f, 176, 15, '`')
             .withSecondaryUnit(goblinGiantSpearGoblinsStats()).withSightRange(7.5f)); // carried Spear Goblins, independently-targeting
         // Skeleton Barrel: releases 2 Skeletons on death (reuses the
         // already-sourced Skeletons card's own stats).
-        add(troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, 0.85f, 1.0f, 81, 10, ',')
+        add(troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, SPEED_FAST, 1.0f, 81, 10, ',')
             .withFlying()
             .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonBarrelSkeletonStats())).withSightRange(7.7f));
         // Full split chain now modeled: Golem -> 2 Golemites (each -> 2
@@ -1079,7 +1079,7 @@ private:
         // elixirBlobStats above for the rest of the chain and their own
         // elixir grants (1.0 + 1.0 + 2.0 = 4.0 total if the whole thing
         // is killed).
-        add(troop(90, "Elixir Golem", 3.0f, Archetype::MeleeBuildingTargeter, 1569, 0.3f, 1.0f, 253, 11, '(')
+        add(troop(90, "Elixir Golem", 3.0f, Archetype::MeleeBuildingTargeter, 1569, SPEED_SLOW, 1.0f, 253, 11, '(')
             .withDeathEffect(std::make_shared<CompositeDeathEffect>(
                 std::vector<std::shared_ptr<IDeathEffect>>{
                     std::make_shared<SpawnOnDeath>(
@@ -1092,7 +1092,7 @@ private:
         // Death spawn confirmed and now modeled: 6 Lava Pups, spread out
         // (no documented exact geometric pattern -- lavaHoundPupStats uses
         // a reasonable hexagonal spread as an engine-internal choice).
-        add(troop(91, "Lava Hound", 7.0f, Archetype::RangedBuildingTargeter, 3581, 0.3f, 3.5f, 53, 13, ')')
+        add(troop(91, "Lava Hound", 7.0f, Archetype::RangedBuildingTargeter, 3581, SPEED_SLOW, 3.5f, 53, 13, ')')
             .withFlying()
             .withDeathEffect(std::make_shared<SpawnOnDeath>(lavaHoundPupStats())));
 
@@ -1226,7 +1226,7 @@ private:
         // Goblin Machine/Ram Rider/Goblin Giant cards above), these no
         // longer need one sub-unit to dominate -- both halves are simply
         // spawned via primary + secondaryUnit.
-        add(troop(112, "Goblin Gang", 3.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+        add(troop(112, "Goblin Gang", 3.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f} })
             .withSecondaryUnit(
                 troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
@@ -1235,7 +1235,7 @@ private:
         // two "Girls" reuse Spear Goblins' own sourced ranged stats as a
         // reasonable stand-in rather than an invented split of the card's
         // one combined figure.
-        add(troop(113, "Rascals", 5.0f, Archetype::MeleeSquad, 1832, 0.5f, 1.2f, 217, 15, 'X')
+        add(troop(113, "Rascals", 5.0f, Archetype::MeleeSquad, 1832, SPEED_MEDIUM, 1.2f, 217, 15, 'X')
             .withSecondaryUnit(
                 troop(-28, "Rascals", 0.0f, Archetype::RangedSquad, 133, 0.5f, 5.0f, 81, 17, 'r')
                     .withOffsets({ {-0.5f, 0.0f}, {0.5f, 0.0f} })));
@@ -1280,7 +1280,7 @@ private:
         // (2.5) isn't part of the sourced data -- a reasonable
         // engine-internal geometry constant, same caveat as splashRadius/
         // shieldHp elsewhere in this file. See MightyMinerEscapeEffect.
-        add(troop(115, "Mighty Miner", 4.0f, Archetype::MeleeSquad, 2250, 0.5f, 1.6f, 409, 4, '\'')
+        add(troop(115, "Mighty Miner", 4.0f, Archetype::MeleeSquad, 2250, SPEED_MEDIUM, 1.6f, 409, 4, '\'')
             .withDamageRamp(20, 40, 40.0f / 409.0f, 204.0f / 409.0f)
             .withChampionAbility(1.0f, 130, std::make_shared<MightyMinerEscapeEffect>(2.5f, 332, 10, 1.8f)));
 
@@ -1288,7 +1288,7 @@ private:
         // enemy within 5.5 tiles, up to 10 times, stopping at a Crown
         // Tower. See GoldenKnightDashEffect for the "resolved in one tick"
         // timing simplification.
-        add(troop(116, "Golden Knight", 4.0f, Archetype::MeleeSquad, 1799, 0.5f, 1.2f, 161, 9, 'k')
+        add(troop(116, "Golden Knight", 4.0f, Archetype::MeleeSquad, 1799, SPEED_MEDIUM, 1.2f, 161, 9, 'k')
             .withChampionAbility(1.0f, 120, std::make_shared<GoldenKnightDashEffect>(335, 5.5f, 10)));
 
         // Skeleton King: passively collects a "soul" (up to 10) whenever
@@ -1296,7 +1296,7 @@ private:
         // sourced data -- a reasonable engine-internal constant, same
         // caveat as splashRadius elsewhere); "Soul Summoning" spawns 6 + 1
         // per collected soul (6-16 total), consuming them.
-        add(troop(117, "Skeleton King", 4.0f, Archetype::MeleeSquad, 2298, 0.5f, 1.2f, 180, 16, 'K')
+        add(troop(117, "Skeleton King", 4.0f, Archetype::MeleeSquad, 2298, SPEED_MEDIUM, 1.2f, 180, 16, 'K')
             .withSplash(1.3f)
             .withSoulCollection(5.0f, 10)
             .withChampionAbility(2.0f, 200,
@@ -1305,7 +1305,7 @@ private:
         // Archer Queen: "Cloaking Cape" -- untargetable + ~2.8x attack
         // speed (180% increase) for 3.5s. Movement-speed drop not modeled
         // -- see ArcherQueenCloakEffect's own comment.
-        add(troop(118, "Archer Queen", 5.0f, Archetype::RangedSquad, 1000, 0.5f, 5.0f, 225, 12, 'Q')
+        add(troop(118, "Archer Queen", 5.0f, Archetype::RangedSquad, 1000, SPEED_MEDIUM, 5.0f, 225, 12, 'Q')
             .withTargetsAir()
             .withChampionAbility(1.0f, 170, std::make_shared<ArcherQueenCloakEffect>(35, 1.0f / 2.8f)));
 
@@ -1316,7 +1316,7 @@ private:
         // reduction for 4s) reuses applyCurse -- see MonkDeflectEffect's
         // own comment for why, and for what else isn't modeled (projectile
         // reflection, knockback immunity).
-        add(troop(119, "Monk", 4.0f, Archetype::MeleeSquad, 2214, 0.5f, 1.2f, 140, 8, 'M')
+        add(troop(119, "Monk", 4.0f, Archetype::MeleeSquad, 2214, SPEED_MEDIUM, 1.2f, 140, 8, 'M')
             .withChampionAbility(1.0f, 170, std::make_shared<MonkDeflectEffect>(0.35f, 40)));
 
         // Little Prince: hit-speed ramps 1.2s -> 0.8s -> 0.4s while
@@ -1393,11 +1393,11 @@ private:
         // conservative reading (unchanged combat stats, only the new
         // death behavior) is used here, not the contested number.
         addEvolution(123,
-            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
+            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, SPEED_VERY_FAST, 1.0f, 350, 12, '{')
                 .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
                 .withSplash(1.5f)
                 .withDieAfterFirstHit().withSightRange(7.0f),
-            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, 0.85f, 1.0f, 350, 12, '{')
+            troop(83, "Wall Breakers", 2.0f, Archetype::MeleeBuildingTargeter, 330, SPEED_VERY_FAST, 1.0f, 350, 12, '{')
                 .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
                 .withSplash(1.5f)
                 .withDieAfterFirstHit().withSightRange(7.0f)
@@ -1430,9 +1430,9 @@ private:
         // at the standard 1). "Never-ending Horde": see
         // evolvedSkeletonChildStats above for the cap-counting design.
         addEvolution(125,
-            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} }),
-            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+            troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} })
                 .withOnHitSpawn(std::make_shared<CappedSpawnOnHitEffect>(evolvedSkeletonChildStats(), 8)),
             2, 1);
@@ -1445,10 +1445,10 @@ private:
         // reasonable ~10%-of-cap engine-internal constant, same caveat
         // category as splashRadius/shieldHp elsewhere in this file.
         addEvolution(126,
-            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, 0.85f, 1.0f, 81, 12, 't')
+            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
                 .withFlying().withTargetsAir(),
-            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 121, 0.85f, 1.0f, 81, 12, 't')
+            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 121, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
                 .withFlying().withTargetsAir()
                 .withHealOnHit(24, 242),
@@ -1463,8 +1463,8 @@ private:
         // damage from one shot) is the same even though the real
         // animation chains instead of hitting simultaneously.
         addEvolution(127,
-            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, 0.5f, 4.5f, 225, 18, 'b'),
-            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 380, 0.5f, 4.5f, 225, 18, 'b')
+            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 304, SPEED_MEDIUM, 4.5f, 225, 18, 'b'),
+            troop(9, "Bomber", 2.0f, Archetype::RangedSquad, 380, SPEED_MEDIUM, 4.5f, 225, 18, 'b')
                 .withSplitTargets(3).withSplitTargetsFullDamage(),
             2, 1);
 
@@ -1474,9 +1474,9 @@ private:
         // tiles away -- new rangeBandBonus primitive (see CombatEntity/
         // CardStats), also reused by Executioner's Axe Smash below.
         addEvolution(128,
-            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 5.0f, 112, 9, 'A')
+            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, SPEED_MEDIUM, 5.0f, 112, 9, 'A')
                 .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir(),
-            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, 0.5f, 6.0f, 112, 9, 'A')
+            troop(1, "Archers", 3.0f, Archetype::RangedSquad, 304, SPEED_MEDIUM, 6.0f, 112, 9, 'A')
                 .withOffsets({ {0.0f, 0.0f}, {1.0f, 0.0f} }).withTargetsAir()
                 .withRangeBandBonus(4.0f, 6.0f, 1.5f),
             2, 1);
@@ -1509,9 +1509,9 @@ private:
         // elsewhere in this file; the 3-tick interval approximates 0.25s
         // (2.5 ticks) at this engine's 10-ticks/second rate.
         addEvolution(130,
-            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
+            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, SPEED_FAST, 6.0f, 64, 30, '$')
                 .withTargetsAir().withSplash(1.5f).withRecoil(1.0f).withSightRange(8.5f),
-            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, 0.7f, 6.0f, 64, 30, '$')
+            troop(64, "Firecracker", 3.0f, Archetype::RangedSquad, 304, SPEED_FAST, 6.0f, 64, 30, '$')
                 .withTargetsAir().withSplash(1.5f).withRecoil(1.0f).withSightRange(8.5f)
                 .withOnHit(std::make_shared<PoisonOnHit>(16, 30, 3)),
             2, 1);
@@ -1531,9 +1531,9 @@ private:
         // it the base Dart Goblin could hit air and its EVOLVED form could
         // not, i.e. evolving strictly downgraded the card.
         addEvolution(131,
-            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
+            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, SPEED_VERY_FAST, 6.5f, 151, 8, 'd')
                 .withTargetsAir().withSightRange(7.5f),
-            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, 0.8f, 6.5f, 151, 8, 'd')
+            troop(20, "Dart Goblin", 3.0f, Archetype::RangedSquad, 261, SPEED_VERY_FAST, 6.5f, 151, 8, 'd')
                 .withTargetsAir()
                 .withOnHit(std::make_shared<PoisonOnHit>(51, 40, 10)).withSightRange(7.5f),
             2, 1);
@@ -1560,9 +1560,9 @@ private:
         // (every spawned unit in an .withOffsets() squad shares one
         // CardStats, no per-position stat variation).
         addEvolution(133,
-            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
+            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 's')
                 .withOffsets(skeletonArmyOffsets()),
-            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 's')
+            troop(12, "Skeleton Army", 3.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 's')
                 .withOffsets(skeletonArmyEvolvedOffsets())
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonArmyShadowStats())),
             2, 1);
@@ -1576,10 +1576,10 @@ private:
         // referenced in some sources isn't modeled here either way (not
         // present on the un-evolved card in this engine).
         addEvolution(134,
-            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, 0.85f, 1.0f, 81, 10, ',')
+            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 532, SPEED_FAST, 1.0f, 81, 10, ',')
                 .withFlying()
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonBarrelSkeletonStats())).withSightRange(7.7f),
-            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 665, 0.85f, 1.0f, 81, 10, ',')
+            troop(89, "Skeleton Barrel", 3.0f, Archetype::MeleeBuildingTargeter, 665, SPEED_FAST, 1.0f, 81, 10, ',')
                 .withFlying()
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(skeletonBarrelSkeletonStats().withOffsets({
                     {-0.6f,0.0f},{0.6f,0.0f},{-0.3f,0.3f},{0.3f,0.3f},{-0.3f,-0.3f},{0.3f,-0.3f},{0.0f,0.0f}
@@ -1593,8 +1593,8 @@ private:
         // approaching" signal at the CardStats level (see
         // withPassiveDamageReduction's own comment).
         addEvolution(135,
-            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K'),
-            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
+            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, SPEED_MEDIUM, 1.2f, 202, 12, 'K'),
+            troop(0, "Knight", 3.0f, Archetype::MeleeSquad, 1766, SPEED_MEDIUM, 1.2f, 202, 12, 'K')
                 .withPassiveDamageReduction(0.65f),
             2, 1);
 
@@ -1611,9 +1611,9 @@ private:
         // fires unconditionally on every hit rather than adding an extra
         // invisibility check.
         addEvolution(136,
-            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.2f, 261, 18, 'Q')
                 .withInvisibility(5).withIgnoresRiver(),
-            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, 0.7f, 1.2f, 261, 18, 'Q')
+            troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.2f, 261, 18, 'Q')
                 .withInvisibility(18)
                 .withOnHitSpawn(std::make_shared<PeriodicSpawnEffect>(royalGhostSouldierStats()
                     .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })))
@@ -1629,9 +1629,9 @@ private:
         // triggered per landed hit rather than continuously. Enemy-slow
         // half of the aura isn't modeled either, for the same reason.
         addEvolution(137,
-            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
+            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, SPEED_FAST, 3.5f, 168, 15, 'y')
                 .withFlying().withTargetsAir(),
-            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, 0.8f, 3.5f, 168, 15, 'y')
+            troop(44, "Baby Dragon", 4.0f, Archetype::RangedSquad, 1152, SPEED_FAST, 3.5f, 168, 15, 'y')
                 .withFlying().withTargetsAir()
                 .withAllyBuffAura(4.0f, 1, 1.3f, 20, 1000000),
             2, 1);
@@ -1677,9 +1677,9 @@ private:
         // horizontal, can't target towers" range shape isn't modeled
         // either (burst only affects damage, not targeting).
         addEvolution(140,
-            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, SPEED_MEDIUM, 6.0f, 217, 10, 'U')
                 .withTargetsAir().withSightRange(6.0f),
-            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+            troop(6, "Musketeer", 4.0f, Archetype::RangedSquad, 721, SPEED_MEDIUM, 6.0f, 217, 10, 'U')
                 .withTargetsAir().withBurstAttack(3, 1.8f).withSightRange(6.0f),
             2, 1);
 
@@ -1690,9 +1690,9 @@ private:
         // isn't modeled (no "on shield depleted" trigger exists in this
         // engine).
         addEvolution(141,
-            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, SPEED_MEDIUM, 5.5f, 281, 14, 'W')
                 .withTargetsAir().withSplash(1.5f),
-            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+            troop(11, "Wizard", 5.0f, Archetype::RangedSquad, 755, SPEED_MEDIUM, 5.5f, 281, 14, 'W')
                 .withTargetsAir().withSplash(1.5f).withShield(189),
             2, 1);
 
@@ -1702,10 +1702,10 @@ private:
         // instead (this engine has no "notify parent when spawned child
         // dies" hook), capped at 839*1.24=1040.
         addEvolution(142,
-            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
+            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, SPEED_MEDIUM, 5.5f, 135, 11, ':')
                 .withTargetsAir()
                 .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats())),
-            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, 0.5f, 5.5f, 135, 11, ':')
+            troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, SPEED_MEDIUM, 5.5f, 135, 11, ':')
                 .withTargetsAir()
                 .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(witchSkeletonStats()))
                 .withHealOnHit(20, 1040),
@@ -1717,9 +1717,9 @@ private:
         // radius -- a clean direct fit for the existing splash mechanism.
         // Knockback on the splash isn't modeled.
         addEvolution(143,
-            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y')
+            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, SPEED_SLOW, 5.0f, 307, 18, 'Y')
                 .withSightRange(7.5f),
-            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, 0.3f, 5.0f, 307, 18, 'Y')
+            troop(18, "Royal Giant", 6.0f, Archetype::RangedBuildingTargeter, 3164, SPEED_SLOW, 5.0f, 307, 18, 'Y')
                 .withSplash(2.5f).withSightRange(7.5f),
             2, 1);
 
@@ -1737,11 +1737,11 @@ private:
         // separate pulses (10 ticks -> 51 ticks, covering roughly the
         // same total window: 1s initial + 3s delay + 1.1s repeat).
         addEvolution(144,
-            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
                 .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
                 .withDieAfterFirstHit(),
-            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, ';')
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
                 .withSplash(1.7f)
                 .withOnHit(std::make_shared<FreezeOnHit>(51, 0.5f))
@@ -1755,9 +1755,9 @@ private:
         // death zone (this engine has no "spawn a lingering area effect
         // on death" primitive).
         addEvolution(145,
-            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
+            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, SPEED_MEDIUM, 9.0f, 168, 30, '9')
                 .withTargetsAir().withSplash(1.5f).withSightRange(9.5f),
-            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, 0.5f, 9.0f, 168, 30, '9')
+            troop(61, "Princess", 3.0f, Archetype::RangedSquad, 261, SPEED_MEDIUM, 9.0f, 168, 30, '9')
                 .withTargetsAir().withSplash(1.5f).withSightRange(9.5f)
                 .withOnHit(std::make_shared<FreezeOnHit>(70, 0.7f)),
             2, 1);
@@ -1772,9 +1772,9 @@ private:
         // (a frozen unit just takes normal damage from whatever reaches
         // it).
         addEvolution(146,
-            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
+            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, SPEED_MEDIUM, 4.0f, 84, 22, '!')
                 .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f),
-            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, 0.5f, 4.0f, 84, 22, '!')
+            troop(62, "Hunter", 4.0f, Archetype::RangedSquad, 885, SPEED_MEDIUM, 4.0f, 84, 22, '!')
                 .withTargetsAir().withSplash(1.5f).withRangeFalloff(0.5f)
                 .withPeriodicEffect(80, std::make_shared<PeriodicFreezeNearestEffect>(4.0f, 30)),
             2, 1);
@@ -1795,9 +1795,9 @@ private:
         // itself isn't modeled (this is an instant per-hit effect, not a
         // separate lingering hazard).
         addEvolution(147,
-            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, SPEED_MEDIUM, 1.2f, 266, 15, 'V')
                 .withSplash(1.5f),
-            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, 0.5f, 1.2f, 266, 15, 'V')
+            troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, SPEED_MEDIUM, 1.2f, 266, 15, 'V')
                 .withSplash(1.5f)
                 .withOnHitPull(5.5f, 2.0f, 50),
             2, 1);
@@ -1810,9 +1810,9 @@ private:
         // "notify on kill" hook, only on-hit), tuned down since hits are
         // far more frequent than kills.
         addEvolution(148,
-            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E')
+            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, SPEED_SLOW, 1.2f, 842, 18, 'E')
                 .withSightRange(5.0f),
-            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, 0.4f, 1.2f, 842, 18, 'E')
+            troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, SPEED_SLOW, 1.2f, 842, 18, 'E')
                 .withHealOnHit(40, 6242).withSightRange(5.0f),
             2, 1);
 
@@ -1831,11 +1831,11 @@ private:
         // it), whereas this fires -- and refreshes the 3s window -- on
         // every hit taken, invisible or not.
         addEvolution(149,
-            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
+            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, SPEED_FAST, 2.5f, 107, 12, 'h')
                 .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
                                {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
                 .withFlying().withTargetsAir(),
-            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, 0.8f, 2.5f, 107, 12, 'h')
+            troop(42, "Minion Horde", 5.0f, Archetype::MeleeSquad, 230, SPEED_FAST, 2.5f, 107, 12, 'h')
                 .withOffsets({ {-0.6f, -0.3f}, {0.0f, -0.3f}, {0.6f, -0.3f},
                                {-0.6f, 0.3f}, {0.0f, 0.3f}, {0.6f, 0.3f} })
                 .withFlying().withTargetsAir()
@@ -1850,10 +1850,10 @@ private:
         // sourced distance/multiplier (2.5, 2.0) rather than an earlier
         // guess (2.0, 1.5).
         addEvolution(150,
-            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, SPEED_MEDIUM, 1.0f, 133, 13, '@')
                 .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
                 .withShield(240),
-            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+            troop(77, "Royal Recruits", 7.0f, Archetype::MeleeSquad, 547, SPEED_MEDIUM, 1.0f, 133, 13, '@')
                 .withOffsets({ {-2.5f, 0.0f}, {-1.5f, 0.0f}, {-0.5f, 0.0f}, {0.5f, 0.0f}, {1.5f, 0.0f}, {2.5f, 0.0f} })
                 .withShield(240)
                 .withCharge(2.5f, 2.0f),
@@ -1866,11 +1866,11 @@ private:
         // at full damage throughout, not a true unbounded chain with
         // degrading effect past the 3rd target.
         addEvolution(151,
-            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, 0.5f, 3.5f, 192, 21, '5')
+            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, SPEED_MEDIUM, 3.5f, 192, 21, '5')
                 .withFlying().withTargetsAir()
                 .withSplitTargets(3).withSplitTargetsFullDamage()
                 .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f)),
-            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, 0.5f, 3.5f, 192, 21, '5')
+            troop(57, "Electro Dragon", 5.0f, Archetype::MeleeSquad, 1049, SPEED_MEDIUM, 3.5f, 192, 21, '5')
                 .withFlying().withTargetsAir()
                 .withSplitTargets(6).withSplitTargetsFullDamage()
                 .withOnHit(std::make_shared<FreezeOnHit>(5, 0.0f)),
@@ -1931,9 +1931,9 @@ private:
         // speed isn't modeled (this engine has no movement-speed-buff
         // plumbing at all, same documented gap as Baby Dragon Evolution).
         addEvolution(155,
-            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
                 .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
-            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 760, 0.5f, 0.7f, 192, 14, 'B')
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 760, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
                 .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
                 .withSelfHasteOnHit(30, 0.74f),
             2, 1);
@@ -1942,9 +1942,9 @@ private:
         // lumberjackGhostStats above for the ghost-spawn design; composed
         // with the existing Rage-drop-on-death via CompositeDeathEffect.
         addEvolution(156,
-            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, SPEED_VERY_FAST, 0.7f, 256, 8, 'l')
                 .withDeathEffect(std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55)),
-            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, 0.8f, 0.7f, 256, 8, 'l')
+            troop(21, "Lumberjack", 4.0f, Archetype::MeleeSquad, 1282, SPEED_VERY_FAST, 0.7f, 256, 8, 'l')
                 .withDeathEffect(std::make_shared<CompositeDeathEffect>(
                     std::vector<std::shared_ptr<IDeathEffect>>{
                         std::make_shared<AreaBuffOnDeath>(2.5f, 1.75f, 55),
@@ -1963,9 +1963,9 @@ private:
         // against heavy units) isn't modeled (no "push the target, not
         // the attacker" primitive at this specific call site).
         addEvolution(157,
-            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
+            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, SPEED_MEDIUM, 4.5f, 179, 24, 'x')
                 .withTargetsAir().withBoomerang(15),
-            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, 0.4f, 4.5f, 179, 24, 'x')
+            troop(36, "Executioner", 5.0f, Archetype::RangedSquad, 1280, SPEED_MEDIUM, 4.5f, 179, 24, 'x')
                 .withTargetsAir().withBoomerang(15)
                 .withRangeBandBonus(0.0f, 3.5f, 1.75f),
             1, 1);
@@ -1992,9 +1992,9 @@ private:
         // (this engine has no "enable a periodic effect only below an hp
         // threshold" mechanism, only full-transform hp thresholds).
         addEvolution(159,
-            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, SPEED_MEDIUM, 1.2f, 176, 15, '`')
                 .withSecondaryUnit(goblinGiantSpearGoblinsStats()).withSightRange(7.5f),
-            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, 0.5f, 1.2f, 176, 15, '`')
+            troop(88, "Goblin Giant", 6.0f, Archetype::MeleeBuildingTargeter, 3110, SPEED_MEDIUM, 1.2f, 176, 15, '`')
                 .withSecondaryUnit(goblinGiantSpearGoblinsStats()).withSightRange(7.5f)
                 .withPeriodicEffect(22, std::make_shared<PeriodicSpawnEffect>(goblinDrillGoblinStats())),
             2, 1);
@@ -2009,9 +2009,9 @@ private:
         // attacker, not the target, and no existing "find the nearest
         // enemy tower's position" board query to aim it at).
         addEvolution(160,
-            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
+            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, SPEED_MEDIUM, 1.2f, 268, 17, 'X')
                 .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f).withIgnoresRiver(),
-            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, 0.5f, 1.2f, 268, 17, 'X')
+            troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, SPEED_MEDIUM, 1.2f, 268, 17, 'X')
                 .withSplash(1.5f).withSpawnEffect(1.3f, 430).withJump(3.5f, 5.0f, 2.0f, 2.2f).withIgnoresRiver(),
             2, 1);
 
@@ -2033,10 +2033,10 @@ private:
         // the Ram's own damage on arrival, not a moving hitbox along the
         // way).
         addEvolution(161,
-            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
                 .withCharge(3.0f, 2.0f),
-            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, 0.6f, 1.0f, 192, 14, '^')
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamEvolvedBarbarianStats()))
                 .withCharge(3.0f, 2.0f).withStickyCharge(),
             2, 1);
@@ -2054,10 +2054,10 @@ private:
         // this is left as a genuine follow-up rather than guessing at an
         // interaction.
         addEvolution(162,
-            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
+            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, SPEED_VERY_FAST, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
                 .withCharge(3.0f, 2.0f).withSightRange(9.5f).withIgnoresRiver(),
-            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, 0.85f, 1.0f, 74, 12, '_')
+            troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, SPEED_VERY_FAST, 1.0f, 74, 12, '_')
                 .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
                 .withCharge(3.0f, 2.0f).withSightRange(9.5f).withIgnoresRiver(),
             2, 1);
@@ -2083,10 +2083,10 @@ private:
         //      rate throughout, rather than a raw tick count from a
         //      differently-timed source.
         addEvolution(163,
-            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, 0.5f, 5.0f, 422, 4, '4')
+            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, SPEED_MEDIUM, 5.0f, 422, 4, '4')
                 .withFlying().withTargetsAir()
                 .withDamageRamp(15, 30, 0.083f, 0.284f),
-            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, 0.5f, 5.0f, 422, 4, '4')
+            troop(56, "Inferno Dragon", 4.0f, Archetype::MeleeSquad, 1295, SPEED_MEDIUM, 5.0f, 422, 4, '4')
                 .withFlying().withTargetsAir()
                 .withDamageRamp(15, 30, 0.083f, 0.284f)
                 .withRampStage4(200, 2.0f)
@@ -2143,14 +2143,14 @@ private:
         // attacking simulation) to a flat, one-time (usesLimit=1, no
         // repeating cooldown) hp+damage boost -- see
         // HeroMiniPekkaBoostEffect.
-        add(troop(170, "Hero Mini P.E.K.K.A.", 4.0f, Archetype::MeleeSquad, 1390, 0.8f, 0.8f, 755, 16, 'M')
+        add(troop(170, "Hero Mini P.E.K.K.A.", 4.0f, Archetype::MeleeSquad, 1390, SPEED_FAST, 0.8f, 755, 16, 'M')
             .withHeroAbility(1.0f, 0, std::make_shared<HeroMiniPekkaBoostEffect>(210, 1.15f), 1));
 
         // Hero Musketeer. Base stats copied from card id 6 (Musketeer), see
         // that registration above. "Trusty Turret": spawns a short-range
         // auto-turret in front of her (see heroMusketeerTurretStats above)
         // with a fixed 10s lifetime, targeting air+ground.
-        add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, 0.5f, 6.0f, 217, 10, 'U')
+        add(troop(168, "Hero Musketeer", 4.0f, Archetype::RangedSquad, 721, SPEED_MEDIUM, 6.0f, 217, 10, 'U')
             .withTargetsAir().withSightRange(6.0f)
             .withHeroAbility(3.0f, 220, std::make_shared<SpawnOnAbility>(heroMusketeerTurretStats())));
 
@@ -2166,7 +2166,7 @@ private:
         // consumed. The reactivated squad spawns via the PLAIN (non-Hero)
         // base Goblins CardStats, not this Hero variant, so a second Banner
         // Brigade can never chain off a reactivated squad.
-        add(troop(172, "Hero Goblins", 2.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+        add(troop(172, "Hero Goblins", 2.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
             .withPostDeathAbility(1.0f, 70, std::make_shared<PeriodicSpawnEffect>(
                 troop(-48, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
@@ -2180,7 +2180,7 @@ private:
         // Shield amount isn't part of the sourced data -- a reasonable
         // engine-internal constant (roughly half his own hp), same caveat
         // as splashRadius/shieldHp elsewhere in this file.
-        add(troop(166, "Hero Knight", 3.0f, Archetype::MeleeSquad, 1766, 0.5f, 1.2f, 202, 12, 'K')
+        add(troop(166, "Hero Knight", 3.0f, Archetype::MeleeSquad, 1766, SPEED_MEDIUM, 1.2f, 202, 12, 'K')
             .withHeroAbility(2.0f, 250, std::make_shared<HeroKnightTauntEffect>(880, 50, 6.5f)));
 
         // Hero Wizard. Base stats copied from card id 11 (Wizard), see that
@@ -2191,7 +2191,7 @@ private:
         // (0.5 tiles) approximates the sourced "~50% pull strength" --
         // not an exact sourced tile value, same caveat category as
         // splashRadius/shieldHp elsewhere in this file.
-        add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, 0.5f, 5.5f, 281, 14, 'W')
+        add(troop(167, "Hero Wizard", 5.0f, Archetype::RangedSquad, 755, SPEED_MEDIUM, 5.5f, 281, 14, 'W')
             .withTargetsAir().withSplash(1.5f)
             .withHeroAbility(1.0f, 200, std::make_shared<HeroWizardFieryFlightEffect>(50, 4.0f, 20, 0.5f)));
 
@@ -2201,7 +2201,7 @@ private:
         // (3.0 tiles -- not part of the sourced data, a reasonable
         // engine-internal constant) and throws it to the opposite lane,
         // stunning it 20 ticks/2s on landing -- see HeroGiantHurlEffect.
-        add(troop(169, "Hero Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, 0.3f, 1.2f, 253, 15, 'G')
+        add(troop(169, "Hero Giant", 5.0f, Archetype::MeleeBuildingTargeter, 3968, SPEED_SLOW, 1.2f, 253, 15, 'G')
             .withSightRange(7.5f)
             .withHeroAbility(2.0f, 140, std::make_shared<HeroGiantHurlEffect>(3.0f, 20)));
 
@@ -2214,7 +2214,7 @@ private:
         // Bonus damage isn't part of the sourced data -- a reasonable
         // engine-internal constant roughly matching her own per-hit
         // damage, same caveat as splashRadius/shieldHp elsewhere.
-        add(troop(173, "Hero Mega Minion", 3.0f, Archetype::MeleeSquad, 837, 0.5f, 1.6f, 312, 15, 'F')
+        add(troop(173, "Hero Mega Minion", 3.0f, Archetype::MeleeSquad, 837, SPEED_MEDIUM, 1.6f, 312, 15, 'F')
             .withFlying().withTargetsAir()
             .withHeroAbility(2.0f, 0, std::make_shared<HeroMegaMinionWarpEffect>(300), 1)
             .withInitialAbilityCooldown(15));
@@ -2225,7 +2225,7 @@ private:
         // his old position (see heroMagicArcherDecoyStats above), and gains
         // a 70-tick/7s multi-shot window -- see
         // HeroMagicArcherTripleThreatEffect.
-        add(troop(171, "Hero Magic Archer", 4.0f, Archetype::RangedSquad, 529, 0.5f, 7.0f, 143, 11, '#')
+        add(troop(171, "Hero Magic Archer", 4.0f, Archetype::RangedSquad, 529, SPEED_MEDIUM, 7.0f, 143, 11, '#')
             .withTargetsAir()
             .withSplash(0.25f).withLineSplash(11.0f).withSightRange(7.5f)
             .withHeroAbility(2.0f, 250, std::make_shared<HeroMagicArcherTripleThreatEffect>(
@@ -2240,7 +2240,7 @@ private:
         // Per-blast damage/knockback/slow strength aren't part of the
         // sourced data -- reasonable engine-internal constants, same
         // caveat as splashRadius/shieldHp elsewhere in this file.
-        add(troop(175, "Hero Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, 0.4f, 0.75f, 84, 25, 'c')
+        add(troop(175, "Hero Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, SPEED_SLOW, 0.75f, 84, 25, 'c')
             .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
             .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f)
             .withHeroAbility(2.0f, 170, std::make_shared<HeroIceGolemSnowstormEffect>(4.0f, 80, 1.0f, 20, 0.6f, 15)));
