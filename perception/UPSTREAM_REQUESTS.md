@@ -2605,18 +2605,26 @@ same failure.
 | tower fraction round trip | within tolerance | exact for all three slots, both teams |
 | refusal | returns false AND leaves hp | both halves pinned |
 | destruction | crown + King wake + count | pinned, and team-scoped |
-| absorbing states | `waypoint_probe` still 0 | **not yet re-run — see below** |
+| absorbing states | `waypoint_probe` still 0 | **0 / 8,661,439 positions**, and 0 / 2,584,034 in the lane-composition sweep under all three tower configurations |
 
 **The C++ count was already stale.** 646 − 19 new = **627**, against the 622
 this file and CLAUDE.md record. The baseline was 5 ahead before this work
 started, so do not read the jump as belonging to item 22 — the same arithmetic
 trap the 2026-08-24 row-compaction section records for the Python count.
 
-**STILL OWED, and it is the one bar not met:** `waypoint_probe` has NOT been
-re-run. `deploy_ticks=0` puts entities into `getNextWaypoint` at arbitrary
-perceived positions with no deploy delay to absorb the first tick — a new entry
-path, and this engine has shipped two absorbing states at the bridge mouths
-already. Run it before the live loop drives real placements.
+**The absorbing-state bar was worth keeping.** `deploy_ticks=0` puts entities
+into `getNextWaypoint` at arbitrary perceived positions with no deploy delay to
+absorb the first tick — a genuinely new entry path, and this engine has shipped
+two absorbing states at the bridge mouths already, the second found only
+because a sweep covered every branch rather than the one the reproduction took.
+Re-run after the change: **0 absorbing states**, both sweeps, all three tower
+configurations.
+
+**What is NOT verified, and should be said plainly:** none of this has faced a
+real screen. Every number above is engine-side. Whether perception's readings
+are good enough to make the mirror worth having is a Stage 2 question, and the
+unit-HP recall of 0.34–0.56 is the figure to watch — roughly half of damaged
+units will still arrive at full health.
 
 **A binding-surface regression test now exists** at
 `perception/tests/test_engine_state_setters.py` (13 cases). The C++ suite
