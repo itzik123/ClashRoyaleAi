@@ -3596,6 +3596,142 @@ that visible.
 
 ---
 
+## 2026-08-24: the live-mirror state setters. NOT gameplay-affecting.
+
+`UPSTREAM_REQUESTS.md` item 22, APPLIED. A `ClashRoyaleEnv` rebuilt from
+perception was a fresh board wearing the real one's unit layout. Four gaps
+closed, all additive with behaviour-preserving defaults, so **no checkpoint and
+no win rate is invalidated** — verified, not assumed: the only deleted lines in
+`include/`+`src/` are `inject`'s own signature and its binding.
+
+```
+set_tower_hp(team, slot, hp) -> bool      destroy_tower(team, slot) -> bool
+get_tower_hp / get_tower_max_hp(team, slot)
+set_current_tick(tick)
+inject(card_id, x, y, team, hp=-1.0, deploy_ticks=-1)
+```
+
+**`slot` is 0=King, 1=LEFT Princess, 2=RIGHT, in BOARD coordinates for BOTH
+teams** — never team-relative. The caller is a sensor reading a screen, and
+asking it to mirror its own coordinates is the convention error that put the
+arena half a tile off-centre.
+
+**Tower HP is ABSOLUTE in, FRACTION out of perception, and that split is
+load-bearing.** This engine's towers are level 9 (Princess 2534, King 4008); a
+real account's are often level 4-5 (1750 ours, 1890 theirs) — wrong by a
+**different factor per player**. So the setter takes engine-absolute HP and
+Python passes `fraction * get_tower_max_hp(...)`. The level knowledge stays on
+the perception side, where it already lives. Never inject an absolute reading.
+
+**`hp <= 0` is REFUSED, not clamped** (same contract as `set_hand_for_team`). A
+0-hp tower that still occupies its cell and still fires is a position the real
+game cannot be in, and killing one has side effects — the crown, the King's
+princess-count wake trigger, `LanePath`'s retargeting — that belong to
+`destroy_tower`. `destroy_tower` routes through `takeDamage` and then pins the
+postcondition, because `CombatEntity::takeDamage` can absorb (shield, parry,
+mid-dash). No Tower carries those today; the pin means it stays a destruction
+if one ever does.
+
+**`deploy_ticks` is the one nobody asked for and it is the largest of the
+four.** `inject -> spawnEntity -> applyCardMetadata` sets
+`deployTicksRemaining = DEPLOY_TIME_TICKS` unconditionally, so a mirror handed
+**every** unit a fresh deploy second — including one that had been walking for
+six. Every rollout believed it had an extra second before anything could act: a
+standing defensive subsidy on every candidate. Pass **0** for any unit
+perception can already SEE.
+
+Measured, enemy Hog, both sides no-oping — ticks until it first damages our
+tower: **88 default, 78 at `deploy_ticks=0`. Exactly `DEPLOY_TIME_TICKS`**, and
+worth **317 tower HP (one Hog hit)** in the 100-110 tick window.
+
+> **THE FIRST PROBE MEASURED ZERO, and this is the transferable part.** A
+> 140-tick window reports a delta of **0**, because over a window that long the
+> Hog deals its full damage either way — the measurement SATURATES and a
+> working fix looks inert. Arrival TIME is the quantity that can see it. Third
+> instance in this file of a saturating control; the deck-QA air probe is the
+> same failure.
+
+Two tests **passed against do-nothing stubs** and had to be strengthened:
+"refuses `hp<=0`" passes trivially against a setter that refuses everything,
+and "clamps `hp` to full" passes trivially against one that IGNORES `hp` —
+which is the pre-item-22 behaviour. Both now carry a positive control that
+fires first. *When a measurement's failure mode is maximal permissiveness, it
+needs an internal control that MUST fire.*
+
+Suites after: **C++ 646 cases / 6,409 assertions** (645 pass, 1 `[!shouldfail]`,
+exit 0), **Python 399/2 skipped** unchanged, **perception 366/1 skipped**
+(353 + 13 new binding tests in `perception/tests/test_engine_state_setters.py`,
+which exist because the C++ suite cannot see pybind at all and a stale `.pyd`
+has twice hidden a landed setter for days). `waypoint_probe` re-run — **0
+absorbing states / 8,661,439 positions** — because `deploy_ticks=0` is a new
+entry path into `getNextWaypoint` at arbitrary positions.
+
+**The C++ count was already stale by 5**: 646 − 19 new = 627, against the 622
+recorded above. Do not read the jump as belonging to this work.
+
+---
+
+## NEXT UP: Stage 2 — the live teacher-as-agent loop
+
+Design: `docs/superpowers/specs/2026-08-24-live-teacher-play-design.md`.
+Stage 1 (a passive gap-logger) was **deliberately skipped** by the human once
+item 22 was approved. The engine half is done; **only Python remains, all of it
+in `perception/`, which is freely editable.**
+
+**Goal:** `UtilityTeacher` plays as US (team 0) in a real match. Perception
+reads the screen → mirror env → teacher proposes AND ranks by 5-10 s rollouts
+→ best placement is tapped.
+
+**Do not add threads.** The pipeline is already three (producer in
+`live/pipeline.py`, decision loop at `DECISION_HZ = 1.0`, actuator with a
+depth-1 drop queue). `src/bindings.cpp` releases the GIL **nowhere**, so a
+rollout thread would BLOCK perception rather than run beside it; and a
+concurrent writer would score candidates against different worlds. Budget is
+not the issue: teacher **14.1 ms** + rebuild ~1 ms against a **1000 ms**
+period. "Streaming" = **rebuild the mirror from the latest Snapshot at each
+decision** — which also deletes `forecast.py`'s entity-removal gap for free.
+
+**Two new modules:**
+
+1. **`perception/live/mirror.py` — `MirrorBuilder.build(snapshot) -> (env, MirrorGaps)`.**
+   `reset()` → `inject(..., hp=frac*full, deploy_ticks=0)` per unit →
+   `set_elixir_for_team` both sides → `set_hand_for_team(0, hand)` **and CHECK
+   ITS BOOL** → `set_tower_hp` / `destroy_tower` per tower →
+   `set_current_tick`. **REUSE `forecast.py`'s `bodies_per_card` and its
+   group-by-`(card_sim_id, team)`** — a card spawning three bodies must be
+   injected once per three, and `bodies_per_card` **resets the env itself**, so
+   every count must be resolved BEFORE the build's `reset()`. That ordering
+   landmine is the argument against a second copy.
+2. **`perception/live/teacher_policy.py` — `TeacherPolicy.decide(gs, ready, now) -> Decision`**,
+   holding ONE persistent `UtilityTeacher(deck, team=0)` (it carries
+   `self.pending` across decisions) while the ENV is rebuilt per decision.
+   Wire as `--policy teacher` beside `ScriptedPolicy`/`NeuralPolicy`.
+   **`--act` stays opt-in; dry run is the default.**
+
+**Invariants that can go silently wrong:**
+
+- **Hand-slot alignment.** The teacher's `slot` indexes the mirror's hand; the
+  actuator taps the real one. Same number ONLY if `set_hand_for_team` returned
+  True. On refusal **drop the decision** — a placement against a misaligned
+  hand plays a card nobody chose.
+- **Cadence is coupled to the teacher's plan clock.** `pending_ticks -=
+  COMBO_FOLLOWUP_DELAY_TICKS` (10) runs **once per `act()` call**, so the
+  teacher assumes exactly 1 decision/second. A DROPPED decision advances the
+  plan 1 s in teacher-time while 2 s of wall time passed, silently skewing
+  every combo gap. Log decision-interval drift. Any fix belongs in a proposal —
+  `python_ai/` is read-only.
+- Bias toward **no-op over a wrong action**: a mistimed card is worse than a
+  skipped decision.
+
+**Known limits, already measured — do not rediscover.** Unit-HP **recall
+0.34-0.56** at precision 0.98, so ~half of damaged units still arrive at full
+health. The opponent's hand is unobservable, so team 1's stays fabricated. The
+engine models **no double elixir** (`ELIXIR_REGEN_RATE` is constant), so late
+rollouts stay mispriced even with a correct clock — filed as its own item, NOT
+folded into 22.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 > **Checkpoint names in the passages below are PROVENANCE, not files.** The
