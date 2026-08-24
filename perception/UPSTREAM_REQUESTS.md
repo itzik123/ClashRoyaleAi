@@ -2315,3 +2315,225 @@ of the sync profile's wall clock, and the environment as a whole is 39.6% of the
 async one at ~2.6x parallel efficiency, so the expected end-to-end throughput
 effect is **low single digits** — this is the safe, zero-risk win, not the
 answer to phase-1 throughput. The async profile puts the MODEL at 55.8%.
+
+---
+
+## 22. OPEN — the live mirror cannot be given the real position: no tower HP, no unit HP, no clock, and every re-injected unit is inert for a second (proposed 2026-08-24)
+
+### What this is for
+
+The live-play pipeline, with the teacher as OUR agent in a real match:
+perception reads the screen, `forecast.py` rebuilds a mirror `ClashRoyaleEnv`,
+`UtilityTeacher` proposes candidates and ranks them by rolling each forward
+5-10 s on `env.snapshot()`, and the winner is tapped by `live/actuator.py`.
+
+Every joint of that already exists except one: **the mirror cannot be told what
+the real position is.** The teacher then ranks candidates against a fabricated
+board, which is the one failure that makes every other component's correctness
+irrelevant.
+
+### What is there now
+
+`forecast.py` rebuilds by `reset()` + `inject()`, and its own docstring lists
+what that loses. Two of the six were closed on 2026-08-17 (`set_elixir_for_team`
+/ `set_hand_for_team`, landed but **still unwired** — that is a Python-side TODO,
+not a platform limit). Four remain:
+
+| gap | status |
+|---|---|
+| unit HP | injected units spawn at FULL health. No setter. |
+| tower HP | always full after `reset()`. No setter. |
+| match clock | always zero. No setter. |
+| entity removal | a unit perception no longer sees cannot be deleted. |
+
+**Removal is dissolved by the architecture rather than by an API.** The live
+loop rebuilds the mirror from the latest perception snapshot at every decision
+and never carries state forward, so there is nothing stale to delete. No removal
+binding is requested. This is worth stating because the obvious incremental
+design — stream deltas into a long-lived env — would need one, and would also
+be unsafe (see Blast radius).
+
+That leaves three. **Verification of this proposal found a fourth that nobody
+had named, and it is probably the largest of the four.**
+
+### The fourth gap: every re-injected unit is inert for a full second
+
+Call chain, verified by reading, not inferred:
+
+```
+ClashEnv::inject  ->  card->spawnEntity(x, y, team, board)
+                  ->  CardFactories::applyCardMetadata
+                  ->  entity->deployTicksRemaining = DEPLOY_TIME_TICKS   // CardFactories.h:36
+```
+
+`DEPLOY_TIME_TICKS` is 10, i.e. 1.0 s. So a rebuilt board hands **every** enemy
+unit a fresh deploy timer — including a Hog Rider that has been running for six
+seconds. In every rollout, on every candidate, on every decision, the teacher
+believes it has one extra second before anything on the board can act.
+
+It is a defensive subsidy paid to US, and it is exactly the shape of a defect
+this repo has already measured once.
+
+**Why it likely dominates the other three.** CLAUDE.md's 2026-08-19 section
+measured the SAME ONE SECOND in the opposite direction — a missing deploy second
+subsidising the defender — and found it was the mathematical flaw suppressing
+win conditions. Controlled, same harness, only the constant varying:
+
+| engine | marginal value of a supported push |
+|---|---|
+| `DEPLOY_TIME_TICKS = 0` | **-73.7** HP, CI [-349.5, +195.3] |
+| `DEPLOY_TIME_TICKS = 10` | **+448.5** HP, CI [+137.3, +760.1] |
+
+One second of deploy inertness moved a push by ~520 tower HP and flipped the win
+condition from negative to positive value. The rebuild currently applies that
+second to every enemy unit in the mirror.
+
+### Measured evidence for the three requested gaps
+
+**Tower HP — and the trap that makes the naive setter wrong.**
+`perception/README.md` finding 6, read off a clean frame at t=20 s before
+anything is damaged, so the on-screen numbers are true maxima:
+
+| | our Princess | opponent's Princess | engine |
+|---|---|---|---|
+| max HP | 1750 (level 4) | 1890 (level 5) | **2534** (level 9) |
+
+**Absolute HP is not comparable, and it is wrong by a DIFFERENT factor per
+player.** Perception already reports a FRACTION for exactly this reason, taking
+the maximum from the first undamaged reading rather than a supplied table.
+Tower HP itself is read as the absolute printed numeral
+(`readers/tower_numerals.py`, finding 9) and validated by read-back over 4 full
+matches: 542 steps, 12 upward jumps, **97.8% consistent** with the fact that
+tower HP never rises.
+
+**Unit HP.** `live/unit_hp.py` reports `UnitHp.fraction`. Scored as an "is this
+unit damaged" detector over 226 detections, reweighted from a stratified sample
+to the population (finding 7): precision **0.79 -> 0.98**, recall
+**0.34 -> 0.56**.
+
+State this honestly: **roughly half of damaged units will still inject at full
+HP.** This improves a biased estimator, it does not fix it. It is still a strict
+gain, because today's effective recall is 0.
+
+**Match clock.** `ClashEnv::currentTick` exists and is already read into the
+observation (`ClashEnv.h:331`, `currentTick / maxTicks`) and into the done
+condition (`:383`, `:542`). It is only ever set to 0 by `reset()` (`:517`) and
+incremented in the step loops.
+
+**The honest limit here is larger than the setter.** The engine models **no
+double or triple elixir**: `ELIXIR_REGEN_RATE` is a constant (`GameManager.h:39`)
+scaled only by `oppElixirMultiplier` (`:661-662`). So even a perfect clock
+leaves every rollout during 2x mispriced on both sides. A clock setter buys the
+observation's time scalar and timeout proximity — real, but modest. **Filed
+separately as item 23** rather than folded in here, because it is a genuine
+gameplay change that would affect training, while everything in this item is
+additive and inert unless called.
+
+### Proposed edit
+
+Four changes. Every one is additive, and every new parameter defaults to
+current behaviour.
+
+**(a) `ClashEnv::setTowerHp(int team, int slot, float hp) -> bool`**
+
+`slot`: 0 = King, 1 = left Princess, 2 = right Princess, in board coordinates
+(not team-relative), so the caller is not asked to mirror anything.
+
+- Clamps to `(0, maxHp]`.
+- **Returns `false` and changes nothing on `hp <= 0`**, following
+  `setHandForTeam`'s precedent: refuse rather than accept a misread. A 0-HP
+  tower that still occupies its cell and still fires is worse than no update.
+- Takes **engine-absolute HP**. The level conversion stays on the perception
+  side, where the per-player max already lives, per CLAUDE.md's
+  no-second-copies rule. Python passes `fraction * engine_max`.
+- **Side effect to name, because it is gameplay-visible and correct:**
+  `Tower::awake` latches on the invariant `hp < maxHp`, so injecting a damaged
+  tower wakes the King. That matches the real game and is the desired
+  behaviour, but it means `setTowerHp` is not a pure state write.
+
+**(b) `ClashEnv::destroyTower(int team, int slot) -> bool`**
+
+Routes through the engine's existing destruction path so the crown, the King
+wake and `LanePath`'s retargeting all fire. Requested because (a) refuses
+`hp <= 0` and a destroyed tower would otherwise be inexpressible in the mirror —
+which would make every rollout wrong from the moment a tower falls, i.e. exactly
+when the position matters most.
+
+**(c) `ClashEnv::inject(int cardId, float x, float y, int team, float hp = -1.0f, int deployTicks = -1)`**
+
+Two optional parameters on the existing method:
+
+- `hp < 0` keeps full health (current behaviour).
+- `deployTicks < 0` keeps `DEPLOY_TIME_TICKS` (current behaviour);
+  `0` spawns an already-deployed unit, which is what a rebuilt board wants for
+  every unit that was already on screen.
+
+Optional-with-preserving-defaults rather than a new method, so **no existing
+caller changes at all** — `forecast.py`, `prove_*.py` and the audit tools keep
+compiling and keep behaving identically.
+
+**(d) `ClashEnv::setCurrentTick(int tick)`**
+
+Clamps to `[0, maxTicks]`. Trivial, but it is the one field that cannot be
+reconstructed by any combination of the others.
+
+Bindings mirror these as `set_tower_hp`, `destroy_tower`, `set_current_tick`,
+and two new `py::arg`s with defaults on the existing `inject`.
+
+### Blast radius — additive, and NOT gameplay-affecting
+
+**No checkpoint is invalidated and no win rate is invalidated**, and that is a
+design goal rather than a happy accident — the same discipline the `place_hires`
+zero-init used:
+
+- `setTowerHp`, `destroyTower` and `setCurrentTick` are new methods. Nothing in
+  either training pipeline calls them. An uncalled method cannot change a
+  rollout.
+- `inject`'s two new parameters default to exactly today's behaviour, so every
+  existing call site is bit-identical.
+- No observation, action-space, reward or architecture change.
+
+**This must be VERIFIED, not assumed** — CLAUDE.md records that a "purely
+additive" `.pyd` change was checked by diffing the commits (119 insertions, 0
+deletions, no simulation code) rather than trusted. Same bar here.
+
+**The one thing this proposal deliberately does NOT enable: concurrent mutation
+of a live env.** The setters are for a single-owner rebuild at decision time.
+`src/bindings.cpp` contains **no `gil_scoped_release` and no `call_guard`** —
+verified by grep — so every engine call holds the GIL for its full duration, and
+a second thread writing into an env while the teacher rolls candidates forward
+would both stall perception and score candidates against different worlds. The
+Python side must own the mirror on one thread.
+
+### Verification
+
+| check | bar |
+|---|---|
+| C++ suite | 622 cases, 1 `[!shouldfail]` wedge, runner exits 0 |
+| Python suite | 401 collected, 399 pass / 2 skip |
+| perception suite | 353 pass / 1 skip |
+| `inject` back-compat | a board built with no new args is bit-identical to today's, over the full observation |
+| deploy bypass | a unit injected with `deployTicks=0` moves on tick 1; with the default it does not move until tick 11 |
+| tower fraction round trip | `set_tower_hp(t, s, f * max)` then read back through the observation returns `f` within float tolerance, for both teams |
+| refusal | `set_tower_hp(t, s, 0.0)` returns `false` AND leaves HP unchanged — both halves, since a refusal that still writes is the worst outcome |
+| destruction | `destroy_tower` awards the crown, wakes that team's King, and changes `get_towers_alive` |
+| absorbing states | `waypoint_probe` still reports 0, since a re-injected unit at an arbitrary position is a new entry path into `getNextWaypoint` |
+
+That last row is not boilerplate. This engine has shipped **two** absorbing
+states at the bridge mouths, the second one found only because a sweep covered
+every branch rather than the one the reproduction took. Injecting units at
+arbitrary perceived positions with `deployTicks=0` puts entities into
+`getNextWaypoint` at positions no normal spawn produces.
+
+### Options considered and rejected
+
+- **Stream deltas into a long-lived env.** Needs a removal API, needs entity
+  identity across frames (blocked by item 20 — spawned entities carry no
+  `cardId`), and is unsafe under the GIL finding above. Rebuild-per-decision
+  costs ~1 ms and needs none of it.
+- **`set_entity_hp(entityId, hp)`.** Cleaner in principle, but requires stable
+  entity ids across the binding boundary, which item 20 says do not exist. The
+  `hp` parameter on `inject` needs no identity at all: the caller sets HP on the
+  unit it is creating, in the same call.
+- **Clamping tower HP to 1 instead of refusing.** Biases toward over-defending a
+  tower that is already gone, and does it silently.
