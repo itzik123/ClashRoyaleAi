@@ -205,11 +205,26 @@ class PPOUpdater:
                 # placement must be conditioned on exactly the card the log-prob
                 # is scored against, or the ratio breaks silently.
                 cf_idx = coverage_slot_seq[tt, ee]
+                # Read UP HERE rather than with the other masks below, because
+                # the placement head is now told which rows to bother with.
+                # Pure reordering of an index read -- no arithmetic moves.
+                mb_decision = decision_seq[tt, ee]
+                # EVERY consumer of both placement maps is decision-masked:
+                # actor_loss by mb_decision, placement entropy by mb_placed
+                # (a subset), clip_frac by mb_decision, and both halves of
+                # coverage_terms by decision. So the rows dropped here
+                # contribute exactly 0.0 to the loss and exactly 0.0 to the
+                # gradient -- pinned by tests/test_rl_ppo_compaction.py, which
+                # corrupts those rows in the UNMODIFIED path and demands the
+                # resulting weights are bit-identical.
+                active_rows = (mb_decision.reshape(-1) > 0).nonzero(
+                    as_tuple=True)[0]
                 (cl_seq, pl_seq, new_values, new_aux_elixir,
                  _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
-                    extra_card_idx_seq=cf_idx, hires_seq=hires_seq)
+                    extra_card_idx_seq=cf_idx, hires_seq=hires_seq,
+                    active_rows=active_rows)
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)
@@ -231,7 +246,6 @@ class PPOUpdater:
                 mb_old_logprobs = old_logprobs_seq[tt, ee]
                 mb_old_values = values_seq[tt, ee]
                 mb_valid = valid_seq[tt, ee]
-                mb_decision = decision_seq[tt, ee]
                 n_valid = mb_valid.sum().clamp(min=1.0)
                 n_decision = mb_decision.sum().clamp(min=1.0)
 

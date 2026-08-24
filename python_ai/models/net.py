@@ -604,7 +604,8 @@ class MicroRoyaleNet(nn.Module):
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
 
     def placement_given_card(self, hx, card_embeds, card_idx, obs=None,
-                             spatial_map=None, hires_map=None):
+                             spatial_map=None, hires_map=None,
+                             ctx=None, ctx_hi=None):
         """
         חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
@@ -631,7 +632,28 @@ class MicroRoyaleNet(nn.Module):
         # הקשר -> 32 ערוצים, משודר על כל תא במפה המרחבית. חיבור ולא שרשור:
         # כך "מה המצב הכללי ואיזה קלף" מזיז את כל מפת הלוגיטים, בעוד המבנה
         # המקומי של הלוח נשאר במפה עצמה.
-        ctx = self.place_ctx(torch.cat((hx, chosen_embed), dim=-1))     # (B, 32)
+        # ctx/ctx_hi מסופקים מבחוץ רק ע"י מסלול דחיסת-השורות ב-forward_sequence,
+        # שמחשב אותם על **כל** האצווה ואז חותך. הסיבה נמדדה: nn.Linear (GEMM)
+        # **אינו** בלתי-תלוי בגודל האצווה על ה-backend הזה -- Linear(280->32)
+        # נבדל ב-4.768e-07 ב-forward וב-2.289e-05 ב-grad_W בין אצווה 500 ל-167.
+        # שתי השכבות האלה הן ~0.5% מעלות הראש, אז חישוב מלא + חיתוך כמעט חינם,
+        # והוא מה שהופך את ה**לוגיטים** בשורות שנשמרות ל-bit-identical.
+        #
+        # **אבל זה לא הופך את המשקלים ל-bit-identical, ואסור לקרוא את זה כך.**
+        # גם grad_W של Conv2d תלוי בגודל האצווה -- אך רק בחלק מהצורות, וזו
+        # בדיוק המלכודת: בדיקה ראשונה על 18x10 החזירה "בלתי-תלוי" ונרשמה כאן
+        # ככזו, וסריקה על שאר הצורות הפריכה אותה. נמדד 500->184, גרדיאנט נכנס
+        # אפס מדויק בשורות שהושמטו:
+        #
+        #     place_up.1    Conv2d(32,16) 18x10   זהה ביט-לביט
+        #     place_up.4    Conv2d(16,8)  36x20   נבדל ב-5.814e-03
+        #     place_up.6    Conv2d(8,1)   36x20   נבדל ב-2.808e-03
+        #     place_hires.0 Conv2d(24,8)  34x18   נבדל ב-4.883e-03
+        #
+        # זה חוסם **כל** סכימת דחיסת-שורות מלהיות bit-exact ברמת המשקלים. מה
+        # שכן מובטח, ונמדד: הלוגיטים בשורות שנשמרות, וה-loss עצמו.
+        if ctx is None:
+            ctx = self.place_ctx(torch.cat((hx, chosen_embed), dim=-1))  # (B,32)
         h = spatial_map + ctx.view(-1, 32, 1, 1)
         logit_map = self.place_up(h)                                    # (B, 1, 4*ph, 4*pw)
         logits = logit_map[:, 0, :self.placement_rows, :self.board_width].reshape(
@@ -653,7 +675,8 @@ class MicroRoyaleNet(nn.Module):
                     "אותו (ראה hires_features). None בשניהם היה מחשב ראש "
                     "אחר מזה שהריץ את ה-rollout.")
             hires_map = self.hires_features(obs)
-        ctx_hi = self.place_ctx_hi(torch.cat((hx, chosen_embed), dim=-1))
+        if ctx_hi is None:
+            ctx_hi = self.place_ctx_hi(torch.cat((hx, chosen_embed), dim=-1))
         h_hi = torch.cat(
             (hires_map,
              ctx_hi.view(-1, HIRES_CTX_DIM, 1, 1).expand(
@@ -672,7 +695,8 @@ class MicroRoyaleNet(nn.Module):
 
     def forward_sequence(self, feats_seq, card_embeds_seq, spatial_seq, obs_seq,
                          card_mask_seq, card_idx_seq, reset_seq, hidden_state,
-                         extra_card_idx_seq=None, hires_seq=None):
+                         extra_card_idx_seq=None, hires_seq=None,
+                         active_rows=None):
         """
         חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
         מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
@@ -717,9 +741,51 @@ class MicroRoyaleNet(nn.Module):
         flat_embeds = card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:])
         flat_spatial = spatial_seq.reshape(L * B, *spatial_seq.shape[2:])
 
-        place_logits = self.placement_given_card(
-            flat_hx, flat_embeds, card_idx_seq.reshape(L * B),
-            flat_obs, flat_spatial, hires_map=flat_hires)
+        # --- דחיסת שורות (2026-08-24) ----------------------------------------
+        # ראש המיקום הוא ~41% מזמן העדכון והוא רץ כאן **פעמיים** (הקלף שנבחר +
+        # משבצת הכיסוי). כל צרכני שני הפלטים ממוסכים ב-decision: actor_loss
+        # ב-mb_decision, אנטרופיית המיקום ב-mb_placed (תת-קבוצה שלו), clip_frac
+        # ב-mb_decision, ושני חצאי coverage_terms ב-decision. נמדד על
+        # model_weights_selfplay.pth לאורך 1500 צעדים: decision דולק ב-0.368
+        # מהשורות, כלומר **63.2% מהקונבולוציות האלה מוכפלות באפס מדויק**.
+        #
+        # active_rows=None משחזר בדיוק את ההתנהגות הקודמת, ולכן שום קורא קיים
+        # לא מושפע.
+        #
+        # המילוי הוא **אפס ולא -inf**, וזו בחירה נושאת-משקל: שורה שכולה -inf
+        # נותנת Categorical.entropy() = nan, ו-nan * 0.0 = nan היה מרעיל כל
+        # סכום ממוסך בעדכון. כל מילוי **סופי** נותן finite * 0.0 == 0.0 בדיוק,
+        # וזה בדיוק מה שהמסלול הישן ייצר שם -- ולכן כל רדוקציה ממוסכת שומרת
+        # על הצורה, הסדר והערכים שלה, וה-loss יוצא bit-identical.
+        #
+        # שתי שכבות ההקשר הליניאריות מחושבות על **כל** האצווה ורק אז נחתכות,
+        # כי GEMM אינו בלתי-תלוי בגודל אצווה. ראה placement_given_card -- שם
+        # גם מתועד למה **המשקלים** בכל זאת אינם bit-identical (grad_W של
+        # Conv2d תלוי-אצווה בצורות 36x20 ו-34x18), וזו מגבלת backend שאף
+        # מימוש של דחיסת שורות לא יכול לעקוף.
+        def _placement(idx_seq):
+            flat_idx = idx_seq.reshape(L * B)
+            if active_rows is None:
+                return self.placement_given_card(
+                    flat_hx, flat_embeds, flat_idx, flat_obs, flat_spatial,
+                    hires_map=flat_hires)
+            out = flat_hx.new_zeros(L * B, self.placement_cells)
+            if active_rows.numel() == 0:
+                # אצווה ריקה מגיעה ל-Conv2d; מדלגים לגמרי. זה לא מקרה קצה
+                # תיאורטי -- chunk שכולו צעדים כפויים הוא בדיוק מה שסוכן
+                # פושט-רגל מייצר, ונמדד P(אין מה להרשות) = 73.9%.
+                return out
+            rows = torch.arange(L * B, device=flat_hx.device)
+            joint = torch.cat((flat_hx, flat_embeds[rows, flat_idx]), dim=-1)
+            sub = self.placement_given_card(
+                flat_hx[active_rows], flat_embeds[active_rows],
+                flat_idx[active_rows], flat_obs[active_rows],
+                flat_spatial[active_rows], hires_map=flat_hires[active_rows],
+                ctx=self.place_ctx(joint)[active_rows],
+                ctx_hi=self.place_ctx_hi(joint)[active_rows])
+            return out.index_copy(0, active_rows, sub)
+
+        place_logits = _placement(card_idx_seq)
 
         # --- placement COVERAGE pass (optional) -----------------------------
         # מפת המיקום של קלף *אחר* מזה שנבחר, על אותם flat_hx/spatial בדיוק.
@@ -735,9 +801,7 @@ class MicroRoyaleNet(nn.Module):
         # צ'קפוינט לא נפסל.
         extra_logits = None
         if extra_card_idx_seq is not None:
-            extra_logits = self.placement_given_card(
-                flat_hx, flat_embeds, extra_card_idx_seq.reshape(L * B),
-                flat_obs, flat_spatial, hires_map=flat_hires).view(L, B, -1)
+            extra_logits = _placement(extra_card_idx_seq).view(L, B, -1)
 
         return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
                 values.view(L, B), aux.view(L, B), (hx, cx), extra_logits)

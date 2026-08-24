@@ -3392,6 +3392,210 @@ count varies with the unseeded opening-hand shuffle). Perception 353 passed /
 
 ---
 
+## 2026-08-24: the placement head stopped computing rows nobody reads. 1.52x on the update.
+
+**NOT gameplay-affecting in the usual sense.** The loss function is unchanged,
+and its VALUE is bit-identical from identical weights -- every field of
+`UpdateStats` compares exactly. Checkpoints load and behave identically; no
+observation, action-space, reward or architecture change. **But the weight
+TRAJECTORY does not reproduce across this commit**, and half this section is
+about why that is unavoidable rather than a defect.
+
+### The premise that was wrong, and it would have caused a silent regression
+
+The change was proposed as: the coverage forward computes a 500-row placement
+map while `Advisor/Rows` sits at 23-25, so ~95% is waste. **That reading is
+wrong.** `advisor_target.coverage_terms` splits the rows TWO ways:
+
+    has  = has_target * decision          ~23-25 rows -> KL to the advisor
+    no_t = (1 - has_target) * decision    every OTHER decision row -> ENTROPY
+
+at a live `PLACEMENT_COVERAGE_COEF = 0.02`. The advisor row count bounds the KL
+half ONLY. Slicing the forward to those rows would delete the entropy half and
+re-open the 2026-08-14 placement collapse (Cannon 91.0% modal share on (11,0),
+121 tower HP preserved against 396 for a RANDOM legal cell -- worse than
+chance). A win-rate arm would have caught that eventually; nothing in the update
+itself would have complained at all.
+
+### What IS dead: 63.2% of BOTH placement forwards
+
+Every consumer of both placement maps is masked by `decision` -- `actor_loss` by
+`mb_decision`, placement entropy by `mb_placed` (a subset), `clip_frac` by
+`mb_decision`, and both halves of `coverage_terms` by `decision`. And `decision`
+is itself `(card_mask.sum(1) > 1) * valid`, so it is a subset of `valid` and
+nothing else can reach those rows either.
+
+Measured on `model_weights_selfplay.pth` over 1500 steps: **decision fires on
+0.368 of rows.** So 63.2% of both forwards, and both backwards, was being
+multiplied by exactly zero.
+
+`net.forward_sequence` grew an optional `active_rows`; `PPOUpdater` passes the
+decision rows. `active_rows=None` reproduces the old path exactly, so no other
+caller is affected. Two details are load-bearing:
+
+- **The filler on skipped rows is ZERO, not `-inf`.** An all-`-inf` row makes
+  `Categorical.entropy()` return `nan`, and `nan * 0.0` is `nan`, which would
+  poison every masked sum in the update. Any FINITE filler gives
+  `finite * 0.0 == 0.0` exactly -- which is what the old path produced there --
+  so every masked reduction keeps its shape, order and values, and the loss
+  comes out bit-identical.
+- **The two `place_ctx` Linears are computed on the FULL batch and sliced.**
+  GEMM is not batch-size invariant on this backend (`Linear(280->32)`: 4.768e-07
+  forward, 2.289e-05 on `grad_W`, batch 500 vs 167). They are ~0.5% of the
+  head's cost, so computing them full is nearly free, and it is what makes the
+  LOGITS on the kept rows bit-identical.
+
+**Measured, interleaved arms, min-of-repeats, one shared batch, production
+config (500x8, bptt 25, 8 minibatches, 4 epochs), decision rate 0.363:**
+
+| | s/update |
+|---|---|
+| baseline (full rows) | 27.38 |
+| **compacted** | **17.99** |
+
+**1.522x, 9.39 s/update, 34.3% of the update.** The 27.38 s baseline reproduces
+the 27.3 s this file already records, which is the cross-check that makes the
+ratio quotable rather than just plausible.
+
+### Bit-exactness at the WEIGHT level is unavailable, and that is a backend fact
+
+It was the goal, and no row-compaction scheme can meet it. **`Conv2d`'s weight
+gradient is a reduction over the batch dimension, and MKL-DNN re-blocks that
+reduction when the batch size changes -- for SOME shapes and not others.**
+Measured 500 -> 184, dropped rows carrying exactly-zero upstream gradient:
+
+| layer | shape | grad_W |
+|---|---|---|
+| `place_up.1` Conv2d(32,16) | 18x10 | **bit-identical** |
+| `place_up.4` Conv2d(16,8) | 36x20 | differs 5.814e-03 |
+| `place_up.6` Conv2d(8,1) | 36x20 | differs 2.808e-03 |
+| `place_hires.0` Conv2d(24,8) | 34x18 | differs 4.883e-03 |
+
+**The shape-dependence is the trap.** The first probe tested only 18x10, got
+"invariant", and that claim was written into a code comment before a sweep over
+the other three shapes refuted it. An invariance that holds for one layer is not
+a property of `Conv2d`. Same standing lesson this file already records for
+environment claims: **state the probe, not the conclusion** -- and check the
+edges of the range, not one point in it.
+
+### The drift COMPOUNDS -- and a semantic no-op does exactly the same thing
+
+Asked whether the round-off stays bounded, it does not. Two arms, same batch,
+same seed, same minibatch permutation, `drift = max|w_A - w_B|` against
+`signal = max|w_A - w_0|`:
+
+| update | drift | signal | drift/signal |
+|---|---|---|---|
+| 1 | 1.038e-03 | 2.371e-03 | 0.438 |
+| 10 | 6.340e-03 | 2.500e-02 | 0.254 |
+| 50 | 1.308e-01 | 1.348e-01 | **0.970** |
+| 100 | 2.573e-01 | 2.567e-01 | **1.002** |
+| 200 | 5.180e-01 | 5.456e-01 | 0.949 |
+
+By update ~50 the arms differ by as much as either has moved from init: in
+weight space they are DIFFERENT RUNS. The mechanism is Adam, not the
+convolution -- Adam's step is `lr * m_hat / sqrt(v_hat)`, which at the first
+step is `lr * sign(g)` for any `|g| >> eps`, so a round-off difference in a
+near-zero gradient becomes a full +/- `lr` step difference immediately. With
+`lr = 3e-4` and 8 optimizer steps per update that predicts ~1e-3 after one
+update; observed 1.038e-03.
+
+**THE CONTROL IS WHAT MAKES THAT NUMBER READABLE, and without it the result is
+alarming for no reason.** Four arms, same protocol: A uncompacted; B uncompacted
+with ONE weight nudged by a single ULP; C compacted; **D uncompacted with the
+placement head run in TWO HALF-BATCHES and concatenated** -- semantically a
+no-op, every row seeing identical weights and inputs, with the GEMM half
+controlled for so that only the conv's blocking varies.
+
+| update | A-B (1 ULP) | A-C (compaction) | A-D (semantic no-op) |
+|---|---|---|---|
+| 1 | 5.821e-11 | 1.038e-03 | 5.316e-04 |
+| 2 | 5.821e-11 | 2.058e-03 | 9.936e-04 |
+| 5 | 5.821e-11 | 1.904e-03 | 1.213e-03 |
+| 10 | 5.821e-11 | 6.340e-03 | 2.394e-03 |
+| 35 | 5.821e-11 | 7.245e-02 | 5.176e-02 |
+| **50** | **5.821e-11** | **1.308e-01** (r 0.970) | **6.826e-02** (r 0.506) |
+
+**Arm D tracks arm C within a factor of 2 at every milestone, and is ~9 orders
+of magnitude above arm B.** Splitting a batch in half and concatenating cannot
+change what is computed, so the divergence is attributable to floating-point
+accumulation order ALONE, and compaction is not doing anything wrong. Note also
+that arm B does NOT amplify: a 1-ULP WEIGHT perturbation never flips a
+gradient's sign, so this trainer is not chaotic under just any nudge -- it is
+specifically sensitive to GRADIENT perturbations, which is exactly what Adam's
+sign-like first step implies. That asymmetry is why arm B alone would have been
+a misleading control and arm D was necessary.
+
+A free cross-check fell out of running the two experiments independently: arm C
+measured 7.245e-02 at update 35 and 1.308e-01 at update 50 in BOTH invocations,
+to every printed digit. The compacted path is deterministic run-to-run, which is
+the property `test_the_compacted_path_is_REPRODUCIBLE_run_to_run` pins at small
+scale and this confirms at 50 updates.
+
+Provenance, since the two tables stop at different points: the 2-arm drift run
+completed all 200 updates (2630 s); the 4-arm control was killed by its own
+`timeout` after update 50 while the full pytest suite was competing for the same
+8 threads. Update 50 is past the saturation knee in the 2-arm table, so nothing
+in the conclusion depends on the missing rows -- but the control has NOT been
+run to 200 and should not be quoted as though it had.
+
+**The consequence for how to read this repo's history: trajectory identity was
+never available to this trainer under ANY reordering, including the
+`forward_sequence` batching already shipped** (recorded above as "max logit
+delta 1.1e-08 vs a float32 eps of 1.19e-07" -- a single-forward comparison that
+was never run out to 200 updates, and would have shown the same thing). The
+achievable bar, and the one `tests/test_rl_ppo_compaction.py` now enforces:
+
+| claim | status |
+|---|---|
+| placement logits on kept rows | **`torch.equal`** |
+| loss + every `UpdateStats` field, from identical weights | **exact** |
+| the compacted path re-run on the same input | **bit-identical** |
+| weight trajectory across the commit | **does not reproduce** |
+
+That last row is a ONE-TIME discontinuity, not ongoing noise: `active_rows` is
+derived from the stored `decision` column, so batch sizes are fixed for a given
+batch and permutation and every kernel takes the same path. Paired harnesses
+keep working; only comparisons that STRADDLE this commit are affected.
+
+### Two further optimizations, scoped and deliberately NOT taken
+
+Both relax the equivalence bar further, and neither is worth doing until the
+placement head is again the binding constraint. Recorded so they need not be
+re-derived:
+
+- **Share `place_hires`' first conv between the two forwards.** `h_hi` is
+  `cat(hires_map, ctx_hi_expanded)`, and `hires_map` is IDENTICAL across the
+  chosen-card and coverage calls, so `conv2d(cat(A,c), W)` factors exactly as
+  `conv2d(A, W_a) + conv2d(c, W_c)` and the expensive 16-channel half
+  (~1.06M MACs/row of the head's ~2.8M) could be computed once instead of
+  twice. Worth roughly another 10-15%. It is NOT bit-exact even at the LOSS
+  level -- splitting a 24-channel accumulation into 16 + 8 reorders the sum --
+  so it gives up the one guarantee compaction keeps.
+- **Fuse the two placement calls into one 2N-batch call.** They differ only in
+  `card_idx`, so concatenating them halves the per-call overhead. Possibly
+  bit-exact, since convolution is per-sample along the batch dimension -- but
+  the measurements above show batch size changing the blocking, so
+  **bit-exactness here must be proven empirically before it is claimed**, which
+  is precisely the mistake the 18x10 probe made.
+
+Not recommended: slicing the coverage forward to the advisor rows. See the top
+of this section -- that is a loss change wearing an optimization's clothes.
+
+### Suite count after this work
+
+**Python 401 collected, 399 passed / 2 skipped**, of which 10 are
+`tests/test_rl_ppo_compaction.py`. C++ untouched -- this is a Python-only
+change, so the 622-case Catch2 figure above still stands.
+
+Note the arithmetic: 401 - 10 = **391 before this change, against the 369 this
+file recorded**. That count was already stale by 22 when this work started, so
+do not read the jump as belonging to this section. Counting the new file's own
+cases with `--collect-only` rather than differencing the totals is what made
+that visible.
+
+---
+
 ## Measured baselines — use these, don't re-derive them
 
 > **Checkpoint names in the passages below are PROVENANCE, not files.** The
