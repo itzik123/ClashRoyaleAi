@@ -14,7 +14,16 @@ Rules that apply to every item below:
 
 - `include/`, `src/` and `python_ai/` are READ-ONLY unless explicitly asked.
   C++ changes need the exact diagnosis and the exact edit confirmed **first**,
-  and go to `perception/UPSTREAM_REQUESTS.md` as a proposal.
+  and go to `perception/UPSTREAM_REQUESTS.md` as a proposal. **That file is
+  deliberately EMPTY as of 2026-08-24** — the backlog was worked to zero and its
+  33 items are archived in `DECISIONS.md` under "ARCHIVE", headings intact so a
+  citation by number still resolves. An empty file means no open proposals, not
+  a lost one; start numbering new items at 26 so archived references stay
+  unambiguous.
+- **Confirm a diagnosis before implementing it, even when the item states one.**
+  UPSTREAM item 20 asserted "spawned entities carry no cardId"; they carry
+  distinct negative ids and the right name, and the fix it proposed would not
+  have named them. The item had been read three times without that being caught.
 - Any gameplay-affecting change invalidates the win-rate history. Say so.
 - Python is 3.11 only: `python_ai/venv/Scripts/python.exe`.
 
@@ -238,15 +247,15 @@ elixir advantage, not HP chipped. Long term these should anneal toward zero.
 
 ---
 
-## 8. ⚠ The engine seeding fix is APPLIED but UNVERIFIED, and one path is still unseedable
+## 8. ✅ DONE (2026-08-24) — engine seeding is applied, VERIFIED, and the last unseedable path is closed
 
-Engine request 7 landed 2026-08-21 (`ClashEnv::seed`). **No Python consumer was
-migrated to it for three days**, so the benefit the item was argued from —
-reproducible runs and reproducible failures — had still not been collected.
-Two consumers were migrated on 2026-08-24; a third path cannot be, and needs an
-engine change. Full write-up: `perception/UPSTREAM_REQUESTS.md` item 23.
+Engine request 7 landed 2026-08-21 (`ClashEnv::seed`). Two Python consumers were
+migrated on 2026-08-24, a third path needed C++, and **the verification that was
+the whole point had never been run** — the machine it was done on had no Python
+3.11, no venv and no built `.pyd`, so nothing importing the engine executed there
+at all. It was run on 2026-08-24 on a box that has all three. Both checks pass.
 
-**Applied 2026-08-24, in the read-only tree, at explicit instruction:**
+**Migrated consumers** (in the read-only tree, at explicit instruction):
 
 - `python_ai/envs/gym_wrapper.py` — `reset(seed=...)` accepted a seed and
   dropped it. `super().reset(seed=seed)` seeds the *wrapper's* `np_random`,
@@ -254,66 +263,125 @@ engine change. Full write-up: `perception/UPSTREAM_REQUESTS.md` item 23.
   on `is not None` so a run does not collapse to one repeated episode.
 - `python_ai/eval/prove_combos.py` — five harnesses built each opening with
   `CE(...).reset()` and never called `seed()`. All five now use
-  `.seed(args.seed + ENGINE_SEED_OFFSET + i)`; `seed()` ends in `reset()`, so
-  it is a drop-in. The stale module docstring was corrected and the old warning
-  kept as the acceptance criterion.
+  `.seed(args.seed + ENGINE_SEED_OFFSET + i)`; `seed()` ends in `reset()`, so it
+  is a drop-in.
 
-**THE VERIFICATION IS THE PENDING PART, and it is the whole item.** Nothing was
-run. The machine this was done on has no Python 3.11, no venv and no built
-`.pyd`, so nothing importing the engine executes there at all — only
-`py_compile` under 3.13. Two checks settle it, and neither has been done:
+**VERIFIED 2026-08-24 — both checks, with their controls:**
 
-```python
-a, b = MicroRoyaleEnv(cfg), MicroRoyaleEnv(cfg)
-assert (a.reset(seed=7)[0] == b.reset(seed=7)[0]).all()
 ```
-```bash
-# the 2026-08-20 control that failed, re-run: the OFF arms must now agree on
-# LEVEL, not merely on delta
-python_ai/venv/Scripts/python.exe -m python_ai.eval.prove_combos --seed 300 ...
+two envs, reset(seed=7):   observations identical        True
+                           hand team 0 identical         [72, 7, 15, 40]
+                           hand team 1 identical          [25, 7, 15, 33]
+a third env, reset(seed=8): differs from seed 7           True   <- non-vacuous
 ```
 
-Until both pass, **the old rule stands: across runs compare deltas only, never
-arm levels.** Item 1's caveat above is written that way on purpose.
+`prove_combos --combo-ab --n 6 --seed 300`, run twice, is **bit-identical**:
 
-**Still unseedable, and it needs C++:** `sample_random_deck` draws from a
-function-local `static std::mt19937` seeded from `std::random_device`
-(`src/bindings.cpp:292`). `ClashEnv::seed` cannot reach it. So a run with
-`randomize_opp_deck=True` now has a reproducible hand, cycle and heuristic roll
-and a **still-random opponent deck** — the largest of the four variance
-sources. `UPSTREAM_REQUESTS.md` item 23C proposes an optional seed argument;
-additive, not gameplay-affecting, no checkpoint invalidated.
+| | run 1 | run 2 |
+|---|---|---|
+| combos OFF | dec 2099, elixir 3.39/p90 6.70, plays 282 | identical |
+| combos ON | dec 2160, plays 314, proposed 824, chosen 58, completed 27 | identical |
+| levels | off 0.667 → on 0.667 | identical |
+| split | 2 better / 3 worse / 1 tied | identical |
+
+Only `ms/dec` moved, which is wall-clock noise. **The OFF arms agree on LEVEL,
+not merely on delta** — the acceptance criterion this item was written around.
+
+**So the old rule is LIFTED.** Across runs at a fixed seed, arm LEVELS are now
+comparable, not only deltas. That rule existed because the 2026-08-20 combo
+ablation's untreated arm moved between runs; it cannot now.
+
+**The third path is closed too — `sample_random_deck(seed=...)` (was UPSTREAM
+item 23C, applied 2026-08-24).** It drew from a function-local
+`static std::mt19937` that `ClashEnv::seed` could not reach, so a run with
+`randomize_opp_deck=True` had a reproducible hand, cycle and heuristic roll and
+a still-random opponent deck — the largest of the four variance sources. A
+seeded call now builds a PRIVATE generator instead of seeding the static,
+because the static is process-global and at `num_envs = 8` every env interleaves
+draws from it: seeding it would only reproduce for a fixed construction and call
+order. Zero-argument calls are bit-for-bit unchanged.
+`python_ai/tests/test_engine_seeding.py` pins reproducibility, a distinct-seeds
+control, order-independence, and no-seed compatibility.
 
 ---
 
-## Engine requests still open (`perception/UPSTREAM_REQUESTS.md`)
+## Engine requests — the backlog is CLOSED (2026-08-24)
 
-| # | Request | Status |
-|---|---|---|
-| 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **open — a decision, not a defect** |
+`perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` were worked
+to empty on 2026-08-24 and are now 0-byte files. All 25 upstream items and all
+8 bot items were verified applied, decided, or implemented. **Their full text is
+archived in `DECISIONS.md` under "ARCHIVE"**, with headings kept intact so the
+112 references that cite them by number still resolve — "UPSTREAM_REQUESTS.md
+item 13" resolves to "UPSTREAM item 13" there.
 
-**One row, and its own recommendation is to change nothing — so the effective
-count of open engine requests is zero.** Items 3 and 7 sat here as "open" until
-2026-08-24 and both had in fact landed. Recorded so neither is re-proposed:
+Do not re-open a numbered item without reading its archived entry first: several
+were re-proposed in the past after their status line went stale, which is the
+specific failure that audit note existed to stop.
 
-- **Item 3 — King Tower activation: APPLIED 2026-08-21.** `Tower` carries a
-  latching `awake` flag; the King constructs asleep, `findTarget` returns
-  `nullptr` while asleep, and it wakes permanently on any damage or on a
-  friendly Princess falling. Measured at 1268 tower damage awake vs 2219
-  dormant. `tests/core/test_king_activation.cpp`.
-- **Item 7 — engine seeding: DONE 2026-08-21.** `ClashEnv::seed(s)` seeds
-  `ClashEnv::rng` *and* `GameManager::rng` (an XOR offset keeps the two streams
-  from correlating) and then re-deals — `initializeDeck` runs inside
-  `GameManager::reset()`, so a seed applied after construction would otherwise
-  be a silent no-op. Bound as `seed`; eight test modules call it, and the
-  nondeterministic `pytest.skip("Cannon not in the opening hand this shuffle")`
-  this item was argued from no longer exists in the tree.
-  **The Python consumers were never migrated — that is item 8 above, and it is
-  a Python task, not an engine request.**
+### What was implemented during the sweep
 
-**Item 8's recommendation is option 1 — change nothing.** 689 and 721 appear to
-be faithful tournament-standard values, and `perception/` exists specifically to
-drive this simulator from real matches. Reach the behaviour through shaping.
+- **UPSTREAM item 17 — `CombatEntity::getTicksOnTarget()`.** One const accessor,
+  resolved minimally: of the eleven the item tabled, only `ticksOnTarget` has a
+  genuinely lossy behavioural proxy (`getDamagePerTick()` collapses it into ≤4
+  ramp buckets, and `rangeFalloff` makes the stage inseparable). Everything else
+  stays behavioural on purpose. `tests/core/test_snapshot_timing_state.cpp`.
+  Additive and const — NOT gameplay-affecting.
+- **UPSTREAM item 20 — the replay now writes each entity's `name`.** The item's
+  own diagnosis ("spawned entities carry no cardId") was FALSE: spawn-children
+  carry distinct negative ids (−1…−48) and already carried the right name; the
+  logger simply never wrote it. Fixed in `GameLogger.h` plus a viewer branch,
+  which is far smaller than the `spawnedByCardId` the item proposed and actually
+  names the child rather than its parent. `cardId` untouched, so stats
+  attribution and reward shaping are bit-identical.
+  `tests/core/test_game_logger_entity_names.cpp`.
+- **UPSTREAM item 23C — `sample_random_deck(seed=...)`.** The third `mt19937`,
+  which `ClashEnv::seed` cannot reach. A seeded call now gets a PRIVATE
+  generator rather than seeding the process-global static, because at
+  `num_envs = 8` a shared stream is only reproducible for a fixed call order.
+  Zero-argument calls are bit-for-bit unchanged.
+- **`tools/audit/verify_pyd.py` — a false negative that could never pass.** It
+  checked `hasattr(cre, "step_self_play_fast")` against the MODULE when that is
+  a method on the `ClashRoyaleEnv` CLASS, so the post-build gate CLAUDE.md tells
+  you to run before every training run had reported FAILED on healthy builds
+  since 2026-08-23. The worst failure mode a gate has: it teaches you to ignore
+  it.
+
+### The live residue — this is the part that is still WORK
+
+- **Channels 0-7 assign rather than accumulate** (was BOT item 3). Agreed by
+  both sides, one line in `ClashEnv.h:267`:
+
+  ```cpp
+  obs[getIndex(channel, y, x)] = normalizedHp;                       // now
+  obs[getIndex(channel, y, x)] = std::max(obs[...], normalizedHp);   // proposed
+  ```
+
+  Makes channels 0-7 mean "the strongest unit in this cell" and consistent with
+  `CH_DPS`/`CH_RANGE`/`CH_SPEED`, which already take the max. Summing would be
+  wrong — three Skeletons would read like a PEKKA. No layout or size change, so
+  checkpoints still LOAD, but observation SEMANTICS shift, so it is
+  **deliberately queued for a clean restart / the next intentional observation
+  change** (decision reaffirmed 2026-08-24). Also CLAUDE.md open problem 3.
+- **`live/adapter.py` still reads tower HP from the BAR** (was BOT item 7).
+  `readers/tower_numerals.py` is built, tested and template-backed — acceptance
+  2030 on both enemy Princesses, 542-step read-back at 97.8% — but the live
+  adapter is not wired to it. Perception-side work, freely editable.
+- **Perception-shaped observation noise stays DEFERRED** (was BOT item 1),
+  behind the sensor's own error: ~15% of detected units are misnamed (`knight`
+  worst; one `minipekka` was the enemy Princess tower) and card identity agrees
+  with the elixir ledger only 33.8% of the time. Training a policy to tolerate
+  that would cost real capability and buy nothing once the sensor improves.
+- **UPSTREAM item 18 stays ACCEPTED / will-not-fix** — troops deadlock in the
+  concave pocket between two buildings, 7 stalls per 342,563 unit-ticks, none on
+  a bridge, pinned `[!shouldfail]` in `tests/core/test_navigation_wedge.cpp`.
+  Reopen if the rate rises, a stall appears near a bridge, or rollout throughput
+  stops being the binding constraint on path planning.
+- **UPSTREAM item 8 stays "change nothing"** — Fireball 689 vs Musketeer 721 is
+  faithful to the real game, where Fireball needs chip damage on top to kill a
+  Musketeer. Under the current 2.6 Hog Cycle deck the awkward EV is if anything
+  sharper than the item described (its table lists the retired Giant deck): the
+  only clean Fireball kills in the mirror are Skeletons and Ice Spirit, both
+  1 elixir. Reach the behaviour through shaping, not by editing the card.
 
 ---
 

@@ -22,11 +22,26 @@ struct EntitySnapshot {
     // 2214) -- a single-char symbol alphabet ran out of room long before
     // the card roster did. cardId is the unambiguous key into GameLogger::
     // save()'s "cardMeta" block; symbol alone is not enough to look up
-    // correct metadata for every card. -1 for entities with no registry
-    // entry other than towers (GameManager::TOWER_KING_ID/TOWER_PRINCESS_ID,
-    // -2/-3 -- see GameManager.h), which the viewer already has separate,
-    // accurate per-corner metadata for (TOWER_DEFS).
+    // correct metadata for every card. NEGATIVE for entities with no
+    // registered card of their own: towers use GameManager's
+    // TOWER_KING_ID/TOWER_PRINCESS_ID (-2/-3 -- see GameManager.h), which the
+    // viewer has separate per-corner metadata for (TOWER_DEFS), and
+    // death-spawn children get their own distinct negative ids from
+    // CardRegistry (Golemite is -1; see the "Negative ids stay clear of -1"
+    // comment there). cardMeta is built from the REGISTERED cards only, so a
+    // negative id never resolves through it -- which is what `name` is for.
     int cardId;
+    // The entity's own display name, straight off the board.
+    //
+    // WHY THIS EXISTS RATHER THAN A LOOKUP. A death-spawn child cannot be
+    // named through cardMeta (negative id, see above), and the fallback the
+    // viewer was left with -- the single-char symbol -- is ambiguous for 36 of
+    // the registry's 90 symbols. The name is already correct on the entity
+    // (CardFactories::applyCardMetadata sets it for every troop and building),
+    // so writing it is strictly cheaper and more accurate than reconstructing
+    // it. See perception/UPSTREAM_REQUESTS.md item 20, whose original
+    // diagnosis -- "spawned entities carry no cardId" -- was wrong.
+    std::string name;
 };
 
 struct TickSnapshot {
@@ -72,6 +87,17 @@ private:
         }
     }
 
+    // Same rule as escapeChar, applied across a string, rather than a second
+    // copy of the escaping table. Card names are engine data and quote-free
+    // today, but so was the symbol alphabet until Ram Rider's symbol turned
+    // out to be '"' and silently corrupted every replay containing one.
+    static std::string escapeString(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) out += escapeChar(c);
+        return out;
+    }
+
 public:
     GameLogger(int boardWidth = 18, int boardHeight = 34)
         : enabled(true), boardWidth(boardWidth), boardHeight(boardHeight) {}
@@ -101,6 +127,7 @@ public:
             es.symbol = entity->symbol;
             es.isFlying = entity->isFlying;
             es.cardId = entity->cardId;
+            es.name = entity->name;
             snap.entities.push_back(es);
         }
 
@@ -278,7 +305,8 @@ public:
                      << ",\"team\":" << ent.team
                      << ",\"symbol\":\"" << escapeChar(ent.symbol) << "\""
                      << ",\"isFlying\":" << (ent.isFlying ? "true" : "false")
-                     << ",\"cardId\":" << ent.cardId << "}";
+                     << ",\"cardId\":" << ent.cardId
+                     << ",\"name\":\"" << escapeString(ent.name) << "\"}";
 
                 if (e + 1 < snap.entities.size()) file << ",";
                 file << "\n";

@@ -74,11 +74,13 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-21 after the fidelity fixes: **619 test cases, 5,907
-assertions**. 618 pass and **exactly one fails "as expected"** --
+Measured 2026-08-24 after the backlog sweep: **650 test cases, 6,423
+assertions**. 649 pass and **exactly one fails "as expected"** --
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
-second failure is a real regression.
+second failure is a real regression. (It read 619 cases / 5,907 assertions on
+2026-08-21; the counts move as tests are added, so treat the **shape** -- one
+expected failure, exit 0 -- as the invariant, not the number.)
 
 **Adding a test FILE needs the build run TWICE.** CMake globs `tests/**` with
 `CONFIGURE_DEPENDS`, so the first MSBuild re-globs and regenerates the vcxproj --
@@ -133,6 +135,28 @@ rebuild of all ~36 test TUs -- budget 8-15 minutes, not 90 seconds.)
 > Machine B's, reached from the opposite direction. Python work here is
 > verified by `py_compile` under 3.13 and static reading, and that is the
 > ceiling until the runtime exists.
+>
+> **Machine D (FULLY EQUIPPED — everything works)** — verified 2026-08-24 by
+> building the `.pyd` and the Catch2 suite, running both suites, and running
+> `verify_pyd.py`:
+> ```
+> Test-Path '...\2022\Community\MSBuild\Current\Bin\MSBuild.exe'  -> True
+> py -0p                          -> 3.14, 3.13, ** 3.11 present **
+> python_ai\venv, perception\.venv                               -> both exist
+> python_ai\clash_royale_env.pyd, build_python\                   -> both exist
+> ```
+> This is Machine C's box after `tools/setup_dev_env.ps1` was run, or one set up
+> the same way. C++ suite 650 cases and Python suite 403 passed / 2 skipped both
+> execute here. **If your probes look like this, no workaround in this section
+> applies to you** — build and run directly.
+>
+> One trap that only appears on a working box: the MSB3073 post-build copy
+> failure is REAL and fires whenever any Python process holds the `.pyd`,
+> including a `pytest` run you did not start. The compile SUCCEEDS and only the
+> copy into `python_ai/` fails, so `build_python/Release/` has a newer `.pyd`
+> than `python_ai/` — which is exactly what "stale .pyd" looks like later.
+> Check `Get-CimInstance Win32_Process -Filter "Name like '%python%'"` and read
+> the COMMAND LINE before killing anything; it may not be yours.
 >
 > **`tools/setup_dev_env.ps1` exists for exactly this box** (2026-08-24): it
 > installs 3.11, builds both venvs, configures `build_python/` and builds the
@@ -194,8 +218,15 @@ tiles per *tick*, so the registry's Giant `0.3f` meant **3.0 tiles/s** against
 a real-game Slow of ~0.75 — a Giant crossed bridge-to-tower in ~3.5 s.
 `MOVEMENT_SPEED_SCALE = 0.2f` in `CardStats.h` now converts the registry's
 tier literals into real-game tiles/tick. It is applied at **three** sites:
-`CardRegistry.h:125` plus both `SpiritEmpressForms.h` assignments, which set
+`CardRegistry.h:127` plus both `include/core/SpiritEmpressForms.h` assignments
+(lines 32 and 50 — the file is in `core/`, not `entities/`), which set
 `stats.speed` directly and so bypass `CardStats::troop()`.
+
+Those two are raw literals rather than `SPEED_*` tiers, and that is **correct,
+not an oversight**: Spirit Empress is one of the 13 cards on the 2026-08-24
+speed rework's "no official row" list, deliberately left off-tier. `0.85 × 0.2`
+and `0.5 × 0.2` give 1.700 and 1.000 tiles/s, both in that rework's documented
+off-tier set. Verified 2026-08-24.
 
 Measured three independent ways against the 8 recordings, all agreeing
 (`perception/UPSTREAM_REQUESTS.md` item 9 carries the evidence): per-card speed

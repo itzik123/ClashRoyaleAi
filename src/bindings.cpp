@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <optional>
 #include "ArenaLayout.h"
 #include "ClashEnv.h"
 
@@ -289,8 +290,32 @@ PYBIND11_MODULE(clash_royale_env, m) {
     // it with its own internally-seeded generator (seeded once, like
     // ClashEnv::rng/GameManager::rng) so the Python-facing call takes no
     // arguments.
-    m.def("sample_random_deck", []() {
+    // The THIRD generator in this project, and the one ClashEnv::seed cannot
+    // reach: it is not a member of anything. Item 7 seeded ClashEnv::rng (the
+    // HeuristicOpponent) and GameManager::rng (the opening hand and cycle
+    // order), which left a run with randomize_opp_deck=True reproducible in
+    // every respect EXCEPT the opponent's deck -- the largest single remaining
+    // source of episode-to-episode variance.
+    //
+    // WHY A SEEDED CALL GETS ITS OWN GENERATOR rather than seeding the static.
+    // The static is process-global, so at num_envs=8 every env interleaves
+    // draws from one stream: seeding it would make a result reproducible only
+    // for a fixed construction and call ORDER, which is not a property a
+    // vectorised trainer can offer. A local generator is order-independent by
+    // construction.
+    //
+    // Passing no seed keeps the previous behaviour bit-for-bit -- same static,
+    // same stream -- so every existing zero-argument call site is unaffected.
+    // See perception/UPSTREAM_REQUESTS.md item 23C.
+    m.def("sample_random_deck", [](std::optional<unsigned int> seed) {
+        if (seed.has_value()) {
+            std::mt19937 local(seed.value());
+            return sampleRandomDeck(local);
+        }
         static std::mt19937 rng(std::random_device{}());
         return sampleRandomDeck(rng);
-    }, "Builds a random 8-card deck that always satisfies Evolution/Champion slot-position rules by construction.");
+    }, py::arg("seed") = py::none(),
+       "Builds a random 8-card deck that always satisfies Evolution/Champion slot-position rules by construction. "
+       "Pass seed= for a reproducible deck drawn from a generator private to this call; omit it for the shared "
+       "process-global stream, which is what every pre-2026-08-24 call site used.");
 }
