@@ -19,6 +19,11 @@ public:
         : CombatEntity(id, x, y, hp, team, symbol, attackRange, damage, attackCooldown),
         maxHp(hp), lifetimeTicks(lifetime) {}
 
+    // Full health as CONSTRUCTED, which is the only ceiling a caller
+    // writing hp from outside can clamp against. Tower::update already
+    // latches `awake` on the same `hp < maxHp` invariant.
+    int getMaxHp() const { return maxHp; }
+
     float getCollisionRadius() const override { return COLLISION_RADIUS; }
 
     bool isBuilding() const override { return true; }

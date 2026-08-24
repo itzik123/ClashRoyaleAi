@@ -379,6 +379,105 @@ public:
         return true;
     }
 
+    // --- The tower and clock half of the estimator write interface --------
+    // perception/UPSTREAM_REQUESTS.md item 22 (2026-08-24). setElixir/setHand
+    // above closed elixir and the hand; a mirror rebuilt from a real screen
+    // still came back with every tower at full health and the clock at zero.
+    //
+    // SLOTS ARE BOARD COORDINATES, NEVER TEAM-RELATIVE: 0 = King, 1 = left
+    // Princess, 2 = right Princess, left/right decided against ArenaLayout's
+    // own centre rather than a restated literal. The caller is a sensor
+    // reading a screen, and asking it to mirror its own coordinates per team
+    // is the convention error that put the arena half a tile off-centre.
+    const Tower* findTower(int team, int slot) const {
+        for (const auto& e : board.getEntities()) {
+            const Tower* t = dynamic_cast<const Tower*>(e.get());
+            if (t == nullptr || t->team != team) continue;
+            const bool isKing = (t->symbol == 'R');
+            if (slot == 0 && isKing) return t;
+            if (slot == 1 && !isKing && t->position.x < ArenaLayout::CENTER_X) return t;
+            if (slot == 2 && !isKing && t->position.x > ArenaLayout::CENTER_X) return t;
+        }
+        return nullptr;
+    }
+
+    Tower* findTower(int team, int slot) {
+        return const_cast<Tower*>(std::as_const(*this).findTower(team, slot));
+    }
+
+    // Returns FALSE and changes nothing on a value the engine cannot hold.
+    //
+    // hp <= 0 is REFUSED rather than clamped, and that is the whole contract:
+    // a 0-hp tower that still occupies its cell and still fires is a position
+    // the real game can never be in, and killing one has side effects -- the
+    // crown, the King's princess-count trigger, LanePath's retargeting --
+    // that belong to destroyTower() below. Same refuse-rather-than-accept
+    // rule setHand uses, and for the same reason: a silently accepted misread
+    // is worse than none.
+    //
+    // Takes ENGINE-ABSOLUTE hp. The caller converts, because tower levels do
+    // not match -- this engine's towers are level 9 (2534/4008) while a real
+    // account's may be level 4-5 (1750/1890), i.e. wrong by a DIFFERENT factor
+    // per player. perception/ reports a fraction and multiplies by
+    // getTowerMaxHp() below, keeping the level knowledge on the side that
+    // already owns it.
+    bool setTowerHp(int team, int slot, float hp) {
+        Tower* t = findTower(team, slot);
+        if (t == nullptr || !t->isAlive()) return false;
+        if (hp <= 0.0f) return false;
+        int want = static_cast<int>(hp + 0.5f);
+        const int ceiling = t->getMaxHp();
+        if (want > ceiling) want = ceiling;
+        if (want < 1) want = 1;
+        t->hp = want;
+        // `awake` is deliberately NOT set here. Tower::update latches it on
+        // the `hp < maxHp` invariant, so a wound written this way wakes the
+        // King through exactly the path real damage uses -- and because the
+        // flag is a latch, writing full health back cannot re-sleep it.
+        return true;
+    }
+
+    // The destruction destroyTower exists to route: setTowerHp refuses hp <= 0,
+    // so without this a fallen tower would be inexpressible in a mirror -- and
+    // a rollout that still has the tower standing is wrong from the moment it
+    // falls, i.e. exactly when the position matters most.
+    bool destroyTower(int team, int slot) {
+        Tower* t = findTower(team, slot);
+        if (t == nullptr || !t->isAlive()) return false;   // idempotent, and says so
+        t->takeDamage(t->hp);
+        // takeDamage is the right entry point -- it is what a real killing
+        // blow uses and it fires onDamageTakenEffect. But CombatEntity's
+        // override can ABSORB (shield, parry, mid-dash invulnerability). No
+        // Tower carries any of those today; pinning the postcondition means
+        // this stays a destruction if one ever does, instead of silently
+        // leaving the tower standing.
+        if (t->isAlive()) t->hp = 0;
+        return true;
+    }
+
+    // -1 for a slot that does not exist, so a caller cannot mistake a missing
+    // tower for a tower at zero.
+    int getTowerHp(int team, int slot) const {
+        const Tower* t = findTower(team, slot);
+        return t == nullptr ? -1 : t->hp;
+    }
+
+    int getTowerMaxHp(int team, int slot) const {
+        const Tower* t = findTower(team, slot);
+        return t == nullptr ? -1 : t->getMaxHp();
+    }
+
+    // Clamped at zero only: the UPPER bound is maxTicks, which lives in
+    // ClashEnv, and ClashEnv::setCurrentTick applies it before calling here.
+    // Board's mirror moves with it so the two never drift -- board.currentTick
+    // stamps every spawn event and drives ability cooldown arithmetic.
+    void setCurrentTick(int tick) {
+        currentTick = std::max(0, tick);
+        board.currentTick = currentTick;
+    }
+
+    int getCurrentTick() const { return currentTick; }
+
     bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius, bool deployAnywhere = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);

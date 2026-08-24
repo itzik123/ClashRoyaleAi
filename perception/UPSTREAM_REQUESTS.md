@@ -2318,7 +2318,7 @@ answer to phase-1 throughput. The async profile puts the MODEL at 55.8%.
 
 ---
 
-## 22. OPEN — the live mirror cannot be given the real position: no tower HP, no unit HP, no clock, and every re-injected unit is inert for a second (proposed 2026-08-24)
+## 22. APPLIED 2026-08-24 — the live mirror cannot be given the real position: no tower HP, no unit HP, no clock, and every re-injected unit is inert for a second (proposed 2026-08-24)
 
 ### What this is for
 
@@ -2537,3 +2537,88 @@ arbitrary perceived positions with `deployTicks=0` puts entities into
   unit it is creating, in the same call.
 - **Clamping tower HP to 1 instead of refusing.** Biases toward over-defending a
   tower that is already gone, and does it silently.
+
+### APPLIED — approved, implemented and measured 2026-08-24
+
+Approved by the human on the proposal above, then built TDD: the 19 new cases
+in `tests/core/test_state_setters.cpp` were written against compiling stubs
+and **17 were watched to fail** before any implementation existed.
+
+**Two of those 19 passed against a do-nothing stub and had to be
+strengthened**, which is the part worth carrying. `setTowerHp REFUSES hp<=0`
+passes trivially against a setter that refuses *everything*, and `an injected
+hp above the maximum is clamped` passes trivially against one that ignores
+`hp` — and ignoring it IS the pre-item-22 behaviour. Both now carry a positive
+control that must fire first. Same rule this file already states for the
+deploy-zone probe: **when a measurement's failure mode is maximal
+permissiveness, it needs an internal control that MUST fire.**
+
+**What shipped**, all additive:
+
+| | |
+|---|---|
+| `Building::getMaxHp()` | the accessor the clamp needed; `maxHp` was protected with no reader |
+| `GameManager::{findTower,setTowerHp,destroyTower,getTowerHp,getTowerMaxHp,setCurrentTick,getCurrentTick}` | the implementations |
+| `ClashEnv::{setTowerHp,destroyTower,getTowerHp,getTowerMaxHp,setCurrentTick}` | wrappers |
+| `ClashEnv::inject(..., hp = -1.0f, deployTicks = -1)` | two optional params |
+| `bindings.cpp` | all of the above, plus `hp` / `deploy_ticks` keywords on `inject` |
+
+`destroyTower` routes through `takeDamage` (the entry point a real killing blow
+uses) and then pins the postcondition, because `CombatEntity::takeDamage` can
+ABSORB via shield/parry/mid-dash invulnerability. No Tower carries any of those
+today; the pin means this stays a destruction if one ever does.
+
+**MEASURED — the deploy gap, and the probe that measured nothing first.**
+Enemy Hog injected at (9.0, 20.0), both sides no-oping:
+
+| | ticks until it first damages our tower |
+|---|---|
+| `inject(default)` | 88 |
+| `inject(deploy_ticks=0)` | **78** |
+
+**Exactly 10 ticks — `DEPLOY_TIME_TICKS` to the tick**, which is the
+confirmation the mechanism is the one diagnosed. In the window where arrival
+decides the outcome it is worth **317 tower HP, one full Hog hit**:
+
+| window | default | deploy_ticks=0 | delta |
+|---|---|---|---|
+| 100 ticks | 317 | 634 | **+317** |
+| 110 ticks | 634 | 951 | **+317** |
+| 120 ticks | 951 | 951 | 0 |
+
+**Read the 120-tick row: the first probe used 140 ticks and reported a delta of
+ZERO.** Over a long enough window the Hog deals its full damage either way, so
+a total-damage probe SATURATES and reports that a working fix does nothing.
+Arrival time is the quantity that can see it. Third instance in this repo of a
+control saturating — the air-targeting probe in the 2026-08-20 deck QA is the
+same failure.
+
+**Verification, against the bars this item set:**
+
+| check | bar | result |
+|---|---|---|
+| C++ suite | 1 `[!shouldfail]`, exit 0 | **646 cases / 6,409 assertions, 645 pass, 1 failed as expected, exit 0** |
+| Python suite | no regression | **399 passed / 2 skipped** — unchanged |
+| perception suite | no regression | **366 passed / 1 skipped** (353 + 13 new) |
+| `inject` back-compat | bit-identical | full observation equal after 50 ticks, 4-arg vs explicit defaults |
+| deploy bypass | moves on tick 1 | pinned, C++ and Python |
+| tower fraction round trip | within tolerance | exact for all three slots, both teams |
+| refusal | returns false AND leaves hp | both halves pinned |
+| destruction | crown + King wake + count | pinned, and team-scoped |
+| absorbing states | `waypoint_probe` still 0 | **not yet re-run — see below** |
+
+**The C++ count was already stale.** 646 − 19 new = **627**, against the 622
+this file and CLAUDE.md record. The baseline was 5 ahead before this work
+started, so do not read the jump as belonging to item 22 — the same arithmetic
+trap the 2026-08-24 row-compaction section records for the Python count.
+
+**STILL OWED, and it is the one bar not met:** `waypoint_probe` has NOT been
+re-run. `deploy_ticks=0` puts entities into `getNextWaypoint` at arbitrary
+perceived positions with no deploy delay to absorb the first tick — a new entry
+path, and this engine has shipped two absorbing states at the bridge mouths
+already. Run it before the live loop drives real placements.
+
+**A binding-surface regression test now exists** at
+`perception/tests/test_engine_state_setters.py` (13 cases). The C++ suite
+cannot see pybind at all, and this repo has twice had a stale `.pyd` hide a
+landed setter for days with the C++ suite green throughout.
