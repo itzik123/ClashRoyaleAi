@@ -8,8 +8,9 @@ drives the simulator from them as a state estimator.
 
 | | |
 |---|---|
-| **`CLAUDE.md`** | The knowledge base. Engine facts, the training mechanism, every measured result and how it was measured. Read this before changing anything. |
-| **`TODO.md`** | The single list of pending work, verified against the source tree. |
+| **`CLAUDE.md`** | The operational reference. Rules, engine facts, the training mechanism, measured baselines, open problems, layout. Read this before changing anything. |
+| **`TODO.md`** | The single list of pending work, verified against the source tree. Item 0 is what to do next. |
+| **`DECISIONS.md`** | The narrative half of the knowledge base: how the learning mechanism got here, every measured result and every reversal. Read it before re-proposing anything. |
 | `perception/README.md` | Per-stage status of the live sensor, with measured numbers. |
 | `perception/UPSTREAM_REQUESTS.md` | Engine changes requested from `perception/`, with evidence and blast radius. |
 | `perception/BOT_REQUESTS.md` | Training-side suggestions from `perception/`. |
@@ -53,11 +54,18 @@ python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
 perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 ```
 
-Rebuild the engine (`cmake`, `cl` and `msbuild` are not on PATH):
+Rebuild the engine (`cmake`, `cl` and `msbuild` are not on PATH). **Run this
+from PowerShell, never Bash** — MSYS path translation rewrites `/p:` and `/m`
+into an MSB1008 that reads like a bad project argument:
 
-```bash
-"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" build_python\clash_royale_env.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+```powershell
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" build_python\clash_royale_env.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
+
+**The toolchain differs between the machines this repo is worked on — probe,
+don't inherit.** See CLAUDE.md's "Environment" section for the two commands
+that settle it. `\18\` appeared here until 2026-08-24 and matches no machine
+on record.
 
 The post-build copy into `python_ai/` fails with MSB3073 if any Python process
 holds the `.pyd` open — Windows will not overwrite a mapped DLL. That looks

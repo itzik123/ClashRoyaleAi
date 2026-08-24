@@ -20,12 +20,76 @@ Rules that apply to every item below:
 
 ---
 
+## 0. NEXT UP — Stage 2: the live teacher-as-agent loop
+
+**The engine half landed 2026-08-24** (`UPSTREAM_REQUESTS.md` item 22,
+APPLIED). **Only Python remains, and all of it is in `perception/`, which is
+freely editable.**
+
+Design: `docs/superpowers/specs/2026-08-24-live-teacher-play-design.md`.
+The measured deploy-time result behind it: `DECISIONS.md`, "2026-08-24: the
+live-mirror state setters". Stage 1 (a passive gap-logger) was **deliberately
+skipped** by the human once item 22 was approved.
+
+**Goal:** `UtilityTeacher` plays as US (team 0) in a real match. Perception
+reads the screen → mirror env → teacher proposes AND ranks by 5-10 s rollouts
+→ the best placement is tapped.
+
+**Two new modules, neither of which exists yet:**
+
+1. `perception/live/mirror.py` — `MirrorBuilder.build(snapshot) -> (env, MirrorGaps)`.
+   `reset()` → `inject(..., hp=frac*full, deploy_ticks=0)` per unit →
+   `set_elixir_for_team` both sides → `set_hand_for_team(0, hand)` **and CHECK
+   ITS BOOL** → `set_tower_hp` / `destroy_tower` per tower → `set_current_tick`.
+2. `perception/live/teacher_policy.py` — `TeacherPolicy.decide(gs, ready, now)
+   -> Decision`, holding ONE persistent `UtilityTeacher(deck, team=0)` (it
+   carries `self.pending` across decisions) while the ENV is rebuilt per
+   decision. Wired as `--policy teacher` beside `ScriptedPolicy`/`NeuralPolicy`.
+   **`--act` stays opt-in; dry run is the default.**
+
+**Do not add threads.** The pipeline is already three (producer in
+`live/pipeline.py`, decision loop at `DECISION_HZ = 1.0`, actuator with a
+depth-1 drop queue). `src/bindings.cpp` releases the GIL **nowhere**, so a
+rollout thread would BLOCK perception rather than run beside it, and a
+concurrent writer would score candidates against different worlds. Budget is
+not the issue: teacher **14.1 ms** + rebuild ~1 ms against a **1000 ms**
+period. "Streaming" = rebuild the mirror from the latest Snapshot at each
+decision — which also deletes `forecast.py`'s entity-removal gap for free.
+
+**The three joints where this goes silently wrong:**
+
+- **Ordering.** REUSE `forecast.py`'s `bodies_per_card` and its
+  group-by-`(card_sim_id, team)`. It **resets the env itself**, so every body
+  count must be resolved BEFORE the build's `reset()`. Getting it wrong gives
+  3x the Skeletons — which reads as "the teacher panics", not as a bug.
+- **Hand-slot alignment.** The teacher's `slot` indexes the mirror's hand; the
+  actuator taps the real one. Same number ONLY if `set_hand_for_team` returned
+  True. On refusal **drop the decision** — a placement against a misaligned
+  hand plays a card nobody chose.
+- **Cadence.** `pending_ticks -= COMBO_FOLLOWUP_DELAY_TICKS` (10) runs **once
+  per `act()` call**, so the teacher assumes exactly 1 decision/second. A
+  DROPPED decision advances the plan 1 s in teacher-time while 2 s of wall time
+  passed, skewing every combo gap. Log decision-interval drift. Any fix belongs
+  in a proposal — `python_ai/` is read-only.
+
+Bias throughout: **no-op over a wrong action.** A mistimed card is worse than a
+skipped decision.
+
+**Known limits, already measured — do not rediscover.** Unit-HP **recall
+0.34-0.56** at precision 0.98, so ~half of damaged units still arrive at full
+health. The opponent's hand is unobservable, so team 1's stays fabricated. The
+engine models **no double elixir** (`ELIXIR_REGEN_RATE` is constant), so late
+rollouts stay mispriced even with a correct clock — filed as its own item, NOT
+folded into 22.
+
+---
+
 ## 1. ✅ DONE (2026-08-20/21) — Utility Teacher evaluates MULTI-CARD COMBO placements, and can now afford them
 
 **Built, tested and measured.** `UtilityTeacher` candidates are now SEQUENCES of
 placements rather than single cells, and the teacher plans, commits to and
-executes two-card combos. Full write-up with every number is in CLAUDE.md,
-"2026-08-20 (later): the MULTI-CARD teacher".
+executes two-card combos. Full write-up with every number is in
+`DECISIONS.md`, "2026-08-20 (later): the MULTI-CARD teacher".
 
 The short version:
 
@@ -52,17 +116,20 @@ The short version:
   the C++ heuristic 1.000 and the old teacher 95-5), with `max_combos = 0` and
   `combo_families` as one-line off switches. **The lever is completion: 60% of
   chosen combos leave a first card down for a plan that never finishes.**
-- **A control failed and the reason is reusable:** `--seed` does not make
+- **A control failed and the reason is reusable:** `--seed` did not make
   `prove_combos.py` reproducible, because `ClashEnv::reset()`'s opening shuffle
-  is unseeded (engine request 7, still open). Within a run the snapshot pairing
-  is sound; ACROSS runs only the deltas are comparable, never the arm levels.
+  was unseeded. Within a run the snapshot pairing is sound; ACROSS runs only the
+  deltas were comparable, never the arm levels. **The engine half was fixed on
+  2026-08-21** — `ClashEnv::seed()` seeds both generators and re-deals — **but
+  `prove_combos.py` still never calls it**, so the caveat holds for the harness
+  exactly as it stands today. That migration is item 8 below.
 
 ### The economy follow-up: DONE 2026-08-21
 
 `play_margin` 0.05 -> 3.0, plus an overflow taper and a follow-up exemption.
 Combo share of plays 2.2% -> 14.4%, the old teacher loses ~94% head to head, and
 stage 5 still scores 1.000 against the C++ heuristic. Full write-up in
-CLAUDE.md, "2026-08-21: the teacher's ECONOMY".
+`DECISIONS.md`, "2026-08-21: the teacher's ECONOMY".
 
 **`w_pos` was the obvious lever and is MEASURED WRONG -- do not re-propose it.**
 Swept 20 -> 8 it raises elixir (1.83 -> 2.67) and drives combo share to
@@ -171,27 +238,78 @@ elixir advantage, not HP chipped. Long term these should anneal toward zero.
 
 ---
 
+## 8. ⚠ The engine seeding fix is APPLIED but UNVERIFIED, and one path is still unseedable
+
+Engine request 7 landed 2026-08-21 (`ClashEnv::seed`). **No Python consumer was
+migrated to it for three days**, so the benefit the item was argued from —
+reproducible runs and reproducible failures — had still not been collected.
+Two consumers were migrated on 2026-08-24; a third path cannot be, and needs an
+engine change. Full write-up: `perception/UPSTREAM_REQUESTS.md` item 23.
+
+**Applied 2026-08-24, in the read-only tree, at explicit instruction:**
+
+- `python_ai/envs/gym_wrapper.py` — `reset(seed=...)` accepted a seed and
+  dropped it. `super().reset(seed=seed)` seeds the *wrapper's* `np_random`,
+  which this env reads nowhere. Now forwards to `self.game.seed(seed)`, guarded
+  on `is not None` so a run does not collapse to one repeated episode.
+- `python_ai/eval/prove_combos.py` — five harnesses built each opening with
+  `CE(...).reset()` and never called `seed()`. All five now use
+  `.seed(args.seed + ENGINE_SEED_OFFSET + i)`; `seed()` ends in `reset()`, so
+  it is a drop-in. The stale module docstring was corrected and the old warning
+  kept as the acceptance criterion.
+
+**THE VERIFICATION IS THE PENDING PART, and it is the whole item.** Nothing was
+run. The machine this was done on has no Python 3.11, no venv and no built
+`.pyd`, so nothing importing the engine executes there at all — only
+`py_compile` under 3.13. Two checks settle it, and neither has been done:
+
+```python
+a, b = MicroRoyaleEnv(cfg), MicroRoyaleEnv(cfg)
+assert (a.reset(seed=7)[0] == b.reset(seed=7)[0]).all()
+```
+```bash
+# the 2026-08-20 control that failed, re-run: the OFF arms must now agree on
+# LEVEL, not merely on delta
+python_ai/venv/Scripts/python.exe -m python_ai.eval.prove_combos --seed 300 ...
+```
+
+Until both pass, **the old rule stands: across runs compare deltas only, never
+arm levels.** Item 1's caveat above is written that way on purpose.
+
+**Still unseedable, and it needs C++:** `sample_random_deck` draws from a
+function-local `static std::mt19937` seeded from `std::random_device`
+(`src/bindings.cpp:292`). `ClashEnv::seed` cannot reach it. So a run with
+`randomize_opp_deck=True` now has a reproducible hand, cycle and heuristic roll
+and a **still-random opponent deck** — the largest of the four variance
+sources. `UPSTREAM_REQUESTS.md` item 23C proposes an optional seed argument;
+additive, not gameplay-affecting, no checkpoint invalidated.
+
+---
+
 ## Engine requests still open (`perception/UPSTREAM_REQUESTS.md`)
 
 | # | Request | Status |
 |---|---|---|
-| 3 | King Tower has no activation condition | open, **already worked around — no change requested** |
-| 7 | The engine's RNG cannot be seeded | **open** — additive, not gameplay-affecting |
 | 8 | Fireball (689) misses the Musketeer kill (721 HP) by 32 | **open — a decision, not a defect** |
 
-**Item 7 got more expensive to live without on 2026-08-20.** A combo A/B
-control was designed around "same `--seed`, so the OFF arm should reproduce";
-it cannot, because the opening shuffle is unseeded, and the mis-specified
-control cost a 10-minute run and nearly produced a wrong conclusion about which
-combo family was responsible for a trend. See CLAUDE.md's multi-card section.
+**One row, and its own recommendation is to change nothing — so the effective
+count of open engine requests is zero.** Items 3 and 7 sat here as "open" until
+2026-08-24 and both had in fact landed. Recorded so neither is re-proposed:
 
-**Item 7 is worth doing and is cheap.** `env.snapshot()` (2026-08-11) removed it
-as the blocker on *paired* A/B tests, but not on **reproducible failures**. Live
-evidence from this session: `test_python_ai.py` skipped a different number of
-tests across two identical runs, because one of them
-(`pytest.skip("Cannon not in the opening hand this shuffle")`) depends on the
-unseeded `mt19937`. A test suite whose skip count is nondeterministic is exactly
-the cost this item describes.
+- **Item 3 — King Tower activation: APPLIED 2026-08-21.** `Tower` carries a
+  latching `awake` flag; the King constructs asleep, `findTarget` returns
+  `nullptr` while asleep, and it wakes permanently on any damage or on a
+  friendly Princess falling. Measured at 1268 tower damage awake vs 2219
+  dormant. `tests/core/test_king_activation.cpp`.
+- **Item 7 — engine seeding: DONE 2026-08-21.** `ClashEnv::seed(s)` seeds
+  `ClashEnv::rng` *and* `GameManager::rng` (an XOR offset keeps the two streams
+  from correlating) and then re-deals — `initializeDeck` runs inside
+  `GameManager::reset()`, so a seed applied after construction would otherwise
+  be a silent no-op. Bound as `seed`; eight test modules call it, and the
+  nondeterministic `pytest.skip("Cannon not in the opening hand this shuffle")`
+  this item was argued from no longer exists in the tree.
+  **The Python consumers were never migrated — that is item 8 above, and it is
+  a Python task, not an engine request.**
 
 **Item 8's recommendation is option 1 — change nothing.** 689 and 721 appear to
 be faithful tournament-standard values, and `perception/` exists specifically to

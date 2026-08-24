@@ -26,18 +26,33 @@ Every comparison shares one `env.snapshot()` opening, so within a run both arms
 get a bit-exact hand and lane draw. Unpaired, resolving 5 win-rate points needs
 ~1,568 episodes per arm; this project has the snapshot, so it pairs.
 
-**But `--seed` does NOT make a run reproducible, and expecting it to cost this
-harness a control.** `ClashEnv::reset()`'s opening-hand shuffle is unseeded
-(`UPSTREAM_REQUESTS.md` item 7, still open); `--seed` reaches only the teachers'
-own RNG, which at stage 5 is just the lane bias. So two invocations draw
-entirely different match populations whatever seed is passed.
+SEEDING -- CORRECTED 2026-08-24, AND THE OLD WARNING IS PRESERVED BELOW
+-----------------------------------------------------------------------
+Every opening is now built with `env.seed(args.seed + ENGINE_SEED_OFFSET + i)`
+rather than `env.reset()`. `ClashEnv::seed` seeds both engine generators and
+ends in `reset()`, so this is a drop-in that also fixes the opening hand and the
+cycle order. Two invocations at the same `--seed` should therefore draw the SAME
+match population.
+
+**This has NOT been verified by a run** -- see the acceptance test in
+`perception/UPSTREAM_REQUESTS.md` item 23. Until someone executes it, treat the
+paragraph below as still in force.
+
+**THE OLD WARNING, kept because it is what the change has to be checked
+against.** `--seed` did NOT make a run reproducible, and expecting it to cost
+this harness a control: `ClashEnv::reset()`'s opening-hand shuffle was unseeded
+(`UPSTREAM_REQUESTS.md` item 7, applied 2026-08-21 but never wired in here), and
+`--seed` reached only the teachers' own RNG, which at stage 5 is just the lane
+bias. So two invocations drew entirely different match populations whatever seed
+was passed.
 
 Measured: an ablation run designed to share seed 300 with an earlier run, and to
 be validated by its OFF arm reproducing that run's 0.537, instead reported
 0.475. Nothing was wrong with either run -- the expectation was wrong.
 
-**Across runs, compare DELTAS only, never arm levels.** Two runs happening to
-report the same OFF arm is coincidence, not reproducibility.
+**That run is now the acceptance test.** If two `--seed 300` invocations still
+disagree on the OFF arm LEVEL, this fix did not work and the rule below is still
+the operative one: across runs, compare DELTAS only, never arm levels.
 
 THE CHECKPOINT. The session brief asks for "ep 25202". That checkpoint no
 longer exists -- the 2026-08-19 cleanup kept only `model_weights.pth` (ep 7,063,
@@ -72,6 +87,14 @@ from python_ai.opponents.teacher import (  # noqa: E402
 CE = E.ClashRoyaleEnv
 HAND_SIZE = CE.HAND_SIZE
 MAX_STEPS = 400
+
+#: Offset separating the ENGINE's seed stream from the teachers'. The teachers
+#: already draw from `args.seed + i`; reusing that for the engine would move a
+#: teacher's lane bias and the hand it was dealt TOGETHER across openings. This
+#: is the same correlation `ClashEnv::seed` avoids internally with its
+#: `^ 0x9E3779B9` between the two engine generators, for the same reason.
+#: Any fixed value works -- it must only be stable, so a `--seed` reproduces.
+ENGINE_SEED_OFFSET = 104729
 
 #: The families `teacher._legal_combos` can emit. Named here so a run that
 #: emits a kind nobody expected shows up as a new column rather than silently
@@ -209,7 +232,9 @@ def run_usage(args):
         tele = Telemetry()
         for i in range(args.n):
             env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-            env.reset()
+            # seed() == a seeded reset(): it seeds both engine generators
+            # and re-deals. See ENGINE_SEED_OFFSET above.
+            env.seed(args.seed + ENGINE_SEED_OFFSET + i)
             play_match(env,
                        make_teacher(0, stage, args.seed + i, args.reserve),
                        make_teacher(1, stage, args.seed + 7777 + i, args.reserve),
@@ -241,7 +266,9 @@ def run_reserve_ab(args):
     teles = {v: Telemetry() for v in values}
     for i in range(args.n):
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        root.reset()
+        # seed() == a seeded reset(): it seeds both engine generators
+        # and re-deals. See ENGINE_SEED_OFFSET above.
+        root.seed(args.seed + ENGINE_SEED_OFFSET + i)
         base = root.snapshot()
         for v in values:
             side_scores = []
@@ -286,7 +313,9 @@ def run_combo_ab(args):
           f"openings, sides swapped\n")
     for i in range(args.n):
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        root.reset()
+        # seed() == a seeded reset(): it seeds both engine generators
+        # and re-deals. See ENGINE_SEED_OFFSET above.
+        root.seed(args.seed + ENGINE_SEED_OFFSET + i)
         base = root.snapshot()
         for combos, bucket, tele in ((0, off, tele_off), (None, on, tele_on)):
             side = []
@@ -377,7 +406,9 @@ def run_profile_sweep(args):
     roots = []
     for i in range(args.n):
         env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        env.reset()
+        # seed() == a seeded reset(): it seeds both engine generators
+        # and re-deals. See ENGINE_SEED_OFFSET above.
+        env.seed(args.seed + ENGINE_SEED_OFFSET + i)
         roots.append(env.snapshot())
 
     results = {}
@@ -478,7 +509,9 @@ def run_vs_net(args):
         scores = []
         for i in range(args.n):
             root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-            root.reset()
+            # seed() == a seeded reset(): it seeds both engine generators
+            # and re-deals. See ENGINE_SEED_OFFSET above.
+            root.seed(args.seed + ENGINE_SEED_OFFSET + i)
             base = root.snapshot()
             side = []
             for tteam in (0, 1):

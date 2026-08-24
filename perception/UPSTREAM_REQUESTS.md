@@ -269,7 +269,7 @@ invalidate the win-rate history of every checkpoint.
 
 The 2026-08-19 curriculum pivot replaced the opponent-elixir-multiplier ladder
 with a competence ladder at a symmetric 1.0x economy, on the hypothesis
-(CLAUDE.md, "The 1.5x Curriculum Overfitting Hypothesis") that a permanent
+(`DECISIONS.md`, "The 1.5x Curriculum Overfitting Hypothesis") that a permanent
 multiplier is what priced the win condition at zero. The falsifier was run with
 NO network on either side — both players are the deterministic
 `python_ai/opponents/teacher.py` — so the historical confound between "the environment
@@ -2630,3 +2630,192 @@ units will still arrive at full health.
 `perception/tests/test_engine_state_setters.py` (13 cases). The C++ suite
 cannot see pybind at all, and this repo has twice had a stale `.pyd` hide a
 landed setter for days with the C++ suite green throughout.
+
+---
+
+## 23. OPEN — item 7 seeded the engine and nothing was migrated to it; one RNG path is still unreachable from Python (proposed 2026-08-24)
+
+**Not a correctness bug. The unfinished half of item 7**, and the reason that
+item's stated benefit — *reproducible failures* — has still not been collected
+three days after it landed.
+
+> **SCOPE NOTE, because this file is for engine changes.** Two of the three
+> paths below are **Python**, in `python_ai/`, and by this repo's own division
+> of labour they belong in `BOT_REQUESTS.md` (training-side suggestions), not
+> here. They are written up here anyway because they are meaningless apart from
+> item 7 and splitting one finding across two files is how item 7's own status
+> went stale in the first place. **Only §C is an engine request.** §A and §B
+> were applied on 2026-08-24 at the human's explicit instruction and are
+> recorded, not requested.
+
+### What item 7 actually delivered
+
+Verified by reading, 2026-08-24:
+
+```cpp
+// include/core/ClashEnv.h
+void seed(unsigned int s) {
+    rng.seed(s);                      // HeuristicOpponent
+    heuristicOpponent.reset(rng);
+    game.seed(s ^ 0x9E3779B9u);       // opening hand + cycle order
+    reset();                          // initializeDeck runs INSIDE reset()
+}
+```
+```cpp
+// src/bindings.cpp:164
+.def("seed", &ClashEnv::seed, py::arg("seed"))
+```
+
+`seed()` ends in `reset()`, which makes it a **drop-in replacement for
+`reset()`** at any call site that wants determinism — that property is what
+makes §A and §B one-line changes rather than restructuring.
+
+### The three paths that bypassed it
+
+| # | path | reachable from Python? | status |
+|---|---|---|---|
+| A | `MicroRoyaleEnv.reset(seed=...)` | yes | **applied 2026-08-24** |
+| B | `prove_combos.py`'s five harnesses | yes | **applied 2026-08-24** |
+| C | `sample_random_deck`'s static generator | **no** | **this request** |
+
+---
+
+### A. `MicroRoyaleEnv.reset(seed=...)` accepted a seed and dropped it — APPLIED
+
+`python_ai/envs/gym_wrapper.py:333`, before:
+
+```python
+def reset(self, seed=None, options=None):
+    super().reset(seed=seed)          # seeds the WRAPPER's np_random only
+    ...
+    obs_list = self.game.reset()      # engine re-deals, unseeded
+```
+
+`gymnasium.Env.reset(seed=...)` seeds `self.np_random`. It cannot reach either
+engine generator, and `MicroRoyaleEnv` reads `self.np_random` nowhere. So the
+argument was accepted, had no effect on anything the env actually does, and
+**looked like it worked** — which is strictly worse than not accepting it,
+because the gymnasium contract says a caller may rely on it.
+
+`UPSTREAM_REQUESTS.md` item 7 named this exact trap ("`MicroRoyaleEnv.reset(seed=...)`
+looks like it should help but only forwards to `gymnasium.Env.reset`") at a time
+when there was no binding to forward to. There has been one since 2026-08-21.
+
+**Applied:** one guarded line forwarding to `self.game.seed(seed)`. Guarded on
+`seed is not None` because the gymnasium convention is that a seed is passed
+once and subsequent `reset()` calls continue the stream — seeding on every reset
+would make every episode of a run identical, which is a far worse failure than
+the one being fixed.
+
+### B. `prove_combos.py` never called it — APPLIED
+
+Five harnesses (`run_usage`, `run_reserve_ab`, `run_combo_ab`,
+`run_profile_sweep`, `run_vs_net`), each building its opening as
+`CE(...)` then `.reset()`, and `--seed` reaching only `make_teacher`'s own RNG.
+This is the harness whose mis-specified control "cost a 10-minute run and nearly
+produced a wrong conclusion about which combo family was responsible for a
+trend" — the single most-cited piece of evidence for item 7.
+
+**Applied:** `.reset()` → `.seed(args.seed + ENGINE_SEED_OFFSET + i)` at all
+five sites, plus the module docstring, which still told readers the shuffle was
+unseeded and that item 7 was open.
+
+**Why an offset rather than `args.seed + i`:** the teachers already draw from
+`args.seed + i`. Reusing it for the engine would move a teacher's lane bias and
+the hand it was dealt together across openings — the same correlation
+`ClashEnv::seed` avoids internally with its `^ 0x9E3779B9` between the two
+engine generators, for the same reason.
+
+---
+
+### C. THE ENGINE REQUEST — `sample_random_deck` cannot be seeded
+
+```cpp
+// src/bindings.cpp:292
+m.def("sample_random_deck", []() {
+    static std::mt19937 rng(std::random_device{}());
+    return sampleRandomDeck(rng);
+});
+```
+
+A **third** `std::mt19937`, function-local `static`, seeded from
+`std::random_device`, with no parameter and no seeding entry point. `ClashEnv::seed`
+cannot reach it — it is not a member of anything.
+
+**Why it matters, concretely.** `gym_wrapper.reset()` calls it on the
+`randomize_opp_deck` path:
+
+```python
+random_deck = list(clash_royale_env.sample_random_deck())
+self.game.set_opponent_deck(random_deck)
+```
+
+So **§A's fix is incomplete exactly where deck randomisation is on.** A run with
+`randomize_opp_deck=True` now has a reproducible opening hand, cycle order and
+heuristic roll, and a still-random *opponent deck* — which is the largest single
+source of episode-to-episode variance of the four. Phase 1's `random_opponent`
+and the scripted bots' randomised decks are the configurations this affects, and
+they are the ones TODO.md item 6 wants extended, not retired.
+
+The `static` also means the stream is **process-global and order-dependent**:
+two envs constructed in the same process interleave draws from one generator, so
+even seeding it would only be reproducible for a fixed construction order. Worth
+knowing before anyone calls this a one-liner.
+
+### Options
+
+1. **Add a module-level seeding function** — `m.def("seed_deck_sampler", ...)`
+   setting the same static. Smallest diff; leaves the process-global stream and
+   its order-dependence in place, so it buys reproducibility only for a fixed
+   call order. Adequate for a single-env eval harness, not obviously adequate
+   for `num_envs = 8`.
+2. **Give `sample_random_deck` an optional seed argument** — `sample_random_deck(seed=None)`,
+   constructing a local generator when one is passed and falling through to the
+   static otherwise. Every existing zero-argument call site keeps its current
+   behaviour bit-for-bit, and a caller that wants determinism gets a stream that
+   is not shared with anyone. **Recommended.** It is additive, it does not
+   change the meaning of any existing call, and it is the only option that
+   survives vectorised envs.
+3. **Move the generator into `ClashEnv`** and have `ClashEnv::seed` cover it.
+   Rejected: `sample_random_deck` is deliberately module-level because it is
+   called *before* a deck exists to construct an env with, and `train.py` /
+   `train_selfplay.py` call it outside any env at all.
+4. **Change nothing, and document it.** Defensible — deck randomisation exists
+   to create variety, and a caller who wants a reproducible deck can pass one
+   explicitly via `set_opponent_deck`. If this is the choice, §A's docstring
+   should say so, because "seeded" will otherwise be read as "reproducible".
+
+### Blast radius
+
+**Options 1 and 2 are additive and NOT gameplay-affecting.** No existing call
+site changes behaviour, no observation changes, no checkpoint and no win-rate
+history is invalidated. Option 2 touches one lambda in `src/bindings.cpp` and
+nothing else; `sampleRandomDeck` itself already takes an `std::mt19937&` and is
+unchanged.
+
+### What is NOT verified, and it is the whole verification section
+
+**Nothing below the reading level. No number in this item was measured, and
+none could be.** The machine this was written on has MSVC 2022 and WSL but
+**no Python 3.11, no `python_ai/venv`, no `perception/.venv` and no built
+`clash_royale_env.pyd`** — so nothing that imports the engine runs here at all.
+
+What was actually done: the three paths were read, `sub`-style exact-match edits
+were applied to §A and §B, and both files were confirmed to parse under
+Python 3.13. That is enough to claim the seed now *reaches* `ClashEnv::seed`,
+and it is **not** enough to claim any run is reproducible.
+
+**The acceptance test is the one item 7 already wrote** and it has never been
+run against §A or §B:
+
+```python
+a = MicroRoyaleEnv(cfg); b = MicroRoyaleEnv(cfg)
+oa, _ = a.reset(seed=7); ob, _ = b.reset(seed=7)
+assert (oa == ob).all()          # identical opening hand AND cycle order
+```
+
+plus, for §B, two `prove_combos.py --seed 300` invocations whose OFF arms
+report the **same level**, not merely the same delta — the check that failed in
+2026-08-20 and produced the evidence item 7 was argued from. Until someone with
+a 3.11 environment runs both, §A and §B are *plausible and unverified*, and this
+file should keep saying so.

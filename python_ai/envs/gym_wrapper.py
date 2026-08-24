@@ -332,6 +332,25 @@ class MicroRoyaleEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        # super().reset() seeds the WRAPPER's np_random, which this env reads
+        # NOWHERE -- so until this line existed the argument was accepted and
+        # silently dropped, which is worse than refusing it: gymnasium's
+        # contract says a caller may rely on it. ClashEnv::seed (2026-08-21)
+        # seeds BOTH engine generators (HeuristicOpponent, and the opening
+        # hand / cycle order) and ends in reset(), so it is a drop-in for the
+        # self.game.reset() below rather than an extra one.
+        #
+        # GUARDED on `is not None` deliberately: the gymnasium convention is
+        # that a seed is passed ONCE and later reset()s continue the stream.
+        # Seeding unconditionally would make every episode of a run identical
+        # -- a far worse failure than the one being fixed.
+        #
+        # NOT sufficient for reproducibility when randomize_opp_deck is True:
+        # the deck comes from clash_royale_env.sample_random_deck(), whose
+        # generator is a function-local static that nothing can seed. See
+        # perception/UPSTREAM_REQUESTS.md item 23, section C.
+        if seed is not None:
+            self.game.seed(int(seed))
         if self.randomize_opp_deck:
             # Correct-by-construction (not random.sample(get_all_card_ids(), 8)
             # + hope): that naive draw includes Champions/Evolutions, which
