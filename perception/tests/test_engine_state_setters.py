@@ -165,15 +165,32 @@ def test_injected_hp_changes_what_the_unit_can_actually_do(engine):
     A wounded Hog dies to the towers before it arrives; a full one takes a
     Princess Tower down. Reading `hp` back would only prove a field was
     written -- this proves the rollout the teacher scores actually differs.
-    """
-    full, wounded = _env(engine, seed=3), _env(engine, seed=3)
-    full.inject(15, 9.0, 20.0, 1, -1.0, 0)
-    wounded.inject(15, 9.0, 20.0, 1, 400.0, 0)
-    full.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, 140)
-    wounded.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, 140)
 
-    assert full.get_tower_damage_dealt(1) > 0
-    assert wounded.get_tower_damage_dealt(1) == 0
+    Scored as a MONOTONE LADDER rather than at one hand-picked hp. The single
+    point this used to test (400 hp) stopped separating the two arms on
+    2026-08-24 when the Hog went 1.6 -> 2.0 tiles/s: it now outruns the towers
+    and lands a hit it previously died before reaching. A ladder states the
+    property that is actually being claimed -- more health buys more damage --
+    so the next speed change moves the threshold instead of inverting the test.
+    """
+    def damage_at(hp):
+        env = _env(engine, seed=3)
+        env.inject(15, 9.0, 20.0, 1, hp, 0)
+        env.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, 140)
+        return env.get_tower_damage_dealt(1)
+
+    ladder = [damage_at(hp) for hp in (150.0, 400.0, 700.0, 1200.0)]
+
+    # a full-health Hog reaches the tower...
+    assert damage_at(-1.0) > 0
+    # ...and one wounded far enough dies on the way, which is the claim that
+    # injected hp reaches the simulation at all rather than being ignored.
+    assert ladder[0] == 0
+    # strictly increasing across the ladder: no plateau, so this cannot pass
+    # against a setter that quietly clamps every value to full health.
+    assert ladder == sorted(ladder), ladder
+    assert ladder[-1] > ladder[0]
+    assert len(set(ladder)) > 2, f"hp barely moves the outcome: {ladder}"
 
 
 def test_injected_hp_is_clamped_to_the_cards_own_full_health(engine):
@@ -232,15 +249,41 @@ def _deployed(engine, deploy_ticks):
 def test_the_deploy_subsidy_is_worth_a_whole_hog_hit_mid_push(engine):
     """Why the second matters, in the units the teacher is scored in.
 
-    Chosen inside the window where arrival decides the outcome. Outside it the
-    measurement saturates -- see the docstring above.
+    THE WINDOW IS DERIVED, NOT WRITTEN DOWN, and that is the whole lesson of
+    this test's history. It used a hardcoded 110 ticks, picked when the Hog
+    moved at 1.6 tiles/s. The 2026-08-24 speed rework took it to 2.0, both arms
+    landed the same number of hits inside 110 ticks, and the assertion became
+    `1268 > 1268` -- a working fix reported as inert, which is exactly the
+    saturating-control failure the sibling test above was written to avoid.
+
+    The damage difference is not monotone in the window: it oscillates between
+    zero and one hit with the Hog's attack cooldown, so ANY fixed tick count is
+    one balance change away from landing in a trough. Anchoring on the arrival
+    times removes the choice -- one tick before the un-deployed Hog arrives,
+    the deployed one has landed exactly one hit and the other none.
     """
+    default_arrival = _ticks_until_tower_damage(_deployed(engine, -1))
+    deployed_arrival = _ticks_until_tower_damage(_deployed(engine, 0))
+    assert default_arrival is not None and deployed_arrival is not None
+    assert deployed_arrival < default_arrival
+
+    # One hit's worth, read off the engine rather than restated: get_card_info
+    # does not expose damage, so the alternative would be a second copy of 317.
+    probe = _deployed(engine, 0)
+    probe.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, deployed_arrival)
+    one_hit = probe.get_tower_damage_dealt(1)
+    assert one_hit > 0
+
+    window = default_arrival - 1
     results = {}
     for deploy in (-1, 0):
         env = _deployed(engine, deploy)
-        env.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, 110)
+        env.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, window)
         results[deploy] = env.get_tower_damage_dealt(1)
-    assert results[0] > results[-1]
+
+    assert results[-1] == 0, "the window is past the un-deployed Hog's arrival"
+    assert results[0] == one_hit
+    assert results[0] - results[-1] == one_hit
 
 
 # --------------------------------------------------------------------------

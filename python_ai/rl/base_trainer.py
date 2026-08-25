@@ -55,7 +55,7 @@ from python_ai.rl.buffer import (
 )
 from python_ai.rl.checkpointing import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
-    save_historical_snapshot,
+    run_path, save_historical_snapshot, weights_path,
 )
 from python_ai.rl.config import PPOConfig
 from python_ai.rl.coverage import PLACEMENT_COVERAGE_COEF, placement_coverage_slots
@@ -94,8 +94,10 @@ class BaseTrainer:
 
     # -- what a subclass declares -------------------------------------------
     #: Live checkpoint (optimizer + training state). Resumed from.
-    weight_path: str = "model_weights.pth"
-    log_dir: str = "runs/clash_royale"
+    #: Both are ANCHORED, not cwd-relative -- `log_dir` especially, because
+    #: `setup_writer` shutil.rmtree's it on a non-resume start.
+    weight_path: str = weights_path("model_weights.pth")
+    log_dir: str = run_path("runs/clash_royale")
     #: Embedded in historical snapshot filenames; pipeline 2's age gate reads it.
     pipeline_name: str = "pipeline1"
     #: Console/replay prefix.

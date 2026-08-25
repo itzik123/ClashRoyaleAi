@@ -43,7 +43,7 @@ from python_ai.envs import gym_wrapper  # noqa: E402
 from python_ai.rewards.shaping import building_hp_end  # noqa: E402
 from python_ai.rl.base_trainer import BaseTrainer  # noqa: E402
 from python_ai.rl.checkpointing import (  # noqa: E402
-    STAGE_CHECKPOINT_DIR, save_stage_snapshot,
+    STAGE_CHECKPOINT_DIR, run_path, save_stage_snapshot, weights_path,
 )
 from python_ai.rl.config import PHASE1_ENTROPY, PPOConfig  # noqa: E402
 from python_ai.rl.curriculum import (  # noqa: E402
@@ -250,9 +250,14 @@ class Phase1Trainer(BaseTrainer):
         # real checkpoint. Both are redirected TOGETHER: a run writing scratch
         # weights into the live TensorBoard directory would silently interleave
         # two runs' curves and make both unreadable.
-        self.weight_path = os.environ.get("CLASH_WEIGHTS", "model_weights.pth")
-        self.log_dir = os.environ.get("CLASH_LOGDIR",
-                                      "runs/clash_royale_experiment")
+        # Anchored, never cwd-relative: the bare "model_weights.pth" this used
+        # to be resolved against os.getcwd(), so a run launched from the repo
+        # root started FRESH and one launched from python_ai/ RESUMED -- both
+        # silently. See rl/checkpointing.weights_path.
+        self.weight_path = weights_path(
+            os.environ.get("CLASH_WEIGHTS", "model_weights.pth"))
+        self.log_dir = run_path(
+            os.environ.get("CLASH_LOGDIR", "runs/clash_royale_experiment"))
         self.curriculum = CurriculumManager(
             entry_win_rate=PHASE2_ENTRY_WIN_RATE,
             min_stage_for_phase2=PHASE2_MIN_CURRICULUM_STAGE,

@@ -206,18 +206,33 @@ def test_the_forecast_hand_is_fiction(forecaster):
     assert len(hands) > 1, "the shuffle looks seeded -- re-read this test"
 
 
+# Giant's engine speed in tiles/second, derived from `include/core/CardStats.h`
+# and hardcoded here because none of the three constants behind it is bound to
+# Python -- CLAUDE.md's rule for exactly that case is "hardcoded with a comment
+# naming the header where not derivable".
+#
+#   SPEED_SLOW = 45 tiles/min * REAL_TILES_PER_MIN_TO_ENGINE (0.011045)
+#              = 0.497025 tiles/tick of raw stat
+#   * MOVEMENT_SPEED_SCALE (0.2) * 10 ticks/s = 0.994 tiles/s
+#
+# This value MOVED on 2026-08-24 (commit 4b31a42, "Speed tiers: the engine had
+# none, and 104 of 131 troops were wrong"). It was 0.6 before, from an ad-hoc
+# 0.3 literal; the Giant is the Slow tier and every Slow card now shares one
+# constant. Updating this line is the acknowledgement that troop speed changed.
+GIANT_TILES_PER_SECOND = 0.994
+
+
 def test_speed_is_measured_over_a_long_baseline(forecaster):
     """The observation is cell-quantised, so a short baseline carries ~+/-1
     tile regardless of duration. A first version used a flat 10 ticks and
     reported the Giant at 3.61 tiles/s against a true 3.0.
 
-    The expected value is now ~0.6, not ~3.0: `MOVEMENT_SPEED_SCALE` landed on
-    2026-08-07 after troop movement measured 4-5x the real game's. A Giant is
-    the Slow tier, 0.3 tiles/tick before scaling, so 0.3 * 0.2 * 10 = 0.6
-    tiles/s. Real-game Slow is ~0.75, and the remaining ~20% is the documented
-    residual of using one flat scale (see CardStats.h).
+    The tolerance is that quantisation allowance, not a fudge factor: the
+    measurement reads ~0.92 against the 0.994 the registry implies, and the
+    ~8% gap is the +/-1 tile the docstring on `measure_speed` describes.
     """
-    assert forecaster.measure_speed(GIANT) == pytest.approx(0.6, abs=0.15)
+    assert forecaster.measure_speed(GIANT) == pytest.approx(
+        GIANT_TILES_PER_SECOND, abs=0.15)
 
 
 def test_the_engine_moves_at_roughly_real_game_speed(forecaster):

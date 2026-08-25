@@ -564,28 +564,67 @@ seed(s)
 
 ## The training mechanism
 
+**Every checkpoint and log destination is ANCHORED, not cwd-relative (fixed
+2026-08-25).** Until then `train.py` read a bare `"model_weights.pth"`, and the
+checkpoints live in `python_ai/`, so **which directory you launched from decided
+whether a run resumed or started fresh** — silently, in both directions:
+
+```
+launched from the repo root  -> os.path.exists() False -> starts FRESH
+launched from python_ai/     -> os.path.exists() True  -> RESUMES
+```
+
+`rl/checkpointing.py` now owns the single resolution point: `weights_path()`
+anchors `.pth` files on `PACKAGE_DIR`, `run_path()` anchors `runs/`,
+`historical_checkpoints/` and `stage_checkpoints/` on `REPO_ROOT` — which is
+where each already physically sat, so nothing moved. An **absolute**
+`CLASH_WEIGHTS` / `CLASH_LOGDIR` is still honoured verbatim, because that
+override is what keeps an experiment arm off the live checkpoint.
+
+Two consequences worth knowing before you edit anything here:
+
+- **`chdir` is no longer test isolation.** The first suite run after the fix
+  wrote a random-init 20-step checkpoint straight into
+  `python_ai/model_weights.pth` and eight untrained snapshots into the real PFSP
+  pool. Tests now redirect through `CLASH_WEIGHTS` / explicit `directory=`
+  arguments, and `test_rl_base_trainer.py` carries an autouse tripwire that
+  fails loudly if anything writes the live checkpoint.
+- **`discover_historical_checkpoints(directory=...)`** exists for the same
+  reason, mirroring `save_historical_snapshot`'s long-standing `directory=`.
+
+Pinned by `python_ai/tests/test_checkpoint_paths.py`.
+
 Two sequential pipelines. `train.py` hands off by `subprocess.Popen`-ing
 `train_selfplay.py` (with `-u`, or the live diagnostics buffer and the log stays
 0 bytes) and exiting.
 
 ```
-train.py            phase 1  "mirror"           vs the C++ HeuristicOpponent
+train.py            phase 1  "mirror"           vs the UtilityTeacher
        |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60)   <-- gates THIS step only
+       |  AND curriculum stage >= PHASE2_MIN_CURRICULUM_STAGE (4)
        v
                     phase 1  "random_opponent"  vs randomised decks
-       |  episodes_completed >= PHASE2_TOTAL_EPISODE_CAP (40,000)
+       |  RANDOM_OPPONENT_EPISODE_BUDGET (5,000) episodes IN THIS PHASE
        v
 train_selfplay.py   phase 2  PFSP league        vs frozen snapshots +
                                                4 scripted bots + exploiters
 ```
 
 **`PHASE2_ENTRY_WIN_RATE` does not gate the pipeline handoff**, despite its
-name. It gates `mirror` → `random_opponent` (`train.py:1299`). The handoff to
-pipeline 2 is a plain episode count (`train.py:1035`) with no win-rate
-condition at all — phase 2 has no natural stopping point, so the cap is what
-ends pipeline 1. An earlier version of this diagram put the 0.60 gate on the
-handoff arrow and cost a live run two wrong predictions about when it would
-transition.
+name. It gates `mirror` → `random_opponent`, together with a stage floor the
+diagram used to omit: **both** the win rate and `PHASE2_MIN_CURRICULUM_STAGE`
+must be satisfied. An earlier version put the 0.60 gate on the handoff arrow
+and cost a live run two wrong predictions about when it would transition.
+
+**`PHASE2_TOTAL_EPISODE_CAP` no longer exists** (corrected 2026-08-25; the
+constant was replaced on 2026-08-09 and this diagram kept its name and its
+40,000 for sixteen days). A cap on TOTAL episodes was the wrong quantity: how
+long the agent spent against random decks depended entirely on how fast it
+cleared the mirror curriculum — clear it in 3k episodes and you got 37k of
+random decks, take 35k and you got 5k. It is now
+`RANDOM_OPPONENT_EPISODE_BUDGET = 5000`, a budget measured **inside** the
+phase, so the handoff is 5,000 episodes after entering `random_opponent`
+whenever that happens.
 
 In `random_opponent` the console prints **two** stage numbers, `4/2`. The
 first is the frozen mirror stage; the second is the CURRENT random deck's own
@@ -685,8 +724,27 @@ guaranteed-zero outcome, i.e. safe.
 
 ### Curriculum (both phases run the same ladder)
 
-Six stages, opponent elixir multiplier `1.0 → 1.5` in 0.1 steps, gated on
-**raw** win rate ≥ 0.80 over 100 episodes.
+Six stages, gated on **raw** win rate ≥ 0.80 over 100 episodes.
+
+**The rungs are the TEACHER'S LOOKAHEAD, not an elixir handicap** (corrected
+2026-08-25; this section still described the retired multiplier ladder — the
+pivot itself is in `DECISIONS.md`, "2026-08-19: the curriculum pivot"). Read
+`TEACHER_STAGES` in `opponents/teacher.py` for the live values:
+
+| stage | horizon | epsilon | k_cells | max_combos | reactive |
+|---|---|---|---|---|---|
+| 0 | 0 t (rules only) | 0.30 | 1 | 0 | no |
+| 1 | 10 t (1 s) | 0.15 | 1 | 0 | no |
+| 2 | 30 t (3 s) | 0.10 | 2 | 2 | no |
+| 3 | 50 t (5 s) | 0.05 | 2 | 3 | no |
+| 4 | 70 t (7 s) | 0.02 | 3 | 4 | no |
+| 5 | 100 t (10 s) | 0.00 | 3 | 4 | **yes** |
+
+Stage 5 has `win_rate_threshold = None` — there is no further auto-advance, so
+the ladder has no natural end and a stopping rule has to be chosen by hand.
+
+The paragraph below is the history of the ladder this REPLACED, kept because it
+is why difficulty is lookahead rather than economy.
 
 Gradual steps replaced an old `1.0 → 1.75 → 3.0` jump where the agent went
 0-for-2000+ episodes at 1.75x with zero improvement. The gate was 0.90 and that
@@ -708,9 +766,15 @@ ladder never revisits, so nothing prevented catastrophic forgetting.
 
 Pool members:
 
-- **Historical snapshots**, saved every 5,000 episodes. Phase-2 snapshots
-  younger than `MIN_OPPONENT_AGE_EPISODES = 15000` are excluded — otherwise the
-  pool fills with coin-flip mirrors of the current trainee.
+- **Historical snapshots**, saved every **2,000** episodes
+  (`HISTORICAL_CHECKPOINT_INTERVAL_EPISODES`). Phase-2 snapshots younger than
+  `MIN_OPPONENT_AGE_EPISODES = 6000` are excluded — otherwise the pool fills
+  with coin-flip mirrors of the current trainee. **Both numbers were stale here
+  (5,000 and 15,000); corrected 2026-08-25.** They are COUPLED — the age gate
+  is kept at exactly 3x the interval, and `checkpointing.py` says so — so
+  changing one alone silently changes which snapshots are eligible. The
+  interval was re-denominated 5,000 → 2,000 on 2026-08-09 because the
+  2026-08-07 speed fix made one episode carry ~2.2x more transitions.
 - **4 scripted bots** — Rusher / Defender / Cycler / Counter, permanent members.
   Defender+Counter get `DEFENSIVE_SCRIPTED_MIN_WEIGHT = 0.8`, overriding PFSP,
   because PFSP's own criterion works *against* seeing them: mastering them
@@ -922,8 +986,26 @@ and `model_weights_selfplay.pth` resumed normally.
 | | ep/hour | updates/hour |
 |---|---|---|
 | before the batched update | 1,167 | 36 |
-| **current, phase 1** | **2,873** | **92** |
-| **current, phase 2** | **4,185** | — |
+| historical, phase 1 (pre 2026-08-07) | 2,873 | 92 |
+| historical, phase 2 (pre 2026-08-07) | 4,185 | — |
+| historical, phase 1 (post speed fix) | 1,301 | — |
+| **MEASURED 2026-08-25, phase 1 stage 0** | **943** | **77** |
+
+**Use the 943 / 77 row to size a run.** Measured directly after the 2026-08-24
+speed-tier rework on a fresh random-init policy: 420 s, `num_envs = 8`, stage 0,
+110 episodes and 9 updates — **3.82 s/episode, 46.7 s/update**. Every row above
+it describes an engine that no longer exists.
+
+Two things to read correctly. **Episodes/hour fell 3x against the 2,873 and only
+0.84x against the updates figure**, which is the same decoupling this file
+already records for the 2026-08-07 fix: a longer match carries proportionally
+more transitions, so gradient steps per hour is the quantity that is roughly
+conserved and the one to budget in. And this row is **stage 0** — the teacher
+is rules-only there (0.62 ms/decision) against 12.4 ms at stage 5, and stronger
+opposition also lengthens matches, so expect ep/hour to FALL as the curriculum
+advances.
+
+At this rate: **10k episodes ≈ 10.6 h, 40k ≈ 42 h, 60k ≈ 64 h.**
 
 Phase 2 is the faster of the two and the ~2.4 h it takes to cover 10,000
 episodes is the number to divide by when sizing anything against it — assuming
