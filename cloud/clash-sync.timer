@@ -1,0 +1,14 @@
+[Unit]
+Description=Mirror ClashRoyaleEnv checkpoints every 10 minutes
+# If the sync unit is failing, the timer keeps firing anyway -- a transient
+# storage outage should not permanently stop the mirror.
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+# Never let two rclone runs overlap on a slow link.
+AccuracySec=30s
+Unit=clash-sync.service
+
+[Install]
+WantedBy=timers.target

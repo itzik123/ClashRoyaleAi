@@ -1,0 +1,63 @@
+[Unit]
+Description=ClashRoyaleEnv PPO training (pipeline 1 -> pipeline 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/clash
+
+# --- MANDATORY, and the single easiest throughput mistake to make ----------
+# Nothing in the training path calls torch.set_num_threads -- it is set in 16
+# eval harnesses and ZERO trainers. Phase 2 runs a frozen MicroRoyaleNet inside
+# EVERY AsyncVectorEnv worker (envs/selfplay_env.py:407), so on a 30-vCPU box
+# with 28 workers the default is ~28 x 30 = 840 intraop threads over 30 cores.
+# AsyncVectorEnv children inherit the environment, so setting it here covers
+# every worker with no code change.
+Environment="OMP_NUM_THREADS=1"
+Environment="MKL_NUM_THREADS=1"
+Environment="OPENBLAS_NUM_THREADS=1"
+
+# num_envs = physical cores - 2. Read `lscpu` on the box; vCPU is not cores.
+Environment="CLASH_NUM_ENVS=28"
+
+# A STABLE run id. base_trainer.py:220 wipes the TensorBoard directory whenever
+# load_checkpoint() returns False, so without a fixed id every restart would
+# open a fresh W&B run and fragment the charts.
+Environment="WANDB_PROJECT=clash-royale-rl"
+Environment="WANDB_RUN_ID=clash-a10-001"
+
+# WANDB_API_KEY and any rclone secrets belong here, not in this file.
+#
+# DELIBERATELY LAST. systemd applies Environment= and EnvironmentFile= in the
+# order they appear, so anything set in .env OVERRIDES every default above it.
+# That is what makes .env the single place to retune a box without editing this
+# unit -- e.g. CLASH_NUM_ENVS=16 to run inside the current OUTCOME_WINDOW.
+# Moving this line above the Environment= block silently inverts that.
+EnvironmentFile=-/opt/clash/.env
+
+ExecStart=/opt/clash/cloud/supervise.sh
+
+Restart=always
+RestartSec=30
+
+# --- DO NOT REMOVE --------------------------------------------------------
+# train.py's launch_pipeline2() Popen()s train_selfplay.py and then returns, so
+# train.py exits 0 while phase 2 is still starting. The default
+# KillMode=control-group would reap that child the instant the main process
+# exits -- phase 2 dies silently, exit code 0, nothing in any log.
+# cloud/supervise.sh re-adopts the survivor; this is what keeps it alive long
+# enough to be re-adopted.
+KillMode=process
+
+# 28 worker processes plus the main process. The default (usually 4096 on
+# Ubuntu) is enough, but the failure mode if it is not is an opaque
+# BlockingIOError from multiprocessing rather than anything naming a limit.
+LimitNOFILE=65536
+
+StandardOutput=append:/var/log/clash/train.log
+StandardError=append:/var/log/clash/train.err
+
+[Install]
+WantedBy=multi-user.target

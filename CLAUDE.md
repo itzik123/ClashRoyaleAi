@@ -900,6 +900,93 @@ when `perception/` can emit real human demonstrations the only new variable is
 the data. **The recordings now exist** (8 matches in
 `perception/assets/recordings/`), so the extraction step is the live blocker.
 
+### Scaling the training loop — what `num_envs` actually changes (2026-08-25)
+
+Written when phase 1 and 2 were moved to a rented Linux GPU box. `cloud/` holds
+the deployment scaffolding; `cloud/README.md` has the provider arithmetic. The
+three items that need a `python_ai/` change are **`TODO.md` item 9**.
+
+**`num_envs` does not shrink the bottleneck; it enlarges it.** 87% of wall clock
+is the PPO update. Optimizer steps per rollout are `num_minibatches ×
+ppo_epochs` — **a constant 32, independent of `num_envs`**:
+
+```
+segments_per_rollout = (update_timestep/bptt_chunk) × N = 20N
+rows_per_minibatch   = (20N / num_minibatches) × bptt_chunk = 62.5N
+optimizer_steps/roll = num_minibatches × ppo_epochs = 32     <- CONSTANT in N
+```
+
+| N | rows/minibatch | opt steps/rollout | transitions/rollout | buffer obs |
+|---|---|---|---|---|
+| 8 | 500 | 32 | 4,000 | 0.22 GB |
+| 32 | 2,000 | 32 | 16,000 | 0.87 GB |
+| 128 | 8,000 | 32 | 64,000 | 3.48 GB |
+
+So raising `N` alone buys samples while holding gradient steps flat — the exact
+opposite of what this file says to budget in. **`num_minibatches` is the lever,
+and nobody adjusts it.** `cloud/launch.py:scaled_config` picks the exact divisor
+of the segment count that holds rows/minibatch nearest 1000, which makes
+optimizer steps scale *with* N instead: 42 at N=28, 64 at N=64.
+
+Learning rate then scales on the **minibatch**, not on N — and since the
+minibatch is held constant, so is the LR: `3e-4 → 3.93e-4` for every N ≥ 14.
+**√ scaling, not linear** (linear is an SGD result; Adam's per-coordinate
+normalization already absorbs the magnitude change, leaving noise ∝ 1/√B),
+discounted 0.75 because `eps_clip` is a *hard* trust region — overshoot and
+every step simply clips, which reads as ClipFrac saturating while the effective
+step size collapses. **`gamma`, `gae_lambda`, `update_timestep` and
+`bptt_chunk` do not change**: the first two are per-trajectory temporal
+parameters, the last two are the truncated-BPTT structure, and none of the four
+has anything to do with how many trajectories run in parallel.
+
+**`OUTCOME_WINDOW = 100` is denominated in EPISODES and the gate's real evidence
+is measured in UPDATES.** At the measured 12.24 episodes per update (943 ep/h ÷
+77 upd/h) the two diverge as `N` grows:
+
+| N | episodes/update | window = updates of evidence |
+|---|---|---|
+| 8 | 12.2 | 8.2 |
+| 28 | 42.8 | 2.3 |
+| 64 | 98 | 1.0 |
+| 128 | 196 | **0.5** |
+
+Past ~N=16 the stage gate reads a win rate off roughly one policy update, then
+`advance()` calls `outcome_history.clear()`. The ladder climbs 0→4 on sampling
+noise, lands at stage 5 against a teacher it cannot beat, and the run reads as
+fast convergence into a flatline. `cloud/launch.py` **refuses to start** below 4
+updates of evidence rather than let this happen quietly. `EpisodeMetrics(short=50,
+window=100, long_window=500)` has the same denomination problem.
+
+**`OMP_NUM_THREADS=1` is mandatory on a many-core box and nothing sets it.**
+`torch.set_num_threads` appears in 16 eval harnesses and **zero** trainers. Phase
+2 runs a frozen `MicroRoyaleNet` inside *every* `AsyncVectorEnv` worker
+(`envs/selfplay_env.py:407`), so 28 workers × ~30 default intraop threads is 840
+threads over 30 cores. Workers inherit the environment, so exporting it before
+launch fixes it with no code change.
+
+**The fork ordering in `setup()` is load-bearing.** `build_envs()` runs at
+`rl/base_trainer.py:196`, *before* `.to(self.device)` at 197, so on Linux the
+`fork` precedes CUDA context creation. Reorder those two lines and forked
+workers inherit a poisoned CUDA context — phase 2's worker-side inference then
+fails in a way that looks like corrupted weights.
+
+**Two hazards live in the phase handoff.** `train.py:497` `Popen`s
+`train_selfplay.py` and then returns, so `train.py` exits 0 with a live child:
+under systemd's default `KillMode=control-group` that exit reaps phase 2, giving
+a dead run with a clean exit code and nothing in any log. And
+`train_selfplay.py:483` constructs `Phase2Trainer()` with **no cfg**, so the
+auto-spawned child runs at the environment's `num_envs` with
+`num_minibatches`/`lr`/`ppo_epochs` at their N=8 defaults. `cloud/supervise.sh`
+works around both; `TODO.md` item 9 has the one-line fix that removes them.
+
+**The engine is portable and this was verified, not assumed:** `include/` and
+`src/` have **zero** hits for `windows.h`, `__declspec`, `_MSC_VER`, `WIN32`,
+`#pragma warning`, `__forceinline` or `intrin.h`. The only Linux blocker was
+`CMakeLists.txt` hardcoding the `.pyd` suffix on the POST_BUILD copy — CPython
+on Linux accepts only `EXTENSION_SUFFIXES` (`.so` and friends), so the build
+reported success and the import failed with `ModuleNotFoundError`. Fixed
+platform-conditionally; **the Windows build is byte-identical to before**.
+
 ---
 
 ## How the learning mechanism got here — moved to `DECISIONS.md`
@@ -1656,6 +1743,19 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
                        a defender says nothing about navigation.
 CLAUDE.md            This file: the knowledge base.
 TODO.md              The single, verified list of pending work.
+cloud/               Deployment scaffolding for running the two pipelines on a
+                     rented Linux GPU box. Imported by nothing in the training
+                     path, and edits nothing in python_ai/ -- both trainers
+                     already accept cfg=, which is what makes the scaled
+                     hyperparameters reachable from outside the read-only tree.
+  launch.py            scaled_config(num_envs) + the phase selector + W&B
+                       mirroring via sync_tensorboard. REFUSES to start when
+                       OUTCOME_WINDOW is too narrow for the chosen num_envs.
+  supervise.sh         Works around the two phase-handoff hazards (see
+                       "Scaling the training loop"). TODO.md item 9 deletes it.
+  bootstrap.sh         apt + venv + build_linux/ + all four verification gates.
+  clash*.service/timer systemd units; the training one sets OMP_NUM_THREADS=1
+                       and KillMode=process, both load-bearing.
 perception/          Screen -> placement events -> simulator as estimator.
                      Self-contained: own venv, own requirements.txt.
 web/viewer.html      Replay viewer.
@@ -1677,12 +1777,14 @@ perception/.venv/Scripts/python.exe -m pytest perception/tests -q
 354 tests (353 pass, 1 skipped), none requiring an emulator — they run against
 frozen replay fixtures, a synthetic camera, or video generated at test time.
 
-The Python suite is **369 collected (367 pass, 2 skipped)** as of 2026-08-21,
-re-run against the rebuilt `.pyd` after the simulator audit's engine changes. It
-was **349 collected (347-348 pass, 1-2 skipped)** since the
-multi-card teacher landed on 2026-08-20, and was **312** after the 2026-08-20
-restructuring, up from 90; the skip count varies run to run because two cases
-depend on the unseeded opening-hand shuffle. Run it with:
+The Python suite is **415 collected (413 pass, 2 skipped)**, measured
+2026-08-25 on a fully-equipped box (111 s). It read **369 collected (367 pass,
+2 skipped)** on 2026-08-21 after the simulator audit's engine changes,
+**349** since the multi-card teacher landed on 2026-08-20, and **312** after
+the 2026-08-20 restructuring, up from 90. As with the C++ suite, treat the
+**shape** as the invariant and not the number: the skip count is 1-2 run to run
+because two cases depend on the unseeded opening-hand shuffle, and anything
+that FAILS is real. Run it with:
 
 ```bash
 python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q

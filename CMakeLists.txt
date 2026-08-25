@@ -29,10 +29,29 @@ FetchContent_MakeAvailable(pybind11)
 pybind11_add_module(clash_royale_env src/bindings.cpp)
 target_include_directories(clash_royale_env PRIVATE include/core include/entities include/rendering)
 
-# Automatically copy and rename the generated .pyd file to the python_ai directory after compiling
+# Automatically copy the generated extension module into python_ai/ after
+# compiling, under a name the host platform's importer will actually accept.
+#
+# THE NAME IS NOT COSMETIC. This used to hardcode `clash_royale_env.pyd`, which
+# is correct on Windows and silently fatal everywhere else: CPython on Linux
+# accepts only the suffixes in importlib.machinery.EXTENSION_SUFFIXES --
+# `.cpython-311-x86_64-linux-gnu.so`, `.abi3.so`, `.so` -- and `.pyd` is not
+# among them. The build reports SUCCESS and `import clash_royale_env` then fails
+# with ModuleNotFoundError, which reads exactly like a broken compile and is
+# purely a filename.
+#
+# On Windows the result is byte-identical to the previous behaviour: pybind11
+# already names the target file `clash_royale_env.pyd` there, so the explicit
+# WIN32 branch below is what it always was, just no longer hardcoded.
+if (WIN32)
+    set(CRE_EXT_NAME clash_royale_env.pyd)
+else()
+    set(CRE_EXT_NAME $<TARGET_FILE_NAME:clash_royale_env>)
+endif()
+
 add_custom_command(TARGET clash_royale_env POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:clash_royale_env> ${CMAKE_SOURCE_DIR}/python_ai/clash_royale_env.pyd
-    COMMENT "Copying compiled bindings to python_ai/clash_royale_env.pyd..."
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:clash_royale_env> ${CMAKE_SOURCE_DIR}/python_ai/${CRE_EXT_NAME}
+    COMMENT "Copying compiled bindings to python_ai/${CRE_EXT_NAME}..."
 )
 
 # Unit tests (Catch2), same FetchContent pattern as pybind11 above.

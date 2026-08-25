@@ -305,6 +305,110 @@ control, order-independence, and no-seed compatibility.
 
 ---
 
+## 9. Three `python_ai/` changes the cloud migration needs (2026-08-25)
+
+The deployment scaffolding is written and verified in `cloud/` — it deliberately
+touches nothing in `python_ai/`, because both trainers already accept `cfg=`.
+These three cannot be reached from out there. **A. is a blocker; B. and C. are
+worked around today.**
+
+Everything here is training-mechanism only. **No engine change, so nothing goes
+to `perception/UPSTREAM_REQUESTS.md`** — that file is scoped to simulator
+proposals and was deliberately worked to empty on 2026-08-24.
+
+### A. `OUTCOME_WINDOW` is denominated in episodes; the gate's evidence is updates
+
+**This is the one that silently corrupts a run.** `rl/curriculum.py`'s
+`OUTCOME_WINDOW = 100` is a count of EPISODES, and at the measured 12.24
+episodes per update (943 ep/h ÷ 77 upd/h) the evidence behind a stage gate
+shrinks as `num_envs` grows:
+
+| `num_envs` | episodes/update | updates of evidence |
+|---|---|---|
+| 8 (baseline) | 12.2 | 8.2 |
+| 28 | 42.8 | 2.3 |
+| 64 | 98 | 1.0 |
+| 128 | 196 | **0.5** |
+
+Past ~16 the gate reads a win rate off about one policy update and then
+`advance()` calls `outcome_history.clear()`. The ladder climbs 0→4 on sampling
+noise, lands at stage 5 against a teacher it cannot beat, and the whole thing
+reads as fast convergence into a flatline — the failure looks like *success*
+for the first few hours, which is what makes it dangerous.
+
+There is a second-order effect on top: with N envs stepping in lockstep, up to N
+episodes finish between updates, so the window fills with **correlated** episodes
+(same policy, same stage) and the effective sample size is below the nominal
+count even at a fixed window.
+
+Proposed:
+
+```python
+#: Scaled so the gate keeps ~8 updates of evidence at any num_envs, which is
+#: what 100 bought at the num_envs=8 baseline.
+OUTCOME_WINDOW = 100 * max(1, num_envs // 8)
+```
+
+`EpisodeMetrics(short=50, window=100, long_window=500)` in
+`rl/episode_metrics.py` has the same denomination problem and should move with
+it. `PHASE2_ENTRY_WIN_RATE`'s mirror→random gate reads the same window.
+
+**Not gameplay-affecting** — it changes when the curriculum advances, not how
+the game is simulated, so no checkpoint is invalidated. It *does* change the
+pace of a phase-1 run, so a win-rate curve either side of it is not directly
+comparable at matched episodes.
+
+Until this lands, `cloud/launch.py` **refuses to start** phase 1 below 4 updates
+of evidence (override: `CLASH_ALLOW_NARROW_WINDOW=1`). So the recommended
+`num_envs=28` will not run until someone makes this decision, deliberately.
+
+### B. The phase handoff orphans phase 2 (`Popen` → `os.execv`)
+
+`train.py:497`'s `launch_pipeline2()` does `subprocess.Popen([sys.executable,
+"-u", train_selfplay.py])` and then returns, so `train.py` exits 0 with a live
+child. Two consequences, both only visible off a dev box:
+
+- **systemd reaps it.** The default `KillMode=control-group` tears down the
+  cgroup when the main process exits, killing phase 2 seconds after it starts.
+  Clean exit code, nothing in any log. `cloud/clash.service` sets
+  `KillMode=process` and `cloud/supervise.sh` re-adopts the survivor.
+- **The child gets the wrong config.** `train_selfplay.py:483` constructs
+  `Phase2Trainer()` with no cfg, so it inherits `CLASH_NUM_ENVS` but keeps
+  `num_minibatches`/`lr`/`ppo_epochs` at their N=8 defaults — the large-batch
+  regime item A's arithmetic exists to avoid. `supervise.sh` retires it and
+  relaunches through `cloud/launch.py`.
+
+Replacing the `Popen` with `os.execv` makes phase 2 *become* the same PID:
+supervision, log attachment and restart semantics all become correct for free,
+and most of `supervise.sh` can be deleted. It also makes the handoff honest —
+pipeline 1 is finished at that point, so there is nothing for the parent to do.
+
+The one thing to check before making it: `launch_pipeline2()` currently opens
+`training_selfplay_pfsp.log` / `_err.log` and passes them as the child's stdout
+and stderr. `os.execv` keeps the caller's fds, so that redirection has to be
+reproduced (`os.dup2` before the exec) or deliberately dropped in favour of the
+supervisor's own logging. **Do not drop it silently** — the file's own docstring
+records that `-u` exists because a buffered handoff log is invisible for a long
+stretch, and that reasoning applies to the redirect too.
+
+Behaviour-preserving on a dev box, where nothing supervises the process group.
+
+### C. Nothing in the training path sets `torch.set_num_threads`
+
+It is set in 16 `eval/` harnesses and **zero** trainers. On 12 threads that is
+merely wasteful; on a 30-vCPU box with 28 workers it is ~840 intraop threads
+over 30 cores, because phase 2 runs a frozen `MicroRoyaleNet` inside *every*
+`AsyncVectorEnv` worker (`envs/selfplay_env.py:407`).
+
+**Already worked around with zero code change** — `cloud/clash.service` exports
+`OMP_NUM_THREADS=1` and workers inherit the environment. Recorded here because
+the workaround lives outside `python_ai/` and the next person to run a many-core
+job without `cloud/` will hit it again. The in-tree fix would be
+`torch.set_num_threads(1)` in the env worker's constructor plus an explicit
+count for the main process.
+
+---
+
 ## Engine requests — the backlog is CLOSED (2026-08-24)
 
 `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` were worked

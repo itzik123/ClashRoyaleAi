@@ -1,0 +1,30 @@
+[Unit]
+Description=Mirror ClashRoyaleEnv checkpoints to object storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/clash
+
+# The rclone remote name, as configured by `rclone config`. Override in
+# /opt/clash/.env (e.g. CLASH_RCLONE_REMOTE=r2) without editing this file.
+Environment="CLASH_RCLONE_REMOTE=b2"
+EnvironmentFile=-/opt/clash/.env
+
+# Three destinations, kept separate because rl/checkpointing.py keeps them
+# separate: the live .pth files sit in python_ai/ (PACKAGE_DIR) while the PFSP
+# pool and the stage snapshots are anchored on REPO_ROOT. All three are stable
+# regardless of launch directory as of commit 15a3509.
+#
+# Type=oneshot is the one service type where multiple ExecStart lines are legal.
+# They run in order; a failure stops the rest and marks the unit failed, which
+# is what you want -- a silently half-synced checkpoint set is worse than a
+# visible failure in `systemctl status clash-sync`.
+ExecStart=/usr/bin/rclone sync /opt/clash/python_ai ${CLASH_RCLONE_REMOTE}:clash/python_ai --include "*.pth" --exclude "venv/**" --exclude "__pycache__/**" --transfers 4 --checkers 8 --stats-one-line
+ExecStart=/usr/bin/rclone sync /opt/clash/historical_checkpoints ${CLASH_RCLONE_REMOTE}:clash/historical_checkpoints --transfers 4 --stats-one-line
+ExecStart=/usr/bin/rclone sync /opt/clash/stage_checkpoints ${CLASH_RCLONE_REMOTE}:clash/stage_checkpoints --transfers 4 --stats-one-line
+
+# Deliberately NOT ordered before/after clash.service and deliberately not a
+# dependency of it: a storage outage must never be able to stop training.

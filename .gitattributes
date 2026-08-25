@@ -61,3 +61,18 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# Linux deployment files (cloud/) MUST stay LF, whatever core.autocrlf says.
+#
+# core.autocrlf=true on the Windows dev boxes rewrites the working tree to CRLF
+# on checkout. That is harmless for files that only ever run on Windows and
+# fatal for these: a shell script with CRLF line endings fails on Linux as
+#     /usr/bin/env: 'bash\r': No such file or directory
+# which names neither the file nor the real cause, and a systemd unit with CRLF
+# silently mis-parses its directives.
+###############################################################################
+*.sh          text eol=lf
+*.service     text eol=lf
+*.timer       text eol=lf
+cloud/**      text eol=lf
