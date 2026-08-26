@@ -17,7 +17,6 @@ and synchronizing a growing stats dict across them every episode would add real
 complexity for little benefit at only 8 workers. Each worker converges its own
 reasonable local estimate, as in any decentralized-actor setup.
 """
-import random
 
 import gymnasium as gym
 import numpy as np
@@ -186,7 +185,26 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # scenario in lockstep. scenarios_enabled=False (used by the replay
         # env) keeps replays representative of full, un-engineered games.
         self.scenarios_enabled = env_config.get("scenarios_enabled", True)
-        self.scenario_rng = np.random.default_rng()
+        #: THE env's only stochastic source: scenario injection, the attacking
+        #: lane, and the PFSP opponent draw all read this one generator.
+        #:
+        #: They used to be three separate uncontrolled streams -- a bare
+        #: `default_rng()`, the stdlib global via `random.choice`, and the numpy
+        #: global via `np.random.choice` -- which is what made pipeline 2
+        #: unreproducible: a crash could not be re-run and a paired A/B could
+        #: not hold the opponent and scenario draws fixed across arms.
+        #:
+        #: `scenario_seed` is the SAME config key pipeline 1's env already
+        #: takes, rather than a second convention. Default None keeps the old
+        #: behaviour exactly -- fresh OS entropy, independent per worker -- so
+        #: seeding is opt-in and no existing run changes. `rl/seeding.py`
+        #: derives the per-worker seeds that keep workers independent AND
+        #: reproducible.
+        self.rng = np.random.default_rng(env_config.get("scenario_seed", None))
+        #: Kept as an alias: `scenario_rng` is the name the scenario code and
+        #: its tests already use, and it must be the SAME object -- two
+        #: generators would re-open the reproducibility hole this closes.
+        self.scenario_rng = self.rng
         self.scenario_active = None       # name of the current episode's scenario, or None
         self.scenario_defensive = False   # is ScenDef a meaningful test for it?
         self.scenario_max_steps = None    # truncation window in bot-steps, or None for full game
@@ -246,7 +264,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         self.game.set_opponent_deck(clash_royale_env.sample_random_deck())
         self._reset_opponent_elixir()
         if name in ("Rusher", "Counter"):
-            self.opponent_lane = random.choice(["left", "right"])
+            self.opponent_lane = ("left" if self.rng.random() < 0.5 else "right")
 
     def _reset_opponent_elixir(self):
         """Undo any elixir multiplier a previous builtin opponent left behind.
@@ -319,7 +337,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             for p in self.pfsp_pool
         ], dtype=np.float64)
         weights /= weights.sum()
-        chosen = self.pfsp_pool[np.random.choice(len(self.pfsp_pool), p=weights)]
+        chosen = self.pfsp_pool[self.rng.choice(len(self.pfsp_pool), p=weights)]
         self._set_opponent(chosen)
 
     def reset(self, seed=None, options=None):
@@ -577,7 +595,17 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         return np.asarray([fn(c, 0) for c in DEFAULT_DECK], dtype=np.float32)
 
 
-def make_env():
+def make_env(seed=None, **env_config):
+    """A worker factory. `seed` is this worker's OWN seed, not the run's.
+
+    `rl.seeding.worker_seeds` derives one per worker from the run seed, so the
+    envs stay statistically independent -- they must not inject the same
+    scenario in lockstep -- while the run as a whole stays reproducible.
+    """
+    config = dict(env_config)
+    if seed is not None:
+        config["scenario_seed"] = seed
+
     def _init():
-        return MicroRoyaleSelfPlayEnv()
+        return MicroRoyaleSelfPlayEnv(config)
     return _init

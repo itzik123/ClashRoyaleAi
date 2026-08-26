@@ -46,6 +46,7 @@ from python_ai.rl.checkpointing import (  # noqa: E402
     STAGE_CHECKPOINT_DIR, run_path, save_stage_snapshot, weights_path,
 )
 from python_ai.rl.config import PHASE1_ENTROPY, PPOConfig  # noqa: E402
+from python_ai.rl.seeding import worker_seeds  # noqa: E402
 from python_ai.rl.curriculum import (  # noqa: E402
     CURRICULUM_STAGES, STALL_WIN_RATE, CurriculumManager,
 )
@@ -226,7 +227,11 @@ def sample_random_deck():
     return clash_royale_env.sample_random_deck()
 
 
-def make_env():
+def make_env(seed=None):
+    """A phase-1 worker factory. `seed` is this worker's own, from
+    `rl.seeding.worker_seeds` -- see selfplay_env.make_env for the contract.
+    Both pipelines take the same `scenario_seed` config key rather than two
+    conventions."""
     def _init():
         # THE PHASE-1 OPPONENT IS THE UTILITY TEACHER, at a symmetric 1.0x
         # economy. See rl/curriculum.py and opponents/teacher.py for why the C++
@@ -234,7 +239,8 @@ def make_env():
         # anchor in train_selfplay.BUILTIN_ANCHORS, so historical numbers stay
         # comparable).
         return gym_wrapper.MicroRoyaleEnv({"opponent": PHASE1_OPPONENT,
-                                           "teacher_stage": 0})
+                                           "teacher_stage": 0,
+                                           "scenario_seed": seed})
     return _init
 
 
@@ -268,7 +274,8 @@ class Phase1Trainer(BaseTrainer):
     # -- environment --------------------------------------------------------
     def build_envs(self):
         return gym.vector.AsyncVectorEnv(
-            [make_env() for _ in range(self.cfg.num_envs)])
+            [make_env(seed=s)
+             for s in worker_seeds(self.cfg.seed, self.cfg.num_envs)])
 
     def build_replay_env(self):
         env = gym_wrapper.MicroRoyaleEnv({"opponent": PHASE1_OPPONENT,

@@ -127,6 +127,16 @@ class PPOConfig:
     #: Episodes between demo replays.
     replay_every_episodes: int = 1000
 
+    #: Run-level RNG seed, or None for fresh OS entropy. `CLASH_SEED=<int>`.
+    #:
+    #: DEFAULT None ON PURPOSE. Seeding by default would silently change what
+    #: every existing configuration does, and every win rate recorded in
+    #: CLAUDE.md was earned unseeded. Set it for an A/B arm, a reproduction, or
+    #: any run whose result someone will have to defend -- see rl/seeding.py
+    #: for what one seed does and does not pin.
+    seed: Optional[int] = (int(os.environ["CLASH_SEED"])
+                           if os.environ.get("CLASH_SEED") else None)
+
     def __post_init__(self):
         if self.update_timestep % self.bptt_chunk:
             raise ValueError(

@@ -63,6 +63,7 @@ from python_ai.rl.engine_stats import extract_engine_stats, opponent_elixir_targ
 from python_ai.rl.entropy import EntropyController
 from python_ai.rl.episode_metrics import EpisodeMetrics
 from python_ai.rl.ppo import PPOUpdater
+from python_ai.rl.seeding import seed_everything, worker_seeds
 
 
 @dataclass
@@ -191,6 +192,15 @@ class BaseTrainer:
         cfg = self.cfg
         os.makedirs("replays", exist_ok=True)
         os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
+
+        # FIRST, before anything stochastic happens. Network initialisation is
+        # the single biggest random input to a run -- two A/B arms that start
+        # from different weights are not comparable -- and `build_envs` draws
+        # its per-worker seeds from this too. A no-op when cfg.seed is None,
+        # which is the default; see rl/seeding.py.
+        if seed_everything(cfg.seed) is not None:
+            print(f"Deterministic run: seed={cfg.seed} "
+                  "(torch, numpy, stdlib random, and per-worker env seeds)")
 
         print(f"Initializing {cfg.num_envs} vectorized environments...")
         self.envs = self.build_envs()

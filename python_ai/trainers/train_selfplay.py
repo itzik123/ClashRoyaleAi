@@ -42,6 +42,7 @@ from python_ai.envs.selfplay_env import (  # noqa: E402
 from python_ai.envs.scripted_opponents import SCRIPTED_OPPONENTS  # noqa: E402
 from python_ai.models.policy_io import load_state_dict_flexible  # noqa: E402
 from python_ai.rewards.shaping import building_hp_end  # noqa: E402
+from python_ai.rl.seeding import worker_seeds
 from python_ai.rl.base_trainer import BaseTrainer  # noqa: E402
 from python_ai.rl.checkpointing import run_path, weights_path  # noqa: E402
 from python_ai.rl.config import PHASE2_ENTROPY, PPOConfig  # noqa: E402
@@ -130,8 +131,13 @@ class Phase2Trainer(BaseTrainer):
 
     # -- environment --------------------------------------------------------
     def build_envs(self):
+        # One seed per worker, derived from the run seed by SeedSequence so the
+        # workers stay statistically INDEPENDENT (they must not inject the same
+        # scenario in lockstep) while the run stays reproducible. Unseeded runs
+        # get [None]*n, i.e. exactly the previous behaviour.
+        seeds = worker_seeds(self.cfg.seed, self.cfg.num_envs)
         return gym.vector.AsyncVectorEnv(
-            [selfplay_env.make_env() for _ in range(self.cfg.num_envs)])
+            [selfplay_env.make_env(seed=s) for s in seeds])
 
     def build_replay_env(self):
         if not self.historical_pool:
