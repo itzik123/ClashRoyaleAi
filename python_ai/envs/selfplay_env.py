@@ -323,8 +323,28 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
                 self.pfsp_stats[p] = 0.5
 
     def _sample_pfsp_opponent(self):
+        """Draw this episode's opponent, dropping any entry that will not load.
+
+        THIS RUNS ON EVERY RESET, and the pool is sampled at random, so an
+        unreadable checkpoint used to crash phase 2 at an unpredictable point --
+        typically hours in, with a traceback naming torch.load rather than the
+        pool. The pool was written NON-ATOMICALLY for this project's whole
+        history (`atomic_save` only landed 2026-08-26), so a file truncated by
+        an OOM kill or a SIGKILL can already be sitting there; fixing the writer
+        does not clean up what the old writer left.
+
+        Both directions are failures and they pull opposite ways. Crashing over
+        one bad file wastes a run for an opponent that could have been skipped.
+        Silently swallowing load errors is worse: an architecture change makes
+        EVERY checkpoint unloadable at once, the pool empties to the scripted
+        bots, and the league stops being self-play with nothing said -- which is
+        the shape CLAUDE.md already records for an empty pool ("silent, and it
+        degrades the opponent distribution rather than crashing"). So: skip the
+        entry, say so, and refuse to continue if the pool drains entirely.
+        """
         if not self.pfsp_pool:
             return
+
         def floor_for(p):
             if p in scripted_opponents.DEFENSIVE_SCRIPTED_OPPONENTS:
                 return scripted_opponents.DEFENSIVE_SCRIPTED_MIN_WEIGHT
@@ -332,13 +352,29 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
                 return BUILTIN_MIN_WEIGHT
             return PFSP_MIN_WEIGHT
 
-        weights = np.array([
-            max(floor_for(p), (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
-            for p in self.pfsp_pool
-        ], dtype=np.float64)
-        weights /= weights.sum()
-        chosen = self.pfsp_pool[self.rng.choice(len(self.pfsp_pool), p=weights)]
-        self._set_opponent(chosen)
+        while self.pfsp_pool:
+            weights = np.array([
+                max(floor_for(p),
+                    (1.0 - self.pfsp_stats.get(p, 0.5)) ** PFSP_EXPONENT)
+                for p in self.pfsp_pool
+            ], dtype=np.float64)
+            weights /= weights.sum()
+            chosen = self.pfsp_pool[self.rng.choice(len(self.pfsp_pool),
+                                                    p=weights)]
+            try:
+                self._set_opponent(chosen)
+                return
+            except Exception as exc:   # noqa: BLE001 -- any load failure is one story
+                print(f"  [WARN] dropping unreadable PFSP pool entry "
+                      f"{chosen}: {type(exc).__name__}: {exc}", flush=True)
+                self.pfsp_pool.remove(chosen)
+                self.pfsp_stats.pop(chosen, None)
+
+        raise RuntimeError(
+            "every entry in the PFSP pool failed to load. One bad file is a "
+            "truncated checkpoint; ALL of them is an architecture mismatch -- "
+            "the pool is not compatible with the current network. Continuing "
+            "would silently reduce the league to its scripted bots.")
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
