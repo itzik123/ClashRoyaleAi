@@ -54,10 +54,37 @@ def compute_gae(rewards, values, masks, next_value, gamma, gae_lambda,
     return advantages
 
 
-def normalize(advantages, eps=1e-8):
+def normalize(advantages, eps=1e-8, mask=None):
     """Batch-normalized advantages. Critic targets are the RAW returns; only
-    advantages are normalized, which is why this is a separate step."""
-    return (advantages - advantages.mean()) / (advantages.std() + eps)
+    advantages are normalized, which is why this is a separate step.
+
+    `mask` : optional (T, N) of 1/0. Where given, the mean and std are taken
+        over the MASKED-IN rows only, but every row is still rescaled by them.
+        Callers pass `valid`, so the phantom post-autoreset rows -- which are
+        excluded from every loss term already -- stop setting the constants
+        that rescale the real ones. `run_update` filters by `valid` for
+        explained variance and for the value-clip range on the next two lines;
+        this was the one statistic in that block still taken over the
+        contaminated tensor.
+
+    A batch with fewer than two masked-in rows has NO ESTIMABLE SPREAD, and
+    `Tensor.std()` is the unbiased estimator, so it divides by n-1 = 0 and
+    returns NaN. That NaN reaches the actor loss, and one non-finite element
+    there turns every parameter to NaN in a single optimizer step -- measured
+    2026-08-26, 32 of 32 parameter tensors, permanently. Zero is the correct
+    answer instead: with no spread there is no directional information to
+    scale, so every advantage is exactly its own mean.
+
+    A non-finite value arriving from UPSTREAM is deliberately NOT swallowed
+    here. Zeroing it would silently convert a numerical fault into a
+    no-learning run, which is the harder failure to notice; it is left to
+    propagate to `PPOUpdater`'s containment guard, which drops the step AND
+    reports it.
+    """
+    flat = advantages.reshape(-1) if mask is None else advantages[mask > 0.5]
+    if flat.numel() < 2:
+        return torch.zeros_like(advantages)
+    return (advantages - flat.mean()) / (flat.std() + eps)
 
 
 def explained_variance(returns, values):

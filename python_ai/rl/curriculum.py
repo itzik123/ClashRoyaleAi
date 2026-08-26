@@ -56,6 +56,26 @@ CURRICULUM_STAGES = [
 #: which is the coarsest resolution the thresholds below are meaningful at.
 OUTCOME_WINDOW = 100
 
+#: --- the stall valve -------------------------------------------------------
+#: The ladder above is otherwise STRICTLY ONE-WAY: `maybe_advance_stage` only
+#: increments and nothing reduced `stage`. A run promoted past its competence
+#: therefore had no way back, which is the dead end this project has already
+#: hit -- 0-for-2000+ episodes with zero improvement.
+#:
+#: And promotion is optimistic. The 0.80 gate is re-tested on EVERY episode, so
+#: it is an optional-stopping test over hundreds of overlapping windows.
+#: Measured 2026-08-26 by simulation: an agent whose TRUE skill is 0.70 clears
+#: a single window 1.6% of the time but clears at least one within 3000
+#: episodes 91.6% of the time. The effective gate is ~0.70, not 0.80, and five
+#: rungs compound it.
+#:
+#: These two numbers are set so the valve CANNOT fire on a run that is merely
+#: finding a stage hard: 0.10 is far below any healthy win rate at any rung,
+#: and the patience is fifteen full windows of it. A run this far gone has
+#: already stopped producing gradient.
+STALL_WIN_RATE = 0.10
+STALL_PATIENCE_EPISODES = 1500
+
 
 def window_win_rate(outcome_history):
     """Raw win rate over a FULL window, or None if the window is not full yet.
@@ -99,6 +119,10 @@ class CurriculumManager:
 
         self.stage = 0
         self.stage_start_episode = 0
+        #: How many times the stall valve has fired. A run that has demoted is
+        #: a run whose ladder position is NOT evidence of competence, so this
+        #: has to be visible and has to survive a resume.
+        self.demotions = 0
         self.phase = "mirror"
         self.deck_stage = 0
         self.deck_episode_start = 0
@@ -168,6 +192,38 @@ class CurriculumManager:
         self.stage_start_episode = episodes_completed
         return self.stage
 
+    def maybe_demote_stage(self, outcome_history, episodes_completed):
+        """Mirror-phase STALL valve. Returns the new stage, or None.
+
+        Steps one rung back down when the agent has been failing at the current
+        rung for a sustained stretch. Without it the ladder is one-way and a
+        run promoted past its competence burns indefinitely at a teacher it
+        cannot score against -- see STALL_PATIENCE_EPISODES for the measurement
+        showing the promotion gate over-promotes by ~10 win-rate points.
+
+        Mirror phase only. The random-deck ladder already has its own valve
+        (`max_episodes_per_deck` rotates a deck it cannot beat), and two valves
+        driving one stage number would fight each other.
+
+        Stage 0 is a floor and not merely an index guard: losing at stage 0
+        means the teacher is rules-only and is NOT what is wrong, so stepping
+        back would fix nothing while hiding the real fault.
+        """
+        if self.phase != "mirror" or self.stage <= 0:
+            return None
+        if episodes_completed - self.stage_start_episode < STALL_PATIENCE_EPISODES:
+            return None
+        win_rate = window_win_rate(outcome_history)
+        if win_rate is None or win_rate > STALL_WIN_RATE:
+            return None
+        self.stage -= 1
+        self.demotions += 1
+        # Same bookkeeping an advance does: the rung must be judged on fresh
+        # episodes, and exploration re-boosts for the changed opponent.
+        outcome_history.clear()
+        self.stage_start_episode = episodes_completed
+        return self.stage
+
     def step_random_deck_curriculum(self, outcome_history, episodes_completed):
         """The per-deck ladder inside `random_opponent`.
 
@@ -207,6 +263,7 @@ class CurriculumManager:
     def state_dict(self):
         return {
             "curriculum_stage": self.stage,
+            "curriculum_demotions": self.demotions,
             "stage_start_episode": self.stage_start_episode,
             "phase": self.phase,
             "deck_curriculum_stage": self.deck_stage,
@@ -224,6 +281,7 @@ class CurriculumManager:
         like the full episode count and hand off immediately on resume.
         """
         self.stage = state["curriculum_stage"]
+        self.demotions = state.get("curriculum_demotions", 0)
         self.stage_start_episode = state["stage_start_episode"]
         self.phase = state.get("phase", "mirror")
         self.deck_stage = state.get("deck_curriculum_stage", 0)

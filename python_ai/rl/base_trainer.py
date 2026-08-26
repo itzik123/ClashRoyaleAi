@@ -471,7 +471,10 @@ class BaseTrainer:
             trunc_boot=batch.get("trunc_boot"))
         # Critic targets are the RAW returns; only advantages are normalized.
         returns = advantages + batch["values"]
-        adv_norm = gae_mod.normalize(advantages)
+        # Masked by `valid` for the same reason the two statistics below are:
+        # a phantom post-autoreset row trains nothing, so it must not set the
+        # mean and std that rescale every row that does.
+        adv_norm = gae_mod.normalize(advantages, mask=batch["valid"])
 
         with torch.no_grad():
             keep = batch["valid"] > 0.5
@@ -509,6 +512,16 @@ class BaseTrainer:
         # below that means the recurrent state genuinely learned to count.
         w.add_scalar("Aux/OppElixir_MAE", stats.aux_mae, ep)
         w.add_scalar("Aux/OppElixir_MSE", stats.aux_mse, ep)
+        # Non-finite minibatches whose optimizer step was dropped. MUST be 0.
+        # Printed as well as logged, because the whole point of the guard is
+        # that the run now SURVIVES a numerical fault -- which means nothing
+        # else in the console would ever tell you one happened.
+        w.add_scalar("Loss/NonFinite_Skips", stats.nonfinite_skips, ep)
+        if stats.nonfinite_skips:
+            print(f"  [WARN] {stats.nonfinite_skips} non-finite minibatch "
+                  f"gradient(s) dropped this update. The weights are intact, "
+                  f"but something upstream produced NaN/inf -- check the "
+                  f"reward stream and the PPO ratio.", flush=True)
 
         target_placement = self.entropy.update(
             stats.ent_card, stats.ent_placement, self.anneal_episodes_done())

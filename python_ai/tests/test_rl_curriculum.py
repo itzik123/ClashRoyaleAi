@@ -211,3 +211,116 @@ def test_random_phase_start_falls_back_to_the_deck_start_not_to_zero():
                        "phase_deck_episode_start": 30_000})
     assert m.random_phase_episode_start == 30_000
     assert not m.budget_exhausted(31_000)
+
+
+# ------------------------------------------------- the stall / demotion valve --
+#
+# THE LADDER WAS STRICTLY ONE-WAY. `maybe_advance_stage` only ever increments,
+# and nothing anywhere reduced `stage`. A run promoted past its competence had
+# no way back, which is the "teacher too strong -> agent learns nothing" dead
+# end this project has already hit once: CLAUDE.md records 0-for-2000+ episodes
+# with zero improvement.
+#
+# And promotion IS optimistic, measured 2026-08-26. The gate reads "raw win
+# rate >= 0.80 over a full 100-episode window", but it is re-tested on EVERY
+# episode, so it is an optional-stopping test over hundreds of overlapping
+# windows. An agent whose TRUE skill is 0.70 has a 1.6% chance of clearing any
+# single window and a 91.6% chance of clearing at least one within 3000
+# episodes. The effective gate is ~0.70, not 0.80, and it compounds over five
+# rungs.
+#
+# The asymmetry is the tell that this was an oversight rather than a choice:
+# the random-deck ladder one phase over ALREADY has a safety valve
+# (`max_episodes_per_deck`), for exactly this failure. The mirror ladder had
+# none.
+#
+# The valve is deliberately PATIENT and set far below any healthy win rate, so
+# in a run that is merely finding a stage hard it never fires at all.
+
+def test_a_dead_run_steps_back_down_a_rung():
+    m = manager()
+    m.stage = 3
+    m.stage_start_episode = 0
+    assert m.maybe_demote_stage(_full_window(0.02), 5000) == 2
+    assert m.stage == 2
+
+
+def test_a_hard_new_stage_is_given_time_before_demoting():
+    """A stage the agent has only just entered is SUPPOSED to be hard. Reacting
+    inside one window would demote every genuine step up the ladder."""
+    m = manager()
+    m.stage = 3
+    m.stage_start_episode = 4900
+    assert m.maybe_demote_stage(_full_window(0.02), 5000) is None
+    assert m.stage == 3
+
+
+def test_a_healthy_run_is_never_demoted():
+    m = manager()
+    m.stage = 3
+    m.stage_start_episode = 0
+    assert m.maybe_demote_stage(_full_window(0.55), 5000) is None
+
+
+def test_stage_zero_has_nowhere_to_fall_to():
+    """Losing at stage 0 means the TEACHER is not the problem. Demoting below
+    the bottom rung would be an index error dressed as a curriculum."""
+    m = manager()
+    m.stage = 0
+    m.stage_start_episode = 0
+    assert m.maybe_demote_stage(_full_window(0.00), 9000) is None
+    assert m.stage == 0
+
+
+def test_a_partial_window_never_demotes():
+    """Same rule the promotion gate follows: no verdict on an unfilled window."""
+    m = manager()
+    m.stage = 2
+    m.stage_start_episode = 0
+    assert m.maybe_demote_stage(_window(0, 10), 5000) is None
+
+
+def test_the_random_phase_uses_its_own_valve_not_this_one():
+    """`step_random_deck_curriculum` already rotates a deck it cannot beat.
+    Two valves on one ladder would fight each other for the stage."""
+    m = manager()
+    m.phase = "random_opponent"
+    m.stage = 3
+    m.stage_start_episode = 0
+    assert m.maybe_demote_stage(_full_window(0.00), 5000) is None
+
+
+def test_demoting_clears_the_window_and_restarts_the_entropy_clock():
+    """Same bookkeeping as an advance: the demoted stage must be judged on
+    fresh episodes, and exploration should re-boost for the changed opponent."""
+    m = manager()
+    m.stage = 4
+    m.stage_start_episode = 0
+    w = _full_window(0.01)
+    m.maybe_demote_stage(w, 7000)
+    assert len(w) == 0
+    assert m.stage_start_episode == 7000
+
+
+def test_demotions_are_counted_and_survive_a_checkpoint_roundtrip():
+    """A run that has demoted is a run whose ladder position is not evidence of
+    competence. That has to survive a resume, or the next session reads the
+    stage number at face value."""
+    m = manager()
+    m.stage = 2
+    m.stage_start_episode = 0
+    m.maybe_demote_stage(_full_window(0.00), 6000)
+    assert m.demotions == 1
+
+    restored = manager()
+    restored.load_state_dict(m.state_dict())
+    assert restored.demotions == 1
+    assert restored.stage == 1
+
+
+def test_a_legacy_checkpoint_without_the_demotion_key_loads_as_zero():
+    m = manager()
+    state = m.state_dict()
+    del state["curriculum_demotions"]
+    m.load_state_dict(state)
+    assert m.demotions == 0

@@ -23,6 +23,50 @@ from python_ai.rewards.weights import (
     W_WIN_CONDITION_DAMAGE,
 )
 
+#: Counters the engine only ever INCREASES within one episode. A decrease is
+#: not physically possible mid-match, so it is a reliable witness that the
+#: vector env auto-reset between the two readings.
+_MONOTONE_UP = (
+    "team0_troop_damage", "team1_troop_damage",
+    "team0_building_damage", "team1_building_damage",
+    "team0_tower_damage", "team1_tower_damage",
+    "team0_wincon_damage",
+    "team0_elixir_spent", "team1_elixir_spent",
+    "fireball_value_killed", "fireball_elixir_spent",
+)
+#: ...and the ones that only ever DECREASE, for which a reset looks like a rise.
+#: Needed on its own: an episode that ended with towers already lost restores
+#: none of the counters above to a LOWER value, so the damage keys alone would
+#: miss it.
+_MONOTONE_DOWN = ("team0_towers_alive", "team1_towers_alive")
+
+
+def auto_reset_mask(stats, prev_stats):
+    """(num_envs,) bool: True where these two readings straddle an auto-reset.
+
+    Every cumulative counter restarts at 0 when a vector env resets, so the
+    POTENTIAL-based terms -- which read raw values, not deltas -- evaluate
+    `gamma*Phi(new episode) - Phi(finished episode)` and emit a large spurious
+    reward on a step where nothing happened. Measured at -0.3038 for a match
+    that was 3000 tower damage ahead, against a sparse win reward of +/-1.
+
+    Detected here rather than trusted to the caller. The guard used to live in
+    `base_trainer` and `exploiter` as two copies of `* (1 - prev_dones)`, and
+    the exploiter shipped WITHOUT its copy through burst #0 -- this exact bug,
+    in production, once already. A monotone counter moving the wrong way is
+    proof of a reset needing no information the caller has to remember to pass.
+    """
+    n = np.asarray(stats["team0_troop_damage"]).shape[0]
+    reset = np.zeros(n, dtype=bool)
+    for key in _MONOTONE_UP:
+        if key in stats and key in prev_stats:
+            reset |= np.asarray(stats[key]) < np.asarray(prev_stats[key])
+    for key in _MONOTONE_DOWN:
+        if key in stats and key in prev_stats:
+            reset |= np.asarray(stats[key]) > np.asarray(prev_stats[key])
+    return reset
+
+
 def flawless_defense_bonus(dones, step_rewards, stats, prev_stats,
                            w=None):
     """The 'perfect defense' term: rank WINS by how little we gave up.
@@ -276,6 +320,12 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
                + w_troops * (enemy_troops_damage - ally_troops_damage)
                + w_elixir * enemy_elixir_spent
                - w_overflow * overflow)
+
+    # A step that straddles an auto-reset is not a transition and carries no
+    # shaping signal. Both live callers already zero it, so this changes
+    # nothing for them -- it makes the function safe for the NEXT caller, which
+    # is the one that has historically forgotten.
+    shaping = np.where(auto_reset_mask(stats, prev_stats), 0.0, shaping)
 
     return shaping.astype(np.float32)
 

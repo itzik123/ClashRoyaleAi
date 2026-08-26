@@ -9,6 +9,7 @@ training time, not the arithmetic in general:
   * placement entropy must be measured on PLACEMENTS, not on affordability
   * the actor is normalized by decision steps, the critic by all real steps
 """
+import copy
 import math
 
 import numpy as np
@@ -270,3 +271,97 @@ def test_the_reachable_count_comes_from_the_MASK_not_from_the_head_size():
     logits[1, :242] = 0.0
     logits[2, :208] = 0.0
     assert list(torch.isfinite(logits).sum(-1)) == [588, 242, 208]
+
+
+# --- non-finite gradient containment -------------------------------------
+#
+# A single non-finite value anywhere in the loss turns EVERY parameter to NaN
+# in one optimizer step, and the damage is PERMANENT: Adam's moment estimates
+# are poisoned with it, so a subsequent clean batch cannot recover. Measured
+# 2026-08-26 -- 100% of parameters NaN after one bad step, still 100% NaN after
+# a clean one.
+#
+# That is the worst failure this loop can have. Training continues, every
+# metric reads NaN, and the periodic checkpoint OVERWRITES the last good
+# weights with the poisoned ones -- so a multi-hour run is lost silently and
+# unrecoverably. The guard is one comparison per minibatch.
+
+def _run_with_adv(net, batch, adv):
+    """An update over a caller-supplied advantage tensor, on a PRIVATE COPY of
+    the net.
+
+    The copy is not hygiene, it is a prerequisite: the whole point of these
+    tests is that a poisoned net stays poisoned, so sharing the module-scoped
+    fixture would let the first test here corrupt every test after it. Copying
+    keeps the stored log-probs exactly matched to the weights, so the PPO ratio
+    is still exactly 1.0 and a "clean" batch really is clean.
+    """
+    victim = copy.deepcopy(net)
+    optimizer = optim.Adam(victim.parameters(), lr=1e-4)
+    updater = PPOUpdater(victim, optimizer, TINY)
+    returns = torch.zeros_like(adv)
+    stats = updater.update(batch, adv, returns, vf_clip_range=0.2,
+                           ent_coef_card=0.05, ent_coef_placement=0.06,
+                           coverage_coef=0.02)
+    return victim, stats
+
+
+def test_one_nan_advantage_cannot_poison_the_whole_network(rollout):
+    """ONE bad element must not take out all 1.88M parameters.
+
+    The realistic sources are an exploding PPO ratio (exp of a large log-prob
+    difference overflows to inf), a NaN out of `gae.normalize` when the batch
+    has a degenerate spread, or a non-finite reward reaching GAE.
+    """
+    net, batch = rollout
+    T, N = batch["rewards"].shape
+    adv = torch.randn(T, N)
+    adv[0, 0] = float("nan")
+
+    victim, _ = _run_with_adv(net, batch, adv)
+
+    bad = [n for n, p in victim.named_parameters()
+           if not torch.isfinite(p).all()]
+    assert not bad, f"{len(bad)} parameter tensors were poisoned: {bad[:5]}"
+
+
+def test_an_all_nan_update_leaves_the_weights_bit_identical(rollout):
+    """A fully corrupt batch must be a NO-OP, not a partial write.
+
+    Skipping the step is the only safe response: there is no meaningful
+    gradient direction in a non-finite batch, so the correct step size is zero.
+    """
+    net, batch = rollout
+    before = {n: p.detach().clone() for n, p in net.named_parameters()}
+
+    T, N = batch["rewards"].shape
+    victim, _ = _run_with_adv(net, batch, torch.full((T, N), float("nan")))
+
+    for n, p in victim.named_parameters():
+        assert torch.equal(p.detach(), before[n]), f"{n} moved on a NaN batch"
+
+
+def test_a_skipped_update_is_reported_not_silent(rollout):
+    """A silent skip is its own hazard: a run whose updates are all being
+    dropped looks exactly like a run that is learning nothing. The count has to
+    reach the caller so `log_update` can surface it."""
+    net, batch = rollout
+    T, N = batch["rewards"].shape
+    _, stats = _run_with_adv(net, batch, torch.full((T, N), float("nan")))
+    assert stats.nonfinite_skips > 0, (
+        "the updater dropped a non-finite step but reported nothing")
+
+
+def test_a_clean_batch_still_updates_and_reports_no_skips(rollout):
+    """The guard must not fire on healthy data -- otherwise it silently
+    converts the whole run into the no-learning failure it exists to prevent."""
+    net, batch = rollout
+    before = {n: p.detach().clone() for n, p in net.named_parameters()}
+
+    T, N = batch["rewards"].shape
+    victim, stats = _run_with_adv(net, batch, torch.randn(T, N))
+
+    assert stats.nonfinite_skips == 0, stats.nonfinite_skips
+    moved = any(not torch.equal(p.detach(), before[n])
+                for n, p in victim.named_parameters())
+    assert moved, "a clean batch produced no weight movement at all"

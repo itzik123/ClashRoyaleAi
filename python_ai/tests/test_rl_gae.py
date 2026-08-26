@@ -143,3 +143,67 @@ def test_explained_variance_of_a_constant_return_is_zero_not_nan():
     poison the TensorBoard series rather than reading as 'no information'."""
     returns = torch.full((8,), 0.5)
     assert float(explained_variance(returns, torch.zeros(8))) == 0.0
+
+
+# --- normalize: degenerate batches and phantom rows -----------------------
+
+def test_normalize_of_a_single_element_is_finite_not_nan():
+    """`Tensor.std()` is the UNBIASED estimator, so a one-element batch divides
+    by n-1 = 0 and yields NaN -- and that NaN goes straight into the actor
+    loss, where one non-finite element turns every parameter to NaN in a single
+    optimizer step. `explained_variance` in this same module already guards its
+    own degenerate case; this one did not.
+    """
+    out = normalize(torch.tensor([[0.5]]))
+    assert torch.isfinite(out).all(), out
+
+
+def test_normalize_of_a_constant_batch_is_finite_and_zero():
+    """A zero-spread batch carries no directional information, so every
+    advantage must read exactly 0 -- not NaN, and not an eps-amplified spike."""
+    out = normalize(torch.full((3, 2), 4.0))
+    assert torch.isfinite(out).all()
+    assert torch.allclose(out, torch.zeros_like(out))
+
+
+def test_normalize_does_not_warn_on_a_degenerate_batch():
+    """The suite is kept warning-clean, and `std()` emits a
+    `degrees of freedom is <= 0` UserWarning here -- which is the library
+    telling us, in the only way it can, that the result is undefined."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        normalize(torch.tensor([[0.5]]))
+
+
+def test_normalize_takes_its_statistics_from_valid_rows_only():
+    """Phantom post-autoreset rows are excluded from every LOSS term, but they
+    were still setting the mean and std that rescale every REAL row.
+
+    `run_update` already filters by `valid` for explained variance and for the
+    value-clip range on the next two lines; the advantage normalizer was the
+    one statistic in that block still computed over the contaminated tensor.
+    """
+    adv = torch.tensor([[1.0, 2.0], [3.0, 1000.0]])
+    valid = torch.tensor([[1.0, 1.0], [1.0, 0.0]])
+
+    out = normalize(adv, mask=valid)
+
+    real = out[valid > 0.5]
+    assert abs(float(real.mean())) < 1e-5, real
+    assert abs(float(real.std()) - 1.0) < 1e-3, real
+
+
+def test_normalize_without_a_mask_is_unchanged():
+    """The mask is OPTIONAL and pipeline-agnostic: passing none must reproduce
+    the old arithmetic exactly, or every historical run becomes incomparable."""
+    adv = torch.randn(6, 3)
+    assert torch.allclose(normalize(adv), (adv - adv.mean()) / (adv.std() + 1e-8))
+
+
+def test_normalize_with_an_all_zero_mask_is_finite():
+    """An update in which literally every row is a phantom is degenerate, but
+    it must not be a NaN bomb."""
+    adv = torch.randn(4, 2)
+    out = normalize(adv, mask=torch.zeros(4, 2))
+    assert torch.isfinite(out).all(), out

@@ -47,7 +47,7 @@ from python_ai.rl.checkpointing import (  # noqa: E402
 )
 from python_ai.rl.config import PHASE1_ENTROPY, PPOConfig  # noqa: E402
 from python_ai.rl.curriculum import (  # noqa: E402
-    CURRICULUM_STAGES, CurriculumManager,
+    CURRICULUM_STAGES, STALL_WIN_RATE, CurriculumManager,
 )
 
 # Who plays team 1 in phase 1. "teacher" is the utility-search bot at a
@@ -368,6 +368,15 @@ class Phase1Trainer(BaseTrainer):
             self._on_stage_advanced(advanced)
             return
 
+        # The STALL valve. Mutually exclusive with the advance gate by
+        # construction (that one needs >=0.80, this one <=0.10), so the
+        # ordering here is free -- unlike the phase/stage ordering above.
+        demoted = self.curriculum.maybe_demote_stage(
+            outcomes, self.episodes_completed)
+        if demoted is not None:
+            self._on_stage_demoted(demoted)
+            return
+
         event = self.curriculum.step_random_deck_curriculum(
             outcomes, self.episodes_completed)
         if event is None:
@@ -413,6 +422,25 @@ class Phase1Trainer(BaseTrainer):
         print(f">>> Curriculum advanced to stage {new_stage} "
               f"(teacher_stage={self.curriculum.teacher_stage})")
         self.writer.add_scalar("Training/Curriculum_Stage", new_stage,
+                               self.episodes_completed)
+
+    def _on_stage_demoted(self, new_stage):
+        """The agent stopped scoring at this rung for a sustained stretch.
+
+        Loud on purpose. A demotion means the ladder position was ahead of the
+        policy's actual competence, so every stage number reported before it --
+        including in any run summary already written down -- described a
+        teacher the agent was not in fact beating.
+        """
+        self.envs.call("set_teacher_stage", self.curriculum.teacher_stage)
+        print(f">>> [STALL] Curriculum DEMOTED to stage {new_stage} "
+              f"(teacher_stage={self.curriculum.teacher_stage}) after a "
+              f"sustained win rate at or below {STALL_WIN_RATE:.0%}. "
+              f"Demotions this run: {self.curriculum.demotions}.")
+        self.writer.add_scalar("Training/Curriculum_Stage", new_stage,
+                               self.episodes_completed)
+        self.writer.add_scalar("Training/Curriculum_Demotions",
+                               self.curriculum.demotions,
                                self.episodes_completed)
 
     def _rotate_random_deck(self, reason):

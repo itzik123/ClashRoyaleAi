@@ -35,6 +35,18 @@ from torch.distributions import Categorical
 from python_ai.advisors import advisor_target
 
 
+def _mean(xs):
+    """Mean of a possibly-EMPTY list of minibatch stats.
+
+    Empty means every minibatch in the update was dropped by the non-finite
+    guard. NaN is the honest report for that -- returning 0.0 would render a
+    numerically broken update as a healthy-looking flat line, which is the
+    class of "safe guaranteed zero" this project has been bitten by repeatedly.
+    `np.mean([])` would also warn, and the suite is kept warning-clean.
+    """
+    return float(np.mean(xs)) if xs else float("nan")
+
+
 @dataclass
 class UpdateStats:
     """Everything one PPO update produced, for the caller to log.
@@ -69,6 +81,13 @@ class UpdateStats:
     #: is a delta. On 2026-08-11 the aggregate read a healthy 0.462 while
     #: Cannon sat at 0.017 with 96.4% of its mass on one cell.
     per_card_placement_entropy: dict = field(default_factory=dict)
+    #: Minibatches whose gradient was non-finite and whose optimizer step was
+    #: therefore DROPPED. Must be 0 on a healthy run. Anything above 0 means
+    #: real gradient was discarded -- see the containment guard in `update`.
+    #: A sustained nonzero count is a genuine numerical fault (an exploding
+    #: ratio, a bad reward), not something the guard has "handled": the guard
+    #: only stops it from becoming permanent.
+    nonfinite_skips: int = 0
 
     @property
     def worst_card(self):
@@ -141,6 +160,7 @@ class PPOUpdater:
             coverage_has_seq = torch.zeros_like(coverage_slot_seq,
                                                 dtype=torch.float32)
 
+        nonfinite_skips = 0
         actor_losses, critic_losses, entropy_bonuses = [], [], []
         total_losses, clip_fracs = [], []
         aux_losses, aux_maes = [], []
@@ -332,8 +352,31 @@ class PPOUpdater:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.net.parameters(),
-                                         cfg.max_grad_norm)
+                total_norm = nn.utils.clip_grad_norm_(self.net.parameters(),
+                                                      cfg.max_grad_norm)
+
+                # THE CONTAINMENT GUARD. A single non-finite element anywhere
+                # in this minibatch -- an exp() overflow in the PPO ratio, a
+                # NaN out of `gae.normalize` on a degenerate batch, a bad
+                # reward reaching GAE -- turns EVERY parameter to NaN in one
+                # optimizer step. `clip_grad_norm_` does not stop it: it scales
+                # by max_norm/(nan+eps), which is itself nan, so the poison is
+                # multiplied THROUGH the clip and into every tensor.
+                #
+                # Measured 2026-08-26: 32 of 32 parameter tensors NaN after one
+                # bad step, and PERMANENTLY so -- Adam's moment estimates carry
+                # the NaN forward, so a subsequent clean batch does not recover
+                # it. The run then trains on, reports NaN for every metric, and
+                # the periodic checkpoint OVERWRITES the last good weights.
+                #
+                # Dropping the step is the only defensible response: there is
+                # no descent direction in a non-finite gradient, so the correct
+                # step size is zero. The stats appends are skipped with it, so
+                # a corrupt minibatch cannot drag the reported means either.
+                if not bool(torch.isfinite(total_norm)):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    nonfinite_skips += 1
+                    continue
                 self.optimizer.step()
 
                 actor_losses.append(actor_loss.item())
@@ -352,20 +395,20 @@ class PPOUpdater:
                     ((clipped * mb_decision).sum() / n_decision).item())
 
         return UpdateStats(
-            actor_loss=float(np.mean(actor_losses)),
-            critic_loss=float(np.mean(critic_losses)),
-            entropy=float(np.mean(entropy_bonuses)),
-            total_loss=float(np.mean(total_losses)),
-            clip_frac=float(np.mean(clip_fracs)),
-            aux_mse=float(np.mean(aux_losses)),
-            aux_mae=float(np.mean(aux_maes)),
-            ent_card=float(np.mean(ent_card_log)),
-            ent_placement=float(np.mean(ent_place_log)),
-            ent_placement_noop=(float(np.mean(ent_place_noop_log))
-                                if ent_place_noop_log else float("nan")),
-            coverage_entropy=float(np.mean(coverage_ents)),
-            advisor_kl=float(np.mean(coverage_kls)),
-            advisor_rows=float(np.mean(coverage_hits)),
+            actor_loss=_mean(actor_losses),
+            critic_loss=_mean(critic_losses),
+            entropy=_mean(entropy_bonuses),
+            total_loss=_mean(total_losses),
+            clip_frac=_mean(clip_fracs),
+            aux_mse=_mean(aux_losses),
+            aux_mae=_mean(aux_maes),
+            ent_card=_mean(ent_card_log),
+            ent_placement=_mean(ent_place_log),
+            ent_placement_noop=_mean(ent_place_noop_log),
+            coverage_entropy=_mean(coverage_ents),
+            advisor_kl=_mean(coverage_kls),
+            advisor_rows=_mean(coverage_hits),
+            nonfinite_skips=nonfinite_skips,
             per_card_placement_entropy={
                 cid: float(np.mean(v)) for cid, v in percard_place_ent.items()},
         )
