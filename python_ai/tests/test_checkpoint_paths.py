@@ -180,3 +180,148 @@ def test_train_module_no_longer_holds_a_bare_relative_default():
     assert 'os.environ.get("CLASH_WEIGHTS", "model_weights.pth")' not in src \
         or "weights_path(" in src, \
         "CLASH_WEIGHTS default is still used unanchored"
+
+
+# --- torn writes -----------------------------------------------------------
+#
+# The live checkpoint IS the run. `save_checkpoint` overwrote it in place with
+# a bare `torch.save(payload, self.weight_path)`, so an interruption during the
+# write -- Ctrl-C, an OOM kill, a full disk, a power cut -- leaves
+# `model_weights.pth` TRUNCATED, and it is the only copy. A multi-day run is
+# destroyed at the exact moment it tries to preserve itself.
+#
+# The window is not negligible: the payload carries the model AND Adam's two
+# moment buffers, so it is roughly three times the parameter count, written on
+# every save (default every 500 episodes) for the whole life of a run.
+#
+# `eval/probe_card_usage.py` even documents the trainer as writing
+# "atomically-enough (torch.save to a fresh path)" -- true of the snapshot
+# helpers, which mint a unique filename, and false of this one.
+#
+# The pool snapshots matter for a different reason: `league.py` torch.loads
+# EVERY entry it discovers, so one truncated file there crashes phase 2 on
+# whichever reset happens to sample it.
+
+def test_an_interrupted_save_leaves_the_previous_checkpoint_intact(tmp_path,
+                                                                   monkeypatch):
+    import torch
+    from python_ai.rl import checkpointing
+
+    dest = tmp_path / "model_weights.pth"
+    torch.save({"model": {"w": torch.ones(3)}, "episodes_completed": 5_000},
+               dest)
+
+    real_save = torch.save
+    calls = {"n": 0}
+
+    def exploding_save(obj, f, *a, **kw):
+        """Write a few bytes, then die -- exactly a torn write.
+
+        `f` is a file HANDLE, not a path: an atomic implementation opens its
+        own temp file and hands torch.save the handle.
+        """
+        calls["n"] += 1
+        f.write(b"\x80\x02}")               # a plausible pickle prefix
+        raise KeyboardInterrupt("killed mid-save")
+
+    monkeypatch.setattr(torch, "save", exploding_save)
+    with pytest.raises(KeyboardInterrupt):
+        checkpointing.atomic_save({"model": {"w": torch.zeros(3)}}, str(dest))
+    monkeypatch.setattr(torch, "save", real_save)
+
+    assert calls["n"] == 1, "the save was never attempted"
+    restored = torch.load(dest, weights_only=False)
+    assert restored["episodes_completed"] == 5_000, (
+        "the previous checkpoint was destroyed by a torn write")
+
+
+def test_a_successful_atomic_save_round_trips(tmp_path):
+    import torch
+    from python_ai.rl import checkpointing
+
+    dest = tmp_path / "w.pth"
+    checkpointing.atomic_save({"episodes_completed": 42}, str(dest))
+    assert torch.load(dest, weights_only=False)["episodes_completed"] == 42
+
+
+def test_an_atomic_save_leaves_no_temporary_files_behind(tmp_path):
+    """A pool directory is enumerated by glob, so a leftover temp file would be
+    discovered as an opponent and torch.load()ed."""
+    import torch
+    from python_ai.rl import checkpointing
+
+    dest = tmp_path / "w.pth"
+    checkpointing.atomic_save({"episodes_completed": 1}, str(dest))
+    assert [p.name for p in tmp_path.iterdir()] == ["w.pth"]
+
+
+def test_an_interrupted_save_leaves_no_partial_file_in_a_pool(tmp_path,
+                                                              monkeypatch):
+    """Nothing may appear in the directory until the payload is complete --
+    `league.py` torch.loads every entry it finds."""
+    import torch
+    from python_ai.rl import checkpointing
+
+    def exploding_save(obj, f, *a, **kw):
+        f.write(b"\x80\x02")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(torch, "save", exploding_save)
+    with pytest.raises(RuntimeError):
+        checkpointing.atomic_save({"model": {}}, str(tmp_path / "snap.pth"))
+    assert list(tmp_path.iterdir()) == [], (
+        f"a partial file survived: {[p.name for p in tmp_path.iterdir()]}")
+
+
+def test_the_trainer_and_both_snapshot_helpers_all_go_through_atomic_save():
+    """A static check: a fourth writer added later must not reintroduce the
+    bare call. This is the same 'second copy' shape the reset-spike guard had.
+    """
+    import inspect
+    import re
+    from python_ai.rl import base_trainer, checkpointing
+
+    for mod in (base_trainer, checkpointing):
+        src = inspect.getsource(mod)
+        # `atomic_save`'s own body is the ONE legitimate torch.save: it is what
+        # every other writer is routed through.
+        body = inspect.getsource(checkpointing.atomic_save)
+        for i, line in enumerate(src.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if line in body.splitlines():
+                continue
+            assert not re.search(r"(?<![\w.])torch\.save\(", code), (
+                f"{mod.__name__}:{i} writes with a bare torch.save: {line.strip()}")
+
+
+def test_the_temp_file_can_never_be_discovered_as_a_pool_opponent(tmp_path,
+                                                                  monkeypatch):
+    """The in-flight temp file must NOT match the pool's `*.pth` glob.
+
+    `discover_historical_checkpoints` globs `*.pth` and `torch.load`s every
+    hit, so a temp file that matches is a live opponent while the save is in
+    flight -- and a SIGKILL leaves one behind PERMANENTLY, because the cleanup
+    handler cannot run, breaking every phase-2 run afterwards.
+
+    Two independent things keep it out, and this pins BOTH: the leading dot
+    (Python's `glob` does not match dotfiles with `*`) and the `.partial`
+    suffix. The dot alone already sufficed, which is exactly why this test
+    matters -- protection that is incidental to a filename prefix is one
+    rename away from gone, and nothing would have reported it.
+    """
+    import torch
+    from python_ai.rl import checkpointing
+    from python_ai.trainers.league import discover_historical_checkpoints
+
+    seen = {}
+
+    def peeking_save(obj, f, *a, **kw):
+        # Look at the directory WHILE the temp file exists.
+        seen["during"] = discover_historical_checkpoints(directory=str(tmp_path))
+        f.write(b"\x80\x02}q\x00.")
+
+    monkeypatch.setattr(torch, "save", peeking_save)
+    checkpointing.atomic_save({"model": {}}, str(tmp_path / "snap.pth"))
+
+    assert seen["during"] == [], (
+        f"the temp file was discoverable as an opponent: {seen['during']}")

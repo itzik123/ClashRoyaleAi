@@ -365,3 +365,24 @@ def test_a_clean_batch_still_updates_and_reports_no_skips(rollout):
     moved = any(not torch.equal(p.detach(), before[n])
                 for n, p in victim.named_parameters())
     assert moved, "a clean batch produced no weight movement at all"
+
+
+def test_a_batch_that_does_not_match_the_config_is_refused_by_name(rollout):
+    """`_segments` builds its gather indices from `cfg.update_timestep` and
+    `cfg.num_envs`, NOT from the batch it was handed. A batch of the wrong
+    length therefore fails deep inside an advanced-indexing expression, as an
+    IndexError about a tensor nobody named -- or, if the batch is LONGER,
+    succeeds while silently training on a prefix of it.
+
+    The rollout loop cannot currently desync (it adds exactly update_timestep
+    rows, then updates, then clears), so this is a contract check on the
+    boundary rather than a live bug: a subclass overriding `collect_rollout`,
+    or a config edited between resume and rollout, is what it is here for.
+    """
+    net, batch = rollout
+    short = {k: (v[:-1] if hasattr(v, "shape") and v.shape[:1] == (TINY.update_timestep,)
+                 else v)
+             for k, v in batch.items()}
+    T, N = short["rewards"].shape
+    with pytest.raises(ValueError, match="update_timestep"):
+        _run_with_adv(net, short, torch.randn(T, N))

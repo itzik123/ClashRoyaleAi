@@ -55,7 +55,7 @@ from python_ai.rl.buffer import (
 )
 from python_ai.rl.checkpointing import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
-    run_path, save_historical_snapshot, weights_path,
+    atomic_save, run_path, save_historical_snapshot, weights_path,
 )
 from python_ai.rl.config import PPOConfig
 from python_ai.rl.coverage import PLACEMENT_COVERAGE_COEF, placement_coverage_slots
@@ -641,7 +641,7 @@ class BaseTrainer:
         }
         payload.update(self.entropy.state_dict())
         payload.update(self.checkpoint_payload())
-        torch.save(payload, self.weight_path)
+        atomic_save(payload, self.weight_path)
         if verbose:
             print(f">>> Checkpoint saved to {self.weight_path} "
                   f"(episode {self.episodes_completed})")

@@ -139,6 +139,22 @@ class PPOUpdater:
         cfg, net = self.cfg, self.net
         L, B_total = cfg.bptt_chunk, cfg.num_envs
         device = batch["obs"].device
+
+        # The gather indices below are built from cfg, not from `batch`, so a
+        # batch of the wrong shape fails deep inside an advanced-indexing
+        # expression as an IndexError naming no tensor -- or, if it is LONGER
+        # than cfg says, succeeds while silently training on a prefix. Name it
+        # here instead. The live rollout cannot desync (it adds exactly
+        # update_timestep rows, then updates, then clears); this guards the
+        # boundary against a subclass overriding `collect_rollout` and against
+        # a config edited between a resume and the next rollout.
+        got_t, got_n = batch["rewards"].shape[:2]
+        if (got_t, got_n) != (cfg.update_timestep, cfg.num_envs):
+            raise ValueError(
+                f"rollout batch is {got_t}x{got_n} but the config says "
+                f"update_timestep={cfg.update_timestep} x "
+                f"num_envs={cfg.num_envs}; the update indexes by the CONFIG, "
+                "so these must agree")
         segments, chunk_offsets = self._segments(device)
         n_segments = len(segments)
         seg_mb_size = max(1, n_segments // cfg.num_minibatches)

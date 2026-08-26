@@ -16,11 +16,62 @@ found at all. `weights_path` and `run_path` below are the single resolution
 point; see `python_ai/tests/test_checkpoint_paths.py` for the measured failure.
 """
 import os
+import tempfile
 import time
 
 import torch
 
 import python_ai
+
+
+def atomic_save(payload, path):
+    """`torch.save` that cannot leave a TRUNCATED file at `path`.
+
+    THE LIVE CHECKPOINT IS THE RUN. `save_checkpoint` used to overwrite it in
+    place, so an interruption during the write -- Ctrl-C, an OOM kill, a full
+    disk, a power cut -- left `model_weights.pth` truncated, and it is the only
+    copy. A multi-day run was destroyed at the exact moment it tried to
+    preserve itself. The window is not negligible either: the payload carries
+    the model AND Adam's two moment buffers, so roughly three times the
+    parameter count, rewritten on every save for the life of the run.
+
+    Write to a temp file in the SAME directory, flush it all the way to the
+    disk, then rename. `os.replace` is atomic for a same-volume rename on both
+    Windows and POSIX, so a reader either sees the whole old file or the whole
+    new one and never a partial. Same directory is load-bearing: a rename
+    across volumes is a copy, and copies are not atomic.
+
+    The snapshot helpers use it too, for a different failure -- they mint a
+    unique filename, so a torn write cannot destroy an existing file, but it
+    CAN leave a partial one in a pool directory that `league.py` enumerates and
+    torch.loads wholesale, crashing phase 2 on whichever reset samples it.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    # TWO independent reasons this cannot be discovered as a pool opponent:
+    # the leading dot (Python's glob excludes dotfiles from `*` patterns) and
+    # the suffix (the pool globs `*.pth`). Either alone would do; relying on
+    # only one makes a rename of the other a silent regression, and the file
+    # that survives a SIGKILL here is permanent -- the cleanup handler cannot
+    # run, so an orphan would break every phase-2 run afterwards.
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".partial", dir=directory)
+    os.close(fd)
+    try:
+        with open(tmp, "wb") as fh:
+            torch.save(payload, fh)
+            fh.flush()
+            # fsync before the rename: the rename can otherwise be durable
+            # while the CONTENT it points at is still only in the page cache,
+            # which is the same truncated file by a slower route.
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # BaseException, not Exception: KeyboardInterrupt is the single most
+        # likely way a training run is interrupted mid-save.
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return path
 
 
 def weights_path(name):
@@ -115,7 +166,7 @@ def save_stage_snapshot(net, directory, stage, episodes_completed, teacher_stage
     """
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"stage{stage}_ep{episodes_completed:08d}.pth")
-    torch.save({
+    atomic_save({
         "model": net.state_dict(),
         "curriculum_stage": stage,
         "episodes_completed": episodes_completed,
@@ -140,6 +191,6 @@ def save_historical_snapshot(net, episodes_completed, pipeline,
     path = os.path.join(
         directory,
         f"{int(time.time() * 1000)}_{pipeline}_ep{episodes_completed:08d}.pth")
-    torch.save({"model": net.state_dict()}, path)
+    atomic_save({"model": net.state_dict()}, path)
     print(f">>> Historical snapshot saved to {path}")
     return path
