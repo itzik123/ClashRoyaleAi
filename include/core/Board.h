@@ -50,6 +50,25 @@ private:
     Vector2D leftBridge{ ArenaLayout::LEFT_BRIDGE_X, ArenaLayout::BRIDGE_Y };
     Vector2D rightBridge{ ArenaLayout::RIGHT_BRIDGE_X, ArenaLayout::BRIDGE_Y };
 
+    // Scratch for resolveCollisions' per-entity property hoist and
+    // colliders()' index cache. Members rather than function locals so the
+    // heap allocation is paid once per Board rather than once per tick;
+    // mutable because colliders() is const. Neither holds meaning between
+    // calls -- bodyScratch is fully rebuilt on entry, and colliderCache is
+    // guarded by collidersDirty.
+    struct Body {
+        Entity* entity;
+        float radius;
+        bool building;
+        bool troop;
+        bool flying;
+        bool alive;
+    };
+    struct Collider { size_t index; float radius; };
+    mutable std::vector<Body> bodyScratch;
+    mutable std::vector<Collider> colliderCache;
+    mutable bool collidersDirty = true;
+
     // Real-map sync: the arena is 18x34, not 18x32 -- there's one extra row
     // behind each King Tower that this engine used to just not have. Most of
     // that row is dead space (matches the decorative rock/wall texture
@@ -259,6 +278,7 @@ public:
             }
             activeEntities.insert(activeEntities.end(), pendingEntities.begin(), pendingEntities.end());
             pendingEntities.clear();
+            collidersDirty = true;   // membership changed -- see colliders()
         }
     }
 
@@ -267,6 +287,19 @@ public:
     }
 
     void cleanDeadEntities(int tick = 0) {
+        // Nothing died: bail before three full passes over the entity list.
+        // The overwhelming majority of ticks take this branch (a match of a
+        // few thousand ticks contains a few dozen deaths), and the three
+        // passes below are each provably no-ops in that case -- neither loop
+        // has a live body and remove_if erases nothing -- so this is an exact
+        // short-circuit, not a behaviour change.
+        bool anyDead = false;
+        for (const auto& e : activeEntities) {
+            if (!e->isAlive()) { anyDead = true; break; }
+        }
+        if (!anyDead) return;
+        collidersDirty = true;   // membership is about to change -- see colliders()
+
         // Fire death effects (e.g. Golem spawning two Golemites) before the
         // erase below, purely via Entity's own virtual onDeath() -- Board
         // never needs to know which entities are CombatEntity-shaped enough
@@ -311,23 +344,73 @@ public:
         float dist = std::sqrt(dx * dx + dy * dy);
 
         if (dist < minDist) {
+            // DIRECTION and DISTANCE are separate questions, and the
+            // degenerate branch used to conflate them: it set dist = 1.0f
+            // purely to make dx/dist a unit vector, and that same 1.0f then
+            // flowed into `push = minDist - dist` -- so a point sitting
+            // exactly on an obstacle's centre was pushed out by minDist - 1.0
+            // instead of by minDist. Measured: a troop landing dead-centre on
+            // a Building (minDist 1.4) moved 0.403 tiles and was still inside
+            // the footprint; on a King Tower (minDist 2.4) it moved 1.4 of the
+            // 2.4 it needed. It escaped over two ticks instead of one, and the
+            // shortfall was exactly 1.0 tile every time -- the fake distance.
+            //
+            // Splitting them leaves the ordinary case bit-identical
+            // (ux == dx / dist, same operands in the same order) and makes the
+            // coincident case push the full minDist along an arbitrary but
+            // fixed +x direction.
+            float ux, uy;
             if (dist < 0.001f) {
-                dx = 1.0f; dy = 0.0f; dist = 1.0f;
+                ux = 1.0f; uy = 0.0f;   // coincident: any direction will do
+            } else {
+                ux = dx / dist; uy = dy / dist;
             }
             float push = minDist - dist;
-            pos.x += (dx / dist) * push + (dy / dist) * 0.05f;
-            pos.y += (dy / dist) * push - (dx / dist) * 0.05f;
+            pos.x += ux * push + uy * 0.05f;
+            pos.y += uy * push - ux * 0.05f;
         }
         return pos;
     }
 
+    // Indices into activeEntities of everything with a real collision radius
+    // -- Buildings and Towers, which on a typical board is 6 entities out of
+    // 30-40. resolvePositionAgainstBuildings runs once per MOVING TROOP per
+    // tick and used to walk the whole entity list making a virtual
+    // getCollisionRadius() call per candidate, so the cost was quadratic in
+    // board population to answer a question about a handful of entities.
+    //
+    // A radius never changes during an entity's life (Building's is a
+    // constant, Tower's keys off `symbol`, everything else inherits Entity's
+    // 0), so the only thing that can invalidate this is MEMBERSHIP -- which
+    // changes in exactly two places, commitPendingEntities and
+    // cleanDeadEntities, both of which set the flag. deepCopy builds a fresh
+    // Board, whose flag starts dirty; the implicit shallow copy carries a
+    // vector of indices that stay valid against its identical entity vector.
+    //
+    // Liveness is deliberately NOT cached: hp changes constantly, so the
+    // isAlive() check stays in the loop below exactly where it was.
+    const std::vector<Collider>& colliders() const {
+        if (collidersDirty) {
+            colliderCache.clear();
+            for (size_t i = 0; i < activeEntities.size(); ++i) {
+                const float r = activeEntities[i]->getCollisionRadius();
+                if (r > 0.0f) colliderCache.push_back(Collider{ i, r });
+            }
+            collidersDirty = false;
+        }
+        return colliderCache;
+    }
+
     Vector2D resolvePositionAgainstBuildings(const Vector2D& pos, int entityId) const {
         Vector2D resolved = pos;
-        for (const auto& entity : activeEntities) {
-            float radius = entity->getCollisionRadius();
-            if (radius <= 0.0f || entity->id == entityId || !entity->isAlive()) continue;
+        // Ascending index order, i.e. the same order as the original walk over
+        // activeEntities -- the pushes compose, so the order is part of the
+        // answer and not an implementation detail.
+        for (const Collider& c : colliders()) {
+            const auto& entity = activeEntities[c.index];
+            if (entity->id == entityId || !entity->isAlive()) continue;
 
-            resolved = pushAwayFrom(resolved, entity->position, radius + Entity::IMPLICIT_TROOP_RADIUS);
+            resolved = pushAwayFrom(resolved, entity->position, c.radius + Entity::IMPLICIT_TROOP_RADIUS);
         }
         return resolved;
     }
@@ -338,24 +421,47 @@ public:
     // one, so it lives here rather than in GameManager::step() alongside
     // elixir economy and win-condition checks.
     void resolveCollisions() {
-        for (size_t i = 0; i < activeEntities.size(); ++i) {
-            for (size_t j = i + 1; j < activeEntities.size(); ++j) {
-                auto& e1 = activeEntities[i];
-                auto& e2 = activeEntities[j];
+        // Everything the pair loop needs to know about an entity OTHER than
+        // its position, read once per entity instead of twice per PAIR.
+        //
+        // This loop is O(n^2) and was making four virtual calls per pair
+        // (getCollisionRadius and isTargetable, on both sides) for facts that
+        // are constant across the whole call: a radius never changes, nor does
+        // targetability within a tick, and nothing here can kill anything, so
+        // isAlive() is fixed too. At 30 entities that is ~1,700 virtual
+        // dispatches replaced by 60. Positions are NOT hoisted -- they are the
+        // one thing this function mutates, and every read below stays live.
+        const size_t count = activeEntities.size();
+        bodyScratch.clear();
+        bodyScratch.reserve(count);
+        for (const auto& e : activeEntities) {
+            const float r = e->getCollisionRadius();
+            bodyScratch.push_back(Body{
+                e.get(), r, r > 0.0f, (r <= 0.0f && e->isTargetable()), e->isFlying, e->isAlive() });
+        }
 
-                if (!e1->isAlive() || !e2->isAlive()) continue;
+        for (size_t i = 0; i < count; ++i) {
+            const Body& b1 = bodyScratch[i];
+            if (!b1.alive) continue;
+            for (size_t j = i + 1; j < count; ++j) {
+                const Body& b2 = bodyScratch[j];
 
-                float r1 = e1->getCollisionRadius();
-                float r2 = e2->getCollisionRadius();
+                if (!b2.alive) continue;
 
-                bool isBuilding1 = r1 > 0.0f;
-                bool isBuilding2 = r2 > 0.0f;
-                bool isTroop1 = !isBuilding1 && e1->isTargetable();
-                bool isTroop2 = !isBuilding2 && e2->isTargetable();
+                Entity* e1 = b1.entity;
+                Entity* e2 = b2.entity;
+
+                const float r1 = b1.radius;
+                const float r2 = b2.radius;
+
+                const bool isBuilding1 = b1.building;
+                const bool isBuilding2 = b2.building;
+                const bool isTroop1 = b1.troop;
+                const bool isTroop2 = b2.troop;
 
                 // Flying units pass through everything -- ground and other
                 // fliers alike -- so only entities sharing a plane collide.
-                if (isTroop1 && isTroop2 && e1->isFlying == e2->isFlying) {
+                if (isTroop1 && isTroop2 && b1.flying == b2.flying) {
                     float dx = e1->position.x - e2->position.x;
                     float dy = e1->position.y - e2->position.y;
                     float dist = std::sqrt(dx * dx + dy * dy);
@@ -379,10 +485,10 @@ public:
                     }
                 }
 
-                if (isTroop1 && isBuilding2 && !e1->isFlying) {
+                if (isTroop1 && isBuilding2 && !b1.flying) {
                     e1->position = pushAwayFrom(e1->position, e2->position, r2 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
-                if (isTroop2 && isBuilding1 && !e2->isFlying) {
+                if (isTroop2 && isBuilding1 && !b2.flying) {
                     e2->position = pushAwayFrom(e2->position, e1->position, r1 + Entity::IMPLICIT_TROOP_RADIUS);
                 }
             }

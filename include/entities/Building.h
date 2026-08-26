@@ -40,7 +40,28 @@ public:
         CombatEntity::update(board);
         if (lifetimeTicks > 0) {
             ticksAlive++;
-            if (ticksAlive % 10 == 0) { // Decay every 1 second (10 ticks)
+            // EXPIRY, checked before the decay schedule below and independent
+            // of it. The decay amount is maxHp / (lifetimeTicks / 10) in
+            // INTEGER arithmetic, so unless maxHp divides exactly the schedule
+            // never quite finishes the building off and it outlives its own
+            // lifetime by however long the truncated remainder takes -- a
+            // Cannon (824 hp / 300 ticks) decayed 27/s, sat on 14 hp at 30.0s
+            // and only died at 31.0s. Nothing anywhere consulted the clock; the
+            // building simply died whenever subtraction happened to reach zero.
+            //
+            // It read as correct because the one test covering it used
+            // hp = 3000 with lifetime 300, and 3000 / 30 = 100 exactly. That
+            // test is named "fully decays to 0 exactly at its configured
+            // lifetime" -- the contract was already written down, and only a
+            // divisible hp made it look true.
+            //
+            // hp = 0 rather than takeDamage(): expiry is not damage. A shield
+            // (Cannon Cart) must not absorb it, a parry must not negate it, and
+            // no OnDamageTakenEffect should fire for a clock running out.
+            if (ticksAlive >= lifetimeTicks) {
+                hp = 0;
+                board.statsEvents.notifyAttributionCleared({ id });
+            } else if (ticksAlive % 10 == 0) { // Decay every 1 second (10 ticks)
                 int decayIntervals = lifetimeTicks / 10;
                 if (decayIntervals <= 0) decayIntervals = 1; // avoid div-by-zero for lifetimes under 10 ticks
                 int decayAmount = maxHp / decayIntervals;

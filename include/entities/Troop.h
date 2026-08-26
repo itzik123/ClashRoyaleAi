@@ -39,7 +39,11 @@ protected:
         // froze troops mid-crossing for 10+ seconds -- see that constant's
         // comment and the regression tests in tests/core/test_board.cpp.
         if (distToWaypoint > Board::WAYPOINT_ARRIVAL_EPS) {
-            float currentSpeed = (freezeTicks > 0) ? speed * freezeSlow : speed;
+            // frozenThisTick, not freezeTicks: this runs AFTER update() has
+            // already decremented the counter, so the final tick of every
+            // freeze read as thawed and moved at full speed. See
+            // CombatEntity::frozenThisTick.
+            float currentSpeed = frozenThisTick ? speed * freezeSlow : speed;
             Vector2D newPos;
             newPos.x = position.x + (dx / distToWaypoint) * currentSpeed;
             newPos.y = position.y + (dy / distToWaypoint) * currentSpeed;

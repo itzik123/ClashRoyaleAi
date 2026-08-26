@@ -22,7 +22,16 @@ public:
         bool team1KingAlive = false;
 
         for (const auto& entity : board.getEntities()) {
-            if (entity->symbol == 'R' && entity->isAlive()) {
+            // isTower() FIRST, and that guard is the whole point. 'R' is a
+            // RENDERER symbol, not an identity: card id 93 (Mortar) is
+            // registered with it too, so a living Mortar reported its owner's
+            // King as alive and a match whose King had just fallen simply did
+            // not end. Every other site asking this question already guards by
+            // type -- Tower::update's Princess count uses
+            // isTower() && symbol != 'R', and TimeoutRules::resolve uses a
+            // dynamic_cast whose own comment says a symbol check would be
+            // fragile. This was the one that did not.
+            if (entity->isTower() && entity->symbol == 'R' && entity->isAlive()) {
                 if (entity->team == 0) team0KingAlive = true;
                 if (entity->team == 1) team1KingAlive = true;
             }

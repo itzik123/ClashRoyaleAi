@@ -68,6 +68,19 @@ public:
         float threatX = 0.0f, threatY = 0.0f;
         for (const auto& entity : board.getEntities()) {
             if (!entity->isAlive() || entity->team != 0) continue;
+            // An AreaSpell sits on the board at its impact point for the whole
+            // of its fuse with hp 1, and a Projectile likewise while in
+            // flight. Both were counted here, so a Fireball aimed at this
+            // bot's own tower read as the deepest incursion on the board and
+            // bought a full defensive placement of the strongest card it could
+            // afford -- against something that was never a unit.
+            //
+            // isTargetable() is the discriminator the rest of the engine
+            // already uses for this exact question (AreaSpell and Projectile
+            // both override it to false; see ClashEnv's own "Projectiles and
+            // pending spells are not board presence"). It also, correctly,
+            // hides a cloaked unit from a bot that could not see it.
+            if (!entity->isTargetable()) continue;
             if (dynamic_cast<const Tower*>(entity.get()) != nullptr) continue;
             if (entity->position.y > threatY || !threatFound) {
                 threatFound = true;

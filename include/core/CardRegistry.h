@@ -707,15 +707,27 @@ private:
                     std::make_shared<AreaDamageOnDeath>(2.5f, 200) }))
             .withSightRange(7.0f));
 
-        // Ice Golem: same story as Ice Wizard -- BuildingTargeter's own
-        // performAttack is already direct damage, so this is behavior-exact.
-        // Explodes on death dealing area damage; the real explosion also
-        // slows everyone it hits, but AreaDamageOnDeath is damage-only
-        // (no onHit-style hook, unlike AreaSpell's spellOnHit) -- not
-        // modeled.
+        // Ice Golem. The slow belongs to the DEATH EXPLOSION, which is where
+        // the real card has it; it has no on-attack slow at all.
+        //
+        // It was registered with .withOnHit(FreezeOnHit(30, 0.65f)) -- Ice
+        // Wizard's effect, carried over together with a "same story as Ice
+        // Wizard" comment -- while that same comment stated the death slow was
+        // "not modeled". Both halves were wrong in the same direction, and the
+        // consequence is not cosmetic: an Ice Golem targets BUILDINGS, so its
+        // phantom on-attack slow landed on a Crown Tower or a Cannon, which
+        // cannot walk out of it, and refreshed on every 2.5s hit -- a standing
+        // 35% cut to the fire rate of whatever it tanked. Measured against a
+        // Princess Tower before the fix: freezeTicks pinned above zero for the
+        // entire engagement (tests/core/test_default_deck_qa.cpp, "an Ice Golem
+        // does not slow what it attacks").
+        //
+        // Duration and strength are the registry's own 30 ticks / 0.65 MOVED,
+        // not re-sourced: neither figure is part of the sourced stats data,
+        // same caveat as splashRadius elsewhere in this file.
         add(troop(40, "Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, SPEED_SLOW, 0.75f, 84, 25, 'c')
-            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
-            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f));
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(
+                2.0f, 84, std::make_shared<FreezeOnHit>(30, 0.65f))).withSightRange(7.0f));
 
         // Balloon: flying, buildings-only, real point-blank 0.1 attack range
         // (BuildingTargeter's own findTarget already never considers
@@ -987,9 +999,19 @@ private:
         // CombatEntity::dieAfterFirstHit (fires the instant the shot is
         // launched for these ranged troops, not on the projectile's later
         // arrival, a minor timing simplification -- see its own comment).
+        // Ice Spirit STUNS: 0.0f, a full stop -- not 0.5f, a half-speed slow.
+        // This engine already has one convention for each and they are not
+        // interchangeable. Stun is FreezeOnHit(ticks, 0.0f) at every other
+        // site (Zap, Electro Spirit, Zappies, the Freeze spell); the 0.5-0.7
+        // band is the SLOW convention (Ice Wizard 0.65f, Ice Golem's death
+        // explosion). At 0.5f the card whose entire job is to stop a charge or
+        // pin a Hog at the bridge merely halved its speed for a second -- and
+        // the Evolution's own comment two hundred lines below already calls the
+        // mechanic a "stun". See tests/core/test_default_deck_qa.cpp, "an Ice
+        // Spirit's freeze is a full stun".
         add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
             .withTargetsAir()
-            .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
+            .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
             .withDieAfterFirstHit());
         add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 207, 10, '<')
             .withTargetsAir()
@@ -1731,20 +1753,28 @@ private:
         // form alone (1.7 tiles, based on the real card's own ~1.2-tile
         // splash + the sourced 0.5 delta) rather than literally "base
         // + 0.5", to avoid quietly changing the un-evolved card's own
-        // behavior as a side effect of this fix. Real mechanic also
-        // re-applies the same stun 3s after the first (a delayed second
-        // pulse) -- approximated as one longer freeze instead of two
-        // separate pulses (10 ticks -> 51 ticks, covering roughly the
-        // same total window: 1s initial + 3s delay + 1.1s repeat).
+        // behavior as a side effect of this fix.
+        //
+        // Both halves carry the base card's corrected 10-tick STUN
+        // (FreezeOnHit(10, 0.0f)) -- see card id 72 above for why 0.5f was
+        // wrong. The evolved form previously stretched that to 51 ticks at
+        // 0.5f to stand in for the real card's delayed SECOND pulse (1s stun,
+        // 3s gap, 1s stun). That approximation cannot survive the correction:
+        // 51 ticks at 0.0f is a 5.1-second unbroken hard stun off a 1-elixir
+        // card, an invention several times larger than the gap it was
+        // covering. So the second pulse joins the list of unmodeled mechanics
+        // in this file (nothing here can re-apply an on-hit effect after a
+        // delay), and the evolution differs from its base card by exactly the
+        // splash boost the source actually states.
         addEvolution(144,
             troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
-                .withOnHit(std::make_shared<FreezeOnHit>(10, 0.5f))
+                .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
                 .withDieAfterFirstHit(),
             troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
                 .withSplash(1.7f)
-                .withOnHit(std::make_shared<FreezeOnHit>(51, 0.5f))
+                .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
                 .withDieAfterFirstHit(),
             2, 1);
 
@@ -2240,9 +2270,12 @@ private:
         // Per-blast damage/knockback/slow strength aren't part of the
         // sourced data -- reasonable engine-internal constants, same
         // caveat as splashRadius/shieldHp elsewhere in this file.
+        // Slow on the death explosion, not on the attack -- see card id 40
+        // above for the measurement. This card copies its base stats and so
+        // carried the identical defect.
         add(troop(175, "Hero Ice Golem", 2.0f, Archetype::MeleeBuildingTargeter, 1315, SPEED_SLOW, 0.75f, 84, 25, 'c')
-            .withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
-            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84)).withSightRange(7.0f)
+            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(
+                2.0f, 84, std::make_shared<FreezeOnHit>(30, 0.65f))).withSightRange(7.0f)
             .withHeroAbility(2.0f, 170, std::make_shared<HeroIceGolemSnowstormEffect>(4.0f, 80, 1.0f, 20, 0.6f, 15)));
 
         // Hero Barbarian Barrel. Base stats copied from card id 101

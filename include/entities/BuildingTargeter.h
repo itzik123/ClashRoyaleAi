@@ -39,6 +39,7 @@ protected:
         std::shared_ptr<Entity> closestTower = nullptr;
         float minTowerDistance = std::numeric_limits<float>::max();
 
+        const float myRadius = ownEffectiveRadius();   // loop invariant
         for (const auto& entity : board.getEntities()) {
             if (entity->team == this->team || !entity->isAlive() || !entity->isTargetable()) continue;
             if (!entity->isBuilding()) continue;
@@ -48,10 +49,10 @@ protected:
                     minTowerDistance = dist;
                     closestTower = entity;
                 }
-            // effectiveSightTo, not raw sightRange -- see CombatEntity's own
+            // effectiveSightWith, not raw sightRange -- see CombatEntity's own
             // findTarget and the comment on effectiveSightTo for the measured
             // free-siege bug the mismatch caused.
-            } else if (dist <= effectiveSightTo(entity) && dist < minSightDistance) {
+            } else if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
                 minSightDistance = dist;
                 closestInSight = entity;
             }

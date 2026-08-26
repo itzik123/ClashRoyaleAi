@@ -74,13 +74,14 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-24 after the backlog sweep: **650 test cases, 6,423
-assertions**. 649 pass and **exactly one fails "as expected"** --
+Measured 2026-08-26 after the C++ simulator audit: **662 test cases, 6,481
+assertions**. 661 pass and **exactly one fails "as expected"** --
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
-second failure is a real regression. (It read 619 cases / 5,907 assertions on
-2026-08-21; the counts move as tests are added, so treat the **shape** -- one
-expected failure, exit 0 -- as the invariant, not the number.)
+second failure is a real regression. (It read 650 cases / 6,423 assertions on
+2026-08-24 and 619 / 5,907 on 2026-08-21; the counts move as tests are added, so
+treat the **shape** -- one expected failure, exit 0 -- as the invariant, not the
+number.)
 
 **Adding a test FILE needs the build run TWICE.** CMake globs `tests/**` with
 `CONFIGURE_DEPENDS`, so the first MSBuild re-globs and regenerates the vcxproj --
@@ -291,6 +292,71 @@ planner's arrival-condition are separate literals, they can disagree.
 
 **Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
 its own untouched `speed`, never recalibrated alongside the movement fix.
+
+**A freeze lasts exactly as many ticks as it says, since 2026-08-26.** It did
+not before: `freezeTicks` had two readers straddling its own decrement --
+`CombatEntity::update` drained the attack cooldown *before* it, `Troop::
+moveTowards` re-read it *after* -- so `applyFreeze(N)` slowed attacks for N ticks
+and movement for N-1, and a 1-tick stun did not stop movement at all. Movement
+now reads `CombatEntity::frozenThisTick`, published once at the top of update().
+GAMEPLAY-AFFECTING; every registered stun (Zap 5, Electro Spirit 3, Ice Spirit
+10, Freeze 40) got one tick longer in movement terms.
+
+The general rule this adds to the two bridge-mouth absorbing states: those were
+*two copies* of one number, and the rule written down for them ("two independent
+copies of close enough is a deadlock waiting for the right step size") does not
+cover this, because here there was only ONE copy. What differed was **when each
+reader sampled it**. So: *one fact, two readers, and a write in between* is the
+same hazard, and grepping for duplicate literals will not find it.
+
+**A deployed building dies exactly at its lifetime, since 2026-08-26.** Decay is
+`maxHp / (lifetimeTicks / 10)` per second in INTEGER arithmetic and nothing
+consulted the clock, so a building lived until repeated subtraction happened to
+finish it: a Cannon (824 hp / 300 ticks) decayed 27/s, sat on 14 hp at 30.0 s and
+died at **31.0 s**. `Building::update` now expires on `ticksAlive >=
+lifetimeTicks`, with `hp = 0` rather than `takeDamage()` -- expiry is not damage,
+so a shield must not absorb it and no OnDamageTakenEffect fires for a clock
+running out. It read as correct because the one test covering it used
+`hp = 3000, lifetime = 300` and 3000/30 = 100 exactly, while being NAMED "fully
+decays to 0 exactly at its configured lifetime". Same failure class as the
+`sight >= attack` blind spot: a check that cannot fail for the inputs it is
+given.
+
+**Two 2.6-deck cards were the wrong card, until 2026-08-26.**
+
+- **Ice Golem's slow is on its DEATH EXPLOSION, not its attack.** It carried
+  `.withOnHit(FreezeOnHit(30, 0.65f))` -- Ice Wizard's effect, copied along with
+  a "same story as Ice Wizard" comment, while that same comment said the death
+  slow was "not modeled". Both halves wrong in the same direction, and the
+  direction is what costs: an Ice Golem targets BUILDINGS, so the phantom slow
+  landed on a Crown Tower or a Cannon -- something that cannot walk out of it --
+  and refreshed every 2.5 s hit, a standing 35% cut to the fire rate of whatever
+  it tanked. `AreaDamageOnDeath` now takes the same optional on-hit slot
+  `AreaSpell` already had (nullptr default, every other caller bit-identical).
+- **Ice Spirit STUNS (0.0f), it does not half-slow (0.5f).** This engine has one
+  convention for each and they are not interchangeable: a stun is
+  `FreezeOnHit(ticks, 0.0f)` at every other site (Zap, Electro Spirit, Zappies,
+  Freeze), and 0.5-0.7 is the SLOW band (Ice Wizard, Ice Golem's explosion). The
+  Evolution's 51-tick window was collapsed to the base card's 10 at the same
+  time: 51 ticks at 0.0f would be a 5.1-second unbroken hard stun off a 1-elixir
+  card, a bigger invention than the delayed second pulse it stood in for.
+
+**`MatchRules::evaluate` identifies the King by TYPE, not by symbol, since
+2026-08-26 -- and `'R'` is NOT unique to the King.** Card id 93 (Mortar) is
+registered with symbol `'R'` too, so a living Mortar reported its owner's King as
+alive: with that King destroyed, `evaluate()` returned "not over",
+`cleanDeadEntities` erased the King the same tick, and from then on the ONLY
+thing answering was the Mortar. The match did not end, and the win was converted
+into a timeout that `TimeoutRules` then decided on towers instead. Reachable in
+ordinary training -- Mortar is in the registry and phase 1's `random_opponent`
+samples random decks. The guard is now `isTower() && symbol == 'R'`, which is
+what `Tower::update`'s Princess count and `TimeoutRules::resolve` already did.
+
+**The four existing MatchRules tests could not have caught it**, because they
+built their stand-in King as a `DummyEntity` wearing `'R'` -- which is precisely
+what a Mortar is at runtime. The double reproduced the bug and then asserted it
+was correct. They build real `Tower`s now. **A test double that is a
+non-instance wearing the discriminator cannot test the discriminator.**
 
 **Deploy time WAS the other half of this and is now FIXED (2026-08-19)** --
 `DEPLOY_TIME_TICKS = 10`. It turned out to be the mathematical flaw suppressing
@@ -923,6 +989,8 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 | 2026-08-21: four fidelity fixes | the arena's coordinates, King activation, blind lane pathing |
 | 2026-08-24: the placement head | row compaction, 1.52x, and why bit-exactness is unavailable |
 | 2026-08-24: the live-mirror state setters | item 22 — the setters Stage 2 calls, and the saturating probe that measured zero |
+| 2026-08-26: the C++ simulator audit | seven defects: Ice Golem/Ice Spirit, the freeze off-by-one, building expiry, the Mortar/King symbol clash |
+| 2026-08-26 (perf): the hot paths | 2.4-4.4x on collisions, 25x on the observation encoder, and the bit-equivalence sweep |
 
 ---
 
@@ -1648,6 +1716,11 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
   deck_audit.cpp       Per-card behaviour: identity, offence, defence, air,
                        deploy, and the sight/attack dead band.
   stall_repro.cpp      Minimal deterministic reproductions.
+  collision_bench.cpp  A/B for the 2026-08-26 hot-path rework. Holds BOTH the
+                       old and new resolveCollisions/resolvePositionAgainstBuildings
+                       in one binary, so the comparison cannot be confounded by
+                       the gameplay fixes that shipped alongside; also sweeps
+                       8,572 cells proving the two answer identically.
   verify_pyd.py        Post-rebuild gate: proves python_ai/clash_royale_env.pyd
                        actually carries the current engine, which the C++ suite
                        cannot tell you. Run it before any training run.

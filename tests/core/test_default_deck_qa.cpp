@@ -419,3 +419,158 @@ TEST_CASE("a spell placed nowhere near anything kills nothing", "[deck_qa][spell
     m.step(30);
     REQUIRE(m.aliveOf(SKELETONS, 1) == before);
 }
+
+// ============================================================================
+// STATUS EFFECTS AND LIFETIME (added 2026-08-26, C++ simulator audit).
+//
+// The block above pins what each deck card DOES. This one pins the state each
+// card leaves BEHIND on something else -- freeze, slow, expiry -- which is
+// where three registry-level defects were found. Every case here failed on the
+// code as it stood; see the report in perception/UPSTREAM_REQUESTS.md.
+// ============================================================================
+
+namespace {
+
+// One full GameManager-order tick against a bare Board (no GameManager, no
+// heuristic opponent, no elixir). Same sequence as damageDealtToAir's inline
+// loop above, extracted because four cases below need it -- including BOTH
+// commitPendingEntities calls, for the reason that helper's own comment gives.
+void tickBoard(Board& board, int tick) {
+    board.currentTick = tick;
+    board.commitPendingEntities(tick);
+    for (const auto& e : board.getEntities()) if (e->isAlive()) e->update(board);
+    board.commitPendingEntities(tick);
+    board.resolveCollisions();
+    board.cleanDeadEntities(tick);
+}
+
+std::shared_ptr<Entity> findByCard(Board& board, int cardId, int team) {
+    for (const auto& e : board.getEntities())
+        if (e->cardId == cardId && e->team == team) return e;
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("an Ice Spirit's freeze is a full stun, not a half-speed slow",
+          "[deck_qa][status]") {
+    // The real Ice Spirit STUNS -- its victim stops dead for one second. This
+    // engine's own convention for that is FreezeOnHit(ticks, 0.0f): Zap,
+    // Electro Spirit and the Freeze spell all use exactly 0.0f. Ice Spirit was
+    // registered at 0.5f, i.e. a 50% SLOW, which is a different card.
+    //
+    // Measured behaviourally rather than by reading freezeSlow, so this stays
+    // a statement about what the victim does.
+    Board board;
+    // A destination to walk toward: with no tower anywhere, findTarget's lane
+    // fallback returns nullptr, the Musketeer never acquires anything, and a
+    // "did not move" assertion would pass for the wrong reason.
+    auto goal = std::make_shared<Tower>(board.allocateId(), 9.0f, 2.0f, 2534, 0, 7.5f, 109, 8, 'P');
+    board.addEntity(goal);
+    CardRegistry::getInstance().getCard(MUSKETEER)->spawnEntity(9.0f, 14.0f, 1, board);
+    CardRegistry::getInstance().getCard(ICE_SPIRIT)->spawnEntity(9.0f, 13.0f, 0, board);
+    board.commitPendingEntities();
+
+    auto victimEntity = findByCard(board, MUSKETEER, 1);
+    REQUIRE(victimEntity);
+    auto victim = std::dynamic_pointer_cast<CombatEntity>(victimEntity);
+    REQUIRE(victim);
+
+    // Both spawn through the real pipeline, so both owe a deploy second.
+    int tick = 0;
+    while (victim->freezeTicks == 0 && tick < 60) tickBoard(board, ++tick);
+
+    // Control 1: the freeze must actually have landed. Every failure mode of
+    // the displacement check below (spirit never fired, projectile never
+    // arrived, Musketeer already dead) otherwise reads as "it did not move".
+    REQUIRE(victim->freezeTicks > 0);
+    REQUIRE(victim->isAlive());
+
+    const Vector2D frozenAt = victim->position;
+    const int freezeWindow = victim->freezeTicks;
+    for (int i = 0; i < freezeWindow; ++i) tickBoard(board, ++tick);
+    const float movedWhileFrozen = frozenAt.distanceTo(victim->position);
+
+    // Control 2: the same unit, same board, same number of ticks, once the
+    // stun has expired -- proves the zero above is the stun and not a unit
+    // that was never going anywhere.
+    REQUIRE(victim->freezeTicks == 0);
+    const Vector2D thawedAt = victim->position;
+    for (int i = 0; i < freezeWindow; ++i) tickBoard(board, ++tick);
+    const float movedAfterThaw = thawedAt.distanceTo(victim->position);
+
+    INFO("moved while frozen = " << movedWhileFrozen << ", after thaw = " << movedAfterThaw);
+    REQUIRE(movedAfterThaw > 0.1f);
+    REQUIRE(movedWhileFrozen == Catch::Approx(0.0f).margin(1e-4f));
+}
+
+TEST_CASE("an Ice Golem does not slow what it attacks", "[deck_qa][status]") {
+    // The real Ice Golem's slow is on its DEATH explosion. It has no on-attack
+    // slow at all. Registered with FreezeOnHit(30, 0.65f) -- Ice Wizard's
+    // effect, copied along with the "same story as Ice Wizard" comment -- it
+    // was permanently draining 35% off the fire rate of whatever building it
+    // tanked, refreshed every 2.5s hit. A tower cannot walk away from it.
+    Board board;
+    auto tower = std::make_shared<Tower>(board.allocateId(), 3.0f, 27.0f, 2534, 1, 7.5f, 109, 8, 'P');
+    board.addEntity(tower);
+    CardRegistry::getInstance().getCard(ICE_GOLEM)->spawnEntity(3.0f, 25.2f, 0, board);
+    board.commitPendingEntities();
+
+    const int towerBefore = tower->hp;
+    for (int t = 1; t <= 60; ++t) tickBoard(board, t);
+
+    // Control: the Golem must actually have connected, or "was not slowed" is
+    // vacuous. Ice Golem is a building-targeter, so the tower is its target.
+    REQUIRE(tower->hp < towerBefore);
+    REQUIRE(tower->freezeTicks == 0);
+    REQUIRE(tower->freezeSlow == Catch::Approx(1.0f));
+}
+
+TEST_CASE("an Ice Golem's death explosion slows nearby enemies", "[deck_qa][status]") {
+    // The other half of the same fix: the slow belongs here, and the registry
+    // comment used to say outright that it was "not modeled".
+    Board board;
+    CardRegistry::getInstance().getCard(ICE_GOLEM)->spawnEntity(9.0f, 10.0f, 0, board);
+    CardRegistry::getInstance().getCard(MUSKETEER)->spawnEntity(9.0f, 11.0f, 1, board);
+    board.commitPendingEntities();
+
+    auto golem = findByCard(board, ICE_GOLEM, 0);
+    auto victimEntity = findByCard(board, MUSKETEER, 1);
+    REQUIRE(golem);
+    REQUIRE(victimEntity);
+    auto victim = std::dynamic_pointer_cast<CombatEntity>(victimEntity);
+    REQUIRE(victim);
+    REQUIRE(victim->freezeTicks == 0); // nothing has touched it yet
+
+    const int hpBefore = victim->hp;
+    golem->hp = 0;
+    board.cleanDeadEntities(1);
+
+    // Control: the explosion's DAMAGE half already worked, so if this stops
+    // firing the test is measuring the wrong thing entirely.
+    REQUIRE(victim->hp < hpBefore);
+    REQUIRE(victim->freezeTicks > 0);
+    REQUIRE(victim->freezeSlow < 1.0f);
+}
+
+TEST_CASE("a Cannon expires at exactly its lifetime, not one second late",
+          "[deck_qa][lifetime]") {
+    // Building decay is maxHp / (lifetimeTicks / 10) per second, INTEGER
+    // division, and nothing ever checked the clock itself -- so a building
+    // lived until its truncated decay happened to finish it off. A Cannon
+    // (824 hp, 300 ticks) decayed 27/s, reached 14 hp at 30.0s and only died
+    // at 31.0s: 3.3% of a free extra Cannon, which for a Hog Cycle deck is
+    // roughly two extra shots every cycle.
+    Board board;
+    CardRegistry::getInstance().getCard(CANNON)->spawnEntity(9.0f, 8.0f, 0, board);
+    board.commitPendingEntities();
+    auto cannon = findByCard(board, CANNON, 0);
+    REQUIRE(cannon);
+
+    constexpr int LIFETIME_TICKS = 300; // Building's own default, 30s at 10 ticks/s
+    for (int t = 1; t < LIFETIME_TICKS; ++t) tickBoard(board, t);
+    REQUIRE(cannon->isAlive()); // still standing one tick short of expiry
+
+    tickBoard(board, LIFETIME_TICKS);
+    REQUIRE_FALSE(cannon->isAlive());
+}

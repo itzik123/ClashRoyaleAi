@@ -102,3 +102,32 @@ TEST_CASE("sampleRandomDeck always produces a deck that passes validateDeckSlots
         REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
     }
 }
+
+
+TEST_CASE("each hand slot's card-identity block is a true one-hot", "[clash_env][observation]") {
+    // The one-hot tail is built by resize-and-set rather than by 185
+    // push_backs per slot, and the two are only equivalent while the block is
+    // zeroed first and exactly one index is written. An out-of-range card id
+    // must leave the block empty rather than write past it.
+    ClashEnv env({ 15, 6, 25, 40, 24, 72, 33, 7 }, { 15, 6, 25, 40, 24, 72, 33, 7 });
+    env.reset();
+
+    const std::vector<float> obs = env.getObservationForTeam(0);
+    const std::vector<int> hand = env.getHand();
+
+    constexpr int BOARD_W = 18, BOARD_H = 34, CHANNELS = 21, HAND = 4, CARD_IDS = 185;
+    const size_t oneHotBase = static_cast<size_t>(BOARD_W) * BOARD_H * CHANNELS + 1 + HAND;
+
+    REQUIRE(hand.size() == static_cast<size_t>(HAND));
+    for (int slot = 0; slot < HAND; ++slot) {
+        const size_t base = oneHotBase + static_cast<size_t>(slot) * CARD_IDS;
+        int hotCount = 0, hotIndex = -1;
+        for (int k = 0; k < CARD_IDS; ++k) {
+            if (obs[base + k] != 0.0f) { hotCount++; hotIndex = k; }
+        }
+        INFO("hand slot " << slot << " holds card " << hand[slot]);
+        REQUIRE(hotCount == 1);
+        REQUIRE(hotIndex == hand[slot]);
+        REQUIRE(obs[base + hotIndex] == Catch::Approx(1.0f));
+    }
+}

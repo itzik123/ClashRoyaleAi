@@ -698,7 +698,17 @@ TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
 }
 
-TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_registry][on_hit]") {
+TEST_CASE("Ice Golem's slow is on its death explosion, never on its attack",
+          "[card_registry][on_hit][regression]") {
+    // This case used to assert the opposite -- that an Ice Golem freezes what
+    // it HITS -- and so pinned the defect in place. The real card has no
+    // on-attack slow; the slow belongs to the death explosion. See the
+    // registry entry for card id 40.
+    //
+    // The direction matters more than it looks: an Ice Golem is a
+    // building-targeter, so its target is always a Crown Tower or a defensive
+    // building, i.e. something that cannot walk out of the effect and whose
+    // only freeze-sensitive property is its FIRE RATE.
     Board board;
     // Ice Golem is a MeleeBuildingTargeter: it only ever targets Buildings.
     auto enemy = std::make_shared<Building>(1, 5.0f, 5.5f, 1000, 1, 'C', 5.0f, 10, 10);
@@ -708,9 +718,20 @@ TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_reg
     iceGolem->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
-    advancePastDeploy(board.getEntities().back(), board);
-    board.getEntities().back()->update(board);
+    auto golem = board.getEntities().back();
+    advancePastDeploy(golem, board);
+    const int hpBeforeAttack = enemy->hp;
+    golem->update(board);
 
+    // Control: the attack really did land, so "no freeze" is a statement
+    // about the hit rather than about nothing happening.
+    REQUIRE(enemy->hp < hpBeforeAttack);
+    REQUIRE(enemy->freezeTicks == 0);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(1.0f));
+
+    // ... and dying DOES slow: same duration and strength, correct trigger.
+    golem->hp = 0;
+    board.cleanDeadEntities();
     REQUIRE(enemy->freezeTicks == 30);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
 }

@@ -508,3 +508,88 @@ TEST_CASE("isBackRowDeadZone mirrors the same opening on the top back row", "[bo
     REQUIRE(board.isBackRowDeadZone(0.0f, maxY));
     REQUIRE_FALSE(board.isBackRowDeadZone(8.5f, maxY));
 }
+
+
+// ---------------- collision: what does NOT participate ----------------
+
+TEST_CASE("resolveCollisions ignores untargetable entities (spells, projectiles)",
+          "[board][collision]") {
+    // resolveCollisions classifies a troop as "radius 0 AND isTargetable()".
+    // AreaSpell and Projectile both override isTargetable() to false, which is
+    // the ONLY thing keeping a Fireball's own marker entity from shoving the
+    // troops it is about to land on. Nothing pinned it, so a refactor of that
+    // predicate could have removed it silently.
+    Board board;
+    auto troop = std::make_shared<DummyEntity>(1, 5.0f, 5.0f, 100, 0);
+    auto ghost = std::make_shared<DummyEntity>(2, 5.0f, 5.0f, 100, 1);
+    ghost->targetable = false;   // stands in for AreaSpell/Projectile
+    spawn(board, troop);
+    spawn(board, ghost);
+
+    board.resolveCollisions();
+
+    REQUIRE(troop->position.x == Catch::Approx(5.0f));
+    REQUIRE(troop->position.y == Catch::Approx(5.0f));
+    REQUIRE(ghost->position.x == Catch::Approx(5.0f));
+    REQUIRE(ghost->position.y == Catch::Approx(5.0f));
+}
+
+TEST_CASE("resolvePositionAgainstBuildings tracks buildings appearing and disappearing",
+          "[board][collision][lifecycle]") {
+    // The set of colliders changes only through commitPendingEntities and
+    // cleanDeadEntities. This walks a position through both transitions in one
+    // case, so any caching of that set has to be invalidated by both.
+    Board board;
+    const Vector2D probe{ 5.0f, 5.0f };
+
+    // 1. Empty board: untouched.
+    REQUIRE(board.resolvePositionAgainstBuildings(probe, 99).x == Catch::Approx(5.0f));
+
+    // 2. A building commits: pushed out.
+    class Blocker : public Entity {
+    public:
+        Blocker(int id, float x, float y) : Entity(id, x, y, 100, 1, 'B') {}
+        void update(Board&) override {}
+        float getCollisionRadius() const override { return 1.0f; }
+    };
+    auto blocker = std::make_shared<Blocker>(7, 5.0f, 5.0f);
+    board.addEntity(blocker);
+    board.commitPendingEntities();
+    const Vector2D pushed = board.resolvePositionAgainstBuildings(probe, 99);
+    REQUIRE(pushed.distanceTo(blocker->position) > 1.0f);
+
+    // 3. It dies and is erased: untouched again.
+    blocker->takeDamage(100);
+    board.cleanDeadEntities();
+    const Vector2D afterDeath = board.resolvePositionAgainstBuildings(probe, 99);
+    REQUIRE(afterDeath.x == Catch::Approx(5.0f));
+    REQUIRE(afterDeath.y == Catch::Approx(5.0f));
+}
+
+
+TEST_CASE("pushAwayFrom clears the full radius even from dead centre",
+          "[board][collision][regression]") {
+    // The degenerate "already exactly on the obstacle" branch reused its
+    // synthetic unit distance as if it were the real one, so the push came out
+    // short by exactly that 1.0 -- see Board::pushAwayFrom.
+    const Vector2D centre{ 5.0f, 5.0f };
+
+    SECTION("dead centre") {
+        const Vector2D out = Board::pushAwayFrom(centre, centre, 1.4f);
+        REQUIRE(out.distanceTo(centre) >= Catch::Approx(1.4f).margin(0.01f));
+    }
+
+    SECTION("a King Tower's larger footprint, same rule") {
+        const Vector2D out = Board::pushAwayFrom(centre, centre, 2.4f);
+        REQUIRE(out.distanceTo(centre) >= Catch::Approx(2.4f).margin(0.01f));
+    }
+
+    SECTION("the ordinary off-centre case is unchanged") {
+        // 0.5 away, needs 1.4: lands on the boundary plus the perpendicular
+        // slide, exactly as before.
+        const Vector2D near{ 5.5f, 5.0f };
+        const Vector2D out = Board::pushAwayFrom(near, centre, 1.4f);
+        REQUIRE(out.x == Catch::Approx(6.4f));
+        REQUIRE(out.y == Catch::Approx(4.95f));
+    }
+}
