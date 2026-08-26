@@ -153,3 +153,62 @@ def test_a_stage_snapshot_records_the_curriculum_it_was_taken_at(tmp_path,
     assert payload["teacher_stage"] == 3
     assert "cleared stage 3" in payload["reason"]
     assert "optimizer" not in payload, "stage snapshots are never resumed from"
+
+
+# --- what a rollout that ENDED is worth -----------------------------------
+#
+# `search_action` scored a finished rollout as `reward * terminal_weight`, and
+# the engine pays ~0 for a draw. So:
+#
+#     loss -> -1.0 * 10 = -10.0
+#     draw ->  0.0 * 10 =   0.0
+#
+# while the reward the POLICY is trained on prices the two identically:
+#
+#     loss -> raw -1.0, no penalty        = -1.0
+#     draw -> raw  0.0 - DRAW_PENALTY 1.0 = -1.0
+#
+# DRAW_PENALTY exists precisely to stop a timeout being the safe outcome, and
+# the search was handing a drawn line a 10-point advantage over a lost one.
+# That is not a small mis-weighting: it means the search is maximising a
+# DIFFERENT objective from the one the policy is trained on, which is exactly
+# the claim that makes it a policy-improvement operator at all.
+#
+# It only bites when a rollout can actually reach the clock -- the horizon is
+# 4-12 decision steps against a ~360 s match -- so it is an ENDGAME defect, and
+# the endgame is where running the clock out is tempting in the first place.
+
+def test_a_drawn_rollout_is_priced_like_a_loss_not_like_a_neutral_outcome():
+    from python_ai.rewards.weights import DRAW_PENALTY
+    from python_ai.search.search import terminal_score
+    assert terminal_score(0.0, weight=10.0) == terminal_score(-1.0, weight=10.0)
+    assert terminal_score(0.0, weight=10.0) == -DRAW_PENALTY * 10.0
+
+
+def test_a_win_still_dominates_and_a_loss_still_sinks():
+    from python_ai.search.search import terminal_score
+    assert terminal_score(1.0, weight=10.0) == 10.0
+    assert terminal_score(-1.0, weight=10.0) == -10.0
+    assert terminal_score(1.0, weight=10.0) > terminal_score(0.0, weight=10.0)
+
+
+def test_the_terminal_weight_still_dominates_any_critic_value():
+    """The reason the weight exists: a finished game must outrank anything the
+    critic can say about an unfinished one."""
+    from python_ai.search.search import terminal_score
+    plausible_critic_range = 2.0
+    for reward in (1.0, -1.0, 0.0):
+        assert abs(terminal_score(reward, weight=10.0)) > plausible_critic_range
+
+
+def test_search_action_uses_the_shared_terminal_score():
+    """A static check: the scoring must not be re-inlined in the search loop,
+    which is how it drifted from the reward function in the first place."""
+    import inspect
+    import re
+
+    from python_ai.search import search
+    body = inspect.getsource(search.search_action)
+    assert "terminal_score" in body
+    assert not re.search(r"reward\s*\*\s*cfg\.terminal_weight", body), (
+        "terminal scoring re-inlined in search_action")

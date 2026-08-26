@@ -29,6 +29,7 @@ import torch
 
 import clash_royale_env
 from python_ai.models.policy_io import LSTM_HIDDEN
+from python_ai.rewards.weights import DRAW_PENALTY
 
 HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
 #: The no-op arm of the card head is the column past the hand.
@@ -128,6 +129,31 @@ def build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_n
     return cands
 
 
+def terminal_score(reward, weight):
+    """What a rollout that ENDED is worth, on the CRITIC's scale.
+
+    A finished game is not a position to be valued -- the critic's estimate of
+    one is meaningless -- so the real outcome is used, weighted to dominate any
+    bootstrapped value.
+
+    A DRAW IS PRICED LIKE A LOSS, because that is what the policy is trained on.
+    This used to be `reward * weight`, and the engine pays ~0 for a draw, so a
+    drawn line scored 0.0 against a lost line's -10.0 -- a ten-point advantage
+    for running the clock out. The training reward gives both exactly -1.0
+    (a loss is raw -1.0; a draw is raw 0.0 minus DRAW_PENALTY 1.0), and
+    DRAW_PENALTY exists precisely to stop a timeout being the safe outcome.
+
+    A search that maximises a different objective from the one the policy is
+    trained on is not a policy-improvement operator, which is the entire claim
+    being made for it. The horizon is 4-12 decision steps against a ~360 s
+    match, so this only bites when a rollout can actually reach the clock --
+    i.e. in the endgame, which is exactly where stalling is tempting.
+    """
+    if abs(reward) > 0.5:
+        return reward * weight
+    return -DRAW_PENALTY * weight
+
+
 @torch.no_grad()
 def search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden_next,
                    greedy, cfg, device, return_details=False):
@@ -177,12 +203,11 @@ def search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden
     _, _, _, values, _ = net.step_lstm_and_card(feats, (hx, cx))
     scores = values.squeeze(-1).clone()
 
-    # A rollout that ENDED is not a position to be valued -- the critic's
-    # estimate of a finished game is meaningless. Use the real outcome instead,
-    # weighted to dominate any bootstrapped value.
+    # A rollout that ENDED is scored by its real outcome -- see terminal_score,
+    # which also prices a draw like a loss, as the training reward does.
     for i, (done, reward) in enumerate(terminal):
         if done:
-            scores[i] = reward * cfg.terminal_weight
+            scores[i] = terminal_score(reward, cfg.terminal_weight)
 
     best = int(scores.argmax().item())
     if return_details:
