@@ -364,3 +364,71 @@ def test_both_heads_can_resolve_a_single_column_at_small_scale():
           f"coarse only: {control:.3f}   +hires: {treatment:.3f}")
     assert treatment >= 0.99, f"the branch should fit exactly, got {treatment}"
     assert treatment >= control, "the branch must not cost resolution"
+
+
+def test_the_pooled_map_covers_the_whole_board():
+    """`ceil_mode=True` on both MaxPools is load-bearing, and its failure is
+    SILENT -- nothing raises, the network simply gets smaller.
+
+    WHAT THIS DOES NOT TEST, because the obvious version of it does not work.
+    The first attempt asserted that lighting up board row 33 changes the trunk
+    output, on the theory that floor-pooling (34 -> 17 -> 8, covering input
+    rows 0..31) would discard the back row behind the King. MEASURED: with
+    ceil_mode forced off the shape drops to (32, 8, 4) and NO row is dead --
+    the convolutions spread row 33's signal into earlier rows before the pool
+    truncates, so it still reaches the trunk. That test passed either way and
+    would have been false confidence.
+
+    What actually changes is the SIZE of the map, in both dimensions, so that
+    is what is pinned -- derived from the board and the pooling arithmetic
+    rather than hardcoded as (9, 5), so it stays honest if the board changes.
+    """
+    import math
+
+    import torch
+
+    from python_ai.engine_constants import BOARD_H, BOARD_W, N_CHANNELS
+    from python_ai.models.net import MicroRoyaleNet
+
+    net = MicroRoyaleNet(num_ability_slots=0)
+    out = net.cnn_trunk(torch.zeros(1, N_CHANNELS, BOARD_H, BOARD_W))
+
+    def pooled(size):        # two 2x2 pools, ceil at each
+        return math.ceil(math.ceil(size / 2) / 2)
+
+    def floored(size):
+        return (size // 2) // 2
+
+    assert out.shape[2] == pooled(BOARD_H), (
+        f"pooled height {out.shape[2]} != ceil-pooled {pooled(BOARD_H)}; "
+        f"floor-pooling would give {floored(BOARD_H)} and silently shrink the "
+        "board the network can see")
+    assert out.shape[3] == pooled(BOARD_W)
+    # and the two must actually differ, or this asserts nothing at all
+    assert pooled(BOARD_H) != floored(BOARD_H)
+
+
+def test_every_board_row_reaches_the_trunk():
+    """A separate, weaker property: no row is wholly invisible to the CNN.
+
+    Deliberately NOT presented as the ceil_mode guard -- see above, it passes
+    with ceil_mode off. It catches a different regression: a row disconnected
+    by a stride, crop or channel-layout change, which would be a blind spot the
+    network could never learn to use.
+    """
+    import torch
+
+    from python_ai.engine_constants import BOARD_H, BOARD_W, N_CHANNELS
+    from python_ai.models.net import MicroRoyaleNet
+
+    net = MicroRoyaleNet(num_ability_slots=0)
+    spatial = torch.zeros(1, N_CHANNELS, BOARD_H, BOARD_W)
+    base = net.cnn_trunk(spatial)
+
+    dead = []
+    for row in range(BOARD_H):
+        lit = spatial.clone()
+        lit[0, 0, row, :] = 1.0
+        if torch.equal(net.cnn_trunk(lit), base):
+            dead.append(row)
+    assert not dead, f"rows invisible to the CNN trunk: {dead}"
