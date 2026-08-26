@@ -46,6 +46,8 @@ import time
 import numpy as np
 import torch
 
+from python_ai.rl.checkpointing import atomic_save
+
 from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
 
@@ -293,7 +295,7 @@ def main():
         score(net, obs, hxs, targets, train_idx, "train")
         results[label] = score(net, obs, hxs, targets, test_idx, "HELD-OUT")
         out = os.path.join(here, files[label])
-        torch.save({"model": net.state_dict()}, out)
+        atomic_save({"model": net.state_dict()}, out)
         print(f"    saved {out}")
         print()
 

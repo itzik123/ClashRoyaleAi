@@ -20,6 +20,8 @@ from collections import deque
 
 import torch
 
+from python_ai.rl.checkpointing import atomic_save
+
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
 # resolve; importing the package is also what makes `clash_royale_env` (an
 # unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
@@ -145,7 +147,7 @@ def main():
                                                               model[k].float())]
         ckpt["model"] = model
         ckpt["optimizer"] = _widen_optimizer(ckpt.get("optimizer"), prev, model)
-        torch.save(ckpt, args.dst)
+        atomic_save(ckpt, args.dst)
         print(f"wrote {args.dst}: {len(model)} tensors "
               f"({len(set(model) - set(prev))} new, {len(moved)} changed, "
               f"{len(shared) - len(moved)} identical), inheriting training "
@@ -169,7 +171,7 @@ def main():
         "random_phase_episode_start": args.episodes,
         "deck_curriculum_stage": args.stage,
     }
-    torch.save(ckpt, args.dst)
+    atomic_save(ckpt, args.dst)
     print(f"wrote {args.dst}: {len(model)} tensors, resuming at episode "
           f"{args.episodes}, stage {args.stage}")
 

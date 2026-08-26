@@ -176,3 +176,56 @@ def test_the_resample_count_is_the_one_every_recorded_ci_used():
     """Changing it would make new CIs not directly comparable with the numbers
     in CLAUDE.md."""
     assert stats.N_RESAMPLES == 10000
+
+
+# --- the fifth copy -------------------------------------------------------
+#
+# `eval/stats.py` exists because "four harnesses each had their own copy" of
+# the paired bootstrap. `prove_hog.py` was a fifth that the consolidation
+# missed, and it was the one that mattered most: it hand-rolled
+#
+#     boot = np.array([np.mean(np.random.choice(d, len(d))) for _ in range(5000)])
+#
+# on the UNSEEDED global RNG, so its 95% CI -- the number the script's own
+# verdict branches on ("BETTER than chance" / "WORSE than chance") -- moved
+# between two runs of the identical measurement. `stats._rng` is seeded by
+# default for exactly this reason: "An unseeded default would make two runs of
+# the same measurement disagree in the third decimal for no reason anyone could
+# trace." Near a boundary the disagreement is not in the third decimal, it is
+# in the conclusion.
+
+def test_no_eval_harness_hand_rolls_its_own_bootstrap():
+    """The drift guard. A harness resampling with the global RNG is both a
+    second copy of a consolidated function and an irreproducible statistic."""
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted((root / "eval").glob("*.py")):
+        if path.name == "stats.py":
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"np\.random\.(choice|randint|integers)\(", code):
+                offenders.append(f"eval/{path.name}:{i}: {line.strip()}")
+    assert not offenders, (
+        "hand-rolled resampling on the global RNG:\n" + "\n".join(offenders))
+
+
+def test_the_shared_bootstrap_is_reproducible_by_default():
+    """The property the harnesses are being routed to. Two calls with no
+    explicit rng must agree exactly, or consolidating them buys nothing."""
+    import numpy as np
+    from python_ai.eval.stats import bootstrap_ci
+    d = np.linspace(-3.0, 5.0, 64)
+    assert bootstrap_ci(d, n=200) == bootstrap_ci(d, n=200)
+
+
+def test_an_explicit_rng_still_overrides_the_default_seed():
+    """A caller that WANTS independent resamples must still be able to say so."""
+    import numpy as np
+    from python_ai.eval.stats import bootstrap_ci
+    d = np.linspace(-3.0, 5.0, 64)
+    a = bootstrap_ci(d, rng=np.random.default_rng(1), n=200)
+    b = bootstrap_ci(d, rng=np.random.default_rng(2), n=200)
+    assert a != b

@@ -31,6 +31,8 @@ import random
 import sys
 
 import numpy as np
+
+from python_ai.eval import stats
 import torch
 
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
@@ -148,7 +150,12 @@ def main():
 
     p = np.array(pol, float); r = np.array(rnd, float)
     d = p - r
-    boot = np.array([np.mean(np.random.choice(d, len(d))) for _ in range(5000)])
+    # THE SHARED bootstrap, not a sixth hand-rolled copy. It is seeded by
+    # default, so re-running this measurement reproduces its own CI -- and this
+    # script's verdict below BRANCHES on the CI bounds, so an unseeded resample
+    # could flip "BETTER than chance" to "indistinguishable" between two runs
+    # of identical data.
+    _, ci_lo, ci_hi = stats.bootstrap_ci(d)
     better = int((d > 1e-9).sum()); worse = int((d < -1e-9).sum())
     from collections import Counter
     modal, cnt = Counter(cells).most_common(1)[0]
@@ -161,14 +168,14 @@ def main():
     print(f"    policy cell        {p.mean():8.1f}")
     print(f"    random legal cell  {r.mean():8.1f}")
     print(f"    delta              {d.mean():+8.1f}   95% CI "
-          f"[{np.percentile(boot,2.5):+.1f}, {np.percentile(boot,97.5):+.1f}]")
+          f"[{ci_lo:+.1f}, {ci_hi:+.1f}]")
     print(f"    {better} better / {worse} worse / {len(p)-better-worse} tied")
     print(f"  placement: modal={modal} {cnt/len(cells):.1%}  distinct={len(set(cells))}")
     print()
-    if d.mean() > 0 and np.percentile(boot, 2.5) > 0:
+    if d.mean() > 0 and ci_lo > 0:
         print("  => BETTER than chance. The placement FUNCTION works; the low")
         print("     usage is a VALUATION by the card head, not a broken head.")
-    elif np.percentile(boot, 97.5) < 0:
+    elif ci_hi < 0:
         print("  => WORSE than chance. A policy cannot be correctly valuing a card")
         print("     it places worse than random. The head is the lever.")
     else:
