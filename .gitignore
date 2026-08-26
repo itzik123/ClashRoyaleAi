@@ -444,3 +444,10 @@ tools/audit/bin/
 # checkout reproduces them byte-for-byte):
 #   python_ai/venv/Scripts/python.exe tools/viewer_fixtures/make_fixtures.py
 web/fixtures/
+
+# Scratch dir for engine audits and the side-by-side bench: extracted video
+# frames, cropped clips, compiled ELF probes, and the multi-MB payloads the
+# viewer embeds. 280 MB of it was staged on 2026-08-26 before this rule
+# existed. Everything in it is REGENERABLE -- the sources that produce it are
+# tracked, in perception/tools/side_by_side/, and that README has the commands.
+.vid/
