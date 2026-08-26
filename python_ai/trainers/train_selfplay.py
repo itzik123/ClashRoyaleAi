@@ -21,6 +21,7 @@ WHY THIS ONE NEEDS TRUNCATION BOOTSTRAPPING and pipeline 1 does not: scenarios
 inject a focused window that can end an episode without a king dying. See
 `BaseTrainer.uses_truncation_bootstrap`.
 """
+import math
 import os
 import sys
 
@@ -413,7 +414,7 @@ class Phase2Trainer(BaseTrainer):
         w.add_scalar("Rates/Draw_100", m["draw_rate"], ep)
         w.add_scalar("Rates/Decisive_Win_100", m["decisive_win_rate"], ep)
         w.add_scalar("Training/Decided_Count_100", m["decided"], ep)
-        if m["decisive_win_rate_long"] is not None:
+        if math.isfinite(m["decisive_win_rate_long"]):
             w.add_scalar("Rates/Decisive_Win_500",
                          m["decisive_win_rate_long"], ep)
         w.add_scalar("Progress/Episode_Length_50", m["avg_length"], ep)

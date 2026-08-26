@@ -108,9 +108,18 @@ class EpisodeMetrics:
             "loss_rate": losses / n if n else float("nan"),
             "draw_rate": draws / n if n else float("nan"),
             "decided": decided,
-            "decisive_win_rate": wins / decided if decided else 0.0,
+            # NaN, not 0.0 and not None: an undefined rate must read the same
+            # way everywhere in this dict, or a caller has to branch on three
+            # conventions to ask one question. 0.0 was the actively misleading
+            # one -- an agent that DRAWS EVERY GAME has no decided games, and
+            # reporting that as a 0.00 decisive win rate is indistinguishable
+            # from losing every decided game, which is a different diagnosis
+            # with a different fix. Draw-everything is precisely the timeout
+            # pathology DRAW_PENALTY exists to fight, so this misreported at
+            # the one moment it mattered most.
+            "decisive_win_rate": wins / decided if decided else float("nan"),
             "decisive_win_rate_long": (wins_long / decided_long
-                                       if decided_long else None),
+                                       if decided_long else float("nan")),
             "avg_reward": _mean(self.rewards),
             "avg_shaping": _mean(self.shaping),
             "avg_length": _mean(self.lengths),

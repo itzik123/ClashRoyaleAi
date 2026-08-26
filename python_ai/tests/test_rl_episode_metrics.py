@@ -69,11 +69,37 @@ def test_the_decisive_rate_excludes_draws_and_the_raw_rate_does_not():
     assert s["decided"] == 53
 
 
-def test_an_all_draw_window_reports_a_decisive_rate_of_zero_not_a_crash():
+def test_an_all_draw_window_reports_an_UNDEFINED_decisive_rate_not_a_crash():
+    """An all-draw window has no decided games, so its decisive win rate does
+    not exist -- and it must not be reported as 0.00.
+
+    This test previously pinned 0.0. Its stated intent was "not a crash", which
+    NaN satisfies equally, and the 0.0 was incidental to that goal rather than
+    the goal itself. It conflicted with this module's own documented rule
+    ("Empty windows give NaN rather than 0, so 'no data yet' cannot be mistaken
+    for 'measured zero'") and with `test_empty_windows_report_nan_not_zero`
+    directly below.
+
+    The conflict matters most exactly where it is most misleading: an agent
+    that DRAWS EVERY GAME is the timeout pathology DRAW_PENALTY exists to
+    fight, and in that state the console printed a decisive rate of 0.00 --
+    indistinguishable from "loses every decided game", which is a different
+    diagnosis with a different fix.
+    """
     m = EpisodeMetrics(num_envs=1)
     for _ in range(5):
         m.finish_episode(0, 0.0, 0.0, 0.0)
-    assert m.summary()["decisive_win_rate"] == 0.0
+    assert np.isnan(m.summary()["decisive_win_rate"])
+
+
+def test_every_undefined_rate_uses_ONE_convention():
+    """`summary()` used three conventions for "undefined" in one dict: NaN for
+    the raw rates, 0.0 for the decisive rate, and None for the long decisive
+    rate. A caller cannot branch correctly on three."""
+    s = EpisodeMetrics(num_envs=1).summary()
+    for key in ("win_rate", "loss_rate", "draw_rate",
+                "decisive_win_rate", "decisive_win_rate_long"):
+        assert isinstance(s[key], float) and np.isnan(s[key]), (key, s[key])
 
 
 def test_windows_have_the_documented_sizes():
@@ -103,4 +129,4 @@ def test_empty_windows_report_nan_not_zero():
     s = EpisodeMetrics(num_envs=1).summary()
     assert np.isnan(s["avg_reward"])
     assert np.isnan(s["win_rate"])
-    assert s["decisive_win_rate_long"] is None
+    assert np.isnan(s["decisive_win_rate_long"])

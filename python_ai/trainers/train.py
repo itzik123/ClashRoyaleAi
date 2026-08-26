@@ -26,6 +26,7 @@ in `rl/`, the reward terms in `rewards/`, the curriculum state machine in
 `rl/curriculum.py`. What remains here is the opponent, the phase machine, and
 the console read-out.
 """
+import math
 import os
 import subprocess
 import sys
@@ -484,7 +485,7 @@ class Phase1Trainer(BaseTrainer):
         # How many of the last 100 games actually got decided -- a low value
         # explains why the curriculum gate has not advanced yet.
         w.add_scalar("Training/Decided_Count_100", m["decided"], ep)
-        if m["decisive_win_rate_long"] is not None:
+        if math.isfinite(m["decisive_win_rate_long"]):
             w.add_scalar("Rates/Decisive_Win_500",
                          m["decisive_win_rate_long"], ep)
         # Learning to close games shows up as shorter episodes and less enemy
