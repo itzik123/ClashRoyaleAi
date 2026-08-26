@@ -49,6 +49,8 @@ import sys
 
 import numpy as np
 import torch
+
+from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
 
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
@@ -263,8 +265,7 @@ def main():
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable, 0.5)
-            opt.step()
+            clip_and_step(opt, trainable, 0.5)
             tot += loss.item() * B
             seen += B
         acc = "  ".join(f"{'Cannon' if c == CANNON else 'Fireball'} "

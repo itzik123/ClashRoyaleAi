@@ -62,6 +62,8 @@ import sys
 
 import numpy as np
 import torch
+
+from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
 
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
@@ -350,8 +352,7 @@ def train_bc(data, net=None, epochs=6, lr=1e-3, batch_episodes=8, device=None,
                 continue
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            opt.step()
+            clip_and_step(opt, net.parameters(), 1.0)
             tot_loss += float(loss)
             n_batches += 1
 

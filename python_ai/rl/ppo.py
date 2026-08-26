@@ -33,6 +33,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 
 from python_ai.advisors import advisor_target
+from python_ai.rl.optim_step import clip_and_step
 
 
 def _mean(xs):
@@ -368,8 +369,6 @@ class PPOUpdater:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                total_norm = nn.utils.clip_grad_norm_(self.net.parameters(),
-                                                      cfg.max_grad_norm)
 
                 # THE CONTAINMENT GUARD. A single non-finite element anywhere
                 # in this minibatch -- an exp() overflow in the PPO ratio, a
@@ -389,11 +388,10 @@ class PPOUpdater:
                 # no descent direction in a non-finite gradient, so the correct
                 # step size is zero. The stats appends are skipped with it, so
                 # a corrupt minibatch cannot drag the reported means either.
-                if not bool(torch.isfinite(total_norm)):
-                    self.optimizer.zero_grad(set_to_none=True)
+                if not clip_and_step(self.optimizer, self.net.parameters(),
+                                     cfg.max_grad_norm):
                     nonfinite_skips += 1
                     continue
-                self.optimizer.step()
 
                 actor_losses.append(actor_loss.item())
                 critic_losses.append(critic_loss.item())

@@ -18,6 +18,8 @@ import sys
 import numpy as np
 import torch
 
+from python_ai.rl.optim_step import clip_and_step
+
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
 # resolve; importing the package is also what makes `clash_royale_env` (an
 # unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
@@ -197,8 +199,7 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
             loss = loss / used
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            opt.step()
+            clip_and_step(opt, net.parameters(), 1.0)
             tot_loss += float(loss.detach())
             n_batches += 1
         rec = {"epoch": epoch, "loss": tot_loss / max(1, n_batches),
