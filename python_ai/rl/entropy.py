@@ -47,6 +47,11 @@ class EntropyController:
         self.cfg = cfg
         self.coef_card = cfg.initial_coef_card
         self.coef_placement = cfg.initial_coef_placement
+        #: Updates whose measurement was unreadable and whose step was skipped.
+        #: Not checkpointed -- it describes THIS process's health, not the
+        #: run's state. Non-zero means the PPO update upstream produced nothing
+        #: to average, which is a numerical fault worth chasing, not a quirk.
+        self.frozen_updates = 0
 
     # -- targets ------------------------------------------------------------
     def placement_target(self, episodes_done):
@@ -70,8 +75,34 @@ class EntropyController:
         return self.cfg.target_card
 
     # -- the controller step ------------------------------------------------
+    #: Largest exponent handed to `math.exp`. exp() RAISES OverflowError past
+    #: ~709 rather than saturating, and with `coef_step_max=None` -- the PHASE1
+    #: default, "None disables it" -- nothing else bounds the argument. exp(50)
+    #: is already ~5e21, so anything beyond it is clipped to `ceil` regardless
+    #: and the bound costs no reachable behaviour.
+    _MAX_EXPONENT = 50.0
+
     def _step_one(self, coef, rate, target, measured, ceil):
-        step = math.exp(rate * (target - measured))
+        # A NON-FINITE MEASUREMENT FREEZES THIS HEAD, and only this head.
+        #
+        # `measured` is a mean over the PPO update's minibatches, and it is NaN
+        # whenever there were none to average -- which is exactly what happens
+        # when the non-finite guard in `rl/ppo.py` drops them all. Without this
+        # check the chain runs: exp(NaN) = NaN -> coef = NaN -> the entropy
+        # bonus is NaN -> every future loss is NaN -> every future update is
+        # dropped -> and `state_dict` writes the NaN to the checkpoint, so a
+        # resume reloads the dead run. The controller is the link that turns a
+        # transient numerical fault into a permanent one.
+        #
+        # Holding the coefficient is the right response, not resetting it: one
+        # unreadable update is no evidence the coefficient is wrong, and the
+        # next healthy update moves it normally.
+        if not math.isfinite(measured):
+            self.frozen_updates += 1
+            return coef
+        exponent = float(np.clip(rate * (target - measured),
+                                 -self._MAX_EXPONENT, self._MAX_EXPONENT))
+        step = math.exp(exponent)
         if self.cfg.coef_step_max is not None:
             # Cap the RATIO, not the coefficient. Any multiplicative controller
             # compounds, so a signal that suddenly reads far from target walks
@@ -103,12 +134,27 @@ class EntropyController:
         return target_placement
 
     # -- persistence --------------------------------------------------------
+    def _safe(self, value, fallback):
+        """`value` unless it is non-finite, in which case the seeded default.
+
+        Applied on the way OUT and on the way IN. A coefficient is a number the
+        run cannot recover from by itself, so a poisoned one must not survive a
+        checkpoint in either direction -- including in a checkpoint written
+        before this guard existed.
+        """
+        return float(value) if math.isfinite(value) else float(fallback)
+
     def state_dict(self):
-        return {"ent_coef_card": self.coef_card,
-                "ent_coef_place": self.coef_placement}
+        return {"ent_coef_card": self._safe(self.coef_card,
+                                            self.cfg.initial_coef_card),
+                "ent_coef_place": self._safe(self.coef_placement,
+                                             self.cfg.initial_coef_placement)}
 
     def load_state_dict(self, state):
         """Restore from a checkpoint, keeping the seeded default for a key an
         older checkpoint does not carry."""
-        self.coef_card = state.get("ent_coef_card", self.coef_card)
-        self.coef_placement = state.get("ent_coef_place", self.coef_placement)
+        self.coef_card = self._safe(
+            state.get("ent_coef_card", self.coef_card), self.cfg.initial_coef_card)
+        self.coef_placement = self._safe(
+            state.get("ent_coef_place", self.coef_placement),
+            self.cfg.initial_coef_placement)

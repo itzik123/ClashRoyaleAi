@@ -167,3 +167,95 @@ def test_log_reachable_never_returns_zero():
     assert log_reachable(1) == math.log(2)
     assert log_reachable(0) == math.log(2)
     assert log_reachable(5) == math.log(5)
+
+
+# --- non-finite measurements ----------------------------------------------
+#
+# THE CASCADE THIS PREVENTS, end to end:
+#
+#   one non-finite gradient
+#     -> PPOUpdater drops every minibatch in the update
+#     -> every reported mean is NaN (there is nothing to average)
+#     -> EntropyController.update(NaN) sets coef = exp(NaN) = NaN
+#     -> the entropy bonus is NaN, so EVERY future loss is NaN
+#     -> every future update is dropped too
+#     -> and the NaN coefficient is CHECKPOINTED, so a resume reloads it
+#
+# The controller is the link that makes a transient fault permanent: the PPO
+# guard protects the weights, but nothing protected the controller's own state,
+# and its state is written to disk. A coefficient is a number the run cannot
+# recover from on its own.
+#
+# `math.exp` is also the one call here that RAISES rather than saturating:
+# math.exp(1000.0) is an OverflowError, not inf. With coef_step_max=None --
+# which is the PHASE1 default, "None disables it" -- nothing bounds the
+# argument, so a wild measurement crashes the process outright.
+
+def test_a_nan_measurement_does_not_poison_the_coefficient():
+    c = EntropyController(PHASE1_ENTROPY)
+    before = c.coef_placement
+    c.update(0.35, float("nan"), 0)
+    assert math.isfinite(c.coef_placement), c.coef_placement
+    assert c.coef_placement == before, "a NaN reading must not move the coefficient"
+
+
+def test_a_nan_on_ONE_head_leaves_the_other_head_working():
+    """The two heads are independent measurements. Freezing both because one
+    is unreadable would silently disable the card controller too."""
+    c = EntropyController(PHASE1_ENTROPY)
+    before_place = c.coef_placement
+    c.update(0.99, float("nan"), 0)          # card way above target, placement unreadable
+    assert c.coef_card < PHASE1_ENTROPY.initial_coef_card
+    assert c.coef_placement == before_place
+
+
+def test_an_infinite_measurement_does_not_poison_the_coefficient():
+    c = EntropyController(PHASE1_ENTROPY)
+    for bad in (float("inf"), float("-inf")):
+        c.coef_placement = 0.06
+        c.update(0.35, bad, 0)
+        assert math.isfinite(c.coef_placement), (bad, c.coef_placement)
+
+
+def test_a_wild_measurement_does_not_raise_overflowerror():
+    """PHASE1 has coef_step_max=None, so nothing bounds exp()'s argument.
+    math.exp(1000.0) RAISES -- it does not saturate -- and an uncaught
+    OverflowError in the controller ends the run."""
+    c = EntropyController(PHASE1_ENTROPY)
+    c.update(0.35, -1e6, 0)
+    assert math.isfinite(c.coef_placement)
+    assert PHASE1_ENTROPY.coef_floor <= c.coef_placement <= PHASE1_ENTROPY.coef_ceil_placement
+
+
+def test_a_nan_coefficient_is_never_written_to_a_checkpoint():
+    """Belt and braces: even if one were reached some other way, it must not
+    be the thing a resume restores."""
+    c = EntropyController(PHASE1_ENTROPY)
+    c.coef_placement = float("nan")
+    c.coef_card = float("nan")
+    state = c.state_dict()
+    assert math.isfinite(state["ent_coef_place"]), state
+    assert math.isfinite(state["ent_coef_card"]), state
+
+
+def test_a_poisoned_legacy_checkpoint_is_not_loaded():
+    """A checkpoint written before this guard existed can already carry a NaN.
+    Restoring it would reinstate the dead run on resume, which is the failure
+    mode that is hardest to attribute -- it looks like the resume itself broke.
+    """
+    c = EntropyController(PHASE1_ENTROPY)
+    c.load_state_dict({"ent_coef_card": float("nan"),
+                       "ent_coef_place": float("nan")})
+    assert math.isfinite(c.coef_card)
+    assert math.isfinite(c.coef_placement)
+    assert c.coef_card == PHASE1_ENTROPY.initial_coef_card
+    assert c.coef_placement == PHASE1_ENTROPY.initial_coef_placement
+
+
+def test_a_healthy_measurement_still_moves_the_coefficient():
+    """The guard must not freeze a working controller -- that would disable
+    the only defence against mode collapse."""
+    c = EntropyController(PHASE1_ENTROPY)
+    before = c.coef_placement
+    c.update(0.35, 0.10, 0)      # far below target -> push UP
+    assert c.coef_placement > before

@@ -533,8 +533,18 @@ class BaseTrainer:
                   f"but something upstream produced NaN/inf -- check the "
                   f"reward stream and the PPO ratio.", flush=True)
 
+        frozen_before = self.entropy.frozen_updates
         target_placement = self.entropy.update(
             stats.ent_card, stats.ent_placement, self.anneal_episodes_done())
+        if self.entropy.frozen_updates > frozen_before:
+            # The controller could not read this update and held its
+            # coefficients. Reported because a HELD controller and a controller
+            # that is simply satisfied look identical in the coefficient trace.
+            print("  [WARN] entropy controller froze this update: the measured "
+                  "entropy was not finite (no minibatch survived). Coefficients "
+                  "held.", flush=True)
+        w.add_scalar("Entropy/Controller_Frozen_Updates",
+                     self.entropy.frozen_updates, ep)
         w.add_scalar("Policy/Entropy_Coef_Card", self.entropy.coef_card, ep)
         w.add_scalar("Policy/Entropy_Coef_Placement",
                      self.entropy.coef_placement, ep)
