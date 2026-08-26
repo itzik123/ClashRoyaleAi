@@ -54,6 +54,7 @@ import numpy as np
 import clash_royale_env as E
 
 from python_ai import engine_constants as EC
+from python_ai.rewards import weights as W
 
 CE = E.ClashRoyaleEnv
 
@@ -102,10 +103,21 @@ OWN_PRINCESS = ((EC.LEFT_LANE_X, EC.princess_y(0)),
                 (EC.RIGHT_LANE_X, EC.princess_y(0)))
 OWN_KING = (EC.BOARD_CENTER_X, EC.king_y(0))
 
-# Fireball, read from the registry.
-FIREBALL_ID = 7
+# Fireball. THE ID AND THE DAMAGE COME FROM `rewards.weights`, which owns the
+# single definition of both -- this file used to repeat `FIREBALL_DAMAGE =
+# 689.0` under a comment claiming it was "read from the registry", which it was
+# not: `get_card_info` exposes cost, name, is_spell and placement_radius, but
+# NOT damage. Nothing derived it, so nothing would have caught the two copies
+# drifting -- leaving the shaping term and this advisor disagreeing about one
+# physical fact, one calling a tower lethal while the other called the same
+# cast worthless.
+#
+# The RADIUS stays here because `weights` has no use for it and therefore no
+# definition of it; it is annotated with the header that owns it, which is the
+# documented fallback where a value genuinely cannot be derived.
+FIREBALL_ID = W.FIREBALL_CARD_ID
 FIREBALL_RADIUS = 2.5         # CardRegistry.h:752 spell(7,...,2.5f,689,10,'O')
-FIREBALL_DAMAGE = 689.0
+FIREBALL_DAMAGE = W.FIREBALL_DAMAGE
 FIREBALL_DELAY_TICKS = 10
 CANNON_ID = 25
 CANNON_RANGE = 5.5            # CardRegistry.h:736 building(25,...,5.5f,202,10)

@@ -121,3 +121,53 @@ def test_the_biasing_terms_are_documented_as_biasing():
                  "W_WIN_CONDITION_DAMAGE", "W_SPELL_VALUE_START",
                  "DRAW_PENALTY"):
         assert name in head, f"{name} is biasing and must be listed as such"
+
+
+def test_fireballs_damage_has_exactly_one_definition_in_the_package():
+    """Two modules each carried `FIREBALL_DAMAGE = 689.0`.
+
+    Neither could derive it -- `get_card_info` exposes cost, name, is_spell and
+    placement_radius, but NOT damage -- so `weights.py` uses a
+    derive-if-available-else-literal expression and `tactics.py` had a bare
+    literal under a comment claiming it was "read from the registry", which it
+    was not.
+
+    That is the worst shape for a second copy: nothing derives it, so nothing
+    catches the two drifting apart, and a balance change to Fireball would
+    leave the shaping term and the placement advisor disagreeing about the same
+    physical fact -- one deciding a tower is lethal, the other deciding the
+    spell does not catch enough value.
+    """
+    import pathlib
+    import re
+
+    import python_ai
+    root = pathlib.Path(python_ai.PACKAGE_DIR)
+    defs = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(("tests/", "venv/", "archive")):
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            m = re.match(r"\s*FIREBALL_DAMAGE\s*=\s*(.+)$", code)
+            if not m:
+                continue
+            rhs = m.group(1)
+            # An ALIAS (`= W.FIREBALL_DAMAGE`) re-exports the one definition
+            # and is not a second copy. A SOURCE is a numeric literal or a
+            # registry read -- those are what can drift apart.
+            if re.search(r"\d", rhs) or "get_card_info" in rhs:
+                defs.append(f"{rel}:{i}: {line.strip()}")
+    assert len(defs) == 1, (
+        "Fireball's damage is defined in more than one place:\n"
+        + "\n".join(defs))
+
+
+def test_the_advisor_and_the_shaping_term_agree_on_fireball():
+    """The property the single definition buys. Kept as a separate assertion
+    because it is the one that matters at runtime."""
+    from python_ai.advisors import tactics
+    from python_ai.rewards import weights
+    assert tactics.FIREBALL_DAMAGE == weights.FIREBALL_DAMAGE
+    assert tactics.FIREBALL_ID == weights.FIREBALL_CARD_ID
