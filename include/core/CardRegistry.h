@@ -169,7 +169,14 @@ private:
     // Golemite: only ever spawned by a Golem's death, never itself a
     // playable card (no id in the registry, hence never add()-ed).
     static CardStats golemiteStats() {
-        return troop(-1, "Golemite", 0.0f, Archetype::MeleeBuildingTargeter, 1039, 0.2f, 0.25f, 84, 25, 'q')
+        // SPEED_SLOW, mirroring the Golem this splits out of, exactly as the
+        // 2026-08-24 rework assigned the 9 Hero variants "by mirroring their
+        // base card's tier rather than by guessing". It was a raw 0.2f --
+        // 0.400 tiles/s, BELOW SPEED_VERY_SLOW (0.663) and therefore slower
+        // than any card in the real game's published table, and 2.5x slower
+        // than its own parent. A child CardStats has no official row, so the
+        // tier pass never reached it.
+        return troop(-1, "Golemite", 0.0f, Archetype::MeleeBuildingTargeter, 1039, SPEED_SLOW, 0.25f, 84, 25, 'q')
             .withOffsets({ {-0.3f, 0.0f}, {0.3f, 0.0f} }).withSightRange(7.0f);
     }
 
@@ -190,7 +197,12 @@ private:
     }
     // Confirmed: death spawn is 1 Bat, not 3 -- default single offset.
     static CardStats nightWitchBatStats() {
-        return troop(-12, "Bats", 0.0f, Archetype::MeleeSquad, 81, 0.85f, 0.5f, 81, 12, 't')
+        // SPEED_VERY_FAST, matching playable card id 78 -- the same unit, with
+        // the same 81 hp / 81 damage / 12-tick cooldown, which the tier pass
+        // moved while leaving this copy on a raw 0.85f (1.700 tiles/s against
+        // 2.651). The registry contradicting itself about one unit is what
+        // makes this wrong without needing an external source.
+        return troop(-12, "Bats", 0.0f, Archetype::MeleeSquad, 81, SPEED_VERY_FAST, 0.5f, 81, 12, 't')
             .withFlying().withTargetsAir();
     }
 
@@ -204,7 +216,8 @@ private:
             .withOffsets({ {-0.4f, -0.4f}, {0.4f, -0.4f}, {-0.4f, 0.4f}, {0.4f, 0.4f} });
     }
     static CardStats nightWitchPeriodicBatStats() {
-        return troop(-14, "Bats", 0.0f, Archetype::MeleeSquad, 81, 0.85f, 0.5f, 81, 12, 't')
+        // SPEED_VERY_FAST, same reasoning as the -12 Bats helper above.
+        return troop(-14, "Bats", 0.0f, Archetype::MeleeSquad, 81, SPEED_VERY_FAST, 0.5f, 81, 12, 't')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
             .withFlying().withTargetsAir();
     }

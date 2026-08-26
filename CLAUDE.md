@@ -74,8 +74,8 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-26 after the C++ simulator audit: **662 test cases, 6,481
-assertions**. 661 pass and **exactly one fails "as expected"** --
+Measured 2026-08-26 after the C++ simulator audit: **669 test cases, 6,504
+assertions**. 668 pass and **exactly one fails "as expected"** --
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
 second failure is a real regression. (It read 650 cases / 6,423 assertions on
@@ -293,6 +293,31 @@ planner's arrival-condition are separate literals, they can disagree.
 **Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
 its own untouched `speed`, never recalibrated alongside the movement fix.
 
+**SPEED TIERS REACH SPAWNED UNITS TOO, since 2026-08-26 -- the 2026-08-24
+rework did not.** That rework round-tripped "109 / 109 match", and 109 is the
+count of cards with an OFFICIAL ROW; the child `CardStats` that death effects
+spawn have none and were never in the set. Measured with
+`tools/audit/spawn_speed_audit.cpp` (spawn every card, fire its death effects,
+read `Troop::getSpeed()` off what arrives): **8 of 109 units off-tier, now 6.**
+
+- **Golemite** was a raw `0.2f` = 0.400 tiles/s, BELOW `SPEED_VERY_SLOW`
+  (0.663) -- slower than any card in the real game's published table, and 2.5x
+  slower than the Golem it splits from. Now `SPEED_SLOW`, mirroring its parent
+  (the rule the rework itself used for the 9 Hero variants).
+- **Bats** needed no external source: the registry contradicted ITSELF. Playable
+  card id 78 is `SPEED_VERY_FAST` (2.651); the child stats a Night Witch
+  releases were `0.85f` (1.700). Same name, same 81 hp / 81 damage / 12-tick
+  cooldown, 36% apart. Now matches card 78.
+- **Still open: Goblin Brawler (-31)** at 1.400, 5.6% off MEDIUM. No playable
+  counterpart and no official row, so there is nothing to make the call from --
+  deliberately not guessed.
+
+**DO NOT read this off the source.** A grep for non-`SPEED_*` literals finds 54
+and looks like a huge gap; the measurement finds 8. Most of those literals land
+within 1% of a tier by coincidence (`0.5f` -> 1.000 against SLOW's 0.994,
+`1.0f` -> 2.000 against FAST's 1.988). The first inference in this audit was
+seven times too large. Run the instrument.
+
 **A freeze lasts exactly as many ticks as it says, since 2026-08-26.** It did
 not before: `freezeTicks` had two readers straddling its own decrement --
 `CombatEntity::update` drained the attack cooldown *before* it, `Troop::
@@ -340,6 +365,35 @@ given.
   Evolution's 51-tick window was collapsed to the base card's 10 at the same
   time: 51 ticks at 0.0f would be a 5.1-second unbroken hard stun off a 1-elixir
   card, a bigger invention than the delayed second pulse it stood in for.
+
+**`pullToward`/`pushAway` refuse a non-positive distance, and nothing may move
+an entity by writing `position` directly (2026-08-26).** Both rules exist for
+the same reason `Entity.h` already gives for the building exemption -- enforced
+once, centrally, because a per-call-site check is one somebody forgets.
+
+Callers compute the distance as "how far do I still have to close"
+(`dist - meleeRange`), which goes NEGATIVE against an already-close target, and
+`moveBy = (distance < dist) ? distance : dist` then took the negative and ran
+the pull BACKWARDS. `GoldenKnightDashEffect` did exactly that: measured, a
+Golden Knight 0.5 tiles from his target finished the ability at 1.0 -- retreating
+from what he dashed at, ten times over.
+
+And `HeroGiantHurlEffect` wrote `victim->position.x = ...` directly, skipping
+`exemptFromForcedMovement` entirely, so it threw enemy BUILDINGS across the
+arena (measured: a Cannon from x=6.0 to x=11.0). Its selector
+`findHpExtremeEnemy` also excluded only `isTower()` while its own comment said
+"enemy TROOP"; it now excludes `isBuilding()`. Lane mirroring goes through
+`mirrorToOppositeLane()`, third member of the pull/push family and carrying the
+same guard.
+
+**Two one-time effects were re-arming on every application (2026-08-26).**
+`CursedHogOnHit` wrapped the victim's `deathEffect` in a fresh
+`CompositeDeathEffect` per HIT, so N hits nested N composites and spawned N hogs
+on death (measured: 3 hits, 3 hogs). `RoyalChefBuffEffect` re-fed whichever ally
+was nearest, compounding `hp += hp / 10` every 280 ticks (measured: 1000 -> 1100
+-> 1771 over six servings, +77%, unbounded in match length). Both are now
+latched -- `CombatEntity::curseDeathSpawnAttached` and `royalChefServed`. The
+curse's DURATION still refreshes on every hit; only the spawn is one-time.
 
 **`MatchRules::evaluate` identifies the King by TYPE, not by symbol, since
 2026-08-26 -- and `'R'` is NOT unique to the King.** Card id 93 (Mortar) is
@@ -991,6 +1045,7 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 | 2026-08-24: the live-mirror state setters | item 22 — the setters Stage 2 calls, and the saturating probe that measured zero |
 | 2026-08-26: the C++ simulator audit | seven defects: Ice Golem/Ice Spirit, the freeze off-by-one, building expiry, the Mortar/King symbol clash |
 | 2026-08-26 (perf): the hot paths | 2.4-4.4x on collisions, 25x on the observation encoder, and the bit-equivalence sweep |
+| 2026-08-26 (part 2): abilities and spawned units | the backwards pull, Hero Giant hurling buildings, and the speed tiers that never reached a Golemite |
 
 ---
 
@@ -1716,6 +1771,11 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
   deck_audit.cpp       Per-card behaviour: identity, offence, defence, air,
                        deploy, and the sight/attack dead band.
   stall_repro.cpp      Minimal deterministic reproductions.
+  spawn_speed_audit.cpp  Spawns every registered card, fires its death effects,
+                       and reads Troop::getSpeed() off whatever arrives --
+                       answering "is this unit on a real speed tier" by
+                       MEASUREMENT. Reading the source instead gives an answer
+                       7x too large; see the 2026-08-26 part 2 section.
   collision_bench.cpp  A/B for the 2026-08-26 hot-path rework. Holds BOTH the
                        old and new resolveCollisions/resolvePositionAgainstBuildings
                        in one binary, so the comparison cannot be confounded by

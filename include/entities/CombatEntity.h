@@ -311,6 +311,23 @@ public:
     // curseTicksRemaining == 0 (the default) is every card unaffected.
     float curseDamageTakenMultiplier = 1.0f;
     int curseTicksRemaining = 0;
+    // Latch: has Mother Witch's on-death hog spawn already been attached to
+    // this entity's deathEffect? See CursedHogOnHit. The curse's DURATION is
+    // meant to refresh on every hit, but its SPAWN is a one-time arming --
+    // without this, each hit wrapped the existing deathEffect in another
+    // CompositeDeathEffect containing the previous chain, so N hits produced N
+    // nested composites and N hogs on death. false (the default) is every
+    // entity that has never been cursed.
+    bool curseDeathSpawnAttached = false;
+    // Latch, same idiom as curseDeathSpawnAttached above: has the Royal Chef
+    // Tower Troop already served this ally? The real card grants a troop
+    // "+1 Level", once -- it does not serve the same troop over and over.
+    // Without this, RoyalChefBuffEffect re-picked whichever ally happened to be
+    // nearest and applied `hp += hp / 10` again, so a tank parked beside the
+    // tower compounded geometrically: measured 1000 -> 1100 -> 1771 hp over six
+    // servings (+77%), unbounded in match length. false (the default) is every
+    // entity, including every match not using this Tower Troop at all.
+    bool royalChefServed = false;
 
     // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
     // Battle Healer's heal): fires the configured effect(s) at nearby

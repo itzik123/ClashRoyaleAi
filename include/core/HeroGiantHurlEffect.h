@@ -23,7 +23,7 @@ public:
     void apply(Board& board, CombatEntity& self) const override {
         auto victim = findHpExtremeEnemy(board, self.position, grabRange, self.team, /*wantHighestHp=*/true);
         if (!victim) return;
-        victim->position.x = static_cast<float>(board.getWidth() - 1) - victim->position.x;
+        mirrorToOppositeLane(*victim, board.getWidth());
         if (auto ce = std::dynamic_pointer_cast<CombatEntity>(victim)) {
             ce->applyFreeze(stunTicks, 0.0f);
         }

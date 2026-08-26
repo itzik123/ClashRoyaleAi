@@ -3275,6 +3275,165 @@ so it was right by luck.
 
 ---
 
+## 2026-08-26 (part 2): the ability effects and the spawned units
+
+The first pass covered core combat, the board, and match rules. This one covers
+the ~19 bespoke Champion/Hero ability effects and the registry's child
+CardStats. Seven more defects, five of them in code that had no test coverage
+of any kind.
+
+### 8. `pullToward` ran BACKWARDS on a negative distance
+
+Every caller computes the argument as "how far do I still have to close" --
+`dist - meleeRange`, `dist - effectiveAttackRange + 0.1f`. When the target is
+already inside that range the subtraction goes negative, and
+
+```cpp
+float moveBy = (distance < dist) ? distance : dist;
+```
+
+takes the negative value happily, so the pull becomes a push.
+
+`GoldenKnightDashEffect` was the live case: `pullToward(self, target->position,
+dist - 1.0f)` against an enemy closer than 1.0 tiles. Measured: a Golden Knight
+0.5 tiles from his target ends the ability at 1.0 tiles -- he **retreats** from
+what he dashed at, and he is registered with `maxDashes = 10`.
+
+Every other caller is safe only by accident of ordering. `CombatEntity::update`'s
+jump and hook branches are both `else if`s reached only when `dist >
+effectiveAttackRange`, so their subtraction cannot go negative -- today.
+
+**Fixed in `pullToward`/`pushAway` themselves**, not at the call site, for the
+reason `exemptFromForcedMovement` gives three lines above them: a per-call-site
+clamp is a check somebody will forget to add. Something that genuinely wants to
+move away calls `pushAway`.
+
+### 9. Hero Giant hurled BUILDINGS across the arena
+
+`Entity.h` states the rule plainly, and states why it lives where it lives:
+
+> Both are a no-op on a Building regardless of which mechanic is calling --
+> buildings are stationary, full stop... Enforced here, once, rather than at
+> every individual call site, so nothing can reintroduce this bug by forgetting
+> a per-site check.
+
+`HeroGiantHurlEffect` reintroduced it, by not calling either function:
+
+```cpp
+victim->position.x = static_cast<float>(board.getWidth() - 1) - victim->position.x;
+```
+
+A raw position write skips the guard entirely. And its victim selector,
+`findHpExtremeEnemy`, excluded only `isTower()` -- not deployed buildings --
+while its own comment said it selects an "enemy TROOP". A Cannon is the
+highest-HP thing inside a 3-tile radius far more often than a troop is, so Hurl
+spent most of its uses throwing a stationary building into the other lane.
+Measured: a Cannon at x = 6.0 ended at x = 11.0.
+
+**Two fixes, because there were two holes.** `findHpExtremeEnemy` now excludes
+`isBuilding()` (strictly wider than `isTower()`, since Tower derives from
+Building, so nothing previously excluded is now admitted). And the raw write is
+replaced by a new `mirrorToOppositeLane(entity, boardWidth)` in `Entity.h`,
+third member of the pull/push family and carrying the same guard -- which also
+removes the last two restatements of the mirror formula.
+
+### 10. Mother Witch's curse stacked a death effect per HIT
+
+```cpp
+target->deathEffect = std::make_shared<CompositeDeathEffect>({ target->deathEffect, spawnEffect });
+```
+
+on **every hit**. Three hits produced three nested composites and three hogs on
+death; a Musketeer taking twenty hits died into twenty of them, and the chain's
+depth grew with the hit count. Measured: three applications, three hogs.
+
+The curse's *duration* is meant to refresh on every hit -- that half was right.
+Only the *spawn* is a one-time arming, now latched by
+`CombatEntity::curseDeathSpawnAttached`.
+
+### 11. The Royal Chef fed the same troop forever
+
+`RoyalChefBuffEffect` picks the nearest ally and applies `hp += hp / 10` plus a
+damage buff lasting 999999 ticks. Nothing excluded an ally it had already fed,
+so a tank parked beside the tower was fed every 280 ticks and compounded
+geometrically. Measured: **1000 -> 1100 after one serving, -> 1771 after six**
+(+77%, exactly 1.1^6), unbounded in match length.
+
+The real card grants a troop "+1 Level", once. Latched by
+`CombatEntity::royalChefServed`, so the chef moves on to a troop that has not
+eaten.
+
+### 12. The speed-tier rework never reached the SPAWNED units
+
+The 2026-08-24 rework put every playable card on one of five real tiers and
+round-tripped **"109 / 109 match, 0 mismatches"**. 109 is the count of cards
+with an OFFICIAL ROW. The child `CardStats` that death effects spawn have no row
+of their own and were never in that set.
+
+**This was measured, not inferred, and the first inference was WRONG.** A grep
+of the registry found 54 speed literals that are not `SPEED_*` constants, which
+looked like a large uncovered population. It is not: most of those literals land
+within 1% of a tier by coincidence (`0.5f` gives 1.000 tiles/s against SLOW's
+0.994; `1.0f` gives 2.000 against FAST's 1.988), and many are helpers nothing
+reaches. `tools/audit/spawn_speed_audit.cpp` spawns every registered card, fires
+its death effects, and reads `Troop::getSpeed()` off what actually arrives:
+
+**8 units off-tier out of 109, of which 5 are documented.** Reading the source
+would have produced a number seven times too large. State the probe, not the
+conclusion.
+
+| unit | tiles/s | nearest tier | off by | |
+|---|---|---|---|---|
+| Golemite (-1) | 0.400 | VERY_SLOW 0.663 | 39.6% | **below the real game's floor** |
+| Bats (-12, -14) | 1.700 | FAST 1.988 | 14.5% | contradicts playable card id 78 |
+| Goblin Brawler (-31) | 1.400 | MEDIUM 1.325 | 5.6% | still open, see below |
+| Berserker, Boss Bandit, Heal Spirit, Ronin, Spirit Empress | | | | documented "no official row" |
+
+**Golemite** was on a raw `0.2f` -- 0.400 tiles/s against `SPEED_VERY_SLOW`'s
+0.663. The real game's published table bottoms out at 30 tiles/min, so this unit
+moved slower than **any card in Clash Royale**, and 2.5x slower than the Golem
+it splits out of. Fixed to `SPEED_SLOW` by mirroring its parent -- the same rule
+the rework itself used for the 9 Hero variants, "by mirroring their base card's
+tier rather than by guessing".
+
+**Bats** needed no external source at all, because *the registry contradicts
+itself*: playable card id 78 is `SPEED_VERY_FAST` (2.651 tiles/s) and the child
+stats a Night Witch releases on death are a raw `0.85f` (1.700). Same name, same
+81 hp, same 81 damage, same 12-tick cooldown, 36% different speed. One of the
+two is on a real tier. Fixed to match card 78.
+
+After: **6 off-tier, 0 below the floor.** Five of the six are the documented
+list.
+
+**Still open, deliberately not guessed: Goblin Brawler (-31)** at 1.400 tiles/s,
+5.6% off MEDIUM. Goblin Cage's spawn has no playable counterpart in this
+registry to cross-check against and no official row, so there is nothing here to
+make the call from -- unlike Golemite (parent) and Bats (its own card). It
+belongs with the 5 documented off-tier cards until a source covers it.
+
+**A note on that documented list.** `DECISIONS.md` says "13 cards have no
+official row" and then names twelve: Berserker, Ronin, Goblin Machine, Goblin
+Demolisher, Furnace, Heal Spirit, Suspicious Bush, Rune Giant, Little Prince,
+Goblinstein, Boss Bandit, Spirit Empress. The measurement finds only five of
+them still off-tier by more than 1% -- the rest sit within 1% of a tier by
+coincidence, which is worth knowing before anyone "fixes" them.
+
+### The negative result, which is worth as much as the defects
+
+Every `FreezeOnHit` in the registry was checked against its card's real
+mechanic. **The stun-vs-slow convention holds everywhere except the two cards
+already fixed in part 1** (Ice Spirit, Ice Golem). Electro Wizard, Electro
+Dragon, Electro Spirit, Zappies, Goblinstein and the Freeze spell are all
+correctly `0.0f` stuns; Ice Wizard, Giant Snowball, Earthquake and the Princess
+Evolution are all correctly in the 0.5-0.7 slow band. There is no third case.
+
+Likewise, only one registration matched the "Ice Golem shape" -- a
+building-targeter carrying an on-hit effect that can therefore only ever land on
+a building -- and it was a false positive: Goblinstein's `withOnHit` sits on its
+secondary ranged unit, not on the building-targeter.
+
+---
+
 # ARCHIVE — `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` (retired 2026-08-24)
 
 Both backlog files were worked to empty on 2026-08-24: every item was either

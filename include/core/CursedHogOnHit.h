@@ -30,7 +30,17 @@ public:
         : damageTakenMultiplier(damageTakenMultiplier), ticks(ticks), cursedHogStats(std::move(cursedHogStats)) {}
 
     void apply(std::shared_ptr<CombatEntity> target) const override {
+        // The curse itself REFRESHES on every hit -- that is the real card.
         target->applyCurse(damageTakenMultiplier, ticks);
+
+        // The hog spawn is armed ONCE. Re-arming wrapped the previous chain in
+        // a fresh CompositeDeathEffect every hit, so a unit that took N hits
+        // died into N hogs (and carried N levels of nesting). Measured before
+        // the latch: three applications produced three hogs. See
+        // CombatEntity::curseDeathSpawnAttached.
+        if (target->curseDeathSpawnAttached) return;
+        target->curseDeathSpawnAttached = true;
+
         auto spawnEffect = std::make_shared<SpawnOnDeathForEnemyTeam>(cursedHogStats);
         if (target->deathEffect) {
             target->deathEffect = std::make_shared<CompositeDeathEffect>(

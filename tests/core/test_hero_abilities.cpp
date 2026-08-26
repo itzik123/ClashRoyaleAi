@@ -820,3 +820,62 @@ TEST_CASE("HeroBarbarianBarrelRerollEffect rolls forward, damages enemies in the
     REQUIRE(enemyTroop->hp == 1000 - 233); // full roll damage
     REQUIRE(enemyTower->hp == 5000 - 116); // 233 / 2 = 116 (integer division), halved vs Towers
 }
+
+
+// ============================================================================
+// Ability-effect defects found in the 2026-08-26 C++ audit.
+// ============================================================================
+
+TEST_CASE("Hero Giant's Hurl cannot throw a building across the arena",
+          "[hero][hero_giant][regression]") {
+    // findHpExtremeEnemy's own comment says it selects an "enemy TROOP" and it
+    // excluded Towers -- but not deployed Buildings. A Cannon is the
+    // highest-HP thing in a 3-tile radius far more often than a troop is, and
+    // HeroGiantHurlEffect then wrote victim->position.x directly, bypassing
+    // exemptFromForcedMovement entirely.
+    //
+    // Entity.h states the rule plainly: pull/push are "a no-op on a Building
+    // regardless of which mechanic is calling -- buildings are stationary,
+    // full stop... Enforced here, once, rather than at every individual call
+    // site, so nothing can reintroduce this bug by forgetting a per-site
+    // check." A raw position write is exactly that forgotten check.
+    Board board;
+    const CardDefinition* cannon = CardRegistry::getInstance().getCard(25);
+    REQUIRE(cannon != nullptr);
+    cannon->spawnEntity(6.0f, 5.0f, 1, board);
+    board.commitPendingEntities();
+
+    std::shared_ptr<Entity> building;
+    for (const auto& e : board.getEntities()) if (e->cardId == 25) building = e;
+    REQUIRE(building);
+    const Vector2D before = building->position;
+
+    auto giant = std::make_shared<MeleeTroop>(900, 5.0f, 5.0f, 4000, 0, 0.1f, 1.0f, 100, 10, 'G');
+    spawn(board, giant);
+
+    HeroGiantHurlEffect hurl(3.0f, 20);
+    hurl.apply(board, *giant);
+
+    INFO("building moved from (" << before.x << "," << before.y << ") to ("
+         << building->position.x << "," << building->position.y << ")");
+    REQUIRE(building->position.x == Catch::Approx(before.x));
+    REQUIRE(building->position.y == Catch::Approx(before.y));
+}
+
+TEST_CASE("Hero Giant's Hurl still throws an actual troop", "[hero][hero_giant]") {
+    // The control for the case above: excluding buildings must not disarm the
+    // ability against the thing it is for.
+    Board board;
+    auto victim = std::make_shared<MeleeTroop>(1, 6.0f, 5.0f, 3000, 1, 0.1f, 1.0f, 10, 10, 'v');
+    spawn(board, victim);
+    auto giant = std::make_shared<MeleeTroop>(900, 5.0f, 5.0f, 4000, 0, 0.1f, 1.0f, 100, 10, 'G');
+    spawn(board, giant);
+
+    const float beforeX = victim->position.x;
+    HeroGiantHurlEffect hurl(3.0f, 20);
+    hurl.apply(board, *giant);
+
+    REQUIRE(victim->position.x != Catch::Approx(beforeX));
+    REQUIRE(victim->position.x == Catch::Approx(static_cast<float>(board.getWidth() - 1) - beforeX));
+    REQUIRE(victim->freezeTicks == 20);
+}

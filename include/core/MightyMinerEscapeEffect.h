@@ -35,8 +35,7 @@ public:
     void apply(Board& board, CombatEntity& self) const override {
         Vector2D originalPosition = self.position;
 
-        float mirroredX = static_cast<float>(board.getWidth() - 1) - self.position.x;
-        self.position.x = mirroredX;
+        mirrorToOppositeLane(self, board.getWidth());
         // Y intentionally unchanged -- a lane swap, not a top/bottom flip.
 
         auto bomb = std::make_shared<AreaSpell>(
