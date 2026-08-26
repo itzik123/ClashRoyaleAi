@@ -84,6 +84,24 @@ public:
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
+    // "Was this unit frozen when this tick began" -- set once at the top of
+    // update(), BEFORE freezeTicks is decremented, and read by
+    // Troop::moveTowards further down the same call.
+    //
+    // It exists because freezeTicks alone could not answer that question
+    // consistently. update() drains the attack cooldown from inside the
+    // `freezeTicks > 0` branch, i.e. before the decrement; moveTowards ran
+    // after it and re-tested the same field, by which point the last tick of
+    // any freeze already read as thawed. applyFreeze(N) therefore slowed
+    // attacks for N ticks and movement for N-1, and a 1-tick stun did not
+    // stop movement at all. One fact, two readers, straddling a mutation --
+    // the same shape as the bridge-mouth absorbing states.
+    //
+    // Transient: recomputed at the top of every update(), so it needs no
+    // special handling in snapshot() (the implicit copy carries it) and
+    // nothing outside update()'s own call tree should read it.
+    bool frozenThisTick = false;
+
     // Ticks left of this unit's deploy time -- see CardStats.h's
     // DEPLOY_TIME_TICKS. While > 0 the unit is on the board and fully
     // targetable/damageable, but does not move, target or attack.
@@ -293,6 +311,23 @@ public:
     // curseTicksRemaining == 0 (the default) is every card unaffected.
     float curseDamageTakenMultiplier = 1.0f;
     int curseTicksRemaining = 0;
+    // Latch: has Mother Witch's on-death hog spawn already been attached to
+    // this entity's deathEffect? See CursedHogOnHit. The curse's DURATION is
+    // meant to refresh on every hit, but its SPAWN is a one-time arming --
+    // without this, each hit wrapped the existing deathEffect in another
+    // CompositeDeathEffect containing the previous chain, so N hits produced N
+    // nested composites and N hogs on death. false (the default) is every
+    // entity that has never been cursed.
+    bool curseDeathSpawnAttached = false;
+    // Latch, same idiom as curseDeathSpawnAttached above: has the Royal Chef
+    // Tower Troop already served this ally? The real card grants a troop
+    // "+1 Level", once -- it does not serve the same troop over and over.
+    // Without this, RoyalChefBuffEffect re-picked whichever ally happened to be
+    // nearest and applied `hp += hp / 10` again, so a tank parked beside the
+    // tower compounded geometrically: measured 1000 -> 1100 -> 1771 hp over six
+    // servings (+77%), unbounded in match length. false (the default) is every
+    // entity, including every match not using this Tower Troop at all.
+    bool royalChefServed = false;
 
     // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
     // Battle Healer's heal): fires the configured effect(s) at nearby
@@ -752,6 +787,9 @@ public:
         // reset -- matches the real "a stun resets the charge" rule for
         // every tick actually spent frozen, not all-but-the-last one.
         bool wasFrozen = freezeTicks > 0;
+        // Same answer, published for Troop::moveTowards -- which runs after
+        // the decrement below and cannot re-derive it. See frozenThisTick.
+        frozenThisTick = wasFrozen;
         ticksSinceLastHit++; // zeroed below the moment a hit actually lands this tick
 
         if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
@@ -1109,12 +1147,17 @@ protected:
             && (minAttackRange <= 0.0f || position.distanceTo(entity->position) >= minAttackRange);
     }
 
+    // The one place "what radius does this thing occupy" is answered, for
+    // both range formulas below. A troop has no real radius of its own, so it
+    // borrows Entity::IMPLICIT_TROOP_RADIUS -- see that constant.
+    static float effectiveRadiusOf(const Entity& e) {
+        const float r = e.getCollisionRadius();
+        return (r > 0.0f) ? r : Entity::IMPLICIT_TROOP_RADIUS;
+    }
+    float ownEffectiveRadius() const { return effectiveRadiusOf(*this); }
+
     float effectiveRangeTo(const std::shared_ptr<Entity>& target) const {
-        float targetRadius = target->getCollisionRadius();
-        if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
-        float myRadius = this->getCollisionRadius();
-        if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
-        return attackRange + myRadius + targetRadius;
+        return attackRange + ownEffectiveRadius() + effectiveRadiusOf(*target);
     }
 
     // Sight, measured the SAME WAY as attack range above -- surface to surface,
@@ -1138,11 +1181,16 @@ protected:
     // nothing can ever attack what it cannot see. See
     // tests/core/test_sight_range.cpp.
     float effectiveSightTo(const std::shared_ptr<Entity>& target) const {
-        float targetRadius = target->getCollisionRadius();
-        if (targetRadius <= 0.0f) targetRadius = Entity::IMPLICIT_TROOP_RADIUS;
-        float myRadius = this->getCollisionRadius();
-        if (myRadius <= 0.0f) myRadius = Entity::IMPLICIT_TROOP_RADIUS;
-        return sightRange + myRadius + targetRadius;
+        return effectiveSightWith(ownEffectiveRadius(), *target);
+    }
+
+    // Same value, with this attacker's own radius passed in. findTarget scans
+    // every entity on the board and called effectiveSightTo per candidate,
+    // which re-derived `myRadius` -- a loop invariant, and a virtual call --
+    // once for each one. Identical arithmetic in identical order, so the
+    // result is bit-for-bit what it was.
+    float effectiveSightWith(float myRadius, const Entity& target) const {
+        return sightRange + myRadius + effectiveRadiusOf(target);
     }
 
     // Re-validates the currently-locked target (by id) rather than running
@@ -1180,6 +1228,7 @@ protected:
         std::shared_ptr<Entity> closestTower = nullptr;
         float minTowerDistance = std::numeric_limits<float>::max();
 
+        const float myRadius = ownEffectiveRadius();   // loop invariant
         for (const auto& entity : board.getEntities()) {
             if (!isValidTarget(entity)) continue;
             float dist = position.distanceTo(entity->position);
@@ -1188,7 +1237,7 @@ protected:
                     minTowerDistance = dist;
                     closestTower = entity;
                 }
-            } else if (dist <= effectiveSightTo(entity) && dist < minSightDistance) {
+            } else if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
                 minSightDistance = dist;
                 closestInSight = entity;
             }

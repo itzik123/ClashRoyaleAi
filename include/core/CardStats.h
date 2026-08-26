@@ -128,7 +128,8 @@ struct CardStats {
     std::vector<Vector2D> spawnOffsets{ Vector2D{ 0.0f, 0.0f } };
 
     // Optional extra behavior applied on every successful attack landed by
-    // every unit this card spawns (e.g. Ice Wizard/Ice Golem's freeze).
+    // every unit this card spawns (e.g. Ice Wizard's slow, Ice Spirit's stun).
+    // NOT Ice Golem -- its slow is on the death explosion, see card id 40.
     std::shared_ptr<IOnHitEffect> onHit;
 
     // Spell archetype only. groundOnly defaults false (hits Air & Ground,

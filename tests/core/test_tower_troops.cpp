@@ -3,6 +3,8 @@
 #include "TowerTroops.h"
 #include "GameManager.h"
 #include "CombatEntity.h"
+#include "MeleeTroop.h"
+#include "RoyalChefBuffEffect.h"
 #include <memory>
 
 TEST_CASE("towerTroopStats(None) exactly reproduces this engine's original hardcoded Princess Tower",
@@ -80,4 +82,32 @@ TEST_CASE("RoyalChefBuffEffect buffs the nearest ally, not itself", "[tower_troo
 
     REQUIRE(combatAlly->buffTicksRemaining > 0);
     REQUIRE(combatAlly->hp == 1100); // +10% hp top-up
+}
+
+
+TEST_CASE("the Royal Chef feeds an ally once, not compounding forever",
+          "[tower_troops][royal_chef][regression]") {
+    // RoyalChefBuffEffect picks the nearest ally and does `hp += hp / 10`.
+    // Nothing excluded an ally it had already fed, so the SAME long-lived tank
+    // parked beside the tower was fed every 280 ticks, compounding
+    // geometrically -- and the accompanying damage buff is applied for 999999
+    // ticks, i.e. permanently. The real card grants "+1 Level" to a troop it
+    // serves; it does not serve the same troop repeatedly.
+    Board board;
+    auto ally = std::make_shared<MeleeTroop>(1, 5.0f, 6.0f, 1000, 0, 0.1f, 1.0f, 100, 10, 'a');
+    spawn(board, ally);
+
+    RoyalChefBuffEffect chef(6.0f, 1.10f);
+    chef.apply(board, Vector2D{ 5.0f, 5.0f }, 0);
+    const int afterFirst = ally->hp;
+
+    // Control: the first serving must actually have done something, or
+    // "did not compound" is vacuous.
+    REQUIRE(afterFirst > 1000);
+    REQUIRE(ally->buffTicksRemaining > 0);
+
+    for (int i = 0; i < 5; ++i) chef.apply(board, Vector2D{ 5.0f, 5.0f }, 0);
+
+    INFO("hp after one serving = " << afterFirst << ", after six = " << ally->hp);
+    REQUIRE(ally->hp == afterFirst);
 }

@@ -32,10 +32,15 @@ public:
             if (dist <= 0.01f || dist > nearestDist) continue;
             auto combatEntity = std::dynamic_pointer_cast<CombatEntity>(entity);
             if (!combatEntity) continue;
+            // Already served. The chef moves on to a troop that has not eaten
+            // rather than feeding the same one every interval -- see
+            // CombatEntity::royalChefServed for the compounding this prevents.
+            if (combatEntity->royalChefServed) continue;
             nearest = combatEntity;
             nearestDist = dist;
         }
         if (!nearest) return;
+        nearest->royalChefServed = true;
         nearest->applyBuff(damageMultiplier, 999999);
         nearest->hp += nearest->hp / 10;
     }

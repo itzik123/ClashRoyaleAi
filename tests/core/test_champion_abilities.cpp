@@ -309,3 +309,38 @@ TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river 
 
     REQUIRE(bandit->position.y == Catch::Approx(17.0f)); // 23 - 6, squarely inside the river band -- not clamped to 15.5 or 17.5
 }
+
+
+// ============================================================================
+// Ability-effect defects found in the 2026-08-26 C++ audit.
+// ============================================================================
+
+TEST_CASE("the Golden Knight's dash never moves him AWAY from his target",
+          "[champion][golden_knight][regression]") {
+    // GoldenKnightDashEffect closes to melee with
+    //     pullToward(self, target->position, dist - 1.0f)
+    // and nothing guarded that subtraction. Against an enemy already closer
+    // than 1.0 tiles the distance goes NEGATIVE, and pullToward's
+    // `moveBy = (distance < dist) ? distance : dist` happily takes a negative
+    // moveBy -- so the dash runs backwards. He is registered with maxDashes 10,
+    // so a Golden Knight who dashes onto something adjacent retreats from it.
+    Board board;
+    auto victim = std::make_shared<MeleeTroop>(1, 5.0f, 5.5f, 100000, 1, 0.0f, 1.0f, 1, 10, 'v');
+    spawn(board, victim);
+
+    auto knight = std::make_shared<MeleeTroop>(2, 5.0f, 5.0f, 1799, 0, 0.1f, 1.0f, 100, 10, 'g');
+    spawn(board, knight);
+
+    const float before = knight->position.distanceTo(victim->position);
+    REQUIRE(before < 1.0f);   // the precondition this is about
+
+    GoldenKnightDashEffect dash(335, 5.5f, 10);
+    dash.apply(board, *knight);
+
+    const float after = knight->position.distanceTo(victim->position);
+    INFO("distance before = " << before << ", after = " << after);
+    // Control: the dash must actually have HAPPENED, or "did not retreat" is
+    // satisfied by an effect that did nothing at all.
+    REQUIRE(victim->hp < 100000);
+    REQUIRE(after <= Catch::Approx(before).margin(1e-4f));
+}

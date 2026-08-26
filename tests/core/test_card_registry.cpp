@@ -698,7 +698,17 @@ TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
 }
 
-TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_registry][on_hit]") {
+TEST_CASE("Ice Golem's slow is on its death explosion, never on its attack",
+          "[card_registry][on_hit][regression]") {
+    // This case used to assert the opposite -- that an Ice Golem freezes what
+    // it HITS -- and so pinned the defect in place. The real card has no
+    // on-attack slow; the slow belongs to the death explosion. See the
+    // registry entry for card id 40.
+    //
+    // The direction matters more than it looks: an Ice Golem is a
+    // building-targeter, so its target is always a Crown Tower or a defensive
+    // building, i.e. something that cannot walk out of the effect and whose
+    // only freeze-sensitive property is its FIRE RATE.
     Board board;
     // Ice Golem is a MeleeBuildingTargeter: it only ever targets Buildings.
     auto enemy = std::make_shared<Building>(1, 5.0f, 5.5f, 1000, 1, 'C', 5.0f, 10, 10);
@@ -708,9 +718,20 @@ TEST_CASE("Ice Golem applies freeze on hit via the on-hit decorator", "[card_reg
     iceGolem->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
-    advancePastDeploy(board.getEntities().back(), board);
-    board.getEntities().back()->update(board);
+    auto golem = board.getEntities().back();
+    advancePastDeploy(golem, board);
+    const int hpBeforeAttack = enemy->hp;
+    golem->update(board);
 
+    // Control: the attack really did land, so "no freeze" is a statement
+    // about the hit rather than about nothing happening.
+    REQUIRE(enemy->hp < hpBeforeAttack);
+    REQUIRE(enemy->freezeTicks == 0);
+    REQUIRE(enemy->freezeSlow == Catch::Approx(1.0f));
+
+    // ... and dying DOES slow: same duration and strength, correct trigger.
+    golem->hp = 0;
+    board.cleanDeadEntities();
     REQUIRE(enemy->freezeTicks == 30);
     REQUIRE(enemy->freezeSlow == Catch::Approx(0.65f));
 }
@@ -1389,4 +1410,141 @@ TEST_CASE("X-Bow can't fire until its slow initial deploy delay elapses", "[card
 
     xbow->update(board); // the 35th tick: ready to fire
     REQUIRE(enemy->hp < 100000);
+}
+
+
+TEST_CASE("Mother Witch's curse arms ONE hog spawn no matter how many times she hits",
+          "[card_registry][on_hit][regression]") {
+    // CursedHogOnHit wrapped the victim's deathEffect in a NEW
+    // CompositeDeathEffect on every single hit, nesting the previous chain
+    // inside it. Three hits meant three nested composites and three hogs on
+    // death; a Musketeer taking twenty hits from a Mother Witch died into
+    // twenty of them, and the chain's depth grew with the hit count.
+    //
+    // The curse itself should refresh on every hit -- that part was right.
+    // Only the spawn should be armed once.
+    Board board;
+
+    CardStats hogStats;
+    hogStats.id = 999;
+    hogStats.name = "TestCursedHog";
+    hogStats.archetype = Archetype::MeleeSquad;
+    hogStats.hp = 100;
+    hogStats.speed = 0.1f;
+    hogStats.attackRange = 1.0f;
+    hogStats.damage = 10;
+    hogStats.attackCooldown = 10;
+    hogStats.symbol = 'h';
+
+    auto victim = std::make_shared<MeleeTroop>(1, 5.0f, 5.0f, 1000, 1, 0.1f, 1.0f, 10, 10, 'v');
+    spawn(board, victim);
+
+    CursedHogOnHit curse(1.3f, 60, hogStats);
+    curse.apply(victim);
+    curse.apply(victim);
+    curse.apply(victim);
+
+    // The curse refreshes -- that half is correct and must stay.
+    REQUIRE(victim->curseTicksRemaining == 60);
+    REQUIRE(victim->curseDamageTakenMultiplier == Catch::Approx(1.3f));
+
+    victim->hp = 0;
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    int hogs = 0;
+    for (const auto& e : board.getEntities()) if (e->cardId == 999) hogs++;
+    INFO("hogs spawned after three curse applications: " << hogs);
+    REQUIRE(hogs == 1);
+}
+
+
+// ============================================================================
+// SPEED TIERS reach SPAWNED units too (2026-08-26 audit).
+//
+// The 2026-08-24 rework put every playable card on one of five real tiers and
+// round-tripped "109 / 109 match". 109 is the count of cards with an OFFICIAL
+// ROW; the child CardStats that death effects spawn have no row of their own
+// and were never in that set. Measured with tools/audit/spawn_speed_audit.cpp.
+// ============================================================================
+
+namespace {
+
+// Speed of the first troop this card puts on the board, in tiles/tick as
+// Troop::moveTowards actually reads it. -1 if the card spawns no troop.
+float firstTroopSpeed(int cardId) {
+    Board board;
+    const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
+    if (!def) return -1.0f;
+    def->spawnEntity(9.0f, 10.0f, 0, board);
+    board.commitPendingEntities();
+    for (const auto& e : board.getEntities())
+        if (auto* t = dynamic_cast<Troop*>(e.get())) return t->getSpeed();
+    return -1.0f;
+}
+
+} // namespace
+
+TEST_CASE("no unit moves slower than the slowest speed the real game has",
+          "[card_registry][speed][regression]") {
+    // The published table bottoms out at 30 tiles/min -- SPEED_VERY_SLOW. A
+    // unit below it is slower than ANY real card, which is not a balance
+    // opinion but an out-of-range value.
+    //
+    // Golemite was registered at a raw 0.2f, i.e. 0.400 tiles/s against
+    // VERY_SLOW's 0.663 -- 40% below the floor, and 2.5x slower than the Golem
+    // it splits out of. It is a pre-rework literal that the tier pass did not
+    // reach because a Golemite is not a playable card.
+    const float floorSpeed = SPEED_VERY_SLOW * MOVEMENT_SPEED_SCALE;
+
+    Board board;
+    CardRegistry::getInstance().getCard(19)->spawnEntity(9.0f, 10.0f, 0, board);  // Golem
+    board.commitPendingEntities();
+    for (const auto& e : board.getEntities()) e->hp = 0;
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    int golemites = 0;
+    for (const auto& e : board.getEntities()) {
+        auto* t = dynamic_cast<Troop*>(e.get());
+        if (!t) continue;
+        golemites++;
+        INFO("Golemite speed " << t->getSpeed() << " vs floor " << floorSpeed);
+        REQUIRE(t->getSpeed() >= Catch::Approx(floorSpeed).epsilon(0.01));
+    }
+    REQUIRE(golemites == 2);   // control: the split really happened
+}
+
+TEST_CASE("a spawned unit moves at the same speed as its own playable card",
+          "[card_registry][speed][regression]") {
+    // Bats exist twice in the registry: card id 78, which the tier pass moved
+    // to SPEED_VERY_FAST, and the child stats a Night Witch spawns, still on a
+    // raw 0.85f. Same name, same 81 hp, same 81 damage, same 12-tick cooldown
+    // -- and 36% different speed.
+    //
+    // This needs no external source to call wrong: the registry contradicts
+    // itself, and one of the two entries is on a real tier.
+    const float playableBats = firstTroopSpeed(78);
+    REQUIRE(playableBats > 0.0f);
+    REQUIRE(playableBats == Catch::Approx(SPEED_VERY_FAST * MOVEMENT_SPEED_SCALE));
+
+    // Night Witch (58) releases 3 Bats on death via SpawnOnDeath.
+    Board board;
+    CardRegistry::getInstance().getCard(58)->spawnEntity(9.0f, 10.0f, 0, board);
+    board.commitPendingEntities();
+    for (const auto& e : board.getEntities()) e->hp = 0;
+    board.cleanDeadEntities();
+    board.commitPendingEntities();
+
+    float spawnedBats = -1.0f;
+    int batCount = 0;
+    for (const auto& e : board.getEntities()) {
+        if (e->name != "Bats") continue;
+        if (auto* t = dynamic_cast<Troop*>(e.get())) { spawnedBats = t->getSpeed(); batCount++; }
+    }
+    INFO("bats released on death: " << batCount);
+
+    INFO("playable Bats " << playableBats << ", spawned Bats " << spawnedBats);
+    REQUIRE(spawnedBats > 0.0f);   // control: she really did spawn some
+    REQUIRE(spawnedBats == Catch::Approx(playableBats));
 }

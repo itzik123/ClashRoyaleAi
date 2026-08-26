@@ -29,9 +29,16 @@ public:
 
 protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
+        // lineSplash/lineSplashRange forwarded, exactly as RangedTroop does.
+        // They were dropped here, so a card of this archetype configured for a
+        // piercing line would silently fire an ordinary circular-splash shot --
+        // no compile error, no test failure, just a card that quietly does not
+        // do the thing its registry entry says. Latent today (Royal Giant is
+        // the only such card and sets neither), which is precisely why it
+        // needed pinning rather than leaving.
         auto proj = std::make_shared<Projectile>(
             board.allocateId(), position.x, position.y, team, target, 1.5f, getCurrentDamage(), onHitEffects,
-            false, 0, id, cardId, splashRadius);
+            false, 0, id, cardId, splashRadius, lineSplash, lineSplashRange);
         board.addEntity(proj);
     }
 };

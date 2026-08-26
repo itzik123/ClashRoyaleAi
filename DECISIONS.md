@@ -2955,6 +2955,485 @@ recorded above. Do not read the jump as belonging to this work.
 
 ---
 
+## 2026-08-26: the C++ simulator audit. SEVEN defects, six of them gameplay-affecting.
+
+A file-by-file pass over `include/`, `src/` and `tests/`, run on a branch of its
+own (`audit-cpp-simulator`) while the Python side was audited separately. The
+brief was card mechanics first — specifically `DEFAULT_DECK`, the 2.6 Hog Cycle —
+then micro-optimisation, with tests for everything.
+
+**GAMEPLAY-AFFECTING. Every win rate in CLAUDE.md predates all of this.** Six of
+the seven change what the simulator does; the seventh (`MatchRules`) changes when
+a match ends, which is worse. Suite before: 650 cases / 6,423 assertions. After:
+**662 cases / 6,481 assertions**, still exactly one expected failure
+(`test_navigation_wedge.cpp`'s open `[!shouldfail]` wedge defect, untouched).
+
+### 1. Ice Golem slowed everything it attacked, and its death explosion slowed nothing
+
+`CardRegistry.h`, card id 40 (and id 175, Hero Ice Golem, which copies its stats).
+Registered as:
+
+```cpp
+.withOnHit(std::make_shared<FreezeOnHit>(30, 0.65f))
+.withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 84))
+```
+
+That is Ice Wizard's effect, and the comment above it opened *"same story as Ice
+Wizard"*. The real Ice Golem has **no on-attack slow at all**; the slow belongs
+to its death explosion. The same comment then said the death slow was *"not
+modeled"* — so the card had a mechanic it should not have had, and lacked the one
+it should.
+
+The direction is what makes it expensive rather than cosmetic. An Ice Golem is a
+**building-targeter**, so the phantom slow never landed on a troop that could walk
+out of it: it landed on a Crown Tower or a Cannon, and refreshed on every 2.5 s
+hit. Measured against a Princess Tower over 60 ticks before the fix,
+`freezeTicks` was pinned above zero for the whole engagement — a standing **35%
+cut to the fire rate of whatever the Ice Golem was tanking**. In a Hog Cycle deck
+the Ice Golem's job is precisely to tank the tower while the Hog connects.
+
+**Fix.** `AreaDamageOnDeath` gained the same optional `onHit` slot `AreaSpell`
+already carries (`nullptr` default, so every other caller — Golem, Balloon, Giant
+Skeleton, the Barbarian Barrel remnant — is bit-identical), and the effect moved
+to the trigger the real card uses. The 30 ticks / 0.65 are the registry's own
+numbers **moved, not re-sourced**: neither was ever part of the sourced stats
+data, same caveat as `splashRadius`.
+
+**The test that was holding it in place.** `test_card_registry.cpp` had a case
+named *"Ice Golem applies freeze on hit via the on-hit decorator"* asserting
+exactly the wrong behaviour. It was rewritten, with a control that the attack
+really lands (so "no freeze" is a statement about the hit, not about nothing
+happening) and a second half proving the death explosion does slow.
+
+### 2. Ice Spirit was a 50% slow, not a stun
+
+`CardRegistry.h`, card id 72: `FreezeOnHit(10, 0.5f)`.
+
+This engine already has two conventions and they are not interchangeable. A
+**stun** is `FreezeOnHit(ticks, 0.0f)` — Zap, Electro Spirit, Zappies and the
+Freeze spell all use exactly `0.0f`. The **0.5–0.7 band is a slow** — Ice Wizard
+`0.65f`, Ice Golem's death explosion `0.65f`. Ice Spirit sat in the slow band
+while being the card whose entire function is stopping a Prince mid-charge or
+pinning a Hog at the bridge. The Evolution's own comment, 700 lines further down,
+calls the mechanic a *"stun"*.
+
+**Fix.** `0.0f`.
+
+**The Evolution needed a judgement call, and it went the conservative way.** The
+evolved form was `FreezeOnHit(51, 0.5f)` — 51 ticks chosen to stand in for the
+real card's *delayed second pulse* (1 s stun, 3 s gap, 1.1 s stun) as one longer
+window at half strength. That approximation does not survive the correction:
+`51` ticks at `0.0f` is a **5.1-second unbroken hard stun off a 1-elixir card**,
+an invention several times larger than the gap it was patching. Both halves now
+carry the base card's 10-tick stun, the second pulse joins this file's documented
+unmodeled list (nothing here can re-apply an on-hit effect after a delay), and
+the evolution differs from its base by exactly the splash boost the source
+states.
+
+### 3. A freeze slowed attacks for N ticks and movement for N−1
+
+Found *by* fixing Ice Spirit: with a true stun applied, the victim still moved
+`0.1325` tiles — **exactly one tick's worth**.
+
+`freezeTicks` had two readers straddling its own decrement, inside one
+`update()`:
+
+```
+CombatEntity::update()   reads freezeTicks, decrements it, drains cooldown by freezeSlow
+Troop::moveTowards()     reads freezeTicks AGAIN, after that decrement
+```
+
+So the last tick of every freeze read as thawed and the unit moved at full speed.
+`applyFreeze(1, 0.0f)` — and the registry holds 3-tick and 5-tick stuns (Electro
+Spirit, Zap) — did not stop movement **at all**.
+
+This is the same shape as the two bridge-mouth absorbing states already recorded
+in CLAUDE.md: one fact, two readers, disagreeing. It is worth noticing that the
+*general rule* those bugs produced ("two independent copies of close enough is a
+deadlock waiting for the right step size") did not catch this one, because here
+there was only ONE copy of the number — what differed was *when* each reader
+sampled it. **Add the mutation-ordering case to that rule: one fact, two readers,
+and a write in between.**
+
+**Fix.** `CombatEntity::frozenThisTick`, published once at the top of `update()`
+before the decrement and read by `moveTowards`. It is transient (recomputed every
+tick), so `snapshot()` needs no change — the implicit copy carries it.
+
+### 4. Buildings outlived their own lifetime
+
+`Building::update`. Decay is `maxHp / (lifetimeTicks / 10)` per second in
+**integer** arithmetic, and **nothing ever consulted the clock** — a building
+died whenever repeated subtraction happened to reach zero.
+
+For a Cannon (824 hp, 300 ticks): `824 / 30 = 27`, so 30 decays remove 810 and it
+sits on **14 hp at 30.0 s**, dying on the next decay at **31.0 s**. A free extra
+second of the 2.6 deck's only defensive building, every cycle — roughly two extra
+Cannon shots.
+
+It read as correct because the single test covering it used `hp = 3000,
+lifetime = 300`, and `3000 / 30 = 100` exactly. **That test is named "Building
+fully decays to 0 exactly at its configured lifetime."** The contract was already
+written down; only a divisible hp made it look true. This is the same failure
+class as the `sight >= attack` blind spot — a check that cannot fail for the
+inputs it is given.
+
+**Fix.** An explicit expiry branch before the decay schedule, using `hp = 0`
+rather than `takeDamage()`. Expiry is not damage: a shield (Cannon Cart) must not
+absorb it, a parry (Ronin) must not negate it, and no `OnDamageTakenEffect`
+should fire for a clock running out.
+
+### 5. A Mortar answered to "is your King Tower alive?"
+
+`MatchRules::evaluate` identified the King as `entity->symbol == 'R'`. So does
+card id 93 — **Mortar**, registered `building(93, "Mortar", 4.0f, 1369, 'R', ...)`,
+along with its Evolution.
+
+While a Mortar is alive, its owner's King reports as alive. With the King
+actually destroyed, `evaluate()` returns `{over: false}`, `cleanDeadEntities`
+erases the dead King on the same tick, and from the next tick the **only** thing
+answering that question is the Mortar. The match does not end. The win is not
+recorded until the Mortar expires or the episode times out — at which point
+`TimeoutRules` decides it on towers instead, which is a different (and possibly
+opposite) verdict.
+
+Mortar is in the registry and phase 1's `random_opponent` samples random decks,
+so this is reachable in ordinary training, silently, as wins converted into
+timeouts.
+
+**Every other site already guarded by type.** `Tower::update`'s Princess count
+uses `isTower() && symbol != 'R'`. `TimeoutRules::resolve` uses a `dynamic_cast`
+and says in its own comment that a symbol check would be fragile *"if tower
+symbols are ever changed for the renderer"* — the hazard was written down, in the
+file next door, and this one site did not take it.
+
+**Fix.** `entity->isTower() && entity->symbol == 'R'`.
+
+**The suite could not have caught this, and the reason is instructive.** All four
+existing `MatchRules` cases built a stand-in King as
+`DummyEntity(..., 'R')` — a non-Tower entity wearing the symbol, which is
+*precisely* what a Mortar is at runtime. The test double reproduced the bug and
+then asserted the buggy behaviour was correct. They now build real `Tower`s.
+
+### 6. `pushAwayFrom` under-pushed from dead centre by exactly 1.0 tile
+
+Found by a characterization test written to protect the optimisation in §7 —
+i.e. by writing down what the function was *supposed* to do before changing how
+it did it.
+
+```cpp
+if (dist < 0.001f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
+float push = minDist - dist;
+```
+
+The `dist = 1.0f` exists to make `dx / dist` a unit vector. It then flowed into
+`push`, so a point sitting exactly on an obstacle's centre was pushed out by
+`minDist - 1.0` instead of by `minDist`. Measured: a troop landing dead-centre on
+a Building (`minDist` 1.4) moved **0.403 tiles and was still inside the
+footprint**; on a King Tower (`minDist` 2.4) it moved 1.4 of the 2.4 it needed.
+It escaped over two ticks instead of one, and the shortfall was 1.0 tile every
+time — the fake distance.
+
+**Fix.** Separate the direction from the distance. The ordinary path is
+bit-identical (`ux == dx / dist`, same operands in the same order); only the
+coincident branch changes.
+
+### 7. The built-in opponent defended against spells
+
+`HeuristicOpponent::act` scanned every living enemy entity for the deepest
+incursion and excluded only Towers. An `AreaSpell` sits on the board at its
+impact point with `hp = 1` for the length of its fuse, and a `Projectile` likewise
+while in flight — so a Fireball thrown at this bot's own tower registered as the
+deepest threat on the board and bought a full defensive placement of **the
+strongest card it could afford**, against something that was never a unit.
+
+This is phase 1's `ClashEnv::step()` opponent and all three `BUILTIN_ANCHORS` in
+the phase-2 Elo roster, so it changes what those anchors measure.
+
+**Fix.** Skip `!entity->isTargetable()` — the discriminator the rest of the engine
+already uses for this exact question (`ClashEnv::extractObservationForTeam`:
+*"Projectiles and pending spells are not board presence"*). It also, correctly,
+hides a cloaked unit from a bot that could not have seen it.
+
+The file had **no test coverage at all** before this; `tests/core/test_heuristic_opponent.cpp`
+is new, and carries the control (it must still answer a real Hog) that keeps the
+negative case from passing vacuously.
+
+### Latent, fixed while passing: projectile line-splash
+
+`RangedBuildingTargeter::performAttack` and `Tower::performAttack` both construct
+a `Projectile` without forwarding `lineSplash` / `lineSplashRange`, which
+`RangedTroop::performAttack` does forward. A card of either archetype configured
+for a piercing line would have silently fired an ordinary circular-splash shot —
+no compile error, no test failure. Latent today (Royal Giant is the only
+`RangedBuildingTargeter` and sets neither; no Tower Troop does), which is exactly
+why it was worth closing rather than leaving.
+
+---
+
+## 2026-08-26 (perf): the hot paths. 2.4-4.4x on collisions, 25x on the encoder.
+
+Measured with `tools/audit/collision_bench.cpp`, built standalone against the
+header-only engine, reporting the **minimum** of 40 repeats with the median
+alongside (same methodology as `engine_profile.cpp`: the cost is deterministic
+and the noise strictly additive, so the minimum is the least contaminated
+estimate and a wide min/median gap flags a noisy box instead of hiding inside an
+average).
+
+**Both implementations live in that one file, deliberately.** The alternative —
+time the new code, stash the diff, rebuild, time the old — also swaps in the
+gameplay fixes above, so the two runs would be simulating different matches and
+the comparison would be measuring the workload rather than the code. Holding the
+board fixed and swapping only the FUNCTION removes that confound.
+
+| board | function | old | new | |
+|---|---|---|---|---|
+| 20 entities | `resolveCollisions` | 3.040 us | 1.250 us | **2.43x** |
+| | `resolvePositionAgainstBuildings` x12 troops | 1.150 us | 0.388 us | **2.97x** |
+| 32 entities | `resolveCollisions` | 7.860 us | 3.325 us | **2.36x** |
+| | `resolvePositionAgainstBuildings` x24 troops | 2.797 us | 0.760 us | **3.68x** |
+| 48 entities | `resolveCollisions` | 14.010 us | 5.190 us | **2.70x** |
+| | `resolvePositionAgainstBuildings` x40 troops | 5.686 us | 1.292 us | **4.40x** |
+
+At 32 entities the two together fell from **10.66 us to 4.09 us per tick**. The
+ratio grows with population, which is the point: both were quadratic in board
+size to answer questions about a handful of entities.
+
+**What changed.**
+
+- `resolveCollisions` is O(n²) and was making four virtual calls per PAIR
+  (`getCollisionRadius` and `isTargetable`, both sides) for facts constant across
+  the whole call — a radius never changes, targetability cannot change within a
+  tick, and nothing in this function kills anything. Hoisted to one pass building
+  a POD scratch array: ~1,700 virtual dispatches become 60 at n = 30. Positions
+  are **not** hoisted; they are the one thing the function mutates.
+- `resolvePositionAgainstBuildings` runs once per MOVING TROOP per tick and
+  walked the entire entity list with a virtual call per candidate, to consult the
+  six Crown Towers and one or two deployed buildings. It now reads a cached index
+  of colliders, invalidated by the only two things that change membership
+  (`commitPendingEntities`, `cleanDeadEntities`). Liveness is deliberately NOT
+  cached — hp changes constantly, so the `isAlive()` check stayed in the loop.
+- `cleanDeadEntities` made three full passes every tick. The overwhelming
+  majority of ticks have no deaths at all, and all three passes are provably
+  no-ops in that case, so it now short-circuits on a single scan.
+- `CombatEntity::findTarget` and `BuildingTargeter::findTarget` re-derived the
+  attacker's OWN collision radius — a loop invariant, and a virtual call — once
+  per candidate. Hoisted. Identical arithmetic in identical order, so the result
+  is bit-for-bit unchanged.
+
+**Bit-equivalence was verified, not assumed.** A faster function that answers
+differently is not an optimisation. The benchmark sweeps
+`resolvePositionAgainstBuildings` over 8,572 board cells comparing old against
+new: **IDENTICAL on every one**. The 8 cells sitting exactly on a collider's
+centre are excluded and that exclusion is the point rather than a fudge — those
+are the cells §6 above deliberately changed.
+
+### The observation encoder: 0.0694 ms -> 0.0027 ms
+
+`extractObservationForTeam` is the hottest function in the C++ layer by a wide
+margin — `engine_profile.cpp` measured it at **63x the physics tick it
+describes** (0.0694 ms against 0.0011 ms), and at 111.8% of the whole
+`stepSelfPlay` call it is returned from.
+
+It was allocating twice per call. `std::vector<float> obs(spatialSize, 0.0f)`
+gives capacity exactly 12,852; the 754-float scalar tail is then appended with
+`push_back`, so the first one reallocates and copies all 12,852 floats it just
+finished zeroing — and the grown block crosses the allocator's large-block
+threshold. Reserving `observationSize()` up front and then `resize`-ing to the
+spatial block leaves one allocation.
+
+The per-hand-slot card one-hot was 185 branchy `push_back`s (740 per
+observation); it is now a zero-fill plus one store.
+
+| | min | median |
+|---|---|---|
+| `extractObservationForTeam(0)` before | 0.0694 ms | 0.0756 ms |
+| after | **0.0027 ms** | 0.0031 ms |
+| `stepSelfPlay(skip=10)` before | 0.1242 ms | 0.1509 ms |
+| after | **0.0410 ms** | 0.1118 ms |
+
+**This number was checked against its own instrument's blind spot.**
+`engine_profile.cpp` defeats dead-store removal with `if (obs.empty())`, which
+forces the VECTOR to exist but not its CONTENTS — and everything here is
+inlinable, so in principle a compiler could drop writes nobody reads and make the
+encoder look arbitrarily cheap. `collision_bench.cpp` therefore also times a
+variant that **checksums every element**: **9.80 us**, and that figure includes a
+13,606-element summation the real caller never pays. So even the pessimistic
+bound is 7x better than the 69.4 us it replaced. The speedup is real, not an
+elision artifact.
+
+Two smaller encoder changes rode along: `dynamic_cast<Building*>` became
+`entity->isBuilding()` (exactly equivalent — only `Building` overrides it, and
+`Tower` inherits — without the RTTI walk), and the six tower-HP scalars are built
+in ONE pass instead of six full board scans each with a `dynamic_cast` per
+entity, roughly 200 RTTI queries per observation to produce six floats.
+
+That last one also removed a **seventh copy of the board centre**: it decided
+left-vs-right with `BOARD_WIDTH / 2.0f` (9.0) where the rest of the engine uses
+`ArenaLayout::CENTER_X` (8.5), and `GameManager::findTower` answers the identical
+question with the latter. No tower currently sits in the half-tile between them,
+so it was right by luck.
+
+---
+
+## 2026-08-26 (part 2): the ability effects and the spawned units
+
+The first pass covered core combat, the board, and match rules. This one covers
+the ~19 bespoke Champion/Hero ability effects and the registry's child
+CardStats. Seven more defects, five of them in code that had no test coverage
+of any kind.
+
+### 8. `pullToward` ran BACKWARDS on a negative distance
+
+Every caller computes the argument as "how far do I still have to close" --
+`dist - meleeRange`, `dist - effectiveAttackRange + 0.1f`. When the target is
+already inside that range the subtraction goes negative, and
+
+```cpp
+float moveBy = (distance < dist) ? distance : dist;
+```
+
+takes the negative value happily, so the pull becomes a push.
+
+`GoldenKnightDashEffect` was the live case: `pullToward(self, target->position,
+dist - 1.0f)` against an enemy closer than 1.0 tiles. Measured: a Golden Knight
+0.5 tiles from his target ends the ability at 1.0 tiles -- he **retreats** from
+what he dashed at, and he is registered with `maxDashes = 10`.
+
+Every other caller is safe only by accident of ordering. `CombatEntity::update`'s
+jump and hook branches are both `else if`s reached only when `dist >
+effectiveAttackRange`, so their subtraction cannot go negative -- today.
+
+**Fixed in `pullToward`/`pushAway` themselves**, not at the call site, for the
+reason `exemptFromForcedMovement` gives three lines above them: a per-call-site
+clamp is a check somebody will forget to add. Something that genuinely wants to
+move away calls `pushAway`.
+
+### 9. Hero Giant hurled BUILDINGS across the arena
+
+`Entity.h` states the rule plainly, and states why it lives where it lives:
+
+> Both are a no-op on a Building regardless of which mechanic is calling --
+> buildings are stationary, full stop... Enforced here, once, rather than at
+> every individual call site, so nothing can reintroduce this bug by forgetting
+> a per-site check.
+
+`HeroGiantHurlEffect` reintroduced it, by not calling either function:
+
+```cpp
+victim->position.x = static_cast<float>(board.getWidth() - 1) - victim->position.x;
+```
+
+A raw position write skips the guard entirely. And its victim selector,
+`findHpExtremeEnemy`, excluded only `isTower()` -- not deployed buildings --
+while its own comment said it selects an "enemy TROOP". A Cannon is the
+highest-HP thing inside a 3-tile radius far more often than a troop is, so Hurl
+spent most of its uses throwing a stationary building into the other lane.
+Measured: a Cannon at x = 6.0 ended at x = 11.0.
+
+**Two fixes, because there were two holes.** `findHpExtremeEnemy` now excludes
+`isBuilding()` (strictly wider than `isTower()`, since Tower derives from
+Building, so nothing previously excluded is now admitted). And the raw write is
+replaced by a new `mirrorToOppositeLane(entity, boardWidth)` in `Entity.h`,
+third member of the pull/push family and carrying the same guard -- which also
+removes the last two restatements of the mirror formula.
+
+### 10. Mother Witch's curse stacked a death effect per HIT
+
+```cpp
+target->deathEffect = std::make_shared<CompositeDeathEffect>({ target->deathEffect, spawnEffect });
+```
+
+on **every hit**. Three hits produced three nested composites and three hogs on
+death; a Musketeer taking twenty hits died into twenty of them, and the chain's
+depth grew with the hit count. Measured: three applications, three hogs.
+
+The curse's *duration* is meant to refresh on every hit -- that half was right.
+Only the *spawn* is a one-time arming, now latched by
+`CombatEntity::curseDeathSpawnAttached`.
+
+### 11. The Royal Chef fed the same troop forever
+
+`RoyalChefBuffEffect` picks the nearest ally and applies `hp += hp / 10` plus a
+damage buff lasting 999999 ticks. Nothing excluded an ally it had already fed,
+so a tank parked beside the tower was fed every 280 ticks and compounded
+geometrically. Measured: **1000 -> 1100 after one serving, -> 1771 after six**
+(+77%, exactly 1.1^6), unbounded in match length.
+
+The real card grants a troop "+1 Level", once. Latched by
+`CombatEntity::royalChefServed`, so the chef moves on to a troop that has not
+eaten.
+
+### 12. The speed-tier rework never reached the SPAWNED units
+
+The 2026-08-24 rework put every playable card on one of five real tiers and
+round-tripped **"109 / 109 match, 0 mismatches"**. 109 is the count of cards
+with an OFFICIAL ROW. The child `CardStats` that death effects spawn have no row
+of their own and were never in that set.
+
+**This was measured, not inferred, and the first inference was WRONG.** A grep
+of the registry found 54 speed literals that are not `SPEED_*` constants, which
+looked like a large uncovered population. It is not: most of those literals land
+within 1% of a tier by coincidence (`0.5f` gives 1.000 tiles/s against SLOW's
+0.994; `1.0f` gives 2.000 against FAST's 1.988), and many are helpers nothing
+reaches. `tools/audit/spawn_speed_audit.cpp` spawns every registered card, fires
+its death effects, and reads `Troop::getSpeed()` off what actually arrives:
+
+**8 units off-tier out of 109, of which 5 are documented.** Reading the source
+would have produced a number seven times too large. State the probe, not the
+conclusion.
+
+| unit | tiles/s | nearest tier | off by | |
+|---|---|---|---|---|
+| Golemite (-1) | 0.400 | VERY_SLOW 0.663 | 39.6% | **below the real game's floor** |
+| Bats (-12, -14) | 1.700 | FAST 1.988 | 14.5% | contradicts playable card id 78 |
+| Goblin Brawler (-31) | 1.400 | MEDIUM 1.325 | 5.6% | still open, see below |
+| Berserker, Boss Bandit, Heal Spirit, Ronin, Spirit Empress | | | | documented "no official row" |
+
+**Golemite** was on a raw `0.2f` -- 0.400 tiles/s against `SPEED_VERY_SLOW`'s
+0.663. The real game's published table bottoms out at 30 tiles/min, so this unit
+moved slower than **any card in Clash Royale**, and 2.5x slower than the Golem
+it splits out of. Fixed to `SPEED_SLOW` by mirroring its parent -- the same rule
+the rework itself used for the 9 Hero variants, "by mirroring their base card's
+tier rather than by guessing".
+
+**Bats** needed no external source at all, because *the registry contradicts
+itself*: playable card id 78 is `SPEED_VERY_FAST` (2.651 tiles/s) and the child
+stats a Night Witch releases on death are a raw `0.85f` (1.700). Same name, same
+81 hp, same 81 damage, same 12-tick cooldown, 36% different speed. One of the
+two is on a real tier. Fixed to match card 78.
+
+After: **6 off-tier, 0 below the floor.** Five of the six are the documented
+list.
+
+**Still open, deliberately not guessed: Goblin Brawler (-31)** at 1.400 tiles/s,
+5.6% off MEDIUM. Goblin Cage's spawn has no playable counterpart in this
+registry to cross-check against and no official row, so there is nothing here to
+make the call from -- unlike Golemite (parent) and Bats (its own card). It
+belongs with the 5 documented off-tier cards until a source covers it.
+
+**A note on that documented list.** `DECISIONS.md` says "13 cards have no
+official row" and then names twelve: Berserker, Ronin, Goblin Machine, Goblin
+Demolisher, Furnace, Heal Spirit, Suspicious Bush, Rune Giant, Little Prince,
+Goblinstein, Boss Bandit, Spirit Empress. The measurement finds only five of
+them still off-tier by more than 1% -- the rest sit within 1% of a tier by
+coincidence, which is worth knowing before anyone "fixes" them.
+
+### The negative result, which is worth as much as the defects
+
+Every `FreezeOnHit` in the registry was checked against its card's real
+mechanic. **The stun-vs-slow convention holds everywhere except the two cards
+already fixed in part 1** (Ice Spirit, Ice Golem). Electro Wizard, Electro
+Dragon, Electro Spirit, Zappies, Goblinstein and the Freeze spell are all
+correctly `0.0f` stuns; Ice Wizard, Giant Snowball, Earthquake and the Princess
+Evolution are all correctly in the 0.5-0.7 slow band. There is no third case.
+
+Likewise, only one registration matched the "Ice Golem shape" -- a
+building-targeter carrying an on-hit effect that can therefore only ever land on
+a building -- and it was a false positive: Goblinstein's `withOnHit` sits on its
+secondary ranged unit, not on the building-targeter.
+
+---
+
 # ARCHIVE — `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` (retired 2026-08-24)
 
 Both backlog files were worked to empty on 2026-08-24: every item was either

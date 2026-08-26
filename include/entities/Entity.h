@@ -201,8 +201,20 @@ inline bool exemptFromForcedMovement(const Entity& entity) {
 
 // Moves `entity` up to `distance` tiles toward `point`, never overshooting
 // past it.
+//
+// A NON-POSITIVE `distance` is a no-op, and that guard is load-bearing rather
+// than defensive tidiness. Every caller computes it as "how far do I still
+// have to close", e.g. `dist - meleeRange`, and when the target is ALREADY
+// inside that range the subtraction goes negative -- at which point
+// `moveBy = (distance < dist) ? distance : dist` picks the negative value and
+// the pull runs backwards, shoving the entity AWAY. GoldenKnightDashEffect
+// did exactly that against an adjacent enemy, and is registered with 10
+// dashes. Enforced here, once, for the same reason exemptFromForcedMovement
+// is: a per-call-site clamp is a check somebody will forget to add.
+// Something that genuinely wants to move away calls pushAway.
 inline void pullToward(Entity& entity, const Vector2D& point, float distance) {
     if (exemptFromForcedMovement(entity)) return;
+    if (distance <= 0.0f) return; // already close enough: nothing to close
     float dist = entity.position.distanceTo(point);
     if (dist <= 0.01f) return; // already there (or coincident): no direction to move in
     float moveBy = (distance < dist) ? distance : dist;
@@ -210,10 +222,29 @@ inline void pullToward(Entity& entity, const Vector2D& point, float distance) {
     entity.position.y += (point.y - entity.position.y) / dist * moveBy;
 }
 
+// Mirrors `entity` into the opposite lane (Mighty Miner's Explosive Escape,
+// Hero Giant's Hurl). Third member of this family, and it exists for the same
+// reason as the other two: both callers previously wrote
+// `victim->position.x = board.getWidth() - 1 - victim->position.x` DIRECTLY,
+// which is a raw position write and therefore skipped
+// exemptFromForcedMovement entirely -- so Hero Giant could hurl an enemy
+// Cannon across the arena, the exact bug the guard on pullToward/pushAway
+// exists to make impossible. It also removes two more restatements of the
+// mirror formula, which on the standard 18-wide board is ArenaLayout::mirrorX.
+//
+// Takes the width rather than reading ArenaLayout so a Board constructed at a
+// non-default size (tests do) mirrors about ITS OWN centre, exactly as the
+// two call sites did before.
+inline void mirrorToOppositeLane(Entity& entity, int boardWidth) {
+    if (exemptFromForcedMovement(entity)) return;
+    entity.position.x = static_cast<float>(boardWidth - 1) - entity.position.x;
+}
+
 // Moves `entity` exactly `distance` tiles directly away from `point`
 // (knockback) -- no "overshoot" concept the other direction, so no clamp.
 inline void pushAway(Entity& entity, const Vector2D& point, float distance) {
     if (exemptFromForcedMovement(entity)) return;
+    if (distance <= 0.0f) return; // same guard as pullToward -- see there
     float dist = entity.position.distanceTo(point);
     if (dist <= 0.01f) return; // coincident: no direction to push in
     entity.position.x += (entity.position.x - point.x) / dist * distance;

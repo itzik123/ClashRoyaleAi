@@ -215,3 +215,46 @@ TEST_CASE("Building has no clone() override -- Clone was never valid against bui
     Building building(1, 0.0f, 0.0f, 500, 0, 'C', 5.0f, 100, 10);
     REQUIRE(building.clone(999) == nullptr);
 }
+
+
+TEST_CASE("a freeze slows movement for exactly as many ticks as it slows the cooldown",
+          "[troop][movement][freeze][regression]") {
+    // freezeTicks had TWO readers inside one update(), on opposite sides of
+    // the decrement:
+    //
+    //   CombatEntity::update()  reads it, decrements it, drains the cooldown
+    //   Troop::moveTowards()    reads it again, AFTER that decrement
+    //
+    // so applyFreeze(N) slowed the attack cooldown for N ticks and movement
+    // for N-1. On the final tick of any freeze the unit was already moving at
+    // full speed. At N = 1 -- and the engine registers 3-tick and 5-tick stuns
+    // (Electro Spirit, Zap) -- the movement half of the freeze did not happen
+    // at all.
+    //
+    // Same shape as the two absorbing states already recorded in CLAUDE.md:
+    // one fact, two readers, and they disagreed.
+    Board board;
+    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 10.0f, 100, 1);
+    spawn(board, enemy);
+
+    auto troop = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
+    troop->sightRange = 10.0f;
+
+    SECTION("a one-tick full stun stops movement for that tick") {
+        troop->applyFreeze(1, 0.0f);
+        troop->update(board);
+        REQUIRE(troop->position.y == Catch::Approx(0.0f));
+    }
+
+    SECTION("an N-tick full stun stops movement for all N ticks") {
+        constexpr int N = 4;
+        troop->applyFreeze(N, 0.0f);
+        for (int i = 0; i < N; ++i) troop->update(board);
+        REQUIRE(troop->position.y == Catch::Approx(0.0f));
+        REQUIRE(troop->freezeTicks == 0);
+
+        // Control: it is not simply immobile -- the very next tick it walks.
+        troop->update(board);
+        REQUIRE(troop->position.y == Catch::Approx(1.0f));
+    }
+}

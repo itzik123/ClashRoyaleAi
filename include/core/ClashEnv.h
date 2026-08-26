@@ -180,7 +180,17 @@ private:
     // team==0 reproduces the exact previous behavior byte-for-byte.
     std::vector<float> extractObservationForTeam(int team) {
         int spatialSize = BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS;
-        std::vector<float> obs(spatialSize, 0.0f);
+        // reserve() the FULL observation before resize() lays down the spatial
+        // block. Built the obvious way -- construct at spatialSize, then
+        // push_back the 754-float scalar tail -- the vector's capacity is
+        // exactly spatialSize when the first push_back arrives, so it
+        // reallocates and copies all 12,852 floats it just finished zeroing.
+        // This is the single hottest function in the C++ layer (measured at
+        // 0.069 ms against a 0.0011 ms physics tick, i.e. 63x the simulation it
+        // describes), and that copy was pure waste.
+        std::vector<float> obs;
+        obs.reserve(observationSize());
+        obs.resize(spatialSize, 0.0f);
 
         auto getIndex = [&](int channel, int y, int x) {
             return channel * (BOARD_HEIGHT * BOARD_WIDTH) + y * BOARD_WIDTH + x;
@@ -251,7 +261,12 @@ private:
             // Type category: building / building-targeter (tank) / ranged / melee.
             // BuildingTargeter* also matches RangedBuildingTargeter (inheritance).
             int typeOffset;
-            bool isBuilding = (dynamic_cast<Building*>(entity.get()) != nullptr);
+            // Entity::isBuilding() -- a one-word virtual, overridden to true by
+            // Building and inherited by Tower, and nothing else in the
+            // hierarchy overrides it. Exactly equivalent to the
+            // dynamic_cast<Building*> this replaces, without the RTTI walk, on
+            // a loop that runs over every entity on every observation.
+            bool isBuilding = entity->isBuilding();
             if (isBuilding) typeOffset = 3;
             else if (dynamic_cast<BuildingTargeter*>(entity.get()) != nullptr) typeOffset = 2;
             else if (dynamic_cast<RangedTroop*>(entity.get()) != nullptr) typeOffset = 1;
@@ -313,9 +328,13 @@ private:
         // Musketeer indistinguishable (both 0.4), so no card-specific strategy could
         // ever be learned.
         for (int cardId : game.getHand(team)) {
-            for (int k = 0; k < NUM_CARD_IDS; ++k) {
-                obs.push_back(k == cardId ? 1.0f : 0.0f);
-            }
+            // Zero the whole block and set the one hot bit, instead of 185
+            // branchy push_backs per hand slot (740 per observation). An
+            // out-of-range or -1 cardId leaves the block all zeros, exactly as
+            // the equality test did.
+            const size_t base = obs.size();
+            obs.resize(base + NUM_CARD_IDS, 0.0f);
+            if (cardId >= 0 && cardId < NUM_CARD_IDS) obs[base + cardId] = 1.0f;
         }
 
         // --- appended scalars (NUM_EXTRA_SCALARS) --------------------------
@@ -350,22 +369,31 @@ private:
         // convention the spatial channels above already use (team 1's view is
         // a y-flip, not a 180-degree rotation), so this stays consistent with
         // them rather than inventing a second frame.
-        auto towerHp = [&](int forTeam, int which) {   // which: 0=king, 1=left, 2=right
-            for (const auto& entity : game.getBoard().getEntities()) {
-                if (!entity->isAlive() || entity->team != forTeam) continue;
-                if (dynamic_cast<const Tower*>(entity.get()) == nullptr) continue;
-                bool isKing = (entity->cardId == GameManager::TOWER_KING_ID);
-                if (which == 0) {
-                    if (isKing) return entity->hp / MAX_BUILDING_HP;
-                } else if (!isKing) {
-                    bool isLeft = entity->position.x < BOARD_WIDTH / 2.0f;
-                    if ((which == 1) == isLeft) return entity->hp / MAX_BUILDING_HP;
-                }
-            }
-            return 0.0f;
-        };
-        for (int which = 0; which < 3; ++which) obs.push_back(towerHp(team, which));
-        for (int which = 0; which < 3; ++which) obs.push_back(towerHp(1 - team, which));
+        // ONE pass for all six values, not six passes of one.
+        //
+        // This was a lambda called six times, each walking the whole entity
+        // list with a dynamic_cast per entity -- roughly 200 RTTI queries per
+        // observation to produce six floats, on a function called once per
+        // agent per decision.
+        //
+        // Left/right is decided against ArenaLayout::CENTER_X (8.5), not
+        // BOARD_WIDTH / 2.0f (9.0). Those are different numbers, and 8.5 is the
+        // one the rest of the engine uses -- it is the fixed point of the
+        // mirror 17 - x, and GameManager::findTower answers this identical
+        // question with it. No tower currently sits in the half-tile between
+        // them so the classification was right by luck; CLAUDE.md's rule is
+        // that a second copy of a constant is a scheduled defect regardless.
+        float towerHp[2][3] = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
+        for (const auto& entity : game.getBoard().getEntities()) {
+            if (!entity->isAlive() || !entity->isTower()) continue;
+            const int side = (entity->team == team) ? 0 : 1;
+            const bool isKing = (entity->cardId == GameManager::TOWER_KING_ID);
+            const int which = isKing ? 0
+                : (entity->position.x < ArenaLayout::CENTER_X ? 1 : 2);
+            towerHp[side][which] = entity->hp / MAX_BUILDING_HP;
+        }
+        for (int which = 0; which < 3; ++which) obs.push_back(towerHp[0][which]);
+        for (int which = 0; which < 3; ++which) obs.push_back(towerHp[1][which]);
 
         return obs;
     }

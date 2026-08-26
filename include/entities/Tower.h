@@ -89,9 +89,13 @@ protected:
     }
 
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
+        // lineSplash/lineSplashRange forwarded -- same omission, same reason,
+        // as RangedBuildingTargeter::performAttack. A Tower Troop
+        // (TowerTroops.h) is built through CardFactories::applyCardMetadata
+        // like any other card and so can carry these fields.
         auto arrow = std::make_shared<Projectile>(
             board.allocateId(), position.x, position.y, team, target, 2.0f, getCurrentDamage(), onHitEffects,
-            false, 0, id, cardId, splashRadius);
+            false, 0, id, cardId, splashRadius, lineSplash, lineSplashRange);
         board.addEntity(arrow);
     }
 
