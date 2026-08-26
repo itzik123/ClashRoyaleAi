@@ -43,6 +43,7 @@ from python_ai.envs.scripted_opponents import SCRIPTED_OPPONENTS  # noqa: E402
 from python_ai.models.policy_io import load_state_dict_flexible  # noqa: E402
 from python_ai.rewards.shaping import building_hp_end  # noqa: E402
 from python_ai.rl.base_trainer import BaseTrainer  # noqa: E402
+from python_ai.rl.checkpointing import run_path, weights_path  # noqa: E402
 from python_ai.rl.config import PHASE2_ENTROPY, PPOConfig  # noqa: E402
 from python_ai.trainers import exploiter as exploiter_mod  # noqa: E402
 from python_ai.trainers import league  # noqa: E402
@@ -80,13 +81,13 @@ STALL_REBOOST_COOLDOWN_EPISODES = 1000
 # reacting to.
 ENTROPY_STALE_REBOOST_EPISODES = 1500
 
-WEIGHT_PATH = "model_weights_selfplay.pth"
+WEIGHT_PATH = weights_path("model_weights_selfplay.pth")
 
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
 # pipeline #2 run (bare weights only; pipeline #2 keeps its own separate
 # episode count/optimizer state in WEIGHT_PATH from then on, so pipeline #1's
 # own checkpoint is never overwritten by this script).
-BOOTSTRAP_FROM_PATH = "model_weights.pth"
+BOOTSTRAP_FROM_PATH = weights_path("model_weights.pth")
 
 
 class Phase2Trainer(BaseTrainer):
@@ -95,7 +96,7 @@ class Phase2Trainer(BaseTrainer):
     pipeline_name = "pipeline2"
     replay_prefix = "selfplay_replay"
     weight_path = WEIGHT_PATH
-    log_dir = "runs/clash_royale_selfplay"
+    log_dir = run_path("runs/clash_royale_selfplay")
     #: A scenario window can end an episode without a king dying, so the critic
     #: must bootstrap V(final_obs) there rather than learn a terminal 0.
     uses_truncation_bootstrap = True

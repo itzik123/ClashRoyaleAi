@@ -87,9 +87,9 @@ def test_a_historical_snapshot_is_weights_only_and_names_its_pipeline(tmp_path,
     """Weights only on purpose: these are never resumed from, only loaded as
     opponents, so carrying Adam's buffers would triple the file size for
     nothing. The pipeline tag is what the age gate matches on."""
-    monkeypatch.chdir(tmp_path)
     net = MicroRoyaleNet(num_ability_slots=0)
-    path = save_historical_snapshot(net, 4321, "pipeline2")
+    path = save_historical_snapshot(net, 4321, "pipeline2",
+                                    directory=str(tmp_path))
     assert "_pipeline2_ep00004321.pth" in os.path.basename(path)
     payload = torch.load(path, map_location="cpu", weights_only=False)
     assert set(payload) == {"model"}
@@ -103,12 +103,13 @@ def test_snapshots_sort_oldest_first_by_save_order_not_by_filename(tmp_path,
     import time
 
     from python_ai.trainers.league import discover_historical_checkpoints
-    monkeypatch.chdir(tmp_path)
     net = MicroRoyaleNet(num_ability_slots=0)
-    first = save_historical_snapshot(net, 99999999, "pipeline1")
+    first = save_historical_snapshot(net, 99999999, "pipeline1",
+                                     directory=str(tmp_path))
     time.sleep(0.02)
-    second = save_historical_snapshot(net, 1, "pipeline1")
-    found = discover_historical_checkpoints()
+    second = save_historical_snapshot(net, 1, "pipeline1",
+                                      directory=str(tmp_path))
+    found = discover_historical_checkpoints(directory=str(tmp_path))
     assert [os.path.basename(p) for p in found] == [
         os.path.basename(first), os.path.basename(second)], (
         "a high episode number in the filename must not reorder the pool")
@@ -121,13 +122,14 @@ def test_pipeline_2s_own_recent_snapshots_are_age_gated_out(tmp_path,
     from python_ai.trainers.league import (
         MIN_OPPONENT_AGE_EPISODES, discover_historical_checkpoints,
     )
-    monkeypatch.chdir(tmp_path)
     net = MicroRoyaleNet(num_ability_slots=0)
-    save_historical_snapshot(net, 50_000, "pipeline2")          # too young
-    save_historical_snapshot(net, 1_000, "pipeline2")           # old enough
-    save_historical_snapshot(net, 50_000, "pipeline1")          # never gated
+    d = str(tmp_path)
+    save_historical_snapshot(net, 50_000, "pipeline2", directory=d)  # too young
+    save_historical_snapshot(net, 1_000, "pipeline2", directory=d)   # old enough
+    save_historical_snapshot(net, 50_000, "pipeline1", directory=d)  # never gated
     eligible = discover_historical_checkpoints(
-        current_episode=50_000 + MIN_OPPONENT_AGE_EPISODES // 2)
+        current_episode=50_000 + MIN_OPPONENT_AGE_EPISODES // 2,
+        directory=d)
     names = [os.path.basename(p) for p in eligible]
     assert not any("_pipeline2_ep00050000" in n for n in names)
     assert any("_pipeline2_ep00001000" in n for n in names)
@@ -141,9 +143,8 @@ def test_a_stage_snapshot_records_the_curriculum_it_was_taken_at(tmp_path,
     """The metadata is what makes a later probe reproducible: it records which
     opponent strength this policy was actually trained against, so a comparison
     can replay it against a different rung and attribute the difference."""
-    monkeypatch.chdir(tmp_path)
     net = MicroRoyaleNet(num_ability_slots=0)
-    path = save_stage_snapshot(net, STAGE_CHECKPOINT_DIR, stage=3,
+    path = save_stage_snapshot(net, str(tmp_path), stage=3,
                                episodes_completed=1234, teacher_stage=3,
                                reason="cleared stage 3 gate")
     payload = torch.load(path, map_location="cpu", weights_only=False)

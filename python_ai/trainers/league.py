@@ -114,7 +114,8 @@ REFERENCE_ROSTER_BASE_ELO = 1000
 
 REFERENCE_ROSTER_ELO_STEP = 150
 
-def discover_historical_checkpoints(current_episode=None):
+def discover_historical_checkpoints(current_episode=None,
+                                    directory=None):
     """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
     (mtime). Save order is the ordering signal, not filenames -- pipeline #1
     and this same script both drop snapshots into this one shared folder, on
@@ -128,8 +129,18 @@ def discover_historical_checkpoints(current_episode=None):
     constant's comment for why. Pipeline #1 snapshots are always eligible
     regardless of current_episode (their episode count lives on a wholly
     different, incomparable scale, and they're always from an earlier, weaker
-    phase anyway)."""
-    paths = glob.glob(os.path.join(HISTORICAL_CHECKPOINT_DIR, "*.pth"))
+    phase anyway).
+
+    `directory` exists so a test can point at a tmp_path EXPLICITLY. Until
+    2026-08-25 the pool directory was cwd-relative and tests isolated
+    themselves with `monkeypatch.chdir`; anchoring it (so a run cannot be
+    redirected by the directory it was launched from) took that away, and
+    without an explicit override the suite would write random-init snapshots
+    into the real PFSP pool -- i.e. silently hand the league eight untrained
+    opponents. Mirrors `save_historical_snapshot`'s existing `directory=`.
+    """
+    directory = HISTORICAL_CHECKPOINT_DIR if directory is None else directory
+    paths = glob.glob(os.path.join(directory, "*.pth"))
     if current_episode is not None:
         eligible = []
         for p in paths:

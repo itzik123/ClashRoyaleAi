@@ -30,10 +30,58 @@ TINY = PPOConfig(num_envs=2, update_timestep=20, bptt_chunk=10,
 
 @pytest.fixture
 def workdir(tmp_path, monkeypatch):
-    """The trainers write to relative paths (replays/, historical_checkpoints/),
-    so a test that did not chdir would litter the repository."""
+    """Redirect every destination a trainer writes to into tmp_path.
+
+    A `chdir` used to be enough, because the trainers' paths were all
+    cwd-relative. They were ANCHORED on 2026-08-25 so that a multi-day run
+    cannot be silently redirected by the directory it was launched from
+    (see rl/checkpointing.weights_path) -- and that turns this fixture's old
+    one-liner into no isolation at all.
+
+    It is not hypothetical: the first suite run after that change wrote a
+    random-init, 20-step, 2-env checkpoint straight into
+    `python_ai/model_weights.pth`, which is the live resume path. A subsequent
+    training run would have started from it and looked like it was resuming.
+
+    So redirection now goes through the sanctioned overrides -- `CLASH_WEIGHTS`
+    and `CLASH_LOGDIR` exist precisely so "a smoke run or an experiment arm
+    cannot clobber the real checkpoint" -- plus monkeypatches for the pipeline
+    2 constants, which are frozen at import and have no env hook. The chdir
+    stays for `replays/`, which is still relative.
+    """
+    from python_ai.rl import base_trainer
+    from python_ai.trainers import train_selfplay
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLASH_WEIGHTS", str(tmp_path / "model_weights.pth"))
+    monkeypatch.setenv("CLASH_LOGDIR", str(tmp_path / "runs" / "test"))
+    for attr, value in (
+            ("WEIGHT_PATH", tmp_path / "model_weights_selfplay.pth"),
+            ("BOOTSTRAP_FROM_PATH", tmp_path / "model_weights.pth")):
+        monkeypatch.setattr(train_selfplay, attr, str(value))
+    monkeypatch.setattr(train_selfplay.Phase2Trainer, "weight_path",
+                        str(tmp_path / "model_weights_selfplay.pth"))
+    monkeypatch.setattr(base_trainer, "HISTORICAL_CHECKPOINT_DIR",
+                        str(tmp_path / "historical_checkpoints"))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_live_checkpoint(monkeypatch):
+    """A tripwire, not a redirect. Any test in this module that writes to the
+    real `python_ai/model_weights.pth` has escaped `workdir`, and the symptom
+    (a training run resuming from a toy checkpoint) appears days later and
+    nowhere near the cause.
+    """
+    import python_ai
+    live = os.path.join(python_ai.PACKAGE_DIR, "model_weights.pth")
+    existed = os.path.exists(live)
+    yield
+    if os.path.exists(live) and not existed:
+        os.remove(live)
+        raise AssertionError(
+            f"a test wrote the LIVE checkpoint {live!r} -- it is not using the "
+            "workdir fixture's redirection")
 
 
 def _phase1(updates=1, cfg=TINY):
@@ -75,9 +123,9 @@ def _phase1(updates=1, cfg=TINY):
 def test_one_full_update_runs_and_writes_a_resumable_checkpoint(workdir):
     trainer = _phase1()
     assert trainer.updates_run == 1
-    assert os.path.exists("model_weights.pth")
+    assert os.path.exists(workdir / "model_weights.pth")
 
-    ck = torch.load("model_weights.pth", map_location="cpu",
+    ck = torch.load(workdir / "model_weights.pth", map_location="cpu",
                     weights_only=False)
     # Everything a resume needs. A checkpoint missing any of these resumes
     # SILENTLY WRONG rather than failing -- the entropy controller reset to its
@@ -200,10 +248,10 @@ def test_the_final_save_carries_the_SAME_keys_as_the_periodic_one(workdir):
     trainer.entropy.coef_placement = 0.0242
 
     trainer.save_checkpoint(verbose=False)          # the periodic path
-    periodic = torch.load("model_weights.pth", map_location="cpu",
+    periodic = torch.load(workdir / "model_weights.pth", map_location="cpu",
                           weights_only=False)
     trainer.on_finish()                             # the final path
-    final = torch.load("model_weights.pth", map_location="cpu",
+    final = torch.load(workdir / "model_weights.pth", map_location="cpu",
                        weights_only=False)
 
     assert set(periodic) == set(final), (

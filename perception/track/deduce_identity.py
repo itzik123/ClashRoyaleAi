@@ -32,8 +32,10 @@ from __future__ import annotations
 from collections import deque
 from itertools import permutations
 
-HAND_SIZE = 4
-QUEUE_SIZE = 4
+# HAND_SIZE/QUEUE_SIZE were redefined here until 2026-08-24, three lines below
+# a docstring insisting costs come "from the engine registry, never a second
+# hardcoded copy". Same rule, same file, opposite practice.
+from track.cycle import HAND_SIZE, QUEUE_SIZE, advance
 
 
 class IdentityContradiction(RuntimeError):
@@ -62,8 +64,9 @@ def _replay(order, plays, costs):
         if cost is not None and costs[card] != cost:
             return None
         played.append(card)
-        hand[slot] = queue.popleft()
-        queue.append(card)
+        # `slot` is passed explicitly: a permutation may repeat an id, and
+        # hand.index() would then resolve to the wrong slot.
+        advance(hand, queue, card, index=slot)
     return played
 
 

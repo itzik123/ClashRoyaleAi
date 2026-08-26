@@ -48,6 +48,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from contracts import UNKNOWN_CARD_SIM_ID
+from track.cycle import QUEUE_SIZE, advance
 
 # Wide enough that the mode has converged (measured: 25 frames reaches 27
 # distinct hands against a true ~23) while still under the ~9 s a real hand
@@ -67,7 +68,7 @@ class HandTracker:
     deck: tuple[int, ...]
     costs: dict[int, float]
     hand: list[int] = field(default_factory=list)
-    queue: deque = field(default_factory=lambda: deque(maxlen=4))
+    queue: deque = field(default_factory=lambda: deque(maxlen=QUEUE_SIZE))
 
     seeded: bool = False
     plays_applied: int = 0
@@ -89,7 +90,7 @@ class HandTracker:
         deliberately slow.
         """
         self.hand = []
-        self.queue = deque(maxlen=4)
+        self.queue = deque(maxlen=QUEUE_SIZE)
         self.seeded = False
         self.plays_applied = 0
         self.ambiguous = 0
@@ -115,7 +116,7 @@ class HandTracker:
             if seed is not None and all(c in self.deck for c in seed):
                 self.hand = list(seed)
                 self.queue = deque(
-                    [c for c in self.deck if c not in set(seed)], maxlen=4)
+                    [c for c in self.deck if c not in set(seed)], maxlen=QUEUE_SIZE)
                 self.seeded = True
             return
 
@@ -145,9 +146,7 @@ class HandTracker:
         else:
             played = candidates[0]
 
-        index = self.hand.index(played)
-        self.hand[index] = self.queue.popleft() if self.queue else UNKNOWN_CARD_SIM_ID
-        self.queue.append(played)
+        advance(self.hand, self.queue, played)
         self.plays_applied += 1
         self._since_play = 0
 
@@ -181,7 +180,7 @@ class HandTracker:
         if all(c in self.deck for c in seen):
             self.hand = list(seen)
             self.queue = deque(
-                [c for c in self.deck if c not in set(seen)], maxlen=4)
+                [c for c in self.deck if c not in set(seen)], maxlen=QUEUE_SIZE)
 
     @property
     def confidence(self) -> float:

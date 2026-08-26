@@ -58,6 +58,41 @@ class CycleDesyncError(RuntimeError):
     """Tracked state contradicts an observation, unrecoverably."""
 
 
+def advance(hand: list[int], queue: "deque[int]", played: int,
+            index: int | None = None) -> None:
+    """Advance the 8-slot FIFO by one play. THE implementation of the rule.
+
+    Mirrors `PlayerState::playCard` (PlayerState.h:208-216) exactly:
+
+        nextCard = deckQueue.front(); deckQueue.pop_front();
+        deckQueue.push_back(cardId);
+        hand[handIndex] = nextCard;
+
+    Single source of truth on purpose. This rule had THREE copies until
+    2026-08-24 -- here, `live/hand_tracker.py` and `track/deduce_identity.py`
+    -- which is precisely the "second copy of an engine constant" CLAUDE.md
+    forbids, in behavioural form. What legitimately differs between those
+    callers is how they work out WHICH card was played (a known id, a cost, or
+    a candidate permutation); what must not differ is what the FIFO then does.
+
+    `index` lets a caller that already knows the slot skip the lookup -- the
+    permutation search does, and `hand.index()` would find the wrong slot for
+    a deck holding duplicate ids. Mutates `hand` and `queue` in place.
+
+    An empty `hand` means no hand model has been seeded yet; the play is still
+    recorded in the queue, since it is a harder fact than our model of it.
+    """
+    if hand:
+        if index is None:
+            index = hand.index(played)
+        hand[index] = queue.popleft() if queue else UNKNOWN_CARD_SIM_ID
+    queue.append(played)
+    # Explicit trim: `queue` is NOT always constructed with a maxlen (see
+    # CycleTracker's field default), so append alone does not bound it.
+    while len(queue) > QUEUE_SIZE:
+        queue.popleft()
+
+
 @dataclass
 class CycleTracker:
     """Tracks one player's hand and queue through a match.
@@ -118,11 +153,7 @@ class CycleTracker:
         """Record that `card_id` was played. Advances the FIFO."""
         self.play_history.append(card_id)
 
-        if card_id in self.hand:
-            index = self.hand.index(card_id)
-            incoming = self.queue.popleft() if self.queue else UNKNOWN_CARD_SIM_ID
-            self.hand[index] = incoming
-        elif self.hand:
+        if self.hand and card_id not in self.hand:
             # Played something we did not believe was in hand. Real causes:
             # a missed earlier play, or a misread hand. Not fatal -- the
             # play itself is a harder fact than our model of the hand, so
@@ -131,9 +162,7 @@ class CycleTracker:
             self._rebuild_from_history()
             return
 
-        self.queue.append(card_id)
-        while len(self.queue) > QUEUE_SIZE:
-            self.queue.popleft()
+        advance(self.hand, self.queue, card_id)
 
     def observe_hand(self, hand: tuple[int, ...]) -> bool:
         """Vision read the hand. Returns True if it matched the prediction.

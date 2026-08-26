@@ -10,7 +10,6 @@ import argparse
 import json
 import sys
 import time
-import types
 from pathlib import Path
 
 import numpy as np
@@ -21,17 +20,11 @@ _PERCEPTION = Path(__file__).resolve().parent.parent
 if str(_PERCEPTION) not in sys.path:
     sys.path.insert(0, str(_PERCEPTION))
 
-# CRBAB's package __init__ imports its Bot, which imports `keyboard` -- a
-# dependency that exists only to drive a live emulator and has nothing to do
-# with running the detector over a file. Stubbing the package lets
-# `clashroyalebuildabot.detectors...` resolve without it, rather than adding a
-# requirement to this venv for a module that is never called.
-sys.modules.setdefault("keyboard", types.ModuleType("keyboard"))
-if "clashroyalebuildabot" not in sys.modules:
-    _pkg = types.ModuleType("clashroyalebuildabot")
-    _pkg.__path__ = [str(_PERCEPTION / "clashroyalebuildabot")]
-    sys.modules["clashroyalebuildabot"] = _pkg
-
+# This used to stub `keyboard` and the package __init__ itself, because
+# CRBAB's __init__ imported its Bot and that chain pulled in PyQt6 and
+# `keyboard` -- neither of which a detector reading a FILE has any use for.
+# The 2026-08-24 vendoring cleanup removed the agent, so the import is now
+# plain and the stub is gone with it.
 from clashroyalebuildabot.constants import MODELS_DIR, DETECTOR_UNITS
 from clashroyalebuildabot.detectors.unit_detector import UnitDetector
 from calib.homography import load_profile, homography_from_profile

@@ -1,6 +1,11 @@
 # Exports for clashroyalebuildabot
+#
+# Vendored as a SENSOR only. Upstream's own agent -- the PyQt GUI, the
+# rule-based `actions/`, the live-play `Bot` loop, the ADB `Emulator` and the
+# Qt `Visualizer` -- was removed in the 2026-08-24 cleanup: this project brings
+# its own agent, and that import chain pulled PyQt6 and `keyboard` into a
+# module whose requirements.txt states it never opens a window.
 from . import constants
-from .bot import Bot
 from .detectors import (
     CardDetector,
     Detector,
@@ -9,13 +14,10 @@ from .detectors import (
     ScreenDetector,
     UnitDetector,
 )
-from .emulator import Emulator
 from .namespaces import Cards, Screens, State, Units
-from .visualizer import Visualizer
 
 __all__ = [
     "constants",
-    "Visualizer",
     "Cards",
     "Screens",
     "Units",
@@ -26,6 +28,4 @@ __all__ = [
     "NumberDetector",
     "UnitDetector",
     "CardDetector",
-    "Emulator",
-    "Bot",
 ]

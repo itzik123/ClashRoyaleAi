@@ -43,9 +43,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from calib.homography import load_profile  # noqa: E402
+from track.cycle import DECK_SIZE  # noqa: E402
 from capture.video import VideoSource  # noqa: E402
 
-DECK_SIZE = 8
 ICON_SHAPE = (48, 40)  # (h, w) that crops are normalised to before clustering
 
 

@@ -843,6 +843,33 @@ function getEntityMeta(ent) {
   if (ent.cardId !== undefined && CARD_META[ent.cardId]) {
     return Object.assign({ inferred: false }, CARD_META[ent.cardId]);
   }
+  // No cardMeta entry. Before guessing from the symbol, use the name the
+  // replay carries for this entity: GameLogger writes it straight off the
+  // board, so it is exact even for a death-spawn child, whose cardId is
+  // deliberately NEGATIVE and therefore absent from cardMeta by construction
+  // (CardRegistry assigns Golemite -1, and towers -2/-3).
+  //
+  // Only the NAME is settled by this. maxHp and the ground/air/building flags
+  // still come from the symbol, which is why hpInferred is reported separately
+  // rather than folded into `inferred` -- claiming the HP maximum is confirmed
+  // when it was matched on a symbol 36 of 90 cards share would be the same
+  // over-claim this fallback already exists to avoid.
+  //
+  // Older replays carry no `name`, so this is skipped and the symbol path below
+  // still runs for them.
+  if (ent.name) {
+    const symMeta = SYMBOL_INDEX.bySymbol[ent.symbol] || {
+      maxHp: MAX_HP[ent.symbol] || 0,
+      isBuilding: BUILDING_SYMBOLS.has(ent.symbol),
+      isSpell: SPELL_SYMBOLS.has(ent.symbol),
+      isFlying: FLYING_SYMBOLS_FALLBACK.has(ent.symbol),
+    };
+    return Object.assign({}, symMeta, {
+      name: ent.name,
+      inferred: false,
+      hpInferred: true,
+    });
+  }
   // cardId missing or -1: resolve by symbol against the replay's OWN registry
   // data before falling through to the legacy hardcoded tables, which cover
   // only ~45 of the 173 registry entries.
@@ -1899,7 +1926,9 @@ function updateInspector(tickData) {
         ? `<div class="inspector-note">identified by symbol${
              meta.ambiguous ? ' — this symbol is shared by more than one card' : ''
            }</div>`
-        : '');
+        : meta.hpInferred
+          ? '<div class="inspector-note">name read from the replay; HP maximum inferred from symbol</div>'
+          : '');
 }
 
 function updateEventLog() {

@@ -84,7 +84,14 @@ if crossed != trials:
 # without it, so a .pyd that predates it turns every phase-1 run into an
 # ImportError at startup. Catching it HERE, in the post-build gate, names the
 # cause before a training run does.
-if not hasattr(cre, "step_self_play_fast"):
+#
+# `cre` is the MODULE; step_self_play_fast is a method on the ClashRoyaleEnv
+# CLASS. Checking the module was a false negative that could never pass, so
+# from the day this check landed the gate reported FAILED on a perfectly good
+# .pyd -- the worst failure mode available to a gate, since it teaches the
+# reader to ignore it. Corrected 2026-08-24; the arena check below already
+# reads module-level constants and is right to use `cre`.
+if not hasattr(cre.ClashRoyaleEnv, "step_self_play_fast"):
     failures.append("stale .pyd: missing step_self_play_fast -- rebuild, and "
                     "check the post-build copy into python_ai/ actually landed "
                     "(MSB3073 if any Python process has the .pyd loaded)")

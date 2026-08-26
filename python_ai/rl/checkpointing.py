@@ -8,11 +8,48 @@ Three destinations, deliberately separate directories:
 
 Mixing the last two would silently change which opponents self-play samples --
 the pool is read as a weakest-to-strongest ladder by save order.
+
+EVERY DESTINATION IS ANCHORED, NEVER CWD-RELATIVE (2026-08-25). All of these
+used to be bare relative strings, so which directory a run was launched from
+decided whether it resumed or started fresh, and whether the PFSP pool was
+found at all. `weights_path` and `run_path` below are the single resolution
+point; see `python_ai/tests/test_checkpoint_paths.py` for the measured failure.
 """
 import os
 import time
 
 import torch
+
+import python_ai
+
+
+def weights_path(name):
+    """A `.pth` destination, anchored on the package directory.
+
+    `python_ai/` is where the checkpoints and the compiled engine already live,
+    and where `shipping.load_shipping_net` already resolves from -- so this
+    moves nothing, it only stops `os.getcwd()` from being able to redirect it.
+    An already-absolute name is returned untouched, because an explicit
+    `CLASH_WEIGHTS` is a deliberate act (an experiment arm redirecting away
+    from the live checkpoint) and second-guessing it would defeat the override.
+    """
+    return name if os.path.isabs(name) else os.path.join(
+        python_ai.PACKAGE_DIR, name)
+
+
+def run_path(name):
+    """A run-artifact destination (TensorBoard runs, snapshot pools), anchored
+    on the repository root, which is where `runs/`, `replays/` and
+    `historical_checkpoints/` already sit.
+
+    Deliberately a DIFFERENT anchor from `weights_path`. Collapsing the two
+    onto one base would relocate either the checkpoints or the run artifacts,
+    and `base_trainer` `shutil.rmtree`s `log_dir` on a non-resume start -- so a
+    wrong anchor here is destructive, not merely untidy.
+    """
+    return name if os.path.isabs(name) else os.path.join(
+        python_ai.REPO_ROOT, *name.split("/"))
+
 
 # Historical self-play (pipeline #2, train_selfplay.py) needs a library of past
 # versions of this same policy to play against, weakest to strongest -- these
@@ -25,7 +62,7 @@ import torch
 # single weakest-to-strongest queue, since it saves its own new (and by then
 # much stronger) snapshots into the same folder as pipeline #2 progresses, and
 # those two runs' episode counters aren't on the same scale.
-HISTORICAL_CHECKPOINT_DIR = "historical_checkpoints"
+HISTORICAL_CHECKPOINT_DIR = run_path("historical_checkpoints")
 
 # Lowered 5000 -> 2000 on 2026-08-09, as a RE-DENOMINATION rather than a change
 # of intent. The 2026-08-07 movement-speed fix left gradient steps per hour
@@ -64,7 +101,7 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 2000
 # narrowness is a pathological collapse or a rational response to being
 # out-elixired is decidable -- but only by replaying ONE fixed policy against
 # SEVERAL stages' opponents, which requires having kept the per-stage weights.
-STAGE_CHECKPOINT_DIR = "stage_checkpoints"
+STAGE_CHECKPOINT_DIR = run_path("stage_checkpoints")
 
 def save_stage_snapshot(net, directory, stage, episodes_completed, teacher_stage, reason):
     """Weights-only snapshot tagged with the curriculum state it was taken at.

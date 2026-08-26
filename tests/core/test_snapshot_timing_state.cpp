@@ -20,12 +20,19 @@
 // in exactly the way that is hardest to notice -- the numbers still look
 // plausible.
 //
-// None of the relevant fields are publicly readable (currentCooldown is
-// protected; Building::ticksAlive is private), and asking for accessors is
+// Most of the relevant fields are not publicly readable (currentCooldown is
+// protected; Building::ticksAlive is private), and asking for accessors was
 // filed as perception/UPSTREAM_REQUESTS.md item 17 -- deliberately as
 // ergonomics, NOT as a coverage unblocker, because the seams below already make
-// the state observable through behaviour. These tests are that argument, made
-// concrete.
+// the state observable through behaviour. The first three tests are that
+// argument, made concrete.
+//
+// Item 17 was then RESOLVED MINIMALLY (2026-08-24): of the eleven accessors it
+// tabled, exactly one was added -- CombatEntity::getTicksOnTarget() -- because
+// ticksOnTarget is the single field whose behavioural proxy is genuinely lossy
+// rather than merely inconvenient. The fourth test is that case. Everything
+// else stays behavioural on purpose; do not add accessors here for fields the
+// seams above already reach.
 
 namespace {
 
@@ -155,4 +162,51 @@ TEST_CASE("a copied attacker re-arms on the same tick as the original",
 
     // Non-vacuous: the attacker must actually have landed hits in the window.
     REQUIRE(a.front() > a.back());
+}
+
+TEST_CASE("a copied attacker keeps its position in the damage ramp, not just its cooldown",
+          "[deepcopy][timing]") {
+    // ticksOnTarget is the ONE field in item 17's table with no adequate
+    // behavioural proxy, which is why it is the only accessor that request
+    // actually bought. getDamagePerTick() collapses it into at most four ramp
+    // BUCKETS via getCurrentDamage(), so a copy that rewound ticksOnTarget by a
+    // few ticks WITHIN a bucket stays invisible to an hp trace -- and on a card
+    // with rangeFalloff the proxy varies continuously with distance and the
+    // ramp stage stops being separable from it at all.
+    //
+    // ticksOnTarget also feeds the hit-SPEED ramp (cooldownFraction), so a
+    // desync here changes when later hits land, not merely how hard they hit.
+    Board original;
+    // Speed 0 on both so neither walks, matching the re-arm test above: this is
+    // about engagement bookkeeping, and movement would add a second source of
+    // drift.
+    auto attacker = std::make_shared<MeleeTroop>(1, 9.0f, 9.0f, 2000, 0,
+                                                 0.0f, 1.2f, 100, 12, 'K');
+    auto target = std::make_shared<MeleeTroop>(2, 9.0f, 9.5f, 5000, 1,
+                                               0.0f, 1.2f, 0, 12, 'T');
+    original.addEntity(attacker);
+    original.addEntity(target);
+    original.commitPendingEntities(0);
+
+    // Accumulate a deliberately non-round ticksOnTarget before copying, so a
+    // copy that reset it to 0 or rounded it to a ramp boundary is caught.
+    for (int t = 0; t < 17; ++t) tickBoard(original, t);
+
+    Board copy = original.deepCopy();
+
+    auto ticksOnTargetOf = [](Board& b) {
+        for (const auto& e : b.getEntities()) {
+            if (e->id == 1) {
+                auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
+                REQUIRE(ce != nullptr);
+                return ce->getTicksOnTarget();
+            }
+        }
+        return -1;
+    };
+
+    // Non-vacuous: the attacker must really be engaged, or both sides read 0
+    // and the comparison would pass on a copy that carried nothing at all.
+    REQUIRE(ticksOnTargetOf(original) > 0);
+    REQUIRE(ticksOnTargetOf(copy) == ticksOnTargetOf(original));
 }

@@ -1246,6 +1246,27 @@ public:
     float getAttackRange() const { return attackRange; }
     int getAttackCooldown() const { return attackCooldown; }
 
+    // Ticks this entity has been continuously engaged with its current target.
+    // Read-only, added for the deepCopy divergence tests -- same rationale as
+    // Projectile::getTargetId(), which exists so those tests can assert the
+    // remap happened instead of inferring it from where damage landed.
+    //
+    // WHY THIS ONE FIELD AND NOT THE WHOLE TIMING TABLE. Every other internal
+    // timing field has an adequate behavioural proxy and is covered that way in
+    // tests/core/test_snapshot_timing_state.cpp: currentCooldown through the
+    // public seedCooldown() seam, Building::ticksAlive through its mod-10 decay
+    // phase, AreaSpell's fuse through an hp trajectory. ticksOnTarget is the
+    // exception -- its only public proxy, getDamagePerTick(), routes through
+    // getCurrentDamage() and collapses it into at most four ramp BUCKETS, so a
+    // within-bucket desync is invisible; and on a card with rangeFalloff that
+    // proxy also varies continuously with lastAttackDistance, which stops the
+    // ramp stage from being separable at all.
+    //
+    // Additive and const: no existing symbol changes meaning, no field becomes
+    // writable, no gameplay path is touched. See perception/UPSTREAM_REQUESTS.md
+    // item 17.
+    int getTicksOnTarget() const { return ticksOnTarget; }
+
     // Damage per TICK, the comparable quantity: a 755-damage Mini PEKKA
     // swinging every 16 ticks is not 3.7x a 202-damage Knight swinging every
     // 12. Built on getCurrentDamage() rather than raw `damage` so ramp,

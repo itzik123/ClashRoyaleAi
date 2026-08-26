@@ -182,3 +182,50 @@ def test_a_snapshot_DOES_reproduce_an_opening_which_is_the_workaround():
     a, b = root.snapshot(), root.snapshot()
     assert list(a.get_hand_for_team(0)) == list(b.get_hand_for_team(0))
     assert list(a.get_hand_for_team(1)) == list(b.get_hand_for_team(1))
+
+
+# --------------------------------------------------------------------------
+# item 23C -- the THIRD generator, which item 7's seed() cannot reach
+# --------------------------------------------------------------------------
+# `sample_random_deck` draws from a function-local `static std::mt19937` in
+# src/bindings.cpp. It is not a member of ClashEnv or GameManager, so
+# `ClashEnv::seed` cannot touch it -- which means a run with
+# `randomize_opp_deck=True` still gets a random OPPONENT DECK even though its
+# opening hand, cycle order and heuristic rolls are all now pinned. That is the
+# largest single remaining source of episode-to-episode variance.
+#
+# The static is also process-global, so two envs built in one process interleave
+# draws from one stream. A seeding entry point that set the static would
+# therefore only reproduce for a fixed construction order -- which is why the
+# accepted fix gives the SEEDED caller a private generator instead.
+def test_sample_random_deck_is_reproducible_when_seeded():
+    a = list(E.sample_random_deck(seed=4242))
+    b = list(E.sample_random_deck(seed=4242))
+    assert a == b, "same seed must yield the same deck"
+    assert len(a) == 8
+
+
+def test_sample_random_deck_different_seeds_differ():
+    """The control that stops the test above passing vacuously -- a stub that
+    returned one constant deck would satisfy reproducibility perfectly."""
+    decks = {tuple(E.sample_random_deck(seed=s)) for s in range(12)}
+    assert len(decks) > 1, "distinct seeds must not all collapse to one deck"
+
+
+def test_sample_random_deck_seeded_stream_is_private_to_the_caller():
+    """The property option 1 could NOT deliver, and the reason option 2 was
+    chosen: at num_envs=8 every env draws from the same process-global static,
+    so a seeded draw must not depend on how many unseeded draws happened first.
+    """
+    first = list(E.sample_random_deck(seed=777))
+    for _ in range(5):
+        E.sample_random_deck()          # interleave unseeded draws
+    second = list(E.sample_random_deck(seed=777))
+    assert first == second
+
+
+def test_sample_random_deck_without_a_seed_still_works():
+    """Backwards compatibility: every existing zero-argument call site must keep
+    working unchanged."""
+    deck = list(E.sample_random_deck())
+    assert len(deck) == 8

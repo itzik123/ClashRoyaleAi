@@ -16,6 +16,24 @@ numpy>=2.0
 opencv-python-headless>=4.10
 pytest>=8.0
 
+# Required by the vendored CRBAB sensor at IMPORT time, and previously
+# UNDECLARED here -- a venv built strictly from this file could not
+# `import clashroyalebuildabot` at all. Verified 2026-08-24 by blocking them on
+# sys.meta_path: the import fails on PIL before it reaches anything else.
+#   pillow  detectors/card_detector.py, hand-icon hashing
+#   scipy   detectors/card_detector.py, linear_sum_assignment over hand slots
+pillow>=10.0
+scipy>=1.11
+
+# LIVE DETECTOR ONLY -- the two ONNX models (units_M_480x352, side). Every test
+# runs against fixtures or fakes rather than the real models, which is why the
+# suite is green without this installed; a live run needs it.
+# Use the `-gpu` build instead on a machine that has one.
+onnxruntime>=1.17
+
+# Used by detectors/detector.py and two measurement tools for log output.
+loguru>=0.7
+
 # LIVE CAPTURE ONLY -- Windows, and only for capture/window.py. Every recorded
 # source (video.py, frames.py) and the whole test suite run without it.
 #
