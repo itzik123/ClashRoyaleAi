@@ -63,7 +63,11 @@ import sys
 import time
 
 import numpy as np
+
+from python_ai.rl.seeding import seed_everything
 import torch
+
+from python_ai.rl.checkpointing import atomic_save
 
 # Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
 # resolve; importing the package is also what makes `clash_royale_env` (an
@@ -220,7 +224,7 @@ def run_ablation(args, cfg, device, resolve):
         print(f"  held-out disagree {ho['disagreement_match']:.4f} "
               f"agree {ho['agreement_match']:.4f} noop {ho['pred_noop_rate']:.3f}")
         print(f"  critic drift |dV| {vd:.6f}  aux {ad:.6f}   ({took / 60:.1f} min)")
-        torch.save({"model": student.state_dict(), "config": name},
+        atomic_save({"model": student.state_dict(), "config": name},
                    resolve(f"exit_ablate_{name.split()[0]}.pth"))
 
     print("\n" + "=" * 78)
@@ -283,7 +287,16 @@ def main():
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     ap.add_argument("--time-budget", type=float, default=0.0)
+    ap.add_argument("--seed", type=int, default=None,
+                   help="Seed every RNG so this run reproduces. Off by "
+                        "default: seeding by default would change what "
+                        "every existing invocation does.")
     args = ap.parse_args()
+    # Applied BEFORE any data is loaded or any net is built: the
+    # per-epoch shuffle below runs on the GLOBAL RNG, and the net's
+    # initialisation is itself a draw. Seeding after either would leave
+    # the run half-reproducible, which is worse than not at all.
+    seed_everything(args.seed)
 
     device = torch.device("cpu")
     torch.set_num_threads(max(1, os.cpu_count() // 2))
@@ -371,7 +384,7 @@ def main():
         if not args.full_finetune and (v_drift != 0.0 or aux_drift != 0.0):
             print("    !! NONZERO under --freeze-trunk. The freeze did not take; the critic")
             print("       that generated these labels is moving underneath the experiment.")
-        torch.save({"model": student.state_dict(),
+        atomic_save({"model": student.state_dict(),
                     "distilled_from": os.path.basename(args.weights),
                     "labels": os.path.basename(args.data),
                     "frozen_trunk": not args.full_finetune}, resolve(args.out))
@@ -465,7 +478,7 @@ def main():
               f"agree {cond['agreement_match']:.4f}  noop {cond['pred_noop_rate']:.3f} "
               f"(expert {noop_rate(data['card']):.3f})")
         print(f"  critic drift |dV| {vd:.6f}  aux {ad:.6f}")
-        torch.save({"model": student.state_dict(), "temperature": args.temperature},
+        atomic_save({"model": student.state_dict(), "temperature": args.temperature},
                    resolve(args.out))
         print(f"  wrote {args.out}")
 

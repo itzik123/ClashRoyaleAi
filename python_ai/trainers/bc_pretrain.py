@@ -61,7 +61,11 @@ import os
 import sys
 
 import numpy as np
+
+from python_ai.rl.seeding import seed_everything
 import torch
+
+from python_ai.rl.checkpointing import atomic_save
 
 from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
@@ -452,7 +456,16 @@ if __name__ == "__main__":
     ap.add_argument("--train", action="store_true", help="fit a policy to --data")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--out", default="bc_warmstart.pth")
+    ap.add_argument("--seed", type=int, default=None,
+                   help="Seed every RNG so this run reproduces. Off by "
+                        "default: seeding by default would change what "
+                        "every existing invocation does.")
     args = ap.parse_args()
+    # Applied BEFORE any data is loaded or any net is built: the
+    # per-epoch shuffle below runs on the GLOBAL RNG, and the net's
+    # initialisation is itself a draw. Seeding after either would leave
+    # the run half-reproducible, which is worse than not at all.
+    seed_everything(args.seed)
 
     if args.collect:
         d = collect_demonstrations(n_episodes=args.collect)
@@ -461,6 +474,6 @@ if __name__ == "__main__":
     if args.train:
         d = load_dataset(args.data)
         model, hist = train_bc(d, epochs=args.epochs)
-        torch.save({"model": model.state_dict()}, args.out)
+        atomic_save({"model": model.state_dict()}, args.out)
         print(f"wrote warm-start weights to {args.out}")
         print("  ", action_match_rate(model, d))

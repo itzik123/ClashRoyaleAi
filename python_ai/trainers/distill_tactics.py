@@ -48,7 +48,11 @@ import os
 import sys
 
 import numpy as np
+
+from python_ai.rl.seeding import seed_everything
 import torch
+
+from python_ai.rl.checkpointing import atomic_save
 
 from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
@@ -187,7 +191,16 @@ def main():
     ap.add_argument("--anchor", type=float, default=1.0,
                     help="weight on keeping the ALIVE cards where they are")
     ap.add_argument("--opp-elixir", type=float, default=1.5)
+    ap.add_argument("--seed", type=int, default=None,
+                   help="Seed every RNG so this run reproduces. Off by "
+                        "default: seeding by default would change what "
+                        "every existing invocation does.")
     args = ap.parse_args()
+    # Applied BEFORE any data is loaded or any net is built: the
+    # per-epoch shuffle below runs on the GLOBAL RNG, and the net's
+    # initialisation is itself a draw. Seeding after either would leave
+    # the run half-reproducible, which is worse than not at all.
+    seed_everything(args.seed)
 
     here = python_ai.PACKAGE_DIR
     dev = torch.device("cpu")
@@ -273,7 +286,7 @@ def main():
         print(f"  epoch {epoch}: loss {tot/max(1,seen):.4f}   argmax match: {acc}")
 
     out = os.path.join(here, args.out)
-    torch.save({"model": net.state_dict()}, out)
+    atomic_save({"model": net.state_dict()}, out)
     print(f"\nsaved {out}")
 
     # Verify the freeze actually held -- the same check expert_iteration.py

@@ -273,25 +273,38 @@ def test_an_interrupted_save_leaves_no_partial_file_in_a_pool(tmp_path,
         f"a partial file survived: {[p.name for p in tmp_path.iterdir()]}")
 
 
-def test_the_trainer_and_both_snapshot_helpers_all_go_through_atomic_save():
-    """A static check: a fourth writer added later must not reintroduce the
-    bare call. This is the same 'second copy' shape the reset-spike guard had.
-    """
-    import inspect
-    import re
-    from python_ai.rl import base_trainer, checkpointing
+def test_no_module_in_the_package_writes_a_checkpoint_unatomically():
+    """Package-wide, not just the two modules this started with.
 
-    for mod in (base_trainer, checkpointing):
-        src = inspect.getsource(mod)
-        # `atomic_save`'s own body is the ONE legitimate torch.save: it is what
-        # every other writer is routed through.
-        body = inspect.getsource(checkpointing.atomic_save)
-        for i, line in enumerate(src.splitlines(), 1):
+    The scan is what found the rest: SEVEN more bare `torch.save` calls lived
+    in trainers/, and one of them -- `exploiter.py`'s burst snapshot -- writes
+    straight into the SHARED PFSP POOL. A torn write there deposits a corrupt
+    opponent that the MAIN run later tries to load, which is the same failure
+    the pool reader was hardened against; hardening the reader does not stop
+    the writer creating the file.
+    """
+    import pathlib
+    import re
+
+    import python_ai
+    from python_ai.rl import checkpointing
+
+    import inspect
+    # `atomic_save`'s own body holds the ONE legitimate torch.save --
+    # it is what every other writer is routed through.
+    exempt_body = inspect.getsource(checkpointing.atomic_save).splitlines()
+    root = pathlib.Path(python_ai.PACKAGE_DIR)
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(("tests/", "venv/", "archive")):
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             code = line.split("#", 1)[0]
-            if line in body.splitlines():
-                continue
-            assert not re.search(r"(?<![\w.])torch\.save\(", code), (
-                f"{mod.__name__}:{i} writes with a bare torch.save: {line.strip()}")
+            if re.search(r"(?<![\w.])torch\.save\(", code) and line not in exempt_body:
+                offenders.append(f"{rel}:{i}: {line.strip()}")
+    assert not offenders, (
+        "checkpoint written without atomic_save:\n" + "\n".join(offenders))
 
 
 def test_the_temp_file_can_never_be_discovered_as_a_pool_opponent(tmp_path,

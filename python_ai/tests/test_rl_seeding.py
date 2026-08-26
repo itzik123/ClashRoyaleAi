@@ -174,3 +174,58 @@ def test_an_unseeded_make_env_is_still_random_for_both_pipelines():
 
     assert sp_make()().rng.random() != sp_make()().rng.random()
     assert p1_make()()._scenario_rng.random() != p1_make()()._scenario_rng.random()
+
+
+# --- the distillation trainers --------------------------------------------
+#
+# bc_pretrain, distill_tactics and expert_distill each shuffle their training
+# set once per epoch on the GLOBAL RNG:
+#
+#     np.random.shuffle(ep_ids)          # bc_pretrain, expert_distill
+#     perm = np.random.permutation(n)    # distill_tactics
+#
+# so no distillation run could be reproduced. That matters more here than it
+# looks: CLAUDE.md's expert-iteration conclusions are PAIRED A/B comparisons
+# between distilled nets, and the `--ablate` 2x2 grid compares four configs
+# against each other. If each run shuffles differently, part of every measured
+# difference is shuffle noise, and the +0.045 win-rate result cannot be
+# re-derived from the same inputs.
+#
+# bc_pretrain already seeds its DATA COLLECTION (`collect_demonstrations(...,
+# seed=0)` builds a `default_rng`) and then trained on an unseeded shuffle --
+# half-seeded, which is the shape that makes a run look reproducible until the
+# half you forgot is the half that matters.
+
+def test_the_distillation_entry_points_expose_a_seed():
+    """Wiring check: each CLI takes --seed and routes it to seed_everything.
+
+    Deliberately static. The behaviour these scripts depend on -- that seeding
+    fixes `np.random.shuffle` -- is proved by the test below; what cannot be
+    proved cheaply is that each script actually CALLS it, because doing so
+    would mean running a full distillation.
+    """
+    import pathlib
+
+    import python_ai
+    root = pathlib.Path(python_ai.PACKAGE_DIR) / "trainers"
+    for name in ("bc_pretrain.py", "distill_tactics.py", "expert_iteration.py"):
+        src = (root / name).read_text(encoding="utf-8")
+        assert '"--seed"' in src, f"{name} has no --seed"
+        assert "seed_everything" in src, f"{name} never applies its seed"
+
+
+def test_seeding_fixes_the_global_shuffle_these_trainers_use():
+    """The mechanism the wiring above relies on."""
+    import numpy as np
+
+    from python_ai.rl.seeding import seed_everything
+
+    def order():
+        ids = np.arange(64)
+        np.random.shuffle(ids)
+        return ids.tolist()
+
+    seed_everything(5)
+    first = order()
+    seed_everything(5)
+    assert order() == first
