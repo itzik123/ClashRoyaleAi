@@ -312,7 +312,8 @@ class BaseTrainer:
             dones = terminateds | truncateds
             stats = extract_engine_stats(infos, cfg.num_envs)
 
-            boot = self._truncation_bootstrap(dones, raw_rewards, next_obs)
+            boot = self._truncation_bootstrap(dones, raw_rewards, next_obs,
+                                              truncateds)
 
             # A draw is an episode that ENDED with a near-zero raw reward.
             draw_source = terminateds if self.draw_on_terminated_only else dones
@@ -421,21 +422,40 @@ class BaseTrainer:
             out["has"] = torch.from_numpy(has.astype(np.float32))
         return out
 
-    def _truncation_bootstrap(self, dones, raw_rewards, next_obs):
-        """V(final_obs) for episodes that ENDED WITHOUT a king dying.
+    def _truncation_bootstrap(self, dones, raw_rewards, next_obs, truncateds):
+        """V(final_obs) for episodes that stopped while the game CONTINUED.
 
-        TRUE terminal (raw reward +/-1) vs TRUNCATION (a natural max-tick
-        timeout OR a scenario-window cutoff, raw reward ~0). Only true terminals
-        get value 0 bootstrapped; truncations must bootstrap V(final_obs) or the
-        critic learns a biased "the world ends here" value. Derived from the raw
-        engine reward's sign, so it needs no extra signal from the wrapper.
+        A TRUNCATION is a scenario window running out on a live match: no king
+        died, the world goes on, and bootstrapping 0 there would teach the
+        critic a biased "the world ends here" value for a state the world does
+        not end in. A TERMINAL is any real ending -- a king dying, or the clock
+        running out -- and gets value 0.
+
+        READ FROM `truncateds`, NOT FROM THE REWARD'S MAGNITUDE. This used to
+        classify with `dones & (abs(raw_rewards) > 0.5)`, a heuristic standing
+        in for a signal the caller already had: `selfplay_env` sets
+        `truncated=True` in exactly one place, a scenario window expiring while
+        the game is not over, so that flag IS the distinction.
+
+        The heuristic got one case wrong, and `TimeoutRules` is what kept it
+        narrow: a timed-out match is DECIDED on surviving towers, then on the
+        weakest tower's HP, so it almost always pays +/-1 and was correctly
+        called terminal. An EXACT TIE pays ~0, and was therefore treated as a
+        truncation -- charging DRAW_PENALTY for the draw AND crediting
+        gamma*V(final_obs) as though play continued. A draw is an ending; that
+        credit partly refunded the very penalty that exists to stop a timeout
+        being the safe option.
+
+        Using the flag also drops a silent dependency on the reward SCALE. If
+        the sparse reward ever stopped being +/-1, the old rule would
+        misclassify every episode at once and nothing would report it.
         """
         n = self.cfg.num_envs
         zero = torch.zeros(n, dtype=torch.float32, device=self.device)
         if not self.uses_truncation_bootstrap:
             return {"nonterminal": zero, "flag": zero, "value": zero}
-        is_terminal = dones & (np.abs(raw_rewards) > 0.5)
-        needs_boot = dones & ~is_terminal
+        needs_boot = np.asarray(truncateds, dtype=bool)
+        is_terminal = dones & ~needs_boot
         boot_value = zero
         if needs_boot.any():
             # next_obs at a done step is the episode's TRUE final observation

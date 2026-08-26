@@ -258,3 +258,105 @@ def test_the_final_save_carries_the_SAME_keys_as_the_periodic_one(workdir):
         "the final save must not drop keys the periodic save persists")
     assert final["ent_coef_card"] == pytest.approx(0.4242)
     assert final["ent_coef_place"] == pytest.approx(0.0242)
+
+
+# --- what actually counts as a truncation ---------------------------------
+#
+# `_truncation_bootstrap` classified a finished episode by the MAGNITUDE OF THE
+# REWARD:
+#
+#     is_terminal = dones & (np.abs(raw_rewards) > 0.5)
+#     needs_boot  = dones & ~is_terminal
+#
+# That is a heuristic standing in for a signal the caller already has.
+# `selfplay_env` sets `truncated=True` in exactly one place -- a scenario
+# window running out while the game is NOT over -- so `truncateds` IS the
+# authoritative "the world continues, we just stopped watching" flag.
+#
+# The heuristic gets one case wrong, and TimeoutRules is what makes it narrow:
+# a timed-out match is DECIDED on surviving towers, then on the weakest
+# tower's HP, and only an exact tie on both is a genuine draw. So a timeout
+# almost always pays +/-1 and is correctly classed terminal. An EXACT TIE pays
+# ~0, and was therefore treated as a truncation -- so the agent was charged
+# DRAW_PENALTY for the tie *and* credited gamma*V(final_obs) as though the game
+# carried on. The game did not carry on; a draw is an ending.
+#
+# Reading the flag instead of the reward also removes a silent dependency on
+# the reward SCALE: if the sparse reward ever stopped being +/-1, the heuristic
+# would misclassify every episode at once, with nothing reporting it.
+
+def _boot(trainer_cls, net, obs, dones, raw, truncateds):
+    """Call `_truncation_bootstrap` on a minimal stand-in for a live trainer."""
+    import types
+
+    import numpy as np
+    import torch
+
+    from python_ai.models.policy_io import LSTM_HIDDEN
+    from python_ai.rl.base_trainer import BaseTrainer
+    from python_ai.rl.config import PPOConfig
+
+    n = len(dones)
+    fake = types.SimpleNamespace(
+        net=net, device=torch.device("cpu"),
+        cfg=PPOConfig(num_envs=n),
+        uses_truncation_bootstrap=trainer_cls.uses_truncation_bootstrap,
+        _hx=torch.zeros(n, LSTM_HIDDEN), _cx=torch.zeros(n, LSTM_HIDDEN))
+    flat = np.asarray(obs, dtype=np.float32)
+    return BaseTrainer._truncation_bootstrap(
+        fake, np.array(dones), np.array(raw, dtype=np.float32),
+        np.repeat(flat[None, :], n, axis=0), np.array(truncateds))
+
+
+def test_an_exact_tie_is_a_TERMINAL_not_a_truncation(net, fresh_obs):
+    """A drawn match has ended. Bootstrapping V(final_obs) there credits the
+    agent with a future that does not exist, partly refunding DRAW_PENALTY --
+    the very term that exists to stop a timeout being the safe option."""
+    from python_ai.trainers.train_selfplay import Phase2Trainer
+    _, obs = fresh_obs
+    out = _boot(Phase2Trainer, net, obs, dones=[True], raw=[0.0],
+                truncateds=[False])
+    assert float(out["flag"][0]) == 0.0, "a tie was bootstrapped"
+    assert float(out["nonterminal"][0]) == 0.0, "a tie was treated as ongoing"
+
+
+def test_a_scenario_window_running_out_IS_a_truncation(net, fresh_obs):
+    """The one case the mechanism exists for: the game is genuinely still
+    going, so the critic must bootstrap rather than learn 'the world ends'."""
+    from python_ai.trainers.train_selfplay import Phase2Trainer
+    _, obs = fresh_obs
+    out = _boot(Phase2Trainer, net, obs, dones=[True], raw=[0.0],
+                truncateds=[True])
+    assert float(out["flag"][0]) == 1.0
+    assert float(out["nonterminal"][0]) == 1.0
+
+
+def test_a_decided_result_never_bootstraps(net, fresh_obs):
+    from python_ai.trainers.train_selfplay import Phase2Trainer
+    _, obs = fresh_obs
+    out = _boot(Phase2Trainer, net, obs, dones=[True, True], raw=[1.0, -1.0],
+                truncateds=[False, False])
+    assert [float(v) for v in out["flag"]] == [0.0, 0.0]
+    assert [float(v) for v in out["nonterminal"]] == [0.0, 0.0]
+
+
+def test_classification_does_not_depend_on_the_reward_scale(net, fresh_obs):
+    """A truncation is a truncation whatever the step happened to pay. Under
+    the old rule a scenario cutoff that coincided with any |reward| > 0.5 was
+    silently reclassified as a terminal."""
+    from python_ai.trainers.train_selfplay import Phase2Trainer
+    _, obs = fresh_obs
+    for reward in (0.0, 0.4, 0.9, -0.9):
+        out = _boot(Phase2Trainer, net, obs, dones=[True], raw=[reward],
+                    truncateds=[True])
+        assert float(out["flag"][0]) == 1.0, reward
+
+
+def test_a_live_step_is_neither_terminal_nor_truncated(net, fresh_obs):
+    from python_ai.trainers.train_selfplay import Phase2Trainer
+    _, obs = fresh_obs
+    out = _boot(Phase2Trainer, net, obs, dones=[False], raw=[0.0],
+                truncateds=[False])
+    assert float(out["flag"][0]) == 0.0
+    assert float(out["nonterminal"][0]) == 1.0, (
+        "an ongoing episode must still bootstrap the next stored value")
