@@ -11,6 +11,10 @@
 #include "Projectile.h"
 #include <vector>
 #include <tuple>
+#include <map>
+#include <string>
+#include <cmath>
+#include <algorithm>
 
 TEST_CASE("Spawned entities carry the card's display name", "[card_registry][name]") {
     Board board;
@@ -1547,4 +1551,85 @@ TEST_CASE("a spawned unit moves at the same speed as its own playable card",
     INFO("playable Bats " << playableBats << ", spawned Bats " << spawnedBats);
     REQUIRE(spawnedBats > 0.0f);   // control: she really did spawn some
     REQUIRE(spawnedBats == Catch::Approx(playableBats));
+}
+
+
+TEST_CASE("every spawned unit moves at the speed of its own playable card",
+          "[card_registry][speed][regression]") {
+    // THE invariant this catches, and the reason the earlier "is it near some
+    // tier" check could not: a unit sitting on the WRONG tier is still sitting
+    // on a tier. Goblins spawned by a hut ran at 2.000 tiles/s -- 0.6% off
+    // FAST, so "on tier" -- while the Goblins card itself is VERY_FAST at
+    // 2.651. Nothing flagged it because nothing compared the two.
+    //
+    // The comparison needs no external source. A spawned unit and a playable
+    // card sharing a NAME, identical in hp, range, damage and cooldown, are the
+    // same unit; where they disagree on speed the registry contradicts itself,
+    // and the card is the copy the 2026-08-24 tier pass actually reached.
+    //
+    // Four names are excluded, and only four: compound cards whose SECONDARY
+    // unit is registered under the parent's name while being a deliberately
+    // different creature -- different archetype, range and hp.
+    const std::vector<std::string> compound = {
+        "Goblin Machine", "Goblinstein", "Ram Rider", "Rascals"
+    };
+
+    auto primarySpeedOf = [](const CardDefinition* def) -> float {
+        Board board;
+        def->spawnEntity(9.0f, 10.0f, 0, board);
+        board.commitPendingEntities();
+        for (const auto& e : board.getEntities())
+            if (auto* t = dynamic_cast<Troop*>(e.get())) return t->getSpeed();
+        return -1.0f;
+    };
+
+    // What each PLAYABLE card says its own unit's speed is.
+    std::map<std::string, float> playable;
+    for (const auto& entry : CardRegistry::getInstance().getAllCards()) {
+        const CardDefinition& def = entry.second;
+        if (def.isEvolution) continue;           // deliberately differs from its base
+        const float s = primarySpeedOf(&def);
+        if (s > 0.0f) playable[def.name] = s;
+    }
+    REQUIRE(playable.size() > 80);   // control: the map really got built
+
+    struct Offender { std::string name; float card; float spawned; };
+    std::vector<Offender> offenders;
+
+    for (const auto& entry : CardRegistry::getInstance().getAllCards()) {
+        const CardDefinition& def = entry.second;
+
+        Board board;
+        def.spawnEntity(9.0f, 10.0f, 0, board);
+        board.commitPendingEntities();
+
+        // Let periodic spawners (Furnace, Tombstone, the huts) actually fire,
+        // then kill everything so death spawns land too.
+        for (int tick = 1; tick <= 120; ++tick) {
+            board.currentTick = tick;
+            for (const auto& e : board.getEntities()) if (e->isAlive()) e->update(board);
+            board.commitPendingEntities(tick);
+        }
+        for (const auto& e : board.getEntities()) e->hp = 0;
+        board.cleanDeadEntities();
+        board.commitPendingEntities();
+
+        for (const auto& e : board.getEntities()) {
+            auto* t = dynamic_cast<Troop*>(e.get());
+            if (!t) continue;
+            auto it = playable.find(e->name);
+            if (it == playable.end()) continue;
+            if (std::find(compound.begin(), compound.end(), e->name) != compound.end()) continue;
+            if (std::fabs(t->getSpeed() - it->second) < 1e-6f) continue;
+            bool already = false;
+            for (const auto& o : offenders) if (o.name == e->name) already = true;
+            if (!already) offenders.push_back({ e->name, it->second, t->getSpeed() });
+        }
+    }
+
+    for (const auto& o : offenders) {
+        UNSCOPED_INFO(o.name << ": card says " << o.card * 10.0f
+                      << " tiles/s, spawned copy runs at " << o.spawned * 10.0f);
+    }
+    REQUIRE(offenders.empty());
 }

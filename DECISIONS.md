@@ -3434,6 +3434,117 @@ secondary ranged unit, not on the building-targeter.
 
 ---
 
+## 2026-08-26 (part 3): the registry sweep, and a question that beat a better instrument
+
+Covering the ~165 non-deck cards, `GameLogger.h`, `TerminalRenderer.h` and
+`src/main.cpp`. Suite 669 -> **673 cases / 6,511 assertions**, exit 0, still one
+expected failure.
+
+### Nineteen spawned units were a quarter slower than their own card
+
+The headline is not the defect, it is how it was found -- because I got it wrong
+twice first.
+
+A source scan for non-`SPEED_*` literals found 54 and I read that as "the
+2026-08-24 tier pass missed ~40 units". Then I built
+`tools/audit/spawn_speed_audit.cpp` to *measure* rather than infer, and it
+reported only 8 off-tier, of which 5 were the documented "no official row"
+cards. That looked like the source scan had been alarmist and the registry was
+nearly clean.
+
+**Both readings were wrong, and the instrument was the reason.** It classified
+each unit against its NEAREST tier, so it was asking *"is this on a tier"* --
+and `0.5f` resolves to 1.000 tiles/s, which is 0.6% off `SPEED_SLOW`. A unit
+that should be MEDIUM but sits on SLOW passes that check perfectly. The tool was
+built to catch exactly this class and could not see it.
+
+The question that works needs no external source: **does a spawned unit agree
+with the playable card of the same name?** Same hp, same range, same damage,
+same cooldown, different speed -- the registry contradicting itself, and the
+card is the copy the tier pass actually reached.
+
+| unit | card | spawned copy | |
+|---|---|---|---|
+| Goblins | 2.651 | 2.000 | -24.6% |
+| Spear Goblins | 2.651 | 2.000 (one helper 1.000) | -24.6% / -62% |
+| Barbarians | 1.325 | 1.000 | -24.6% |
+| Phoenix | 1.325 | 1.000 | -24.6% |
+| Skeletons | 1.988 | 2.000 | +0.6% |
+
+Nineteen child registrations retiered to their card's constant. The test is
+GENERIC -- it walks every card, spawns it, runs 120 ticks so periodic spawners
+fire, kills everything so death spawns land, and compares every resulting troop
+against the card of its own name. Four compound cards are excluded by name
+(Goblin Machine, Goblinstein, Ram Rider, Rascals), whose secondary unit is
+deliberately a different creature registered under the parent's name.
+
+**The lesson is the one CLAUDE.md already states in another form:** a check that
+shares an assumption with the thing it checks cannot see past it. "Near a tier"
+and "on the right tier" are different questions, and only the second one is the
+invariant.
+
+### The renderer was an eighth copy of the arena
+
+`TerminalRenderer::render` painted the river as
+`(x >= 3 && x <= 5) || (x >= 13 && x <= 15)` -- bridges at columns 3-5 and
+13-15 against a real 2-3 and 14-15. **Four of eighteen columns wrong**: column 2
+is bridge and was drawn as water; 4, 5 and 13 are water and were drawn as
+bridge. A three-tile bridge, i.e. the pre-2026-08-21 shape.
+
+It is the copy that least deserved to exist. CLAUDE.md argues at length that
+`web/viewer.html` is *structurally forced* to restate the geometry, its only
+input being a replay JSON that carries none. The renderer has no such excuse --
+it holds a `const Board&`, and `Board::isOnBridge` is public. It now derives.
+
+**A trap worth recording about the test.** The obvious check -- compare the
+rendered row against `Board::isOnBridge` -- is circular, because `riverRow()` is
+built from `isOnBridge`. So is the physics probe: `clampToBoard` calls
+`isOnBridge` too. The genuinely independent anchor is the literal
+`WWBBWWWWWWWWWWBBWW`, the same string the observation-encoder fix was verified
+against. The physics comparison is kept anyway, for the failures that are NOT
+the predicate -- wrong row index, wrong width, an off-by-one in the paint loop,
+which is most of what actually went wrong.
+
+### `src/main.cpp` totalled an X-Bow as a Princess Tower
+
+Same symbol-alias class as the Mortar/King defect in part 1: it summed King HP
+by `symbol == 'R'` and Princess HP by `symbol == 'P'`. Card id 92 (X-Bow) is
+registered with `'P'` and card id 93 (Mortar) with `'R'`, so a deployed X-Bow
+inflated the Princess total and a Mortar the King's. Display-only in the demo
+binary, and fixed with `isTower()` for consistency.
+
+### What the sweep did NOT find, which is worth stating
+
+Reported as negatives so nobody re-derives them:
+
+- **No duplicate playable card ids** across 130 `add()` calls.
+- **No evolution stat inversions.** A first scan flagged Evolved Skeletons at
+  cooldown 11 -> 12; that was my regex running past the block terminator and
+  picking up Bats from the next registration. Both halves are 11.
+- **The stun/slow convention holds everywhere else.** Every `FreezeOnHit` in the
+  registry was checked against its card: `0.0f` for stuns (Electro Wizard,
+  Electro Dragon, Electro Spirit, Zappies, Freeze, Goblinstein), the 0.5-0.7
+  band for slows (Ice Wizard, Giant Snowball, Earthquake, Princess Evolution).
+  Ice Golem and Ice Spirit, fixed in part 1, were the only two violations.
+- **`GameLogger::resultJson` was already right**, and pointedly so: it keys on
+  the reserved tower `cardId`s rather than the symbol, which is exactly the
+  guard `MatchRules::evaluate` was missing. Its JSON escaping is also complete,
+  including the `\u` path for control characters.
+- **"Melee with long range" is a modeling convention, not a bug.** Electro
+  Wizard, Minions, Inferno Dragon and Electro Dragon are `MeleeSquad` with
+  ranges of 2.5-5.0 because `MeleeTroop::performAttack` is direct damage and
+  spawns no projectile. The archetype name means "direct damage" here.
+
+### And a documentation defect that would have cost someone a build
+
+CLAUDE.md said "CMake globs `tests/**`". It does not -- `CMakeLists.txt` globs
+`tests/entities/*.cpp tests/core/*.cpp`. A test file added under any other
+subdirectory is silently ignored: it compiles nothing, registers nothing, and
+the build reports success. Corrected, since the existing note about needing two
+builds would otherwise send someone hunting the wrong cause.
+
+---
+
 # ARCHIVE — `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` (retired 2026-08-24)
 
 Both backlog files were worked to empty on 2026-08-24: every item was either

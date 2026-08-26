@@ -101,12 +101,20 @@ int main() {
         for (const auto& entity : game.getBoard().getEntities()) {
             if (!entity->isAlive()) continue;
 
-            if (entity->symbol == 'P') {
-                if (entity->team == 0) aiPrincessHP += entity->hp;
-                else oppPrincessHP += entity->hp;
-            } else if (entity->symbol == 'R') {
-                if (entity->team == 0) aiKingHP += entity->hp;
-                else oppKingHP += entity->hp;
+            // isTower() first. 'P' and 'R' are RENDERER symbols, not
+            // identities: card id 92 (X-Bow) is registered with 'P' and card
+            // id 93 (Mortar) with 'R', so a deployed X-Bow was being added to
+            // the Princess Tower total and a Mortar to the King's. Same alias
+            // that let a Mortar answer for a King in MatchRules::evaluate;
+            // here it is only a display figure, but it is the same mistake.
+            if (entity->isTower()) {
+                if (entity->symbol == 'R') {
+                    if (entity->team == 0) aiKingHP += entity->hp;
+                    else oppKingHP += entity->hp;
+                } else {
+                    if (entity->team == 0) aiPrincessHP += entity->hp;
+                    else oppPrincessHP += entity->hp;
+                }
             }
 
             if (entity->symbol != '-' && entity->symbol != '*' && entity->symbol != 'O'

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <cstddef>
 #include <iomanip> // מאפשר לנו לעצב את הדפסת האליקסיר עם נקודה עשרונית
 
 class TerminalRenderer {
@@ -19,6 +20,46 @@ private:
 public:
     TerminalRenderer(int w = 18, int h = 34) : width(w), height(h) {}
 
+    // The river row, DERIVED from the board instead of restated.
+    //
+    // This was `(x >= 3 && x <= 5) || (x >= 13 && x <= 15)` -- another stale
+    // copy of the arena's bridge columns, the EIGHTH this project has found
+    // (CLAUDE.md keeps the list; the seventh was python_ai/envs/
+    // scenario_offense.py, found the same day).
+    // The real river row is
+    //
+    //     column  012345678901234567
+    //             WWBBWWWWWWWWWWBBWW      (W water, B bridge)
+    //
+    // and the old test painted B at {3,4,5,13,14,15} against a real
+    // {2,3,14,15}: FOUR of eighteen columns wrong in both directions -- column
+    // 2 is real bridge and was drawn as water, while 4, 5 and 13 are water and
+    // were drawn as bridge. It also drew a THREE-tile bridge, the
+    // pre-2026-08-21 shape from before the bridges were re-centred on the seam
+    // between their two tiles.
+    //
+    // Unlike web/viewer.html, which CLAUDE.md records as structurally unable to
+    // derive this (its only input is a replay JSON that carries no geometry),
+    // this renderer holds a `const Board&` and `Board::isOnBridge` is public.
+    // There was never a reason for the copy.
+    //
+    // Public and string-returning so a test can check it without parsing ANSI
+    // escapes out of stdout.
+    static std::string riverRow(const Board& board) {
+        std::string row(static_cast<size_t>(board.getWidth()), 'W');
+        for (int x = 0; x < board.getWidth(); ++x) {
+            if (board.isOnBridge(static_cast<float>(x))) row[static_cast<size_t>(x)] = 'B';
+        }
+        return row;
+    }
+
+    // Which grid row the river is drawn on. getRiverEnd() is 17.5, so this is
+    // 17 -- the same row ClashEnv::extractObservationForTeam paints channel 8
+    // on, derived rather than restated so both follow if the river moves again.
+    static int riverRowIndex(const Board& board) {
+        return static_cast<int>(board.getRiverEnd());
+    }
+
     // הפונקציה כעת מקבלת את מנהל המשחק כולו
     void render(const GameManager& game) {
         const Board& board = game.getBoard();
@@ -26,12 +67,11 @@ public:
         // 1. יצירת לוח ריק עם טופוגרפיה
         std::vector<std::string> grid(height, std::string(width, '.'));
 
-        for (int x = 0; x < width; ++x) {
-            if ((x >= 3 && x <= 5) || (x >= 13 && x <= 15)) {
-                grid[17][x] = 'B';
-            }
-            else {
-                grid[17][x] = 'W';
+        const std::string river = riverRow(board);
+        const int riverY = riverRowIndex(board);
+        if (riverY >= 0 && riverY < height) {
+            for (int x = 0; x < width && x < static_cast<int>(river.size()); ++x) {
+                grid[riverY][x] = river[static_cast<size_t>(x)];
             }
         }
 

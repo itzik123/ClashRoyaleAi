@@ -74,7 +74,7 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-26 after the C++ simulator audit: **669 test cases, 6,504
+Measured 2026-08-26 after the C++ simulator audit: **673 test cases, 6,511
 assertions**. 668 pass and **exactly one fails "as expected"** --
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
@@ -83,8 +83,12 @@ second failure is a real regression. (It read 650 cases / 6,423 assertions on
 treat the **shape** -- one expected failure, exit 0 -- as the invariant, not the
 number.)
 
-**Adding a test FILE needs the build run TWICE.** CMake globs `tests/**` with
-`CONFIGURE_DEPENDS`, so the first MSBuild re-globs and regenerates the vcxproj --
+**Adding a test FILE needs the build run TWICE, and it must live in
+`tests/core/` or `tests/entities/`.** The glob is
+`tests/entities/*.cpp tests/core/*.cpp` (CMakeLists.txt), NOT `tests/**` as this
+file claimed until 2026-08-26 -- a new `tests/rendering/` directory is silently
+ignored, compiles nothing, and reports a green build. `CONFIGURE_DEPENDS` means
+the first MSBuild re-globs and regenerates the vcxproj --
 and then links from its pre-reconfigure target list and reports **success** with
 the new file absent from the binary. The tag matches zero cases and it looks
 like the tests silently failed to register. The second invocation compiles it.
@@ -312,6 +316,29 @@ read `Troop::getSpeed()` off what arrives): **8 of 109 units off-tier, now 6.**
   counterpart and no official row, so there is nothing to make the call from --
   deliberately not guessed.
 
+**AND THE SAME PASS MISSED NINETEEN MORE, found 2026-08-26 by a different
+question.** "Is this speed near SOME tier" is far weaker than it looks: a unit
+that should be MEDIUM but sits on SLOW passes it, because SLOW *is* a tier.
+`0.5f` resolves to 1.000 tiles/s, 0.6% off `SPEED_SLOW` -- so nineteen child
+helpers carrying pre-rework literals all read as "on tier" while sitting on the
+WRONG one. The question that finds them needs no external source at all: **does a
+spawned unit agree with the playable card of the same name?**
+
+| unit | its card says | the spawned copy ran at |
+|---|---|---|
+| Goblins | 2.651 (VERY_FAST) | 2.000 |
+| Spear Goblins | 2.651 (VERY_FAST) | 2.000, and one helper at 1.000 |
+| Barbarians | 1.325 (MEDIUM) | 1.000 |
+| Phoenix | 1.325 (MEDIUM) | 1.000 |
+| Skeletons | 1.988 (FAST) | 2.000 |
+
+Every hut-spawned Goblin, every Barbarian a Battle Ram or Barbarian Barrel
+dropped, and the Phoenix that rises from its own egg were all a quarter slower
+than the card that spawned them. Fixed by giving each helper its card's
+`SPEED_*` constant; pinned by *"every spawned unit moves at the speed of its own
+playable card"* in `tests/core/test_card_registry.cpp`, which is generic rather
+than a list, so a new helper cannot reintroduce it.
+
 **DO NOT read this off the source.** A grep for non-`SPEED_*` literals finds 54
 and looks like a huge gap; the measurement finds 8. Most of those literals land
 within 1% of a tier by coincidence (`0.5f` -> 1.000 against SLOW's 0.994,
@@ -465,8 +492,16 @@ water and were drawn as bridge. Same shape as the observation-encoder bug
 (§ "The observation encoder was NOT updated with the arena"), found the same
 day; this was the copy nobody thought to check after that one was fixed.
 
-Order of discovery, since the count in this file has now moved twice: the four
-above, then `extractObservationForTeam`'s channel 8, then the viewer.
+Order of discovery, since the count in this file keeps moving: the four above,
+then `extractObservationForTeam`'s channel 8, then the viewer, then (2026-08-26)
+`python_ai/envs/scenario_offense.py` -- stale and default-OFF -- and
+`include/rendering/TerminalRenderer.h`, which painted the bridges at columns
+3-5 and 13-15 against a real 2-3 and 14-15: **four of eighteen columns wrong**,
+and a three-tile bridge, the shape from before the 2026-08-21 re-centring.
+
+The renderer is the one that should never have been a copy at all. Unlike the
+viewer it holds a `const Board&`, and `Board::isOnBridge` is public -- it could
+always have derived. It now does, via `TerminalRenderer::riverRow(board)`.
 
 **THE VIEWER IS A DIFFERENT KIND OF COPY, AND THAT IS THE PART WORTH
 CARRYING.** The other five were all reachable by the rule this section states.

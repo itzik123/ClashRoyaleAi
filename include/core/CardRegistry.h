@@ -187,12 +187,29 @@ private:
     // are simply left unmodeled instead (see each card's own comment below).
     // Negative ids stay clear of -1 (Golemite, above) and of
     // GameManager::TOWER_KING_ID/TOWER_PRINCESS_ID (-2/-3).
+    //
+    // SPEED: a child helper whose unit ALSO exists as a playable card takes
+    // that card's SPEED_* tier, never a literal. These helpers were the blind
+    // spot of the 2026-08-24 tier pass -- it round-tripped "109 / 109 match"
+    // over cards with an OFFICIAL ROW, and a child CardStats has none, so
+    // nineteen registrations kept their pre-rework literals. The result was a
+    // registry that contradicted itself about the same unit: the Goblins card
+    // is VERY_FAST (2.651 tiles/s) while every hut-spawned Goblin ran at 2.000,
+    // Spear Goblins likewise, Barbarians and Phoenix at 1.000 against their
+    // cards' 1.325.
+    //
+    // It hid because those literals land ON A TIER, just the WRONG one --
+    // 0.5f is 1.000 tiles/s, which is 0.6% off SLOW, so any "is this near a
+    // tier" check passes it. Only comparing a spawned unit against its own
+    // card finds it, and that comparison needs no external source. Pinned by
+    // "every spawned unit moves at the speed of its own playable card" in
+    // tests/core/test_card_registry.cpp.
     static CardStats battleRamBarbarianStats() {
-        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     static CardStats skeletonBarrelSkeletonStats() {
-        return troop(-11, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+        return troop(-11, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     // Confirmed: death spawn is 1 Bat, not 3 -- default single offset.
@@ -212,7 +229,7 @@ private:
     // helpers above; Goblin Hut's per-spawn count and every interval
     // below aren't sourced either (see each card's own comment).
     static CardStats witchSkeletonStats() {
-        return troop(-13, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k')
+        return troop(-13, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
             .withOffsets({ {-0.4f, -0.4f}, {0.4f, -0.4f}, {-0.4f, 0.4f}, {0.4f, 0.4f} });
     }
     static CardStats nightWitchPeriodicBatStats() {
@@ -222,18 +239,18 @@ private:
             .withFlying().withTargetsAir();
     }
     static CardStats furnaceFireSpiritStats() {
-        return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 207, 10, '<')
+        return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 207, 10, '<')
             .withTargetsAir();
     }
     static CardStats barbarianHutBarbarianStats() {
-        return troop(-16, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
+        return troop(-16, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f} });
     }
     static CardStats goblinHutSpearGoblinStats() {
-        return troop(-17, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S');
+        return troop(-17, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S');
     }
     static CardStats goblinDrillGoblinStats() {
-        return troop(-18, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g');
+        return troop(-18, "Goblins", 0.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g');
     }
     // Phoenix's one-time revive: a second Phoenix with no deathEffect of
     // its own, so it only ever comes back once, not indefinitely. The
@@ -242,25 +259,25 @@ private:
     // instead, dropping that vulnerability window (a minor simplification,
     // no delayed/interruptible spawn primitive exists).
     static CardStats phoenixReviveStats() {
-        return troop(-19, "Phoenix", 0.0f, Archetype::MeleeSquad, 1052, 0.5f, 1.0f, 217, 10, '7')
+        return troop(-19, "Phoenix", 0.0f, Archetype::MeleeSquad, 1052, SPEED_MEDIUM, 1.0f, 217, 10, '7')
             .withFlying().withTargetsAir();
     }
     // Spell-spawn child units (Goblin Barrel, Royal Delivery, Graveyard) --
     // same reuse-sourced-stats reasoning as the death/periodic-spawn
     // helpers above.
     static CardStats goblinBarrelGoblinStats() {
-        return troop(-20, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+        return troop(-20, "Goblins", 0.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f}, {0.0f, 0.4f} });
     }
     static CardStats graveyardSkeletonStats() {
-        return troop(-21, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 1.0f, 0.5f, 81, 11, 'k');
+        return troop(-21, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k');
     }
     static CardStats royalDeliveryRecruitStats() {
-        return troop(-22, "Royal Recruits", 0.0f, Archetype::MeleeSquad, 547, 0.5f, 1.0f, 133, 13, '@')
+        return troop(-22, "Royal Recruits", 0.0f, Archetype::MeleeSquad, 547, SPEED_MEDIUM, 1.0f, 133, 13, '@')
             .withShield(240); // matches Royal Recruits' own corrected shield value
     }
     static CardStats barbarianBarrelBarbarianStats() {
-        return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B');
+        return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
     }
     // Hero Barbarian Barrel Hero-ifies the SPAWNED Barbarian himself, not
     // the ephemeral one-tick barrel spell (which has no persistent entity
@@ -297,7 +314,7 @@ private:
             .withIgnoresRiver();
     }
     static CardStats goblinGiantSpearGoblinsStats() {
-        return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 0.5f, 5.0f, 81, 17, 'S')
+        return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
             .withOffsets({ {-0.4f, 0.3f}, {0.4f, 0.3f} }).withTargetsAir();
     }
 
@@ -349,13 +366,13 @@ private:
     // Barbarian released when the Hut itself dies, not the 3-at-once
     // periodic spawn).
     static CardStats barbarianHutDeathBarbarianStats() {
-        return troop(-35, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B');
+        return troop(-35, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
     }
     // Reuses goblinDrillGoblinStats' own combat numbers, just 2 offsets
     // instead of the periodic spawn's 1 (2021 balance patch reduced this
     // from 3 to 2).
     static CardStats goblinDrillDeathGoblinStats() {
-        return troop(-36, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+        return troop(-36, "Goblins", 0.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     // Goblin Demolisher's transformed form: a short-range, Very Fast,
@@ -379,7 +396,7 @@ private:
     // SkeletonKingSoulSummonEffect itself rather than via static
     // spawnOffsets; this stats object is always spawned one at a time.
     static CardStats skeletonKingSummonedSkeletonStats() {
-        return troop(-38, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, 0.7f, 0.5f, 81, 11, 'k');
+        return troop(-38, "Skeletons", 0.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k');
     }
     // Little Prince's Royal Rescue: the summoned Guardienne. Real card's
     // spawn-in dash+knockback isn't modeled (same "knockback on a spawn
@@ -450,7 +467,7 @@ private:
     // registration comment for why this is a flat stat buff rather than
     // recursively invoking the Evolution framework itself.
     static CardStats battleRamEvolvedBarbarianStats() {
-        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 830, 0.5f, 0.7f, 230, 14, 'B')
+        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 830, SPEED_MEDIUM, 0.7f, 230, 14, 'B')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     // Evolved Skeletons' "Never-ending Horde" spawn -- deliberately reuses
@@ -1264,7 +1281,7 @@ private:
         add(troop(112, "Goblin Gang", 3.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f} })
             .withSecondaryUnit(
-                troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, 1.0f, 5.0f, 81, 17, 'S')
+                troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
                     .withOffsets({ {-0.5f, 0.5f}, {0.5f, 0.5f}, {0.0f, -0.5f} })));
         // Rascals: only the "Boy" half's stats are separately sourced; the
         // two "Girls" reuse Spear Goblins' own sourced ranged stats as a
@@ -2212,7 +2229,7 @@ private:
         add(troop(172, "Hero Goblins", 2.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
             .withPostDeathAbility(1.0f, 70, std::make_shared<PeriodicSpawnEffect>(
-                troop(-48, "Goblins", 0.0f, Archetype::MeleeSquad, 202, 1.0f, 0.5f, 120, 11, 'g')
+                troop(-48, "Goblins", 0.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
                     .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }))));
 
         // Hero Knight. Base stats copied from card id 0 (Knight), see that
