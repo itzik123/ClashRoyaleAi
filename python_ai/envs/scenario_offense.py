@@ -72,6 +72,7 @@ import os
 
 
 import clash_royale_env as E
+from python_ai import engine_constants as EC
 
 CE = E.ClashRoyaleEnv
 
@@ -88,10 +89,18 @@ HAS_STATE_SETTERS = all(hasattr(CE, m)
                         for m in ("set_elixir_for_team", "set_hand_for_team"))
 
 # ABSOLUTE board coordinates (inject bypasses every frame conversion).
-# River is [15.5, 17.5) and the bridges sit at x = 4 and x = 14; team 0 attacks
-# toward HIGH y, team 1 toward LOW y.
-BRIDGE_XS = (4.0, 14.0)
-RIVER_Y = 16.5
+# Team 0 attacks toward HIGH y, team 1 toward LOW y.
+#
+# DERIVED, NOT RESTATED. These were literals -- `BRIDGE_XS = (4.0, 14.0)` and
+# `RIVER_Y = 16.5` -- and the x pair was ALREADY STALE: the 2026-08-21
+# re-centring moved the bridges to 2.5 / 14.5, and x = 4 is water. Nothing
+# caught it because this module is default-OFF, so the error was waiting for
+# whoever first switched Proposal A on to measure it wrong.
+#
+# `ArenaLayout` is bound as `clash_royale_env.ARENA_*` and surfaced through
+# `engine_constants` precisely so this file does not have to know.
+BRIDGE_XS = (EC.LEFT_BRIDGE_X, EC.RIGHT_BRIDGE_X)
+RIVER_Y = EC.BRIDGE_Y
 OWN_SIDE_Y = 13.0        # our half, short of our Princess towers
 ENEMY_SIDE_Y = 20.0      # their half, just past the river
 

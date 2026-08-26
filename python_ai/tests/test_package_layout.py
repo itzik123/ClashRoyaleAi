@@ -192,3 +192,80 @@ def test_every_module_in_every_package_imports(package):
         if package == "tests":
             continue
         importlib.import_module(name)
+
+
+# --- "derive; do not restate" ---------------------------------------------
+#
+# CLAUDE.md's rule for arena geometry: "Nothing may keep a second copy. Four
+# did, and all four were stale." The count has since moved twice -- the
+# observation encoder's channel 8 was a fifth, and web/viewer.html a sixth --
+# and the reason the rule keeps being broken is that a restated constant is
+# CORRECT on the day it is written. It only becomes a defect when the arena
+# moves, which is exactly when nobody re-greps for literals.
+#
+# `ArenaLayout` is bound to Python as `clash_royale_env.ARENA_*` and surfaced
+# through `engine_constants`, so every consumer inside this package CAN derive.
+# The 2026-08-21 re-centring is what makes this concrete: it moved the bridges
+# from 3.0/14.0 to 2.5/14.5, and every hardcoded copy silently disagreed with
+# the engine from that commit onward.
+
+def test_no_module_restates_a_geometry_constant_it_could_derive():
+    """A module-level literal equal to a bound arena value is a second copy.
+
+    Matched on the VALUE and not on a fixed name list, because the next one
+    will not be called RIVER_Y -- but on the value ALONE this over-fires:
+    `FIREBALL_RADIUS = 2.5` is a blast radius that merely collides with
+    `LEFT_BRIDGE_X = 2.5`, and they are unrelated quantities that happen to
+    share a number. So the name must also read as POSITIONAL. That is a real
+    limitation and worth stating: this catches a coordinate restated under a
+    coordinate-ish name, which is every instance the project has actually hit,
+    and would miss one hidden behind a name like `FIREBALL_RADIUS`.
+    """
+    import pathlib
+    import re
+
+    from python_ai import engine_constants as EC
+
+    derivable = {
+        float(EC.BRIDGE_Y): "engine_constants.BRIDGE_Y",
+        float(EC.LEFT_BRIDGE_X): "engine_constants.LEFT_BRIDGE_X",
+        float(EC.RIGHT_BRIDGE_X): "engine_constants.RIGHT_BRIDGE_X",
+    }
+    root = pathlib.Path(EC.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(("tests/", "venv/", "archive")) or rel == "engine_constants.py":
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            m = re.match(r"\s*([A-Z_][A-Z0-9_]*)\s*=\s*(-?\d+\.\d+)\s*$", code)
+            positional = m and re.search(
+                r"(^|_)(X|Y|RIVER|BRIDGE|LANE|TOWER|KING|ARENA|BOARD|ROW|COL)(_|$)",
+                m.group(1))
+            if m and positional and float(m.group(2)) in derivable:
+                offenders.append(
+                    f"{rel}:{i}: {m.group(1)} = {m.group(2)} "
+                    f"-- derive from {derivable[float(m.group(2))]}")
+    assert not offenders, (
+        "arena geometry restated instead of derived:\n" + "\n".join(offenders))
+
+
+def test_the_offensive_scenario_reads_its_geometry_from_the_engine():
+    """The specific copies this test was written for, and one of them was
+    ALREADY STALE when it was found.
+
+    `BRIDGE_XS` read (4.0, 14.0) -- the arena as it stood BEFORE the
+    2026-08-21 re-centring moved the bridges to 2.5 / 14.5. Per CLAUDE.md,
+    x = 4 is WATER. The module is default-OFF (OFFENSIVE_SCENARIO_PROB = 0.0),
+    so no run was harmed; but the first person to switch Proposal A on would
+    have injected every offensive scenario 1.5 tiles off-lane and measured the
+    wrong thing, with nothing to say so.
+
+    Pinning the EQUALITY rather than the literal is the whole point: it fails
+    the next time the arena moves, instead of going quietly stale again.
+    """
+    from python_ai import engine_constants as EC
+    from python_ai.envs import scenario_offense
+    assert scenario_offense.RIVER_Y == EC.BRIDGE_Y
+    assert scenario_offense.BRIDGE_XS == (EC.LEFT_BRIDGE_X, EC.RIGHT_BRIDGE_X)
