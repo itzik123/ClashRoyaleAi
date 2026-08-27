@@ -31,12 +31,17 @@ import os
 import subprocess
 import sys
 
-import gymnasium as gym
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
+# FIRST, and before gymnasium/numpy/torch below. Importing this package caps
+# OPENBLAS_NUM_THREADS, and OpenBLAS reads that when it LOADS -- so an import
+# that pulls numpy ahead of this line makes the cap a silent no-op worth
+# ~353 MB of private commit per process (measured; see python_ai/__init__.py).
+# tests/test_blas_thread_caps.py fails if this order is ever reversed.
 import python_ai  # noqa: E402,F401
+
+import gymnasium as gym  # noqa: E402
 
 import clash_royale_env  # noqa: E402
 import torch  # noqa: E402

@@ -173,3 +173,53 @@ def test_matches_compute_shaping_when_wired_in():
     out = train_shaping.compute_shaping(cur, prev)
     # env 0 stayed solvent, env 1 dropped to 1 elixir -> strictly worse
     assert out[1] < out[0]
+
+
+# --- the bankruptcy floor's justification, pinned against the engine -------
+#
+# Added 2026-08-27. `bankruptcy_rate`'s docstring justified floor=3.0 as "the
+# cost of the cheapest card in DEFAULT_DECK, so below it the action space is
+# literally empty". That was true of the Giant deck and is false of the 2.6 Hog
+# Cycle, whose cheapest card costs 1. The floor is deliberately unchanged (the
+# 65.3% baseline is quoted against it); only the claim was wrong. These pin the
+# real numbers so the comment cannot drift again.
+
+def test_the_cheapest_default_deck_card_costs_one_not_three():
+    import clash_royale_env as E
+    from python_ai.envs.gym_wrapper import DEFAULT_DECK
+
+    def _cost(cid):
+        info = E.get_card_info(cid)
+        return float(info["cost"] if isinstance(info, dict) else info.cost)
+
+    costs = [_cost(c) for c in DEFAULT_DECK]
+    assert min(costs) == 1.0, (
+        f"DEFAULT_DECK costs are {costs}; bankruptcy_rate's docstring explains "
+        "floor=3.0 in terms of the cheapest card and must be re-checked")
+
+
+def test_the_action_space_is_NOT_empty_below_the_bankruptcy_floor():
+    """The specific claim that was false: at 2.0 elixir several cards are still
+    affordable, so 'bankrupt' cannot mean 'nothing is playable'."""
+    import numpy as np
+    import torch
+
+    from python_ai.envs.gym_wrapper import DEFAULT_DECK
+    from python_ai.models.net import MicroRoyaleNet
+    import clash_royale_env as E
+
+    net = MicroRoyaleNet(num_ability_slots=0)
+    deck = list(DEFAULT_DECK)
+    g = E.ClashRoyaleEnv(deck, deck, 20000)
+    g.reset()
+    # Returns None, unlike set_hand_for_team which is documented `-> bool`.
+    g.set_elixir_for_team(0, 2.0)
+    obs = torch.tensor(
+        np.asarray(g.get_observation_for_team(0), dtype=np.float32)).unsqueeze(0)
+
+    mask = net.affordability_mask(obs)[0]
+    # last column is the always-legal no-op; the real cards are before it
+    playable = int(mask[:net.hand_size].sum())
+    assert playable > 0, (
+        "no card affordable at 2.0 elixir -- if the deck changed so that this "
+        "is now true, bankruptcy_rate's floor and docstring both need revisiting")

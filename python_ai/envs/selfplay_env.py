@@ -467,13 +467,24 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # would be a far weaker (and differently-behaved) opponent than the
             # checkpoint it is supposed to be reproducing.
             card_mask1 = self.opponent_net.affordability_mask(obs1_t)
-            features1, card_embeds1, spatial_map1 = self.opponent_net.extract_features(obs1_t)
+            # `_hires`, and the map is THREADED into placement_given_card below.
+            # The three-value wrapper computes `cnn_trunk[:2](spatial_obs)` and
+            # discards it, and placement_given_card(hires_map=None) rebuilds it
+            # from the same obs -- so the trunk's most expensive layer ran TWICE
+            # per opponent decision. net.py accepts that duplication in COLD
+            # paths (the eval harnesses) by design; this is not one. It runs
+            # once per env per step for the whole of pipeline 2, exactly like
+            # the trainee's own path in base_trainer.collect_rollout, which was
+            # measured at 67.7% of the rollout's network time.
+            (features1, card_embeds1, spatial_map1,
+             hires_map1) = self.opponent_net.extract_features_hires(obs1_t)
             (logits1, _, _, _,
              (self.opponent_hx, self.opponent_cx)) = self.opponent_net.step_lstm_and_card(
                 features1, (self.opponent_hx, self.opponent_cx), card_mask1)
             card_idx1_t = Categorical(logits=logits1).sample()
             place_logits1 = self.opponent_net.placement_given_card(
-                self.opponent_hx, card_embeds1, card_idx1_t, obs1_t, spatial_map1)
+                self.opponent_hx, card_embeds1, card_idx1_t, obs1_t,
+                spatial_map1, hires_map=hires_map1)
             cell1 = Categorical(logits=place_logits1).sample()
             x1_t, y1_t = self.opponent_net.cell_to_xy(cell1)
             card_idx1 = card_idx1_t.item()

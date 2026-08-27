@@ -87,6 +87,32 @@ def normalize(advantages, eps=1e-8, mask=None):
     return (advantages - flat.mean()) / (flat.std() + eps)
 
 
+def safe_std(x):
+    """`x.std()`, but 0.0 where there is no estimable spread.
+
+    Same rule and same reasoning as `normalize` above: `Tensor.std()` is the
+    UNBIASED estimator, so with fewer than two elements it divides by n-1 = 0,
+    returns NaN, and warns. With no spread there is no scale to estimate, and
+    zero is the honest answer.
+
+    `run_update` was the one statistic in its block still taking an unguarded
+    `std()`, to scale the critic's trust region:
+
+        vf_clip_range = clamp(vf_clip_std_frac * r.std(), min=eps_clip)
+
+    and `torch.clamp` PROPAGATES NaN rather than flooring it -- so that line
+    read as "never tighter than eps_clip" while actually passing NaN into
+    `value_clipped`, the critic loss and the total loss, where the containment
+    guard then dropped every minibatch. The update survived and learned nothing.
+
+    Returns a plain float: every caller wants a scalar, and this keeps the NaN
+    from being reintroduced by a later tensor op.
+    """
+    if x.numel() < 2:
+        return 0.0
+    return float(x.std())
+
+
 def explained_variance(returns, values):
     """1 - Var(return - V) / Var(return): ~1 good, 0 no better than the mean,
     <0 worse than the mean.
@@ -96,6 +122,14 @@ def explained_variance(returns, values):
     critic broken three times off a flat MSE around 0.11; explained variance at
     the same moment measured +0.64, i.e. healthy all along.
     """
+    # numel < 2 checked BEFORE `.var()`, not just caught after it. The unbiased
+    # estimator divides by n-1 = 0 there, and while `not (var > 0)` does then
+    # return the right answer (NaN > 0 is False), the call still emits a
+    # UserWarning -- and this suite is kept warning-clean, so a real warning
+    # elsewhere stays visible. Found by the end-to-end degenerate-batch test in
+    # tests/test_rl_vf_clip_range.py, which runs with warnings as errors.
+    if returns.numel() < 2:
+        return torch.tensor(0.0)
     var = returns.var()
     if not (var > 0):
         return torch.tensor(0.0)

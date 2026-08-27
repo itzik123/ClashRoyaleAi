@@ -49,6 +49,8 @@ cannot be derived. `tests/test_tactics.py` pins each of them against the header
 it came from, so a change on the C++ side fails a test here rather than
 silently going stale. This project has paid for the second-copy mistake twice.
 """
+from functools import lru_cache
+
 import numpy as np
 
 import clash_royale_env as E
@@ -179,7 +181,26 @@ def advance(hp, speed, ticks):
     return out
 
 
+@lru_cache(maxsize=None)
 def _disc_offsets(radius):
+    """Cell offsets within `radius`, as an immutable tuple.
+
+    MEMOIZED: a pure function of one float, over the handful of distinct radii
+    this module ever asks for (spell radii and unit ranges), so the cache is
+    bounded in practice and every hit is exact. It cannot change a downstream
+    number -- the result is integer offsets from a hypot test --
+    `tests/test_tactics_disc_offsets.py` recomputes the original definition
+    inline and compares exactly rather than taking that on trust.
+
+    A TUPLE, not a list, because memoizing hands the SAME object to every
+    caller: mutation would now corrupt every other call site instead of a local
+    copy. Both callers only iterate.
+
+    This replaces a module-level `_FIREBALL_DISC` that was computed at import
+    and then never read once -- the cache was built, left unwired, and
+    `spell_catch_map` recomputed the identical list inside its scatter loop
+    anyway.
+    """
     r = int(np.ceil(radius))
     offs = []
     for dy in range(-r, r + 1):
@@ -189,10 +210,7 @@ def _disc_offsets(radius):
             # integer cell coordinate the engine actually receives.
             if np.hypot(dx + 0.5, dy + 0.5) <= radius:
                 offs.append((dy, dx))
-    return offs
-
-
-_FIREBALL_DISC = _disc_offsets(FIREBALL_RADIUS)
+    return tuple(offs)
 
 
 def spell_catch_map(obs, radius=FIREBALL_RADIUS, lead_ticks=0,
@@ -233,9 +251,13 @@ def spell_catch_map(obs, radius=FIREBALL_RADIUS, lead_ticks=0,
 
     out = np.zeros((BOARD_H, BOARD_W), dtype=np.float32)
     ys, xs = np.nonzero(effective)
+    # HOISTED out of the per-cell loop -- it is loop-invariant, and the scatter
+    # loop in `_reach_cover` below already binds it this way. Left inside, it
+    # rebuilt the identical list once per occupied enemy cell.
+    offsets = _disc_offsets(radius)
     for y, x in zip(ys, xs):
         v = effective[y, x]
-        for dy, dx in _disc_offsets(radius):
+        for dy, dx in offsets:
             ay, ax = y - dy, x - dx
             if 0 <= ay < BOARD_H and 0 <= ax < BOARD_W:
                 out[ay, ax] += v

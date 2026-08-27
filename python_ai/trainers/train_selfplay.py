@@ -25,13 +25,17 @@ import math
 import os
 import sys
 
-import gymnasium as gym
-import numpy as np
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
+# FIRST, and before gymnasium/numpy/torch below -- see the same note in
+# trainers/train.py. Importing this package caps OPENBLAS_NUM_THREADS, which
+# OpenBLAS reads at load time, so pulling numpy ahead of it silently forfeits
+# ~353 MB of private commit per process.
 import python_ai  # noqa: E402,F401
+
+import gymnasium as gym  # noqa: E402
+import numpy as np  # noqa: E402
 
 import torch  # noqa: E402
 from python_ai.engine_constants import card_name  # noqa: E402

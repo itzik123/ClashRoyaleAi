@@ -123,8 +123,24 @@ def solvency_shaping(stats, prev_stats, gamma=0.99,
 def bankruptcy_rate(elixir, floor=3.0):
     """Share of decisions below `floor` elixir -- the statistic to watch.
 
-    3.0 is the cost of the cheapest card in DEFAULT_DECK, so below it the action
-    space is literally empty and P(play) is 0.0% by arithmetic. Measured at
-    65.3% overall and 60.8% during a big push before this term existed.
+    THE 3.0 IS A CONSTRAINED-ECONOMY THRESHOLD, NOT AN EMPTY ACTION SPACE. This
+    docstring used to justify it as "the cost of the cheapest card in
+    DEFAULT_DECK, so below it the action space is literally empty and P(play) is
+    0.0% by arithmetic". That was true of the Giant deck it was written for and
+    is FALSE of the 2.6 Hog Cycle adopted 2026-08-16, whose costs are
+    [4, 4, 3, 2, 1, 1, 2, 4]: the cheapest card costs 1, and at 2.0 elixir the
+    agent can still play Skeletons, Ice Spirit, Ice Golem or The Log.
+
+    The number is KEPT at 3.0 anyway, deliberately: it is the Cannon's cost and
+    the point below which the deck's defensive answer is unaffordable, it is
+    still a meaningful "economically constrained" line, and the 65.3% overall /
+    60.8%-during-a-push baselines in CLAUDE.md were measured against it.
+    Changing the default would silently redefine a number those figures are
+    quoted for. Only the JUSTIFICATION was wrong.
+
+    `tests/test_elixir_shaping.py` now pins the real cheapest cost against the
+    engine, so this cannot go stale a second time -- it is the same
+    second-copy-of-an-engine-constant drift CLAUDE.md already records for
+    model.py's "18*16=288" and calibrate.py's y=17.0.
     """
     return float(np.mean(np.asarray(elixir, dtype=np.float32) < floor))

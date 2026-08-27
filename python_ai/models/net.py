@@ -84,7 +84,7 @@ def _build_placement_legality(num_card_ids, placement_rows, board_width):
             "noise in the gradient. Rebuild the .pyd -- see "
             "perception/UPSTREAM_REQUESTS.md item 12.",
             RuntimeWarning, stacklevel=2)
-        return None
+        return None, None
 
     deck = [10, 1, 41, 25, 7, 2, 6, 5]
     probe = _env.ClashRoyaleEnv(deck, deck, 20000)
@@ -104,7 +104,60 @@ def _build_placement_legality(num_card_ids, placement_rows, board_width):
             if probe.is_valid_placement(cid, float(x), float(y), 0):
                 table[cid, cell] = True
     table[num_card_ids] = True          # the permissive no-op fallback row
-    return table
+
+    # --- cells our OWN dead towers hand back (2026-08-27) -----------------
+    # The premise above -- "legality does not depend on board state" -- was
+    # measured against TROOPS and does NOT hold for a destroyed tower. The
+    # tower's 3x3 footprint clears when it dies:
+    #
+    #   own LEFT princess destroyed   242 -> 251 legal cells (+9)
+    #   own RIGHT princess destroyed  242 -> 251 legal cells (+9)
+    #   ENEMY princess destroyed      242 -> 242             ( 0)
+    #
+    # so only our own towers matter, and a table cached on a full board masks
+    # those nine cells off forever -- exactly the ground a player defends after
+    # losing a tower.
+    #
+    # Probed over a BOUNDED WINDOW around each tower rather than by re-running
+    # the whole board for every card in every tower state: the base pass is
+    # ~113k predicate calls and 2.35s, and two more full passes would triple
+    # the cost of constructing a net. The window is +/-2 cells, i.e. 25 per
+    # tower against an observed 3x3 footprint, and
+    # tests/test_placement_mask_after_tower_loss.py does the exhaustive
+    # all-cards/all-cells comparison to prove it is wide enough -- an
+    # under-sized window would otherwise be a silent mask divergence.
+    freed = torch.zeros(2, num_card_ids + 1, cells, dtype=torch.bool)
+    centres = _own_princess_centres()
+    for slot_i, (cx, cy) in enumerate(centres):
+        probe2 = _env.ClashRoyaleEnv(deck, deck, 20000)
+        probe2.reset()
+        if not probe2.destroy_tower(0, slot_i + 1):   # slots 1=LEFT, 2=RIGHT
+            continue
+        window = [(x, y)
+                  for y in range(max(0, cy - 2), min(placement_rows, cy + 3))
+                  for x in range(max(0, cx - 2), min(board_width, cx + 3))]
+        for cid in range(num_card_ids):
+            if cid not in known:
+                continue
+            for x, y in window:
+                cell = y * board_width + x
+                if table[cid, cell]:
+                    continue                      # already legal, no delta
+                if probe2.is_valid_placement(cid, float(x), float(y), 0):
+                    freed[slot_i, cid, cell] = True
+    return table, freed
+
+
+def _own_princess_centres():
+    """[(x, y), ...] for team 0's LEFT and RIGHT Princess Towers, as CELLS.
+
+    Derived from the bound ArenaLayout rather than restated -- CLAUDE.md's
+    no-second-copies rule, and this geometry has already gone stale twice.
+    """
+    import clash_royale_env as _env
+    y = int(_env.arena_princess_y(0))
+    return [(int(_env.ARENA_LEFT_LANE_X), y),
+            (int(_env.ARENA_RIGHT_LANE_X), y)]
 
 
 class MicroRoyaleNet(nn.Module):
@@ -159,11 +212,47 @@ class MicroRoyaleNet(nn.Module):
         # buffer ולא פרמטר, ומסומן persistent=False: זו עובדה על המנוע ולא
         # משקל נלמד, ושמירתו בצ'קפוינט הייתה הופכת אותו לעותק שני שיכול
         # להתיישן מול המנוע -- בדיוק הסחיפה שהטבלה נועדה למנוע.
-        self.register_buffer("_placement_legal",
-                             _build_placement_legality(num_card_ids,
-                                                       self.placement_rows,
-                                                       board_width),
+        _legal_table, _freed_table = _build_placement_legality(
+            num_card_ids, self.placement_rows, board_width)
+        self.register_buffer("_placement_legal", _legal_table,
                              persistent=False)
+        #: (2, num_card_ids+1, cells) -- cells that become legal when our own
+        #: LEFT/RIGHT Princess dies. Same persistent=False reasoning.
+        self.register_buffer("_placement_freed", _freed_table,
+                             persistent=False)
+        #: Cell index of each own Princess centre, for reading its liveness out
+        #: of the observation. Built once; cheap.
+        # --- legality folded into ONE table indexed by tower state ----------
+        # Four variants -- both Princesses alive / left dead / right dead /
+        # both dead -- each already OR-ed with the base table. The mask then
+        # does a single gather instead of a base gather plus one gather and one
+        # OR per tower, which is what made the first version of this feature
+        # 53% more expensive than the base mask. Built by pure tensor ORs, so it
+        # costs no extra engine probing; 4 x 186 x 612 bools is ~455 KB.
+        if _freed_table is not None:
+            _by_state = torch.stack([
+                _legal_table,                                          # 0: both alive
+                _legal_table | _freed_table[0],                        # 1: LEFT dead
+                _legal_table | _freed_table[1],                        # 2: RIGHT dead
+                _legal_table | _freed_table[0] | _freed_table[1],      # 3: both dead
+            ])
+        else:
+            _by_state = None
+        self.register_buffer("_placement_legal_by_state", _by_state,
+                             persistent=False)
+
+        self._own_princess_cells = (
+            [y * board_width + x for x, y in _own_princess_centres()]
+            if _freed_table is not None else [])
+        #: The same two centres as FLAT indices into the observation vector.
+        #: The spatial half is channel-major, so channel 3 (ally buildings --
+        #: the index rewards.shaping.building_hp_end reads) starts at
+        #: 3*H*W. Precomputed so placement_mask can read two scalars instead of
+        #: reshaping the whole spatial block on every call.
+        _ch_ally_buildings = 3
+        self._own_princess_flat = [
+            _ch_ally_buildings * self.board_height * board_width + c
+            for c in self._own_princess_cells]
 
         # 0 = לחפיסה אין צ'מפיון, ולכן אין בכלל ראשי הפעלת יכולת. זה לא
         # אופטימיזציה קוסמטית: כשאין צ'מפיון, שני הראשים האלה דגמו רעש טהור
@@ -885,8 +974,45 @@ class MicroRoyaleNet(nn.Module):
             chosen_id = torch.where(chosen_id < 0,
                                     torch.full_like(chosen_id, table.shape[0] - 1),
                                     chosen_id)
-            mask = mask & table[chosen_id]
+            # Legality, selected by which of OUR OWN Princess Towers are still
+            # standing. A tower's 3x3 footprint clears when it dies (+9 cells
+            # each, measured), so a table cached on a full board permanently
+            # masks the policy out of the ground it defends after losing a
+            # tower. ENEMY towers change nothing, which is why only team 0's two
+            # Princesses index this.
+            #
+            # Liveness comes from the ally-building channel at each tower's own
+            # centre cell: the encoder marks a tower at its centre only, at
+            # hp/MAX_BUILDING_HP (2534/4008 = 0.632 at full) and 0 once dead,
+            # and `hp <= 0` is refused by the engine's setters, so `> 0` is
+            # exactly "alive". Read as two scalar columns straight out of the
+            # flat vector via the precomputed offsets -- reshaping the whole
+            # (channels, H, W) block to slice channel 3 copies 612 floats per
+            # row for two numbers.
+            #
+            # ONE gather, into the state-indexed table built in __init__.
+            # Doing it as base-gather + per-tower gather + OR measured 53% more
+            # expensive than the base mask; this costs the same as the single
+            # lookup it replaces.
+            if self._placement_legal_by_state is not None:
+                by_state = self._placement_legal_by_state.to(obs.device)
+                dead_l = (obs[:, self._own_princess_flat[0]] <= 0.0).long()
+                dead_r = (obs[:, self._own_princess_flat[1]] <= 0.0).long()
+                legal = by_state[dead_l + 2 * dead_r, chosen_id]
+            else:
+                legal = table[chosen_id]
+
+            mask = mask & legal
         return mask
+
+    def freed_cells_for(self, tower_slot, card_id):
+        """{(x, y)} that our own Princess `tower_slot` (1=LEFT, 2=RIGHT) hands
+        back for `card_id` when it dies. Diagnostic/testing accessor."""
+        if self._placement_freed is None:
+            return set()
+        row = self._placement_freed[tower_slot - 1, card_id]
+        return {(c % self.board_width, c // self.board_width)
+                for c in torch.nonzero(row, as_tuple=True)[0].tolist()}
 
     def cell_to_xy(self, cell_idx):
         """

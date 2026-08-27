@@ -269,12 +269,37 @@ def masked_kl_elementwise(new_logits, target_logits):
     on illegal cells in BOTH distributions, torch evaluates
     0 * (-inf - -inf) = nan there, and the true contribution of a cell carrying
     no probability mass in either distribution is exactly zero.
+
+    SANITIZED BEFORE THE ARITHMETIC, NOT AFTER IT. The previous form computed
+    `term` and then zeroed the non-finite entries with `torch.where`, which
+    fixes the FORWARD and does not fix the BACKWARD: `where` still
+    differentiates the branch it did not select, and `0 * nan = nan`. Tracing
+    it, with `a = lo.exp()` and `b = (lo - ln)`:
+
+        grad_a = grad_term * b = 0 * nan = NAN
+        grad_b = grad_term * a = 0 * 0   = 0
+
+    so a NaN really was produced. It stayed harmless only because `grad_a`
+    flows into `log_softmax(target_logits)` and the target is a CONSTANT -- the
+    advisor's surface, buffered from numpy during the rollout. Two implicit
+    properties were holding it up: that the target never requires grad, and
+    that no row is entirely `-inf`. The second one is demonstrably load-bearing
+    -- a fully-masked row DID put NaN straight into `new_logits.grad`, forward
+    still reading a clean 0.0.
+
+    Replacing the operands first means no NaN is ever created, so neither
+    property has to hold. Bit-identical on every reachable input: at a masked
+    cell the substituted operands give `exp(0) * (0 - 0) * 0 = 0`, which is what
+    the old zeroing produced, and at a legal cell nothing is substituted.
     """
     import torch
     ln = torch.log_softmax(new_logits, -1)
     lo = torch.log_softmax(target_logits, -1)
-    term = lo.exp() * (lo - ln)
-    term = torch.where(torch.isfinite(term), term, torch.zeros_like(term))
+    keep = torch.isfinite(lo) & torch.isfinite(ln)
+    zero = torch.zeros_like(lo)
+    lo_s = torch.where(keep, lo, zero)
+    ln_s = torch.where(keep, ln, zero)
+    term = lo_s.exp() * (lo_s - ln_s) * keep
     return term.sum(-1)
 
 

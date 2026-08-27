@@ -63,7 +63,7 @@ from python_ai.rl.engine_stats import extract_engine_stats, opponent_elixir_targ
 from python_ai.rl.entropy import EntropyController
 from python_ai.rl.episode_metrics import EpisodeMetrics
 from python_ai.rl.ppo import PPOUpdater
-from python_ai.rl.seeding import seed_everything, worker_seeds
+from python_ai.rl.seeding import engine_seeds, seed_everything, worker_seeds
 
 
 @dataclass
@@ -190,7 +190,17 @@ class BaseTrainer:
     # ======================================================================
     def setup(self):
         cfg = self.cfg
-        os.makedirs("replays", exist_ok=True)
+        # ANCHORED, not cwd-relative -- the same rule weights_path/run_path
+        # already apply to checkpoints and TensorBoard runs, and which
+        # run_path's own docstring already claims covers `replays/`. Left
+        # relative, which directory the run was launched from silently decided
+        # where its replays landed: a stale replays/replay_ep1000.json sits at
+        # the repo root while python_ai/replays/ never existed. That matters
+        # beyond tidiness -- replays/*.json is the input to the placement PHASE
+        # histogram, the only cheap detector for the ConvTranspose2d
+        # checkerboard artifact, and a detector aimed at a directory the run
+        # did not write to reports a clean board forever.
+        os.makedirs(run_path("replays"), exist_ok=True)
         os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
 
         # FIRST, before anything stochastic happens. Network initialisation is
@@ -240,7 +250,20 @@ class BaseTrainer:
                               if advisor_target.enabled() else {})
         self.updater = PPOUpdater(self.net, self.optimizer, cfg)
 
-        self._obs, _ = self.envs.reset()
+        # SEEDED reset, because this is the ONLY route to the engine's own RNG.
+        # `seed_everything` above covers torch/numpy/random and `build_envs`
+        # seeds each worker's SCENARIO generator, but the opening-hand shuffle
+        # lives in C++ and MicroRoyaleEnv seeds it exclusively from
+        # `reset(seed=...)`. A bare `reset()` left it on OS entropy, so a run
+        # with cfg.seed set reproduced its weights and its minibatch
+        # permutation while dealing different hands every time -- and announced
+        # itself deterministic anyway. Gymnasium's contract is that a seed
+        # passed once is used for that reset and the stream continues from
+        # there, which is exactly what makes the whole run reproducible rather
+        # than only its first episode.
+        _engine_seeds = engine_seeds(self.cfg.seed, self.cfg.num_envs)
+        self._obs, _ = self.envs.reset(
+            seed=_engine_seeds if self.cfg.seed is not None else None)
         self._prev_stats = None
         self._prev_dones = np.zeros(cfg.num_envs, dtype=bool)
         self._hx = torch.zeros(cfg.num_envs, LSTM_HIDDEN).to(self.device)
@@ -283,13 +306,29 @@ class BaseTrainer:
                 # Autoregressive placement: the card must actually be SAMPLED
                 # before placement can be conditioned on it, so this cannot be a
                 # single net(...) call.
-                features, card_embeds, spatial_map = net.extract_features(obs_tensor)
+                # `_hires` rather than the three-value wrapper, and the map is
+                # THREADED into placement_given_card below. The wrapper computes
+                # `cnn_trunk[:2](spatial_obs)` and discards it, and
+                # `placement_given_card(hires_map=None)` then rebuilds it from
+                # the same obs -- so the trunk's first conv, Conv2d(21->16) at
+                # the full 34x18 board before any pooling, ran TWICE per step on
+                # bit-identical input. `forward_sequence` already threads this
+                # through for exactly this reason in the UPDATE path; the
+                # rollout was the half nobody threaded.
+                #
+                # Measured, 500 steps x 8 envs, network portion, best of 3:
+                # 6.505s -> 2.103s, 67.7% saved. Bit-identical by construction
+                # (same module, same input, no RNG between the two calls) --
+                # pinned in tests/test_rollout_no_redundant_conv.py.
+                features, card_embeds, spatial_map, hires_map = \
+                    net.extract_features_hires(obs_tensor)
                 card_logits, _, _, state_value, (self._hx, self._cx) = \
                     net.step_lstm_and_card(features, (hx_in, cx_in), card_mask)
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
                 placement_logits = net.placement_given_card(
-                    self._hx, card_embeds, card_idx, obs_tensor, spatial_map)
+                    self._hx, card_embeds, card_idx, obs_tensor, spatial_map,
+                    hires_map=hires_map)
                 placement_dist = Categorical(logits=placement_logits)
                 placement_cell = placement_dist.sample()
                 total_logprob = (card_dist.log_prob(card_idx)
@@ -481,7 +520,12 @@ class BaseTrainer:
     # -- update -------------------------------------------------------------
     def run_update(self):
         cfg, net = self.cfg, self.net
-        batch = self.buffer.stack()
+        # `drain`, not `stack`: torch.stack has already copied every field into
+        # the batch, so the per-step lists are dead weight from here on --
+        # ~218 MB of observations at the production shape, held across the PPO
+        # update, which is ~87% of the cycle. run()'s later clear() stays and is
+        # simply a no-op. See RolloutBuffer.drain.
+        batch = self.buffer.drain()
 
         # Bootstrap value for the state right after the last stored step. Value
         # depends only on hx and never needs a card or a placement, so this
@@ -501,10 +545,28 @@ class BaseTrainer:
             trunc_boot=batch.get("trunc_boot"))
         # Critic targets are the RAW returns; only advantages are normalized.
         returns = advantages + batch["values"]
-        # Masked by `valid` for the same reason the two statistics below are:
-        # a phantom post-autoreset row trains nothing, so it must not set the
-        # mean and std that rescale every row that does.
-        adv_norm = gae_mod.normalize(advantages, mask=batch["valid"])
+        # Masked by `decision`, NOT by `valid` -- the normalized advantages have
+        # exactly one consumer, `mb_adv` in the actor loss, and that term is
+        # masked by `mb_decision`. So the rows that set the mean and std must be
+        # the rows the loss actually reads, which is the rule rl/ppo.py's module
+        # docstring already states for the actor and the entropy terms.
+        #
+        # `valid` is a strict SUPERSET: it also carries every FORCED step (fewer
+        # than two affordable arms), whose advantages are perfectly real but are
+        # multiplied by zero in the actor. Letting them set the constants left
+        # the actor's own rows off-centre -- measured over three consecutive
+        # rollouts at a 308-episode checkpoint, where decision covered 73.7-75.1%
+        # of rows: centring error -0.0312 / -0.0820 / -0.0073 of a unit std, and
+        # a scale error of 0.9757x / 0.9492x / 1.0041x.
+        #
+        # That is not the harmless baseline shift it would be in vanilla policy
+        # gradient. PPO's clip is asymmetric in sign(A), so shifting the
+        # advantages changes WHICH samples clip and in which direction.
+        #
+        # The phantom post-autoreset rows this mask used to exist for are still
+        # excluded, and strictly so: `decision` is built as
+        # `(card_mask.sum(1) > 1) * valid`, so valid==0 implies decision==0.
+        adv_norm = gae_mod.normalize(advantages, mask=batch["decision"])
 
         with torch.no_grad():
             keep = batch["valid"] > 0.5
@@ -512,8 +574,14 @@ class BaseTrainer:
             self._explained_variance = float(gae_mod.explained_variance(r, v))
             # Scaled to THIS batch's own return spread, never tighter than
             # eps_clip -- see PPOConfig.vf_clip_std_frac.
-            vf_clip_range = torch.clamp(cfg.vf_clip_std_frac * r.std(),
-                                        min=cfg.eps_clip).item()
+            #
+            # `safe_std`, not `r.std()`: the unbiased estimator returns NaN on
+            # fewer than two rows, and `clamp(min=)` PROPAGATES NaN instead of
+            # flooring it, so this line looked floored while feeding NaN to the
+            # critic loss and costing the whole update. Same guard, same
+            # reasoning, as gae.normalize.
+            vf_clip_range = max(cfg.vf_clip_std_frac * gae_mod.safe_std(r),
+                                cfg.eps_clip)
         self._vf_clip_range = vf_clip_range
 
         return self.updater.update(
@@ -649,7 +717,9 @@ class BaseTrainer:
         print(f"Generating replay video for episode {self.episodes_completed}...")
         record_greedy_replay(
             self.net, env, self.device,
-            f"replays/{self.replay_prefix}_ep{self.episodes_completed}.json")
+            os.path.join(run_path("replays"),
+                         f"{self.replay_prefix}_ep"
+                         f"{self.episodes_completed}.json"))
         return True
 
     def save_checkpoint(self, verbose=True):

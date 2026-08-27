@@ -32,6 +32,44 @@ Layout -- one package per responsibility:
 import os as _os
 import sys as _sys
 
+#: Thread-count variables capped on import, BEFORE numpy is loaded.
+#:
+#: `import numpy` (scipy-openblas) commits 32.1 MB of private memory per BLAS
+#: thread, and unset OpenBLAS defaults to one thread per core. Measured here on
+#: 12 logical processors: 397.4 MB unset against 44.1 MB at 1, fitting
+#: `44.1 + 32.1*(threads-1)`. The WORKING SET is flat at ~16 MB either way, so
+#: it is invisible in Task Manager and shows only in private commit. A phase-1
+#: run is 1 main + num_envs workers, so the default num_envs=8 pays ~3.2 GB of
+#: commit that nothing in this package can use: every numpy array here is
+#: (num_envs,)-shaped reward/stat bookkeeping, for which a multi-threaded BLAS
+#: is pure overhead.
+#:
+#: OMP_NUM_THREADS IS DELIBERATELY NOT IN THIS LIST. That one governs torch's
+#: intra-op parallelism, and the main process spends ~87% of its wall clock in
+#: the conv-bound PPO update. Capping it would trade real update throughput for
+#: memory the update does not use -- torch costs ~166 MB at import regardless of
+#: thread count, plus only ~4.4 MB per OMP thread, so there is nothing to
+#: reclaim there.
+BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS",)
+
+
+def _apply_blas_caps():
+    """`setdefault` each cap. Deliberately not an override: someone
+    benchmarking numpy, or on a box where a wider BLAS genuinely pays, sets
+    these on purpose and must win.
+    """
+    for _var in BLAS_THREAD_VARS:
+        _os.environ.setdefault(_var, "1")
+
+
+# MUST run before anything imports numpy: OpenBLAS reads the variable when the
+# library LOADS, so a later set is measurably a no-op (403.3 MB, bit-identical
+# to never setting it). That is why both trainers import THIS package before
+# they import gymnasium/numpy/torch, and why
+# tests/test_blas_thread_caps.py pins that ordering statically -- a reordering
+# would not raise, it would just quietly cost the memory again.
+_apply_blas_caps()
+
 #: Absolute path of this package -- also where `clash_royale_env.pyd` and the
 #: `*.pth` checkpoints live.
 PACKAGE_DIR = _os.path.dirname(_os.path.abspath(__file__))

@@ -284,6 +284,12 @@ class PPOUpdater:
                 mb_old_values = values_seq[tt, ee]
                 mb_valid = valid_seq[tt, ee]
                 n_valid = mb_valid.sum().clamp(min=1.0)
+                # Kept BEFORE the clamp: `clamp(min=1)` makes an empty chunk
+                # arithmetically safe but also indistinguishable from a chunk
+                # with exactly one decision, and every statistic denominated by
+                # this is UNDEFINED rather than zero when the count is 0. See
+                # the guarded appends at the bottom of the loop.
+                has_decision = bool(mb_decision.sum() > 0)
                 n_decision = mb_decision.sum().clamp(min=1.0)
 
                 ratios = torch.exp(new_logprobs - mb_old_logprobs)
@@ -393,20 +399,44 @@ class PPOUpdater:
                     nonfinite_skips += 1
                     continue
 
-                actor_losses.append(actor_loss.item())
+                # `valid`-denominated, so informative on every surviving
+                # minibatch: a chunk with no CHOICE still has real states, and
+                # the critic and the auxiliary head genuinely trained on them.
                 critic_losses.append(critic_loss.item())
-                entropy_bonuses.append((ent_card_mean + ent_place_mean).item())
-                ent_card_log.append(ent_card_mean.item())
-                ent_place_log.append(ent_place_mean.item())
                 total_losses.append(loss.item())
                 aux_losses.append(aux_loss.item())
                 aux_maes.append(aux_mae.item())
-                # Fraction of DECISION samples where the ratio hit the clip
-                # range. Forced steps have ratio exactly 1.0 by construction and
-                # would dilute this toward 0 however much the policy moved.
-                clipped = ((ratios - 1.0).abs() > cfg.eps_clip).float()
-                clip_fracs.append(
-                    ((clipped * mb_decision).sum() / n_decision).item())
+
+                # DECISION-denominated, and therefore UNDEFINED -- not zero --
+                # on a chunk where nothing was ever affordable. Such a chunk is
+                # not exotic: P(nothing affordable) is 73.9% per step, so runs
+                # of them are what a spent-down agent produces.
+                #
+                # These terms are correctly 0 in the LOSS there (a point-mass
+                # distribution has no gradient), but recording that 0 as a
+                # MEASUREMENT is what does the damage: `ent_card`/`ent_placement`
+                # feed EntropyController, whose non-finite guard cannot catch a
+                # finite 0.0, so it reads a total policy collapse and drives the
+                # coefficient UP -- measured 0.05 -> 0.0596, +19% in one update,
+                # on a batch carrying no information at all.
+                #
+                # Skipping the append hands the whole-update case to `_mean([])`,
+                # which already returns NaN for exactly this reason, and the
+                # controller already holds its coefficients on a non-finite
+                # reading. A MIXED update averages only the informative chunks.
+                if has_decision:
+                    actor_losses.append(actor_loss.item())
+                    entropy_bonuses.append(
+                        (ent_card_mean + ent_place_mean).item())
+                    ent_card_log.append(ent_card_mean.item())
+                    ent_place_log.append(ent_place_mean.item())
+                    # Fraction of DECISION samples where the ratio hit the clip
+                    # range. Forced steps have ratio exactly 1.0 by construction
+                    # and would dilute this toward 0 however much the policy
+                    # moved -- which is the same reason it is guarded here.
+                    clipped = ((ratios - 1.0).abs() > cfg.eps_clip).float()
+                    clip_fracs.append(
+                        ((clipped * mb_decision).sum() / n_decision).item())
 
         return UpdateStats(
             actor_loss=_mean(actor_losses),

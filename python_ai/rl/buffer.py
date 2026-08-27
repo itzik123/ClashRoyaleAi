@@ -105,6 +105,35 @@ class RolloutBuffer:
             raise RuntimeError("stack() on an empty rollout buffer")
         return {name: torch.stack(values) for name, values in self._data.items()}
 
+    def drain(self):
+        """`stack()`, then release the per-step lists.
+
+        `torch.stack` ALLOCATES and copies -- the batch it returns does not view
+        the stored tensors -- so from the moment it returns there are two full
+        copies of every field alive, and the list half is dead weight nothing
+        reads again.
+
+        The update used to run with both resident, because the caller cleared
+        only after it returned. At the production shape that is expensive:
+
+            obs 13606 x 8 envs x 4 bytes = 0.435 MB/step
+            x 500 steps                  = 217.7 MB
+            both copies                  = 435.4 MB
+
+        held across the PPO update, i.e. ~87% of the cycle, against a main
+        process measured at 1194 MB private commit. Draining at the stack point
+        gives ~218 MB back for exactly the phase that needs it most, and costs
+        nothing: the batch already owns its storage.
+
+        Safe precisely BECAUSE stack does not alias, which
+        `tests/test_rl_buffer_drain.py` pins as a separate premise rather than
+        assuming -- if that ever changed, draining would pull storage out from
+        under the update.
+        """
+        batch = self.stack()
+        self.clear()
+        return batch
+
     def clear(self):
         for values in self._data.values():
             values.clear()

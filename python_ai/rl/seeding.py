@@ -64,8 +64,42 @@ def worker_seeds(seed, n):
 
     `[None] * n` when unseeded, so `make_env(seed=...)` takes the same code
     path either way and the default behaviour is untouched.
+
+    These seed each env's SCENARIO generator. The engine's own shuffle is a
+    separate stream -- see `engine_seeds`.
     """
     if seed is None:
         return [None] * n
     return [int(s.generate_state(1)[0])
             for s in np.random.SeedSequence(int(seed)).spawn(n)]
+
+
+def engine_seeds(seed, n):
+    """`n` seeds for the ENGINE's own RNG, one per worker.
+
+    Passed to `envs.reset(seed=...)`, which is the only route to
+    `ClashEnv::seed` and therefore the only way the opening-hand shuffle is
+    pinned. `BaseTrainer.setup` used to call `envs.reset()` with no seed at all,
+    so a run with CLASH_SEED set reproduced its network initialisation and its
+    minibatch permutation while dealing DIFFERENT opening hands every time --
+    and printed "Deterministic run" regardless. Measured at seed 4242:
+
+        network init identical : True
+        opening hands run A    : [[7, 24, 6, 33], [24, 25, 6, 7]]
+        opening hands run B    : [[24, 33, 25, 72], [40, 15, 25, 24]]
+
+    The opening hand decides what the agent is ABLE to play, so this was not a
+    minor stochastic source; it is most of an episode's variance, and it is
+    exactly what a paired A/B needs held fixed across arms.
+
+    A SEPARATE STREAM from `worker_seeds`, not the same integers reused. Handing
+    one number to both would tie which scenario is injected to which hand is
+    dealt -- a correlation between two things an experiment varies
+    independently, invisible because both would still look properly seeded.
+    The distinct entropy comes from the two-element SeedSequence key, which
+    leaves `worker_seeds`' existing stream bit-identical.
+    """
+    if seed is None:
+        return [None] * n
+    return [int(s.generate_state(1)[0])
+            for s in np.random.SeedSequence([int(seed), 0xE1]).spawn(n)]

@@ -46,13 +46,24 @@ def workdir(tmp_path, monkeypatch):
     So redirection now goes through the sanctioned overrides -- `CLASH_WEIGHTS`
     and `CLASH_LOGDIR` exist precisely so "a smoke run or an experiment arm
     cannot clobber the real checkpoint" -- plus monkeypatches for the pipeline
-    2 constants, which are frozen at import and have no env hook. The chdir
-    stays for `replays/`, which is still relative.
+    2 constants, which are frozen at import and have no env hook.
+
+    `replays/` WAS the one destination still relative, and the chdir below was
+    what contained it. It is anchored now (base_trainer routes both sites
+    through `run_path`, which is what run_path's docstring always claimed), so
+    the chdir alone would let `setup()` create -- and `record_replay()` write
+    into -- the REAL repo root. `run_path` is therefore redirected here too.
+    The chdir stays regardless: it is still the containment for anything that
+    writes relative paths of its own, and tests that call
+    `record_greedy_replay` with an explicit relative path rely on it.
     """
     from python_ai.rl import base_trainer
     from python_ai.trainers import train_selfplay
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        base_trainer, "run_path",
+        lambda name: str(tmp_path.joinpath(*name.split("/"))))
     monkeypatch.setenv("CLASH_WEIGHTS", str(tmp_path / "model_weights.pth"))
     monkeypatch.setenv("CLASH_LOGDIR", str(tmp_path / "runs" / "test"))
     for attr, value in (
