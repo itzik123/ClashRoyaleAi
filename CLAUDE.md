@@ -666,6 +666,49 @@ BEHAVIOURALLY, never as "the Cannon lost hp": `Building::update` decays it every
 10 ticks on its own, so a damage test reports a pull at every offset and the
 sweep saturates.
 
+**SIGHT IS STRICT CENTRE-TO-CENTRE, since 2026-08-28.** `effectiveSightWith`
+returned `sightRange + myRadius + effectiveRadiusOf(target)`, inflating every
+unit's aggro radius by both hitboxes -- a Hog Rider's catalogued 9.5 became
+**10.9** against a Cannon, a 15% free extension applied game-wide. Radii answer
+a HITBOX question ("can these two touch"); the published sight ranges are
+centre-to-centre, and 9.5 must mean 9.5. The registry's values were already
+correct and match the published table exactly (9 distinct values, 4.0-11.5) --
+only the COMPARISON was wrong, so fixing the one function fixes every card
+systemically.
+
+**One floor remains, and it is not a softening.** Attack range in this engine
+IS surface-to-surface (`effectiveRangeTo`), so a unit whose attack REACH
+exceeds its sight can hit what it cannot acquire -- it never targets and stands
+idle. That is exactly the 2026-08-20 free-siege defect below. Sight is
+therefore floored at the unit's own attack reach. The floor binds only where
+`attackRange` is within ~2 tiles of `sightRange` (towers, Musketeer-likes); for
+every long-sight card it is irrelevant -- a Hog's floor is `0.8+0.4+1.0 = 2.2`
+against a sight of 9.5.
+
+**Measured on the reported case** (Hog spawned at (14.0, 17.5), Cannon at
+(5.0, 11.0)):
+
+| | acquires at |
+|---|---|
+| old, radius-inflated | 10.783 tiles |
+| **new, strict** | walks past 9.789 untouched, acquires at **9.160** |
+
+**AND THE CROSS-LANE PULL SURVIVES IT -- for a geometric reason, not a defect.**
+The lanes sit at `x = 3.0` and `x = 14.0`, so a unit walking one lane passes
+**9.0 tiles** from a building in the other, and 9.0 < 9.5. No euclidean sight
+value at or above the Hog's catalogue figure can exclude it. Making a win
+condition immune to an off-lane Cannon requires **PATH distance** (down, across
+a bridge, back up -- well over 14 tiles), which is a different mechanism and is
+NOT what this change implements. Do not re-derive this: the euclidean rule is
+now exactly the catalogue, and the remaining pull is the arena's geometry.
+
+GAMEPLAY-AFFECTING: every unit's aggro radius shrank by roughly its own plus its
+target's radius, so defensive-building pulls, kiting distances and every win
+rate earned before this date describe a different engine. Pinned by
+`test_sight_range.cpp`'s `[centre_to_centre]` cases, including a parameterised
+sweep over four catalogue values (9.5 / 7.7 / 7.5 / 7.0) that bounds the rule
+from BOTH sides, so a uniformly-blind engine cannot pass it either.
+
 **The `sight >= attack` invariant is BLIND to a missing value for most cards.**
 It only fires when `sightRange < attackRange`, and **130 of 148** non-spell cards
 have `attackRange <= 5.5` — every one of the 102 default cards is inside that
@@ -726,6 +769,40 @@ probe scored `inject(FIREBALL)` at 0.000 value-killed and briefly looked like
 broken kill attribution; injected ON the clump it kills 12 → 3 bodies normally.
 `get_troop_damage_dealt` includes **our own towers shooting**, so it is not
 evidence a spell landed. Nothing in `prove_placement.py` is invalidated.
+
+**`isValidPlacement` checks a body's FOOTPRINT against the board edge, since
+2026-08-28.** It checked the CENTRE only, while the building-overlap loop three
+lines below it already reasoned in footprints (`placedRadius + r`) -- two
+conventions for one geometric question, the same shape as the sight-vs-attack
+band. Measured through the binding: a Cannon (`placementRadius` =
+`Building::COLLISION_RADIUS` = 1.0) was accepted at `x = 0.0` spanning
+[-1.0, +1.0] and at `x = 17.0` spanning [16.0, 18.0].
+
+The edge that matters is the PHYSICAL one, and this is the part that is easy to
+get wrong: **cell i covers `[i - 0.5, i + 0.5]`** (`Board::CELL_HALF_EXTENT`,
+the convention `isOnBridge` already documents and `clampToBoard` depends on), so
+an 18-wide board runs `x` in **[-0.5, 17.5]**, not [0, 17]. Checking footprints
+against the INDEX range instead would reject a 0.4-radius TROOP at both edge
+columns and silently delete two of eighteen columns from the action space while
+looking like a bounds fix.
+
+Net effect, verified through the rebuilt `.pyd`: **buildings lose exactly
+columns 0 and 17; troops lose nothing.** Spells are exempt -- a spell's radius
+is an area of effect, not a body, and clipping the arena edge is normal for one
+(same reason the overlap loop is inside the `!isSpell` branch).
+
+GAMEPLAY-AFFECTING: the legal building area shrinks, so the placement head's
+learned distribution and every win rate earned before this date describe a
+slightly different action space. Pinned by `test_game_manager.cpp`'s
+"...FOOTPRINT leaves the arena, and only its footprint", whose troop SECTION is
+the load-bearing half.
+
+**Three things reported as placement bugs on 2026-08-28 were already enforced**
+and are worth not re-investigating: a building on the RIVER (rejected by the
+own-half rule plus `OWN_HALF_RIVER_BUFFER`), a building fully OUT OF BOUNDS
+(rejected by the centre test), and a building OVERLAPPING A PRINCESS TOWER
+(rejected by the overlap loop -- towers are Buildings with a 1.5 radius, and
+even 0.5 tiles away is refused). Only the footprint gap was real.
 
 ### The state setters an estimator writes with (item 22, 2026-08-24)
 
@@ -840,7 +917,7 @@ first is the frozen mirror stage; the second is the CURRENT random deck's own
 progress through the same six stages. It resets to 0 every time a new deck is
 sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 
-### Network (`models/net.py`, 1.85 M params)
+### Network (`models/net.py`, 1.89 M params)
 
 `MicroRoyaleNet` — the LSTM is 96% of the parameters:
 
@@ -852,7 +929,7 @@ sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 | `card_head` | 1,285 | 256 → 5 (4 hand slots + no-op) |
 | `place_ctx` + `place_up` | 14,593 | ctx→32ch, broadcast-add, 2× (upsample+conv) → 612 |
 | `value_head` | 257 | critic |
-| `aux_elixir_head` | 257 | opponent-elixir estimator |
+| `aux_card_head` | 47,360 | opponent NEXT-CARD classifier (256 -> 185) |
 
 **PHASE 4, 2026-08-27 — three architectural bottlenecks, all measured.** The
 net went 1,907,329 → **1,846,963** parameters (it got SMALLER) for **+14.8%**
@@ -1094,6 +1171,25 @@ pivot itself is in `DECISIONS.md`, "2026-08-19: the curriculum pivot"). Read
 | 3 | 50 t (5 s) | 0.05 | 2 | 3 | no |
 | 4 | 70 t (7 s) | 0.02 | 3 | 4 | no |
 | 5 | 100 t (10 s) | 0.00 | 3 | 4 | **yes** |
+
+**The teacher's play bar tapers from 6.0 elixir, not 9.0, since 2026-08-28.**
+`play_margin = 3.0` is the utility a candidate must beat to be worth playing,
+and `effective_play_margin` tapers it to zero as the bar approaches overflow.
+That taper was anchored on `ELIXIR_OVERFLOW_AT = 9.0`, which left the bar at its
+FULL height for every elixir value from 0 to 9 -- i.e. across almost the whole
+operating range -- so the freeze the taper exists to prevent happened anyway.
+
+Measured on `replays/replay_ep2018.json` (stage 1): the teacher lost a Princess
+Tower at **tick 159** having spent 2 elixir (one Ice Golem, tick 111) while its
+bar ran 5.0 -> 8.6, and its next play landed at **tick 561** -- the exact tick
+elixir first reached 9.60, i.e. the first moment the taper did anything.
+`MARGIN_TAPER_START = 6.0` is now a separate constant; `score`'s own
+`overflow_relief` still uses 9.0, because that one is about refunding the COST
+charge when income is genuinely being discarded, which really is a 9.0 question.
+
+GAMEPLAY-AFFECTING for phase 1: the stage 0/1 teacher defends materially more,
+so every curriculum win-rate gate is calibrated against a different opponent and
+win rates earned before this date are not comparable across it.
 
 Stage 5 has `win_rate_threshold = None` — there is no further auto-advance, so
 the ladder has no natural end and a stopping rule has to be chosen by hand.
@@ -1864,14 +1960,19 @@ because refuting one costs an hour and re-suspecting it is free.
   that is the un-refitted critic, not an architectural property, and it is the
   transitional effect the gamma change predicts.
 
-**Watch these three during any run:** ~~`Aux/OppElixir_MAE` (below ~1.3 means
-the recurrent state genuinely counts)~~ — **STRUCK 2026-08-27, this metric
-cannot see what it was being read for.** A stateless least-squares fit on two
-scalars already in the observation scores 0.0000, clearing the ~1.3 threshold
-by more than an order of magnitude, so ANY reading below it is consistent with
-zero memory. Watch it as a *loss-is-descending* sanity check only, never as a
-recurrence diagnostic. See "Opponent-elixir MAE" above for the measurement and
-`test_aux_task_is_not_a_memory_probe.py` for the pin. The other two stand:
+**Watch these three during any run:** ~~`Aux/OppElixir_MAE`~~ — **the head it
+measured was DELETED on 2026-08-28.** The metric could not see what it was read
+for (a stateless least-squares fit on two scalars already in the observation
+scores 0.0000, so any reading below the ~1.3 threshold is consistent with zero
+memory), and the task therefore shaped nothing. Replaced by
+**`Aux/NextCard_CE` / `Aux/NextCard_Acc`** — cross-entropy and top-1 accuracy
+on "which card does the opponent play next", which is NOT solvable from present
+scalars and so is a real ask on the recurrent state. Read CE against
+`ln(8) = 2.08` and accuracy against `0.125`: those are what a policy with no
+cycle knowledge scores, and beating them is the entire point of the head. See
+`test_aux_task_is_not_a_memory_probe.py` (why the old one went) and
+`test_aux_next_card_task.py` (what the new one guarantees). The other two
+stand:
 `Entropy/Placement_Target` vs
 `_Measured` (tracking, not fighting), and `Cards/Game` in phase 2 — it sat at
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,

@@ -21,6 +21,7 @@ The defaults are therefore not cosmetic:
       key can only ever zero the lethal-spell potential, never fabricate one.
 """
 import numpy as np
+import torch
 
 #: Cumulative or instantaneous counters that default to a zero of their own
 #: dtype. Split by dtype because elixir_spent is a float (card costs) while the
@@ -64,9 +65,56 @@ def extract_engine_stats(infos, num_envs):
     return stats
 
 
-def opponent_elixir_target(infos, num_envs):
-    """Ground truth for the auxiliary head. Hidden information: it travels
-    through `info` and never through the observation."""
+def opponent_played_card(infos, num_envs):
+    """Which card the opponent played during THIS step, or -1 for none.
+
+    Raw per-step stream, not yet the training label -- `next_card_labels`
+    turns it into one. Hidden information: it travels through `info` and never
+    through the observation, because at the moment the agent acted this play
+    had not happened yet.
+
+    The default is -1 ("nothing played"), which is the value that contributes
+    exactly zero to the loss, matching this module's rule for every other
+    default: on the all-envs-auto-reset step the key is absent entirely.
+    """
     return np.asarray(
-        infos.get("opp_elixir", np.zeros(num_envs, dtype=np.float32)),
-        dtype=np.float32)
+        infos.get("opp_played_card", np.full(num_envs, -1, dtype=np.int64)),
+        dtype=np.int64)
+
+
+def next_card_labels(played, masks, valid):
+    """(T, N) per-step plays -> (T, N) NEXT-card labels + their loss mask.
+
+    The label for step t is the first card the opponent plays at or after t,
+    within the same episode. Computed by ONE backward scan carrying the next
+    known play, which is why this is done once per update rather than per
+    minibatch.
+
+    `masks[t] == 0` marks the step an episode ENDED on. Scanning backward, the
+    carry has to be cleared there BEFORE step t reads it: everything after t
+    belongs to a different episode and using it would teach the net to predict
+    the next match's opening play from this match's final state. Step t's own
+    `played[t]` is still valid -- the episode ended after that play, not
+    before it.
+
+    Steps with no future play (the tail of every episode, where the opponent
+    simply never plays again) get label -1 and mask 0. They are DROPPED, not
+    given a "no card" class: "they played nothing for the rest of the match"
+    is an artifact of where the episode stopped, not a fact about the
+    opponent, and giving it a class would make it the majority label.
+
+    Returns (labels, has_label) with labels clamped to 0 where has_label is 0,
+    so the tensor is always a legal index for cross_entropy even on the rows
+    the mask discards.
+    """
+    T, N = played.shape
+    labels = torch.full_like(played, -1)
+    carry = torch.full((N,), -1, dtype=played.dtype, device=played.device)
+    for t in range(T - 1, -1, -1):
+        carry = torch.where(masks[t] == 0,
+                            torch.full_like(carry, -1), carry)
+        step = played[t]
+        labels[t] = torch.where(step >= 0, step, carry)
+        carry = labels[t]
+    has_label = ((labels >= 0).float() * valid)
+    return labels.clamp_min(0), has_label

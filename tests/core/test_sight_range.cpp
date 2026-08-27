@@ -4,6 +4,8 @@
 #include "GameManager.h"
 #include "CardRegistry.h"
 #include "CombatEntity.h"
+#include "Building.h"
+#include "CardStats.h"   // DEPLOY_TIME_TICKS
 #include "ClashEnv.h"   // getAllCardIds()
 #include <vector>
 #include <string>
@@ -78,11 +80,18 @@ TEST_CASE("a Princess Tower fights back against a unit inside its attack range",
     REQUIRE(survivorHp < startHp);
 }
 
-TEST_CASE("sight is measured the same way as attack range, not centre-to-centre",
+TEST_CASE("whatever a unit can attack, it can also see",
           "[targeting][sight][regression]") {
     // The invariant behind the fix, stated directly so it cannot regress
     // quietly: for every entity, whatever it can ATTACK it must also be able to
     // SEE. Anything else is a blind spot in which it stands idle.
+    //
+    // NOTE (2026-08-28): this case is about the RAW catalogue values, and it is
+    // NOT the claim that sight and attack share a measurement convention --
+    // they deliberately no longer do. Sight is strict centre-to-centre against
+    // sightRange; attack stays surface-to-surface. The invariant survives that
+    // split because effectiveSightWith floors sight at the unit's own attack
+    // reach -- see the centre-to-centre section at the bottom of this file.
     //
     // Checked here for the shape that actually occurs -- a tower (large radius,
     // sightRange == attackRange) against a troop -- because that is the pairing
@@ -463,4 +472,140 @@ TEST_CASE("an Evolution's evolved form keeps its base form's sight range",
     INFO("Evolutions whose evolved form changes sight range:" << offenders);
     REQUIRE(offenders.empty());
     REQUIRE(checked > 10);
+}
+
+
+// ---------------- sight is STRICT CENTRE-TO-CENTRE ----------------
+//
+// CHANGED 2026-08-28. `effectiveSightWith` used to return
+// `sightRange + myRadius + effectiveRadiusOf(target)`, which inflated a Hog
+// Rider's aggro radius against a Cannon from its catalogued 9.5 to 10.9 -- a
+// 15% free extension, applied to every unit in the game. Radii answer a HITBOX
+// question ("can these two touch"); the published sight ranges are
+// centre-to-centre, and 9.5 must mean 9.5.
+//
+// THE FLOOR, which is not a softening. Attack range in this engine IS
+// surface-to-surface (`effectiveRangeTo`), so a unit whose attack REACH exceeds
+// its sight can hit what it cannot acquire -- it never targets and stands
+// there. That is the measured 2026-08-20 free-siege defect pinned at the top of
+// this file. Sight is therefore floored at the unit's own attack reach. For
+// every long-sight card the floor is irrelevant: a Hog's is 0.8+0.4+1.0 = 2.2
+// against a sight of 9.5.
+//
+// WHAT THIS DOES AND DOES NOT BUY, measured 2026-08-28 on the reported case
+// (Hog spawned at (14.0, 17.5), Cannon at (5.0, 11.0)):
+//
+//   old code: acquires at 10.783 tiles     new code: walks past 9.789 untouched,
+//                                                    acquires at 9.160
+//
+// The inflation is gone. The cross-lane pull is NOT, and the reason is
+// geometric rather than a defect: the lanes sit at x = 3.0 and x = 14.0, so a
+// unit walking one lane passes 9.0 tiles from a building in the other, and
+// 9.0 < 9.5. Euclidean sight of 9.5 cannot exclude it. Making a Hog immune to
+// an off-lane Cannon requires PATH distance (down, across a bridge, back up --
+// well over 14 tiles), which is a different mechanism and not what this change
+// implements.
+
+namespace {
+
+// Pure-x separation at a fixed y, so "distance" and "how far off-lane the
+// building sits" are the same number. With the building unseen the lane
+// objective is the Princess Tower directly below, i.e. straight down, and the
+// separation only grows -- so "no aggro" is a stable state, not a race.
+float driftAtSeparation(int attackerCard, float separation) {
+    GameManager game(DECK, DECK);
+    Board& board = game.getBoard();
+    CardRegistry::getInstance().getCard(attackerCard)
+        ->spawnEntity(14.0f, 12.0f, 1, board);
+    CardRegistry::getInstance().getCard(25)                    // Cannon
+        ->spawnEntity(14.0f - separation, 12.0f, 0, board);
+    board.commitPendingEntities();
+    std::shared_ptr<Entity> attacker;
+    for (const auto& e : board.getEntities())
+        if (e->cardId == attackerCard) attacker = e;
+    REQUIRE(attacker != nullptr);
+    const float x0 = attacker->position.x;
+    for (int i = 0; i < DEPLOY_TIME_TICKS + 20; ++i) game.step();
+    return attacker->position.x - x0;
+}
+
+float catalogSight(int cardId) {
+    GameManager probe(DECK, DECK);
+    CardRegistry::getInstance().getCard(cardId)
+        ->spawnEntity(14.0f, 12.0f, 1, probe.getBoard());
+    probe.getBoard().commitPendingEntities();
+    for (const auto& e : probe.getBoard().getEntities()) {
+        if (e->cardId != cardId) continue;
+        if (auto c = std::dynamic_pointer_cast<CombatEntity>(e)) return c->sightRange;
+    }
+    return -1.0f;
+}
+
+} // namespace
+
+TEST_CASE("a Hog Rider does not acquire a Cannon beyond its catalogued 9.5",
+          "[targeting][sight][regression][centre_to_centre]") {
+    // 10.0 tiles is the case that decides it: OUTSIDE the catalogued 9.5, and
+    // INSIDE the 10.9 the old radius-inflated formula produced. This assertion
+    // fails on the pre-2026-08-28 engine, which is what makes it a regression
+    // test rather than a restatement.
+    const float drift = driftAtSeparation(15, 10.0f);
+    INFO("net x drift at 10.0 tiles: " << drift);
+    REQUIRE(drift == Catch::Approx(0.0f).margin(0.05f));
+}
+
+TEST_CASE("a Hog Rider still acquires a Cannon inside 9.5",
+          "[targeting][sight][centre_to_centre]") {
+    // The other half: strict must not mean blind. Without this, deleting the
+    // Cannon-pull entirely would pass the case above.
+    const float drift = driftAtSeparation(15, 9.0f);
+    INFO("net x drift at 9.0 tiles: " << drift);
+    REQUIRE(drift < -0.5f);
+}
+
+TEST_CASE("the centre-to-centre sight bound holds for every catalogued range",
+          "[targeting][sight][centre_to_centre][systemic]") {
+    // Parameterised over building-targeters spanning four different catalogue
+    // values, so this is a property of the RULE and not of one card. Ids and
+    // sight ranges are read from the registry, never restated here.
+    const int card = GENERATE(15,   // Hog Rider   9.5
+                              45,   // Balloon     7.7
+                              2,    // Giant       7.5
+                              40);  // Ice Golem   7.0
+    const float sight = catalogSight(card);
+    REQUIRE(sight > 0.0f);
+
+    INFO("card id " << card << " with catalogued sight " << sight);
+    // Half a tile outside: no acquisition, at any catalogue value.
+    REQUIRE(driftAtSeparation(card, sight + 0.5f)
+            == Catch::Approx(0.0f).margin(0.05f));
+    // Half a tile inside: acquisition. Bounds the rule from both sides so a
+    // uniformly-blind engine cannot pass.
+    REQUIRE(driftAtSeparation(card, sight - 0.5f) < -0.3f);
+}
+
+TEST_CASE("sight is never shorter than the unit's own attack reach",
+          "[targeting][sight][invariant][regression]") {
+    // The floor, stated as the property it protects. A Princess Tower's sight
+    // is 7.5 while its attacks reach 7.5 + 1.5 + 0.4 = 9.4, so a strict
+    // centre-to-centre reading alone would recreate the free-siege defect this
+    // file opens with: a Musketeer parked at 8.0 removing a tower that never
+    // fires back.
+    GameManager game(DECK, DECK);
+    CardRegistry::getInstance().getCard(MUSKETEER)
+        ->spawnEntity(4.0f, 19.0f, 0, game.getBoard());
+    game.getBoard().commitPendingEntities();
+    std::shared_ptr<Entity> musketeer;
+    for (const auto& e : game.getBoard().getEntities())
+        if (e->cardId == MUSKETEER) musketeer = e;
+    REQUIRE(musketeer != nullptr);
+    const int startHp = musketeer->hp;
+
+    for (int i = 0; i < 300; ++i) game.step();
+
+    int survivorHp = 0;
+    for (const auto& e : game.getBoard().getEntities())
+        if (e->id == musketeer->id && e->isAlive()) survivorHp = e->hp;
+    INFO("Musketeer hp " << startHp << " -> " << survivorHp);
+    REQUIRE(survivorHp < startHp);
 }

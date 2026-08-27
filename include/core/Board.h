@@ -83,6 +83,19 @@ public:
     // company with a seam-centred leftBridge/rightBridge -- see those.
     static constexpr float BRIDGE_HALF_WIDTH = 1.0f;
 
+    // Cell i covers [i - 0.5, i + 0.5] (the convention isOnBridge's comment
+    // states and clampToBoard's +/-BRIDGE_HALF_WIDTH depends on), so the
+    // board's PHYSICAL extent runs half a cell beyond the outermost cell
+    // INDEX on every side: x in [-0.5, width - 0.5], y in [-0.5, height-0.5].
+    //
+    // Named because GameManager::isValidPlacement's footprint check is the
+    // one place that needs the physical edge rather than the index edge, and
+    // getting the two confused is not a small error: checking a footprint
+    // against the INDEX range instead would reject a 0.4-radius troop at
+    // x = 0 and x = width-1, silently deleting two of eighteen columns from
+    // the action space while looking like a bounds fix.
+    static constexpr float CELL_HALF_EXTENT = 0.5f;
+
 private:
 
 public:

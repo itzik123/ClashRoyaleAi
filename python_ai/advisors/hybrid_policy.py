@@ -146,7 +146,25 @@ class HybridPolicy:
             # this step's LSTM runs -- which is 1 second of a quantity that
             # regenerates at 0.35/decision, so the staleness is far inside the
             # head's own ~0.9 MAE.
-            opp = float(self.net.predict_opp_elixir(self.hidden[0])[0])                 if self.use_opp_elixir else None
+            # The opponent-elixir ESTIMATE is gone: the aux head predicts
+            # the opponent's next CARD since 2026-08-28, not their elixir.
+            #
+            # Not a lost capability, and deliberately not replaced with a
+            # worse one. Opponent elixir is exactly `start + rate*t -
+            # spent(t)`, an affine function of extra-scalar 0 and extra-scalar
+            # 2, both already in the observation -- ordinary least squares on
+            # those two scores MAE 0.0000 against the head's ~0.9. So the
+            # correct replacement is that closed form read straight off the
+            # observation, NOT another learned estimate.
+            #
+            # Left as None until that is written and verified against the
+            # engine's own get_elixir_for_team, rather than shipping an
+            # unverified formula into a gate that silently removes card slots.
+            # `gate.mask` already accepts None (this call site has always been
+            # able to pass it), so the gate simply stops using the elixir
+            # clause and keeps every other one.
+            opp = None
+
             allow = torch.tensor([self.gate.mask(o, costs, opp)],
                                  dtype=torch.bool, device=self.device)
             blocked = int((mask & ~allow).sum())

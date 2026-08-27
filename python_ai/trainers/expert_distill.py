@@ -41,7 +41,7 @@ BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 # by extract_features, so they count as trunk: training them would move the
 # features the critic sees, which is the thing freezing exists to prevent.
 TRUNK_MODULES = ("cnn_trunk", "scalar_mlp", "card_id_embed", "lstm",
-                 "value_head", "aux_elixir_head")
+                 "value_head", "aux_card_head")
 
 TRUNK_PARAMS = ("noop_embed",)
 

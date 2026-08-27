@@ -372,6 +372,10 @@ class MicroRoyaleEnv(gym.Env):
             self.current_opp_deck = list(self.opp_deck)
 
         obs_list = self.game.reset()
+        # New match: drop the played-tick baseline so the next poll re-seeds
+        # against THIS episode's clock instead of comparing the new match's
+        # ticks to the previous one's and reporting a phantom play on step 1.
+        self._opp_last_tick = {}
         # Scenario injection rewrites the freshly-reset state, so the
         # observation has to be RE-READ afterwards -- reset()'s return value
         # describes the position before the rewrite.
@@ -390,6 +394,41 @@ class MicroRoyaleEnv(gym.Env):
             self.teacher.reset()
         obs = np.array(obs_list, dtype=np.float32)
         return obs, {}
+
+    def _poll_opponent_play(self):
+        """Which card team 1 played since the last poll, or -1 for none.
+
+        Baseline-and-diff over `get_last_played_tick`, one call per card in
+        the opponent's CURRENT deck (8, re-read each call because
+        `randomize_opp_deck` changes it per episode).
+
+        The first poll of an episode always returns -1 and only establishes
+        the baseline. That is correct rather than a lost sample: with the
+        baseline empty there is no way to distinguish "played just now" from
+        "the engine's initial value", and inventing a label there would put a
+        wrong answer into the supervision set.
+
+        When a 10-tick step contains more than one play, the EARLIEST is
+        returned -- the label is "the next card they play", so the first one
+        after the observation is the answer.
+        """
+        last = getattr(self, "_opp_last_tick", None)
+        if last is None:
+            last = self._opp_last_tick = {}
+        # current_opp_deck, NOT opp_deck: under randomize_opp_deck the latter
+        # stays the fixed fallback (reset() says so explicitly), so polling it
+        # would watch eight cards the opponent does not hold and report -1 for
+        # every play of the entire episode -- a silently empty supervision set.
+        deck = getattr(self, "current_opp_deck", None) or self.opp_deck
+        best_tick, best_card = None, -1
+        for card in set(deck):
+            tick = self.game.get_last_played_tick(1, card)
+            prev = last.get(card)
+            last[card] = tick
+            if prev is not None and tick > prev:
+                if best_tick is None or tick < best_tick:
+                    best_tick, best_card = tick, card
+        return best_card
 
     def step(self, action, skip_frames=10):
         card_idx = int(_to_scalar(action["card_index"]))
@@ -468,13 +507,27 @@ class MicroRoyaleEnv(gym.Env):
             # is tower damage plus any enemy deployed building in the way).
             "team0_wincon_damage": (self.game.get_damage_dealt_by_card(WIN_CONDITION_ID, 0)
                                     if WIN_CONDITION_ID is not None else 0),
-            # SUPERVISION TARGET for the network's auxiliary elixir head, and
-            # nothing else. Deliberately delivered through info -- NOT through
-            # the observation -- because the opponent's current elixir is
-            # hidden information a human cannot read off the screen. Putting
-            # it in the observation would train a policy that silently depends
-            # on something perception/ can never supply from a real match.
-            # See MicroRoyaleNet.predict_opp_elixir.
+            # SUPERVISION TARGET for the auxiliary head, and nothing else.
+            # Deliberately delivered through info -- NOT through the
+            # observation -- because WHICH CARD the opponent played during
+            # this step is, at the moment the agent chose its action, still in
+            # the future. Putting it in the observation would be handing the
+            # policy the answer it is being asked to predict.
+            #
+            # -1 means "the opponent played nothing during this step". The
+            # trainer turns this per-step stream into a NEXT-card label by
+            # scanning forward within the episode; a step with no future play
+            # gets no label and is masked out of the loss entirely.
+            #
+            # Detected by watching get_last_played_tick per deck card rather
+            # than by diffing elixir: elixir cannot identify WHICH card, and a
+            # 10-tick step can contain more than one play. The EARLIEST new
+            # play in the window is the right answer, since the label is "the
+            # next card they play". See MicroRoyaleNet.predict_opp_next_card.
+            "opp_played_card": self._poll_opponent_play(),
+            # Kept for diagnostics only -- no head consumes it since the
+            # 2026-08-28 aux swap. It is still the cheapest sanity read on
+            # whether the opponent is spending at all.
             "opp_elixir": self.game.get_elixir_for_team(1),
             # Not part of observation_space -- see ClashEnv.h's own comment
             # on why champion-ability state stays out of the flat

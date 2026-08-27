@@ -836,14 +836,25 @@ def test_the_margin_TAPERS_as_the_bar_approaches_overflow():
     An episode-0 agent IS passive, so a fixed high bar would hand phase 1 the
     zero-gradient environment the whole 2026-08-19 pivot exists to avoid.
 
-    The taper reuses `score`'s own overflow relief: above ELIXIR_OVERFLOW_AT the
-    bar is discarding income, so holding is NOT free and a marginal play stops
-    needing to justify itself. Same threshold, same shape, one idea expressed
-    once.
+    The taper has `score`'s overflow-relief SHAPE but starts at
+    MARGIN_TAPER_START, not at ELIXIR_OVERFLOW_AT.
+
+    STARTING IT AT THE OVERFLOW LINE WAS MEASURED WRONG (2026-08-28,
+    replay_ep2018.json, stage 1): it left the bar at its full height for every
+    elixir value from 0 to 9, i.e. across almost the whole operating range, so
+    the freeze this docstring describes happened anyway. The teacher lost a
+    Princess Tower at tick 159 having spent 2 elixir while its bar ran 5.0 ->
+    8.6, and its next play landed at tick 561 -- the exact tick elixir first
+    reached 9.60. Below MARGIN_TAPER_START the bar is still full; that is what
+    keeps the teacher picky when holding really is cheap.
     """
     t = T.UtilityTeacher(DECK, team=0)
     assert t.effective_play_margin(5.0) == pytest.approx(t.play_margin)
-    assert t.effective_play_margin(T.ELIXIR_OVERFLOW_AT) == pytest.approx(
+    # At the OLD anchor the bar is now already partly relieved -- the point of
+    # the change. Pinned as an inequality, not a number, so retuning
+    # MARGIN_TAPER_START does not have to edit this line.
+    assert 0.0 < t.effective_play_margin(T.ELIXIR_OVERFLOW_AT) < t.play_margin
+    assert t.effective_play_margin(T.MARGIN_TAPER_START) == pytest.approx(
         t.play_margin)
     mid = t.effective_play_margin(9.5)
     assert 0.0 < mid < t.play_margin

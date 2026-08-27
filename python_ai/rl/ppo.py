@@ -33,6 +33,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 
 from python_ai.advisors import advisor_target
+from python_ai.rl.engine_stats import next_card_labels
 from python_ai.rl.optim_step import clip_and_step
 
 
@@ -61,8 +62,8 @@ class UpdateStats:
     entropy: float = 0.0
     total_loss: float = 0.0
     clip_frac: float = 0.0
-    aux_mse: float = 0.0
-    aux_mae: float = 0.0
+    aux_ce: float = 0.0
+    aux_acc: float = 0.0
     ent_card: float = 0.0
     ent_placement: float = 0.0
     #: Placement entropy on the no-op arm. Kept purely as the contrast that
@@ -168,7 +169,11 @@ class PPOUpdater:
         decision_seq = batch["decision"]
         values_seq = batch["values"]
         old_logprobs_seq = batch["logprobs"]
-        aux_elixir_seq = batch["aux_elixir"]
+        # ONE backward scan per update, not per minibatch: turning the
+        # per-step "what did they play" stream into "what do they play NEXT"
+        # needs the whole (T, N) block and the episode boundaries in `masks`.
+        aux_label_seq, aux_has_seq = next_card_labels(
+            batch["aux_opp_played"], masks_seq, valid_seq)
         hx_in_seq, cx_in_seq = batch["hx_in"], batch["cx_in"]
         coverage_slot_seq = batch["coverage_slot"]
         coverage_target_seq = batch.get("coverage_target")
@@ -180,7 +185,7 @@ class PPOUpdater:
         nonfinite_skips = 0
         actor_losses, critic_losses, entropy_bonuses = [], [], []
         total_losses, clip_fracs = [], []
-        aux_losses, aux_maes = [], []
+        aux_losses, aux_accs = [], []
         coverage_ents, coverage_kls, coverage_hits = [], [], []
         ent_card_log, ent_place_log, ent_place_noop_log = [], [], []
         percard_place_ent = defaultdict(list)
@@ -256,7 +261,7 @@ class PPOUpdater:
                 # resulting weights are bit-identical.
                 active_rows = (mb_decision.reshape(-1) > 0).nonzero(
                     as_tuple=True)[0]
-                (cl_seq, pl_seq, new_values, new_aux_elixir,
+                (cl_seq, pl_seq, new_values, new_aux_logits,
                  _, cf_pl_seq) = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
@@ -359,19 +364,32 @@ class PPOUpdater:
                 entropy_bonus = (ent_coef_card * ent_card_mean
                                  + ent_coef_placement * ent_place_mean)
 
-                # Auxiliary opponent-elixir loss. Masked by mb_valid for the
-                # same reason the critic loss is: phantom auto-reset steps carry
-                # an observation from the NEXT episode paired with stale
-                # bookkeeping, and regressing on those teaches noise.
-                aux_err = new_aux_elixir - aux_elixir_seq[tt, ee]
-                aux_loss = ((aux_err ** 2) * mb_valid).sum() / n_valid
-                aux_mae = (aux_err.abs() * mb_valid).sum() / n_valid
+                # Auxiliary NEXT-OPPONENT-CARD loss (cross-entropy).
+                #
+                # Masked by aux_has, which is STRICTLY NARROWER than mb_valid:
+                # it already carries `valid`, and it additionally drops every
+                # step with no future play -- the tail of each episode. Those
+                # rows have no answer at all, so a `reduction="mean"` over the
+                # full minibatch would average real losses against fabricated
+                # ones. Denominator is the count of LABELLED rows, and a
+                # minibatch can legitimately have none (an opponent that never
+                # plays again), so it is floored rather than assumed positive.
+                mb_aux_has = aux_has_seq[tt, ee]
+                n_aux = mb_aux_has.sum().clamp_min(1.0)
+                aux_ce_all = F.cross_entropy(
+                    new_aux_logits.reshape(-1, new_aux_logits.shape[-1]),
+                    aux_label_seq[tt, ee].reshape(-1),
+                    reduction="none").view_as(mb_aux_has)
+                aux_loss = (aux_ce_all * mb_aux_has).sum() / n_aux
+                aux_acc = ((new_aux_logits.argmax(-1)
+                            == aux_label_seq[tt, ee]).float()
+                           * mb_aux_has).sum() / n_aux
 
                 # cov_delta carries both signs already: the entropy half is a
                 # bonus (negative), the advisor KL a penalty (positive).
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
-                        + cfg.aux_elixir_coef * cfg.aux_elixir_scale * aux_loss)
+                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_loss)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -405,7 +423,7 @@ class PPOUpdater:
                 critic_losses.append(critic_loss.item())
                 total_losses.append(loss.item())
                 aux_losses.append(aux_loss.item())
-                aux_maes.append(aux_mae.item())
+                aux_accs.append(aux_acc.item())
 
                 # DECISION-denominated, and therefore UNDEFINED -- not zero --
                 # on a chunk where nothing was ever affordable. Such a chunk is
@@ -444,8 +462,8 @@ class PPOUpdater:
             entropy=_mean(entropy_bonuses),
             total_loss=_mean(total_losses),
             clip_frac=_mean(clip_fracs),
-            aux_mse=_mean(aux_losses),
-            aux_mae=_mean(aux_maes),
+            aux_ce=_mean(aux_losses),
+            aux_acc=_mean(aux_accs),
             ent_card=_mean(ent_card_log),
             ent_placement=_mean(ent_place_log),
             ent_placement_noop=_mean(ent_place_noop_log),

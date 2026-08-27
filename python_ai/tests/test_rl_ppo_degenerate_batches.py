@@ -80,7 +80,8 @@ def _rollout(decision_value):
                 rewards=torch.randn(TINY.num_envs) * 0.1,
                 masks=torch.ones(TINY.num_envs),
                 valid=torch.ones(TINY.num_envs),
-                aux_elixir=torch.full((TINY.num_envs,), 5.0),
+                aux_opp_played=torch.full((TINY.num_envs,), 15,
+                                          dtype=torch.long),
                 coverage_slot=torch.zeros(TINY.num_envs, dtype=torch.long))
         hx, cx = hx2, cx2
         for i, e in enumerate(envs):
@@ -152,7 +153,7 @@ def test_the_LOSS_is_untouched_by_the_reporting_change():
         "the no-decision batch was dropped by the containment guard; the NaN "
         "escaped the diagnostics into the loss")
     assert np.isfinite(stats.critic_loss) and stats.critic_loss > 0.0
-    assert np.isfinite(stats.aux_mse)
+    assert np.isfinite(stats.aux_ce)
 
     after = list(net.parameters())
     assert any(not torch.equal(b, a.detach()) for b, a in zip(before, after)), (
@@ -207,7 +208,8 @@ def test_a_MIXED_update_averages_only_the_informative_minibatches():
                 decision=torch.full((2,), 1.0 if t < 2 else 0.0),
                 hx_in=hx, cx_in=cx, logprobs=lp, values=value.squeeze(-1),
                 rewards=torch.zeros(2), masks=torch.ones(2),
-                valid=torch.ones(2), aux_elixir=torch.zeros(2),
+                valid=torch.ones(2),
+                aux_opp_played=torch.full((2,), -1, dtype=torch.long),
                 coverage_slot=torch.zeros(2, dtype=torch.long))
         hx, cx = hx2, cx2
         for e in envs:

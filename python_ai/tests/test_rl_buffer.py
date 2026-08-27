@@ -93,7 +93,7 @@ def test_the_two_pipelines_declare_the_field_sets_they_actually_use():
     # Everything the PPO update reads must be in CORE -- see rl/ppo.py.
     for required in ("obs", "card_actions", "placement_actions", "decision",
                      "hx_in", "cx_in", "logprobs", "values", "rewards",
-                     "masks", "valid", "aux_elixir", "coverage_slot"):
+                     "masks", "valid", "aux_opp_played", "coverage_slot"):
         assert required in CORE_FIELDS
 
 

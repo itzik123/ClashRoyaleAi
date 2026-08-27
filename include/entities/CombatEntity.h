@@ -1189,8 +1189,53 @@ protected:
     // which re-derived `myRadius` -- a loop invariant, and a virtual call --
     // once for each one. Identical arithmetic in identical order, so the
     // result is bit-for-bit what it was.
+    // STRICT CENTRE-TO-CENTRE, since 2026-08-28. `sightRange` means exactly
+    // what the card catalogue says it means: a Hog Rider's 9.5 is 9.5 tiles
+    // from its centre to the target's centre, and at 9.51 there is NO aggro.
+    //
+    // It used to be `sightRange + myRadius + effectiveRadiusOf(target)`, which
+    // inflated a Hog's aggro radius against a Cannon to 10.9 and let a Cannon
+    // parked deep in one lane drag a win condition off the other. Radii belong
+    // to a HITBOX question ("can these two touch"), not to a VISION question
+    // ("can this unit see that one"), and Clash Royale's published sight
+    // ranges are centre-to-centre.
+    //
+    // THE ONE FLOOR, and it is not a softening of the rule above. Attack range
+    // in this engine IS measured surface-to-surface (`effectiveRangeTo`), so a
+    // unit whose attack REACH exceeds its sight would be able to hit something
+    // it cannot acquire -- it never targets, and simply stands there. That is
+    // the measured 2026-08-20 free-siege defect: a Princess Tower (sight 7.5,
+    // reach 7.5+1.5+0.4 = 9.4) could not see a Musketeer sitting at 8.0, and
+    // she removed the tower from 8 tiles taking ZERO damage -- 5355 damage
+    // dealt, 0 received. Flooring sight at the unit's own attack reach is what
+    // keeps "whatever it can attack, it can see" true.
+    //
+    // The floor binds ONLY where attackRange is within a couple of tiles of
+    // sightRange (towers, Musketeer-likes), and only for a card whose sight
+    // already covers its attack. For every long-sight card in the catalogue --
+    // Hog 9.5, Princess 9.5, Mortar/X-Bow 11.5, Giant 7.5, Balloon 7.7 --
+    // sightRange wins outright and the check is exactly strict
+    // centre-to-centre. A Hog's floor is 0.8+0.4+1.0 = 2.2 against a sight of
+    // 9.5, so it does nothing at all.
+    //
+    // Without the floor a Musketeer pair (sight 6.0, reach 6.0+0.4+0.4 = 6.8)
+    // would stop 6.8 apart, each outside the other's 6.0, and neither would
+    // ever acquire -- they would walk past each other to the towers. The floor
+    // is what keeps "if you can reach it, you can see it" true, and it is
+    // narrower than the old formula in every case: the old one added radii
+    // unconditionally, this one only where the alternative is a unit that
+    // cannot fight what it is standing next to.
     float effectiveSightWith(float myRadius, const Entity& target) const {
-        return sightRange + myRadius + effectiveRadiusOf(target);
+        const float attackReach = attackRange + myRadius + effectiveRadiusOf(target);
+        // The floor applies ONLY to a well-formed card, i.e. one whose raw
+        // sightRange already covers its raw attackRange -- which the catalogue
+        // guarantees for all 148 (`no card can attack further than it can
+        // see`). Where that does NOT hold the unit is deliberately blind past
+        // its sight and must stay so: that is the entire point of sight, and
+        // `test_combat_entity.cpp` builds exactly that shape (attackRange 20
+        // against the 5.5 default) to pin it.
+        if (sightRange >= attackRange && attackReach > sightRange) return attackReach;
+        return sightRange;
     }
 
     // Re-validates the currently-locked target (by id) rather than running

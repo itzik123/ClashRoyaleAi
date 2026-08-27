@@ -59,7 +59,7 @@ from python_ai.rl.checkpointing import (
 )
 from python_ai.rl.config import PPOConfig
 from python_ai.rl.coverage import PLACEMENT_COVERAGE_COEF, placement_coverage_slots
-from python_ai.rl.engine_stats import extract_engine_stats, opponent_elixir_target
+from python_ai.rl.engine_stats import extract_engine_stats, opponent_played_card
 from python_ai.rl.entropy import EntropyController
 from python_ai.rl.episode_metrics import EpisodeMetrics
 from python_ai.rl.ppo import PPOUpdater
@@ -398,8 +398,11 @@ class BaseTrainer:
                                         dtype=torch.float32).to(self.device),
                 "masks": mask,
                 "valid": valid,
-                "aux_elixir": torch.tensor(
-                    opponent_elixir_target(infos, cfg.num_envs)).to(self.device),
+                # Raw per-step stream (-1 = they played nothing). Converted
+                # into a NEXT-card label inside the update, where the whole
+                # (T, N) block and the episode boundaries are available.
+                "aux_opp_played": torch.tensor(
+                    opponent_played_card(infos, cfg.num_envs)).to(self.device),
                 "coverage_slot": cov["slot"],
             }
             if self.uses_truncation_bootstrap:
@@ -608,8 +611,12 @@ class BaseTrainer:
         # many elixir off is our estimate of what the opponent is holding". An
         # always-guess-the-mean baseline sits near 1.35; anything meaningfully
         # below that means the recurrent state genuinely learned to count.
-        w.add_scalar("Aux/OppElixir_MAE", stats.aux_mae, ep)
-        w.add_scalar("Aux/OppElixir_MSE", stats.aux_mse, ep)
+        # Cross-entropy in nats and top-1 accuracy over the LABELLED steps.
+        # Read them against ln(reachable classes): the opponent holds 4 of 8
+        # cards, so a policy with no cycle knowledge cannot beat ~ln(8)=2.08
+        # / 0.125 by much, and beating it is the whole point of the head.
+        w.add_scalar("Aux/NextCard_CE", stats.aux_ce, ep)
+        w.add_scalar("Aux/NextCard_Acc", stats.aux_acc, ep)
         # Non-finite minibatches whose optimizer step was dropped. MUST be 0.
         # Printed as well as logged, because the whole point of the guard is
         # that the run now SURVIVES a numerical fault -- which means nothing
@@ -661,7 +668,7 @@ class BaseTrainer:
         print(f"  >> Update @ ep {ep} | Actor: {stats.actor_loss:.5f} | "
               f"Critic: {stats.critic_loss:.5f} | Entropy: {stats.entropy:.4f} | "
               f"ClipFrac: {stats.clip_frac:.4f} | "
-              f"OppElixirMAE: {stats.aux_mae:.2f}")
+              f"NextCardCE: {stats.aux_ce:.2f} Acc: {stats.aux_acc:.2f}")
 
     def _log_per_card(self, stats):
         """H(placement | card), and the minimum over cards.

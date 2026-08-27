@@ -135,7 +135,8 @@ def rollout():
                 rewards=torch.zeros(TINY.num_envs),
                 masks=torch.ones(TINY.num_envs),
                 valid=torch.ones(TINY.num_envs),
-                aux_elixir=torch.zeros(TINY.num_envs),
+                aux_opp_played=torch.full((TINY.num_envs,), -1,
+                                          dtype=torch.long),
                 coverage_slot=torch.zeros(TINY.num_envs, dtype=torch.long))
         hx, cx = hx2, cx2
         for i, e in enumerate(envs):
@@ -392,7 +393,7 @@ def test_the_LOSS_and_every_diagnostic_are_bit_identical(rollout):
         "actually skipped and the comparison is still vacuous")
 
     for field in ("actor_loss", "critic_loss", "entropy", "total_loss",
-                  "clip_frac", "aux_mse", "aux_mae", "ent_card",
+                  "clip_frac", "aux_ce", "aux_acc", "ent_card",
                   "ent_placement", "coverage_entropy", "advisor_kl",
                   "advisor_rows"):
         assert getattr(base_stats, field) == getattr(fast_stats, field), (

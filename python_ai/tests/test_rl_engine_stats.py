@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 from python_ai.rewards.shaping import compute_shaping
-from python_ai.rl.engine_stats import extract_engine_stats, opponent_elixir_target
+from python_ai.rl.engine_stats import (extract_engine_stats,
+                                       next_card_labels,
+                                       opponent_played_card)
 
 N = 3
 
@@ -138,8 +140,15 @@ def test_the_elixir_key_is_read_from_infos_elixir_not_from_a_team_key():
     assert list(stats["team0_elixir_current"]) == pytest.approx([9.5] * 3)
 
 
-def test_the_aux_target_defaults_to_zero_and_is_float():
-    target = opponent_elixir_target({}, N)
+def test_the_aux_target_defaults_to_no_play_and_is_an_integer_card_id():
+    """-1 ("played nothing"), not 0 -- 0 is a REAL card id.
+
+    Same rule as every other default in this module: the value a missing key
+    yields must contribute exactly zero. For a classification target that is
+    an out-of-range sentinel `next_card_labels` drops, not a valid class the
+    head would be trained toward on every all-envs-auto-reset step.
+    """
+    target = opponent_played_card({}, N)
     assert target.shape == (N,)
-    assert target.dtype == np.float32
-    assert np.allclose(target, 0.0)
+    assert target.dtype == np.int64
+    assert np.all(target == -1)

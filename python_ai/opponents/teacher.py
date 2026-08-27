@@ -173,6 +173,28 @@ CH_ALLY_COUNT = CE.CH_COUNT           # ally is the base index, enemy is base+1
 # charge should not stop it.
 ELIXIR_OVERFLOW_AT = 9.0
 
+# Where `effective_play_margin`'s taper STARTS. Deliberately NOT
+# ELIXIR_OVERFLOW_AT, and deliberately a separate constant from it.
+#
+# MEASURED 2026-08-28, replay_ep2018.json (stage 1, ep 2018). Tying the taper to
+# the 9.0 overflow line meant the bar sat at the FULL play_margin for every
+# elixir value from 0 to 9, so the teacher was maximally reluctant across almost
+# its whole operating range and only relented in the last elixir before
+# overflow. Observed: it lost a Princess Tower at tick 159 having spent 2 elixir
+# (one Ice Golem, tick 111) while its bar ran 5.0 -> 8.6, and its next play
+# landed at tick 561 -- the exact tick elixir first reached 9.60.
+#
+# That is the same failure `effective_play_margin`'s own docstring was written
+# to prevent ("against a PASSIVE opponent nothing clears a fixed 3.0, so the bot
+# froze"); the taper fixed the shape but started too late to fix the range.
+# 6.0 is the midpoint of the bar: below it holding really is cheap and the
+# teacher should be picky, above it income is increasingly at risk.
+#
+# GAMEPLAY-AFFECTING for phase 1. The stage 0/1 teacher defends materially more,
+# so every curriculum win-rate gate is calibrated against a different opponent
+# and win rates earned before this date are not comparable across it.
+MARGIN_TAPER_START = 6.0
+
 
 # --------------------------------------------------------------------------
 # card roles -- derived from the engine, never a hardcoded id list
@@ -1337,12 +1359,19 @@ class UtilityTeacher:
         pivot exists to remove -- while looking strong on every benchmark that
         uses an active opponent.
 
-        The taper reuses `score`'s own overflow relief, same threshold and same
-        shape: above ELIXIR_OVERFLOW_AT the bar is discarding income, so holding
-        is not free and a marginal play no longer has to justify itself.
+        The taper has the same SHAPE as `score`'s overflow relief but starts at
+        MARGIN_TAPER_START, not at ELIXIR_OVERFLOW_AT. Anchoring it on the
+        overflow line left the bar at its full height for 0-9 elixir -- i.e.
+        across almost the whole range -- which reproduced the freeze this
+        docstring describes rather than removing it. See MARGIN_TAPER_START for
+        the measurement.
+
+        `score`'s own `overflow_relief` is deliberately NOT changed with it:
+        that one is about the COST charge being refunded when income is
+        genuinely being thrown away, which really is a 9.0 question.
         """
-        relief = max(0.0, float(elixir) - ELIXIR_OVERFLOW_AT) / (
-            10.0 - ELIXIR_OVERFLOW_AT)
+        relief = max(0.0, float(elixir) - MARGIN_TAPER_START) / (
+            10.0 - MARGIN_TAPER_START)
         return float(self.play_margin) * (1.0 - min(1.0, relief))
 
     def margin_for(self, cand, elixir):

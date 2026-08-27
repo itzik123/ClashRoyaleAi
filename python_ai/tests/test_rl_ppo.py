@@ -69,7 +69,8 @@ def rollout():
                 rewards=torch.zeros(TINY.num_envs),
                 masks=torch.ones(TINY.num_envs),
                 valid=torch.ones(TINY.num_envs),
-                aux_elixir=torch.zeros(TINY.num_envs),
+                aux_opp_played=torch.full((TINY.num_envs,), -1,
+                                          dtype=torch.long),
                 coverage_slot=torch.zeros(TINY.num_envs, dtype=torch.long))
         hx, cx = hx2, cx2
         for i, e in enumerate(envs):
@@ -94,8 +95,8 @@ def test_an_update_runs_and_reports_every_diagnostic(rollout):
     stats = _run(net, batch)
     assert isinstance(stats, UpdateStats)
     for value in (stats.actor_loss, stats.critic_loss, stats.entropy,
-                  stats.total_loss, stats.clip_frac, stats.aux_mse,
-                  stats.aux_mae, stats.ent_card, stats.ent_placement):
+                  stats.total_loss, stats.clip_frac, stats.aux_ce,
+                  stats.aux_acc, stats.ent_card, stats.ent_placement):
         assert math.isfinite(value), stats
 
 
@@ -171,7 +172,13 @@ def test_the_actor_uses_decision_steps_and_the_critic_uses_all_valid_steps(rollo
     src = inspect.getsource(ppo.PPOUpdater.update)
     assert "* mb_decision).sum() / n_decision" in src           # actor
     assert "(critic_loss_per_elem * mb_valid).sum() / n_valid" in src
-    assert "((aux_err ** 2) * mb_valid).sum() / n_valid" in src
+    # The auxiliary head is denominated over its OWN labelled rows since the
+    # 2026-08-28 next-card swap. `mb_aux_has` is strictly narrower than
+    # `mb_valid` -- it already carries `valid` and additionally drops steps
+    # with no future opponent play -- so the property this line pins (the aux
+    # term is averaged over the rows it is actually defined on, never over the
+    # whole minibatch) is unchanged; only the mask got tighter.
+    assert "(aux_ce_all * mb_aux_has).sum() / n_aux" in src
 
 
 def test_the_affordability_mask_is_RECOMPUTED_not_read_from_the_buffer(rollout):

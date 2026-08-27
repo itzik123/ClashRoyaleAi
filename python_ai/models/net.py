@@ -731,7 +731,38 @@ class MicroRoyaleNet(nn.Module):
         # הוא נחוץ **רק בזמן אימון**, אף פעם לא בבחירת פעולה, אז אין סיבה
         # לשלם עליו בכל טיק של rollout ואין סיבה לשנות את החתימה של מסלול
         # הפעולה החם (ולסכן את כל מי שקורא לו).
-        self.aux_elixir_head = nn.Linear(256, 1)
+        # AUXILIARY TASK: which card does the OPPONENT play next?
+        #
+        # This replaced an opponent-ELIXIR regression head on 2026-08-28, and
+        # the reason is that the old task was measurably not a task at all.
+        # Opponent elixir is an affine function of two scalars the observation
+        # ALREADY CARRIES: `elixir(t) = start + rate*t - spent(t)`, where t is
+        # extra-scalar 0 and spent(t) is extra-scalar 2. Ordinary least squares
+        # on those two -- four parameters, no recurrence -- scores MAE 0.0000
+        # over 2,606 samples, while the trained head sat at 0.77. So the head
+        # was not modelling the opponent, it was failing at arithmetic on two
+        # present inputs, and it exerted essentially no representational
+        # pressure on the LSTM (python_ai/tests/test_aux_task_is_not_a_memory_
+        # probe.py pins that measurement).
+        #
+        # Next-card is the task that cannot be solved that way: it needs the
+        # opponent's PLAY HISTORY, which lives only in the recurrent state and
+        # in the item-24 cycle channels. Measured 2026-08-28 by
+        # eval/probe_card_counting.py, the trained hx decoded the next card at
+        # +0.013 lift over a random projection at ep 1522 and -0.025 at ep
+        # 2054 -- i.e. training was DISCARDING cycle information, because
+        # nothing in the objective asked for it. This head is that ask.
+        #
+        # NUM_CARD_IDS-wide rather than 8-wide over the opponent's deck: the
+        # deck is not known in `random_opponent` or in deployment, and the
+        # cycle observation block is already NUM_CARD_IDS-wide, so this keeps
+        # one card space across the whole net. 256*185 = 47k params, 2.5% of
+        # the net.
+        #
+        # Still deliberately a separate method rather than an extra output of
+        # step_lstm_and_card: needed ONLY during training, never when choosing
+        # an action.
+        self.aux_card_head = nn.Linear(self.LSTM_HIDDEN, NUM_CARD_IDS_LIVE)
 
     def extract_features_hires(self, obs):
         """
@@ -1035,7 +1066,7 @@ class MicroRoyaleNet(nn.Module):
 
         feats_seq/obs_seq/card_mask_seq/card_idx_seq/reset_seq: (L, B, ...).
         מחזיר card_logits (L,B,hand+1), place_logits (L,B,cells),
-        values (L,B), aux_elixir (L,B), ומצב חבוי סופי.
+        values (L,B), aux_card_logits (L,B,C), ומצב חבוי סופי.
         """
         L, B = feats_seq.shape[0], feats_seq.shape[1]
         hx, cx = hidden_state
@@ -1054,7 +1085,11 @@ class MicroRoyaleNet(nn.Module):
         mask_flat = card_mask_seq.reshape(L * B, -1)
         card_logits = card_logits.masked_fill(~mask_flat, float("-inf"))
         values = self.value_head(flat_hx).squeeze(-1)
-        aux = self.aux_elixir_head(flat_hx).squeeze(-1) * 10.0
+        # (L*B, NUM_CARD_IDS) LOGITS, not a scalar -- the caller reshapes to
+        # (L, B, C) and feeds cross_entropy. No output scaling: the old head
+        # multiplied by 10.0 to put a sigmoid-free regression in elixir units,
+        # which has no analogue for a classifier.
+        aux = self.aux_card_head(flat_hx)
 
         # נבנית פעם אחת ומשותפת לשתי הקריאות למטה. בלי זה מעבר הכיסוי היה
         # משחזר את conv1 של ה-trunk בפעם השנייה על אותו קלט בדיוק.
@@ -1127,18 +1162,22 @@ class MicroRoyaleNet(nn.Module):
             extra_logits = _placement(extra_card_idx_seq).view(L, B, -1)
 
         return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
-                values.view(L, B), aux.view(L, B), (hx, cx), extra_logits)
+                values.view(L, B), aux.view(L, B, -1), (hx, cx), extra_logits)
 
-    def predict_opp_elixir(self, hx):
-        """
-        הערכת האליקסיר של היריב מתוך מצב ה-LSTM. (Batch,) בסקאלה 0..10 --
-        אותן יחידות כמו get_elixir_for_team, כדי שהשגיאה תהיה קריאה ישירות
-        ביחידות אליקסיר ולא בסקאלה מנורמלת חסרת משמעות.
+    def predict_opp_next_card(self, hx):
+        """Logits over card ids for the opponent's NEXT play. (Batch, C).
 
-        נקרא רק מלולאת עדכון ה-PPO (ראה AUX_ELIXIR_COEF במאמנים). הגרדיאנט
-        שלו זורם אחורה לתוך ה-LSTM וה-CNN -- זו כל המטרה.
+        Raw logits, not probabilities: the loss is cross_entropy, which wants
+        logits, and the only other caller (expert_metrics) reports them the
+        same way.
+
+        Called only from the PPO update loop (see `aux_card_coef`). Its
+        gradient flows back into the LSTM and the CNN -- that is the entire
+        point of the head, and the reason it replaced the elixir regression,
+        whose target was solvable from two present scalars and therefore
+        shaped nothing. See the head's definition for the measurement.
         """
-        return self.aux_elixir_head(hx).squeeze(-1) * 10.0
+        return self.aux_card_head(hx)
 
     def placement_mask(self, obs, card_idx):
         """

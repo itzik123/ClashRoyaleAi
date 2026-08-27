@@ -51,7 +51,12 @@ def critic_drift(net_a, net_b, obs, device, limit=512):
         hx = torch.zeros(len(o), LSTM_HIDDEN, device=device)
         cx = torch.zeros(len(o), LSTM_HIDDEN, device=device)
         _, _, _, value, (hx2, _) = net.step_lstm_and_card(feats, (hx, cx))
-        out.append((value.squeeze(-1), net.aux_elixir_head(hx2).squeeze(-1)))
+        # argmax card id rather than a scalar since the 2026-08-28 aux swap;
+        # the caller reports |a - b| over it, which for a class index is a
+        # disagreement count rather than a magnitude -- still the right
+        # question (did distillation move the auxiliary head?).
+        out.append((value.squeeze(-1),
+                    net.aux_card_head(hx2).argmax(-1).float()))
     return (float((out[0][0] - out[1][0]).abs().mean()),
             float((out[0][1] - out[1][1]).abs().mean()))
 

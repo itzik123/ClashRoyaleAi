@@ -33,8 +33,8 @@ def test_the_documented_defaults_are_the_ones_every_measurement_used():
     assert cfg.num_minibatches == 8
     assert cfg.max_grad_norm == 0.5
     assert cfg.vf_clip_std_frac == 1.0
-    assert cfg.aux_elixir_coef == 0.5
-    assert cfg.aux_elixir_scale == 0.02
+    assert cfg.aux_card_coef == 0.5
+    assert cfg.aux_card_scale == 0.02
 
 
 def test_update_timestep_must_divide_evenly_into_bptt_chunks():

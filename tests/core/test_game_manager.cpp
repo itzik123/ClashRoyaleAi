@@ -200,6 +200,57 @@ TEST_CASE("isValidPlacement's required gap tracks the placed card's own footprin
     REQUIRE(game.isValidPlacement(0, 9.0f, 5.2f, false, Entity::IMPLICIT_TROOP_RADIUS));
 }
 
+TEST_CASE("isValidPlacement rejects a body whose FOOTPRINT leaves the arena, and only its footprint",
+          "[game_manager][placement][regression]") {
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+
+    // Measured 2026-08-28 through the Python binding: a Cannon
+    // (placementRadius = Building::COLLISION_RADIUS = 1.0) was ACCEPTED at
+    // x = 0.0 while spanning [-1.0, +1.0], and at x = 17.0 while spanning
+    // [16.0, 18.0]. The centre passed the bounds test and the footprint was
+    // never consulted -- the same two-conventions-for-one-question shape as
+    // the sight-vs-attack-range band (tests/core/test_sight_range.cpp).
+    //
+    // The edge that matters is the PHYSICAL one. Cell i covers
+    // [i - 0.5, i + 0.5] (Board::CELL_HALF_EXTENT), so an 18-wide board runs
+    // x in [-0.5, 17.5], NOT [0, 17]. The troop SECTION below is the load-
+    // bearing half of this case: checking footprints against the INDEX range
+    // instead would reject a 0.4-radius troop at both edge columns and delete
+    // two of eighteen columns from the action space while looking like a
+    // bounds fix.
+    const float maxX = static_cast<float>(game.getBoard().getWidth() - 1);   // 17
+
+    SECTION("a building may not hang off either side edge") {
+        REQUIRE_FALSE(game.isValidPlacement(0, 0.0f, 10.0f, false, Building::COLLISION_RADIUS));
+        REQUIRE_FALSE(game.isValidPlacement(0, maxX, 10.0f, false, Building::COLLISION_RADIUS));
+        // One column in from each edge: [0.0, 2.0] and [15.0, 17.0], both
+        // inside [-0.5, 17.5]. Pins that the fix costs exactly one column a
+        // side and not two.
+        REQUIRE(game.isValidPlacement(0, 1.0f, 10.0f, false, Building::COLLISION_RADIUS));
+        REQUIRE(game.isValidPlacement(0, maxX - 1.0f, 10.0f, false, Building::COLLISION_RADIUS));
+    }
+
+    SECTION("a troop keeps BOTH edge columns") {
+        REQUIRE(game.isValidPlacement(0, 0.0f, 10.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+        REQUIRE(game.isValidPlacement(0, maxX, 10.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+    }
+
+    SECTION("a spell is exempt -- its radius is an area of effect, not a body") {
+        REQUIRE(game.isValidPlacement(0, 0.0f, 10.0f, true, 3.0f));
+        REQUIRE(game.isValidPlacement(0, maxX, 25.0f, true, 3.0f));
+    }
+
+    SECTION("the y axis is checked the same way") {
+        // x = 5.6 is inside the back row's centre opening and far enough from
+        // the King Tower (9.0, 2.5, radius 2.0) that the OVERLAP rule cannot
+        // reject either arm -- dist 3.83 clears both 2.4 and 3.0. Without that
+        // the building arm would pass on overlap alone and this SECTION could
+        // not fail even with the footprint check removed.
+        REQUIRE(game.isValidPlacement(0, 5.6f, 0.0f, false, Entity::IMPLICIT_TROOP_RADIUS));
+        REQUIRE_FALSE(game.isValidPlacement(0, 5.6f, 0.0f, false, Building::COLLISION_RADIUS));
+    }
+}
+
 // ---------------- playCard ----------------
 
 TEST_CASE("playCard: successful play deducts elixir, cycles the hand, and spawns the entity", "[game_manager][play_card]") {

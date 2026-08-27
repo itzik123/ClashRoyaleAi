@@ -380,6 +380,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         super().reset(seed=seed)
         self._sample_pfsp_opponent()
         self.game.reset()
+        # New match: drop the played-tick baseline so the first poll re-seeds
+        # against this episode's clock instead of comparing it to the previous
+        # match's. Clearing once here covers the scenario warm-up's repeated
+        # reset() loop below too -- the baseline is empty either way, and the
+        # first poll of the episode is what seeds it.
+        self._opp_last_tick = {}
 
         self.scenario_active = None
         self.scenario_max_steps = None
@@ -504,6 +510,28 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         return scripted_opponents.scripted_action(
             self.opponent_kind, obs1, self.opponent_lane, self.MAX_X, self.MAX_Y)
 
+    def _poll_opponent_play(self):
+        """Which card team 1 played since the last poll, or -1 for none.
+
+        Same baseline-and-diff as gym_wrapper.MicroRoyaleEnv._poll_opponent_
+        play; kept as a sibling rather than shared because the two envs hold
+        their decks differently (this one plays self.deck on BOTH sides) and a
+        shared helper would need the deck passed in anyway. The first poll of
+        an episode returns -1 and only seeds the baseline.
+        """
+        last = getattr(self, "_opp_last_tick", None)
+        if last is None:
+            last = self._opp_last_tick = {}
+        best_tick, best_card = None, -1
+        for card in set(self.deck):
+            tick = self.game.get_last_played_tick(1, card)
+            prev = last.get(card)
+            last[card] = tick
+            if prev is not None and tick > prev:
+                if best_tick is None or tick < best_tick:
+                    best_tick, best_card = tick, card
+        return best_card
+
     def step(self, action, skip_frames=10):
         card_idx0 = int(_to_scalar(action["card_index"]))
         x0 = float(_to_scalar(action["target_x"]))
@@ -592,10 +620,14 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # zero for the whole of self-play.
             "team0_wincon_damage": (self.game.get_damage_dealt_by_card(WIN_CONDITION_ID, 0)
                                     if WIN_CONDITION_ID is not None else 0),
-            # Supervision target for the auxiliary elixir head -- see the
+            # Supervision target for the auxiliary NEXT-CARD head -- see the
             # identical key in gym_wrapper.MicroRoyaleEnv.step()'s info dict
-            # and MicroRoyaleNet.predict_opp_elixir. Hidden information, so it
+            # and MicroRoyaleNet.predict_opp_next_card. Hidden information (at
+            # the moment the agent acted it had not happened yet), so it
             # travels through info and never through the observation.
+            # Both sides play self.deck here, so the poll watches that.
+            "opp_played_card": self._poll_opponent_play(),
+            # Diagnostics only since the 2026-08-28 aux swap; no head reads it.
             "opp_elixir": self.game.get_elixir_for_team(1),
             "champion_ability_slot1_ready": self.game.is_champion_ability_ready(0, 1),
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),

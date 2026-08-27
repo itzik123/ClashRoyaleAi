@@ -47,9 +47,12 @@ CORE_FIELDS = (
     #: action at all -- the worker just calls reset() -- so that step is not a
     #: real transition and must be excluded from every loss term.
     "valid",
-    #: Ground-truth opponent elixir: supervision for the auxiliary head only,
-    #: never an input.
-    "aux_elixir",
+    #: Which card the opponent played on THIS step (-1 for none). Supervision
+    #: for the auxiliary head only, never an input. Stored as the raw per-step
+    #: stream rather than as the next-card LABEL, because turning one into the
+    #: other needs the whole (T, N) block and the episode boundaries -- see
+    #: engine_stats.next_card_labels, run once per update.
+    "aux_opp_played",
     #: The affordable-but-not-necessarily-chosen slot the coverage term scores.
     #: Sampled ONCE at rollout time and buffered, never resampled inside a PPO
     #: epoch: an advisor target has to be computed against the observation the

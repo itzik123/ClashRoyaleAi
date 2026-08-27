@@ -210,28 +210,38 @@ class PPOConfig:
     #: the old behaviour.
     vf_clip_std_frac: float = 1.0
 
-    #: --- Auxiliary task: opponent elixir estimation ------------------------
-    #: Weight on the loss that trains MicroRoyaleNet.predict_opp_elixir. The
-    #: head predicts the opponent's CURRENT elixir -- hidden information,
-    #: deliberately absent from the observation -- from elapsed time and both
-    #: sides' cumulative spend, which ARE in it.
+    #: --- Auxiliary task: opponent NEXT-CARD prediction ---------------------
+    #: Weight on the loss that trains MicroRoyaleNet.predict_opp_next_card:
+    #: cross-entropy over card ids for the next card the OPPONENT plays.
     #:
-    #: Its gradient flows back into the shared LSTM/CNN trunk, and that is the
-    #: entire point: this is representation shaping, not an extra output. The
-    #: sparse win/loss signal gives the recurrent state almost no reason to
-    #: integrate opponent spending over a whole match, and "how much elixir do
-    #: they have right now" is the single most load-bearing latent variable in
-    #: the game.
+    #: REPLACED an opponent-elixir regression head on 2026-08-28. That head was
+    #: not shaping anything, and the measurement is unambiguous: opponent
+    #: elixir is `start + rate*t - spent(t)`, an affine function of extra-scalar
+    #: 0 and extra-scalar 2, both already in the observation. Ordinary least
+    #: squares on those two scores MAE 0.0000 over 2,606 samples while the
+    #: trained head sat at 0.77. A task a four-parameter stateless fit solves
+    #: exactly cannot pressure a 1.8M-parameter recurrent net into remembering
+    #: anything.
     #:
-    #: 0.5 makes the term a real but minority contributor: the target is in
-    #: elixir units (0-10) and a well-fit head sits around 1.0-1.5 MAE, i.e. an
-    #: MSE of ~1-2, against an actor loss of order 0.1.
-    aux_elixir_coef: float = 0.5
+    #: Next-card CANNOT be solved that way -- it needs the opponent's play
+    #: history. That is the capability item 24 put in the observation
+    #: (seen[]/recency[]) and that eval/probe_card_counting.py then measured the
+    #: policy DISCARDING: trained hx decoded the next card +0.013 over a random
+    #: projection at ep 1522 and -0.025 at ep 2054, i.e. below the
+    #: random-projection floor. Nothing in the objective asked for the cycle, so
+    #: gradient descent correctly spent the hidden state elsewhere. This is the
+    #: ask.
+    #:
+    #: 0.5 keeps it a real but minority contributor, matching what the elixir
+    #: term was worth: cross-entropy over ~8 reachable classes starts near
+    #: ln(8) = 2.08 and a useful head lands around 1.2-1.8, against an actor
+    #: loss of order 0.1.
+    aux_card_coef: float = 0.5
 
-    #: Converts the elixir-unit MSE into the same numeric range as the other
-    #: loss terms. Kept explicit (rather than folded into aux_elixir_coef) so
-    #: the LOGGED diagnostic stays in interpretable elixir units.
-    aux_elixir_scale: float = 0.02
+    #: Scales the cross-entropy into the same numeric range as the other loss
+    #: terms. Kept explicit (rather than folded into aux_card_coef) so the
+    #: LOGGED diagnostic stays in interpretable nats.
+    aux_card_scale: float = 0.02
 
     #: Periodic-checkpoint interval, in episodes. Overridable ONLY so a short
     #: controlled run produces matched artifacts: a resume sets last_save_ep to

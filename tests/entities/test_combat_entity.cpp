@@ -63,17 +63,10 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
 TEST_CASE("findTarget never picks an enemy beyond sightRange, even if it's the only one on the board",
         "[combat_entity][targeting][sight_range]") {
     Board board;
-    // Distance 7.0. It used to be 6.0, chosen as "just past the default
-    // sightRange of 5.5" back when sight was compared CENTRE TO CENTRE. Sight
-    // is now measured surface to surface, exactly like attack range
-    // (CombatEntity::effectiveSightTo), so the default 5.5 covers
-    // 5.5 + 0.4 + 0.4 = 6.3 between these two, and 6.0 is inside it.
-    //
-    // The invariant this case exists to protect is unchanged and still the
-    // point: sightRange gates targeting on its own, and a huge attackRange does
-    // not let an attacker acquire something outside its sight. Only the
-    // constant moved, because the measurement convention was corrected -- see
-    // tests/core/test_sight_range.cpp for the free-siege bug that forced it.
+    // Distance 7.0, comfortably outside the default 5.5 either way. The
+    // invariant this case protects has never moved: sightRange gates targeting
+    // on its own, and a huge attackRange does not let an attacker acquire
+    // something outside its sight.
     auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 7.0f, 1000, 1);
     spawn(board, farEnemy);
 
@@ -83,21 +76,37 @@ TEST_CASE("findTarget never picks an enemy beyond sightRange, even if it's the o
     REQUIRE(attacker->attackCount == 0); // never even acquired as a target, despite being well within attackRange
 }
 
-TEST_CASE("sight is measured surface-to-surface, the same convention as attack range",
-        "[combat_entity][targeting][sight_range]") {
-    // The positive half of the case above, and the one that would have caught
-    // the original defect: an enemy at 6.0 with the default 5.5 sightRange IS
-    // visible, because the 0.8 of body radius between the two centres is not
-    // empty space the attacker has to see across.
+TEST_CASE("sight is measured CENTRE-TO-CENTRE against the raw sightRange",
+        "[combat_entity][targeting][sight_range][centre_to_centre]") {
+    // CHANGED 2026-08-28, and this case is the unit-level statement of the
+    // rule. It previously asserted the OPPOSITE -- that an enemy at 6.0 is
+    // visible to a 5.5-sight attacker "because the 0.8 of body radius between
+    // the two centres is not empty space" -- i.e. it pinned the radius
+    // inflation that let a Hog Rider's catalogued 9.5 reach 10.9.
+    //
+    // 5.5 now means 5.5. Both halves are asserted so the rule is bounded from
+    // both sides: a uniformly-blind engine fails the second REQUIRE, and the
+    // old surface-to-surface engine fails the first.
     Board board;
-    auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 6.0f, 1000, 1);
-    spawn(board, enemy);
 
-    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
-    attacker->update(board);
+    SECTION("just OUTSIDE the raw sightRange: not acquired") {
+        auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 6.0f, 1000, 1);
+        spawn(board, enemy);
+        auto attacker = std::make_shared<StationaryCombatant>(
+            2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+        attacker->update(board);
+        REQUIRE(attacker->attackCount == 0);
+    }
 
-    REQUIRE(attacker->attackCount == 1);
-    REQUIRE(attacker->lastTargetId == enemy->id);
+    SECTION("just INSIDE the raw sightRange: acquired") {
+        auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 5.4f, 1000, 1);
+        spawn(board, enemy);
+        auto attacker = std::make_shared<StationaryCombatant>(
+            2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
+        attacker->update(board);
+        REQUIRE(attacker->attackCount == 1);
+        REQUIRE(attacker->lastTargetId == enemy->id);
+    }
 }
 
 TEST_CASE("sightRange is read per-instance, not a hardcoded constant", "[combat_entity][targeting][sight_range]") {

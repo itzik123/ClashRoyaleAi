@@ -196,7 +196,7 @@ def test_a_full_phase2_update_runs_and_reports_finite_diagnostics(phase2):
 
     assert stats.nonfinite_skips == 0, (
         "a minibatch was dropped as non-finite on the truncation path")
-    for name in ("critic_loss", "total_loss", "aux_mse", "aux_mae"):
+    for name in ("critic_loss", "total_loss", "aux_ce", "aux_acc"):
         v = getattr(stats, name)
         assert np.isfinite(v), f"{name} is {v}"
     assert np.isfinite(phase2._explained_variance)

@@ -547,6 +547,30 @@ public:
         if (board.isBackRowDeadZone(x, y)) return false;
 
         if (!isSpell) {
+            // FOOTPRINT vs the board edge. The centre test above is the INDEX
+            // range; this one is the PHYSICAL extent, because a body placed
+            // legally by its centre can still hang off the arena. Measured
+            // 2026-08-28: a Cannon (placementRadius = Building::
+            // COLLISION_RADIUS = 1.0) at x = 0.0 was accepted while spanning
+            // [-1.0, +1.0], and at x = 17.0 while spanning [16.0, 18.0].
+            //
+            // This is the same two-conventions-for-one-question defect the
+            // sight-vs-attack-range band was: the overlap loop immediately
+            // below already reasons in footprints (placedRadius + r) while
+            // the bounds test three lines up reasoned in centres.
+            //
+            // Spells are exempt deliberately -- a Fireball's radius is its
+            // area of effect, not a body, and clipping the arena edge is
+            // normal for it. Same reason the overlap loop is inside this
+            // branch.
+            const float minEdge = -Board::CELL_HALF_EXTENT;
+            const float maxEdgeX = maxX + Board::CELL_HALF_EXTENT;
+            const float maxEdgeY = maxY + Board::CELL_HALF_EXTENT;
+            if (x - placedRadius < minEdge || x + placedRadius > maxEdgeX ||
+                y - placedRadius < minEdge || y + placedRadius > maxEdgeY) {
+                return false;
+            }
+
             // Miner/Goblin Drill skip the own-half restriction (they can
             // deploy anywhere on the board) but still can't overlap an
             // existing building -- that check runs unconditionally below.
