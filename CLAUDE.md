@@ -680,10 +680,15 @@ systemically.
 IS surface-to-surface (`effectiveRangeTo`), so a unit whose attack REACH
 exceeds its sight can hit what it cannot acquire -- it never targets and stands
 idle. That is exactly the 2026-08-20 free-siege defect below. Sight is
-therefore floored at the unit's own attack reach. The floor binds only where
-`attackRange` is within ~2 tiles of `sightRange` (towers, Musketeer-likes); for
-every long-sight card it is irrelevant -- a Hog's floor is `0.8+0.4+1.0 = 2.2`
-against a sight of 9.5.
+therefore floored at the unit's own attack reach -- but **only for a card whose
+raw `sightRange` already covers its raw `attackRange`**, which the catalogue
+guarantees for all 148. Where it does not hold the unit stays blind past its
+sight, and that guard is load-bearing: `test_combat_entity.cpp` builds dummies
+with `attackRange = 20` against the 5.5 default precisely to pin that a huge
+attack range does NOT buy vision, and an unguarded floor makes them see
+everything. The floor binds only where `attackRange` is within ~2 tiles of
+`sightRange` (towers, Musketeer-likes); for every long-sight card it is
+irrelevant -- a Hog's floor is `0.8+0.4+1.0 = 2.2` against a sight of 9.5.
 
 **Measured on the reported case** (Hog spawned at (14.0, 17.5), Cannon at
 (5.0, 11.0)):
