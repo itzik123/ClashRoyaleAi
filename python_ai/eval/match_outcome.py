@@ -25,15 +25,20 @@ there is one implementation to keep correct instead of four.
 WHERE THE TIE-BREAK DATA COMES FROM
 -----------------------------------
 No new binding is needed. `ClashEnv::extractObservationForTeam` already appends
-the six tower HPs as the last of NUM_EXTRA_SCALARS, laid out as:
+the six tower HPs among NUM_EXTRA_SCALARS, laid out as:
 
     tail+0        elapsed-time fraction
     tail+1, +2    both sides' cumulative elixir spend
     tail+3..+5    the OBSERVING team's king, left, right
     tail+6..+8    the opponent's king, left, right
 
-where `tail = observation_size() - NUM_EXTRA_SCALARS`. `probe_perfect_defense
-.own_tower_hp_fraction` is the existing in-repo reader for the same slice.
+where `tail = ClashRoyaleEnv.EXTRA_SCALARS_START`, a FORWARD offset bound from
+the engine. It used to be computed as `observation_size() - NUM_EXTRA_SCALARS`,
+which was right only while the extra scalars were the last thing in the vector;
+item 24 appended two card-cycle blocks behind them on 2026-08-27 and that form
+began reading card-recency floats as tower HP without raising anything.
+`probe_perfect_defense.own_tower_hp_fraction` is the existing in-repo reader
+for the same slice and takes the offset the same way.
 
 Each value is `hp / MAX_BUILDING_HP`, and a destroyed tower reads exactly 0.0
 because it is no longer a live entity -- so filtering zeros reproduces
@@ -117,7 +122,7 @@ def score_from_towers(env, team=0):
     #    for a side with nothing standing -- unreachable from here, because a
     #    side with zero towers cannot have tied the count against a side with any.
     obs = np.asarray(env.get_observation_for_team(team), dtype=np.float32)
-    tail = env.observation_size() - _E.ClashRoyaleEnv.NUM_EXTRA_SCALARS
+    tail = _E.ClashRoyaleEnv.EXTRA_SCALARS_START
     my_alive = obs[tail + 3:tail + 6]
     their_alive = obs[tail + 6:tail + 9]
     my_weakest = my_alive[my_alive > 0.0]

@@ -16,8 +16,14 @@ without the human confirming the diagnosis and the edit.
 
 ## Item 24 — the opponent's played cards are observable and are being discarded
 
-**Status:** proposal. **Class:** observation content. **Raised:** 2026-08-27,
-Phase 3 RL audit.
+**Status: IMPLEMENTED 2026-08-27**, on the maintainer's explicit sign-off
+lifting the C++ read-only rule for this item. **Class:** observation content.
+**Raised:** 2026-08-27, Phase 3 RL audit.
+
+Option B shipped. `observation_size()` 13606 -> **13976**; `CYCLE_START` is
+13606 exactly, which is the check that the blocks are a pure append and every
+pre-existing index is unmoved. See "What actually shipped" at the end of this
+item for the parts that differ from the proposal.
 
 ### The gap
 
@@ -146,11 +152,61 @@ present scalars, so its accuracy against a marginal baseline (always guess their
 most-played card) is a direct read on whether the representation carries cycle
 structure at all. Run that before spending a phase 1 on the win-rate question.
 
+**This remains UNMEASURED.** The feature is implemented and tested; whether it
+raises the learning ceiling is a training-run question and nothing here claims
+it does.
+
+### What actually shipped, where it differs from the proposal
+
+- **`CARD_ID_COUNT` moved to `CardRegistry.h`.** `NUM_CARD_IDS` was declared
+  inside `ClashEnv`, which `GameManager` cannot include -- so sizing the
+  tracking table there would have meant a second literal `185`. The constant
+  now lives next to the ids it bounds and `ClashEnv::NUM_CARD_IDS` is an alias;
+  the Python binding is unchanged.
+
+- **The hook is `GameManager::playCard`, not `ClashEnv`.** `HeuristicOpponent`
+  reaches `playCard` directly rather than through `ClashEnv::step`, so hooking
+  the env would have missed every opponent play in phase 1. Same shape as the
+  five damage entry points that made `Tower::awake` latch on an HP invariant.
+
+- **`ClashEnv::notePlayedCard` was added, and `inject` deliberately does NOT
+  call it.** `inject` places a BODY and bypasses `playCard` by design (a
+  mirrored unit must not cost the mirror elixir), so without a separate
+  recorder the feature would work in training and silently do nothing in
+  deployment through `perception/`. Keeping them separate also stops scenario
+  setup from asserting "they just played this" when it only placed a unit.
+
+- **Item 25 was implemented at the same time, because item 24 detonated it.**
+  Five Python call sites located the extra-scalar tail as
+  `observation_size() - NUM_EXTRA_SCALARS`. That is correct only while the
+  extra scalars are last, and appending the cycle blocks behind them made every
+  one read card-recency floats instead -- including two reading
+  `enemy_tower_hp`, which feeds `compute_shaping`'s tower potential, so the
+  REWARD would have gone quietly wrong with nothing raising. `EXTRA_SCALARS_START`
+  and `CYCLE_START` are now bound forward offsets and `observationSize()` is
+  derived from them, so the size and the offsets cannot disagree.
+
+- **Mirror records its own id (164), not the duplicated card's.** What left
+  the hand is what has to cycle back, even though the unit an observer SEES is
+  the mirrored one.
+
+### Tests
+
+`tests/core/test_card_cycle_observation.cpp` (9 cases) pins the offset, the
+opponent-not-self direction, the decay constant, the seen/recency distinction,
+a rewound clock not pushing recency above 1, snapshot inheritance, and reset
+clearing. `python_ai/tests/test_opponent_cycle_observation.py` (8 cases) pins
+the Python side, including the regression that would have been silent: the
+tower-HP scalars must still read as tower HP, asserted on a property the wrong
+region cannot have (all six are strictly positive on a fresh board, while every
+cycle float there is exactly zero).
+
 ---
 
 ## Item 25 — `NUM_EXTRA_SCALARS` order is positional and undocumented downstream
 
-**Status:** minor, raised alongside item 24.
+**Status: IMPLEMENTED 2026-08-27**, alongside item 24 -- which is what turned
+this from a tidy-up into a live defect. Raised as "minor"; it was not.
 
 The nine appended scalars are `[time, spent_self, spent_opp, towerHp[0][0..2],
 towerHp[1][0..2]]`, and consumers index them by offset from the end of the

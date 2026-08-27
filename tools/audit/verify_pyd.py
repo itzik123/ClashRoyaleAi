@@ -34,8 +34,13 @@ failures = []
 
 size = cre.ClashRoyaleEnv(DECK, DECK).observation_size()
 print(f"observation_size = {size}")
-if size != 13606:
-    failures.append(f"observation_size is {size}, expected 13606")
+# 13976 since 2026-08-27 (UPSTREAM_REQUESTS item 24): two NUM_CARD_IDS-wide
+# blocks carrying the opponent's seen[]/recency[] were appended behind the
+# extra scalars. Updated deliberately -- this literal is a tripwire for an
+# ACCIDENTAL resize, since any change here kills every existing checkpoint, so
+# editing it is the acknowledgement that the change was intended.
+if size != 13976:
+    failures.append(f"observation_size is {size}, expected 13976")
 
 # ---- sight/attack geometry: a Musketeer 8 tiles from a Princess Tower must
 # ---- NOT be able to siege it for free.

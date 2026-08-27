@@ -158,6 +158,16 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // Clamped to [0, max_ticks]. Sets BOTH engine clocks so they cannot
         // drift; see ClashEnv::setCurrentTick.
         .def("set_current_tick", &ClashEnv::setCurrentTick, py::arg("tick"))
+        .def("get_current_tick", &ClashEnv::getCurrentTick)
+        // Card-cycle tracking (item 24). `note_played_card` is for the live
+        // mirror in perception/: `inject` places a BODY and deliberately
+        // bypasses GameManager::playCard, which is where the cycle is hooked,
+        // so an estimator has to report the PLAY separately or the cycle
+        // blocks stay empty in deployment while working fine in training.
+        .def("note_played_card", &ClashEnv::notePlayedCard,
+             py::arg("team"), py::arg("card_id"))
+        .def("get_last_played_tick", &ClashEnv::getLastPlayedTick,
+             py::arg("team"), py::arg("card_id"))
         // Reproducible episodes. Seeds BOTH engine generators and re-deals,
         // so two envs given the same seed agree on the opening hand, the
         // cycle order and the heuristic's rolls. See ClashEnv::seed, and
@@ -230,6 +240,19 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly_static("CH_DPS", &ClashEnv::CH_DPS)
         .def_readonly_static("CH_RANGE", &ClashEnv::CH_RANGE)
         .def_readonly_static("CH_SPEED", &ClashEnv::CH_SPEED)
+        // Opponent card-cycle blocks (item 24, 2026-08-27). Bound for exactly
+        // the reason the block above is: `MicroRoyaleNet` sizes its scalar
+        // input from these, and a hand-synced copy of 2*185 in Python is the
+        // defect this project has now hit six times.
+        .def_readonly_static("NUM_CYCLE_BLOCKS", &ClashEnv::NUM_CYCLE_BLOCKS)
+        .def_readonly_static("CYCLE_BLOCK_SIZE", &ClashEnv::CYCLE_BLOCK_SIZE)
+        .def_readonly_static("CYCLE_RECENCY_TAU_TICKS", &ClashEnv::CYCLE_RECENCY_TAU_TICKS)
+        // FORWARD offsets into the observation. Bound because locating a
+        // section by subtracting from the end silently re-points the moment
+        // anything is appended behind it -- which is exactly what the cycle
+        // blocks did to five call sites that used to read the tower HPs.
+        .def_readonly_static("EXTRA_SCALARS_START", &ClashEnv::EXTRA_SCALARS_START)
+        .def_readonly_static("CYCLE_START", &ClashEnv::CYCLE_START)
         .def_readonly_static("NUM_EXTRA_SCALARS", &ClashEnv::NUM_EXTRA_SCALARS)
         .def_readonly_static("MAX_MATCH_ELIXIR", &ClashEnv::MAX_MATCH_ELIXIR);
 

@@ -574,7 +574,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # guaranteed-zero trap that parked the Cannon in a back corner.
             "fireball_value_killed": self.game.get_elixir_value_killed_by(FIREBALL_CARD_ID, 0),
             "fireball_elixir_spent": self.game.get_elixir_spent_on_card(FIREBALL_CARD_ID, 0),
-            "enemy_tower_hp": np.asarray(obs[-clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS:][6:9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
+            "enemy_tower_hp": np.asarray(obs[clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 6:clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
             "fireball_in_hand": float(FIREBALL_CARD_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),
             "team1_tower_damage": self.game.get_tower_damage_dealt(1),

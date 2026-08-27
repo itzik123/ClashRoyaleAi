@@ -20,7 +20,14 @@
 //     counterplay and unit identity beyond raw HP fraction are actually
 //     visible in the observation (see NUM_CHANNELS's own comment).
 //   - NUM_EXTRA_SCALARS 0->9: appended scalars (time, elixir spent, tower HP).
-// 18*34*21 + 1 + 4 + 4*185 + 9 = 13606.
+//   - CYCLE_BLOCK_SIZE 0->370 (2026-08-27, UPSTREAM_REQUESTS item 24): two
+//     NUM_CARD_IDS-wide blocks carrying what the OPPONENT has played --
+//     seen[] and an exponentially-decaying recency[]. The card identities are
+//     observable to a human watching the screen (the encoder already gives the
+//     agent the opponent's elixir SPEND on exactly that reasoning) and were
+//     being reduced to a scalar sum of costs, which is the one summary that
+//     destroys cycle information.
+// 18*34*21 + 1 + 4 + 4*185 + 9 + 2*185 = 13976.
 //
 // Asserted BOTH ways on purpose, because the two catch different faults:
 //   * the FORMULA catches observationSize() disagreeing with the constants it
@@ -41,10 +48,19 @@ TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]"
         + 1                                              // own elixir
         + ClashEnv::HAND_SIZE                            // hand costs
         + ClashEnv::HAND_SIZE * ClashEnv::NUM_CARD_IDS   // hand identity one-hots
-        + ClashEnv::NUM_EXTRA_SCALARS;                   // time, elixir spent, tower HP
+        + ClashEnv::NUM_EXTRA_SCALARS                    // time, elixir spent, tower HP
+        + ClashEnv::CYCLE_BLOCK_SIZE;                    // opponent seen[] + recency[]
 
     REQUIRE(env.observationSize() == expected);
-    REQUIRE(env.observationSize() == 13606);
+    REQUIRE(env.observationSize() == 13976);
+
+    // The cycle blocks are a pure APPEND: everything that was in the vector
+    // before is still at the index it was at. CYCLE_START therefore equals the
+    // OLD observation size exactly, which is the cheapest possible check that
+    // nothing was inserted rather than added.
+    REQUIRE(ClashEnv::CYCLE_START == 13606);
+    REQUIRE(ClashEnv::EXTRA_SCALARS_START + ClashEnv::NUM_EXTRA_SCALARS
+            == ClashEnv::CYCLE_START);
 
     auto obs = env.reset();
     REQUIRE(obs.size() == static_cast<size_t>(expected));
@@ -55,7 +71,11 @@ TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]"
     const int spatial = ClashEnv::BOARD_WIDTH * ClashEnv::BOARD_HEIGHT * ClashEnv::NUM_CHANNELS;
     REQUIRE(env.observationSize() - spatial
             == 1 + ClashEnv::HAND_SIZE + ClashEnv::HAND_SIZE * ClashEnv::NUM_CARD_IDS
-               + ClashEnv::NUM_EXTRA_SCALARS);
+               + ClashEnv::NUM_EXTRA_SCALARS + ClashEnv::CYCLE_BLOCK_SIZE);
+    // ...and the spatial block itself is exactly where the scalar section
+    // starts, which is the fact EXTRA_SCALARS_START is built on.
+    REQUIRE(ClashEnv::EXTRA_SCALARS_START - spatial
+            == 1 + ClashEnv::HAND_SIZE + ClashEnv::HAND_SIZE * ClashEnv::NUM_CARD_IDS);
 }
 
 TEST_CASE("isChampionAbilityReady/activateChampionAbility return false with nothing deployed", "[clash_env][champion]") {

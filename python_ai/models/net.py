@@ -277,9 +277,20 @@ class MicroRoyaleNet(nn.Module):
         # בלי שינוי; הוספה באמצע הייתה שוברת את כולם בשקט -- בלי חריגה, רק
         # מדיניות שמסתכלת על מספרים לא נכונים.
         self.num_extra_scalars = clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS
-        self.scalar_size = 1 + hand_size + hand_size * num_card_ids + self.num_extra_scalars
+        # שני בלוקים ברוחב num_card_ids עם מחזור הקלפים של היריב (item 24,
+        # 2026-08-27): seen[] ו-recency[]. נגזר מה-binding ולא נכתב כאן כמספר
+        # -- 2*185 בפייתון היה בדיוק העותק השני שהכלל בראש CLAUDE.md אוסר.
+        # נוסף **אחרי** הזנב, כך שגם extra_start וגם כל ההיסטים שלפניו נשארים
+        # תקפים בדיוק כפי שהיו.
+        self.cycle_block_size = clash_royale_env.ClashRoyaleEnv.CYCLE_BLOCK_SIZE
+        self.scalar_size = (1 + hand_size + hand_size * num_card_ids
+                            + self.num_extra_scalars + self.cycle_block_size)
         # ההיסט (בתוך scalar_obs) שבו מתחיל הזנב -- נחוץ לראש העזר ולאבחון.
         self.extra_start = 1 + hand_size + hand_size * num_card_ids
+        # ...ותחילת בלוקי המחזור, מיד אחרי הזנב. שני ההיסטים נמדדים קדימה
+        # מתחילת הקטע הסקלרי ולא לאחור מסופו: מדידה לאחור נשברת בשקט בכל פעם
+        # שמשהו נוסף בסוף, וזה בדיוק מה שקרה עכשיו.
+        self.cycle_start = self.extra_start + self.num_extra_scalars
 
         # ==========================================
         # 1. חילוץ תכונות מרחבי (CNN)

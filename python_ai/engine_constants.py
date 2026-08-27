@@ -91,6 +91,21 @@ NOOP_ACTION = HAND_SIZE
 #: cumulative elixir spend, and the six tower HPs.
 NUM_EXTRA_SCALARS = clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS
 
+#: FORWARD offset of the extra-scalar tail, and of the opponent card-cycle
+#: blocks appended behind it (item 24). Read from the engine, which computes
+#: `observationSize()` from these same two constants, so a Python consumer and
+#: the encoder cannot disagree about where a section begins.
+#:
+#: USE THESE; NEVER `observation_size() - NUM_EXTRA_SCALARS`. That backward
+#: form was correct only while the extra scalars were last in the vector, and
+#: on 2026-08-27 they stopped being. Five call sites carried it -- two of them
+#: reading `enemy_tower_hp`, which feeds `compute_shaping`'s tower potential --
+#: and every one would have started returning card-recency floats without
+#: raising anything at all.
+EXTRA_SCALARS_START = clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START
+CYCLE_START = clash_royale_env.ClashRoyaleEnv.CYCLE_START
+CYCLE_BLOCK_SIZE = clash_royale_env.ClashRoyaleEnv.CYCLE_BLOCK_SIZE
+
 def _own_tower_hp_total():
     """Total starting HP across our three towers, READ FROM THE ENGINE.
 
@@ -103,7 +118,7 @@ def _own_tower_hp_total():
     E = clash_royale_env.ClashRoyaleEnv
     probe = E(list(range(8)), list(range(8)), 100)
     obs = np.asarray(probe.reset(), dtype=np.float32)
-    tail = probe.observation_size() - E.NUM_EXTRA_SCALARS
+    tail = E.EXTRA_SCALARS_START
     # tail layout: 0 time | 1-2 elixir spent | 3-5 OWN king/left/right | 6-8 enemy
     return float(obs[tail + 3:tail + 6].sum()) * E.MAX_BUILDING_HP
 

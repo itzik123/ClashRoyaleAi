@@ -452,6 +452,60 @@ channels indexed via the bound `CH_*` constants. Checkpoints older than that
 date are architecturally dead (`python_ai/archive_pre_obs_v3/`). `NUM_CARD_IDS`
 is 185.
 
+**AND AGAIN ON 2026-08-27: `observation_size()` 13606 → 13976.** Two
+`NUM_CARD_IDS`-wide blocks appended, carrying what the OPPONENT has played —
+`UPSTREAM_REQUESTS.md` item 24, the fix for this file's own open problem #3:
+
+```
+CYCLE_START + c                    seen[c]     1.0 once they have played card c
+CYCLE_START + NUM_CARD_IDS + c     recency[c]  exp(-(now - lastPlayed)/200 ticks)
+```
+
+**Every checkpoint trained before this date is architecturally dead**, the
+same way the 2026-07-29 change killed the ones before it: `scalar_size` goes
+754 → 1124, so `scalar_mlp`'s first layer changes shape.
+`load_state_dict_flexible` will warm-start everything else and report the
+discard, which is the correct behaviour, not a workaround — the policy has to
+relearn what to do with the new input.
+
+**Why this is not cheating**, which is the design constraint the whole feature
+turns on. The encoder already draws the line correctly for elixir: the agent
+gets the opponent's cumulative SPEND ("you see every card they play and you
+know what it costs") and never their current bar. By that same test a card's
+IDENTITY is observable — a human watching the screen knows it was a Hog and
+knows roughly when it can be back. The encoder was keeping the cost sum and
+discarding the identity, which is the one summary that destroys cycle
+information. The opponent's HAND stays hidden.
+
+Three things worth carrying:
+
+- **The hook is `GameManager::playCard`, not `ClashEnv`.** `HeuristicOpponent`
+  reaches `playCard` directly rather than through `ClashEnv::step`, so hooking
+  the env would have missed every opponent play in phase 1 while looking fine.
+  Same shape as the five damage entry points behind `Tower::awake`'s HP latch.
+- **`inject` deliberately does NOT record a play.** It places a BODY and
+  bypasses `playCard` by design. `ClashEnv::notePlayedCard` (bound as
+  `note_played_card`) is the separate recorder `perception/` must call, or the
+  channel works in training and is silently empty in deployment.
+- **`CARD_ID_COUNT` now lives in `CardRegistry.h`**, with
+  `ClashEnv::NUM_CARD_IDS` as an alias, because `GameManager` cannot include
+  `ClashEnv.h` and a second literal `185` was the alternative.
+
+**AND IT DETONATED A LATENT DEFECT — `UPSTREAM_REQUESTS.md` item 25.** Five
+Python call sites located the extra-scalar tail by subtracting from the end,
+`observation_size() - NUM_EXTRA_SCALARS`, which is correct only while those
+scalars are LAST. Appending the cycle blocks behind them made every one read
+card-recency floats instead — including two reading `enemy_tower_hp`, which
+feeds `compute_shaping`'s tower potential, so **the reward itself would have
+gone quietly wrong with nothing raising**. Fixed by binding forward offsets
+`EXTRA_SCALARS_START` and `CYCLE_START`, and deriving `observationSize()` from
+them so the size and the offsets cannot disagree.
+
+The rule this adds: **locate a section of the observation by a FORWARD offset,
+never by subtracting from the end.** This layout only ever grows by appending,
+so a forward offset is stable by construction and a backward one is a
+scheduled defect — it survives until the next append and then fails silently.
+
 **Combat is deterministic.** The only RNG in the engine is the opening-hand
 shuffle (`PlayerState::initializeDeck`) and `HeuristicOpponent`. Nothing in
 `include/entities/` is random — so identical inputs give identical outcomes,
@@ -1651,8 +1705,17 @@ the teacher simply cannot express it.
 
 3. **Remaining observation gaps.** Cells still *overwrite* rather than
    accumulate in channels 0–7 (`obs[idx] = normalizedHp`), so a Skeleton Army
-   collapses — `CH_COUNT` mitigates but does not fix it. No card-cycle tracking
-   (which of the opponent's 8 cards are available) — a core human skill.
+   collapses — `CH_COUNT` mitigates but does not fix it.
+
+   ~~No card-cycle tracking (which of the opponent's 8 cards are available) — a
+   core human skill.~~ **CLOSED 2026-08-27**: the opponent's `seen[]` and
+   decaying `recency[]` are in the observation (see "AND AGAIN ON 2026-08-27"
+   under Engine facts, and `UPSTREAM_REQUESTS.md` item 24). Note what that does
+   and does not settle — the INFORMATION is now present and pinned by 17 tests
+   across both suites; whether the policy exploits it is unmeasured and needs a
+   phase 1. The cheap read is the auxiliary task item 24 proposes (predict the
+   opponent's NEXT card, which unlike the elixir head is genuinely unsolvable
+   from present scalars), not a win rate.
 
 4. **One decision per second** caps tactical precision (see Action space).
 

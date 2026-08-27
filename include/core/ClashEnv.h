@@ -115,7 +115,12 @@ public:
     // between the last bump and this one (see CardRegistry.h for the actual
     // registered range). No longer needs a matching manual bump in
     // python_ai/model.py -- see this constant's binding in bindings.cpp.
-    static constexpr int NUM_CARD_IDS = 185;
+    // ALIAS, not a value. The definition moved to CardRegistry.h on 2026-08-27
+    // so `GameManager` -- which cannot include this header -- can size its
+    // per-card cycle tracking from the same constant instead of restating it.
+    // The Python binding still reads `ClashRoyaleEnv.NUM_CARD_IDS` and still
+    // gets 185.
+    static constexpr int NUM_CARD_IDS = CARD_ID_COUNT;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
@@ -138,6 +143,57 @@ public:
     //   0 time fraction | 1 own elixir spent | 2 opp elixir spent
     //   3-5 own king/left/right tower HP | 6-8 enemy king/left/right tower HP
     static constexpr int NUM_EXTRA_SCALARS = 9;
+
+    // --- OPPONENT CARD-CYCLE BLOCKS (2026-08-27, UPSTREAM_REQUESTS item 24) --
+    // Two NUM_CARD_IDS-wide blocks appended AFTER the extra scalars, describing
+    // what the OPPONENT has shown this match:
+    //
+    //   block 0  seen[c]     1.0 once they have played card c at least once
+    //   block 1  recency[c]  exp(-(now - lastPlayed[c]) / TAU), else 0.0
+    //
+    // WHY THIS IS NOT CHEATING, which is the whole design constraint here. The
+    // encoder already draws the line in the right place for elixir -- it gives
+    // the agent the opponent's cumulative SPEND ("you see every card they play
+    // and you know what it costs") and withholds their current elixir, because
+    // spend is observable and the elixir bar is not. By that same test a card's
+    // IDENTITY is observable: a human watching the screen sees the Hog, knows
+    // it was a Hog, and knows it cannot be back for about a cycle. The encoder
+    // was keeping the cost sum and throwing the identity away -- the one
+    // summary that destroys exactly the cycle information this restores.
+    // Nothing here reveals the opponent's HAND, which stays hidden.
+    //
+    // WHY RECENCY DECAYS rather than being a raw timestamp: a decay needs no
+    // normalisation against match length, saturates gracefully, and answers the
+    // question actually being asked ("can that card be back yet?") instead of
+    // one the agent would have to do arithmetic on. TAU is one cycle.
+    static constexpr int NUM_CYCLE_BLOCKS = 2;
+    static constexpr int CYCLE_BLOCK_SIZE = NUM_CYCLE_BLOCKS * NUM_CARD_IDS;
+    // 200 ticks = 20 s at this engine's 10 ticks/s (see perception/timebase.py
+    // for that conversion's single source). An 8-card cycle at ordinary play is
+    // roughly 20-30 s, so one TAU is about one rotation: a card played half a
+    // cycle ago reads ~0.61, a full cycle ago ~0.37, two cycles ~0.14.
+    static constexpr float CYCLE_RECENCY_TAU_TICKS = 200.0f;
+
+    // --- NAMED OFFSETS INTO THE OBSERVATION --------------------------------
+    // Where each appended section STARTS, measured forward from index 0.
+    //
+    // These exist because the sections were previously located by subtracting
+    // from the end -- `observation_size() - NUM_EXTRA_SCALARS` -- which is
+    // correct only while the extra scalars are the LAST thing in the vector.
+    // Adding the cycle blocks behind them made five Python call sites read
+    // card-recency floats as tower HP, and one of those feeds the reward
+    // shaping's tower potential. Nothing would have raised; the returns would
+    // simply have gone quietly wrong.
+    //
+    // A forward offset cannot be invalidated by an append, which is the only
+    // kind of change this layout permits. Bound to Python (see bindings.cpp)
+    // so the offset has ONE definition rather than one per consumer.
+    static constexpr int EXTRA_SCALARS_START =
+          BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial channels
+        + 1                                            // own elixir
+        + HAND_SIZE                                    // hand costs
+        + HAND_SIZE * NUM_CARD_IDS;                    // hand identity one-hots
+    static constexpr int CYCLE_START = EXTRA_SCALARS_START + NUM_EXTRA_SCALARS;
     // Ceiling on cumulative per-match elixir spend used to normalize scalars
     // 1-2: maxTicks(3600) * ELIXIR_REGEN_RATE(0.035) + 5 starting = 131, so
     // 140 leaves headroom for the curriculum's opponent elixir multiplier
@@ -395,6 +451,43 @@ private:
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[0][which]);
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[1][which]);
 
+        // --- OPPONENT CARD CYCLE (item 24) ---------------------------------
+        // Two NUM_CARD_IDS-wide blocks describing what the OTHER side has
+        // shown. Appended last, after the extra scalars, so every existing
+        // forward offset into the scalar section stays exactly where it was --
+        // the same rule NUM_EXTRA_SCALARS itself was added under.
+        //
+        // `1 - team`, never `team`: this is what the observer has watched the
+        // OPPONENT play. Reading it for `team` would hand the agent its own
+        // cycle, which it can already see in its own hand one-hots, and would
+        // leave the actually-missing information still missing.
+        const int opponent = 1 - team;
+        const int now = currentTick;
+        for (int block = 0; block < NUM_CYCLE_BLOCKS; ++block) {
+            for (int cardId = 0; cardId < NUM_CARD_IDS; ++cardId) {
+                const int last = game.getLastPlayedTick(opponent, cardId);
+                if (last < 0) {
+                    // Never played. BOTH blocks are 0 here, and that is the
+                    // point of having two: seen=0/recency=0 is "no information
+                    // about this card", while seen=1/recency~0 is the very
+                    // different "they have it and it went a long time ago".
+                    obs.push_back(0.0f);
+                    continue;
+                }
+                if (block == 0) {
+                    obs.push_back(1.0f);
+                } else {
+                    // std::max guards the one case that can run backwards:
+                    // set_current_tick() lets a state estimator rewind the
+                    // clock, and a negative age would make exp() blow up past
+                    // 1.0 and break the [0,1] contract every other channel
+                    // keeps. Clamped to "just played" instead.
+                    const float age = static_cast<float>(std::max(0, now - last));
+                    obs.push_back(std::exp(-age / CYCLE_RECENCY_TAU_TICKS));
+                }
+            }
+        }
+
         return obs;
     }
 
@@ -458,13 +551,10 @@ public:
     // wrong game.
     ClashEnv snapshot() const { return ClashEnv(*this, SnapshotTag{}); }
 
-    int observationSize() const {
-        return BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial type/HP/attribute channels
-             + 1                                            // elixir
-             + HAND_SIZE                                    // card costs
-             + HAND_SIZE * NUM_CARD_IDS                     // card identity one-hots
-             + NUM_EXTRA_SCALARS;                           // time, elixir spent, tower HP
-    }
+    // Built from the named offsets above rather than restating the section
+    // list, so the size and the offsets cannot disagree: appending a section
+    // means extending CYCLE_START's chain, and this follows automatically.
+    int observationSize() const { return CYCLE_START + CYCLE_BLOCK_SIZE; }
 
     // Thin delegates to GameManager's own placement-bound queries (see that
     // class's comment) -- exposed here since ClashEnv, not GameManager, is
@@ -861,6 +951,47 @@ public:
     void setCurrentTick(int tick) {
         currentTick = std::max(0, std::min(tick, maxTicks));
         game.setCurrentTick(currentTick);
+    }
+
+    // The matching read. Absent until 2026-08-27, which is why the cycle
+    // observation's own tests could not previously say "one TAU after the
+    // play" without re-deriving the clock from outside.
+    int getCurrentTick() const { return currentTick; }
+
+    // Record that `team` played `cardId` right now, WITHOUT spawning anything.
+    //
+    // Exists for the live mirror in `perception/`, and it is not redundant
+    // with `inject`. The two answer different questions and deliberately do
+    // not call each other:
+    //
+    //   inject()         a BODY is on the board at (x, y). Used to reconcile
+    //                    the mirror against what the camera sees, including
+    //                    units that have been walking for six seconds.
+    //   notePlayedCard() a PLAY was OBSERVED. This is the cycle fact.
+    //
+    // `inject` routes through `spawnEntity` directly rather than through
+    // `GameManager::playCard` -- by design, since a mirrored unit must not
+    // cost the mirror elixir or consume a hand slot -- and playCard is where
+    // cycle tracking is hooked. So without this, every card the estimator ever
+    // saw would be invisible to the cycle blocks and the feature would work in
+    // training and silently do nothing in deployment: exactly the class of gap
+    // this project's observability rule exists to prevent.
+    //
+    // Not called by `inject` itself on purpose. Scenario setup and unit tests
+    // inject bodies to build a position, and having that quietly assert "they
+    // just played this" would put fiction into an observation channel whose
+    // whole value is that it reports only what was really seen.
+    void notePlayedCard(int team, int cardId) {
+        game.notePlayedCard(team, cardId);
+    }
+
+    // Tick at which `team` last played `cardId`, or -1 for never this match.
+    // The raw number behind the recency channel, exposed so a caller can check
+    // WHAT was recorded separately from HOW it is encoded -- a test that can
+    // only see exp(-age/TAU) has to invert the encoding to say anything about
+    // the tracking, and would then be asserting against its own arithmetic.
+    int getLastPlayedTick(int team, int cardId) const {
+        return game.getLastPlayedTick(team, cardId);
     }
 
     // Make this environment reproducible: same seed -> same opening hands,

@@ -114,6 +114,23 @@ struct CardDefinition {
     std::function<void(float x, float y, int team, Board& board)> spawnEvolvedEntity;
 };
 
+// Exclusive upper bound on registered card ids: valid ids are [0, CARD_ID_COUNT).
+//
+// Registered ids currently run up to 175 (Evolutions 123-163, Mirror 164,
+// Spirit Empress 165, Heroes 166-175) -- kept a few slots ahead of that max so
+// future card additions don't silently go blind the way ids 120-122 did before
+// the last bump.
+//
+// LIVES HERE, next to the ids it bounds, because more than one layer needs it
+// and none of them may own it. `ClashEnv::NUM_CARD_IDS` is an alias of this
+// (and is what the Python binding exposes, unchanged); `GameManager` sizes its
+// per-card cycle tracking from it. Before 2026-08-27 it was declared inside
+// ClashEnv, which GameManager cannot include -- so adding a second literal
+// there was the obvious move and would have been this project's seventh
+// stale-copy defect. Deriving both from one definition is the rule CLAUDE.md
+// states; this is the header that can hold it.
+inline constexpr int CARD_ID_COUNT = 185;
+
 class CardRegistry {
 private:
     std::unordered_map<int, CardDefinition> cards;

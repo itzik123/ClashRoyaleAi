@@ -80,7 +80,7 @@ def own_tower_hp_fraction(env):
     train._own_tower_hp_total() sums at reset, so the ratio is exact.
     """
     obs = np.asarray(env.get_observation_for_team(0), np.float32)
-    tail = env.observation_size() - E.NUM_EXTRA_SCALARS
+    tail = E.EXTRA_SCALARS_START
     return float(obs[tail + 3:tail + 6].sum())
 
 

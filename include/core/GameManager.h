@@ -19,6 +19,11 @@
 // translation unit that does not pull <utility> in some other way failed with
 // "'as_const' is not a member of 'std'" -- tools/audit/*.cpp did, immediately.
 #include <utility>
+// std::array for the per-card cycle tracking below. Included EXPLICITLY rather
+// than leaned on transitively, for exactly the reason the <utility> note above
+// records: reaching a header by luck compiles until the one translation unit
+// that does not.
+#include <array>
 
 class GameManager {
 public:
@@ -41,6 +46,30 @@ private:
     int currentTick;
     bool gameOver;
     int loserTeam;
+    using CycleTable = std::array<std::array<int, CARD_ID_COUNT>, 2>;
+
+    // Every entry -1, meaning "not played this match".
+    //
+    // A default `{}` would zero-fill instead, and 0 is not a neutral value
+    // here -- it is a real tick, so a table that missed its initialisation
+    // would claim BOTH sides had played EVERY card on the opening tick, and
+    // the recency channel would read 1.0 across the board. `reset()` fills
+    // this too and the constructor calls `reset()`, so today that is belt and
+    // braces; it is written this way so the invariant does not depend on that
+    // call order staying true.
+    static constexpr CycleTable neverPlayed() {
+        CycleTable t{};
+        for (auto& perTeam : t) for (auto& v : perTeam) v = -1;
+        return t;
+    }
+
+    // [team][cardId] -> tick that team last played that card, -1 for never.
+    // Written only in playCard(), which is the one function every real play
+    // passes through; read by ClashEnv when it builds the observation's
+    // opponent-cycle blocks. A plain value member on purpose -- snapshot()
+    // copies GameManager implicitly, so this rides along with no further work
+    // and a search rollout inherits the cycle it is searching from.
+    CycleTable lastPlayedTick = neverPlayed();
     const float ELIXIR_REGEN_RATE = 0.035f;
     // Curriculum hook: scales the opponent's elixir regen relative to the base rate.
     // 1.0 = normal opponent, >1.0 = faster-elixir opponent for later training stages.
@@ -267,6 +296,14 @@ public:
     //                                        search would be comparing
     //                                        candidates across different
     //                                        futures and scoring noise
+    //   lastPlayedTick                       std::array of ints -- a rollout
+    //                                        inherits what each side has shown
+    //                                        so far, which is exactly right:
+    //                                        the cycle is part of the position
+    //                                        being searched, and a snapshot
+    //                                        that forgot it would tell every
+    //                                        candidate the opponent had played
+    //                                        nothing all match
     //
     // Only `board` and `stats` need fixing up, and both for the same reason --
     // they are the only members holding shared_ptr, so the implicit copy
@@ -311,6 +348,26 @@ public:
 
     const std::vector<int>& getHand(int team) const {
         return (team == 0) ? playerAI.hand : playerOpponent.hand;
+    }
+
+    // Tick at which `team` last played `cardId`, or -1 if never this match.
+    // Out-of-range ids answer -1 rather than throwing: callers sweep the whole
+    // [0, CARD_ID_COUNT) range to build an observation and a gap in the id
+    // space is a normal, expected miss, not an error.
+    // Record an OBSERVED play without simulating one -- see
+    // ClashEnv::notePlayedCard for why this is separate from inject(). Silently
+    // ignores an out-of-range team or card id, matching getLastPlayedTick's
+    // treatment of the same: a caller sweeping ids is doing normal work.
+    void notePlayedCard(int team, int cardId) {
+        if (team != 0 && team != 1) return;
+        if (cardId < 0 || cardId >= CARD_ID_COUNT) return;
+        lastPlayedTick[team][cardId] = currentTick;
+    }
+
+    int getLastPlayedTick(int team, int cardId) const {
+        if (team != 0 && team != 1) return -1;
+        if (cardId < 0 || cardId >= CARD_ID_COUNT) return -1;
+        return lastPlayedTick[team][cardId];
     }
 
     float getElixir(int team) const {
@@ -583,6 +640,26 @@ public:
             }
             float reportedCost = (costOverride >= 0.0f) ? costOverride : cardDef->cost;
             board.statsEvents.notifyCardPlayed({ team, result.cardId, reportedCost, x, y, currentTick });
+
+            // CARD-CYCLE TRACKING (2026-08-27, UPSTREAM_REQUESTS item 24).
+            // Recorded HERE because this is the only choke point every real
+            // play passes through: ClashEnv::step, ClashEnv::stepSelfPlay and
+            // HeuristicOpponent::update all reach a card play through this
+            // function, and hooking any one caller would silently miss the
+            // others -- the same shape as the five damage entry points that
+            // made Tower::awake latch on an HP invariant instead.
+            //
+            // `result.cardId` is what actually LEFT THE HAND, which is the
+            // cycle-relevant fact and therefore the right thing to record. For
+            // a Mirror play that is Mirror's own id (164) rather than the
+            // duplicated card's -- deliberate: Mirror is what left their hand
+            // and Mirror is what has to cycle back round, even though the unit
+            // the observer SEES on the board is the mirrored one. The spawned
+            // entity keeps carrying the mirrored id (see the Champion tracking
+            // below), so nothing else is affected by this choice.
+            if (result.cardId >= 0 && result.cardId < CARD_ID_COUNT) {
+                lastPlayedTick[team][result.cardId] = currentTick;
+            }
             // A second Mirror replays whatever was played before the
             // FIRST Mirror, not the first Mirror itself -- so a Mirror
             // play must not overwrite lastPlayedCardId with its own id.
@@ -704,6 +781,11 @@ public:
         currentTick = 0;
         gameOver = false;
         loserTeam = -1;
+        // -1 == "never played this match". Cleared HERE rather than in the
+        // constructor alone, because reset() is what starts a new match and a
+        // carried-over cycle would tell the agent the opponent had already
+        // shown cards they have not.
+        for (auto& perTeam : lastPlayedTick) perTeam.fill(-1);
 
         std::string aiErr = validateDeckSlots(aiDeckConfig);
         if (!aiErr.empty()) throw std::invalid_argument("GameManager: invalid AI deck -- " + aiErr);

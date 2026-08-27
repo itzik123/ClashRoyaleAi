@@ -77,7 +77,10 @@ MAX_CELL_UNITS = 5.0
 
 PLANE = BOARD_WIDTH * BOARD_HEIGHT
 SPATIAL_SIZE = NUM_CHANNELS * PLANE
-SCALAR_SIZE = 1 + HAND_SIZE + HAND_SIZE * NUM_CARD_IDS + NUM_EXTRA_SCALARS
+# + the opponent card-cycle blocks appended behind the tail (item 24).
+CYCLE_BLOCK_SIZE = _E.CYCLE_BLOCK_SIZE
+SCALAR_SIZE = (1 + HAND_SIZE + HAND_SIZE * NUM_CARD_IDS + NUM_EXTRA_SCALARS
+               + CYCLE_BLOCK_SIZE)
 OBSERVATION_SIZE = SPATIAL_SIZE + SCALAR_SIZE
 
 # See the module docstring. Not an anonymous 0.0.
@@ -278,6 +281,21 @@ def encode(state, *, card_table_=None) -> np.ndarray:
     to get wrong and are called out where they happen: the HP channels ASSIGN
     while CH_COUNT ACCUMULATES, and every other attribute takes the MAX over
     units sharing a cell.
+
+    THE OPPONENT CARD-CYCLE BLOCKS ARE LEFT ZERO, and that is a KNOWN STUB
+    rather than an oversight (item 24, 2026-08-27). `obs` is allocated at the
+    engine's full `OBSERVATION_SIZE`, so the vector is always the right LENGTH
+    and the net accepts it; the last `CYCLE_BLOCK_SIZE` floats simply read as
+    "the opponent has shown nothing", which is what a fresh match looks like
+    and is the one wrong answer that cannot mislead the policy into acting on
+    a card it has not seen.
+
+    Filling them needs a `GameState` that carries the opponent's play history,
+    which it does not yet. The engine-side route already exists and is the one
+    the live mirror should use: call `ClashEnv.note_played_card(1, card_id)`
+    each time the placement stream reports an opponent play, and read the
+    observation off the mirror rather than building it here. That is why the
+    recorder is separate from `inject` -- see `ClashEnv::notePlayedCard`.
     """
     global _BASE, _TOWERS
     table = card_table_ if card_table_ is not None else card_table()

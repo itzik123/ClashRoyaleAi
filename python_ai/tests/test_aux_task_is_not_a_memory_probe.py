@@ -65,12 +65,50 @@ import clash_royale_env
 from python_ai.envs.gym_wrapper import MicroRoyaleEnv
 
 
-N_EXTRA = clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS
-#: Offsets from the END of the observation. Derived from the engine's own
-#: constant rather than restated, and ordered as ClashEnv.h appends them:
-#: time, elixir spent by this team, elixir spent by the other team, then 6
-#: tower HP readings.
-T_IDX, SPENT_SELF_IDX, SPENT_OPP_IDX = -N_EXTRA + 0, -N_EXTRA + 1, -N_EXTRA + 2
+_CE = clash_royale_env.ClashRoyaleEnv
+N_EXTRA = _CE.NUM_EXTRA_SCALARS
+
+#: FORWARD offsets, measured from the start of the observation.
+#:
+#: These read from the END until 2026-08-27, as `-N_EXTRA + k`, and that was a
+#: latent bug the very next observation change detonated: item 24 appended two
+#: NUM_CARD_IDS-wide card-cycle blocks AFTER the extra scalars, at which point
+#: every negative offset here silently re-pointed into the cycle data. The
+#: tests would have kept passing while measuring entirely different columns --
+#: the exact failure `UPSTREAM_REQUESTS.md` item 25 describes.
+#:
+#: Measured forward, an append cannot move them. Every term is derived from the
+#: bindings, so a change to the board, the channel count or the card roster
+#: carries these with it.
+_SCALAR_START = _CE.BOARD_WIDTH * _CE.BOARD_HEIGHT * _CE.NUM_CHANNELS
+_EXTRA_START = (_SCALAR_START + 1 + _CE.HAND_SIZE
+                + _CE.HAND_SIZE * _CE.NUM_CARD_IDS)
+#: Ordered as ClashEnv.h appends them: time, own elixir spent, opponent elixir
+#: spent, then 6 tower HP readings.
+T_IDX, SPENT_SELF_IDX, SPENT_OPP_IDX = (
+    _EXTRA_START + 0, _EXTRA_START + 1, _EXTRA_START + 2)
+
+
+def test_the_extra_scalar_offsets_still_point_at_the_extra_scalars():
+    """Guards the offsets themselves, because everything below is meaningless
+    if they drift. The time scalar is `currentTick / maxTicks`, so on a fresh
+    board it must be exactly 0.0 and it must RISE as the match runs -- a
+    property no other column in the observation has, which is what makes it a
+    usable fingerprint.
+    """
+    env = MicroRoyaleEnv({})
+    obs = env.reset()
+    o = np.asarray(obs[0] if isinstance(obs, tuple) else obs, dtype=np.float32)
+    assert o[T_IDX] == 0.0, (
+        f"observation[{T_IDX}] is {o[T_IDX]}, expected the time fraction to be "
+        "0.0 on a fresh board; the extra-scalar offsets have drifted")
+    for _ in range(20):
+        res = env.step({"card_index": 4, "target_x": 0.0, "target_y": 0.0})
+        obs = res[0]
+    o2 = np.asarray(obs[0] if isinstance(obs, tuple) else obs, dtype=np.float32)
+    assert o2[T_IDX] > o[T_IDX], (
+        "the time scalar did not increase over 20 steps; T_IDX is not "
+        "pointing at the time fraction")
 
 
 def _collect(episodes=6, seed=0):
