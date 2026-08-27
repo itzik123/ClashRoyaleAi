@@ -42,6 +42,15 @@ import clash_royale_env as E  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval.match_outcome import score_from_towers  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks and
+# this project has now found eight times. If the grid ever changes, the net
+# decodes correctly and these scripts silently feed the engine transposed
+# coordinates.
 
 CE = E.ClashRoyaleEnv
 
@@ -56,7 +65,7 @@ def act(net, env, team, hid):
     gi = int(lg.argmax(-1).item())
     cell = int(net.placement_given_card(
         hid[0], emb, torch.tensor([gi]), obs, sp).argmax(-1).item())
-    return gi, float(cell % 18), float(cell // 18), hid
+    return gi, float(cell % BOARD_W), float(cell // BOARD_W), hid
 
 
 def duel(net0, net1, env, max_steps=400):

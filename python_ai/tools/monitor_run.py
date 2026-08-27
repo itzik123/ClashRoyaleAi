@@ -55,6 +55,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
 import python_ai  # noqa: E402,F401
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks. If the
+# grid ever changes, the net decodes correctly and these scripts silently
+# feed the engine transposed coordinates.
 
 ALARM, WARN, OK = "ALARM", "warn", "ok"
 
@@ -148,7 +156,7 @@ def check_placement(ckpt_path, episodes, opp_elixir):
                 gp = net.placement_given_card(
                     hid[0], emb, torch.tensor([gi]), ot, sp)
                 cell = int(gp.argmax(-1).item())
-            r = env.step(gi, float(cell % 18), float(cell // 18), 10)
+            r = env.step(gi, float(cell % BOARD_W), float(cell // BOARD_W), 10)
             obs = r.observation
             if r.done:
                 break

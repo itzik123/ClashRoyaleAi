@@ -58,6 +58,13 @@ import clash_royale_env as CE  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
+from python_ai.engine_constants import BOARD_CENTER_X  # noqa: E402
+
+# Half-width of the "central pull pocket" this probe reports. Named rather than
+# left as a bare 3.0 next to a second bare number, so the pocket is stated once
+# and the centre it is measured from is DERIVED (see BOARD_CENTER_X above)
+# instead of restated -- which is how it came to be 9.0.
+PULL_POCKET_HALF_WIDTH = 3.0
 
 E = CE.ClashRoyaleEnv
 NOOP = E.HAND_SIZE
@@ -181,10 +188,22 @@ def main():
         print(f"\n  {label}: n={len(cells)}  centroid=({xs.mean():.1f}, {ys.mean():.1f})  "
               f"modal={modal} {cnt/len(cells):.1%}  distinct={len(set(cells))}")
         if cid == CANNON:
-            # x=9 is the board centre; a pull wants to be near it and ahead of
-            # the Princess towers (y around 6-11), not in a back corner.
-            central = np.mean((np.abs(xs - 9.0) <= 3.0) & (ys >= 5) & (ys <= 12))
-            print(f"    in the central pull pocket (|x-9|<=3, 5<=y<=12): {central:.1%}")
+            # A pull wants to be near the board centre and ahead of the Princess
+            # towers (y around 6-11), not in a back corner.
+            #
+            # The centre is BOARD_CENTER_X, read from the engine -- it was
+            # hardcoded as 9.0, with a comment asserting "x=9 is the board
+            # centre". It is 8.5: x is a cell index in [0, 17], so the centre
+            # and the fixed point of the mirror 17-x is (18-1)/2. 9.0 is the
+            # exact half-tile error that put the whole arena off-centre until
+            # the 2026-08-21 re-centring, and it shifted this pocket half a
+            # tile toward the right lane -- counting x=12 as central while
+            # excluding x=5.5.
+            half = PULL_POCKET_HALF_WIDTH
+            central = np.mean((np.abs(xs - BOARD_CENTER_X) <= half)
+                              & (ys >= 5) & (ys <= 12))
+            print(f"    in the central pull pocket "
+                  f"(|x-{BOARD_CENTER_X}|<={half}, 5<=y<=12): {central:.1%}")
 
 
 if __name__ == "__main__":

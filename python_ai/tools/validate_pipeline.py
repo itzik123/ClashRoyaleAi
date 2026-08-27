@@ -46,6 +46,41 @@ from python_ai.envs import selfplay_env  # noqa: E402
 from python_ai.rewards import shaping, weights  # noqa: E402
 from python_ai.eval import prove_placement  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+
+def cells_the_engine_refuses(env, card_id, target, team=0):
+    """Cells carrying finite target mass that the ENGINE will not accept.
+
+    THE CHECK THIS REPLACES COULD NOT FAIL, on any board, ever.
+
+    It asked whether `target_logits_for`'s output was finite anywhere outside
+    the `legal` table it had just been handed. But `advisor_target._standardize`
+    builds that vector as `np.full(N_CELLS, -inf)` and only ever writes cells
+    that are IN `legal` -- so `isfinite(t[~legal]).any()` is False for every
+    possible input. The gate reported "0 violations over N targets" for
+    thousands of targets and would have reported exactly that with the legality
+    table completely wrong.
+
+    CLAUDE.md lists this trap by name, from a previous occurrence: "Never
+    validate a mask against the predicate that generated it... The check was
+    circular and could not fail."
+
+    The engine is the independent oracle, and it is the one worth asking.
+    `legal` comes from the NET's own `_placement_legal` table, and whether THAT
+    agrees with what the engine will actually accept is the real question --
+    exactly the disagreement that put placements off the board once before.
+
+    Returns a list of (cell, x, y); empty is clean.
+    """
+    flat = np.asarray(target, dtype=np.float64).reshape(-1)
+    bad = []
+    for cell in np.flatnonzero(np.isfinite(flat)):
+        cell = int(cell)
+        x, y = cell % BOARD_W, cell // BOARD_W
+        if not env.is_valid_placement(int(card_id), float(x), float(y), team):
+            bad.append((cell, x, y))
+    return bad
 
 CE = E.ClashRoyaleEnv
 DECK = list(gym_wrapper.DEFAULT_DECK)
@@ -233,7 +268,7 @@ def validate_advisor(episodes=40):
     net = MicroRoyaleNet(num_ability_slots=0)
     legal = AT.build_legal_table(net)
 
-    n_states = spoke = illegal = 0
+    n_states = spoke = illegal = checked = 0
     quiet_states = quiet_spoke = 0
     adv_c, rnd_c, adv_f, rnd_f = [], [], [], []
     rng = np.random.default_rng(7)
@@ -261,8 +296,16 @@ def validate_advisor(episodes=40):
                 if t is None:
                     continue
                 spoke += 1
-                if np.isfinite(t[~legal[cid]]).any():
-                    illegal += 1
+                # Legality is checked against the ENGINE, on the same subsample
+                # cadence as the value probe below -- see
+                # cells_the_engine_refuses for why the previous in-loop check
+                # could not fail. Sub-sampled because it costs one pybind call
+                # per finite cell (~half the board) per card, which every state
+                # would not survive.
+                if _t % 40 == 0:
+                    checked += 1
+                    if cells_the_engine_refuses(env, cid, t):
+                        illegal += 1
 
             # Engine-scored, on a subsample: injection costs no elixir, so the
             # rest of the match is untouched and the two arms see one state.
@@ -275,23 +318,28 @@ def validate_advisor(episodes=40):
                     base = prove_placement.cannon_baseline(env)
                     cell = int(np.argmax(tc))
                     adv_c.append(prove_placement.cannon_value(
-                        env, cell % 18, cell // 18, base))
+                        env, cell % BOARD_W, cell // BOARD_W, base))
                     rc = int(rng.choice(lc))
                     rnd_c.append(prove_placement.cannon_value(
-                        env, rc % 18, rc // 18, base))
+                        env, rc % BOARD_W, rc // BOARD_W, base))
                 if tf is not None:
                     cell = int(np.argmax(tf))
                     adv_f.append(prove_placement.fireball_value(
-                        env, cell % 18, cell // 18))
+                        env, cell % BOARD_W, cell // BOARD_W))
                     rf = int(rng.choice(lf))
                     rnd_f.append(prove_placement.fireball_value(
-                        env, rf % 18, rf // 18))
+                        env, rf % BOARD_W, rf // BOARD_W))
         if ep % 10 == 0:
             print(f"    ...episode {ep}/{episodes} ({n_states} states, "
                   f"{time.time() - t0:.0f}s)", flush=True)
 
-    check("no target ever puts mass on an illegal cell", illegal == 0,
-          f"{illegal} violations over {spoke} targets / {n_states} states")
+    check("no target puts mass on a cell the ENGINE refuses", illegal == 0,
+          f"{illegal} violations over {checked} engine-checked targets "
+          f"({spoke} targets / {n_states} states)")
+    # A denominator of zero would make the line above pass for the worst
+    # possible reason, so it is asserted rather than assumed.
+    check("the engine legality probe actually ran", checked > 0,
+          f"{checked} targets checked against the engine")
     check("the gate declines on an empty board", quiet_spoke == 0,
           f"{quiet_spoke}/{quiet_states} quiet states produced a target")
     # Denominator is state x CARD, not state: three cards are queried per state,
@@ -462,7 +510,7 @@ def validate_side_null(net_path, episodes=300):
         gi = int(lg.argmax(-1).item())
         pl = net_.placement_given_card(h[0], emb, torch.tensor([gi]), obs, sp)
         cell = int(pl.argmax(-1).item())
-        return gi, float(cell % 18), float(cell // 18), h
+        return gi, float(cell % BOARD_W), float(cell // BOARD_W), h
 
     wins = draws = 0
     t0 = time.time()

@@ -3545,6 +3545,91 @@ builds would otherwise send someone hunting the wrong cause.
 
 ---
 
+## 2026-08-26 (part 4): `eval/` and `tools/`, and a gate check that could not fail
+
+Same defect classes as the C++ audit, hunted in the measurement harnesses.
+Python suite 500 -> **505 passed, 2 skipped**.
+
+### The pre-flight gate's legality check was structurally incapable of failing
+
+`tools/validate_pipeline.py` -- the 20/20 gate -- carried:
+
+```python
+t = AT.target_logits_for(obs, cid, legal[cid])
+if np.isfinite(t[~legal[cid]]).any():
+    illegal += 1
+```
+
+`advisor_target._standardize` builds its output as `np.full(N_CELLS, -inf)` and
+only ever writes cells that are IN `legal`. So `isfinite(t[~legal])` is False for
+every possible input, on every board, forever. The gate printed "0 violations
+over N targets" and would have printed exactly that with the legality table
+completely wrong.
+
+**Measured rather than reasoned**, because inference had already misled me twice
+in part 3: 106 real targets over a real match, and not one had finite mass
+outside `legal`. The condition never fired because it cannot.
+
+CLAUDE.md lists this trap by name from a previous occurrence -- *"Never validate
+a mask against the predicate that generated it... The check was circular and
+could not fail"* -- and this is the same shape, in the file whose whole job is
+catching things before a run starts.
+
+The fix consults the ENGINE, which was bound and available the whole time
+(`bindings.cpp:181`, `is_valid_placement` -> `ClashEnv::isValidPlacementForCard`).
+That is strictly stronger: `legal` comes from the NET's `_placement_legal`
+table, and whether THAT agrees with what the engine accepts is the question
+worth asking -- it is exactly the disagreement that once put placements off the
+board entirely. It is sub-sampled on the same cadence as the engine-scored value
+probe, because it costs one pybind call per finite cell per card.
+
+A second `check()` asserts the probe actually ran, since a zero denominator
+would make the first one pass for the worst possible reason.
+
+### The Cannon pull-pocket was measured around the wrong centre
+
+`eval/probe_perfect_defense.py`:
+
+```python
+# x=9 is the board centre; ...
+central = np.mean((np.abs(xs - 9.0) <= 3.0) & (ys >= 5) & (ys <= 12))
+```
+
+The centre is **8.5**, not 9.0 -- x is a cell index in [0, 17], so the centre and
+the fixed point of the mirror `17 - x` is `(18-1)/2`. 9.0 is the precise
+half-tile error that put the whole arena off-centre until the 2026-08-21
+re-centring, and the comment asserted it as fact.
+
+The window was therefore `[6.0, 12.0]` instead of `[5.5, 11.5]` -- shifted half a
+tile toward the right lane, counting x=12 as central while excluding x=5.5. This
+probe reports the number the Cannon reward-hacking investigation reads. Now
+derived from `engine_constants.BOARD_CENTER_X` (8.5, confirmed against the live
+bindings), with the half-width named rather than left as a second bare literal.
+
+### Thirty flat-cell decode sites restated the board width
+
+`cell % 18` / `cell // 18` across eight files in `eval/` and `tools/`.
+`MicroRoyaleNet.cell_to_xy` -- the canonical decoder the placement head itself
+uses -- derives this from the engine (`self.board_width`). Every harness that
+retyped it as 18 is another copy of a board constant, and if the grid ever
+changes the net decodes correctly while these scripts silently feed the engine
+transposed coordinates. All thirty now read `engine_constants.BOARD_W`.
+
+### What was checked and found clean
+
+- **The tower-count scoring pattern has NOT regrown.** `6790e91` guards it with a
+  grep-based test after eight instances in three waves; the tree scans clean.
+- **`profile_training.py`'s `n = 13606`** is a dead initializer, overwritten
+  immediately by the live engine's `observation_size()` or derived from the
+  header. Not a stale copy.
+- **`np.bincount(..., minlength=612)`** is benign: `minlength` only pads, and
+  `bincount` sizes itself to the data regardless.
+- **`3600` as maxTicks** appears ~20 times, but it is the engine constructor's
+  own default being passed explicitly, not a value that can go stale silently.
+  Left alone; noted.
+
+---
+
 # ARCHIVE — `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` (retired 2026-08-24)
 
 Both backlog files were worked to empty on 2026-08-24: every item was either

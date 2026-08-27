@@ -33,6 +33,15 @@ from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 from python_ai.search.search import outcome_score  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks and
+# this project has now found eight times. If the grid ever changes, the net
+# decodes correctly and these scripts silently feed the engine transposed
+# coordinates.
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10
@@ -72,7 +81,7 @@ def play(net, env, device, gate):
 
         elix.append(tactics.own_elixir(o))
         hx, cx = hx2, cx2
-        r = env.step(gi, float(cell % 18), float(cell // 18), SKIP)
+        r = env.step(gi, float(cell % BOARD_W), float(cell // BOARD_W), SKIP)
         obs, reward, done = r.observation, float(r.reward), r.done
         steps += 1
 

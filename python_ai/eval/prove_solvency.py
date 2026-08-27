@@ -51,6 +51,15 @@ from python_ai.advisors import tactics  # noqa: E402
 from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.search.search import outcome_score  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks and
+# this project has now found eight times. If the grid ever changes, the net
+# decodes correctly and these scripts silently feed the engine transposed
+# coordinates.
 
 CE = E.ClashRoyaleEnv
 CHEAPEST = 3.0
@@ -81,7 +90,7 @@ def run_episode(net, deck, opp_elixir, max_steps=400):
         played.append(gi != net.hand_size)
 
         hx, cx = hx2, cx2
-        r = env.step(gi, float(cell % 18), float(cell // 18), 10)
+        r = env.step(gi, float(cell % BOARD_W), float(cell // BOARD_W), 10)
         obs, reward = r.observation, float(r.reward)
         if r.done:
             break

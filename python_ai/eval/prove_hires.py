@@ -62,6 +62,15 @@ import python_ai  # noqa: E402,F401
 from python_ai.trainers import distill_tactics as D  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks and
+# this project has now found eight times. If the grid ever changes, the net
+# decodes correctly and these scripts silently feed the engine transposed
+# coordinates.
 
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
 NAME = {CANNON: "Cannon", FIREBALL: "Fireball"}
@@ -192,8 +201,8 @@ def score(net, obs, hxs, targets, idx, label):
             # hops between cells that are worth the same, and a head landing one
             # tile away scores zero while having learned the geometry. Distance
             # says how wrong it is; exact match only says whether it is wrong.
-            d = torch.maximum((cells % 18 - tgt % 18).abs(),
-                              (cells // 18 - tgt // 18).abs())
+            d = torch.maximum((cells % BOARD_W - tgt % BOARD_W).abs(),
+                              (cells // BOARD_W - tgt // BOARD_W).abs())
             near += int((d <= 2).sum())
             dists += d.tolist()
             tot += int(m.sum())
@@ -208,7 +217,7 @@ def score(net, obs, hxs, targets, idx, label):
         cell = out[cid][4]
         print(f"    {label:9s} {NAME[cid]:8s}  exact {hits / tot:6.1%}  "
               f"within-2 {near / tot:6.1%}  mean dist {np.mean(dists):5.2f}   "
-              f"modal ({cell % 18},{cell // 18}) {modal:5.1%}   "
+              f"modal ({cell % BOARD_W},{cell // BOARD_W}) {modal:5.1%}   "
               f"top-1 p {np.mean(top1):.4f}   n={tot}")
     return out
 

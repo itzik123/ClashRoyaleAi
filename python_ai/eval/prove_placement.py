@@ -57,6 +57,15 @@ from python_ai.envs import gym_wrapper  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
 from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
+from python_ai.engine_constants import BOARD_W  # noqa: E402
+
+# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
+# flat-cell decoder the placement head itself uses -- derives this from the
+# engine (`self.board_width`); every harness that retyped it as 18 is a
+# second copy of a board constant, the defect class CLAUDE.md tracks and
+# this project has now found eight times. If the grid ever changes, the net
+# decodes correctly and these scripts silently feed the engine transposed
+# coordinates.
 
 CE = E.ClashRoyaleEnv
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
@@ -219,7 +228,7 @@ def main():
                     cannon[k].append(cannon_value(env, c[0], c[1], base))
                 r = int(rng.choice(legal_idx[CANNON]))
                 cannon["random"].append(
-                    cannon_value(env, r % 18, r // 18, base))
+                    cannon_value(env, r % BOARD_W, r // BOARD_W, base))
 
             # --- Fireball: only where there is something to hit -------------
             if FIREBALL in hand and enemies > 0:
@@ -227,7 +236,7 @@ def main():
                     c = props[(k, FIREBALL)]
                     fire[k].append(fireball_value(env, c[0], c[1]))
                 r = int(rng.choice(legal_idx[FIREBALL]))
-                fire["random"].append(fireball_value(env, r % 18, r // 18))
+                fire["random"].append(fireball_value(env, r % BOARD_W, r // BOARD_W))
 
             # Advance with the REFERENCE policy's action, taken from the SAME
             # forward pass above, so every net sees one shared state
