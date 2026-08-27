@@ -33,7 +33,86 @@ class PPOConfig:
     #: BPTT segments per minibatch.
     num_envs: int = int(os.environ.get("CLASH_NUM_ENVS", 8))
 
-    gamma: float = 0.99
+    #: THE DISCOUNT MUST OUTLAST THE MATCH. Raised 0.99 -> 0.999 on 2026-08-27.
+    #:
+    #: `1/(1-gamma)` is the effective horizon in DECISIONS, and a decision here
+    #: is one second (`skip_frames=10` at 10 ticks/s). A full match is
+    #: `max_ticks/skip_frames` = 3600/10 = **360 decisions**. At 0.99 the
+    #: horizon was 100 -- barely a quarter of the game -- so every TERMINAL
+    #: quantity decayed to `0.99^360 = 0.0268` of its face value by the time it
+    #: had to compete with an immediate shaping term:
+    #:
+    #:     win  (+1)              -> 0.0268 at episode start
+    #:     DRAW_PENALTY (1.0)     -> 0.0268   (raised 0.2->1.0 to stop stalling)
+    #:     W_TOWER_DESTROYED      -> 0.6      UNDISCOUNTED, fires mid-episode
+    #:
+    #: i.e. one crown was worth **22.4x** winning the game it was supposed to
+    #: serve. Measured 2026-08-27 over 10 greedy episodes of
+    #: `model_weights_phase1_v5.pth`: the terminal reward contributed **0.0195**
+    #: of the discounted return, so ~98% of the objective was shaping. A
+    #: sacrifice play -- concede tower HP now, win later -- costs 0.5 at once
+    #: and repays 0.027 at the end, so gradient ascent on this objective can
+    #: never find one. That is the strategic ceiling, in one constant.
+    #:
+    #: WHICH TERMS WERE ACTUALLY AT FAULT, because "shaping drowned the win" is
+    #: too coarse and points at the wrong half. The POTENTIAL-BASED terms were
+    #: never the problem: a PBRS term telescopes over an episode to
+    #: `gamma^T*Phi(s_T) - Phi(s_0)`, so it carries the SAME `gamma^T` factor
+    #: the terminal reward does and stays in fixed proportion to it at any
+    #: discount. The tower potential was ~2:1 against a win at gamma 0.99 and
+    #: is ~2:1 against a win at 0.999.
+    #:
+    #: What dwarfed the outcome was the terms that are deliberately NOT
+    #: policy-invariant, because those do not carry the factor:
+    #: `W_TOWER_DESTROYED` (undiscounted, fires mid-episode), the one-sided
+    #: elixir-trade term, and the per-step overflow penalty. So the fix is the
+    #: horizon, and the PBRS terms need no compensating retune -- only the
+    #: explicit biases should be re-examined against the restored win value.
+    #:
+    #: WHY IT DRIFTED, rather than having been wrong when written. `weights.py`
+    #: still says W_TOWER_DESTROYED is "set above the discounted value of a win
+    #: (~0.28 at these episode lengths)", and at the 112-decision episodes of
+    #: that era 0.99^112 = 0.32 made 0.6 a deliberate ~2x bias. The 2026-08-07
+    #: movement-speed fix tripled match length -- CLAUDE.md's own warning is
+    #: "no win rate below survives it" -- and the reward constants were never
+    #: re-derived against it. Same failure class as the four stale arena copies:
+    #: a constant calibrated against a measurement a later change invalidated.
+    #:
+    #: WHY 0.999 IS CHEAP HERE, which is not obvious and was measured rather
+    #: than assumed. The usual objection is variance: a longer horizon means
+    #: noisier returns and a harder critic. It does not apply at this lambda.
+    #: GAE's advantage estimator has its own effective lookahead of
+    #: `1/(1-gamma*lambda)`, and `gae_lambda=0.9` already pins that near 10
+    #: steps -- 9.17 at gamma 0.99, 9.91 at 0.999. Measured over 6 real
+    #: episodes (mean 322 decisions), the critic's target barely moves:
+    #:
+    #:     gamma    mean|return|   std(return)   max|return|
+    #:     0.990       0.385          0.362         1.719
+    #:     0.999       0.416 (+8%)    0.384 (+6%)   1.719 (unchanged)
+    #:
+    #: So this buys a 26x increase in the weight of the actual outcome
+    #: (0.0268 -> 0.6976) for ~6% more return spread.
+    #:
+    #: NO ANNEALING, DELIBERATELY. OpenAI Five ramped gamma upward precisely to
+    #: control early variance; the table above shows there is no early variance
+    #: problem to control here, because lambda already does that job. Adding a
+    #: schedule would be machinery bought against a cost that was measured and
+    #: found absent.
+    #:
+    #: GAMEPLAY-AFFECTING IN THE SENSE THAT MATTERS: this changes the OBJECTIVE,
+    #: so every win rate in CLAUDE.md's "Measured baselines" was earned against
+    #: a different one and is not comparable across this change. Checkpoints
+    #: still LOAD (no architecture moved) but their critic was fitted to the old
+    #: discount and will need to re-converge; expect Loss/Critic and explained
+    #: variance to move early in a resumed run and do not read that as a fault.
+    #: `CLASH_GAMMA` overrides it, so the previous behaviour is one env var
+    #: away for anyone who needs the old objective to reproduce an old number.
+    #:
+    #: Pinned by `tests/test_reward_horizon_invariant.py`, which asserts the
+    #: RELATIONSHIP (horizon >= match length; crown not >3x a win) rather than
+    #: this particular value -- so retuning either side is free, and letting
+    #: them drift apart again is not.
+    gamma: float = float(os.environ.get("CLASH_GAMMA", 0.999))
 
     #: Lowered from 0.95: every prior fix (num_envs, value clipping, entropy
     #: decay, reward shaping) left Loss/Critic on the same noisy, non-decreasing

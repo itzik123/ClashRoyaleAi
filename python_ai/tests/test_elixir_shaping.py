@@ -41,6 +41,16 @@ from python_ai.rl.coverage import (  # noqa: E402
 )
 from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 
+#: The discount these arithmetic tests are written against. Deliberately a
+#: FIXED fixture value and NOT `PPOConfig.gamma`: these cases assert exact
+#: numbers out of `gamma*Phi(s') - Phi(s)`, so reading the live config would
+#: make their expected values move every time someone tunes the discount --
+#: a test that changes its own answer cannot pin anything. The separate
+#: question of whether the TRAINER passes its real gamma is pinned by
+#: tests/test_rl_config.py and tests/test_reward_horizon_invariant.py.
+SHAPING_TEST_GAMMA = 0.99
+
+
 CE = clash_royale_env.ClashRoyaleEnv
 
 
@@ -170,7 +180,7 @@ def test_matches_compute_shaping_when_wired_in():
     cur = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
     cur["team0_elixir_current"] = np.array([8.0, 1.0], dtype=np.float32)
 
-    out = train_shaping.compute_shaping(cur, prev)
+    out = train_shaping.compute_shaping(cur, prev, SHAPING_TEST_GAMMA)
     # env 0 stayed solvent, env 1 dropped to 1 elixir -> strictly worse
     assert out[1] < out[0]
 

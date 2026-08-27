@@ -60,12 +60,25 @@ def normalize(advantages, eps=1e-8, mask=None):
 
     `mask` : optional (T, N) of 1/0. Where given, the mean and std are taken
         over the MASKED-IN rows only, but every row is still rescaled by them.
-        Callers pass `valid`, so the phantom post-autoreset rows -- which are
-        excluded from every loss term already -- stop setting the constants
-        that rescale the real ones. `run_update` filters by `valid` for
-        explained variance and for the value-clip range on the next two lines;
-        this was the one statistic in that block still taken over the
-        contaminated tensor.
+        The live caller passes `decision`, NOT `valid` -- this docstring said
+        `valid` until 2026-08-27 and the code at `base_trainer.py:569` has
+        passed `decision` for longer than that. The distinction is the whole
+        point of the argument, so the stale prose was worse than none:
+
+          `valid`     drops only the phantom post-autoreset rows.
+          `decision`  drops those AND every forced step (fewer than two legal
+                      card arms). This is the correct mask here because the
+                      ACTOR is the only consumer of normalized advantages and
+                      `ppo.py` denominates the actor loss by `mb_decision`.
+                      Standardizing over a row set wider than the one the loss
+                      averages over leaves the mean non-zero on the rows that
+                      actually contribute gradient.
+
+        Either way the phantom rows -- excluded from every loss term already --
+        stop setting the constants that rescale the real ones, which was the
+        original fix. `run_update` separately filters by `valid` for explained
+        variance and the value-clip range, because those describe the CRITIC,
+        which does train on every real state whether or not it had a choice.
 
     A batch with fewer than two masked-in rows has NO ESTIMABLE SPREAD, and
     `Tensor.std()` is the unbiased estimator, so it divides by n-1 = 0 and

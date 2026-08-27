@@ -44,6 +44,7 @@ from python_ai.envs import scenarios  # noqa: E402
 from python_ai.envs import scripted_opponents  # noqa: E402
 from python_ai.envs import selfplay_env  # noqa: E402
 from python_ai.rewards import shaping, weights  # noqa: E402
+from python_ai.rl.config import PPOConfig  # noqa: E402
 from python_ai.eval import prove_placement  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
@@ -461,8 +462,8 @@ def validate_spell_anneal():
     cur["fireball_value_killed"] = np.array([8.0], dtype=np.float32)
     cur["fireball_elixir_spent"] = np.array([4.0], dtype=np.float32)
 
-    hot = float(shaping.compute_shaping(cur, prev, w_spell=w0)[0])
-    cold = float(shaping.compute_shaping(cur, prev, w_spell=wend)[0])
+    hot = float(shaping.compute_shaping(cur, prev, PPOConfig.gamma, w_spell=w0)[0])
+    cold = float(shaping.compute_shaping(cur, prev, PPOConfig.gamma, w_spell=wend)[0])
     check("the reward actually responds to the weight", hot > cold,
           f"shaping {hot:.5f} at w={w0} vs {cold:.5f} at w={wend}")
 

@@ -68,6 +68,16 @@ from python_ai.rewards import shaping as train_shaping  # noqa: E402
 from python_ai.rewards import weights as train_weights  # noqa: E402
 from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 
+#: The discount these arithmetic tests are written against. Deliberately a
+#: FIXED fixture value and NOT `PPOConfig.gamma`: these cases assert exact
+#: numbers out of `gamma*Phi(s') - Phi(s)`, so reading the live config would
+#: make their expected values move every time someone tunes the discount --
+#: a test that changes its own answer cannot pin anything. The separate
+#: question of whether the TRAINER passes its real gamma is pinned by
+#: tests/test_rl_config.py and tests/test_reward_horizon_invariant.py.
+SHAPING_TEST_GAMMA = 0.99
+
+
 
 def test_spell_value_weight_anneals_from_start_to_final():
     """The schedule the docstring always claimed, now actually reachable."""
@@ -110,15 +120,15 @@ def test_compute_shaping_actually_responds_to_w_spell():
     weight START than at weight 0.
     """
     cur, prev = shaping_stats(fireball_killed=8.0)
-    hot = train_shaping.compute_shaping(cur, prev, w_spell=train_weights.W_SPELL_VALUE_START)
-    off = train_shaping.compute_shaping(cur, prev, w_spell=0.0)
+    hot = train_shaping.compute_shaping(cur, prev, SHAPING_TEST_GAMMA, w_spell=train_weights.W_SPELL_VALUE_START)
+    off = train_shaping.compute_shaping(cur, prev, SHAPING_TEST_GAMMA, w_spell=0.0)
     assert float(hot[0]) > float(off[0]), (
         "w_spell is not reaching spell_value_shaping -- the dead-code bug is back")
 
     none_cast, prev2 = shaping_stats(fireball_killed=0.0)
     none_cast["fireball_elixir_spent"] = np.zeros(1, dtype=np.float32)
     assert float(off[0]) == pytest.approx(
-        float(train_shaping.compute_shaping(none_cast, prev2, w_spell=0.0)[0]))
+        float(train_shaping.compute_shaping(none_cast, prev2, SHAPING_TEST_GAMMA, w_spell=0.0)[0]))
 
 
 # --- the advisor target ----------------------------------------------------

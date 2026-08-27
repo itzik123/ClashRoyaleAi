@@ -106,9 +106,22 @@ def solvency_potential(elixir, reserve=SOLVENCY_RESERVE, w=W_SOLVENCY):
     return (-w * shortfall / reserve).astype(np.float32)
 
 
-def solvency_shaping(stats, prev_stats, gamma=0.99,
+def solvency_shaping(stats, prev_stats, gamma,
                      reserve=SOLVENCY_RESERVE, w=W_SOLVENCY):
     """F = gamma*Phi(s') - Phi(s), the policy-invariant discounted form.
+
+    THE DISCOUNT IS REQUIRED, NOT DEFAULTED, and that is the whole guarantee.
+    This term and the tower term in `shaping.py` are the two potential-based
+    ones, and Ng et al.'s policy-invariance result holds for either only when
+    this gamma is the SAME one GAE discounts with. It used to default to a literal 0.99 -- harmless only while
+    `PPOConfig.gamma` also read 0.99, and a silent invariance break the moment
+    it did not. Deriving the default was not available either: `rewards/` is an
+    enforced leaf layer that may import neither `rl/` nor `trainers/`
+    (`tests/test_package_layout.py`). Requiring the argument satisfies the
+    no-second-copies rule by ABSENCE rather than by derivation, which is the
+    stronger form -- there is no copy here to go stale, and no caller can
+    compute potential-based shaping without stating the discount it is for.
+
 
     The gamma is load-bearing and is not decoration: Ng et al.'s invariance
     result requires the discounted difference, and the undiscounted version is a

@@ -834,6 +834,64 @@ drop-as-they-cross-the-bridge, kiting all want 0.1–0.3 s).
 
 ### Reward
 
+> **THE DISCOUNT HAS TO OUTLAST THE MATCH, and it did not until 2026-08-27.
+> `gamma` 0.99 -> 0.999.** `1/(1-gamma)` is the horizon in DECISIONS and a full
+> match is `max_ticks/skip_frames` = 3600/10 = **360**, so a horizon of 100
+> covered barely a quarter of the game and every TERMINAL quantity decayed
+> together to `0.99^360 = 0.0268` before it could compete with any immediate
+> shaping term:
+>
+> | | discounted to episode start |
+> |---|---|
+> | win (+1) | 0.0268 |
+> | `DRAW_PENALTY` (1.0), raised 0.2 -> 1.0 *to stop stalling* | 0.0268 |
+> | `W_TOWER_DESTROYED` (0.6), undiscounted, fires mid-episode | **0.6000** |
+>
+> One crown was worth **22.4x winning the game it serves**. Measured over 10
+> greedy episodes of `model_weights_phase1_v5.pth`: the terminal reward
+> contributed **0.0195** of the discounted return, so **~98% of the objective
+> was shaping**. That is a hard ceiling on strategic depth and not a tuning
+> nicety — a sacrifice play (concede tower HP now, win later) costs 0.5 at once
+> and repays 0.027 at the end, so gradient ascent on that objective cannot find
+> one at any network capacity.
+>
+> **It DRIFTED; it was not wrong when written.** `weights.py` still says 0.6 is
+> "above the discounted value of a win (~0.28 at these episode lengths)", and
+> at the ~112-decision episodes of that era `0.99^112 = 0.32` made 0.6 a
+> deliberate ~2x bias. The **2026-08-07 movement-speed fix tripled match
+> length** — this file's own warning is "no win rate below survives it" — and
+> the reward constants were never re-derived against it. Same failure class as
+> the four stale arena copies: a constant calibrated against a measurement a
+> later change invalidated.
+>
+> **The variance objection was measured and does not apply here.** GAE's
+> advantage estimator has its own lookahead `1/(1-gamma*lambda)`, and
+> `gae_lambda = 0.9` already pins that near 10 steps — 9.17 at gamma 0.99,
+> 9.91 at 0.999. Over 6 real episodes the critic's target barely moves:
+> mean |return| 0.385 -> 0.416 (+8%), std 0.362 -> 0.384 (+6%), max **unchanged**
+> at 1.719. So this buys a 26x increase in outcome weight for ~6% more spread.
+> **No annealing**, deliberately: OpenAI Five ramped gamma to control early
+> variance, and the table shows there is none here to control.
+>
+> **GAMEPLAY-AFFECTING in the sense that matters** — it changes the OBJECTIVE,
+> so every win rate in "Measured baselines" was earned against a different one.
+> Checkpoints still LOAD, but their critic was fitted to the old discount and
+> must re-converge; early movement in `Loss/Critic` and explained variance on a
+> resumed run is expected, not a fault. `CLASH_GAMMA` restores the old value.
+>
+> Pinned by `tests/test_reward_horizon_invariant.py`, which asserts the
+> RELATIONSHIP (horizon >= match length; crown <= 3x a win; `DRAW_PENALTY`
+> above one step of the overflow penalty) rather than the number — so retuning
+> either side stays free and letting them drift apart again does not.
+>
+> **`compute_shaping`/`solvency_shaping` now REQUIRE `gamma`** — no default.
+> `rewards/` is an enforced leaf that may import neither `rl/` nor `trainers/`
+> (`test_package_layout.py`), so the default could not be *derived*; requiring
+> it satisfies the no-second-copies rule by ABSENCE, which is stronger. Unit
+> tests pass their own fixed fixture value, which is correct rather than a copy
+> — they pin the FORMULA, and a test reading live config would move its own
+> expected answers. `EXPLOITER_GAMMA` now derives from `PPOConfig.gamma` too.
+
 Sparse `±1` on win/loss plus `compute_shaping()`:
 
 | term | weight | form |
@@ -1194,8 +1252,23 @@ exactly 1.0, max logit delta **1.1e-08 vs a float32 eps of 1.19e-07**.
 Baselines that make those numbers mean something:
 
 - **Opponent-elixir MAE**: predict-the-mean ≈ **1.35**; "read your own elixir"
-  is *no better* than the mean (ratio 0.96–1.05 across seeds, corr ≈ 0.27). So
-  0.77 is a real capability, not a trivial correlation.
+  is *no better* than the mean (ratio 0.96–1.05 across seeds, corr ≈ 0.27).
+  **That control was the wrong one, and the conclusion drawn from it —
+  "0.77 is a real capability, not a trivial correlation" — is WRONG. Corrected
+  2026-08-27.** The opponent's elixir is an *affine function of two scalars the
+  observation already carries*: `elixir(t) = start + rate*t − spent(t)`, where
+  `t` is extra-scalar 0 and `spent(t)` is extra-scalar 2. Ordinary least
+  squares on those two, four parameters and no recurrence at all, scores
+  **MAE 0.0000** (2,606 samples, 8 episodes; each scalar ALONE scores ~1.42,
+  i.e. no better than the mean, so the fit genuinely uses both).
+
+  Two consequences. The aux head's 0.77 is a **shortfall against an achievable
+  zero**, not a capability. And the auxiliary loss exerts almost no
+  representational pressure — it is arithmetic on two present inputs, not
+  opponent modelling, so it cannot be doing the job it was added for.
+  `python_ai/tests/test_aux_task_is_not_a_memory_probe.py` pins the
+  measurement. A task that would actually require memory — predict which CARD
+  the opponent plays next — is `perception/UPSTREAM_REQUESTS.md` item 24.
 - **Placement cell match**: random is 1/612 = 0.0016, but the scripted teachers
   use only ~75 distinct cells and always-guess-the-modal-cell scores **0.273**.
   Compare against the marginal, never against random.
@@ -1601,8 +1674,54 @@ And low early ClipFrac is **not** a property of the conv head — it rises with
 training in every run; at matched episodes the old and new architectures are
 0.061 vs 0.071.
 
-**Watch these three during any run:** `Aux/OppElixir_MAE` (below ~1.3 means the
-recurrent state genuinely counts), `Entropy/Placement_Target` vs
+**...and THREE more, measured away on 2026-08-27 during the Phase 3 RL audit.**
+Each of these is a standard, literature-backed thing to suspect, each looked
+right from a grep, and each was refuted by the instrument. They are recorded
+because refuting one costs an hour and re-suspecting it is free.
+
+- **Missing orthogonal initialization is worth ~nothing here.** The net uses
+  PyTorch defaults everywhere (only `place_hires[-1]` is explicitly zeroed), and
+  "orthogonal init, gain 0.01 on the policy head" is one of the most-cited PPO
+  implementation details (Engstrom et al. 2020; Huang et al. 2022). Its purpose
+  is a near-uniform initial policy. Measured over 10 seeds on a fresh board,
+  the DEFAULT init already delivers exactly that: card head **H/Hmax = 0.9996**
+  (max prob 0.2089 against a uniform 0.2000), placement head **H/Hmax = 1.0000**
+  (max prob 0.0017 against a uniform 0.0017), value head V(s0) = −0.009 ± 0.043.
+  The reason is structural and will hold for any init: `hx` starts at exactly
+  zero, so every head sees a zero input and emits ~zero logits. There is
+  nothing for gain 0.01 to improve.
+
+- **The scalars are NOT drowned out by the spatial features.** The LSTM input is
+  1440 spatial + 64 scalar = 1504, so scalars are 4.3% of its width, which looks
+  alarming for a game where elixir and hand contents decide everything. By
+  gradient it is the opposite: `d(card logits)/d(input)` per DIMENSION is
+  **2.26x higher for scalars** than for spatial cells. Width is not weight.
+
+- **There is no measurable actor/critic destructive interference on the shared
+  trunk.** Cosine similarity between the actor's and the critic's gradients,
+  real returns and real normalized GAE advantages, 6 independent rollouts, at
+  the checkpoint's own gamma: `cnn_trunk` −0.058 ± 0.191, `scalar_mlp`
+  +0.103 ± 0.264, `lstm` +0.016 ± 0.053 — all indistinguishable from zero. The
+  decisive detail is that `cnn_trunk`'s cosine **flipped sign between two runs
+  of the same configuration** (−0.170 then +0.166), i.e. the statistic is
+  noise-dominated and n=6 cannot resolve it at all. So splitting the actor and
+  critic into separate networks — which would roughly double trunk cost on a
+  machine where the trunk is already 43% of the update — is NOT justified by
+  anything measured. `|0.5*g_critic|/|g_actor|` is 1.66 / 0.40 / 0.49 on the
+  three shared modules, i.e. no runaway either. It reads ~2.55 on `cnn_trunk`
+  when returns are computed at gamma 0.999 against a critic fitted at 0.99;
+  that is the un-refitted critic, not an architectural property, and it is the
+  transitional effect the gamma change predicts.
+
+**Watch these three during any run:** ~~`Aux/OppElixir_MAE` (below ~1.3 means
+the recurrent state genuinely counts)~~ — **STRUCK 2026-08-27, this metric
+cannot see what it was being read for.** A stateless least-squares fit on two
+scalars already in the observation scores 0.0000, clearing the ~1.3 threshold
+by more than an order of magnitude, so ANY reading below it is consistent with
+zero memory. Watch it as a *loss-is-descending* sanity check only, never as a
+recurrence diagnostic. See "Opponent-elixir MAE" above for the measurement and
+`test_aux_task_is_not_a_memory_probe.py` for the pin. The other two stand:
+`Entropy/Placement_Target` vs
 `_Measured` (tracking, not fighting), and `Cards/Game` in phase 2 — it sat at
 **5.6/8 flat across 50,000 episodes** in the run before the exploiter existed,
 which is the plateau signature the exploiter is meant to break. It has still

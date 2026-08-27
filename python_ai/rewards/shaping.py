@@ -218,7 +218,7 @@ def tower_potential(stats, w_bldg=W_BLDG):
     """
     return w_bldg * (stats["team0_tower_damage"] - stats["team1_tower_damage"]) / MAX_BUILDING_HP
 
-def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TROOPS,
+def compute_shaping(stats, prev_stats, gamma, w_bldg=W_BLDG, w_troops=W_TROOPS,
                      w_elixir=W_ELIXIR_TRADE, w_overflow=W_ELIXIR_OVERFLOW,
                      w_tower=W_TOWER_DESTROYED, w_spell=W_SPELL_VALUE_START,
                      w_wincon=W_WIN_CONDITION_DAMAGE):
@@ -235,6 +235,18 @@ def compute_shaping(stats, prev_stats, gamma=0.99, w_bldg=W_BLDG, w_troops=W_TRO
     team0 = ally/AI, team1 = enemy/opponent. 'team0_elixir_current' is an
     instantaneous (not cumulative) reading, only used from `stats`, never
     diffed against `prev_stats`.
+
+    THE DISCOUNT IS REQUIRED, NOT DEFAULTED, and that is the whole guarantee.
+    The tower term is `gamma*Phi(s') - Phi(s)`, and Ng et al.'s policy-
+    invariance result holds only when this gamma is the SAME one GAE discounts
+    with. It used to default to a literal 0.99 -- harmless only while
+    `PPOConfig.gamma` also read 0.99, and a silent invariance break the moment
+    it did not. Deriving the default was not available either: `rewards/` is an
+    enforced leaf layer that may import neither `rl/` nor `trainers/`
+    (`tests/test_package_layout.py`). Requiring the argument satisfies the
+    no-second-copies rule by ABSENCE rather than by derivation, which is the
+    stronger form -- there is no copy here to go stale, and no caller can
+    compute potential-based shaping without stating the discount it is for.
     """
     if prev_stats is None:
         return np.zeros(stats["team0_troop_damage"].shape[0], dtype=np.float32)

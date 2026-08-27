@@ -28,6 +28,16 @@ import pytest
 
 from python_ai.rewards.shaping import compute_shaping
 
+#: The discount these arithmetic tests are written against. Deliberately a
+#: FIXED fixture value and NOT `PPOConfig.gamma`: these cases assert exact
+#: numbers out of `gamma*Phi(s') - Phi(s)`, so reading the live config would
+#: make their expected values move every time someone tunes the discount --
+#: a test that changes its own answer cannot pin anything. The separate
+#: question of whether the TRAINER passes its real gamma is pinned by
+#: tests/test_rl_config.py and tests/test_reward_horizon_invariant.py.
+SHAPING_TEST_GAMMA = 0.99
+
+
 
 def _stats(n=1, **over):
     """A stats dict in `extract_engine_stats`' exact shape."""
@@ -57,7 +67,7 @@ def test_an_auto_reset_step_contributes_exactly_zero_shaping():
     prev = _stats(team0_tower_damage=[3000.0])   # we were winning
     cur = _stats()                                # counters restarted at 0
 
-    out = compute_shaping(cur, prev)
+    out = compute_shaping(cur, prev, SHAPING_TEST_GAMMA)
 
     assert out.shape == (1,)
     assert float(out[0]) == 0.0, (
@@ -80,7 +90,7 @@ def test_the_reset_guard_is_per_environment_not_all_or_nothing():
     prev = _stats(2, team0_tower_damage=[3000.0, 1000.0])
     cur = _stats(2, team0_tower_damage=[0.0, 1200.0])  # env 0 reset, env 1 live
 
-    out = compute_shaping(cur, prev)
+    out = compute_shaping(cur, prev, SHAPING_TEST_GAMMA)
 
     assert float(out[0]) == 0.0, "the reset env leaked a spike"
     assert float(out[1]) != 0.0, "the LIVE env was zeroed along with it"
@@ -98,8 +108,8 @@ def test_a_towers_alive_count_going_UP_is_a_reset():
                   team0_elixir_current=[9.9])
     cur = _stats(team0_towers_alive=[3], team1_towers_alive=[3],
                  team0_elixir_current=[9.9])
-    assert float(compute_shaping(cur, _stats(team0_elixir_current=[9.9]))[0]) < 0.0,         "control: with no reset this configuration must earn a real penalty"
-    assert float(compute_shaping(cur, prev)[0]) == 0.0
+    assert float(compute_shaping(cur, _stats(team0_elixir_current=[9.9]), SHAPING_TEST_GAMMA)[0]) < 0.0,         "control: with no reset this configuration must earn a real penalty"
+    assert float(compute_shaping(cur, prev, SHAPING_TEST_GAMMA)[0]) == 0.0
 
 
 def test_an_ordinary_step_is_untouched_by_the_guard():
@@ -107,13 +117,13 @@ def test_an_ordinary_step_is_untouched_by_the_guard():
     the entire dense reward, which is the no-learning failure."""
     prev = _stats(team0_tower_damage=[1000.0])
     cur = _stats(team0_tower_damage=[1300.0])
-    assert float(compute_shaping(cur, prev)[0]) > 0.0
+    assert float(compute_shaping(cur, prev, SHAPING_TEST_GAMMA)[0]) > 0.0
 
 
 def test_the_first_step_of_an_episode_is_not_mistaken_for_a_reset():
     """All-zero to all-zero is not a decrease, so a genuinely fresh episode
     still earns shaping on its first real step."""
-    out = compute_shaping(_stats(team0_elixir_current=[9.9]), _stats())
+    out = compute_shaping(_stats(team0_elixir_current=[9.9]), _stats(), SHAPING_TEST_GAMMA)
     assert np.isfinite(out).all()
     assert float(out[0]) < 0.0, "the overflow penalty should still apply"
 
@@ -143,4 +153,4 @@ def test_the_reset_guard_survives_a_stats_dict_missing_optional_keys():
     cur = _stats()
     for d in (prev, cur):
         d.pop("team0_wincon_damage")
-    assert float(compute_shaping(cur, prev)[0]) == 0.0
+    assert float(compute_shaping(cur, prev, SHAPING_TEST_GAMMA)[0]) == 0.0

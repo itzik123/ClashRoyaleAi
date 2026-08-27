@@ -81,9 +81,37 @@ W_ELIXIR_TRADE = 0.03
 #
 # The fix is not to un-do the PBRS term (it still gives unbiased dense guidance)
 # but to add an explicit, honest bias next to it: destroying a tower is the
-# thing we actually want and it should be paid for directly. Set above the
-# discounted value of a win (~0.28 at these episode lengths) so taking a crown
-# is never worth less than the trade that led to it.
+# thing we actually want and it should be paid for directly.
+#
+# THE ORIGINAL JUSTIFICATION READ: "Set above the discounted value of a win
+# (~0.28 at these episode lengths) so taking a crown is never worth less than
+# the trade that led to it." That sentence was TRUE WHEN WRITTEN and both
+# halves of it are now stale, so it is quoted here rather than left standing:
+#
+#   * "~0.28" was measured over ~112-decision episodes at gamma 0.99
+#     (0.99^112 = 0.32), which made 0.6 a deliberate ~2x bias.
+#   * The 2026-08-07 movement-speed fix roughly tripled match length to ~360
+#     decisions, at which 0.99^360 = 0.0268 -- so by 2026-08-27 this constant
+#     was paying **22.4x** a win rather than ~2x, and ~98% of the agent's
+#     discounted return was shaping. Nobody re-derived it across that fix.
+#
+# gamma is now 0.999 (see rl/config.py for the measurement and the variance
+# cost), which puts a win at 0.999^360 = 0.6976 and makes the ratio 0.86x.
+#
+# SO THE STATED INTENT IS NOW INVERTED: a crown pays slightly LESS than a win
+# rather than slightly more. That is deliberate and left alone for now -- three
+# crowns ARE a win, so a crown at ~86% of one is already generous, and the
+# behaviour this bias was introduced to fix (win-condition usage decaying to
+# 0.7% over 8,300 episodes under pure PBRS) was measured against an objective
+# where the win itself was worth 0.0268 and could not compete with anything.
+# With the win restored to 0.6976 the bias may no longer be needed at all.
+#
+# DO NOT retune this from the armchair. It was set from a real measured
+# behavioural failure, and whether it is still required is a training-run
+# question -- run it against the new discount before changing it. What must NOT
+# happen again is the two drifting apart silently, which is why
+# tests/test_reward_horizon_invariant.py now pins the RELATIONSHIP between this
+# constant and gamma rather than either number on its own.
 W_TOWER_DESTROYED = 0.6
 
 # Continuous (not one-time) pressure against sitting on a full elixir bar --

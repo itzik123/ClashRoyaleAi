@@ -13,7 +13,14 @@ from python_ai.rl.config import PHASE1_ENTROPY, PHASE2_ENTROPY, PPOConfig
 
 def test_the_documented_defaults_are_the_ones_every_measurement_used():
     cfg = PPOConfig()
-    assert cfg.gamma == 0.99
+    # Raised 0.99 -> 0.999 on 2026-08-27. `1/(1-gamma)` is the horizon in
+    # DECISIONS and a full match is max_ticks/skip_frames = 360, so at 0.99
+    # the horizon covered barely a quarter of the game and every TERMINAL
+    # reward decayed to 0.99^360 = 0.0268 -- making one crown worth 22.4x
+    # winning. The relationship, rather than this literal, is pinned by
+    # tests/test_reward_horizon_invariant.py. See rl/config.py for the
+    # measured variance cost (+6% return spread at lambda=0.9).
+    assert cfg.gamma == 0.999
     assert cfg.gae_lambda == 0.9
     assert cfg.eps_clip == 0.2
     assert cfg.lr == 3e-4
@@ -70,7 +77,21 @@ def test_the_gamma_used_for_shaping_is_the_same_one_GAE_uses():
     src = inspect.getsource(base_trainer.BaseTrainer.collect_rollout)
     assert "gamma=cfg.gamma" in src, (
         "compute_shaping must be passed the config's gamma, not a literal")
-    assert cfg.gamma == 0.99
+
+    # ...and `compute_shaping` must have NO default to fall back to, which is
+    # the half this test could not previously see. While the shaping default
+    # was itself 0.99, a caller that forgot the argument got the right answer
+    # by luck; the guarantee only became structural when the parameter was
+    # made required. tests/test_shaping_gamma_is_not_a_second_copy.py pins it
+    # directly -- this line keeps the two facts adjacent, since a future
+    # "convenience" default would restore the silent-drift hazard without
+    # breaking the assertion above.
+    import python_ai.rewards.shaping as _shaping
+    assert inspect.signature(_shaping.compute_shaping).parameters[
+        "gamma"].default is inspect.Parameter.empty, (
+        "compute_shaping's gamma has acquired a default again; that reopens "
+        "the silent policy-invariance break this test exists to prevent")
+    assert cfg.gamma == PPOConfig.gamma
 
 
 def test_entropy_configs_are_frozen_too():
