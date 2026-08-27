@@ -9,7 +9,22 @@ the kernel/pool arithmetic predicts (3 -> 4 -> 8 -> 10). The bridges sit at
 y=16.5 and the Princess Towers at y=3.0/14.0 in board coordinates, so no single
 trunk feature can span a bridge and the tower behind it.
 
-That is a real limit on the SPATIAL features, though deliberately not a limit
+>>> CLOSED 2026-08-27 (Phase 4, bottleneck 1). The shipped trunk now appends
+>>> two `DilatedContextBlock`s (CONTEXT_DILATIONS) and measures the FULL BOARD,
+>>> 34x18. Everything in this file below now measures the BASE trunk explicitly,
+>>> via `context_dilations=()`, because that is what the arithmetic below
+>>> describes. The shipped net's field is pinned in test_net_dilated_context.py.
+>>>
+>>> READ THIS BEFORE TRUSTING A GREEN RUN HERE: the context blocks are
+>>> zero-initialised residuals, so on a fresh net the gradient flows only
+>>> through the identity path and a receptive-field measurement returns 10x10
+>>> whether or not the blocks exist. This file's assertions therefore kept
+>>> PASSING across the change that invalidated their own docstring -- a guard
+>>> that silently stopped guarding rather than failing loudly. Hence the
+>>> explicit `context_dilations=()`: it measures the base trunk BY
+>>> CONSTRUCTION instead of by accident.
+
+That was a real limit on the SPATIAL features, though deliberately not a limit
 on global reasoning: the trunk output is flattened into a 1440-dim vector and
 the LSTM is fully connected over all of it, so long-range relations can still
 be formed -- just not as convolutional features, and not by the placement head,
@@ -89,15 +104,20 @@ def measured_receptive_field(net, trials=8):
     return int(rows.sum()), int(cols.sum())
 
 
-def test_trunk_receptive_field_is_what_the_architecture_implies():
-    """Pins 10x10. Fails loudly if a trunk edit shrinks what a feature sees.
+def test_base_trunk_receptive_field_is_what_the_architecture_implies():
+    """Pins the BASE trunk (no context blocks) at 10x10.
+
+    Built with `context_dilations=()` so it measures the two convolutions and
+    two pools this docstring's arithmetic actually describes. Without that
+    argument it would measure the shipped net and still read 10x10, for the
+    unrelated reason that a zero-initialised residual emits no gradient.
 
     10 is exactly what the layer arithmetic predicts -- conv3 gives 3, the
     first pool 4, conv3 again 8, the second pool 10 -- which is the check that
     makes the gradient measurement trustworthy rather than merely empirical:
     two independent derivations agreeing.
     """
-    net = MicroRoyaleNet(num_ability_slots=0)
+    net = MicroRoyaleNet(num_ability_slots=0, context_dilations=())
     rows, cols = measured_receptive_field(net)
     assert (rows, cols) == (10, 10), (
         f"trunk receptive field measured {rows}x{cols}, expected 10x10. If a "
@@ -106,23 +126,25 @@ def test_trunk_receptive_field_is_what_the_architecture_implies():
         "test deliberately rather than letting it drift.")
 
 
-def test_receptive_field_does_not_span_bridge_to_tower():
-    """The measured limitation, stated as the game fact it implies.
+def test_base_trunk_alone_does_not_span_bridge_to_tower():
+    """The measured limitation that the context blocks exist to remove.
 
-    A bridge sits at y=16.5 and the Princess Towers at y=3.0 and y=14.0
-    (ArenaLayout, via engine_constants). Relating "their win condition just
-    crossed" to "this tower is what it is walking at" is ~14 rows. The trunk
-    sees 9. This test does not assert that is WRONG -- the LSTM integrates
-    globally afterwards -- it asserts that the fact stays visible, so nobody
-    concludes the convolutional features carry that relation when they cannot.
+    A bridge sits at y=16.5, the enemy King at y=30.5 and the enemy Princess
+    Towers at y=27.0 (ArenaLayout, via engine_constants), so relating "their
+    win condition just crossed" to "this is the tower it is walking at" is 14
+    rows. The base trunk sees 10.
+
+    Kept, inverted in role: it no longer describes the shipped net, it pins the
+    REASON the shipped net adds context blocks. If this ever fails, the blocks
+    are buying nothing and should be deleted rather than paid for.
     """
-    net = MicroRoyaleNet(num_ability_slots=0)
+    net = MicroRoyaleNet(num_ability_slots=0, context_dilations=())
     rows, _ = measured_receptive_field(net)
     bridge_to_tower_rows = 14
     assert rows < bridge_to_tower_rows, (
-        "the trunk's receptive field now spans bridge-to-tower; that is an "
-        "improvement, but this test and the note in CLAUDE.md both describe "
-        "the old limit and must be rewritten together.")
+        "the BASE trunk now spans bridge-to-tower on its own; if that is real "
+        "then the context blocks are redundant and should be removed rather "
+        "than left as cost.")
 
 
 def test_widening_and_receptive_field_are_independent_axes():

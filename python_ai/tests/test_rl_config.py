@@ -25,7 +25,10 @@ def test_the_documented_defaults_are_the_ones_every_measurement_used():
     assert cfg.eps_clip == 0.2
     assert cfg.lr == 3e-4
     assert cfg.update_timestep == 500
-    assert cfg.bptt_chunk == 25
+    # 25 -> 50 on 2026-08-27: the credit horizon had to outlast a card
+    # rotation (30 decisions, derived from the engine in
+    # test_bptt_credit_horizon.py). Overridable via CLASH_BPTT_CHUNK.
+    assert cfg.bptt_chunk == 50
     assert cfg.ppo_epochs == 4
     assert cfg.num_minibatches == 8
     assert cfg.max_grad_norm == 0.5
@@ -43,11 +46,16 @@ def test_update_timestep_must_divide_evenly_into_bptt_chunks():
 
 
 def test_segments_per_rollout_is_chunks_times_envs():
-    """160 segments at the shipping settings: 20 chunks x 8 envs. A minibatch is
-    then 20 segments, i.e. a real batch rather than 8 sequences."""
+    """80 segments at the shipping settings: 10 chunks x 8 envs, so a minibatch
+    is 10 segments.
+
+    Was 160/20 at bptt_chunk=25. Doubling the horizon halves both, because
+    `update_timestep` is fixed -- that is the price of the longer credit path
+    and it is bounded (>= 8 per minibatch) in test_bptt_credit_horizon.py.
+    """
     cfg = PPOConfig(num_envs=8)
-    assert cfg.segments_per_rollout == 160
-    assert cfg.segments_per_rollout // cfg.num_minibatches == 20
+    assert cfg.segments_per_rollout == 80
+    assert cfg.segments_per_rollout // cfg.num_minibatches == 10
 
 
 def test_the_config_is_frozen():

@@ -840,19 +840,107 @@ first is the frozen mirror stage; the second is the CURRENT random deck's own
 progress through the same six stages. It resets to 0 every time a new deck is
 sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
 
-### Network (`model.py`, 1.88 M params)
+### Network (`models/net.py`, 1.85 M params)
 
 `MicroRoyaleNet` — the LSTM is 96% of the parameters:
 
 | | params | |
 |---|---|---|
-| `cnn_trunk` | 7,680 | 21→16→32 conv, 2× MaxPool(ceil) → `32×9×5` |
-| `scalar_mlp` | 48,320 | 754 scalars → 64 |
+| `cnn_trunk` | 14,464 | 21→16→32 conv, 2× MaxPool(ceil) → `32×9×5`, then 2× `DilatedContextBlock` |
+| `scalar_mlp` | 4,850 | `ScalarEncoder`: 1124 scalars → 64, in four branches |
 | `lstm` | **1,804,288** | `LSTMCell(1504, 256)`, stepped manually |
 | `card_head` | 1,285 | 256 → 5 (4 hand slots + no-op) |
 | `place_ctx` + `place_up` | 14,593 | ctx→32ch, broadcast-add, 2× (upsample+conv) → 612 |
 | `value_head` | 257 | critic |
 | `aux_elixir_head` | 257 | opponent-elixir estimator |
+
+**PHASE 4, 2026-08-27 — three architectural bottlenecks, all measured.** The
+net went 1,907,329 → **1,846,963** parameters (it got SMALLER) for **+14.8%**
+update wall-clock, measured interleaved against a ±0.8% noise floor.
+
+**The trunk's receptive field was 10x10 and is now the whole board (34x18).**
+A bridge sits at y=16.5 and the enemy King at y=30.5 — **14 rows** — so no
+single convolutional feature could relate "their win condition just crossed" to
+"this is the tower it is walking at", and the placement head reads the spatial
+map DIRECTLY, so the limit reached the ACTION and not merely the
+representation. Two `DilatedContextBlock`s (`CONTEXT_DILATIONS = (2, 2)`) are
+**appended** to `cnn_trunk`; at the pooled 9x5 map one cell is worth 4 input
+cells, so a 3x3 at dilation d buys 8d input rows. 10 + 16 + 16 = 42 ≥ 34.
+
+Four things worth carrying:
+
+- **Appending is load-bearing, not style.** Two callers slice the trunk by
+  INDEX — `extract_features_hires` and `hires_features` take `cnn_trunk[:2]`
+  for the full-resolution placement branch. Inserting anywhere but the end
+  hands that branch a different tensor with no error anywhere.
+- **The final 1x1 is ZERO-INITIALISED**, so the block is an exact identity at
+  init and a warm-started checkpoint's trunk is bit-identical — the same device
+  `place_hires[-1]` already used. The change is strictly additive.
+- **...and that made the existing receptive-field guard silently obsolete
+  rather than loudly failing.** A zero gate emits zero gradient, so
+  `test_net_trunk_receptive_field.py` kept measuring 10x10 and kept PASSING
+  across the change that invalidated its own docstring. It now builds the base
+  trunk explicitly with `context_dilations=()` — measuring by construction
+  instead of by accident. **A guard that stops guarding without failing is
+  worse than one that never existed.**
+- **DILATION IS ONLY CHEAP WHILE IT IS SMALL RELATIVE TO ITS MAP.** The first
+  attempt used dilations (2, 4) and cost **1.533x** — a hard budget fail for
+  6,784 parameters. Isolated at the real shape (500, 32, 9, 5): d=2 costs
+  8.26 ms and **d=4 costs 43.72 ms for the SAME parameter count**, because
+  `padding=4` on a 9x5 map pads to 17x13 — 221 cells against 45 — so ~80% of
+  the work is padding. Two d=2 blocks reach the same 32 rows for 14.6 ms.
+  Width is also NOT the axis: the earlier measurement in that same test file
+  has doubling the channels at 2.28x for exactly zero extra reach.
+
+**`scalar_mlp` is four semantic branches, not `Linear(1124, 64)`.** 72,000 →
+**4,850** parameters, at **0.998x** — free. econ (elixir + 4 costs) → 8, hand
+(4 one-hots through one shared `Linear(185, 5)` per slot) → 20, extra (clock,
+both spends, 6 tower HPs) → **12, an EXPANSION**, and cycle (`seen`/`recency`
+through one shared card projection) → 24. **The sum must stay 64**: it is
+`lstm_input_dim - cnn_out_dim`, and moving it reshapes `LSTMCell(1504, 256)` —
+1,804,288 parameters, 96% of the net.
+
+**And the premise needed correcting first.** "17.6:1 compression destroys the
+cycle" does not survive the mathematics — a random projection of 370 dims into
+64 largely preserves it (Johnson–Lindenstrauss). The defect is about
+**learning, not information**: in one `Linear(1124, 64)` every output row spans
+all 1124 inputs, so a gradient step improving HAND encoding rewrites the very
+rows the cycle is read through. It was not compressed away, it was
+continuously perturbed by another objective's learning, which is worse because
+it never converges. The test that pins this therefore takes a real optimizer
+step on a hand-only objective and asks whether the encoder's RESPONSE to the
+cycle moved — and a paired contrast test **requires the monolithic layer to
+fail the same procedure**, so the instrument cannot be passing for a trivial
+reason.
+
+**`bptt_chunk` 25 → 50, because the credit horizon was shorter than a card
+rotation.** Derived from the engine, not assumed: cycling a card back means
+playing the other four, and at `DEFAULT_DECK`'s average cost with the elixir
+rate MEASURED off a live env (28.571 ticks/elixir, i.e. exactly 1/0.035) that
+is `4 x 2.625 x 28.571 = 300 ticks = 30 DECISIONS` at `skip_frames = 10`. So
+gradients were truncated before one rotation completed — **the same shape of
+defect as the gamma correction made the same day**, and pointed at the same
+capability: item 24 had just put `seen[]`/`recency[]` in the observation to
+make card counting possible, and no gradient path reached far enough to learn
+from it. *The information arrived and the credit path did not.*
+
+Nearly free (**1.052x**) because `update_timestep` and `num_minibatches` are
+fixed, so the segment count halves as the length doubles and a minibatch still
+pushes 500 flat rows through the trunk — 84% of the update. Only the LSTM loop
+changes shape (25 calls at batch 20 → 50 at batch 10) and it is 16%.
+**The real cost is not wall clock**: segments per minibatch fall 20 → 10, and
+those segments are the batch dimension of every gradient estimate. That is
+bounded at ≥ 8 by `test_bptt_credit_horizon.py`, which is what refuses L=100
+(1.227x, and 5 segments) — on batch width, not on time. Overridable with
+`CLASH_BPTT_CHUNK`.
+
+**Measuring any of this needs care on this box.** The update-chunk benchmark
+(`eval/profile_architecture.py`) drifted **3x in absolute terms** across one
+session from thermal throttling, so only INTERLEAVED within-run ratios mean
+anything — and a fixed arm order is not enough either: with two IDENTICAL arms
+the second read **6.8% slower**, every round, because it inherits the cache the
+first just evicted. The order is alternated and every comparison carries an
+identical-arms control. With 21 repeats that control sits at 0.99–1.02.
 
 `ceil_mode=True` on both pools is load-bearing: 34 rows floor-divide to 8 and
 would silently delete the back row behind the King.

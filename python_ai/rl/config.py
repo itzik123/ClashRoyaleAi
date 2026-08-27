@@ -147,7 +147,45 @@ class PPOConfig:
     #: chunks x 8 envs = 160 segments per rollout, so a minibatch is a real
     #: batch instead of 8 sequences. FASTER as well as more thorough:
     #: sequential LSTMCell calls per epoch drop from 500 to 8 x 25 = 200.
-    bptt_chunk: int = 25
+    #: --- THE HORIZON MUST OUTLAST A CARD ROTATION (2026-08-27) ------------
+    #: 25 -> 50. `bptt_chunk` is the CREDIT-ASSIGNMENT horizon: gradients stop
+    #: at the chunk boundary, so an action whose payoff arrives later than
+    #: `bptt_chunk` decisions cannot be reinforced at all.
+    #:
+    #: A card rotation -- playing the other four cards to cycle a given one back
+    #: -- is, derived from the engine rather than assumed (DEFAULT_DECK's costs
+    #: via get_card_info, and the elixir rate MEASURED off a live env at 28.571
+    #: ticks/elixir):
+    #:
+    #:     4 cards x 2.625 elixir x 28.571 ticks = 300 ticks = 30 DECISIONS
+    #:
+    #: at skip_frames=10. So the old 25 truncated the gradient BEFORE one
+    #: rotation completed. That is the same shape of defect as the gamma
+    #: correction made the same day: the observation had just been extended
+    #: with the opponent's `seen[]`/`recency[]` (item 24) to make card counting
+    #: possible, and no gradient path reached far enough to learn from it. The
+    #: information arrived; the credit path did not.
+    #:
+    #: WHY IT IS NEARLY FREE. `update_timestep` and `num_minibatches` are
+    #: unchanged, so the segment count halves as the segment length doubles and
+    #: a minibatch still pushes exactly 500 flat rows through the trunk -- 84%
+    #: of the update. Only the LSTM's sequential loop changes shape, 25 calls
+    #: at batch 20 becoming 50 at batch 10, and that loop is 16% of the update.
+    #: Measured end-to-end: 1.090x per PPO update. L=100 costs 1.227x and is
+    #: refused on the batch-width guard below, not on wall clock.
+    #:
+    #: WHAT IT COSTS THAT IS NOT WALL CLOCK. Segments per minibatch fall 20 ->
+    #: 10, and those segments are the batch dimension of every gradient
+    #: estimate, so it gets noisier while the number of optimizer steps per
+    #: rollout (32) stays the same. That is the real trade. It is bounded by
+    #: test_bptt_credit_horizon.py, which refuses fewer than 8 segments per
+    #: minibatch -- the thing that stops the horizon being pushed to 250
+    #: "because gradients are good" and landing back in the one-long-sequence
+    #: regime truncated BPTT was introduced to escape.
+    #:
+    #: Must divide `update_timestep` (validated in __post_init__), so the
+    #: available rungs are 50, 100, 125, 250, 500 -- not arbitrary.
+    bptt_chunk: int = int(os.environ.get("CLASH_BPTT_CHUNK", 50))
     ppo_epochs: int = 4
 
     #: 160 segments / 8 = 20 segments per minibatch, 8 optimizer steps per

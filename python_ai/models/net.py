@@ -160,6 +160,192 @@ def _own_princess_centres():
             (int(_env.ARENA_RIGHT_LANE_X), y)]
 
 
+#: Dilations of the context blocks appended to the CNN trunk, in order.
+#:
+#: They run on the POOLED 9x5 map, where one cell is worth 4 input cells (two
+#: stride-2 pools), so a 3x3 kernel at dilation d reaches 8d further in INPUT
+#: rows. The base trunk measures 10x10 by gradient, so 10 + 16 + 16 = 42 >= 34
+#: covers the whole board -- bought at the price of two 9x5 convolutions, the
+#: cheapest resolution on the board at which to buy reach.
+#:
+#: WHY REACH WAS NEEDED. A bridge sits at y=16.5 and the enemy King at y=30.5,
+#: 14 rows apart; the enemy Princess Towers at y=27.0, 10.5 rows. At a 10-row
+#: field no single convolutional feature could relate "their win condition just
+#: crossed" to "this is the tower it is walking at" -- and the placement head
+#: reads the spatial map DIRECTLY, so that limit reached the ACTION, not just
+#: the representation.
+#:
+#: WHY NOT WIDTH. Measured in test_net_trunk_receptive_field.py: doubling the
+#: channels costs 2.28x and moves the receptive field by exactly zero. Width
+#: and reach are orthogonal axes, and this problem is on the reach axis.
+#:
+#: WHY (2,2) AND NOT (2,4) -- MEASURED, AND THE ONE COUNTERINTUITIVE BIT.
+#: A single d=4 block reaches as far as two d=2 blocks and has the same
+#: parameter count, so it looks like the cheaper way to buy 32 rows. It is not.
+#: Isolated fwd+bwd at the real update shape (500, 32, 9, 5):
+#:
+#:     identity          0.97 ms          bottleneck d=1     7.30 ms
+#:     bottleneck d=2    8.26 ms          bottleneck d=4    43.72 ms
+#:
+#: 5.3x for the SAME parameters. `padding=dilation` on a 9x5 map means d=4 pads
+#: to 17x13 -- 221 cells against 45 -- so the convolution spends ~80% of its
+#: work on padding. Dilation is cheap only while the dilation is small relative
+#: to the map it runs on, and a 9x5 map is small. Two d=2 blocks reach the same
+#: 32 rows for 14.6 ms instead of 50.1 ms.
+#:
+#: Both are inside budget end-to-end (3-5% of an update chunk, against a ~1%
+#: noise floor measured arm-against-itself), so this was decided on the
+#: isolated measurement, where the 6x difference is far above noise.
+CONTEXT_DILATIONS = (2, 2)
+
+#: Bottleneck width inside a context block. 32 -> 16 -> 16 -> 32, so the only
+#: 3x3 convolution runs at half the trunk's channel count and the block costs
+#: ~2.7k parameters instead of the ~9.2k a plain 32->32 dilated conv would.
+CONTEXT_BOTTLENECK = 16
+
+
+class DilatedContextBlock(nn.Module):
+    """Residual dilated bottleneck: `x + expand(relu(spread(relu(reduce(x)))))`.
+
+    THE FINAL 1x1 IS ZERO-INITIALISED, which is the whole design. At
+    initialisation the block computes exactly `x`, so appending it to a trained
+    trunk leaves every existing feature bit-identical and the change is
+    strictly additive -- the net starts where it was and learns to use the new
+    reach. `place_hires[-1]` in this same file already uses that device.
+
+    The consequence that trips up measurement, pinned in
+    tests/test_net_dilated_context.py: a zero gate emits zero gradient too, so
+    a gradient-measured receptive field on a FRESH net truthfully reports the
+    identity path's 10x10. Activate the gate before measuring the STRUCTURAL
+    field. That is the same class of trap as measuring a receptive field on a
+    zeros input and getting whichever ReLU channels happened to be open.
+
+    Shape-preserving by construction (`padding=dilation` on a 3x3 kernel), so
+    `cnn_out_dim` and therefore `lstm_input_dim` do not move -- the 1.8M-
+    parameter LSTM, 96% of the net, keeps its shape and its checkpoint.
+    """
+
+    def __init__(self, channels, bottleneck, dilation):
+        super().__init__()
+        self.channels = channels
+        self.dilation = dilation
+        self.reduce = nn.Conv2d(channels, bottleneck, kernel_size=1)
+        self.spread = nn.Conv2d(bottleneck, bottleneck, kernel_size=3,
+                                padding=dilation, dilation=dilation)
+        self.expand = nn.Conv2d(bottleneck, channels, kernel_size=1)
+        nn.init.zeros_(self.expand.weight)
+        nn.init.zeros_(self.expand.bias)
+
+    def forward(self, x):
+        h = F.relu(self.reduce(x))
+        h = F.relu(self.spread(h))
+        return x + self.expand(h)
+
+
+#: Widths of the scalar encoder's four semantic branches. They MUST sum to
+#: SCALAR_FEATURE_DIM: that sum is `lstm_input_dim - cnn_out_dim`, and moving it
+#: reshapes `LSTMCell(1504, 256)` -- 1,804,288 parameters, 96% of the net, all
+#: discarded on the next load. Retuning the split is free; changing the total is
+#: not, and should be a deliberate decision rather than a side effect.
+#:
+#: `extra` is an EXPANSION (9 -> 12), not a compression. Those nine floats are
+#: the match clock, both players' cumulative spend and six tower HPs -- they
+#: decide who is winning -- and in the monolithic layer they shared all 64
+#: outputs with 740 sparse one-hot dims.
+ECON_BRANCH_DIM = 8
+HAND_SLOT_EMBED_DIM = 5      # x hand_size (4) = 20
+EXTRA_BRANCH_DIM = 12
+CYCLE_BRANCH_DIM = 24
+SCALAR_FEATURE_DIM = 64
+
+#: Card-identity width inside the cycle branch. `seen` and `recency` index the
+#: same card space, so ONE shared projection serves both: `seen @ W` is the sum
+#: of the embeddings of the cards the opponent has shown, `recency @ W` the same
+#: sum weighted by how recently. 2,960 parameters against a dense 370-wide
+#: layer's 8,880, and the two blocks cannot learn two different notions of what
+#: a card is.
+CYCLE_EMBED_DIM = 16
+
+
+class ScalarEncoder(nn.Module):
+    """The scalar half of the observation, encoded in four independent branches.
+
+    WHAT THIS REPLACES AND WHY. `nn.Linear(1124, 64)`. Every one of its 64
+    outputs was a row spanning all 1124 inputs, so the columns carrying the
+    opponent's card cycle shared their outputs with the 740 hand one-hot
+    columns -- and a gradient step taken to improve hand encoding rewrote the
+    same rows the cycle is read through. The cycle was not compressed away so
+    much as continuously perturbed by other objectives' learning.
+
+    Note what the defect is NOT. "17.6:1 compression destroys the cycle" does
+    not survive the mathematics: a random projection of 370 dims into 64
+    preserves pairwise structure well (Johnson-Lindenstrauss), so at
+    initialisation the information is largely intact. The problem is an
+    optimisation one, which is why the test that pins this takes a real
+    optimizer step rather than measuring reconstruction error.
+
+    Branches are concatenated in a FIXED order with the cycle LAST, so
+    `cycle_slice` names a contiguous block that other code (and the tests) can
+    address. Offsets into the observation are taken from the engine's own
+    bound values, never restated -- the last thing to restate this layout read
+    card-recency floats where it expected tower HP.
+    """
+
+    def __init__(self, hand_size, num_card_ids, num_extra_scalars,
+                 cycle_block_size, extra_start, cycle_start):
+        super().__init__()
+        self.hand_size = hand_size
+        self.num_card_ids = num_card_ids
+        self.num_extra_scalars = num_extra_scalars
+        self.cycle_block_size = cycle_block_size
+        self.extra_start = extra_start
+        self.cycle_start = cycle_start
+        self.onehot_start = 1 + hand_size
+
+        hand_dim = hand_size * HAND_SLOT_EMBED_DIM
+        self.out_dim = (ECON_BRANCH_DIM + hand_dim
+                        + EXTRA_BRANCH_DIM + CYCLE_BRANCH_DIM)
+        if self.out_dim != SCALAR_FEATURE_DIM:
+            raise ValueError(
+                f"scalar branches sum to {self.out_dim}, not "
+                f"{SCALAR_FEATURE_DIM}; that changes lstm_input_dim and "
+                "discards the LSTM's 1.8M trained parameters. Retune the "
+                "branch widths so they still sum to the total, or change the "
+                "total deliberately and say so.")
+
+        # elixir + the hand's costs. Affordability is a JOINT function of the
+        # two, so they share a branch rather than being split apart.
+        self.econ = nn.Linear(1 + hand_size, ECON_BRANCH_DIM)
+        # ONE projection reused across hand slots, not a dense layer over all
+        # 740 dims: slot i and slot j hold the same kind of thing (a card), and
+        # a dense layer would have to learn that four separate times.
+        self.hand_slot = nn.Linear(num_card_ids, HAND_SLOT_EMBED_DIM)
+        self.extra = nn.Linear(num_extra_scalars, EXTRA_BRANCH_DIM)
+        self.cycle_card = nn.Linear(num_card_ids, CYCLE_EMBED_DIM, bias=False)
+        self.cycle_out = nn.Linear(2 * CYCLE_EMBED_DIM, CYCLE_BRANCH_DIM)
+
+        self.cycle_slice = (self.out_dim - CYCLE_BRANCH_DIM, self.out_dim)
+
+    def forward(self, scalar):
+        econ = scalar[:, :self.onehot_start]
+        onehots = scalar[:, self.onehot_start:
+                         self.onehot_start + self.hand_size * self.num_card_ids]
+        extra = scalar[:, self.extra_start:
+                       self.extra_start + self.num_extra_scalars]
+        cycle = scalar[:, self.cycle_start:
+                       self.cycle_start + self.cycle_block_size]
+
+        e = F.relu(self.econ(econ))
+        h = F.relu(self.hand_slot(
+            onehots.reshape(-1, self.hand_size, self.num_card_ids))).flatten(1)
+        x = F.relu(self.extra(extra))
+        # (B, 2, num_card_ids) -- row 0 is seen[], row 1 is recency[].
+        c = cycle.reshape(-1, 2, self.num_card_ids)
+        c = F.relu(self.cycle_card(c)).flatten(1)
+        c = F.relu(self.cycle_out(c))
+        return torch.cat([e, h, x, c], dim=1)
+
+
 class MicroRoyaleNet(nn.Module):
     # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
 
@@ -172,7 +358,9 @@ class MicroRoyaleNet(nn.Module):
     LSTM_HIDDEN = 256
 
     def __init__(self, channels=None, board_width=None, board_height=None, hand_size=None, num_card_ids=None,
-                 placement_rows=None, num_ability_slots=0):
+                 placement_rows=None, num_ability_slots=0,
+                 context_dilations=CONTEXT_DILATIONS,
+                 branched_scalars=True):
         super(MicroRoyaleNet, self).__init__()
 
         # ברירות מחדל נשלפות חי מהמנוע המקומפל (לא hardcoded) -- כל שינוי גודל
@@ -313,6 +501,15 @@ class MicroRoyaleNet(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
         )
+        # נוספים **בסוף** ולא באמצע, וזה לא סגנון: שני קוראים חותכים את
+        # ה-trunk לפי אינדקס (extract_features_hires ו-hires_features לוקחים
+        # [:2] לענף הרזולוציה המלאה ו-[2:] לשאר). הוספה בסוף משאירה את שני
+        # החיתוכים תקפים בדיוק כפי שהם; הוספה בהתחלה הייתה מוסרת לענף
+        # ברזולוציה המלאה טנזור אחר לגמרי, בלי שום שגיאה בשום מקום.
+        self.context_dilations = tuple(context_dilations)
+        for dilation in self.context_dilations:
+            self.cnn_trunk.append(
+                DilatedContextBlock(32, CONTEXT_BOTTLENECK, dilation))
         self.cnn_flatten = nn.Flatten()
 
         # חישוב ממד הפלט של ה-CNN לאחר הפולינג (ceil פעמיים, תואם ceil_mode=True למעלה)
@@ -325,10 +522,25 @@ class MicroRoyaleNet(nn.Module):
         # 2. חילוץ תכונות סקלרי (MLP)
         # קלט: אליקסיר + עלויות + זהות הקלפים ביד (one-hot לכל משבצת)
         # ==========================================
-        self.scalar_mlp = nn.Sequential(
-            nn.Linear(self.scalar_size, 64),
-            nn.ReLU()
-        )
+        # ארבעה ענפים סמנטיים במקום Linear(1124, 64) יחיד. השם נשמר
+        # (`scalar_mlp`) בכוונה: expert_distill.TRUNK_MODULES מזהה מודולים
+        # לפי שם, ושינוי שם היה מנתק אותו בשקט. ראה ScalarEncoder.
+        if branched_scalars:
+            self.scalar_mlp = ScalarEncoder(
+                hand_size, num_card_ids, self.num_extra_scalars,
+                self.cycle_block_size, self.extra_start, self.cycle_start)
+            scalar_feature_dim = self.scalar_mlp.out_dim
+        else:
+            # השכבה המונוליטית שקדמה לזה. נשמרת כדי שה-A/B יהיה בר-הרצה
+            # תמיד (בדיוק כמו collision_bench.cpp שמחזיק את שני המסלולים),
+            # ובעיקר כדי שהבדיקה שמראה שהיא **נכשלת** בבדיקת אי-ההפרעה
+            # תוכל להריץ אותה באמת ולא לתאר אותה.
+            self.scalar_mlp = nn.Sequential(
+                nn.Linear(self.scalar_size, SCALAR_FEATURE_DIM),
+                nn.ReLU()
+            )
+            scalar_feature_dim = SCALAR_FEATURE_DIM
+        self.scalar_feature_dim = scalar_feature_dim
 
         # ==========================================
         # 2ב. Embedding לזהות קלף -- למיקום אוטורגרסיבי (ראה placement_given_card)
@@ -350,7 +562,7 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         # 3. שכבת זיכרון (LSTM)
         # ==========================================
-        self.lstm_input_dim = self.cnn_out_dim + 64
+        self.lstm_input_dim = self.cnn_out_dim + scalar_feature_dim
         # אנו משתמשים ב-LSTMCell כדי שנוכל לשלוט על הפעימות (Ticks) ידנית בלולאת הסביבה
         self.lstm = nn.LSTMCell(self.lstm_input_dim, self.LSTM_HIDDEN)
 
