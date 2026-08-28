@@ -475,50 +475,45 @@ TEST_CASE("an Evolution's evolved form keeps its base form's sight range",
 }
 
 
-// ---------------- sight is STRICT CENTRE-TO-CENTRE ----------------
+// ---------------- target selection: nearest building, strict sight ----------
 //
-// CHANGED 2026-08-28. `effectiveSightWith` used to return
-// `sightRange + myRadius + effectiveRadiusOf(target)`, which inflated a Hog
-// Rider's aggro radius against a Cannon from its catalogued 9.5 to 10.9 -- a
-// 15% free extension, applied to every unit in the game. Radii answer a HITBOX
-// question ("can these two touch"); the published sight ranges are
-// centre-to-centre, and 9.5 must mean 9.5.
+// TWO SEPARATE RULES, both fixed 2026-08-28, and the second one is the defect
+// actually reported.
 //
-// THE FLOOR, which is not a softening. Attack range in this engine IS
-// surface-to-surface (`effectiveRangeTo`), so a unit whose attack REACH exceeds
-// its sight can hit what it cannot acquire -- it never targets and stands
-// there. That is the measured 2026-08-20 free-siege defect pinned at the top of
-// this file. Sight is therefore floored at the unit's own attack reach. For
-// every long-sight card the floor is irrelevant: a Hog's is 0.8+0.4+1.0 = 2.2
-// against a sight of 9.5.
+// 1. SIGHT IS STRICT CENTRE-TO-CENTRE. effectiveSightWith returned
+//    `sightRange + myRadius + radiusOf(target)`, inflating a Hog Rider's
+//    catalogued 9.5 to 10.9 against a Cannon. Radii answer a hitbox question;
+//    the published sight ranges are centre-to-centre. (One floor survives:
+//    sight is floored at the unit's own attack reach for a card whose raw
+//    sightRange already covers its raw attackRange -- otherwise a Princess
+//    Tower goes blind to a Musketeer inside its own attack range, the
+//    free-siege defect this file opens with.)
 //
-// WHAT THIS DOES AND DOES NOT BUY, measured 2026-08-28 on the reported case
-// (Hog spawned at (14.0, 17.5), Cannon at (5.0, 11.0)):
+// 2. NEAREST BUILDING WINS, TOWERS INCLUDED. BuildingTargeter::findTarget used
+//    an `else if` that made every non-tower building beat every tower at ANY
+//    distance. Measured on replays/hog_test_1.json: at the tick it turned, the
+//    Hog was 7.714 tiles from the Princess Tower and 9.160 from the Cannon --
+//    it abandoned the nearer objective for the further one and stayed wrong
+//    for seven more ticks. Fixing sight alone did NOT fix this; it only moved
+//    the distance at which the wrong preference fired.
 //
-//   old code: acquires at 10.783 tiles     new code: walks past 9.789 untouched,
-//                                                    acquires at 9.160
-//
-// The inflation is gone. The cross-lane pull is NOT, and the reason is
-// geometric rather than a defect: the lanes sit at x = 3.0 and x = 14.0, so a
-// unit walking one lane passes 9.0 tiles from a building in the other, and
-// 9.0 < 9.5. Euclidean sight of 9.5 cannot exclude it. Making a Hog immune to
-// an off-lane Cannon requires PATH distance (down, across a bridge, back up --
-// well over 14 tiles), which is a different mechanism and not what this change
-// implements.
+// The old code's own comment described tier-two as modelling the real game.
+// It does not: a building-targeter walks at whichever BUILDING is closest, and
+// Crown Towers are buildings.
 
 namespace {
 
-// Pure-x separation at a fixed y, so "distance" and "how far off-lane the
-// building sits" are the same number. With the building unseen the lane
-// objective is the Princess Tower directly below, i.e. straight down, and the
-// separation only grows -- so "no aggro" is a stable state, not a race.
-float driftAtSeparation(int attackerCard, float separation) {
+// Pure-x separation at a fixed y, so "distance to the Cannon" and "how far
+// off-lane it sits" are one number. Returns the attacker's net x drift: a
+// negative value means it left its lane for the Cannon, ~0 means it kept
+// walking at its tower.
+float driftAt(int attackerCard, float attackerY, float separation) {
     GameManager game(DECK, DECK);
     Board& board = game.getBoard();
     CardRegistry::getInstance().getCard(attackerCard)
-        ->spawnEntity(14.0f, 12.0f, 1, board);
+        ->spawnEntity(14.0f, attackerY, 1, board);
     CardRegistry::getInstance().getCard(25)                    // Cannon
-        ->spawnEntity(14.0f - separation, 12.0f, 0, board);
+        ->spawnEntity(14.0f - separation, attackerY, 0, board);
     board.commitPendingEntities();
     std::shared_ptr<Entity> attacker;
     for (const auto& e : board.getEntities())
@@ -541,56 +536,71 @@ float catalogSight(int cardId) {
     return -1.0f;
 }
 
+// y = 12 puts the attacker exactly 6.0 tiles from the Princess Tower at
+// (14, 6), so a Cannon's separation can be placed either side of 6.0 while
+// staying well inside every catalogued sight range. That is what isolates
+// rule 2 from rule 1.
+constexpr float LANE_Y = 12.0f;
+constexpr float TOWER_DIST_AT_LANE_Y = 6.0f;
+
 } // namespace
 
-TEST_CASE("a Hog Rider does not acquire a Cannon beyond its catalogued 9.5",
-          "[targeting][sight][regression][centre_to_centre]") {
-    // 10.0 tiles is the case that decides it: OUTSIDE the catalogued 9.5, and
-    // INSIDE the 10.9 the old radius-inflated formula produced. This assertion
-    // fails on the pre-2026-08-28 engine, which is what makes it a regression
-    // test rather than a restatement.
-    const float drift = driftAtSeparation(15, 10.0f);
-    INFO("net x drift at 10.0 tiles: " << drift);
+TEST_CASE("a Cannon FURTHER than the tower never steals a Hog Rider off its lane",
+          "[targeting][sight][regression][nearest_building]") {
+    // THE REPORTED BUG. 7.0 > 6.0, so the tower is the nearer building, but
+    // 7.0 is comfortably inside the Hog's 9.5 sight -- which is precisely the
+    // band the old `else if` got wrong. Fails on the pre-fix engine.
+    const float drift = driftAt(15, LANE_Y, 7.0f);
+    INFO("Cannon 7.0 away, Princess Tower " << TOWER_DIST_AT_LANE_Y
+         << " away; net x drift " << drift);
     REQUIRE(drift == Catch::Approx(0.0f).margin(0.05f));
 }
 
-TEST_CASE("a Hog Rider still acquires a Cannon inside 9.5",
-          "[targeting][sight][centre_to_centre]") {
-    // The other half: strict must not mean blind. Without this, deleting the
-    // Cannon-pull entirely would pass the case above.
-    const float drift = driftAtSeparation(15, 9.0f);
-    INFO("net x drift at 9.0 tiles: " << drift);
+TEST_CASE("a Cannon NEARER than the tower does pull a Hog Rider",
+          "[targeting][nearest_building]") {
+    // The other side of the same rule: strict must not mean inert. Without
+    // this, deleting the Cannon pull outright would pass the case above.
+    const float drift = driftAt(15, LANE_Y, 4.0f);
+    INFO("Cannon 4.0 away, Princess Tower " << TOWER_DIST_AT_LANE_Y
+         << " away; net x drift " << drift);
     REQUIRE(drift < -0.5f);
 }
 
-TEST_CASE("the centre-to-centre sight bound holds for every catalogued range",
-          "[targeting][sight][centre_to_centre][systemic]") {
-    // Parameterised over building-targeters spanning four different catalogue
-    // values, so this is a property of the RULE and not of one card. Ids and
-    // sight ranges are read from the registry, never restated here.
+TEST_CASE("the nearest-building rule holds for every catalogued sight range",
+          "[targeting][nearest_building][systemic]") {
+    // Parameterised over building-targeters spanning four catalogue values, so
+    // this is a property of the RULE and not of one card. Every one of these
+    // sees past 6.0, so in each case both buildings are in sight and only
+    // distance decides.
     const int card = GENERATE(15,   // Hog Rider   9.5
                               45,   // Balloon     7.7
                               2,    // Giant       7.5
                               40);  // Ice Golem   7.0
     const float sight = catalogSight(card);
-    REQUIRE(sight > 0.0f);
+    REQUIRE(sight > TOWER_DIST_AT_LANE_Y);
+    INFO("card id " << card << ", catalogued sight " << sight);
 
-    INFO("card id " << card << " with catalogued sight " << sight);
-    // Half a tile outside: no acquisition, at any catalogue value.
-    REQUIRE(driftAtSeparation(card, sight + 0.5f)
-            == Catch::Approx(0.0f).margin(0.05f));
-    // Half a tile inside: acquisition. Bounds the rule from both sides so a
-    // uniformly-blind engine cannot pass.
-    REQUIRE(driftAtSeparation(card, sight - 0.5f) < -0.3f);
+    REQUIRE(driftAt(card, LANE_Y, 7.0f) == Catch::Approx(0.0f).margin(0.05f));
+    REQUIRE(driftAt(card, LANE_Y, 4.0f) < -0.3f);
+}
+
+TEST_CASE("sight still bounds acquisition at the raw catalogued range",
+          "[targeting][sight][centre_to_centre]") {
+    // Rule 1, isolated from rule 2. At y = 20 the tower is 14.0 tiles away, so
+    // the Cannon is the nearest building at every separation tested here and
+    // only SIGHT can refuse it. 10.0 is outside the Hog's 9.5 and inside the
+    // 10.9 the old radius-inflated formula produced.
+    REQUIRE(driftAt(15, 20.0f, 10.0f) == Catch::Approx(0.0f).margin(0.05f));
+    REQUIRE(driftAt(15, 20.0f, 9.0f) < -0.3f);
 }
 
 TEST_CASE("sight is never shorter than the unit's own attack reach",
           "[targeting][sight][invariant][regression]") {
-    // The floor, stated as the property it protects. A Princess Tower's sight
+    // The floor, stated as the property it protects: a Princess Tower's sight
     // is 7.5 while its attacks reach 7.5 + 1.5 + 0.4 = 9.4, so a strict
     // centre-to-centre reading alone would recreate the free-siege defect this
-    // file opens with: a Musketeer parked at 8.0 removing a tower that never
-    // fires back.
+    // file opens with -- a Musketeer at 8.0 removing a tower that never fires
+    // back.
     GameManager game(DECK, DECK);
     CardRegistry::getInstance().getCard(MUSKETEER)
         ->spawnEntity(4.0f, 19.0f, 0, game.getBoard());

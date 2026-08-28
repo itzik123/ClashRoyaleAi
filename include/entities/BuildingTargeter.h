@@ -44,15 +44,35 @@ protected:
             if (entity->team == this->team || !entity->isAlive() || !entity->isTargetable()) continue;
             if (!entity->isBuilding()) continue;
             float dist = position.distanceTo(entity->position);
-            if (entity->isTower()) {
-                if (dist < minTowerDistance) {
-                    minTowerDistance = dist;
-                    closestTower = entity;
-                }
+
+            // The nearest TOWER is tracked separately, but only to serve the
+            // out-of-sight fallback below -- never as a competing tier.
+            if (entity->isTower() && dist < minTowerDistance) {
+                minTowerDistance = dist;
+                closestTower = entity;
+            }
+
+            // NEAREST BUILDING IN SIGHT WINS, AND TOWERS COMPETE ON EQUAL
+            // TERMS. This used to be an `else if`, which made every non-tower
+            // building beat every tower at ANY distance -- so a Cannon parked
+            // far off-lane out-prioritised a Princess Tower the unit was
+            // already closer to.
+            //
+            // Measured 2026-08-28 on replays/hog_test_1.json: at the tick it
+            // turned, the Hog was 7.714 tiles from the Princess Tower and
+            // 9.160 from the Cannon. It abandoned the nearer objective to walk
+            // at the further one, and stayed wrong for seven more ticks until
+            // the Cannon actually became closest at tick 22.
+            //
+            // A building-targeter in the real game walks at whichever BUILDING
+            // is closest, and Crown Towers are buildings. That is one rule, not
+            // two tiers, and the previous comment here stated the two-tier
+            // behaviour as a deliberate model of the real game -- it was not.
+            //
             // effectiveSightWith, not raw sightRange -- see CombatEntity's own
             // findTarget and the comment on effectiveSightTo for the measured
             // free-siege bug the mismatch caused.
-            } else if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
+            if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
                 minSightDistance = dist;
                 closestInSight = entity;
             }
