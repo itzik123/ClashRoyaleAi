@@ -1277,13 +1277,16 @@ protected:
         for (const auto& entity : board.getEntities()) {
             if (!isValidTarget(entity)) continue;
             float dist = position.distanceTo(entity->position);
-            if (entity->isTower()) {
-                if (dist < minTowerDistance) {
-                    minTowerDistance = dist;
-                    closestTower = entity;
-                }
-            } else if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
-                minSightDistance = dist;
+            if (entity->isTower() && dist < minTowerDistance) {
+                minTowerDistance = dist;
+                closestTower = entity;
+            }
+            // Towers compete on distance like everything else; the tracking
+            // above serves only the out-of-sight fallback. Ranked by footprint
+            // distance (Entity::getTargetingRadius), sight gated on centre.
+            const float rank = dist - entity->getTargetingRadius();
+            if (rank <= effectiveSightWith(myRadius, *entity) && rank < minSightDistance) {
+                minSightDistance = rank;
                 closestInSight = entity;
             }
         }

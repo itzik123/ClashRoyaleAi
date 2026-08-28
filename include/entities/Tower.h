@@ -21,6 +21,20 @@ public:
         return (symbol == 'R') ? 2.0f : 1.5f;
     }
 
+    // Target-selection footprint, larger than the collision radius and fitted
+    // to observed play: a Hog Rider with a Cannon 8 or 7 tiles off-lane walks
+    // at the Princess Tower, and only diverts at 6. Centre-to-centre made it
+    // divert in all three; the collision radius (1.5) is too small to change
+    // that. The band that reproduces the real behaviour is 2.92 < r < 3.65
+    // against a Cannon's own 1.0, so 3.3 sits in the middle of it.
+    //
+    // The King's is scaled by the same ratio its collision radius carries
+    // (2.0 / 1.5), keeping the two towers proportional rather than
+    // independently tuned.
+    float getTargetingRadius() const override {
+        return (symbol == 'R') ? 4.4f : 3.3f;
+    }
+
     bool isTower() const override { return true; }
 
     // Board::deepCopy. Its own override, not Building's inherited one, which

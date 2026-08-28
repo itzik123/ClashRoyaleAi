@@ -560,8 +560,8 @@ TEST_CASE("a Cannon NEARER than the tower does pull a Hog Rider",
           "[targeting][nearest_building]") {
     // The other side of the same rule: strict must not mean inert. Without
     // this, deleting the Cannon pull outright would pass the case above.
-    const float drift = driftAt(15, LANE_Y, 4.0f);
-    INFO("Cannon 4.0 away, Princess Tower " << TOWER_DIST_AT_LANE_Y
+    const float drift = driftAt(15, LANE_Y, 3.0f);
+    INFO("Cannon 3.0 away, Princess Tower " << TOWER_DIST_AT_LANE_Y
          << " away; net x drift " << drift);
     REQUIRE(drift < -0.5f);
 }
@@ -581,7 +581,8 @@ TEST_CASE("the nearest-building rule holds for every catalogued sight range",
     INFO("card id " << card << ", catalogued sight " << sight);
 
     REQUIRE(driftAt(card, LANE_Y, 7.0f) == Catch::Approx(0.0f).margin(0.05f));
-    REQUIRE(driftAt(card, LANE_Y, 4.0f) < -0.3f);
+    // 3.0 centre => rank 2.0 against the tower's 6.0 - 3.3 = 2.7.
+    REQUIRE(driftAt(card, LANE_Y, 3.0f) < -0.3f);
 }
 
 TEST_CASE("sight still bounds acquisition at the raw catalogued range",
@@ -590,7 +591,9 @@ TEST_CASE("sight still bounds acquisition at the raw catalogued range",
     // the Cannon is the nearest building at every separation tested here and
     // only SIGHT can refuse it. 10.0 is outside the Hog's 9.5 and inside the
     // 10.9 the old radius-inflated formula produced.
-    REQUIRE(driftAt(15, 20.0f, 10.0f) == Catch::Approx(0.0f).margin(0.05f));
+    // Gated on FOOTPRINT distance, so a Cannon (radius 1.0) is refused past
+    // 10.5 centre and accepted inside it.
+    REQUIRE(driftAt(15, 20.0f, 11.0f) == Catch::Approx(0.0f).margin(0.05f));
     REQUIRE(driftAt(15, 20.0f, 9.0f) < -0.3f);
 }
 

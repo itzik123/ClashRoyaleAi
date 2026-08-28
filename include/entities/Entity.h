@@ -81,6 +81,13 @@ public:
 
     virtual float getCollisionRadius() const { return 0.0f; }
 
+    // Footprint used for TARGET SELECTION distance only (never collision,
+    // never attack range). Zero for everything except a Crown Tower: a tower
+    // is a large structure and a unit closes on its edge, so comparing it to a
+    // small building by centre distance overstates how far away it is. See
+    // Tower::getTargetingRadius for the empirical fit.
+    virtual float getTargetingRadius() const { return getCollisionRadius(); }
+
     // Re-applies board bounds/river constraints to this entity's position.
     // Default no-op: only Troop (the only thing that ever moves) overrides
     // it. Public and Board-aware so it can be called again, uniformly,

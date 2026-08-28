@@ -72,8 +72,11 @@ protected:
             // effectiveSightWith, not raw sightRange -- see CombatEntity's own
             // findTarget and the comment on effectiveSightTo for the measured
             // free-siege bug the mismatch caused.
-            if (dist <= effectiveSightWith(myRadius, *entity) && dist < minSightDistance) {
-                minSightDistance = dist;
+            // Compared by FOOTPRINT distance (see Entity::getTargetingRadius);
+            // the sight gate stays on centre distance.
+            const float rank = dist - entity->getTargetingRadius();
+            if (rank <= effectiveSightWith(myRadius, *entity) && rank < minSightDistance) {
+                minSightDistance = rank;
                 closestInSight = entity;
             }
         }

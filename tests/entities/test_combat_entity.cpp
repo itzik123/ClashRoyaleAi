@@ -136,11 +136,15 @@ TEST_CASE("findTarget falls back to the nearest enemy Tower when nothing else is
     REQUIRE(attacker->lastTargetId == tower->id); // the tower, not the out-of-sight troop
 }
 
-TEST_CASE("A closer enemy Tower never steals priority from a farther-but-in-sight enemy",
-        "[combat_entity][targeting][sight_range][tower]") {
+TEST_CASE("a closer enemy Tower DOES take priority over a farther in-sight enemy",
+        "[combat_entity][targeting][sight_range][tower][nearest_building]") {
+    // INVERTED 2026-08-28. This case previously asserted the opposite, and
+    // that hardcoded preference was the defect: any non-tower enemy in sight
+    // beat a tower at ANY distance. Targets now compete purely on distance
+    // once in sight, ranked by footprint (Entity::getTargetingRadius).
     Board board;
-    auto inSightEnemy = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist 4.0, within sight
-    auto closerTower = std::make_shared<Tower>(2, 0.0f, 1.0f, 4008, 1, 7.0f, 90, 10, 'R'); // dist 1.0, much closer
+    auto inSightEnemy = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist 4.0
+    auto closerTower = std::make_shared<Tower>(2, 0.0f, 1.0f, 4008, 1, 7.0f, 90, 10, 'R'); // dist 1.0
     spawn(board, inSightEnemy);
     spawn(board, closerTower);
 
@@ -148,7 +152,7 @@ TEST_CASE("A closer enemy Tower never steals priority from a farther-but-in-sigh
     attacker->update(board);
 
     REQUIRE(attacker->attackCount == 1);
-    REQUIRE(attacker->lastTargetId == inSightEnemy->id); // not the tower, despite it being far closer
+    REQUIRE(attacker->lastTargetId == closerTower->id);
 }
 
 TEST_CASE("Tower fallback picks whichever enemy Tower is closer", "[combat_entity][targeting][sight_range][tower]") {
