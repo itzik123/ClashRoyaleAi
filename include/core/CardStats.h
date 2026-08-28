@@ -161,6 +161,23 @@ struct CardStats {
     // spell here.
     float spellKnockback = 0.0f;
 
+    // --- Rolling sweep (The Log, Barbarian Barrel), 2026-08-28 -------------
+    // These two are not static circles: they roll forward from where they land
+    // and sweep a RECTANGULAR corridor. See AreaSpell's rolling-sweep block for
+    // the mechanic and for why rollSpeed is stated in tiles/tick directly
+    // rather than through MOVEMENT_SPEED_SCALE.
+    //
+    // spellRollWidth is a FULL width, not a radius -- the published figures
+    // (Log 3.9, Barrel 2.6) are widths, and reading one as a radius would make
+    // the corridor twice as wide as the real card.
+    //
+    // spellRollRange == 0 (the default) means "not a roller", which is every
+    // other spell in the registry.
+    float spellRollRange = 0.0f;
+    float spellRollWidth = 0.0f;
+    float spellRollSpeed = 0.0f;
+    float spellRollKnockback = 0.0f;
+
     // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard) --
     // see AreaSpell::spawnOnDetonate. nullptr (the default) is every
     // spell that doesn't spawn anything.
@@ -596,6 +613,16 @@ struct CardStats {
     }
     CardStats& withKnockback(float distance) {
         spellKnockback = distance;
+        return *this;
+    }
+    // width is the FULL corridor width; speed is tiles per TICK; knockback is
+    // how far a swept unit is thrown, along a direction that depends on where
+    // across the corridor it was caught (see AreaSpell::updateRoll).
+    CardStats& withRollingSweep(float range, float width, float speed, float knockback) {
+        spellRollRange = range;
+        spellRollWidth = width;
+        spellRollSpeed = speed;
+        spellRollKnockback = knockback;
         return *this;
     }
     CardStats& withSpellSpawn(std::shared_ptr<IPeriodicEffect> effect) {

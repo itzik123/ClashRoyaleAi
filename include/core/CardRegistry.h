@@ -61,6 +61,19 @@ struct CardDefinition {
     // The footprint GameManager::isValidPlacement keeps clear of an existing
     // building -- see CardFactories::placementRadius. Unused for spells.
     float placementRadius;
+    // Rolling-sweep shape, for consumers that have to DRAW this card (2026-08
+    // -28). 0 for everything that is not The Log or a Barbarian Barrel.
+    //
+    // Surfaced through GameLogger's cardMeta block for the same reason every
+    // other field there is: web/viewer.html is a file:// page whose only input
+    // is the replay JSON, so it CANNOT derive engine geometry and is
+    // structurally forced to restate whatever it is not told. CLAUDE.md's
+    // "derive; do not restate" rule has no way to reach it -- the fix for that
+    // class of staleness belongs in the FORMAT, which is what this is. Without
+    // it the viewer would have to hardcode "card 33 is 3.9 wide", and would go
+    // stale the next time either number moved.
+    float rollWidth;
+    float rollRange;
     // Miner, Goblin Drill: can be placed anywhere on the board, not just
     // this player's own half -- see GameManager::isValidPlacement. false
     // (the default) is every other troop/building.
@@ -530,6 +543,8 @@ private:
         def.isSpell = (stats.archetype == Archetype::Spell);
         def.isBuilding = (stats.archetype == Archetype::DefensiveBuilding);
         def.placementRadius = CardFactories::placementRadius(stats.archetype);
+        def.rollWidth = stats.spellRollWidth;
+        def.rollRange = stats.spellRollRange;
         def.deployAnywhere = stats.deployAnywhere;
         def.isChampion = stats.isChampion;
         def.isHero = stats.isHero;
@@ -568,6 +583,8 @@ private:
         def.isSpell = (baseStats.archetype == Archetype::Spell);
         def.isBuilding = (baseStats.archetype == Archetype::DefensiveBuilding);
         def.placementRadius = CardFactories::placementRadius(baseStats.archetype);
+        def.rollWidth = baseStats.spellRollWidth;
+        def.rollRange = baseStats.spellRollRange;
         def.deployAnywhere = baseStats.deployAnywhere;
         def.isChampion = baseStats.isChampion;
         def.isHero = baseStats.isHero;
@@ -830,7 +847,29 @@ private:
         add(spell(32, "Poison", 4.0f, 3.5f, 92, 0, 'n').withRepeats(8, 10));
         // The Log is a ground-control spell -- unlike every other spell here,
         // it rolls along the arena floor and can't hit flying units.
-        add(spell(33, "The Log", 2.0f, 3.9f, 269, 8, 'o').withGroundOnly());
+        //
+        // ROLLING SWEEP (2026-08-28). Width 3.9 and range 10.1 are the
+        // published figures, and 3.9 is a WIDTH: it was previously passed as
+        // the spellRadius, i.e. a circle of DIAMETER 7.8 -- twice as wide
+        // laterally as the real card, and static. The radius argument is now
+        // vestigial for rollers (updateRoll never reads it) and is left at 3.9
+        // so a reader comparing the two numbers sees the same figure.
+        //
+        // The 10.1 is load-bearing, not decorative: an enemy Princess Tower's
+        // centre sits 10.50 tiles from BRIDGE_Y and its near edge 9.00, so a
+        // Log dropped at the bridge reaches the tower with 1.1 tiles to spare
+        // while never reaching its centre. That is the interaction the number
+        // exists for, and test_area_spell.cpp pins it against ArenaLayout
+        // rather than against a hardcoded distance.
+        //
+        // Speed (1.0 tiles/tick = 10 tiles/s, so the full roll takes ~1.0 s)
+        // and knockback (0.8 tiles) are NOT sourced -- the real card's travel
+        // time and push distance were not supplied with the width and range.
+        // They are deliberate, documented approximations; the width, the range
+        // and the lateral-throw MECHANIC are the sourced parts.
+        add(spell(33, "The Log", 2.0f, 3.9f, 269, 8, 'o')
+            .withGroundOnly()
+            .withRollingSweep(10.1f, 3.9f, 1.0f, 0.8f));
 
         // ====================================================================
         // 2026 roster expansion (ids 46+): every remaining non-Champion,
@@ -1231,8 +1270,15 @@ private:
         // Barbarian Barrel: rolling damage plus a single Barbarian spawned
         // at the landing point via the same spell-spawn mechanism as
         // Goblin Barrel below.
+        // Rolls 4.5 tiles at width 2.6 (published figures; the old 2.5 radius
+        // was a static circle). Its Barbarian now spawns where the barrel
+        // STOPS rather than where it was thrown -- see AreaSpell::updateRoll,
+        // which fires spawnOnDetonate at the end of the roll. No knockback:
+        // the real Barrel does not throw what it rolls over the way The Log
+        // does, so this is 0.0 deliberately rather than by omission.
         add(spell(101, "Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
             .withGroundOnly()
+            .withRollingSweep(4.5f, 2.6f, 0.5f, 0.0f)
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(barbarianBarrelBarbarianStats())));
         // Goblin Curse: damage-over-time portion modeled via withRepeats;
         // the damage-taken-amplification debuff and cursed-death-spawns-a-
@@ -2329,8 +2375,11 @@ private:
         // (Barbarian Barrel), see that registration above -- but the
         // ability itself lives on the SPAWNED Barbarian's own CardStats
         // (heroBarbarianBarrelBarbarianStats above), not this ephemeral
-        // one-tick spell's, since the spell entity dies the same tick it
-        // spawns and never has a live turn to activate anything. isHero is
+        // rolling spell's. Since 2026-08-28 it lives for the ~9 ticks of its
+        // roll rather than dying the same tick (see withRollingSweep below),
+        // but the reasoning is unchanged: it still never has a turn on which
+        // activating anything would mean something, and the ability belongs to
+        // the Barbarian it drops at the end of the roll. isHero is
         // set directly on this spell's own CardStats (not via
         // withHeroAbility, which would also wire up ability fields this
         // entity never uses) purely so validateDeckSlots/seedSlotState
@@ -2341,6 +2390,7 @@ private:
         {
             CardStats heroBarbarianBarrelSpellStats = spell(174, "Hero Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
                 .withGroundOnly()
+                .withRollingSweep(4.5f, 2.6f, 0.5f, 0.0f)
                 .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(heroBarbarianBarrelBarbarianStats()));
             heroBarbarianBarrelSpellStats.isHero = true;
             add(heroBarbarianBarrelSpellStats);

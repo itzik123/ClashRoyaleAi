@@ -5,7 +5,10 @@
 #include "PeriodicEffect.h"
 #include "Board.h"
 #include "StatsEvents.h"
+#include <algorithm>
+#include <cmath>
 #include <memory>
+#include <vector>
 
 class AreaSpell : public CardEntity {
 private:
@@ -121,9 +124,57 @@ public:
         return std::make_shared<AreaSpell>(*this);
     }
 
+    // --- Rolling sweep (The Log, Barbarian Barrel), 2026-08-28 -------------
+    //
+    // These two are not static circles. They are dynamic bodies that roll
+    // forward from where they land, sweeping a RECTANGULAR corridor: a fixed
+    // width across the roll axis, and a length they travel over time. Modelled
+    // here rather than as a new Entity subclass because everything else about
+    // them -- team filter, ground-only, damage, on-hit, the Barrel's spawn --
+    // is already exactly AreaSpell's behaviour; only the shape and the motion
+    // differ.
+    //
+    // UNITS. `rollSpeed` is tiles per TICK, stated directly and deliberately
+    // NOT routed through CardStats::MOVEMENT_SPEED_SCALE. That scale exists to
+    // convert the registry's troop SPEED_* tier literals into real-game
+    // tiles/tick; a spell has no tier and borrowing the conversion would make
+    // these two numbers mean something different from every other number in
+    // this file. See CLAUDE.md's movement-speed section for why that confusion
+    // is worth one comment.
+    //
+    // Each target is damaged AT MOST ONCE per roll (`sweptIds`), which is the
+    // real-game behaviour -- the log rolls over you, it does not grind.
+    float rollRange = 0.0f;   // total distance travelled; 0 => not a roller
+    float rollWidth = 0.0f;   // FULL width across the roll axis, not a radius
+    float rollSpeed = 0.0f;   // tiles per tick
+    float rollKnockback = 0.0f;
+    float rollTravelled = 0.0f;
+    int rollDirY = 0;         // +1 for team 0 (attacks toward +y), -1 for team 1
+    Vector2D rollOrigin{0.0f, 0.0f};
+    std::vector<int> sweptIds;
+
+    bool isRolling() const { return rollRange > 0.0f; }
+
+    // Set post-construction rather than through the constructor: that
+    // parameter list is already 20 wide and has five other call sites
+    // (spawnDeployEffect, Goblinstein's link, Hero Ice Golem's snowstorm,
+    // Mighty Miner's escape, and snapshot()), none of which roll.
+    void configureRoll(float range, float width, float speed, float knockback) {
+        rollRange = range;
+        rollWidth = width;
+        rollSpeed = speed;
+        rollKnockback = knockback;
+        rollDirY = (team == 0) ? 1 : -1;
+        rollOrigin = position;
+    }
+
     void update(Board& board) override {
         if (delayTicks > 0) {
             delayTicks--;
+            return;
+        }
+        if (isRolling()) {
+            updateRoll(board);
             return;
         }
 
@@ -213,6 +264,85 @@ public:
         if (remainingHits > 0) {
             delayTicks = tickInterval; // wait out the gap, then apply again
         } else {
+            hp = 0;
+        }
+    }
+
+private:
+    bool alreadySwept(int entityId) const {
+        return std::find(sweptIds.begin(), sweptIds.end(), entityId) != sweptIds.end();
+    }
+
+    // One tick of a rolling sweep. Advances the body, damages whatever the
+    // corridor has newly reached, and throws each victim along a direction
+    // that depends on WHERE ACROSS the corridor it was caught.
+    void updateRoll(Board& board) {
+        rollTravelled += rollSpeed;
+        if (rollTravelled > rollRange) rollTravelled = rollRange;
+        // The entity's own position tracks the leading edge. That is what the
+        // replay records per tick and therefore what the viewer draws the
+        // rectangle from -- no extra per-tick field needed in the log.
+        position.y = rollOrigin.y + static_cast<float>(rollDirY) * rollTravelled;
+
+        const float halfWidth = rollWidth * 0.5f;
+
+        for (const auto& entity : board.getEntities()) {
+            if (!entity->isAlive() || !entity->isTargetable()) continue;
+            if (entity->team == this->team || entity->id == this->id) continue;
+            if (groundOnly && entity->isFlying) continue;
+            if (alreadySwept(entity->id)) continue;
+
+            const float r = CombatEntity::effectiveRadiusOf(*entity);
+            const float dx = entity->position.x - rollOrigin.x;
+            // Longitudinal offset measured ALONG the roll direction, so one
+            // set of comparisons serves both teams.
+            const float dy = (entity->position.y - rollOrigin.y) * static_cast<float>(rollDirY);
+
+            if (std::fabs(dx) > halfWidth + r) continue;  // outside the corridor
+            if (dy + r < 0.0f) continue;                  // entirely behind the spawn point
+            // Reached when the leading edge touches the target's near SURFACE,
+            // not its centre -- the same convention effectiveRangeTo uses, and
+            // the one the bridge interaction depends on: an enemy Princess
+            // Tower's centre is 10.50 tiles from BRIDGE_Y but its near edge only
+            // 9.00, so The Log's 10.1 roll reaches it from the bridge with 1.1
+            // to spare while never reaching the centre. Pinned in
+            // tests/entities/test_area_spell.cpp.
+            if (dy - r > rollTravelled) continue;
+
+            sweptIds.push_back(entity->id);
+
+            const int dealt = entity->isTower()
+                ? static_cast<int>(damage * spellTowerDamageMultiplier)
+                : damage;
+            entity->takeDamage(dealt);
+            board.statsEvents.notifyDamageDealt(
+                { id, team, cardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+
+            if (rollKnockback > 0.0f) {
+                // THE LATERAL THROW. `lateral` is where across the corridor
+                // this unit was caught, in [-1, +1]; `forward` is what is left
+                // over. Dead centre is shoved straight along the roll, the very
+                // edge is flung purely sideways, and everything between blends.
+                // Separating a grouped push is exactly this, and a radial
+                // pushAway from the log's centre cannot produce it -- see
+                // pushAlong's comment in Entity.h.
+                float lateral = (halfWidth > 0.0f) ? (dx / halfWidth) : 0.0f;
+                if (lateral > 1.0f) lateral = 1.0f;
+                if (lateral < -1.0f) lateral = -1.0f;
+                const float forward = 1.0f - std::fabs(lateral);
+                pushAlong(*entity, lateral, forward * static_cast<float>(rollDirY), rollKnockback);
+            }
+
+            if (onHit) {
+                auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(entity);
+                if (combatTarget) onHit->apply(combatTarget);
+            }
+        }
+
+        if (rollTravelled >= rollRange) {
+            // Barbarian Barrel drops its Barbarian where the barrel STOPS, not
+            // where it was thrown -- so this fires at the final position.
+            if (spawnOnDetonate) spawnOnDetonate->apply(board, position, team);
             hp = 0;
         }
     }

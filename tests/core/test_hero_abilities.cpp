@@ -568,13 +568,19 @@ TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Her
     // own registration) -- its spawnOnDetonate (the Barbarian) only fires
     // partway through AreaSpell::update(), not at construction, so this
     // needs to be driven forward before the Barbarian exists at all.
+    //
+    // 20 ticks, not 9, since 2026-08-28: the Barrel ROLLS now, and drops its
+    // Barbarian where it STOPS rather than where it was thrown. That is 8
+    // delay ticks plus 4.5 tiles at 0.5 tiles/tick = 9 more, so 17 is the real
+    // floor and 20 leaves margin. The old 9 was exactly "delay, then detonate
+    // on the next tick", which is no longer what this card does.
     std::shared_ptr<AreaSpell> spell;
     for (const auto& e : board.getEntities()) {
         spell = std::dynamic_pointer_cast<AreaSpell>(e);
         if (spell) break;
     }
     REQUIRE(spell != nullptr);
-    for (int i = 0; i < 9; ++i) spell->update(board);
+    for (int i = 0; i < 20; ++i) spell->update(board);
     board.commitPendingEntities();
 
     std::shared_ptr<CombatEntity> barbarian;

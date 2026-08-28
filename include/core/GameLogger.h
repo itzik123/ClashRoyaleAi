@@ -247,6 +247,15 @@ public:
                  << ",\"isFlying\":" << (def.isFlying ? "true" : "false")
                  << ",\"isBuilding\":" << (def.isBuilding ? "true" : "false")
                  << ",\"isSpell\":" << (def.isSpell ? "true" : "false")
+                 // Rolling-sweep shape (The Log, Barbarian Barrel). 0 for
+                 // every other card, which is what the viewer tests to decide
+                 // between a circle and a swept rectangle. Emitted here rather
+                 // than left to the viewer for the reason CardDefinition's own
+                 // comment gives: the viewer cannot derive engine geometry, so
+                 // anything it is not told it is forced to hardcode and will
+                 // eventually get wrong.
+                 << ",\"rollWidth\":" << def.rollWidth
+                 << ",\"rollRange\":" << def.rollRange
                  << "}";
             firstMeta = false;
         }

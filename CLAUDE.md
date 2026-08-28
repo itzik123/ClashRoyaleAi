@@ -809,6 +809,73 @@ own-half rule plus `OWN_HALF_RIVER_BUFFER`), a building fully OUT OF BOUNDS
 (rejected by the overlap loop -- towers are Buildings with a 1.5 radius, and
 even 0.5 tiles away is refused). Only the footprint gap was real.
 
+**The Log and Barbarian Barrel ROLL, since 2026-08-28.** They were static
+circular `AreaSpell`s detonating once at the tap point. They are now dynamic
+bodies that sweep a **rectangular corridor** forward from where they land,
+advancing every tick and damaging each target **at most once**.
+
+| | width | range | speed | knockback |
+|---|---|---|---|---|
+| The Log (33) | 3.9 | 10.1 | 1.0 tiles/tick | 0.8 |
+| Barbarian Barrel (101, 174) | 2.6 | 4.5 | 0.5 tiles/tick | none |
+
+**3.9 is a WIDTH and was being read as a RADIUS**, so The Log's old footprint
+was a circle of diameter 7.8 — twice as wide laterally as the real card, and
+it never moved. Same for the Barrel at 2.5.
+
+**The 10.1 is load-bearing.** An enemy Princess Tower's centre sits **10.50**
+tiles from `BRIDGE_Y` and its near edge **9.00** (radius 1.5), so a Log dropped
+at the bridge reaches the tower with 1.1 tiles to spare and never reaches its
+centre. Hit detection is therefore **surface-to-surface**, the same convention
+`effectiveRangeTo` already uses — a centre-to-centre test would put the tower
+out of reach and silently delete the card's main use. Verified through the
+rebuilt `.pyd`: a Log injected at `(LEFT_LANE_X, BRIDGE_Y)` deals exactly 269
+to the enemy Princess Tower. `test_area_spell.cpp` pins it against
+`ArenaLayout`, never a hardcoded 9.0.
+
+**Knockback is DIRECTIONAL, and that is the whole tactical point.** Where a
+unit is caught ACROSS the corridor decides which way it is thrown: dead centre
+is shoved forward along the roll, the lateral edges are flung sideways in
+opposite directions, and everything between blends. That is what splits a
+grouped push. `pushAway(entity, logCentre, d)` **cannot** express it — a radial
+push from a point falls off with longitudinal distance, not lateral offset, so
+a unit level with the log and one at its nose get thrown the same way. Hence
+`pushAlong(entity, dirX, dirY, distance)` in `Entity.h`, fourth member of the
+`pullToward`/`pushAway`/`mirrorToOppositeLane` family and carrying the same two
+guards — so a Log still cannot move a building.
+
+**GAMEPLAY-AFFECTING, and The Log is in `DEFAULT_DECK`.** Its area went from a
+7.8-wide circle to a 3.9-wide moving corridor, so every win rate earned before
+this date describes a different card. Checkpoints still load — nothing about
+the observation or the action space moved.
+
+Three implementation notes worth not re-deriving:
+
+- **`rollSpeed` is tiles per TICK, stated directly and deliberately NOT routed
+  through `MOVEMENT_SPEED_SCALE`.** That scale converts the registry's troop
+  `SPEED_*` tier literals; a spell has no tier, and borrowing the conversion
+  would make these two numbers mean something different from every other speed
+  in the registry. Speed and knockback are **not sourced** — the published data
+  gave width and range only — so they are documented approximations, unlike the
+  width, the range and the lateral-throw mechanic.
+- **The Barrel's Barbarian now spawns where the barrel STOPS**, not where it
+  was thrown, because `spawnOnDetonate` fires at the end of the roll. That
+  broke one Hero test that drove the spell exactly 9 ticks ("delay, then
+  detonate"); the real floor is now 8 delay + 9 roll = 17.
+- **`CombatEntity::effectiveRadiusOf` became a public static** so the sweep's
+  corridor test can use it. `AreaSpell` is not a `CombatEntity`, and the
+  alternative was a second copy of its two lines — the duplication that
+  function's own comment exists to prevent.
+
+**And the replay format carries the corridor, because the viewer cannot derive
+it.** `cardMeta` now emits `rollWidth`/`rollRange` per card (0 for everything
+else), and `web/viewer.html` draws the swept rectangle from those rather than
+from a table of its own. This is the fix the "THE VIEWER IS A DIFFERENT KIND OF
+COPY" section above argues for: a `file://` page whose only input is the replay
+JSON is *structurally forced* to restate whatever it is not told, so the answer
+belongs in the FORMAT. Verified by sampling rendered pixels — the body paints
+3.91 tiles wide, centred on the lane, advancing exactly one tile per tick.
+
 ### The state setters an estimator writes with (item 22, 2026-08-24)
 
 Additive, behaviour-preserving defaults, **no checkpoint or win rate

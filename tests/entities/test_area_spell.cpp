@@ -1,6 +1,8 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
 #include "AreaSpell.h"
+#include "ArenaLayout.h"
+#include "CardRegistry.h"
 #include "FreezeOnHit.h"
 #include "MeleeTroop.h"
 #include "Building.h"
@@ -346,4 +348,211 @@ TEST_CASE("tieredDamage applies the many-targets tier for 5+ entities caught", "
         if (e->id == 10) continue;
         REQUIRE(e->hp == 10000 - 76);
     }
+}
+
+// ============================================================================
+// Rolling sweep -- The Log, Barbarian Barrel (2026-08-28)
+// ============================================================================
+// These two are dynamic bodies sweeping a rectangular corridor, not static
+// circles. The cases below pin the four things that can each go silently
+// wrong: the corridor's WIDTH (a full width, not a radius), its REACH measured
+// to a target's surface, the once-per-roll damage rule, and the lateral throw.
+
+static AreaSpell makeRoller(int id, float x, float y, int team, int damage,
+                            float range, float width, float speed, float knock) {
+    AreaSpell s(id, x, y, team, /*radius*/ 0.0f, damage, /*delayTicks*/ 0, 'o');
+    s.configureRoll(range, width, speed, knock);
+    return s;
+}
+
+TEST_CASE("a rolling spell advances along its team's attack direction", "[area_spell][roll]") {
+    Board board;
+    AreaSpell team0 = makeRoller(1, 9.0f, 10.0f, 0, 100, 4.0f, 3.0f, 1.0f, 0.0f);
+    AreaSpell team1 = makeRoller(2, 9.0f, 20.0f, 1, 100, 4.0f, 3.0f, 1.0f, 0.0f);
+
+    team0.update(board);
+    team1.update(board);
+
+    // Team 0 defends the low-y half and therefore rolls toward +y; team 1 the
+    // mirror. Derived from the team, never passed in -- a spell has no aim.
+    REQUIRE(team0.position.y == Catch::Approx(11.0f));
+    REQUIRE(team1.position.y == Catch::Approx(19.0f));
+}
+
+TEST_CASE("a rolling spell sweeps everything along its corridor, once each", "[area_spell][roll]") {
+    Board board;
+    auto nearTarget = std::make_shared<DummyEntity>(1, 9.0f, 12.0f, 1000, 1);
+    auto farTarget = std::make_shared<DummyEntity>(2, 9.0f, 16.0f, 1000, 1);
+    spawn(board, nearTarget);
+    spawn(board, farTarget);
+
+    AreaSpell log = makeRoller(3, 9.0f, 10.0f, 0, 200, 8.0f, 3.9f, 1.0f, 0.0f);
+
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    // Both were in the corridor and both were rolled over exactly ONCE, even
+    // though the log spent several ticks on top of each. A per-tick reapply
+    // would read 1000 - 200*n here.
+    REQUIRE(nearTarget->hp == 800);
+    REQUIRE(farTarget->hp == 800);
+    REQUIRE_FALSE(log.isAlive());
+}
+
+TEST_CASE("the corridor width is a FULL width, not a radius", "[area_spell][roll]") {
+    Board board;
+    // The Log's 3.9 is a width, so its half-width is 1.95. A DummyEntity has
+    // no collision radius of its own and so borrows IMPLICIT_TROOP_RADIUS.
+    const float halfWidth = 3.9f / 2.0f;
+    const float r = Entity::IMPLICIT_TROOP_RADIUS;
+
+    auto inside = std::make_shared<DummyEntity>(1, 9.0f + halfWidth + r - 0.05f, 14.0f, 1000, 1);
+    auto outside = std::make_shared<DummyEntity>(2, 9.0f + halfWidth + r + 0.05f, 14.0f, 1000, 1);
+    spawn(board, inside);
+    spawn(board, outside);
+
+    AreaSpell log = makeRoller(3, 9.0f, 10.0f, 0, 200, 8.0f, 3.9f, 1.0f, 0.0f);
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    REQUIRE(inside->hp == 800);
+    // Read as a radius, 3.9 would make the corridor 7.8 wide and catch this.
+    REQUIRE(outside->hp == 1000);
+}
+
+TEST_CASE("a rolling spell stops at its range and reaches no further", "[area_spell][roll]") {
+    Board board;
+    auto within = std::make_shared<DummyEntity>(1, 9.0f, 10.0f + 4.0f, 1000, 1);
+    auto beyond = std::make_shared<DummyEntity>(2, 9.0f, 10.0f + 9.0f, 1000, 1);
+    spawn(board, within);
+    spawn(board, beyond);
+
+    AreaSpell log = makeRoller(3, 9.0f, 10.0f, 0, 200, 5.0f, 3.9f, 1.0f, 0.0f);
+    for (int i = 0; i < 12; ++i) log.update(board);
+
+    REQUIRE(within->hp == 800);
+    REQUIRE(beyond->hp == 1000);
+    REQUIRE_FALSE(log.isAlive());
+    // It travelled exactly its range, not one tick's worth further.
+    REQUIRE(log.position.y == Catch::Approx(15.0f));
+}
+
+TEST_CASE("The Log's 10.1 range reaches a Princess Tower from the bridge", "[area_spell][roll][bridge]") {
+    // The interaction the number exists for. Asserted against ArenaLayout
+    // rather than a hardcoded 9.0, so moving the arena moves this test with it
+    // instead of silently invalidating it -- the failure mode CLAUDE.md
+    // records for every other copy of this geometry.
+    const float bridgeY = ArenaLayout::BRIDGE_Y;
+    const float towerY = ArenaLayout::princessY(1);
+    const float towerRadius = 1.5f;
+
+    const float toSurface = (towerY - towerRadius) - bridgeY;
+    const float toCentre = towerY - bridgeY;
+
+    REQUIRE(toSurface < 10.1f);   // the roll reaches the tower
+    REQUIRE(toCentre > 10.1f);    // ...and does not reach its centre
+
+    Board board;
+    auto tower = std::make_shared<Building>(1, ArenaLayout::LEFT_LANE_X, towerY, 2534, 1, 'T', 7.5f, 50, 10);
+    spawn(board, tower);
+
+    AreaSpell log = makeRoller(2, ArenaLayout::LEFT_LANE_X, bridgeY, 0, 269, 10.1f, 3.9f, 1.0f, 0.8f);
+    for (int i = 0; i < 12; ++i) log.update(board);
+
+    REQUIRE(tower->hp == 2534 - 269);
+}
+
+TEST_CASE("The Log throws edge-caught units SIDEWAYS and centred ones FORWARD", "[area_spell][roll][knockback]") {
+    // The tactical point of the card: it splits a group apart rather than
+    // shunting it back as one block. A radial pushAway from the log's centre
+    // cannot express this, which is why pushAlong exists.
+    Board board;
+    const float halfWidth = 3.9f / 2.0f;
+    auto centre = std::make_shared<DummyEntity>(1, 9.0f, 14.0f, 1000, 1);
+    auto leftEdge = std::make_shared<DummyEntity>(2, 9.0f - halfWidth, 14.0f, 1000, 1);
+    auto rightEdge = std::make_shared<DummyEntity>(3, 9.0f + halfWidth, 14.0f, 1000, 1);
+    spawn(board, centre);
+    spawn(board, leftEdge);
+    spawn(board, rightEdge);
+
+    AreaSpell log = makeRoller(4, 9.0f, 10.0f, 0, 100, 8.0f, 3.9f, 1.0f, 1.0f);
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    // Dead centre: thrown straight along the roll, no lateral drift at all.
+    REQUIRE(centre->position.x == Catch::Approx(9.0f));
+    REQUIRE(centre->position.y == Catch::Approx(15.0f));
+
+    // At the edges: thrown purely sideways, AWAY from the axis and in
+    // OPPOSITE directions -- which is what separates a group.
+    REQUIRE(leftEdge->position.x == Catch::Approx(9.0f - halfWidth - 1.0f));
+    REQUIRE(leftEdge->position.y == Catch::Approx(14.0f));
+    REQUIRE(rightEdge->position.x == Catch::Approx(9.0f + halfWidth + 1.0f));
+    REQUIRE(rightEdge->position.y == Catch::Approx(14.0f));
+
+    REQUIRE(rightEdge->position.x - leftEdge->position.x
+            > halfWidth * 2.0f);   // strictly further apart than they started
+}
+
+TEST_CASE("a rolling spell never moves a building, only damages it", "[area_spell][roll][knockback]") {
+    // exemptFromForcedMovement, enforced inside pushAlong exactly as it is for
+    // pushAway/pullToward -- a Log must not shove a Cannon out of its lane.
+    Board board;
+    auto cannon = std::make_shared<Building>(1, 10.0f, 14.0f, 824, 1, 'C', 5.5f, 60, 10);
+    spawn(board, cannon);
+
+    AreaSpell log = makeRoller(2, 9.0f, 10.0f, 0, 200, 8.0f, 3.9f, 1.0f, 1.0f);
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    REQUIRE(cannon->hp == 624);
+    REQUIRE(cannon->position.x == Catch::Approx(10.0f));
+    REQUIRE(cannon->position.y == Catch::Approx(14.0f));
+}
+
+TEST_CASE("a rolling spell is ground-only when configured so", "[area_spell][roll]") {
+    Board board;
+    auto flyer = std::make_shared<DummyEntity>(1, 9.0f, 14.0f, 1000, 1);
+    flyer->isFlying = true;
+    spawn(board, flyer);
+
+    AreaSpell log(2, 9.0f, 10.0f, 0, 0.0f, 200, 0, 'o', nullptr, /*groundOnly*/ true);
+    log.configureRoll(8.0f, 3.9f, 1.0f, 0.0f);
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    REQUIRE(flyer->hp == 1000);
+}
+
+TEST_CASE("a rolling spell ignores what is behind its spawn point", "[area_spell][roll]") {
+    Board board;
+    auto behind = std::make_shared<DummyEntity>(1, 9.0f, 6.0f, 1000, 1);
+    spawn(board, behind);
+
+    AreaSpell log = makeRoller(2, 9.0f, 10.0f, 0, 200, 8.0f, 3.9f, 1.0f, 0.0f);
+    for (int i = 0; i < 8; ++i) log.update(board);
+
+    REQUIRE(behind->hp == 1000);
+}
+
+TEST_CASE("the registry gives The Log and Barbarian Barrel their real corridors", "[area_spell][roll][registry]") {
+    // The registration itself, so a future edit that drops withRollingSweep
+    // turns these back into static circles LOUDLY rather than silently.
+    // Asserted on CardDefinition rather than CardStats because that is the
+    // struct GameLogger's cardMeta block is built from -- so this also pins
+    // the shape the replay hands web/viewer.html, which cannot derive it.
+    const auto& registry = CardRegistry::getInstance();
+
+    const CardDefinition* log = registry.getCard(33);
+    REQUIRE(log != nullptr);
+    REQUIRE(log->name == "The Log");
+    REQUIRE(log->rollWidth == Catch::Approx(3.9f));
+    REQUIRE(log->rollRange == Catch::Approx(10.1f));
+
+    const CardDefinition* barrel = registry.getCard(101);
+    REQUIRE(barrel != nullptr);
+    REQUIRE(barrel->name == "Barbarian Barrel");
+    REQUIRE(barrel->rollWidth == Catch::Approx(2.6f));
+    REQUIRE(barrel->rollRange == Catch::Approx(4.5f));
+
+    // Every non-rolling spell must stay at zero, or the viewer would draw a
+    // rectangle for a Fireball.
+    const CardDefinition* fireball = registry.getCard(7);
+    REQUIRE(fireball != nullptr);
+    REQUIRE(fireball->rollRange == Catch::Approx(0.0f));
 }

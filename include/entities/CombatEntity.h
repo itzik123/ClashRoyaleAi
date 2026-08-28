@@ -1134,6 +1134,21 @@ public:
         if (deathEffect) deathEffect->apply(board, position, team);
     }
 
+    // The one place "what radius does this thing occupy" is answered, for
+    // both range formulas below. A troop has no real radius of its own, so it
+    // borrows Entity::IMPLICIT_TROOP_RADIUS -- see that constant.
+    //
+    // PUBLIC, and a static taking an Entity, since 2026-08-28: AreaSpell's
+    // rolling sweep needs the same answer for its corridor test and is not a
+    // CombatEntity. Widening the access keeps this "the one place" -- the
+    // alternative was a second copy of the two lines inside AreaSpell, which
+    // is exactly the duplication this comment exists to prevent. Nothing about
+    // the function is CombatEntity-specific; it reads only Entity state.
+    static float effectiveRadiusOf(const Entity& e) {
+        const float r = e.getCollisionRadius();
+        return (r > 0.0f) ? r : Entity::IMPLICIT_TROOP_RADIUS;
+    }
+
 protected:
     // Entity, not CombatEntity: targeting itself doesn't care about freeze
     // or on-hit effects, and every other consumer of findTarget's result
@@ -1147,13 +1162,6 @@ protected:
             && (minAttackRange <= 0.0f || position.distanceTo(entity->position) >= minAttackRange);
     }
 
-    // The one place "what radius does this thing occupy" is answered, for
-    // both range formulas below. A troop has no real radius of its own, so it
-    // borrows Entity::IMPLICIT_TROOP_RADIUS -- see that constant.
-    static float effectiveRadiusOf(const Entity& e) {
-        const float r = e.getCollisionRadius();
-        return (r > 0.0f) ? r : Entity::IMPLICIT_TROOP_RADIUS;
-    }
     float ownEffectiveRadius() const { return effectiveRadiusOf(*this); }
 
     float effectiveRangeTo(const std::shared_ptr<Entity>& target) const {

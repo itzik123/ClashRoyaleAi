@@ -234,6 +234,15 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
         stats.spellTieredDamage, stats.spellTierSingleDamage, stats.spellTierFewDamage, stats.spellTierManyDamage);
     spell->name = stats.name;
     spell->cardId = stats.id;
+    // Rolling spells (The Log, Barbarian Barrel) are configured here rather
+    // than through the constructor above, whose parameter list is already 20
+    // wide and shared with five non-rolling call sites. configureRoll also
+    // latches the roll ORIGIN from the spell's spawn position, so it must run
+    // after construction and before the first update -- which is exactly here.
+    if (stats.spellRollRange > 0.0f) {
+        spell->configureRoll(stats.spellRollRange, stats.spellRollWidth,
+                             stats.spellRollSpeed, stats.spellRollKnockback);
+    }
     board.addEntity(spell);
 }
 

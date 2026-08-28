@@ -808,6 +808,26 @@ let CARD_META = {};
 // silently presenting whichever card happened to load last as certain.
 let SYMBOL_INDEX = { bySymbol: {}, ambiguous: new Set() };
 
+// Entity id -> the position it first appeared at, for rolling spells.
+//
+// The replay records a rolling spell's LEADING EDGE each tick but not where
+// the roll began, and the corridor behind the log is most of what makes the
+// sweep readable. Rather than add a per-tick field for something derivable,
+// this scans the ticks once at load: the first tick an id appears on IS its
+// spawn. Built for every entity, not just spells, because the scan is the same
+// cost either way and the map is a few hundred entries.
+let ROLL_ORIGINS = {};
+
+function buildRollOrigins() {
+  const origins = {};
+  for (const tick of (gameData.ticks || [])) {
+    for (const ent of (tick.entities || [])) {
+      if (origins[ent.id] === undefined) origins[ent.id] = { x: ent.x, y: ent.y };
+    }
+  }
+  return origins;
+}
+
 function buildSymbolIndex(cardMeta) {
   const bySymbol = {}, ambiguous = new Set();
   for (const id of Object.keys(cardMeta || {})) {
@@ -1038,6 +1058,7 @@ function initViewer() {
   // falls through to the legacy symbol-keyed tables instead.
   CARD_META = gameData.cardMeta || {};
   SYMBOL_INDEX = buildSymbolIndex(CARD_META);
+  ROLL_ORIGINS = buildRollOrigins();
 
   const w = gameData.boardWidth * CELL_SIZE + PADDING * 2;
   const h = gameData.boardHeight * CELL_SIZE + PADDING * 2;
@@ -1617,6 +1638,90 @@ function drawTypeBadge(rc, ent, pos, radius) {
   }
 }
 
+// Rolling spells (The Log, Barbarian Barrel) are not circles: they sweep a
+// rectangular corridor forward from where they landed. Drawn as three layers
+// so the PROGRESSION is legible rather than just the current frame --
+//
+//   1. the full corridor it will cover, faint and dashed;
+//   2. the part it has already swept, filled;
+//   3. the body itself at the leading edge, solid.
+//
+// Shape comes from the replay's own cardMeta (rollWidth/rollRange), never from
+// a table in this file. That is deliberate: the viewer is a file:// page whose
+// only input is the JSON, so anything it is not told it must hardcode -- and
+// CLAUDE.md records four separate arena constants that went stale in exactly
+// this file for exactly that reason. The width and range are now in the
+// format, so they cannot drift from the engine.
+function drawRollingSpell(rc, ent, meta, isBlue) {
+  const width = meta.rollWidth || 0;
+  const range = meta.rollRange || 0;
+  if (width <= 0 || range <= 0) return false;
+
+  // Team 0 defends the low-y half and rolls toward +y, mirroring the engine's
+  // own rollDirY -- derived from the team, exactly as AreaSpell::configureRoll
+  // does, rather than stored per tick.
+  const dir = ent.team === 0 ? 1 : -1;
+  const origin = ROLL_ORIGINS[ent.id] || { x: ent.x, y: ent.y };
+  const half = width / 2;
+
+  const stroke = isBlue ? 'rgba(74, 158, 255, 0.55)' : 'rgba(255, 82, 82, 0.55)';
+  const sweptFill = isBlue ? 'rgba(74, 158, 255, 0.16)' : 'rgba(255, 82, 82, 0.16)';
+  const bodyFill = isBlue ? 'rgba(74, 158, 255, 0.85)' : 'rgba(255, 82, 82, 0.85)';
+
+  const rectBetween = (yA, yB) => {
+    const a = gameToCanvas(rc, origin.x - half, yA);
+    const b = gameToCanvas(rc, origin.x + half, yB);
+    return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+             w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+  };
+
+  // 1. the whole corridor, so you can see where it is GOING to reach
+  const full = rectBetween(origin.y, origin.y + dir * range);
+  rc.ctx.save();
+  rc.ctx.setLineDash([4, 4]);
+  rc.ctx.strokeStyle = stroke;
+  rc.ctx.lineWidth = 1;
+  rc.ctx.strokeRect(full.x, full.y, full.w, full.h);
+  rc.ctx.restore();
+
+  // 2. the part already swept
+  const swept = rectBetween(origin.y, ent.y);
+  rc.ctx.fillStyle = sweptFill;
+  rc.ctx.fillRect(swept.x, swept.y, swept.w, swept.h);
+
+  // 3. the body at the leading edge. A fixed visual thickness -- the engine's
+  // corridor has no longitudinal extent at all (it tests "has the leading edge
+  // reached you"), so this is presentation, not a claim about the hitbox.
+  const bodyThickness = 0.8;
+  const body = rectBetween(ent.y - dir * bodyThickness, ent.y);
+  rc.ctx.fillStyle = bodyFill;
+  if (rc.ctx.roundRect) {
+    rc.ctx.beginPath();
+    rc.ctx.roundRect(body.x, body.y, body.w, body.h, Math.max(2, rc.cellSize * 0.25));
+    rc.ctx.fill();
+  } else {
+    rc.ctx.fillRect(body.x, body.y, body.w, body.h);
+  }
+  rc.ctx.strokeStyle = stroke;
+  rc.ctx.lineWidth = 1.5;
+  rc.ctx.strokeRect(body.x, body.y, body.w, body.h);
+
+  // Two grain lines across the body, so successive frames read as ROLLING
+  // rather than sliding. Phase advances with distance travelled.
+  const travelled = (ent.y - origin.y) * dir;
+  rc.ctx.strokeStyle = isBlue ? 'rgba(10, 30, 60, 0.5)' : 'rgba(60, 10, 10, 0.5)';
+  rc.ctx.lineWidth = 1;
+  for (let k = 0; k < 2; k++) {
+    const phase = ((travelled * 1.5 + k * 0.5) % 1.0);
+    const gx = body.x + phase * body.w;
+    rc.ctx.beginPath();
+    rc.ctx.moveTo(gx, body.y);
+    rc.ctx.lineTo(gx, body.y + body.h);
+    rc.ctx.stroke();
+  }
+  return true;
+}
+
 function drawEntity(rc, ent, isSelected) {
   const pos = gameToCanvas(rc, ent.x, ent.y);
   const radius = SYMBOL_RADIUS[ent.symbol] || 8;
@@ -1626,15 +1731,19 @@ function drawEntity(rc, ent, isSelected) {
   const meta = getEntityMeta(ent);
 
   if (meta.isSpell && ent.symbol !== '-') {
-    const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
-    const pixelRadius = spellRadius * rc.cellSize;
-    rc.ctx.beginPath();
-    rc.ctx.arc(pos.x, pos.y, pixelRadius, 0, Math.PI * 2);
-    rc.ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.08)' : 'rgba(255, 82, 82, 0.08)';
-    rc.ctx.fill();
-    rc.ctx.strokeStyle = isBlue ? 'rgba(74, 158, 255, 0.25)' : 'rgba(255, 82, 82, 0.25)';
-    rc.ctx.lineWidth = 1;
-    rc.ctx.stroke();
+    // A roller draws its corridor and nothing else; everything else keeps the
+    // old circle.
+    if (!drawRollingSpell(rc, ent, meta, isBlue)) {
+      const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
+      const pixelRadius = spellRadius * rc.cellSize;
+      rc.ctx.beginPath();
+      rc.ctx.arc(pos.x, pos.y, pixelRadius, 0, Math.PI * 2);
+      rc.ctx.fillStyle = isBlue ? 'rgba(74, 158, 255, 0.08)' : 'rgba(255, 82, 82, 0.08)';
+      rc.ctx.fill();
+      rc.ctx.strokeStyle = isBlue ? 'rgba(74, 158, 255, 0.25)' : 'rgba(255, 82, 82, 0.25)';
+      rc.ctx.lineWidth = 1;
+      rc.ctx.stroke();
+    }
   }
 
   // Projectiles: small dot with trail

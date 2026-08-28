@@ -257,3 +257,30 @@ inline void pushAway(Entity& entity, const Vector2D& point, float distance) {
     entity.position.x += (entity.position.x - point.x) / dist * distance;
     entity.position.y += (entity.position.y - point.y) / dist * distance;
 }
+
+// Moves `entity` exactly `distance` tiles along an EXPLICIT direction, rather
+// than along the line from some point. Fourth member of the family, and it
+// carries the same two guards for the same reasons -- see pullToward.
+//
+// WHY A DIRECTION AND NOT A POINT (2026-08-28). A rolling spell's knockback is
+// not radial. The Log sweeps a rectangular corridor, and where it catches a
+// unit ACROSS that corridor decides which way the unit is thrown: dead centre
+// is shoved forward along the roll, at the left or right edge it is flung
+// sideways. That lateral throw is the card's whole tactical point -- it is what
+// splits a grouped push apart -- and `pushAway(entity, logCentre, d)` cannot
+// express it. Pushing away from the log's centre POINT does produce some
+// sideways motion, but its magnitude falls off with longitudinal distance
+// rather than with lateral offset, so a unit level with the log and one at its
+// nose get thrown the same way. The caller computes the blend and hands the
+// unit vector here.
+//
+// `dirX`/`dirY` need not be normalised; a zero-length direction is a no-op
+// rather than a division by zero.
+inline void pushAlong(Entity& entity, float dirX, float dirY, float distance) {
+    if (exemptFromForcedMovement(entity)) return;
+    if (distance <= 0.0f) return; // same guard as pullToward -- see there
+    float len = std::sqrt(dirX * dirX + dirY * dirY);
+    if (len <= 0.0001f) return; // no direction to push in
+    entity.position.x += dirX / len * distance;
+    entity.position.y += dirY / len * distance;
+}
