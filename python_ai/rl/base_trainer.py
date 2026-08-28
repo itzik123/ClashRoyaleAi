@@ -617,6 +617,16 @@ class BaseTrainer:
         # / 0.125 by much, and beating it is the whole point of the head.
         w.add_scalar("Aux/NextCard_CE", stats.aux_ce, ep)
         w.add_scalar("Aux/NextCard_Acc", stats.aux_acc, ep)
+        # The same label read off the DETACHED ScalarEncoder cycle branch. Read
+        # against the same ln(8)=2.08 / 0.125, but the meaningful reference is
+        # the measured ceiling for a 24-dim branch, ~0.55 accuracy: this series
+        # is the fast, high-SNR indicator that the 2026-08-28 detach is doing
+        # its job, because it answers off 24 dims with no recurrence involved.
+        # Aux/NextCard_Acc is the SLOW one -- it needs the LSTM to have
+        # integrated the play history, and it is the one that was stuck at the
+        # 0.22 marginal.
+        w.add_scalar("Aux/CycleId_CE", stats.cycle_id_ce, ep)
+        w.add_scalar("Aux/CycleId_Acc", stats.cycle_id_acc, ep)
         # Non-finite minibatches whose optimizer step was dropped. MUST be 0.
         # Printed as well as logged, because the whole point of the guard is
         # that the run now SURVIVES a numerical fault -- which means nothing
@@ -668,7 +678,8 @@ class BaseTrainer:
         print(f"  >> Update @ ep {ep} | Actor: {stats.actor_loss:.5f} | "
               f"Critic: {stats.critic_loss:.5f} | Entropy: {stats.entropy:.4f} | "
               f"ClipFrac: {stats.clip_frac:.4f} | "
-              f"NextCardCE: {stats.aux_ce:.2f} Acc: {stats.aux_acc:.2f}")
+              f"NextCardCE: {stats.aux_ce:.2f} Acc: {stats.aux_acc:.2f} | "
+              f"CycleId: {stats.cycle_id_ce:.2f} Acc: {stats.cycle_id_acc:.2f}")
 
     def _log_per_card(self, stats):
         """H(placement | card), and the minimum over cards.

@@ -40,8 +40,12 @@ BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 # docstring. `card_id_embed`/`noop_embed` feed placement_given_card AND are read
 # by extract_features, so they count as trunk: training them would move the
 # features the critic sees, which is the thing freezing exists to prevent.
+# `cycle_id_head` is trunk for the same reason `aux_card_head` is: it is not an
+# action head, and it is the only gradient the (detached) cycle branch has, so
+# leaving it trainable here would let a distillation run reshape the branch --
+# the exact thing the detach exists to prevent.
 TRUNK_MODULES = ("cnn_trunk", "scalar_mlp", "card_id_embed", "lstm",
-                 "value_head", "aux_card_head")
+                 "value_head", "aux_card_head", "cycle_id_head")
 
 TRUNK_PARAMS = ("noop_embed",)
 

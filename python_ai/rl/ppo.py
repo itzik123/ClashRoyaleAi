@@ -64,6 +64,13 @@ class UpdateStats:
     clip_frac: float = 0.0
     aux_ce: float = 0.0
     aux_acc: float = 0.0
+    #: The same next-card cross-entropy read off the DETACHED cycle branch
+    #: rather than off hx. Diverges from aux_ce by construction: this one sees
+    #: only the 24-dim block and answers "is card identity still recoverable
+    #: here", while aux_ce needs the recurrence to have integrated the play
+    #: history. Ceiling for the branch is ~0.55 accuracy; ~0.22 is the marginal.
+    cycle_id_ce: float = 0.0
+    cycle_id_acc: float = 0.0
     ent_card: float = 0.0
     ent_placement: float = 0.0
     #: Placement entropy on the no-op arm. Kept purely as the contrast that
@@ -186,6 +193,7 @@ class PPOUpdater:
         actor_losses, critic_losses, entropy_bonuses = [], [], []
         total_losses, clip_fracs = [], []
         aux_losses, aux_accs = [], []
+        cyc_losses, cyc_accs = [], []
         coverage_ents, coverage_kls, coverage_hits = [], [], []
         ent_card_log, ent_place_log, ent_place_noop_log = [], [], []
         percard_place_ent = defaultdict(list)
@@ -385,11 +393,42 @@ class PPOUpdater:
                             == aux_label_seq[tt, ee]).float()
                            * mb_aux_has).sum() / n_aux
 
+                # --- cycle-branch IDENTITY loss (2026-08-28) --------------
+                # Same label, same mask, different reader: this one is a
+                # linear head on the 24-dim ScalarEncoder cycle branch, which
+                # `ScalarEncoder.forward` detaches from everything else. So
+                # this is the ONLY gradient those 3,752 parameters get, and it
+                # asks for card identity -- the thing PPO was measured
+                # destroying at 248:1. It reaches cycle_id_head and the branch
+                # and goes no further: the LSTM, the trunk and every policy
+                # head sit downstream of that detach.
+                #
+                # The branch is recomputed here rather than lifted out of
+                # feats_seq because feats_seq carries the DETACHED copy, which
+                # has no graph to backpropagate through. Same parameters, one
+                # extra Linear(185,16) + Linear(32,24) on the minibatch.
+                if net.cycle_id_head is not None:
+                    cyc_feat = net.cycle_features(mb_obs_flat)
+                    cyc_logits = net.predict_cycle_card(cyc_feat).view(
+                        L, B, -1)
+                    cyc_ce_all = F.cross_entropy(
+                        cyc_logits.reshape(-1, cyc_logits.shape[-1]),
+                        aux_label_seq[tt, ee].reshape(-1),
+                        reduction="none").view_as(mb_aux_has)
+                    cycle_id_loss = (cyc_ce_all * mb_aux_has).sum() / n_aux
+                    cycle_id_acc = ((cyc_logits.argmax(-1)
+                                     == aux_label_seq[tt, ee]).float()
+                                    * mb_aux_has).sum() / n_aux
+                else:
+                    cycle_id_loss = torch.zeros((), device=device)
+                    cycle_id_acc = torch.zeros((), device=device)
+
                 # cov_delta carries both signs already: the entropy half is a
                 # bonus (negative), the advisor KL a penalty (positive).
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
-                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_loss)
+                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_loss
+                        + cfg.cycle_id_coef * cycle_id_loss)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -424,6 +463,8 @@ class PPOUpdater:
                 total_losses.append(loss.item())
                 aux_losses.append(aux_loss.item())
                 aux_accs.append(aux_acc.item())
+                cyc_losses.append(cycle_id_loss.item())
+                cyc_accs.append(cycle_id_acc.item())
 
                 # DECISION-denominated, and therefore UNDEFINED -- not zero --
                 # on a chunk where nothing was ever affordable. Such a chunk is
@@ -464,6 +505,8 @@ class PPOUpdater:
             clip_frac=_mean(clip_fracs),
             aux_ce=_mean(aux_losses),
             aux_acc=_mean(aux_accs),
+            cycle_id_ce=_mean(cyc_losses),
+            cycle_id_acc=_mean(cyc_accs),
             ent_card=_mean(ent_card_log),
             ent_placement=_mean(ent_place_log),
             ent_placement_noop=_mean(ent_place_noop_log),

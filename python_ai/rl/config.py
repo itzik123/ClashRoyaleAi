@@ -243,6 +243,30 @@ class PPOConfig:
     #: LOGGED diagnostic stays in interpretable nats.
     aux_card_scale: float = 0.02
 
+    #: --- Cycle-branch identity loss (2026-08-28) --------------------------
+    #: Weight on the cross-entropy that trains MicroRoyaleNet.predict_cycle_card
+    #: -- the SAME next-card label as `aux_card_coef`, read off the 24-dim
+    #: ScalarEncoder cycle branch instead of off hx.
+    #:
+    #: It exists because `aux_card_coef` could not do this job and no value of
+    #: it could. Measured on the ep-7,200 checkpoint, the aux term supplied
+    #: 0.27-0.40% of the gradient landing on the cycle parameters -- 18x
+    #: outgunned by the actor term alone and ~250x by actor+critic+entropy --
+    #: and PPO spent them on a 1-D opponent-tempo readout instead, leaving the
+    #: branch decoding the next card WORSE than at random init (+0.169 against
+    #: +0.195). Matching that gradient needed a coefficient near 2.5, which
+    #: makes a 2.0-nat cross-entropy the dominant term against an actor loss of
+    #: 0.02. So the fix is the detach in ScalarEncoder.forward, not a weight.
+    #:
+    #: 1.0, undivided, and that is safe ONLY because of the detach: this is the
+    #: only gradient the branch receives, so there is nothing for it to
+    #: overpower. It reaches `cycle_id_head` and the branch and stops -- the
+    #: LSTM, the trunk and every policy head are downstream of a detach and see
+    #: none of it. Read the logged value against ln(8) = 2.08 and its accuracy
+    #: against ~0.22 (the marginal); the measured ceiling for a 24-dim branch
+    #: is ~0.55, and that is the number this term is chasing.
+    cycle_id_coef: float = 1.0
+
     #: Periodic-checkpoint interval, in episodes. Overridable ONLY so a short
     #: controlled run produces matched artifacts: a resume sets last_save_ep to
     #: the resumed episode, so at the 500 default an experiment shorter than 500

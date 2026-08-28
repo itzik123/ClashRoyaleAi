@@ -171,7 +171,12 @@ def test_zero_init_is_bit_identical():
     obs = _obs_batch(4)
     logits, hx, embeds, spatial = _place(net, obs)
 
-    ctx = net.place_ctx(torch.cat((hx, embeds[torch.arange(4), 0]), dim=-1))
+    # hx, then the cycle skip, then the chosen card's embedding -- the order
+    # `placement_given_card` builds it in (`_head_input` first, embed appended).
+    # The skip was added 2026-08-28; before it this was cat((hx, embed)).
+    ctx = net.place_ctx(torch.cat(
+        (hx, net.cycle_features(obs, detached=True),
+         embeds[torch.arange(4), 0]), dim=-1))
     coarse_map = net.place_up(spatial + ctx.view(-1, 32, 1, 1))
     coarse = coarse_map[:, 0, :net.placement_rows, :net.board_width].reshape(4, -1)
     coarse = coarse.masked_fill(

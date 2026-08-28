@@ -196,17 +196,78 @@ def test_a_monolithic_scalar_layer_fails_that_same_question():
 
 
 def test_every_branch_receives_gradient_and_the_output_is_finite():
-    """A branch that never learns is dead code dressed as an architecture."""
+    """A branch that never learns is dead code dressed as an architecture.
+
+    The cycle branch is DELIBERATELY exempt from this since 2026-08-28: it is
+    detached in `forward`, so no gradient reaches it from anything downstream
+    of the encoder. Its own guarantee is the next test -- the exemption is not
+    a hole, it is a redirection, and both halves are pinned.
+    """
     net = MicroRoyaleNet(num_ability_slots=0)
     enc = net.scalar_mlp
     scalar = _scalar_part(net, _obs_batch(net))
     out = enc(scalar)
     assert torch.isfinite(out).all()
     out.pow(2).mean().backward()
+    detached = {"cycle_card.weight", "cycle_out.weight", "cycle_out.bias"}
     for name, p in enc.named_parameters():
+        if name in detached:
+            continue
         assert p.grad is not None, f"{name} received no gradient"
         assert torch.isfinite(p.grad).all(), f"{name} grad not finite"
         assert p.grad.abs().sum() > 0, f"{name} is dead: all-zero gradient"
+
+
+def test_the_cycle_branch_is_reachable_only_from_the_identity_head():
+    """The 2026-08-28 gradient isolation, from both sides.
+
+    Measured on `model_weights_phase4.pth` at ep ~7,200: PPO was supplying
+    99.6% of the gradient on these parameters and spending it on a 1-D
+    opponent-tempo readout, which left the branch decoding the opponent's next
+    card WORSE than at random init (+0.169 lift against +0.195, where the
+    observation itself carries +0.412). The eight deck columns of
+    `cycle_card.weight` had collapsed toward a common direction -- mean
+    pairwise |cos| 0.191 +- 0.017 at init to 0.461, effective rank 7.48 -> 6.01.
+
+    So this asserts BOTH directions. A one-sided test would pass on a branch
+    that is simply dead, which is the failure mode the test above exists for.
+    """
+    net = MicroRoyaleNet(num_ability_slots=0)
+    obs = _obs_batch(net)
+    cyc_params = [net.scalar_mlp.cycle_card.weight,
+                  net.scalar_mlp.cycle_out.weight,
+                  net.scalar_mlp.cycle_out.bias]
+
+    def grad_norms(loss):
+        net.zero_grad()
+        loss.backward()
+        return [0.0 if p.grad is None else float(p.grad.norm())
+                for p in cyc_params]
+
+    # 1. Nothing reading the encoder's OUTPUT may reshape the branch. The
+    #    policy path is represented here by the encoder output itself, which
+    #    every one of the CNN/LSTM/head consumers is downstream of.
+    assert grad_norms(net.scalar_mlp(_scalar_part(net, obs)).pow(2).mean()) \
+        == [0.0, 0.0, 0.0]
+
+    # 2. ...and the skip that reaches the heads carries no path either, so the
+    #    actor and the critic read these 24 dims without owning them.
+    feats, _, _, _ = net.extract_features_hires(obs)
+    skip = net._split_cycle(feats)
+    assert skip.shape[-1] == net.cycle_feature_dim
+    assert skip.requires_grad is False
+
+    # 3. But the identity head MUST reach all three, or the branch is simply
+    #    dead and this whole change made things worse.
+    ident = net.predict_cycle_card(net.cycle_features(obs)).pow(2).mean()
+    assert all(g > 0.0 for g in grad_norms(ident))
+
+    # 4. And that head's gradient must stop at the branch -- if it reached the
+    #    LSTM it would be a second aux task, not an isolated one.
+    net.zero_grad()
+    net.predict_cycle_card(net.cycle_features(obs)).pow(2).mean().backward()
+    assert net.lstm.weight_ih.grad is None
+    assert net.cnn_trunk[0].weight.grad is None
 
 
 def test_the_branched_encoder_is_cheaper_than_the_layer_it_replaces():

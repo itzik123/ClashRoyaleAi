@@ -339,11 +339,59 @@ class ScalarEncoder(nn.Module):
         h = F.relu(self.hand_slot(
             onehots.reshape(-1, self.hand_size, self.num_card_ids))).flatten(1)
         x = F.relu(self.extra(extra))
-        # (B, 2, num_card_ids) -- row 0 is seen[], row 1 is recency[].
+        # DETACHED, and this is the whole of the 2026-08-28 fix. See
+        # `cycle_branch` below for the measurement; the short version is that
+        # PPO was winning a 248:1 gradient fight for these parameters and
+        # spending them on a one-dimensional opponent-tempo readout, so the
+        # branch's own output decoded the opponent's next card WORSE after
+        # training than at random init. Detaching here means the actor and the
+        # critic READ the branch and can never RESHAPE it; `cycle_id_head` is
+        # now its only gradient, and that one asks for card identity.
+        #
+        # Note what is NOT detached: `lstm.weight_ih`, `place_ctx`, every head.
+        # They keep learning to USE these 24 dims, at full gradient. Only the
+        # definition of the 24 dims is protected.
+        return torch.cat([e, h, x, self.cycle_branch(cycle).detach()], dim=1)
+
+    def cycle_branch(self, cycle):
+        """The cycle branch WITH its gradient attached. (B, CYCLE_BRANCH_DIM).
+
+        Separated from `forward` because the two callers want opposite things:
+        `forward` feeds the LSTM and must detach (see above), while the
+        auxiliary identity loss needs the live graph. Same parameters, called
+        twice -- a recompute of 3,752 parameters on the minibatch, not a second
+        copy of the definition.
+
+        WHY THIS EXISTS, measured 2026-08-28 on `model_weights_phase4.pth` at
+        ep ~7,200 (24 episodes, 5,366 decisions, linear probes with l2 swept
+        per representation), as lift over the marginal on "which card does the
+        opponent play NEXT":
+
+            obs cycle_raw (the ceiling)   +0.412
+            this branch, PPO-trained      +0.169     <- 41% retained
+            this branch, at random init   +0.195     <- training made it WORSE
+            hx, PPO-trained               +0.046     <- 11% retained
+            hx, at random init            +0.135
+            everything EXCEPT the cycle   +0.031     <- not shortcut-solvable
+
+        The cause is that `cycle_card` is a SHARED projection over a SUM-POOLED
+        bag of cards, so the only thing the dominant objective can cheaply
+        extract is aggregate opponent activity -- which is 1-D, and optimising
+        for it pulls the eight deck columns onto a common direction. Measured:
+        mean pairwise |cos| between them went 0.191 +- 0.017 at init to 0.461
+        (~16 sigma), effective rank 7.48 -> 6.01, and the branch output's PC1
+        went 32% -> 54% of variance while its column norms GREW 2.1x. It was
+        not neglected. It was re-tasked.
+
+        It is not a capacity limit -- `Linear(370, 8) + ReLU` trained FOR this
+        task keeps 92% of the ceiling, and 24 dims keeps 96%, so widening this
+        branch is the wrong instinct. And it is fully reversible: handed an
+        identity gradient, these exact collapsed weights recover +0.390 of the
+        +0.412 ceiling and the columns un-align (|cos| back to 0.202).
+        """
         c = cycle.reshape(-1, 2, self.num_card_ids)
         c = F.relu(self.cycle_card(c)).flatten(1)
-        c = F.relu(self.cycle_out(c))
-        return torch.cat([e, h, x, c], dim=1)
+        return F.relu(self.cycle_out(c))
 
 
 class MicroRoyaleNet(nn.Module):
@@ -542,6 +590,30 @@ class MicroRoyaleNet(nn.Module):
             scalar_feature_dim = SCALAR_FEATURE_DIM
         self.scalar_feature_dim = scalar_feature_dim
 
+        # --- the cycle skip (2026-08-28) ------------------------------------
+        # Width of the block that bypasses the LSTM and reaches the heads
+        # directly. 0 on the monolithic `branched_scalars=False` path, which
+        # has no cycle branch at all -- and that zero must stay a real zero
+        # rather than a slice, because `t[..., -0:]` is the WHOLE tensor, not
+        # an empty one. Everything downstream goes through `_split_cycle` /
+        # `_head_input` for exactly that reason.
+        #
+        # WHY the skip: even a healthy branch only reaches the actor and the
+        # critic THROUGH the LSTM, where it is 24 of 1504 input dims (1.6%) and
+        # is subject to the same pressure that collapsed it. Measured, the
+        # recurrence retains 27% of the branch's card signal when trained
+        # (+0.169 -> +0.046) against 69% untrained (+0.195 -> +0.135) -- so it
+        # is a second lossy stage, in the same direction, for the same reason.
+        # Routing the block straight to the heads makes delivery unconditional:
+        # +0.169 instead of +0.046 today, and +0.390 instead of +0.046 once
+        # `cycle_id_head` has repaired the branch.
+        #
+        # `lstm_input_dim` is deliberately NOT touched -- the block still
+        # occupies its 24 slots in `features`, so LSTMCell(1504, 256) keeps its
+        # shape and all 1,804,288 of its trained parameters warm-start.
+        self.cycle_feature_dim = (CYCLE_BRANCH_DIM if branched_scalars else 0)
+        head_dim = self.LSTM_HIDDEN + self.cycle_feature_dim
+
         # ==========================================
         # 2ב. Embedding לזהות קלף -- למיקום אוטורגרסיבי (ראה placement_given_card)
         # ==========================================
@@ -572,7 +644,7 @@ class MicroRoyaleNet(nn.Module):
         # א. ראש בחירת הקלף (התפלגות קטגוריאלית) -- תלוי רק ב-hx, בדיוק כמו קודם.
         # hand_size משבצות יד + פעולה אחת נוספת = no-op (המתנה/אגירת אליקסיר).
         # המנוע מתעלם מ-cardIndex מחוץ ל-[0,hand_size) כך שאין צורך בשינוי C++.
-        self.card_head = nn.Linear(256, hand_size + 1)
+        self.card_head = nn.Linear(head_dim, hand_size + 1)
 
         # ב. ראש המיקום במרחב -- קטגוריאלי על תאי לוח שלמים, לא גאוסיאן.
         # אוטורגרסיבי כמו קודם: מותנה ב-hx *וגם* ב-embedding של הקלף שנבחר.
@@ -604,7 +676,7 @@ class MicroRoyaleNet(nn.Module):
         # משקלים משותפים שפועלים על המאפיינים המקומיים *של אותו אזור לוח* --
         # וזו בדיוק ההטיה האינדוקטיבית הנכונה למשחק שבו ההחלטה היא "איפה".
         # אותו דפוס שבו AlphaStar מייצר ארגומנטים מרחביים.
-        self.place_ctx = nn.Linear(256 + CARD_EMBED_DIM, 32)
+        self.place_ctx = nn.Linear(head_dim + CARD_EMBED_DIM, 32)
         # RESIZE + CONV, not ConvTranspose. השינוי הזה תוקן ב-2026-08-09 אחרי
         # שנמדד שהגרסה הקודמת --
         #     ConvTranspose2d(32,32,k=2,s=2) -> ReLU -> ConvTranspose2d(32,16,k=2,s=2)
@@ -671,7 +743,7 @@ class MicroRoyaleNet(nn.Module):
         # הגרדיאנט עדיין זורם: לשכבה המאופסת עצמה יש גרדיאנט לא-אפסי (היא
         # רואה אקטיבציה חיה), אז היא יוצאת מאפס בצעד הראשון והשכבה שמתחתיה
         # מתחילה ללמוד בשני. התנהגות zero-conv סטנדרטית.
-        self.place_ctx_hi = nn.Linear(256 + CARD_EMBED_DIM, HIRES_CTX_DIM)
+        self.place_ctx_hi = nn.Linear(head_dim + CARD_EMBED_DIM, HIRES_CTX_DIM)
         self.place_hires = nn.Sequential(
             nn.Conv2d(16 + HIRES_CTX_DIM, HIRES_HIDDEN,
                       kernel_size=3, stride=1, padding=1),
@@ -693,7 +765,7 @@ class MicroRoyaleNet(nn.Module):
         # ==========================================
         # 5. ראש הערכת המצב - Critic Head -- תלוי רק ב-hx.
         # ==========================================
-        self.value_head = nn.Linear(256, 1)
+        self.value_head = nn.Linear(head_dim, 1)
 
         # ==========================================
         # 6. ראשי הפעלת יכולת צ'מפיון (עד 2 צ'מפיונים בו-זמנית -- ראו
@@ -763,6 +835,79 @@ class MicroRoyaleNet(nn.Module):
         # step_lstm_and_card: needed ONLY during training, never when choosing
         # an action.
         self.aux_card_head = nn.Linear(self.LSTM_HIDDEN, NUM_CARD_IDS_LIVE)
+
+        # ==========================================
+        # 8. IDENTITY head on the cycle branch (2026-08-28)
+        # ==========================================
+        # The other half of the detach in ScalarEncoder.forward. Reading the
+        # 24-dim branch DIRECTLY rather than hx, it is the only gradient those
+        # 3,752 parameters now receive, and it asks for exactly one thing: is
+        # the identity of each card the opponent has shown still recoverable
+        # from this block?
+        #
+        # Its coefficient can be O(1) precisely BECAUSE of the detach. The old
+        # arrangement had `aux_card_head` fighting the actor and the critic for
+        # the same weights and losing 248:1 -- matching that needed a
+        # coefficient near 2.5, which puts a 2.0-nat CE against an actor loss
+        # of 0.02, i.e. a different objective rather than a tuning knob. With
+        # the branch isolated there is no fight to lose and no coefficient to
+        # balance.
+        #
+        # `aux_card_head` STAYS, on plain hx, and the two are not redundant.
+        # `recency[]` decays with a 200-tick constant, so this head asks "what
+        # has been played lately"; knowing which four cards they HOLD means
+        # integrating the play sequence, which only the recurrence can do. This
+        # head protects the encoder, that one asks the LSTM to do the
+        # integration it currently is not doing. It is also why `aux_card_head`
+        # must keep reading hx alone and never `_head_input` -- handed the skip
+        # it would answer from the branch and stop asking anything of memory.
+        self.cycle_id_head = (nn.Linear(CYCLE_BRANCH_DIM, NUM_CARD_IDS_LIVE)
+                              if self.cycle_feature_dim else None)
+
+    def _split_cycle(self, features):
+        """The DETACHED cycle block ScalarEncoder placed at the end of `features`.
+
+        None when there is no cycle branch. Never `features[..., -0:]`, which
+        would silently be the entire feature vector.
+        """
+        if not self.cycle_feature_dim:
+            return None
+        # `.detach()` again, and it is not redundant even though `forward`
+        # already detached what it concatenated. The slice comes out of a `cat`
+        # whose OTHER inputs carry a graph, so it inherits requires_grad=True
+        # and merely happens to route zero gradient to the branch. That makes
+        # the isolation an argument about cat's backward rather than a property
+        # you can read here. This makes it local and costs nothing.
+        return features[..., -self.cycle_feature_dim:].detach()
+
+    def _head_input(self, hx, cycle_feat):
+        """hx, plus the cycle skip when there is one. (Batch, head_dim)."""
+        if cycle_feat is None:
+            return hx
+        return torch.cat((hx, cycle_feat), dim=-1)
+
+    def cycle_features(self, obs, detached=False):
+        """The cycle branch run on a raw observation, WITH gradient by default.
+
+        The PPO update's entry point to `cycle_id_head`, and the fallback
+        `placement_given_card` uses when a caller hands it `obs` but no
+        precomputed context. Returns None where there is no branch.
+        """
+        if not self.cycle_feature_dim:
+            return None
+        scalar_obs = obs[:, self.spatial_size:]
+        cycle = scalar_obs[:, self.cycle_start:
+                           self.cycle_start + self.cycle_block_size]
+        out = self.scalar_mlp.cycle_branch(cycle)
+        return out.detach() if detached else out
+
+    def predict_cycle_card(self, cycle_feat):
+        """Logits over card ids, read from the cycle branch. (Batch, C).
+
+        Trained against the same next-card label as `predict_opp_next_card`;
+        see `cycle_id_head` for why both exist.
+        """
+        return self.cycle_id_head(cycle_feat)
 
     def extract_features_hires(self, obs):
         """
@@ -930,7 +1075,11 @@ class MicroRoyaleNet(nn.Module):
           (ללא מיסוך -- ההתנהגות הישנה, לשימוש רק היכן שאין תצפית זמינה).
         """
         hx, cx = self.lstm(features, hidden_state)
-        card_logits = self.card_head(hx)
+        # The cycle skip. Taken from `features` rather than recomputed, so it
+        # is bit-identical to what the LSTM was just fed and costs nothing --
+        # ScalarEncoder already put it at the end of that vector, detached.
+        head_in = self._head_input(hx, self._split_cycle(features))
+        card_logits = self.card_head(head_in)
         if card_mask is not None:
             # -inf ולא ערך שלילי גדול-אך-סופי: Categorical מנרמל דרך
             # log_softmax, וערך סופי היה עדיין משאיר הסתברות זעירה אך אי-
@@ -938,7 +1087,7 @@ class MicroRoyaleNet(nn.Module):
             # לאנטרופיה. -inf נותן בדיוק אפס בשניהם. ה-no-op תמיד חוקי
             # (ראה affordability_mask) אז אף שורה לא יכולה לצאת כולה -inf.
             card_logits = card_logits.masked_fill(~card_mask, float("-inf"))
-        state_value = self.value_head(hx)
+        state_value = self.value_head(head_in)
         # ראשי הצ'מפיון תלויים רק ב-hx, בדיוק כמו card_logits/state_value --
         # לכן מחושבים כאן, לא ב-placement_given_card. None כשאין צ'מפיון
         # בחפיסה (ראה num_ability_slots), והמאמן מדלג עליהם לגמרי.
@@ -948,7 +1097,7 @@ class MicroRoyaleNet(nn.Module):
 
     def placement_given_card(self, hx, card_embeds, card_idx, obs=None,
                              spatial_map=None, hires_map=None,
-                             ctx=None, ctx_hi=None):
+                             ctx=None, ctx_hi=None, cycle_feat=None):
         """
         חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
         מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
@@ -981,6 +1130,20 @@ class MicroRoyaleNet(nn.Module):
                 "העברת None כאן הייתה מייצרת לוגיטים שונים מאלה שנוצרו ב-rollout, "
                 "ויחס ה-PPO היה נשבר בשקט -- לכן זו שגיאה ולא ברירת מחדל.")
 
+        if hires_map is None and obs is None:
+            # אין נפילה שקטה לראש הגס-בלבד. פונקציה אחרת מזו שהריצה את
+            # ה-rollout הייתה שוברת את יחס ה-PPO בשקט -- בדיוק מה
+            # שהשמירה על spatial_map=None כבר קיימת בשבילו.
+            #
+            # נבדק כאן, בראש הפונקציה, ולא במקום שבו hires_map נבנה: מאז
+            # תוספת ה-cycle skip יש **שתי** תלויות ב-obs, וההודעה הזו היא
+            # המדויקת יותר מבין השתיים -- קורא שקיבל את הודעת ה-cycle כשגם
+            # hires_map חסר היה מתקן את הדבר הלא נכון.
+            raise ValueError(
+                "placement_given_card דורש hires_map או obs כדי לבנות "
+                "אותו (ראה hires_features). None בשניהם היה מחשב ראש "
+                "אחר מזה שהריץ את ה-rollout.")
+
         batch_idx = torch.arange(card_embeds.shape[0], device=card_embeds.device)
         chosen_embed = card_embeds[batch_idx, card_idx]  # (Batch, CARD_EMBED_DIM)
         # הקשר -> 32 ערוצים, משודר על כל תא במפה המרחבית. חיבור ולא שרשור:
@@ -1006,8 +1169,24 @@ class MicroRoyaleNet(nn.Module):
         #
         # זה חוסם **כל** סכימת דחיסת-שורות מלהיות bit-exact ברמת המשקלים. מה
         # שכן מובטח, ונמדד: הלוגיטים בשורות שנשמרות, וה-loss עצמו.
+        # The cycle skip, on the same terms as `hires_map` two blocks down:
+        # supplied by the hot caller, else rebuilt from `obs`, else an error --
+        # never a silent zero. A zero block here would compute a DIFFERENT head
+        # from the one that ran the rollout and break the PPO ratio quietly,
+        # which is the exact failure the spatial_map guard above already exists
+        # to prevent. Skipped entirely when both contexts are precomputed.
+        if cycle_feat is None and self.cycle_feature_dim and (
+                ctx is None or ctx_hi is None):
+            if obs is None:
+                raise ValueError(
+                    "placement_given_card needs cycle_feat or obs to rebuild "
+                    "it (see cycle_features). None in both would compute a "
+                    "different head from the one that ran the rollout.")
+            cycle_feat = self.cycle_features(obs, detached=True)
+        head_in = self._head_input(hx, cycle_feat)
+
         if ctx is None:
-            ctx = self.place_ctx(torch.cat((hx, chosen_embed), dim=-1))  # (B,32)
+            ctx = self.place_ctx(torch.cat((head_in, chosen_embed), dim=-1))  # (B,32)
         h = spatial_map + ctx.view(-1, 32, 1, 1)
         logit_map = self.place_up(h)                                    # (B, 1, 4*ph, 4*pw)
         logits = logit_map[:, 0, :self.placement_rows, :self.board_width].reshape(
@@ -1020,17 +1199,9 @@ class MicroRoyaleNet(nn.Module):
         # מדויק והחיבור השיורי מדויק. זה מה שמאפשר לצ'קפוינטים קיימים
         # להיטען ולהתנהג bit-identical.
         if hires_map is None:
-            if obs is None:
-                # אין נפילה שקטה לראש הגס-בלבד. פונקציה אחרת מזו שהריצה את
-                # ה-rollout הייתה שוברת את יחס ה-PPO בשקט -- בדיוק מה
-                # שהשמירה על spatial_map=None כבר קיימת בשבילו.
-                raise ValueError(
-                    "placement_given_card דורש hires_map או obs כדי לבנות "
-                    "אותו (ראה hires_features). None בשניהם היה מחשב ראש "
-                    "אחר מזה שהריץ את ה-rollout.")
             hires_map = self.hires_features(obs)
         if ctx_hi is None:
-            ctx_hi = self.place_ctx_hi(torch.cat((hx, chosen_embed), dim=-1))
+            ctx_hi = self.place_ctx_hi(torch.cat((head_in, chosen_embed), dim=-1))
         h_hi = torch.cat(
             (hires_map,
              ctx_hi.view(-1, HIRES_CTX_DIM, 1, 1).expand(
@@ -1081,14 +1252,20 @@ class MicroRoyaleNet(nn.Module):
             cx = cx * reset
 
         flat_hx = torch.stack(hx_steps).reshape(L * B, -1)
-        card_logits = self.card_head(flat_hx)
+        # The cycle skip, read off the same feats_seq the LSTM consumed, so it
+        # matches step_lstm_and_card's `head_in` exactly.
+        flat_cycle = self._split_cycle(feats_seq.reshape(L * B, -1))
+        flat_head = self._head_input(flat_hx, flat_cycle)
+        card_logits = self.card_head(flat_head)
         mask_flat = card_mask_seq.reshape(L * B, -1)
         card_logits = card_logits.masked_fill(~mask_flat, float("-inf"))
-        values = self.value_head(flat_hx).squeeze(-1)
+        values = self.value_head(flat_head).squeeze(-1)
         # (L*B, NUM_CARD_IDS) LOGITS, not a scalar -- the caller reshapes to
         # (L, B, C) and feeds cross_entropy. No output scaling: the old head
         # multiplied by 10.0 to put a sigmoid-free regression in elixir units,
         # which has no analogue for a classifier.
+        # flat_hx, NOT flat_head: this head exists to pressure the RECURRENCE,
+        # and handed the skip it would answer straight off the branch.
         aux = self.aux_card_head(flat_hx)
 
         # נבנית פעם אחת ומשותפת לשתי הקריאות למטה. בלי זה מעבר הכיסוי היה
@@ -1126,7 +1303,7 @@ class MicroRoyaleNet(nn.Module):
             if active_rows is None:
                 return self.placement_given_card(
                     flat_hx, flat_embeds, flat_idx, flat_obs, flat_spatial,
-                    hires_map=flat_hires)
+                    hires_map=flat_hires, cycle_feat=flat_cycle)
             out = flat_hx.new_zeros(L * B, self.placement_cells)
             if active_rows.numel() == 0:
                 # אצווה ריקה מגיעה ל-Conv2d; מדלגים לגמרי. זה לא מקרה קצה
@@ -1134,13 +1311,14 @@ class MicroRoyaleNet(nn.Module):
                 # פושט-רגל מייצר, ונמדד P(אין מה להרשות) = 73.9%.
                 return out
             rows = torch.arange(L * B, device=flat_hx.device)
-            joint = torch.cat((flat_hx, flat_embeds[rows, flat_idx]), dim=-1)
+            joint = torch.cat((flat_head, flat_embeds[rows, flat_idx]), dim=-1)
             sub = self.placement_given_card(
                 flat_hx[active_rows], flat_embeds[active_rows],
                 flat_idx[active_rows], flat_obs[active_rows],
                 flat_spatial[active_rows], hires_map=flat_hires[active_rows],
                 ctx=self.place_ctx(joint)[active_rows],
-                ctx_hi=self.place_ctx_hi(joint)[active_rows])
+                ctx_hi=self.place_ctx_hi(joint)[active_rows],
+                cycle_feat=None if flat_cycle is None else flat_cycle[active_rows])
             return out.index_copy(0, active_rows, sub)
 
         place_logits = _placement(card_idx_seq)
