@@ -2,6 +2,7 @@
 #include "test_helpers.h"
 #include "ArenaLayout.h"
 #include "GameManager.h"
+#include "CardRegistry.h"
 #include "CardStats.h"
 #include "BuildingTargeter.h"
 #include "Building.h"
@@ -778,4 +779,84 @@ TEST_CASE("A cloned Champion can never activate the ability, even after the orig
 
     REQUIRE_FALSE(game.isChampionAbilityReady(0, 1)); // the clone is alive but was never tracked -- unreachable
     REQUIRE_FALSE(game.activateChampionAbility(0, 1));
+}
+
+TEST_CASE("a rolling spell may be cast on its own half and the river, but no further",
+          "[game_manager][placement][roll]") {
+    // The Log and Barbarian Barrel are the one exception to "a spell goes
+    // anywhere". They damage by rolling FORWARD, so a cast deep in enemy
+    // territory rolls away from everything -- measured on the ep-32,484 policy,
+    // 53.4% of its Log placements were over there, spread to y = 33.
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    game.reset();
+    const float riverStart = game.getBoard().getRiverStart();
+    const float riverEnd = game.getBoard().getRiverEnd();
+
+    SECTION("team 0 keeps its own half and the river") {
+        REQUIRE(game.isValidPlacement(0, 9.0f, 5.0f, true, 0.0f, false, true));
+        REQUIRE(game.isValidPlacement(0, 9.0f, 15.0f, true, 0.0f, false, true));
+        REQUIRE(game.isValidPlacement(0, 9.0f, riverStart, true, 0.0f, false, true));
+        REQUIRE(game.isValidPlacement(0, 9.0f, riverEnd, true, 0.0f, false, true));
+    }
+
+    SECTION("team 0 is refused past the river") {
+        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 18.0f, true, 0.0f, false, true));
+        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 25.0f, true, 0.0f, false, true));
+        REQUIRE_FALSE(game.isValidPlacement(0, 9.0f, 31.0f, true, 0.0f, false, true));
+    }
+
+    SECTION("team 1 is the exact mirror") {
+        REQUIRE(game.isValidPlacement(1, 9.0f, 28.0f, true, 0.0f, false, true));
+        REQUIRE(game.isValidPlacement(1, 9.0f, riverEnd, true, 0.0f, false, true));
+        REQUIRE(game.isValidPlacement(1, 9.0f, riverStart, true, 0.0f, false, true));
+        REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 15.0f, true, 0.0f, false, true));
+        REQUIRE_FALSE(game.isValidPlacement(1, 9.0f, 5.0f, true, 0.0f, false, true));
+    }
+
+    SECTION("NON-rolling spells are unaffected and still go anywhere") {
+        // The exemption is narrowed for rollers only -- a Fireball across the
+        // river is normal and must stay legal.
+        REQUIRE(game.isValidPlacement(0, 9.0f, 25.0f, true, 0.0f, false, false));
+        REQUIRE(game.isValidPlacement(1, 9.0f, 5.0f, true, 0.0f, false, false));
+    }
+}
+
+TEST_CASE("the rolling-spell zone still lets The Log reach the enemy Princess Tower",
+          "[game_manager][placement][roll][bridge]") {
+    // THE LOAD-BEARING HALF. A STRICT own-half rule (y <= 15.0, what every
+    // troop obeys) would put the enemy tower out of reach of a 10.1 roll -- its
+    // near edge is 9.00 tiles from BRIDGE_Y, so a Log cast at 15.0 reaches
+    // 25.1 against a tower edge at 25.5 and does nothing at all. Including the
+    // river band is what preserves the interaction the range exists for, and
+    // this asserts the arithmetic rather than trusting it.
+    GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
+    game.reset();
+    const float riverEnd = game.getBoard().getRiverEnd();                 // 17.5
+    const float ownHalfMax = game.getBoard().getRiverStart() - 0.5f;      // 15.0
+    const float towerEdge = ArenaLayout::princessY(1) - 1.5f;             // 25.5
+    const float logRange = CardRegistry::getInstance().getCard(33)->rollRange;
+
+    REQUIRE(logRange == Catch::Approx(10.1f));
+    REQUIRE(ownHalfMax + logRange < towerEdge);   // strict own half CANNOT reach
+    REQUIRE(riverEnd + logRange > towerEdge);     // own half + river CAN
+
+    // ...and the highest legal cell really is legal.
+    REQUIRE(game.isValidPlacement(0, ArenaLayout::LEFT_LANE_X, riverEnd, true, 0.0f, false, true));
+}
+
+TEST_CASE("the registry's two rolling spells are the only cards this rule catches",
+          "[game_manager][placement][roll][registry]") {
+    // Guards against the flag being wired to the wrong predicate: it keys on
+    // rollRange > 0, so exactly The Log, Barbarian Barrel and the Hero variant
+    // should be restricted and nothing else.
+    const auto& registry = CardRegistry::getInstance();
+    std::vector<int> rollers;
+    for (const auto& pair : registry.getAllCards()) {
+        if (pair.second.rollRange > 0.0f) rollers.push_back(pair.first);
+    }
+    std::sort(rollers.begin(), rollers.end());
+    // 33 The Log, 101 Barbarian Barrel, 174 its Hero variant -- and nothing else.
+    REQUIRE(rollers == std::vector<int>{33, 101, 174});
+    REQUIRE(registry.getCard(7)->rollRange == 0.0f);    // Fireball unaffected
+    REQUIRE(registry.getCard(100)->rollRange == 0.0f);  // Giant Snowball unaffected
 }

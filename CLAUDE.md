@@ -809,6 +809,40 @@ own-half rule plus `OWN_HALF_RIVER_BUFFER`), a building fully OUT OF BOUNDS
 (rejected by the overlap loop -- towers are Buildings with a 1.5 radius, and
 even 0.5 tiles away is refused). Only the footprint gap was real.
 
+**Rolling spells are cast on the own half OR the river, and no further, since
+2026-08-29.** They were exempt from the own-half rule like every other spell.
+Measured on the ep-32,484 policy over 60 sampled episodes, **53.4% of its Log
+placements were on the ENEMY half**, spread to y = 33 -- and a roller travels
+FORWARD, so a Log at y = 31 rolls away from everything and off the board. Every
+other card in the deck placed 100% on its own half.
+
+**The bound is getRiverEnd() (17.5), not the own-half line (15.0), and that is
+load-bearing.** The Log reaches the enemy Princess Tower only from the bridge:
+
+| cast at | leading edge reaches | tower damage |
+|---|---|---|
+| y = 15.0 (own-half max) | 25.1 | **0** |
+| y = 16.0 | 26.1 | 269 |
+
+The tower's near edge is 25.5. A STRICT own-half rule would have made the tower
+physically unreachable by a Log from any legal cell -- silently deleting the
+interaction the 10.1 range exists for. Including the river band keeps it by one
+row. Pinned in 's  case, which asserts
+the arithmetic from 's own river accessors rather than restating it.
+
+Keyed on , so it catches exactly ids 33, 101 and
+174 and nothing else; Fireball and Giant Snowball still go anywhere. Mirrored
+for team 1 about the same band.
+
+GAMEPLAY-AFFECTING: The Log is in  and roughly half its placement
+mass was on cells that are now masked off, so the placement head's learned
+distribution for that card is invalidated.
+
+**NOT a real-game rule, as far as I know.** Clash Royale lets every spell,
+rollers included, deploy anywhere. This is a deliberate ACTION-SPACE decision --
+it removes a large region of provably useless placements -- not a fidelity fix,
+and it is recorded that way so nobody later "corrects" the engine toward it.
+
 **The Log and Barbarian Barrel ROLL, since 2026-08-28.** They were static
 circular `AreaSpell`s detonating once at the tap point. They are now dynamic
 bodies that sweep a **rectangular corridor** forward from where they land,

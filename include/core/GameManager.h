@@ -540,7 +540,10 @@ public:
 
     int getCurrentTick() const { return currentTick; }
 
-    bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius, bool deployAnywhere = false) const {
+    // `isRollingSpell` narrows the spell exemption for The Log and Barbarian
+    // Barrel -- see the branch at the bottom of this function.
+    bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius,
+                          bool deployAnywhere = false, bool isRollingSpell = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);
         if (x < 0.0f || x > maxX || y < 0.0f || y > maxY) return false;
@@ -592,6 +595,41 @@ public:
                     if (dx*dx + dy*dy < requiredDist*requiredDist) return false;
                 }
             }
+        }
+
+        // ROLLING SPELLS ARE NOT CAST ANYWHERE (2026-08-29). The Log and
+        // Barbarian Barrel may be dropped on the caster's own half OR on the
+        // river band, and no further into enemy territory.
+        //
+        // WHY THE RIVER IS INCLUDED, AND WHY THAT BOUND IS EXACT. A roller does
+        // its damage by travelling FORWARD from where it lands, so the useful
+        // cast is at the front edge of your own ground -- and the whole point of
+        // The Log's 10.1 range is that from the bridge it reaches the enemy
+        // Princess Tower, whose near edge sits 9.00 tiles from BRIDGE_Y.
+        // Measured 2026-08-29 through the binding, that interaction survives
+        // this rule by exactly one row:
+        //
+        //     cast at y = 15.0 (own-half max) -> reaches 25.1 -> 0 damage
+        //     cast at y = 16.0                -> reaches 26.1 -> 269 damage
+        //
+        // so a STRICT own-half rule (y <= riverStart - OWN_HALF_RIVER_BUFFER,
+        // i.e. 15.0) would have made the tower physically unreachable by a Log
+        // from any legal cell, silently deleting the card's main use. The river
+        // band is what keeps it, and it is the reason this bound is
+        // getRiverEnd() rather than the own-half line every troop uses.
+        //
+        // What it DOES remove is the deep-enemy-half cast, which is pure waste:
+        // a Log dropped at y = 31 rolls away from everything and off the board.
+        // Measured on the ep-32,484 policy over 60 sampled episodes, 53.4% of
+        // its Log placements were on the enemy half and spread to y = 33 --
+        // roughly half the card's training experience spent on placements that
+        // cannot do anything.
+        //
+        // Mirrored for team 1 about the same band, so the rule reads identically
+        // from either side.
+        if (isSpell && isRollingSpell) {
+            if (team == 0 && y > board.getRiverEnd()) return false;
+            if (team == 1 && y < board.getRiverStart()) return false;
         }
         return true;
     }
@@ -649,7 +687,8 @@ public:
             costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
         }
 
-        if (!isValidPlacement(team, x, y, effectiveDef->isSpell, effectiveDef->placementRadius, effectiveDef->deployAnywhere)) return false;
+        if (!isValidPlacement(team, x, y, effectiveDef->isSpell, effectiveDef->placementRadius,
+                              effectiveDef->deployAnywhere, effectiveDef->rollRange > 0.0f)) return false;
 
         PlayerState::PlayCardResult result = player.playCard(handIndex, costOverride);
         if (result.cardId != -1) {

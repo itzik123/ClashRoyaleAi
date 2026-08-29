@@ -623,7 +623,8 @@ public:
         const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
         if (!def) return false;
         return game.isValidPlacement(team, x, y, def->isSpell,
-                                     def->placementRadius, def->deployAnywhere);
+                                     def->placementRadius, def->deployAnywhere,
+                                     def->rollRange > 0.0f);
     }
 
     std::vector<float> reset() {
