@@ -827,14 +827,15 @@ load-bearing.** The Log reaches the enemy Princess Tower only from the bridge:
 The tower's near edge is 25.5. A STRICT own-half rule would have made the tower
 physically unreachable by a Log from any legal cell -- silently deleting the
 interaction the 10.1 range exists for. Including the river band keeps it by one
-row. Pinned in 's  case, which asserts
-the arithmetic from 's own river accessors rather than restating it.
+row. Pinned in `tests/core/test_game_manager.cpp`'s `[roll][bridge]` case,
+which asserts the arithmetic from `Board`'s own river accessors rather than
+restating it.
 
-Keyed on , so it catches exactly ids 33, 101 and
+Keyed on `CardDefinition::rollRange > 0`, so it catches exactly ids 33, 101 and
 174 and nothing else; Fireball and Giant Snowball still go anywhere. Mirrored
 for team 1 about the same band.
 
-GAMEPLAY-AFFECTING: The Log is in  and roughly half its placement
+GAMEPLAY-AFFECTING: The Log is in `DEFAULT_DECK` and roughly half its placement
 mass was on cells that are now masked off, so the placement head's learned
 distribution for that card is invalidated.
 
