@@ -668,6 +668,13 @@ class BaseTrainer:
                          stats.ent_placement_noop, ep)
         w.add_scalar("Advisor/KL", stats.advisor_kl, ep)
         w.add_scalar("Advisor/Rows", stats.advisor_rows, ep)
+        # Deck/MinCardProb is the series the 2026-08-28 run needed and did
+        # not have: it sat near 0.001 for 30,000 episodes while
+        # Policy/Entropy_Card_Frac held its 0.35 target exactly. Watch the
+        # MIN, not the penalty -- the penalty is 0.0 both when the deck is
+        # healthy and when the floor is switched off.
+        w.add_scalar("Deck/Coverage_Penalty", stats.deck_coverage, ep)
+        w.add_scalar("Deck/MinCardProb", stats.deck_min_card_prob, ep)
         w.add_scalar("Advisor/Coef", advisor_target.ADVISOR_COVERAGE_COEF, ep)
         # Proof that the spell-value anneal actually runs -- it was dead code
         # for a whole training era and no test varied its argument.

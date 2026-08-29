@@ -3,7 +3,7 @@ from gymnasium import spaces
 import numpy as np
 
 import clash_royale_env
-from python_ai.envs import scenario_offense
+from python_ai.envs import scenario_offense, scenarios
 
 # Real-meta Balloon Freeze deck, replacing the earlier Giant Beatdown archetype
 # entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
@@ -295,6 +295,25 @@ class MicroRoyaleEnv(gym.Env):
         self._scenario_rng = np.random.default_rng(
             env_config.get("scenario_seed", None))
         self.last_scenario = None
+
+        # DEFENSIVE scenario injection in phase 1. Pipeline 2 has had this
+        # since 2026-08-09; `trainers/train.py`'s own comment recorded that it
+        # "never runs here", and the 2026-08-28 run showed what that costs: in
+        # 32,680 episodes the agent never met a manufactured "defend or lose
+        # the tower" moment, and its Cannon / Log / Fireball play probabilities
+        # settled at 0.0053 / 0.0091 / 0.0011. Those cards are near-worthless
+        # on a quiet board, so declining them was CORRECT -- the fix belongs in
+        # the state distribution, not in the card head.
+        #
+        # DEFAULT 0.0, so an existing phase-1 run's distribution is unchanged
+        # unless a caller opts in. `envs/scenarios.SCENARIO_INJECTION_PROB`
+        # (0.30) is the value pipeline 2 uses and the one to pass here.
+        self.defensive_scenario_prob = float(
+            env_config.get("defensive_scenario_prob", 0.0))
+        #: Truncation window in bot-steps for the active scenario, or None.
+        self.scenario_max_steps = None
+        self.scenario_steps_taken = 0
+        self.scenario_defensive = False
         if self.opponent_kind == "teacher":
             from python_ai.opponents.teacher import UtilityTeacher
             self.teacher = UtilityTeacher(self.opp_deck, team=1)
@@ -380,6 +399,12 @@ class MicroRoyaleEnv(gym.Env):
         # observation has to be RE-READ afterwards -- reset()'s return value
         # describes the position before the rewrite.
         self.last_scenario = None
+        self.scenario_max_steps = None
+        self.scenario_steps_taken = 0
+        self.scenario_defensive = False
+        if (self.defensive_scenario_prob > 0.0
+                and self._scenario_rng.random() < self.defensive_scenario_prob):
+            obs_list = self._apply_defensive_scenario()
         if self.offensive_scenario_prob > 0.0:
             self.last_scenario = scenario_offense.apply_offensive_scenario(
                 self.game, self._scenario_rng, list(self.game.get_hand())
@@ -394,6 +419,44 @@ class MicroRoyaleEnv(gym.Env):
             self.teacher.reset()
         obs = np.array(obs_list, dtype=np.float32)
         return obs, {}
+
+    def _apply_defensive_scenario(self):
+        """Rewrite the freshly-reset state into a defensive emergency.
+
+        Mirrors `MicroRoyaleSelfPlayEnv.reset`'s injection deliberately, so the
+        two pipelines present the SAME distribution of threats and a phase-2
+        policy is not meeting them for the first time at handoff.
+
+        Returns the re-read observation: `game.reset()`'s return value
+        describes the position BEFORE this rewrite.
+        """
+        scenario = scenarios.sample_scenario(self._scenario_rng)
+
+        warmup = scenario.get("warmup_ticks", 0)
+        noop = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
+        if warmup:
+            # Banked elixir, BEFORE the spawns so injected units do not walk
+            # during the warm-up.
+            self.game.step_self_play(noop, 0.0, 0.0, noop, 0.0, 0.0, warmup)
+
+        for card_id, x, y in scenario["spawns"]:
+            self.game.inject_enemy(card_id, x, y)
+
+        # inject_enemy only QUEUES units into pendingEntities; they are absent
+        # from the observation until a step commits them. One 1-tick no-op
+        # makes the threat visible in the very first observation the net acts
+        # on -- otherwise a Hog gets a full step of travel before the policy
+        # has ever seen it.
+        #
+        # step_self_play, not step: it never calls opponentTurn(), so this
+        # commit tick cannot hand the teacher a free extra decision. Same
+        # reason pipeline 2 uses it here.
+        self.game.step_self_play(noop, 0.0, 0.0, noop, 0.0, 0.0, 1)
+
+        self.last_scenario = scenario["name"]
+        self.scenario_max_steps = scenario["max_steps"]
+        self.scenario_defensive = bool(scenario.get("defensive", False))
+        return self.game.get_observation_for_team(0)
 
     def _poll_opponent_play(self):
         """Which card team 1 played since the last poll, or -1 for none.
@@ -460,6 +523,17 @@ class MicroRoyaleEnv(gym.Env):
             reward = float(step_result.reward0)
             terminated = bool(step_result.done)
         truncated = False
+
+        # A scenario window expiring is NOT the world ending. `base_trainer`
+        # bootstraps V(final_obs) on `truncated` and 0.0 on `terminated`,
+        # reading the FLAG and never the reward's magnitude -- so reporting
+        # this as terminated would teach the critic that successfully holding
+        # a defence is worth zero, which is the exact value the scenario
+        # exists to teach.
+        if self.scenario_max_steps is not None and not terminated:
+            self.scenario_steps_taken += 1
+            if self.scenario_steps_taken >= self.scenario_max_steps:
+                truncated = True
         
         info = {
             "elixir": self.game.get_elixir(),
@@ -471,6 +545,14 @@ class MicroRoyaleEnv(gym.Env):
             # same way it used to diff raw HP.
             "team0_troop_damage": self.game.get_troop_damage_dealt(0),
             "team1_troop_damage": self.game.get_troop_damage_dealt(1),
+            # Same key and encoding as selfplay_env's, so ONE trainer-side
+            # rule reads both pipelines. A scenario episode must stay out
+            # of the curriculum's win-rate window: it is a 15-25 step
+            # window that rarely ends in a crown, so recording it would
+            # cap the achievable win rate near 1 - injection_prob against
+            # a 0.80 gate and freeze the curriculum permanently.
+            "is_scenario": 1.0 if self.last_scenario is not None else 0.0,
+            "scenario_defensive": 1.0 if self.scenario_defensive else 0.0,
             "team0_building_damage": self.game.get_building_damage_dealt(0),
             # Towers only. compute_shaping() needs tower damage and
             # deployed-building damage priced differently -- see

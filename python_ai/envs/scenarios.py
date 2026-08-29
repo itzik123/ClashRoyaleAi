@@ -22,6 +22,8 @@ warmup_ticks.
 """
 import numpy as np
 
+from python_ai import engine_constants as EC
+
 # --- Scenario injection (start-state distribution design) ------------------
 # Industry precedent: reshaping the START-STATE distribution is how rare-but-
 # critical situations get learned when normal play visits them too seldom for
@@ -96,16 +98,27 @@ _SUPPORT_IDS = [
 # ClashEnv::extractObservationForTeam's `riverRow = 17` / x-band 3-4 & 13-14 --
 # that is the OBSERVATION channel-8 marker, a wider visual hint painted for the
 # network, and it is a different frame. perception/geometry.py warns against
-# exactly this conflation. The board's own geometry (Board.h) is river
-# [15.5, 17.5) with bridges at x = 4.0 and 14.0.
+# exactly this conflation. The board's own geometry (ArenaLayout.h, bound as
+# clash_royale_env.ARENA_*) is river [15.5, 17.5) with bridges at x = 2.5 and
+# 14.5 -- each spanning two cells, 2-3 and 14-15.
 #
-# The values below are nonetheless correct and must not be "corrected":
-# y = 17.0 is inside the band, injectEnemy applies no clamp, and
-# Board::getNextWaypoint classifies 17.0 as neither bank and routes to the
-# bridge exit -- which is precisely the on-the-bridge spawn this wants.
+# `_RIVER_Y` is nonetheless correct and must not be "corrected": y = 17.0 is
+# inside the band, injectEnemy applies no clamp, and Board::getNextWaypoint
+# classifies 17.0 as neither bank and routes to the bridge exit -- which is
+# precisely the on-the-bridge spawn this wants.
 _RIVER_Y = 17.0
 
-_BRIDGE_LANES = [3.5, 13.5]
+# DERIVED, never restated -- and it was restated, and it went stale.
+# This read `[3.5, 13.5]` from when the arena put bridges at 4.0 and 14.0. The
+# 2026-08-21 re-centring moved them to 2.5 / 14.5, and since cell i covers
+# [i-0.5, i+0.5], x = 13.5 is the edge of cell 13, which is WATER. Every
+# right-lane bridge push was being injected off the bridge, and nothing caught
+# it because the scenario still "worked" -- the unit swam to the nearest
+# waypoint and the episode looked normal.
+#
+# Eighth instance of the stale-arena-copy defect CLAUDE.md tracks. Unlike
+# web/viewer.html, this module CAN reach the source of truth, so it must.
+_BRIDGE_LANES = [EC.LEFT_BRIDGE_X, EC.RIGHT_BRIDGE_X]
 
 def _scenario_bridge_push(rng):
     """The exact case: one enemy win-condition on a random bridge, nothing

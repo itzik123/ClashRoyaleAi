@@ -59,6 +59,30 @@ LSTM_HIDDEN = MicroRoyaleNet.LSTM_HIDDEN
 _warned_mismatches = set()
 
 
+def _is_width_extension(key, saved, own_state):
+    """True when `saved` is this net's matrix with input columns APPENDED.
+
+    A layer that starts reading extra features -- `card_head`, `value_head`,
+    `place_ctx` and `place_ctx_hi` when the 2026-08-28 cycle skip connection
+    made them read `cat((hx, cycle_feat))` -- grows only along dim 1, and
+    `torch.cat` puts the OLD features first. So the saved columns keep their
+    meaning at `[:, :old_width]` and zeroing the remainder reproduces the old
+    layer EXACTLY (`cat(hx, c) @ W.T == hx @ W_old.T + c @ 0`). Warm-starting
+    it is therefore lossless, not an approximation.
+
+    Deliberately NOT extended to dim 0. A matrix that gained output rows has
+    new units with no trained counterpart, and a zero row there is not a no-op
+    -- it is a 0.0 logit competing with trained ones. That case keeps falling
+    through to the discard path. The asymmetry is the whole point: the check
+    must be as narrow as the mathematical identity that justifies it.
+    """
+    own = own_state.get(key)
+    return (own is not None
+            and saved.dim() == 2 and own.dim() == 2
+            and saved.shape[0] == own.shape[0]
+            and saved.shape[1] < own.shape[1])
+
+
 def load_state_dict_flexible(net, state_dict, context_label):
     """Loads state_dict into net. Returns True on a clean, fully-matching load.
 
@@ -83,6 +107,12 @@ def load_state_dict_flexible(net, state_dict, context_label):
         own_state = net.state_dict()
         compatible = {k: v for k, v in state_dict.items()
                       if k in own_state and v.shape == own_state[k].shape}
+        grown = {k: v for k, v in state_dict.items()
+                 if k not in compatible and _is_width_extension(k, v, own_state)}
+        for k, v in grown.items():
+            widened = torch.zeros_like(own_state[k])
+            widened[:, :v.shape[1]] = v
+            compatible[k] = widened
         skipped = sorted(set(state_dict.keys()) - set(compatible.keys()))
         own_state.update(compatible)
         net.load_state_dict(own_state)
@@ -99,6 +129,15 @@ def load_state_dict_flexible(net, state_dict, context_label):
             # Reporting both as "re-initialized" is how a harmless load gets
             # read as a discarded placement head.
             missing = sorted(set(own_state.keys()) - set(state_dict.keys()))
+            if grown:
+                # Report growth separately and BEFORE the discard case. These
+                # were previously counted as discards, which is how losing the
+                # card head, both placement contexts and the critic at once
+                # read as an ordinary warm start (see
+                # tests/test_flexible_load_grows_widened_heads.py).
+                print(f"[{context_label}] Widened layer(s) warm-started by "
+                      f"zero-padding appended columns (lossless): "
+                      f"{sorted(grown)}")
             if skipped:
                 print(f"[{context_label}] Architecture mismatch -- warm-started "
                       f"{len(compatible)}/{len(state_dict)} tensor(s), "

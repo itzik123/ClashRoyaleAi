@@ -33,6 +33,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 
 from python_ai.advisors import advisor_target
+from python_ai.rl import deck_coverage
 from python_ai.rl.engine_stats import next_card_labels
 from python_ai.rl.optim_step import clip_and_step
 
@@ -83,6 +84,17 @@ class UpdateStats:
     #: simply stops speaking, and those are opposite situations.
     advisor_kl: float = 0.0
     advisor_rows: float = 0.0
+    #: mean over deck cards of relu(floor - P(play card | card in hand)).
+    #: EXACTLY 0.0 on a healthy deck, so any sustained nonzero value means a
+    #: card head is at or below the floor and is being pushed back up. Read it
+    #: with `deck_min_card_prob`, which says how bad the worst card is -- the
+    #: penalty alone cannot distinguish one dead card from four slightly-low
+    #: ones. See rl/deck_coverage.py for why the entropy controller is blind
+    #: to this and held its own target perfectly while the deck halved.
+    deck_coverage: float = 0.0
+    #: min over deck cards of P(play card | card in hand). The direct readout
+    #: the 2026-08-28 run never had: it sat near 0.001 for 30,000 episodes.
+    deck_min_card_prob: float = 0.0
     #: card id -> H(placement | card) as a fraction of that card's own
     #: reachable maximum. THE conditional-collapse detector: the aggregate
     #: provably cannot see a per-card collapse, because a mixture of eight
@@ -138,7 +150,7 @@ class PPOUpdater:
 
     def update(self, batch, advantages_norm, returns, vf_clip_range,
                ent_coef_card, ent_coef_placement, coverage_coef,
-               collect_per_card=True):
+               collect_per_card=True, deck_coverage_coef=None):
         """Run `ppo_epochs` passes over the rollout and return an UpdateStats.
 
         `batch` is `RolloutBuffer.stack()`; `advantages_norm` and `returns` come
@@ -195,6 +207,12 @@ class PPOUpdater:
         aux_losses, aux_accs = [], []
         cyc_losses, cyc_accs = [], []
         coverage_ents, coverage_kls, coverage_hits = [], [], []
+        deck_pens, deck_min_probs = [], []
+        # Resolved once per update, not per minibatch: the module default is
+        # the shipping value and an explicit argument is how an experiment arm
+        # (or a test) turns the term off without editing code.
+        deck_coef = (deck_coverage.DECK_COVERAGE_COEF
+                     if deck_coverage_coef is None else deck_coverage_coef)
         ent_card_log, ent_place_log, ent_place_noop_log = [], [], []
         percard_place_ent = defaultdict(list)
 
@@ -367,6 +385,27 @@ class PPOUpdater:
                 coverage_kls.append(float(cov_kl))
                 coverage_hits.append(float(cov_n))
 
+                # --- deck coverage --------------------------------------
+                # A hinge floor under P(play card | card in hand), per DECK
+                # card. Also a REGULARIZER on the same terms as the block
+                # above: it reads `cl_seq` only, and never the stored-action
+                # log-probs the PPO ratio is built from, so the ratio is
+                # untouched and the update stays a valid PPO step. (The test
+                # that pins this scans this region textually -- do not name
+                # that tensor here even in a comment.)
+                #
+                # It is not redundant with the entropy bonus and cannot be
+                # replaced by raising it: entropy is measured over hand SLOTS
+                # per decision, which a five-card policy satisfies exactly
+                # while three cards sit at zero. See rl/deck_coverage.py.
+                deck_pen, deck_min_p, deck_n = deck_coverage.deck_coverage_penalty(
+                    cl_seq.reshape(-1, cl_seq.shape[-1]),
+                    net.hand_card_ids(mb_obs_flat),
+                    mb_decision.reshape(-1))
+                if deck_n:
+                    deck_pens.append(float(deck_pen.detach()))
+                    deck_min_probs.append(deck_min_p)
+
                 # ent_*_mean are ALREADY fractions of each head's reachable
                 # maximum (divided per step above), so no second division here.
                 entropy_bonus = (ent_coef_card * ent_card_mean
@@ -427,6 +466,7 @@ class PPOUpdater:
                 # bonus (negative), the advisor KL a penalty (positive).
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
+                        + deck_coef * deck_pen
                         + cfg.aux_card_coef * cfg.aux_card_scale * aux_loss
                         + cfg.cycle_id_coef * cycle_id_loss)
 
@@ -513,6 +553,8 @@ class PPOUpdater:
             coverage_entropy=_mean(coverage_ents),
             advisor_kl=_mean(coverage_kls),
             advisor_rows=_mean(coverage_hits),
+            deck_coverage=_mean(deck_pens),
+            deck_min_card_prob=_mean(deck_min_probs),
             nonfinite_skips=nonfinite_skips,
             per_card_placement_entropy={
                 cid: float(np.mean(v)) for cid, v in percard_place_ent.items()},

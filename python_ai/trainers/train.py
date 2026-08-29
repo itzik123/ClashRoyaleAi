@@ -42,10 +42,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 import python_ai  # noqa: E402,F401
 
 import gymnasium as gym  # noqa: E402
+import numpy as np  # noqa: E402
 
 import clash_royale_env  # noqa: E402
 import torch  # noqa: E402
-from python_ai.envs import gym_wrapper  # noqa: E402
+from python_ai.envs import gym_wrapper, scenarios  # noqa: E402
 from python_ai.rewards.shaping import building_hp_end  # noqa: E402
 from python_ai.rl.base_trainer import BaseTrainer  # noqa: E402
 from python_ai.rl.checkpointing import (  # noqa: E402
@@ -67,6 +68,23 @@ from python_ai.rl.curriculum import (  # noqa: E402
 # anything produced after this. Checkpoints are NOT invalidated -- the
 # observation, action space and architecture are untouched.
 PHASE1_OPPONENT = os.environ.get("CLASH_PHASE1_OPPONENT", "teacher")
+
+#: Fraction of phase-1 episodes that START in a defensive emergency.
+#: Pipeline 2 has done this since 2026-08-09; phase 1 did not, and the
+#: 2026-08-28 run is the measurement of what that costs -- 32,680
+#: episodes in which the agent never met a "defend or lose the tower"
+#: moment, ending with Cannon / The Log / Fireball at P(play | in hand)
+#: of 0.0053 / 0.0091 / 0.0011. A well-placed Cannon prevents a full
+#: Princess Tower (2,536 HP) in a real threat state, so those cards are
+#: not weak -- the states that make them worth playing were absent.
+#:
+#: Set to scenarios.SCENARIO_INJECTION_PROB so both pipelines present
+#: the same threat distribution and phase 2 is not the first time the
+#: policy sees one. GAMEPLAY-AFFECTING: it changes the start-state
+#: distribution, so curriculum win-rate gates are calibrated against a
+#: different episode mix and win rates are not comparable across it.
+PHASE1_DEFENSIVE_SCENARIO_PROB = float(os.environ.get(
+    "CLASH_PHASE1_SCENARIO_PROB", scenarios.SCENARIO_INJECTION_PROB))
 
 # --- Phase 2: once the agent is consistently strong against the mirror-
 # deck opponent at the final curriculum stage, switch to randomized
@@ -244,9 +262,11 @@ def make_env(seed=None):
         # HeuristicOpponent no longer trains the agent (it remains an EVAL
         # anchor in train_selfplay.BUILTIN_ANCHORS, so historical numbers stay
         # comparable).
-        return gym_wrapper.MicroRoyaleEnv({"opponent": PHASE1_OPPONENT,
-                                           "teacher_stage": 0,
-                                           "scenario_seed": seed})
+        return gym_wrapper.MicroRoyaleEnv({
+            "opponent": PHASE1_OPPONENT,
+            "teacher_stage": 0,
+            "scenario_seed": seed,
+            "defensive_scenario_prob": PHASE1_DEFENSIVE_SCENARIO_PROB})
     return _init
 
 
@@ -254,6 +274,19 @@ class Phase1Trainer(BaseTrainer):
     """PPO vs the teacher, with the two-phase curriculum on top."""
 
     pipeline_name = "pipeline1"
+    #: Defensive scenario windows can now expire here, exactly as in pipeline 2.
+    #: Without this the window would be reported as a TERMINAL and the critic
+    #: would bootstrap 0.0 through it -- teaching that holding a defence
+    #: successfully is worth nothing, which inverts the lesson the scenario is
+    #: injected to deliver. See BaseTrainer._truncation_bootstrap.
+    uses_truncation_bootstrap = True
+    #: ...and the other half of the same change. `draw_source` is
+    #: `terminateds | truncateds` when this is False, so a scenario window
+    #: expiring with a near-zero reward -- which is what a SUCCESSFUL defence
+    #: looks like -- would be classified as a passivity draw and charged the
+    #: full DRAW_PENALTY of 1.0. Injecting scenarios without this flag punishes
+    #: exactly the behaviour the scenarios exist to teach.
+    draw_on_terminated_only = True
     replay_prefix = "replay"
 
     def __init__(self, cfg=None):
@@ -358,6 +391,20 @@ class Phase1Trainer(BaseTrainer):
                 or self.curriculum.budget_exhausted(self.episodes_completed))
 
     def on_episode_end(self, i, ctx):
+        # A SCENARIO EPISODE IS NOT A MATCH RESULT. It is a 15-25 step window
+        # on a live game that rarely ends in a crown, so recording it would
+        # enter a non-win into the curriculum's 100-episode window ~30% of the
+        # time and cap the achievable win rate near 0.70 against a 0.80 gate --
+        # freezing the curriculum at whatever stage it happened to reach, with
+        # no error and no log line. Pipeline 2 has always excluded these; phase
+        # 1 gained scenario injection on 2026-08-29 and needs the same rule.
+        # Pinned by tests/test_phase1_scenarios_do_not_break_the_gate.py.
+        is_scenario = ctx.infos.get(
+            "is_scenario", np.zeros(self.cfg.num_envs, dtype=np.float32))[i] > 0.5
+        if is_scenario:
+            self.metrics.reset_env(i)
+            return
+
         ally_end, enemy_end = building_hp_end(ctx.next_obs[i])
         self.metrics.finish_episode(i, ctx.raw_rewards[i], ally_end, enemy_end)
         if self.episodes_completed % 10 == 0:

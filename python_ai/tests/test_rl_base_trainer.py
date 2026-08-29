@@ -215,13 +215,19 @@ def test_the_two_pipelines_declare_their_documented_differences():
 
     assert Phase1Trainer.pipeline_name == "pipeline1"
     assert Phase2Trainer.pipeline_name == "pipeline2"
-    # Only pipeline 2 injects scenarios, so only it can truncate an episode
-    # without a king dying -- and only it must keep a scenario cutoff from being
-    # scored as a passivity draw.
-    assert Phase1Trainer.uses_truncation_bootstrap is False
-    assert Phase2Trainer.uses_truncation_bootstrap is True
-    assert Phase1Trainer.draw_on_terminated_only is False
-    assert Phase2Trainer.draw_on_terminated_only is True
+    # BOTH pipelines inject scenarios since 2026-08-29 -- phase 1 gained
+    # defensive injection because 32,680 episodes without a single "defend or
+    # lose the tower" moment left Cannon/Log/Fireball at P(play|in hand) of
+    # 0.0053/0.0091/0.0011. So both must handle a window expiring:
+    #   * bootstrap V(final_obs) through it, never 0.0, or the critic learns
+    #     that holding a defence is worth nothing;
+    #   * and not score it as a passivity draw, or a successful defence is
+    #     charged the full DRAW_PENALTY.
+    # These two flags travel together. Setting the first without the second is
+    # a live bug, which is what this assertion pair exists to catch.
+    for trainer in (Phase1Trainer, Phase2Trainer):
+        assert trainer.uses_truncation_bootstrap is True
+        assert trainer.draw_on_terminated_only is True
 
 
 def test_both_pipelines_are_BaseTrainers_rather_than_two_loops():
