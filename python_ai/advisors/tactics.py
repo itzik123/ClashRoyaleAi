@@ -376,14 +376,36 @@ MAX_ELIXIR = 10.0
 TRAINING_MAX_TICKS = 3600.0
 
 
-def elapsed_ticks(obs):
-    """Match time in ticks, from the extra-scalar tail.
+# FORWARD offsets into the extra-scalar block. Verified against the engine on
+# 2026-08-29 by moving each quantity and watching which index responds: S+0 is
+# elapsed time over max_ticks, S+1 OUR cumulative elixir spend and S+2 the
+# OPPONENT'S over MAX_MATCH_ELIXIR, then six tower HPs (own king, own princess
+# x2, enemy king, enemy princess x2 -- 2534/4008 = 0.632 identifies them).
+#
+# THESE WERE NEGATIVE INDICES UNTIL 2026-08-29, AND HAD BEEN WRONG SINCE THE
+# CYCLE BLOCKS LANDED ON 2026-08-27. obs[-9] is index 13967, which is inside
+# the card-recency block that now sits BEHIND the extra scalars, so
+# `elapsed_ticks` returned a recency float -- measured 0.0 at engine tick 300,
+# where the forward offset correctly reads 300.0.
+#
+# CLAUDE.md records that defect and says five call sites were fixed. This file
+# was a sixth and the sweep could not have found it: that sweep searched for
+# `observation_size() - NUM_EXTRA_SCALARS`, and these two sites spell the same
+# bug as a negative index. Same defect, different spelling.
+#
+# What it cost while it was live: `opp_elixir_estimate` computes income over
+# `elapsed_ticks`, so with the clock pinned at zero it returned essentially the
+# starting elixir forever, and `hog_advice`'s gate -- the only win-condition
+# advisor target -- was gated on a constant rather than on the board.
+_S = EC.EXTRA_SCALARS_START
+IDX_ELAPSED = _S + 0
+IDX_OWN_SPEND = _S + 1
+IDX_OPP_SPEND = _S + 2
 
-    Layout verified empirically against the engine: obs[-9] is elapsed time
-    normalised by max_ticks, obs[-8] OUR cumulative elixir spend and obs[-7]
-    the OPPONENT'S, both over MAX_MATCH_ELIXIR, then six tower HPs.
-    """
-    return float(np.asarray(obs, dtype=np.float32)[-9]) * TRAINING_MAX_TICKS
+
+def elapsed_ticks(obs):
+    """Match time in ticks, from the extra-scalar tail."""
+    return float(np.asarray(obs, dtype=np.float32)[IDX_ELAPSED]) * TRAINING_MAX_TICKS
 
 
 def opp_elixir_estimate(obs, multiplier=1.0):
@@ -406,7 +428,7 @@ def opp_elixir_estimate(obs, multiplier=1.0):
     threading the net through would change that contract.
     """
     a = np.asarray(obs, dtype=np.float32)
-    spent = float(a[-7]) * MAX_MATCH_ELIXIR
+    spent = float(a[IDX_OPP_SPEND]) * MAX_MATCH_ELIXIR
     gained = STARTING_ELIXIR + ELIXIR_REGEN_RATE * elapsed_ticks(obs) * multiplier
     return float(np.clip(gained - spent, 0.0, MAX_ELIXIR))
 

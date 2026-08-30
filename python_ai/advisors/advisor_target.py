@@ -52,7 +52,7 @@ import os
 
 import numpy as np
 
-from python_ai.advisors import tactics
+from python_ai.advisors import human_prior, tactics
 
 CANNON_ID = tactics.CANNON_ID
 FIREBALL_ID = tactics.FIREBALL_ID
@@ -109,9 +109,12 @@ def _standardize(flat_scores, legal, T):
     return out
 
 
-def target_logits_for(obs, card_id, legal, T=None):
-    """(612,) float32 target logits for `card_id`, or None if the advisor
-    has nothing to say about this board.
+def _advisor_logits_for(obs, card_id, legal, T=None):
+    """(612,) float32 target logits from the HAND-WRITTEN rules, or None.
+
+    Every `return None` below means "this rule declines to speak", which used
+    to end the lookup and hand the row back to the entropy bonus. It now falls
+    through to the mined human prior; see `target_logits_for`.
 
     obs:   (obs_dim,) float32, one state, team-0 frame.
     legal: (612,) bool -- the net's own `_placement_legal[card_id]`. Passing the
@@ -185,10 +188,52 @@ def target_logits_for(obs, card_id, legal, T=None):
     return out
 
 
+def target_logits_for(obs, card_id, legal, T=None):
+    """(612,) float32 target logits for `card_id`, or None.
+
+    THE HAND-WRITTEN RULE WINS WHERE IT SPEAKS, and the prior fills the gaps.
+    That precedence is not arbitrary. The rules are validated against THIS
+    engine (`prove_placement.py`: Cannon 539.1 HP preserved against the net's
+    102.2), while the prior is mined from real Clash Royale, whose physics this
+    engine demonstrably does not reproduce -- the divergence probe that produced
+    the prior measured a reconstruction horizon under 30 s and outcome agreement
+    below its own base rate. A prior from a different game must never override a
+    rule measured against this one.
+
+    What it does instead is cover the five DEFAULT_DECK cards no rule reaches --
+    Musketeer, Ice Golem, Skeletons, Ice Spirit, The Log -- which today receive
+    an entropy bonus and nothing else.
+    """
+    out = _advisor_logits_for(obs, card_id, legal, T)
+    if out is not None:
+        return out
+    return human_prior.logits_for(card_id, legal)
+
+
+def target_and_weight(obs, card_id, legal, T=None):
+    """(logits, weight) -- weight 1.0 for a rule, HUMAN_PRIOR_COEF for a prior.
+
+    The weight rides through the buffer inside `coverage_has`, which is already
+    a float, so serving the prior needs no new rollout field.
+    """
+    out = _advisor_logits_for(obs, card_id, legal, T)
+    if out is not None:
+        return out, 1.0
+    out = human_prior.logits_for(card_id, legal)
+    if out is not None:
+        return out, human_prior.HUMAN_PRIOR_COEF
+    return None, 0.0
+
+
+def target_cards():
+    """Every card SOME source can produce a target for."""
+    return set(ADVISOR_CARDS) | human_prior.prior_cards()
+
+
 def build_legal_table(net):
-    """{card_id: (612,) bool} for every card the advisor has a rule for."""
+    """{card_id: (612,) bool} for every card ANY target source covers."""
     return {cid: net._placement_legal[cid].numpy().astype(bool)
-            for cid in ADVISOR_CARDS}
+            for cid in sorted(target_cards())}
 
 
 # --- the trainer-facing half ------------------------------------------------
@@ -226,8 +271,14 @@ def slot_weights_for(hand_ids):
     import torch
     if ADVISOR_SLOT_WEIGHT == 1.0 or not enabled():
         return None
+    # Weight every card with a target source, not just the three with rules.
+    # This is self-adjusting rather than a new knob: with the prior enabled all
+    # eight deck cards carry a target, so they all get the same weight and the
+    # draw is uniform among them again -- which is correct, because the
+    # starvation argument this weighting exists for no longer distinguishes
+    # them. With the prior off it reduces exactly to the old behaviour.
     w = torch.ones(hand_ids.shape, dtype=torch.float32)
-    for cid in ADVISOR_CARDS:
+    for cid in target_cards():
         w[hand_ids == cid] = ADVISOR_SLOT_WEIGHT
     return w
 
@@ -237,24 +288,25 @@ def targets_for_batch(obs_np, card_ids, legal_table, T=None):
 
     obs_np:    (B, obs_dim) float32 -- the observations the policy just acted on
     card_ids:  (B,) int -- the card in each env's sampled COVERAGE slot, or -1
-    returns:   targets (B, N_CELLS) float32, has_target (B,) bool
+    returns:   targets (B, N_CELLS) float32, weight (B,) float32
 
-    Rows without a target are left as zeros and flagged False; the caller must
-    never read them, and the loss masks them out.
+    `weight` is 0 where there is no target, 1 for a hand-written rule and
+    HUMAN_PRIOR_COEF for the mined prior. Rows at 0 are left as zeros and the
+    caller must never read them; the loss masks them out.
     """
     B = obs_np.shape[0]
     out = np.zeros((B, N_CELLS), dtype=np.float32)
-    has = np.zeros(B, dtype=bool)
+    has = np.zeros(B, dtype=np.float32)
     for b in range(B):
         cid = int(card_ids[b])
         legal = legal_table.get(cid)
         if legal is None:
             continue
-        t = target_logits_for(obs_np[b], cid, legal, T)
-        if t is None:
+        t, w = target_and_weight(obs_np[b], cid, legal, T)
+        if t is None or w <= 0.0:
             continue
         out[b] = t
-        has[b] = True
+        has[b] = w
     return out, has
 
 
@@ -321,9 +373,20 @@ def coverage_terms(cf_logits, targets, has_target, decision, entropy_coef,
     import torch
     from torch.distributions import Categorical
 
-    has = has_target * decision
-    no_t = (1.0 - has_target) * decision
-    n_has = has.sum()
+    # has_target carries a WEIGHT now (1.0 for a rule, HUMAN_PRIOR_COEF for the
+    # prior), so "does this row have a target" and "how hard does it pull" are
+    # two different quantities and must be computed separately.
+    #
+    # The row mask is what preserves this function's invariant: a row gets KL or
+    # entropy, never both. Deriving the entropy mask as `1 - has_target` would
+    # silently break that the moment a weight is not 1.0 -- a row at weight 0.1
+    # would take 90% of an entropy bonus telling it to spread out WHILE taking
+    # KL telling it where to go, which is the exact opposition this function
+    # exists to prevent.
+    has_row = (has_target > 0).to(has_target.dtype)
+    has = has_target * decision           # weighted, for the KL
+    no_t = (1.0 - has_row) * decision     # masked, for the entropy
+    n_has = (has_row * decision).sum()    # ROWS, not summed weight -- see below
     n_no = no_t.sum()
 
     cf_ent = Categorical(logits=cf_logits).entropy()
@@ -337,6 +400,11 @@ def coverage_terms(cf_logits, targets, has_target, decision, entropy_coef,
     kl_mean = torch.zeros((), device=cf_logits.device)
     if float(n_has) > 0.0 and ADVISOR_COVERAGE_COEF > 0.0:
         kl_elems = masked_kl_elementwise(cf_logits, targets)
+        # Divide by the ROW COUNT, not the summed weight. A weighted mean would
+        # normalise a uniform weight straight back out -- every row at 0.1 would
+        # give exactly the same loss as every row at 1.0 -- so the coefficient
+        # would silently do nothing. With all weights 1.0 the two agree, which
+        # is what keeps this byte-identical while the prior is off.
         kl_mean = (kl_elems * has).sum() / n_has.clamp(min=1.0)
         loss_delta = loss_delta + ADVISOR_COVERAGE_COEF * kl_mean / log_n_placement
 

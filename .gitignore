@@ -444,3 +444,12 @@ tools/audit/bin/
 # checkout reproduces them byte-for-byte):
 #   python_ai/venv/Scripts/python.exe tools/viewer_fixtures/make_fixtures.py
 web/fixtures/
+
+# Replay-mining corpus cache (1.3 GB of third-party episodes, no declared
+# licence). Only the derived ~9 KB prior in python_ai/advisors/data/ is tracked.
+_replay_cache/
+
+# The extracted human placement prior is a tracked model asset, not a
+# dataset: ~9 KB, consumed by advisors/human_prior.py at training time. The
+# blanket *.npz rule above exists for bc_pretrain demonstration dumps.
+!python_ai/advisors/data/*.npz
