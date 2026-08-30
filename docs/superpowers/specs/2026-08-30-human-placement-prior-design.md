@@ -1,7 +1,8 @@
 # The human placement prior
 
-**Status:** Phases A and B complete and measured. Phase C (integration into the
-training path) specified but NOT built — deliberately gated on the result below.
+**Status:** Phases A, B and C complete. Phase D (the A/B) specified and not yet run.
+The prior ships **OFF** (`CLASH_HUMAN_PRIOR_COEF=0`), so nothing in the training
+path behaves differently until the A/B is deliberately started.
 
 ## Why this exists
 
@@ -130,7 +131,7 @@ stamped with the arena constants it was built against. The loader refuses a
 mismatch — the contract `bc_pretrain.load_dataset` already uses for
 `observation_size()`.
 
-## Phase C — integration (specified, NOT built)
+## Phase C — integration (done)
 
 One seam: `advisor_target.target_logits_for(obs, card_id, legal, T) -> (612,) or None`.
 A new `python_ai/advisors/human_prior.py` supplies the same signature, and
@@ -160,6 +161,47 @@ toward the 3 ruled cards; with 8 covered that allocation is wrong.
 
 Gated by `CLASH_HUMAN_PRIOR_COEF`, default 0, so both A/B arms run byte-identical
 code — the pattern `PLACEMENT_COVERAGE_COEF`'s own comment mandates.
+
+### What it measured out to
+
+Coverage-slot target rate over 495 decision states carrying a live threat:
+
+| | overall | Cannon | Fireball | Hog | the other five |
+|---|---|---|---|---|---|
+| prior OFF (today) | **23.4%** | 0.94 | 0.95 | 0.02 | **0.00** |
+| prior ON | **100%** | 1.00 | 1.00 | 1.00 | **1.00** |
+
+**The prior speaks unconditionally, and that needs defending** — `advisor_target`
+is emphatic that a source which always answers teaches a constant. The defence is
+that the newly-covered rows were not previously getting a state-*dependent*
+target; they were getting the **entropy bonus**, which is equally
+state-independent (it pulls every board toward the same uniform map). This swaps
+one state-independent pull for a strictly better one and introduces
+state-independence nowhere it did not already exist.
+
+What does change is strength: a human marginal is far sharper than uniform, so it
+pulls harder. That is what `HUMAN_PRIOR_COEF` is for, and why the A/B watches
+per-card **modal share**.
+
+### Implementation notes
+
+- The weight rides through `coverage_has`, which was **already** float32, so no
+  new rollout buffer field was needed. 1.0 for a rule, `HUMAN_PRIOR_COEF` for the
+  prior.
+- `coverage_terms` derives its entropy mask from `has_target > 0` rather than
+  `1 - has_target`. With a non-1.0 weight the old form would hand a row 90% of an
+  entropy bonus *while* giving it KL — the exact opposition that function exists
+  to prevent.
+- The KL is divided by the **row count**, not the summed weight. A weighted mean
+  would normalise a uniform weight straight back out and the coefficient would
+  silently do nothing.
+- `blur()` and `geometry_stamp()` live in `human_prior.py` and `perception`
+  imports them, so there is one implementation of each. perception may import
+  python_ai; the reverse is forbidden.
+- `slot_weights_for` now weights every card with a target source. Self-adjusting
+  rather than a new knob: with the prior on all eight deck cards carry a target,
+  so the draw is uniform among them again — correct, since the starvation
+  argument no longer distinguishes them.
 
 ## Phase D — measurement (specified)
 

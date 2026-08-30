@@ -65,32 +65,12 @@ def _lane_sibling_contexts(ctx: int) -> list[int]:
             for h in range(N_HALF) for p in range(N_PHASE)]
 
 
-from functools import lru_cache
-
-
-@lru_cache(maxsize=16)
-def _blur_matrix(n: int, sigma: float) -> np.ndarray:
-    """(n, n) edge-clamped Gaussian smoothing operator along one axis.
-
-    Precomputed as a matrix so a blur is two small matmuls rather than a
-    per-row convolution. That matters beyond tidiness: this runs on the rollout
-    path once the prior is served as an advisor target, and the first version
-    (`np.apply_along_axis` + `np.convolve`) was slow enough to time out an
-    offline sweep, which is a bad sign for something inside training.
-    """
-    i = np.arange(n)
-    d = i[:, None] - i[None, :]
-    k = np.exp(-0.5 * (d / sigma) ** 2)
-    k[np.abs(d) > 3 * sigma] = 0.0
-    return k / k.sum(axis=1, keepdims=True)
-
-
-def _blur(flat: np.ndarray, sigma: float) -> np.ndarray:
-    """Separable Gaussian over the 34x18 grid, scipy-free."""
-    if sigma <= 0:
-        return flat
-    m = flat.reshape(BOARD_H, BOARD_W).astype(np.float64)
-    return (_blur_matrix(BOARD_H, sigma) @ m @ _blur_matrix(BOARD_W, sigma).T).reshape(-1)
+# The blur and the geometry stamp live in python_ai/advisors/human_prior.py,
+# which is where they are CONSUMED during training. perception may import
+# python_ai (that is the allowed direction), so importing them keeps exactly one
+# implementation of each -- the alternative is the second copy of an engine-side
+# constant this project forbids.
+from python_ai.advisors.human_prior import blur as _blur  # noqa: F401
 
 
 def select_counts(counts, card_slot: int, ctx: int, min_samples: int = MIN_SAMPLES,

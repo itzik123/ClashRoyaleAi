@@ -121,19 +121,10 @@ def extract(paths, labels_py, deck, drop_illegal=True):
     return table, cen
 
 
-def geometry_stamp() -> dict:
-    """What the prior is only valid against. Any change here invalidates it."""
-    CE = E.ClashRoyaleEnv
-    return {
-        "board_h": BOARD_H, "board_w": BOARD_W,
-        "arena_center_x": E.ARENA_CENTER_X, "arena_bridge_y": E.ARENA_BRIDGE_Y,
-        "left_lane_x": E.ARENA_LEFT_LANE_X, "right_lane_x": E.ARENA_RIGHT_LANE_X,
-        "left_bridge_x": E.ARENA_LEFT_BRIDGE_X,
-        "right_bridge_x": E.ARENA_RIGHT_BRIDGE_X,
-        "king_y0": E.arena_king_y(0), "princess_y0": E.arena_princess_y(0),
-        "n_contexts": N_CONTEXTS, "n_cells": N_CELLS,
-        "num_card_ids": CE.NUM_CARD_IDS,
-    }
+#: The arena stamp comes from python_ai/advisors/human_prior.py, the module that
+#: VALIDATES it at load time. One definition, so a prior cannot be stamped with
+#: one set of constants and checked against another.
+from python_ai.advisors.human_prior import geometry_stamp  # noqa: E402
 
 
 def save_table(path, table, cen):
