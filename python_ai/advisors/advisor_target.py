@@ -207,7 +207,9 @@ def target_logits_for(obs, card_id, legal, T=None):
     out = _advisor_logits_for(obs, card_id, legal, T)
     if out is not None:
         return out
-    return human_prior.logits_for(card_id, legal)
+    # obs is passed so the prior can honour the quiet-board gate that
+    # validate_pipeline asserts on every target source.
+    return human_prior.logits_for(card_id, legal, obs)
 
 
 def target_and_weight(obs, card_id, legal, T=None):
@@ -219,7 +221,7 @@ def target_and_weight(obs, card_id, legal, T=None):
     out = _advisor_logits_for(obs, card_id, legal, T)
     if out is not None:
         return out, 1.0
-    out = human_prior.logits_for(card_id, legal)
+    out = human_prior.logits_for(card_id, legal, obs)
     if out is not None:
         return out, human_prior.HUMAN_PRIOR_COEF
     return None, 0.0

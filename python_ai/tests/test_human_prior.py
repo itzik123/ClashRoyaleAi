@@ -47,12 +47,23 @@ def _legal(card_id):
 
 
 def _fresh_obs():
+    """A board with a LIVE THREAT on it.
+
+    It must not be quiet: the prior declines on a quiet board by design, so a
+    fixture built from no-ops alone would make every "the prior speaks" case
+    below vacuously wrong. An enemy Hog crossing is the canonical live state.
+    """
     env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), max_ticks=3600)
     env.seed(1)
     env.reset()
-    for _ in range(20):
+    for _ in range(15):
         env.step_self_play_fast(4, 0, 0, 4, 0, 0, skip_frames=10)
-    return np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    env.inject(15, 3.0, 18.0, 1)
+    for _ in range(5):
+        env.step_self_play_fast(4, 0, 0, 4, 0, 0, skip_frames=10)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    assert not human_prior.board_is_quiet(obs), "fixture board went quiet"
+    return obs
 
 
 def test_the_prior_ships_OFF():
@@ -227,3 +238,34 @@ def test_the_OFF_arm_is_the_OLD_behaviour_exactly():
 def test_prior_cards_populates_only_when_enabled(prior_on):
     assert human_prior.enabled()
     assert human_prior.prior_cards() == set(int(c) for c in DEFAULT_DECK)
+
+
+def test_the_prior_declines_on_a_quiet_board(prior_on):
+    """validate_pipeline asserts every target source declines on an empty
+    board, "or it teaches a constant". That check is backed by the measured
+    2026-08-14 collapse, so the prior honours it rather than arguing with it.
+    """
+    env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), max_ticks=3600)
+    env.seed(0)
+    env.reset()
+    quiet = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    assert human_prior.board_is_quiet(quiet)
+    for cid in UNCOVERED:
+        assert human_prior.logits_for(cid, _legal(cid), quiet) is None
+        assert advisor_target.target_logits_for(quiet, cid, _legal(cid)) is None
+
+
+def test_the_prior_still_speaks_once_there_is_a_threat(prior_on):
+    """The gate must not be so wide that the prior never trains on anything."""
+    env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), max_ticks=3600)
+    env.seed(5)
+    env.reset()
+    for _ in range(15):
+        env.step_self_play_fast(4, 0, 0, 4, 0, 0, skip_frames=10)
+    env.inject(15, 3.0, 18.0, 1)
+    for _ in range(5):
+        env.step_self_play_fast(4, 0, 0, 4, 0, 0, skip_frames=10)
+    live = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    assert not human_prior.board_is_quiet(live)
+    for cid in UNCOVERED:
+        assert advisor_target.target_logits_for(live, cid, _legal(cid)) is not None

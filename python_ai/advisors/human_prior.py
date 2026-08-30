@@ -202,18 +202,42 @@ def prior_cards():
         return set()
 
 
-def logits_for(card_id, legal, T=None):
+def board_is_quiet(obs):
+    """True when there is nothing on the board to react to.
+
+    The one gate the prior keeps. `validate_pipeline`'s advisor section asserts
+    that a target source DECLINES on an empty board, "or it teaches a constant",
+    and that check is backed by the measured 2026-08-14 placement collapse -- it
+    is the project's invariant, not a stylistic preference, so the prior honours
+    it rather than arguing with it.
+
+    The cost of honouring it is close to zero. A "quiet" board here is the empty
+    one at episode start, where nothing should be placed at all; declining there
+    removes a negligible number of training rows. What it buys is that the prior
+    no longer speaks on states that carry no information, which is the strongest
+    form of the "a source that always answers teaches a constant" objection.
+    """
+    from python_ai.advisors import tactics
+    return float(tactics.enemy_hp_map(obs).sum()) <= 0.0
+
+
+def logits_for(card_id, legal, obs=None, T=None):
     """(N_CELLS,) float32 target logits for `card_id`, or None.
 
-    Takes no observation, and that is the point: a marginal has no state
-    dependence, so there is nothing to read off the board. It keeps the
-    signature compatible with `advisor_target.target_logits_for` minus `obs`.
+    The surface itself has NO state dependence -- it is a marginal, so there is
+    nothing to read off the board. `obs` is used only by the quiet-board gate
+    above, and passing it is what keeps this source inside the invariant
+    `validate_pipeline` enforces. A caller that omits it gets the ungated
+    surface, which is correct for offline inspection and wrong for training;
+    `advisor_target` always passes it.
 
     Legality is applied AFTER smoothing. Blurring first and masking second lets
     a human placement near a legal/illegal boundary contribute to its legal
     neighbours; masking first would discard that.
     """
     if not enabled():
+        return None
+    if obs is not None and board_is_quiet(obs):
         return None
     surfaces = _load()
     surf = surfaces.get(int(card_id))
