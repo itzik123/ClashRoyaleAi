@@ -25,6 +25,29 @@ Measured on the final checkpoint (ep 32,484), P(play card | card in hand):
 Five live cards at 0.066-0.343, three dead ones at 0.0011-0.0091, and a factor
 of ~7 of empty space between the two groups.
 
+THE SHAPE OF THE HINGE, AND THE MEASUREMENT THAT FORCED IT
+----------------------------------------------------------
+The first version hinged on the probability directly, `relu(floor - p)`. That
+is wrong in a way no coefficient can repair: the gradient reaching the card's
+logit carries a softmax factor `p*(1-p)`, so it VANISHES exactly as the card
+dies. Measured on the real distribution:
+
+    p_dead     d(linear)/d(logit)     d(log)/d(logit)
+    0.0011              0.000275              0.2497     <- Fireball, measured
+    0.0150              0.003694              0.2463
+
+Seventeen times weaker at the value that actually needed help. Three paired
+18-minute arms resuming the ep-32,484 checkpoint confirmed it live -- change in
+MinCardProb was -0.0007 at coef 0, +0.0018 at coef 2 and +0.0004 at coef 8:
+non-monotone in the coefficient and inside the update-to-update noise, i.e. a
+null. Quadrupling the coefficient did nothing because the term was fighting its
+own shape.
+
+Hinging on `log p` instead gives `d(-log p)/d(logit) = (1 - p)`, which is ~1 for
+any card worth rescuing and flat in p, so the push does not fade as the card
+dies. It also reads naturally: `relu(log(floor/p))` is "how many e-folds below
+the floor is this card", and it is exactly zero at and above the floor.
+
 A HINGE, NOT A TARGET -- and that distinction is the whole design
 -----------------------------------------------------------------
 `DECK_COVERAGE_FLOOR` sits inside that gap, so the term is EXACTLY ZERO for
@@ -64,6 +87,7 @@ pays a small, bounded price to keep exploring it. The companion fix is on the
 state-distribution side (defensive scenario injection in phase 1), which is
 what makes the exploration worth anything.
 """
+import math
 import os
 
 import torch
@@ -77,11 +101,39 @@ import torch.nn.functional as F
 #: strongest dead one.
 DECK_COVERAGE_FLOOR = float(os.environ.get("CLASH_DECK_COVERAGE_FLOOR", 0.02))
 
-#: Weight on the penalty. The term's magnitude is bounded by the floor itself
-#: (a fully dead card contributes at most `floor / n_cards` before weighting),
-#: so this is scaled to be comparable to the entropy bonus rather than to the
-#: actor loss: with 4 cards and one dead, the raw term is at most 0.005.
-DECK_COVERAGE_COEF = float(os.environ.get("CLASH_DECK_COVERAGE_COEF", 2.0))
+#: Floating-point guard on log(p). Never reached by a live card; it exists so a
+#: card that was unaffordable across an ENTIRE minibatch cannot produce -inf.
+_EPS = 1e-9
+
+#: Weight on the penalty. MUCH smaller than the linear form's, because the log
+#: hinge is ~150x larger in magnitude: one dead card at p = 0.0011 contributes
+#: log(0.02/0.0011)/4 = 0.725 raw, against 0.0047 before.
+#:
+#: MEASURED, not chosen. Three paired arms resuming the ep-32,484 checkpoint at
+#: stage 3, ~18 minutes each, all from an identical copy:
+#:
+#:     coef   d(MinCardProb)   DeckPen        H_card       ClipFrac
+#:     0.00        -0.00068    0.005 flat   0.34 -> 0.32   0.32 -> 0.33
+#:     0.05        +0.00096    0.53 -> 0.33 0.38 -> 0.43   0.32 -> 0.32
+#:     0.20        +0.00715    0.43 -> 0.13 0.38 -> 0.57   0.39 -> 0.34
+#:
+#: Monotone in the coefficient, unlike the linear form's null, and the log
+#: shortfall itself falls 70% at 0.20 -- the direct confirmation that cards are
+#: climbing out rather than the statistic wobbling. 0.20 is 7x faster than 0.05
+#: and the stability side holds: actor loss unchanged in magnitude (-0.026 to
+#: -0.033 against the control's -0.032 to -0.039), critic slightly BETTER.
+#:
+#: THE COST IS ON H_card, AND IT IS PARTLY THE CURE. Card entropy rises to 0.57
+#: against `EntropyConfig.target_card = 0.35` -- but that target was calibrated
+#: on a policy using five of eight cards, and an eight-card policy legitimately
+#: carries more. The controller will respond by cutting `coef_card` toward its
+#: 0.01 floor, which is the right resolution: the entropy bonus was only ever a
+#: crude proxy for what this term now does properly.
+#:
+#: WATCH `Policy/Entropy_Coef_Card`. If it PINS at 0.01 for a sustained stretch
+#: while H_card stays above ~0.55, the two controllers are fighting and one is
+#: saturated -- back off to 0.10 (untested midpoint) rather than raising this.
+DECK_COVERAGE_COEF = float(os.environ.get("CLASH_DECK_COVERAGE_COEF", 0.20))
 
 
 def enabled():
@@ -89,7 +141,7 @@ def enabled():
 
 
 def deck_coverage_penalty(card_logits, hand_ids, decision, floor=None):
-    """mean over deck cards of `relu(floor - P(play card | card in hand))`.
+    """mean over deck cards of `relu(log(floor / P(play card | card in hand)))`.
 
     card_logits: (N, hand_size + 1) -- the final column is the no-op arm.
     hand_ids:    (N, hand_size) long, -1 for an empty slot.
@@ -127,7 +179,11 @@ def deck_coverage_penalty(card_logits, hand_ids, decision, floor=None):
     counts = zeros.index_add(0, inv, torch.ones_like(p))
     p_card = sums / counts
 
-    shortfall = F.relu(floor - p_card)
+    # LOG space, not probability space -- see THE SHAPE OF THE HINGE above.
+    # clamp_min guards log(0): p_card is a MEAN over rows and an unaffordable
+    # arm contributes an exact 0.0, so a card that was never affordable in the
+    # whole minibatch would otherwise produce -inf and poison the update.
+    shortfall = F.relu(math.log(floor) - torch.log(p_card.clamp_min(_EPS)))
     # .detach() before the scalar read: min_p is a logging value, and pulling
     # it off the graph as a bare float otherwise warns and keeps the subgraph
     # alive for no reason.

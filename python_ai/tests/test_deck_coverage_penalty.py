@@ -45,7 +45,9 @@ def test_a_healthy_deck_costs_exactly_zero():
     assert pen.item() == 0.0
 
 
-def test_a_starved_card_costs_its_shortfall():
+def test_a_starved_card_costs_its_log_shortfall():
+    """The shortfall is measured in LOG space -- see the module docstring."""
+    import math
     logits = _logits_with([0.005, 0.30, 0.30, 0.30, 0.095])
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -54,8 +56,46 @@ def test_a_starved_card_costs_its_shortfall():
 
     assert n == 4
     assert abs(min_p - 0.005) < 1e-6
-    # mean over the 4 cards of relu(floor - p): only card 10 is short.
-    assert abs(pen.item() - (0.02 - 0.005) / 4) < 1e-6
+    # mean over the 4 cards of relu(log(floor) - log(p)): only card 10 is short.
+    assert abs(pen.item() - math.log(0.02 / 0.005) / 4) < 1e-5
+
+
+def test_the_push_does_not_weaken_as_the_card_gets_deader():
+    """THE REGRESSION THIS FORM EXISTS FOR.
+
+    The first implementation hinged on the probability directly, so the
+    gradient carried a softmax `p*(1-p)` factor and went to ZERO as p did. At
+    Fireball's measured p = 0.0011 that gradient was 0.00027 -- 17x weaker than
+    at p = 0.019, i.e. weakest exactly where the card was deadest.
+
+    Measured live on the ep-32,484 checkpoint over three paired 18-minute arms,
+    that produced a clean null: MinCardProb moved -0.0007 at coef 0, +0.0018 at
+    coef 2 and +0.0004 at coef 8. Non-monotone in the coefficient and inside the
+    run-to-run noise -- 4x the coefficient did not help, because no coefficient
+    can fix a term whose push shrinks as the problem worsens.
+
+    A log hinge's gradient is (1 - p), which is ~1 for any dead card. This test
+    pins the SHAPE: the push must not fall off as p -> 0.
+    """
+    hand = torch.tensor([[10, 20, 30, 40]])
+    decision = torch.ones(1)
+
+    grads = []
+    for p_dead in (0.0011, 0.005, 0.015):
+        others = (1.0 - p_dead) / 3.0
+        raw = torch.log(torch.tensor(
+            [[p_dead, others, others, others, 1e-9]], dtype=torch.float32)
+        ).requires_grad_(True)
+        pen, _, _ = deck_coverage_penalty(raw, hand, decision, floor=0.02)
+        pen.backward()
+        grads.append(-raw.grad[0, 0].item())
+
+    assert all(g > 0 for g in grads), "every starved card must be pushed up"
+    # The deadest card must be pushed AT LEAST as hard as the nearly-recovered
+    # one. Under the old linear hinge this ratio was 0.059 (17x weaker).
+    assert grads[0] / grads[-1] > 0.9, (
+        f"push weakens as the card dies: {grads[0]:.5f} at p=0.0011 vs "
+        f"{grads[-1]:.5f} at p=0.015")
 
 
 def test_it_pushes_the_starved_card_UP_and_leaves_healthy_cards_alone():
