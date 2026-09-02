@@ -33,6 +33,12 @@ import clash_royale_env
 from python_ai.engine_constants import BOARD_H, BOARD_W
 from python_ai.models.policy_io import LSTM_HIDDEN
 from python_ai.rewards.weights import DRAW_PENALTY
+# Re-exported so callers and tests keep reaching them here, but DEFINED in
+# config.py -- a configuration object must stay the cheapest import in the
+# tree, and config importing this module would invert that.
+from python_ai.search.config import (WIDE_PROPOSAL_MAX_CELLS,
+                                     WIDE_PROPOSAL_STRIDE,
+                                     WIDE_PROPOSAL_TOP1)
 
 HAND_SIZE = clash_royale_env.ClashRoyaleEnv.HAND_SIZE
 #: The no-op arm of the card head is the column past the hand.
@@ -67,27 +73,6 @@ def greedy_from_logits(net, obs_t, card_logits, card_embeds, spatial_map, hidden
     return int(card_idx_t.item()), float(x_t.item()), float(y_t.item()), place_logits
 
 
-#: Placement top-1 probability below which a card's head is treated as having
-#: nothing useful for search to RANK, so the proposals are widened instead.
-#:
-#: MEASURED SITING, not chosen. Mean top-1 per deck card on the ep-32,484
-#: policy: Hog 0.7654, Musketeer 0.3939, Skeletons 0.3527 | Ice Golem 0.1259,
-#: Fireball 0.1074, Ice Spirit 0.0987, Cannon 0.0970, The Log 0.0288. The
-#: largest gap inside the diffuse region is 0.227, and 0.25 sits in it -- 1.4x
-#: below Skeletons and 2.0x above Ice Golem.
-#:
-#: NOT A DEAD-CARD DETECTOR. Ice Golem and Ice Spirit are two of the most-played
-#: cards in the deck and their heads are as flat as the Cannon's, because for a
-#: cheap cycle card placement genuinely matters less. This selects "search has
-#: nothing useful to rank here", which is the question search needs answered.
-#: Widening a card whose placement does not matter costs compute, not accuracy.
-WIDE_PROPOSAL_TOP1 = float(os.environ.get("CLASH_WIDE_PROPOSAL_TOP1", 0.25))
-
-#: Board stride for the widened sweep. (2, 2) reproduces the grid the measured
-#: arm used -- ~56 cells before the legality filter, against k_cells=2.
-WIDE_PROPOSAL_STRIDE = (2, 2)
-
-
 def propose_cells(place_logits, k_cells,
                   top1=None, stride=WIDE_PROPOSAL_STRIDE):
     """Cell indices for one card: the head's top-k, or a spread if it is flat.
@@ -118,11 +103,27 @@ def propose_cells(place_logits, k_cells,
             idx = y * BOARD_W + x
             if idx < place_logits.numel() and bool(legal[idx]):
                 out.append(idx)
+
     # The argmax always survives: search must never be able to do WORSE than
     # the head it is helping, which is the same reason greedy is candidate 0.
+    # Added BEFORE the cap -- appending it afterwards returned
+    # WIDE_PROPOSAL_MAX_CELLS + 1 cells, which put real emission at 147 against
+    # an analytic bound of 145. The first cap test missed that because a
+    # uniform distribution's argmax lands on the stride grid by luck.
     best = int(torch.topk(place_logits, 1).indices[0])
     if best not in out and bool(legal[best]):
         out.append(best)
+
+    # CAP BY EVEN SUBSAMPLING, never by truncation. Taking the first N of a
+    # row-major scan would collapse the set into the top of the board; a
+    # uniform stride keeps it spread, which is the property that made the wide
+    # arm worth +994 tower HP over the head's own top-k.
+    if len(out) > WIDE_PROPOSAL_MAX_CELLS:
+        step = len(out) / float(WIDE_PROPOSAL_MAX_CELLS)
+        kept = [out[int(i * step)] for i in range(WIDE_PROPOSAL_MAX_CELLS)]
+        if best not in kept:
+            kept[-1] = best      # the cap must never evict the head's own pick
+        out = kept
     return out
 
 

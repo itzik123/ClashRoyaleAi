@@ -52,7 +52,35 @@ BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 #     k_cards=5 k_cells=3 -> 13   (overflows)
 # Overflow is no longer silent-and-harmful (candidates are kept by SCORE, see
 # collect_episode) but it is still lossy, so _warn_truncation reports it once.
-K_MAX = 8
+K_MAX = 160
+
+def select_candidate_indices(scores, k_max=None):
+    """Which candidates to record, value-sorted, capped at `k_max`.
+
+    Returns indices into `scores`, best FIRST.
+
+    OVERFLOW IS A UNIFORM STRIDE OVER THE VALUE-SORTED LIST, NOT THE TOP-K, and
+    that is the whole point. The top-k are the candidates most similar to each
+    other, so keeping them destroys the dynamic range the soft target is made
+    of. Measured on real overflow rows under the widened search, spread
+    collapsed 0.6371 -> 0.1036, an 84% compression -- which then moves the
+    calibrated temperature from 0.592 of maximum entropy to 0.858, i.e. into
+    the near-uniform region that has already produced one null here "while
+    looking like it was training".
+
+    Striding the sorted list keeps both endpoints, so the recorded target spans
+    the same range the search actually saw. The argmax is index 0 and therefore
+    always survives: it is the action search chose, and a target that omits it
+    is fitted to a set not containing the decision.
+    """
+    k_max = K_MAX if k_max is None else k_max
+    order = np.argsort(-np.asarray(scores, dtype=np.float64))
+    if len(order) <= k_max:
+        return order
+    # Endpoints pinned, the rest spread evenly between them.
+    idx = np.linspace(0, len(order) - 1, k_max)
+    return order[np.unique(np.round(idx).astype(int))]
+
 
 # Module-level so the warning fires once per process, not once per decision.
 _truncation_warned = False
@@ -157,14 +185,14 @@ def collect_episode(net, env, device, cfg, episode_index):
                 global _truncation_warned
                 if not _truncation_warned:
                     _truncation_warned = True
-                    print(f"  WARNING: search emitted {len(cands)} candidates but "
-                          f"K_MAX={K_MAX}; keeping the {K_MAX} highest-scoring and "
-                          f"DISCARDING the rest. The recorded target is a partial "
-                          f"ranking. Raise K_MAX (it is a schema width -- datasets "
-                          f"recorded at different K_MAX cannot be merged) or lower "
-                          f"--k-cards/--k-cells. Only k_cards=3,k_cells=2 fits 8.",
-                          flush=True)
-            order = np.argsort(-np.asarray(scores, dtype=np.float64))[:K_MAX]
+                    print(f"  NOTE: search emitted {len(cands)} candidates against "
+                          f"K_MAX={K_MAX}; recording a uniform stride over the "
+                          f"value-sorted set, so the argmax and BOTH endpoints of "
+                          f"the spread survive. The target is a subsample of the "
+                          f"ranking, not a truncation of it. K_MAX is a schema "
+                          f"width -- datasets recorded at different K_MAX cannot "
+                          f"be merged.", flush=True)
+            order = select_candidate_indices(scores)
             n_c = len(order)
             for j, i in enumerate(order):
                 ci, cx, cy = cands[i]

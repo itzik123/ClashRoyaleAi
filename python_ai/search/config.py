@@ -7,7 +7,34 @@ configuration -- had to import a 1,162-line experiment harness (and through it
 to reach this dataclass. A configuration object should be the cheapest thing in
 the tree to import, not the most expensive.
 """
+import os
 from dataclasses import dataclass
+
+
+#: Placement top-1 probability below which a card's head is treated as having
+#: nothing useful for search to RANK, so its cell proposals are widened instead.
+#:
+#: MEASURED SITING. Mean top-1 per deck card on the ep-32,484 policy: Hog
+#: 0.7654, Musketeer 0.3939, Skeletons 0.3527 | Ice Golem 0.1259, Fireball
+#: 0.1074, Ice Spirit 0.0987, Cannon 0.0970, The Log 0.0288. The largest gap
+#: inside the diffuse region is 0.227 and 0.25 sits in it.
+#:
+#: NOT a dead-card detector: Ice Golem and Ice Spirit are heavily played and
+#: their heads are just as flat, because for a cheap cycle card placement
+#: genuinely matters less. It selects "search has nothing here to rank".
+WIDE_PROPOSAL_TOP1 = float(os.environ.get("CLASH_WIDE_PROPOSAL_TOP1", 0.25))
+
+#: Board stride for the widened sweep.
+WIDE_PROPOSAL_STRIDE = (2, 2)
+
+#: Hard cap on cells proposed for ONE widened card.
+#:
+#: This exists so `max_candidates` is a PROOF rather than the largest sample
+#: anyone happened to see. Unbounded, the stride grid alone is
+#: ceil(34/2) * ceil(18/2) = 153 cells per card, so three expanded cards could
+#: emit 460 candidates -- while the observed max was 150. Sizing a schema width
+#: on that observation would have been sizing it on luck.
+WIDE_PROPOSAL_MAX_CELLS = int(os.environ.get("CLASH_WIDE_PROPOSAL_MAX_CELLS", 48))
 
 
 @dataclass(frozen=True)
@@ -43,5 +70,18 @@ class SearchCfg:
 
     @property
     def max_candidates(self):
-        """Greedy plus the expansion grid. The bound `K_MAX` is checked against."""
-        return 1 + self.k_cards * self.k_cells
+        """Greedy plus the expansion grid. The bound `K_MAX` is checked against.
+
+        ACCOUNTS FOR WIDENING since 2026-09-03. It returned
+        `1 + k_cards*k_cells` = 7 while the real search emitted up to 150, so
+        the padding-width test it feeds passed for a schema that could not hold
+        a row -- a guard that had stopped guarding without failing, the same
+        shape as the receptive-field test that kept measuring 10x10 across the
+        change that invalidated its docstring.
+
+        A widened card contributes at most `WIDE_PROPOSAL_MAX_CELLS`; a sharp
+        one at most `k_cells`. The bound takes the worst case, which is every
+        expanded card being flat.
+        """
+        per_card = max(self.k_cells, WIDE_PROPOSAL_MAX_CELLS)
+        return 1 + self.k_cards * per_card

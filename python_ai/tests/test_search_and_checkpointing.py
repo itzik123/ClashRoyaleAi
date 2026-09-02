@@ -25,11 +25,25 @@ def test_the_shipping_horizon_is_the_one_the_sweep_confirmed():
     assert cfg.terminal_weight == 10.0
 
 
-def test_max_candidates_is_greedy_plus_the_expansion_grid():
-    """K <= 1 + k_cards * k_cells. The harness used to compute this inline in an
-    f-string, which is where a mismatch with the padding width would hide."""
-    assert SearchCfg(k_cards=3, k_cells=2).max_candidates == 7
-    assert SearchCfg(k_cards=1, k_cells=1).max_candidates == 2
+def test_max_candidates_is_greedy_plus_the_WIDENED_expansion_grid():
+    """K <= 1 + k_cards * max(k_cells, WIDE_PROPOSAL_MAX_CELLS).
+
+    This asserted `== 7` (greedy plus k_cards*k_cells) until 2026-09-03. That
+    stopped being the bound when `propose_cells` began widening a flat
+    placement head: the real search emitted up to 150 candidates while this
+    still read 7, so the padding-width test it feeds was passing for a schema
+    that could not hold a row. The harness used to compute the same expression
+    inline in an f-string, which is exactly where such a mismatch hides.
+
+    Written against the FORMULA rather than a literal, so raising the per-card
+    cap moves the bound and the padding-width guard together instead of
+    silently decoupling them again.
+    """
+    from python_ai.search.config import WIDE_PROPOSAL_MAX_CELLS
+
+    per_card = max(2, WIDE_PROPOSAL_MAX_CELLS)
+    assert SearchCfg(k_cards=3, k_cells=2).max_candidates == 1 + 3 * per_card
+    assert SearchCfg(k_cards=1, k_cells=1).max_candidates ==         1 + max(1, WIDE_PROPOSAL_MAX_CELLS)
 
 
 def test_the_padding_width_is_wide_enough_for_the_shipping_config():
@@ -64,7 +78,16 @@ def test_it_is_importable_without_dragging_in_a_trainer():
             imported.add(node.module)
         elif isinstance(node, ast.Import):
             imported.update(a.name for a in node.names)
-    assert imported == {"dataclasses"}, imported
+    # The rule is about DEPENDENCY WEIGHT, not a literal one-module list: this
+    # file must stay the cheapest import in the tree, which is why shipping.py
+    # can read it without pulling a 1,100-line experiment harness. Stdlib is
+    # free (already resident at interpreter start); a first-party import is not,
+    # and is what this guard actually exists to refuse. Widened from
+    # `== {"dataclasses"}` on 2026-09-03 when the widened-search constants moved
+    # here and brought `os` for their env overrides.
+    STDLIB_OK = {"dataclasses", "os", "math", "typing", "enum"}
+    assert not any(m.startswith("python_ai") for m in imported), imported
+    assert imported <= STDLIB_OK, imported
 
 
 # -------------------------------------------------------- checkpointing --

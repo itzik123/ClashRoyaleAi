@@ -90,7 +90,8 @@ from python_ai.trainers.expert_collect import (  # noqa: E402
     collect_expert_labels, make_env, merge_datasets,
 )
 from python_ai.trainers.expert_distill import (  # noqa: E402
-    candidate_target, freeze_trunk, train_distribution,
+    TARGET_ENTROPY_FRAC, calibrate_temperature, candidate_target, freeze_trunk,
+    target_entropy_frac, train_distribution,
 )
 from python_ai.trainers.expert_metrics import (  # noqa: E402
     conditional_lift, conditional_match_rate, conditional_metrics, critic_drift,
@@ -243,6 +244,22 @@ def run_ablation(args, cfg, device, resolve):
           f"HO noop climbs toward it")
     print("without HO disagree moving learned the MARGINAL, not the conditional.")
 
+def resolve_temperature(spec, data):
+    """`--temperature` -> a float, solving it from the data when asked.
+
+    Recalibrating per invocation IS the DAgger-round recalibration: each round
+    collects with a fresh critic and distills its own dataset, so solving here
+    tracks the critic without any extra plumbing.
+    """
+    if not (isinstance(spec, str) and spec.lower() == "auto"):
+        return float(spec)
+    T = calibrate_temperature(data["cand_value"], data["cand_n"])
+    frac = target_entropy_frac(data["cand_value"], data["cand_n"], T)
+    print(f"  T calibrated from this dataset: {T:.4f} "
+          f"(target entropy {frac:.3f} of max, aiming {TARGET_ENTROPY_FRAC})")
+    return T
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--collect", type=int, metavar="N_EPISODES",
@@ -267,8 +284,12 @@ def main():
     # is mean 0.221 / median 0.187, at which 0.25 puts the target at 94% of
     # maximum entropy (near-uniform, no signal) while 0.05 puts it at ~50% --
     # the midpoint between a hard label and no information.
-    ap.add_argument("--temperature", type=float, default=0.05,
-                    help="softmax temperature on candidate values (see --target-entropy)")
+    ap.add_argument("--temperature", default="auto",
+                    help="softmax temperature on candidate values, or 'auto' to "
+                         "SOLVE it from this dataset's own value spread (see "
+                         "--target-entropy). auto is the default because T is a "
+                         "property of the critic, and expert iteration changes "
+                         "the critic -- a T fixed once is right only for round 0")
     ap.add_argument("--lift", action="store_true",
                     help="conditional-lift analysis over the saved ablation checkpoints")
     ap.add_argument("--ablate", action="store_true",
@@ -453,7 +474,8 @@ def main():
             n_tr, n_fz = sum(p.numel() for p in student.parameters()), 0
         else:
             n_tr, n_fz = freeze_trunk(student)
-        print(f"  {n_tr:,} trainable / {n_fz:,} frozen, T={args.temperature}, "
+        temperature = resolve_temperature(args.temperature, data)
+        print(f"  {n_tr:,} trainable / {n_fz:,} frozen, T={temperature:.4f}, "
               f"{len(train_eps)} train / {len(held)} held-out episodes")
 
         base = conditional_lift(original, data, greedy_card, device, held)
@@ -461,7 +483,7 @@ def main():
 
         student, _ = train_distribution(
             data, student, device, epochs=args.epochs, lr=args.lr,
-            batch_episodes=args.batch_episodes, temperature=args.temperature,
+            batch_episodes=args.batch_episodes, temperature=temperature,
             episode_filter=train_eps)
         student.eval()
 
@@ -478,7 +500,7 @@ def main():
               f"agree {cond['agreement_match']:.4f}  noop {cond['pred_noop_rate']:.3f} "
               f"(expert {noop_rate(data['card']):.3f})")
         print(f"  critic drift |dV| {vd:.6f}  aux {ad:.6f}")
-        atomic_save({"model": student.state_dict(), "temperature": args.temperature},
+        atomic_save({"model": student.state_dict(), "temperature": temperature},
                    resolve(args.out))
         print(f"  wrote {args.out}")
 

@@ -15,6 +15,8 @@ signal, while looking like it is training. T=0.05 puts it at ~55%.
 import os
 import sys
 
+import math
+
 import numpy as np
 import torch
 
@@ -75,6 +77,64 @@ def freeze_trunk(net):
     trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
     frozen = sum(p.numel() for p in net.parameters() if not p.requires_grad)
     return trainable, frozen
+
+#: Where the soft target should sit, as a fraction of log(n_candidates).
+#: At ~0 it is the argmax label that already measured a null (+0.016, p=0.553);
+#: at ~1 it is uniform and carries no preference at all. 0.55 is the band the
+#: working arms were measured in.
+TARGET_ENTROPY_FRAC = 0.55
+
+
+def target_entropy_frac(cand_value, cand_n, temperature):
+    """Median entropy of softmax(values / T), as a fraction of log(n)."""
+    fracs = []
+    for row in range(len(cand_n)):
+        k = int(cand_n[row])
+        if k < 2:
+            continue
+        v = np.asarray(cand_value[row][:k], dtype=np.float64)
+        z = (v - v.max()) / max(1e-9, temperature)
+        p = np.exp(z)
+        tot = p.sum()
+        if not np.isfinite(tot) or tot <= 0:
+            continue
+        p = p / tot
+        nz = p[p > 0]
+        fracs.append(float(-(nz * np.log(nz)).sum() / math.log(k)))
+    return float(np.median(fracs)) if fracs else 0.0
+
+
+def calibrate_temperature(cand_value, cand_n, target_frac=None,
+                          lo=1e-4, hi=10.0, iters=60):
+    """The T whose target sits at `target_frac` of maximum entropy.
+
+    WHY THIS IS SOLVED PER ROUND RATHER THAN PASSED AS A FLAG. T is a property
+    of the CRITIC's value spread, and expert iteration changes the critic --
+    so a temperature calibrated once is correct only for round 0. It is also
+    the single knob this project has already lost a run to: T=0.25 put the
+    target at 94% of maximum entropy, near-uniform and carrying no signal,
+    while looking exactly like training.
+
+    Entropy is monotone increasing in T, so a bisection is exact and cheap.
+    """
+    target_frac = TARGET_ENTROPY_FRAC if target_frac is None else target_frac
+
+    spreads = [float(np.ptp(np.asarray(cand_value[r][:int(cand_n[r])])))
+               for r in range(len(cand_n)) if int(cand_n[r]) >= 2]
+    if not spreads or max(spreads) <= 1e-9:
+        raise ValueError(
+            "cannot calibrate a temperature: candidate value spread is zero, so "
+            "every target is uniform at every T. This is the no-op duplication "
+            "signature -- check the candidate set is not one action recorded twice.")
+
+    for _ in range(iters):
+        mid = math.sqrt(lo * hi)          # geometric: T spans orders of magnitude
+        if target_entropy_frac(cand_value, cand_n, mid) < target_frac:
+            lo = mid
+        else:
+            hi = mid
+    return math.sqrt(lo * hi)
+
 
 def candidate_target(values, n, temperature):
     """softmax(values / T) over the n real candidates. Rows with n<2 are dead.
