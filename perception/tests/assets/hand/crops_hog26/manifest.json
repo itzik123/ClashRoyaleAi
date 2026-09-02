@@ -1,0 +1,182 @@
+[
+ {
+  "file": "lifted_skeletons_f306_s4.png",
+  "truth": "skeletons",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 16.865
+ },
+ {
+  "file": "lifted_musketeer_f378_s3.png",
+  "truth": "musketeer",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 22.8
+ },
+ {
+  "file": "lifted_skeletons_f225_s4.png",
+  "truth": "skeletons",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 16.688
+ },
+ {
+  "file": "lifted_the_log_f419_s2.png",
+  "truth": "the_log",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 20.981
+ },
+ {
+  "file": "clean_skeletons_f398_s4.png",
+  "truth": "skeletons",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 15.554
+ },
+ {
+  "file": "clean_cannon_f97_s1.png",
+  "truth": "cannon",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 15.331
+ },
+ {
+  "file": "clean_the_log_f133_s4.png",
+  "truth": "the_log",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 18.917
+ },
+ {
+  "file": "clean_hog_rider_f70_s3.png",
+  "truth": "hog_rider",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 20.757
+ },
+ {
+  "file": "clean_musketeer_f169_s2.png",
+  "truth": "musketeer",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 20.679
+ },
+ {
+  "file": "clean_fireball_f103_s2.png",
+  "truth": "fireball",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 47.176
+ },
+ {
+  "file": "clean_ice_spirit_f184_s3.png",
+  "truth": "ice_spirit",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 37.818
+ },
+ {
+  "file": "clean_ice_golem_f124_s3.png",
+  "truth": "ice_golem",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 31.963
+ },
+ {
+  "file": "dimmed_musketeer_f285_s3.png",
+  "truth": "musketeer",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 1.051
+ },
+ {
+  "file": "dimmed_hog_rider_f315_s1.png",
+  "truth": "hog_rider",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.197
+ },
+ {
+  "file": "dimmed_hog_rider_f352_s1.png",
+  "truth": "hog_rider",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 1.22
+ },
+ {
+  "file": "dimmed_hog_rider_f255_s1.png",
+  "truth": "hog_rider",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.208
+ },
+ {
+  "file": "dimmed_fireball_f214_s2.png",
+  "truth": "fireball",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.81
+ },
+ {
+  "file": "empty_blank_f85_s2.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 52.689
+ },
+ {
+  "file": "empty_blank_f57_s1.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 52.992
+ },
+ {
+  "file": "empty_blank_f394_s4.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 52.814
+ }
+]

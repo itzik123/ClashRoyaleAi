@@ -1,0 +1,34 @@
+{
+  "2": {
+    "file": "card_2.png",
+    "name": "Giant"
+  },
+  "25": {
+    "file": "card_25.png",
+    "name": "Cannon"
+  },
+  "41": {
+    "file": "card_41.png",
+    "name": "Minions"
+  },
+  "7": {
+    "file": "card_7.png",
+    "name": "Fireball"
+  },
+  "10": {
+    "file": "card_10.png",
+    "name": "Valkyrie"
+  },
+  "1": {
+    "file": "card_1.png",
+    "name": "Archers"
+  },
+  "6": {
+    "file": "card_6.png",
+    "name": "Musketeer"
+  },
+  "5": {
+    "file": "card_5.png",
+    "name": "Mini PEKKA"
+  }
+}

@@ -21,7 +21,7 @@ the C++ core are read-only from here.
 | 0 — capture, calibration | **PASSES** (2026-07-30) | independent check against the arena's **own rendered tile seams**: **0.105–0.224 tiles** across all 8 recordings — `tools/validate_grid.py`. Landmark residuals, for reference only: in-sample 0.31, leave-one-out 0.78. See *Findings* 1. |
 | 1 — elixir reader | **PASSES** | 587 samples over a full match, mean confidence **0.990**, 13 low-confidence. Regen interval measures **2.80 s**, matching the real game exactly. |
 | 1 — clock reader | **PASSES with confidence gating** | **97.1%** of readings correct at confidence ≥ 0.7 (207 of 295 samples). Free-running drift over the match is **~0.6 ms** (CFR measured at 30.0001 fps). |
-| 2 — our hand and cycle | **templates exist; identity measurably WRONG** | cycle model reproduces the engine's FIFO exactly across a real replay, 0 desyncs — but on real video the icon template agrees with the elixir ledger on card cost only **33.8%** of the time (328 in-match plays, 8 recordings) and over-predicts Giant at 35% against a 12.5% prior. See *Findings* 5. |
+| 2 — our hand and cycle | **PASSES, and WIRED LIVE on `DEFAULT_DECK`** (2026-09-03) | `live/deck_hand.py`. On the 2.6 Hog Cycle recording: **100.0%** of 120 blind-labelled slot crops (**100%** held out), against **96.7%** for the vendored CRBAB hash, and cycle-impossible transitions **62.8% → 0.0%**. On the giant recording: 99.2% vs 92.5%, transitions 60.0% → 5.3%. Costs ~2.5x the incumbent and ~4% of the per-frame budget. `mvp_loop` loads `deck_pool_hog26` with no fallback. See *Findings* 5. |
 | 3 — opponent placement detection | **blocked on data** | `detect/placements.py` raises. Needs the next batch. |
 | 4 — opponent deck, cycle, elixir | **done and tested** | deck discovery, exact elixir derivation, negative-balance alarm. |
 | 5 — bridge + divergence | **done and tested** | zero-error control: divergence identically **0**. |
@@ -301,17 +301,95 @@ Details and the requested change are in **`UPSTREAM_REQUESTS.md`**. Summary:
    and bind `get_hand(team)`. Would remove the whole candidate-pool
    machinery. Everything works without it. **Partly landed** — `inject()` and
    `getHandForTeam()` appear in commit `0ab809b`.
-5. **Our own hand identity is measurably wrong on real video** — a perception
-   bug, not an engine one, recorded here because it invalidates the stage-2
-   "logic done" claim. Over 8 recordings and 328 in-match candidate plays the
-   icon template agrees with the elixir ledger on card cost only **33.8%** of
-   the time, while the observed elixir drop lands within 0.6 of a real cost
-   **74.7%** of the time. The template over-predicts Giant at 35% against a
-   12.5% prior. Direct proof: Giant is played out of slot 1 at t=21.0s and one
-   second later reads as present in slot 2, holding for 10 seconds — a played
-   card goes to the back of an 8-card queue, so this is impossible, and no
-   debouncer can catch a *stably* wrong classifier (raising `hold` from 2 to 8
-   leaves 7 flip-flops per match in two recordings).
+5. **Hand identity — FIXED 2026-09-02 for the recorded deck.** `live/deck_hand.py`.
+
+   **The 33.8% figure that stood here described DEAD CODE.** It was measured
+   on `readers/hand.py`, which has no caller; the live loop reads its hand
+   from the vendored CRBAB `CardDetector`, a different classifier. Measured
+   properly, the incumbent scores **92.5%** on 120 blind-labelled slot crops
+   from `assets/live/match_practice_01`.
+
+   **Restricting the template pool was not available as a fix — it was
+   already done.** `CardDetector` loads only the eight cards it is handed plus
+   five `blank` entries, never the 139 icons in `images/cards/`, and off-deck
+   reads are correspondingly 0.6%. The error was entirely *within-deck*: the
+   incumbent reads Musketeer correctly **53.8%** of the time, mostly as
+   Mini P.E.K.K.A. A stably-wrong card is what produces the impossible cycle
+   transitions, at **60.0%** of checkable ones.
+
+   Three causes, all measured, none of them pool size:
+
+   - **The stock templates are the wrong domain.** A stock icon is 252x313
+     and frames the whole character; the live slot crop is 61x73, zoomed far
+     tighter, and carries a magenta cost badge the stock icon does not have.
+     Both are then crushed to an **8x8 greyscale hash** — 64 numbers for a
+     4,453-pixel crop.
+   - **A selected card is LIFTED ~11 px** out of its slot with a highlight bar
+     beneath. Rigid-template correlation collapses from ~0.99 to 0.26–0.39,
+     and these are the frames that matter most: a card is selected exactly
+     when it is about to be played.
+   - **An unaffordable card is rendered in TRUE greyscale, badge included**,
+     so a magenta-badge presence test reports it empty. 15.1% of in-match
+     slots. Only 4.6% are genuinely empty (the blue card-back), and the two
+     separate cleanly on colour.
+
+   Result: **99.2%** identity, impossible transitions **5.3%**, and the hand
+   holds a median 11.2 s against a real ~9.3 s (the incumbent churned at
+   4.8 s). Costs **8.0 ms/frame** against 3.3 ms — both negligible beside the
+   77.9 ms unit detector.
+
+   **CLOSED 2026-09-03 for `DEFAULT_DECK`.** `assets/recordings/2026-09-02
+   19-33-22.mp4` is a 2.6 Hog Cycle match, and `deck_pool_hog26` is cut from
+   it. Measured on 120 blind-labelled slot crops from that recording:
+
+   | | overall | affordable | dimmed | empty |
+   |---|---|---|---|---|
+   | CRBAB (incumbent) | 96.7% | 94.7% | 98.1% | 100% |
+   | **deck pool** | **100.0%** | **100%** | **100%** | **100%** |
+
+   Cycle-impossible transitions **62.8% → 0.0%**, duplicates 3.1% → 0.5%. That
+   recording is **44.2% dimmed** against the giant recording's 15.1%, because a
+   cheap cycle deck spends its elixir continuously — so it stresses the
+   unaffordable path far harder, and that path is the one the badge gate got
+   wrong.
+
+   **Held out, not just in-sample.** A second pool built from only the first
+   60% of the match scores **100.0% (48/48)** on labels from the last 40%. Its
+   eight templates correlate at **1.000** with the shipped pool's, so a
+   per-pixel median over hundreds of crops is not memorising frames.
+
+   Three things this recording added that the first one could not:
+
+   - **The emulator window MOVES between recordings.** `tools/calibrate.py`
+     and `tools/sim_fidelity.py` both carry `(686, 40, 1236, 1012)` for the
+     July batch; this one sits at **(665, 41, 1214, 1018)**. Twenty-one pixels
+     is a fifth of a card slot — enough to clip every cost badge and make
+     `ScreenDetector` report `unknown` on every frame of a match in progress.
+     `build_icon_templates.measure_game_rect` now measures it per recording
+     from the black letterbox instead of inheriting a constant.
+   - **`k = DECK_SIZE` is not enough clusters.** At eight, k-means spent one
+     cluster on a *render state* (the selected/highlighted card, pulling
+     Musketeer and Skeletons together) and merged Fireball with Ice Golem, so
+     Ice Golem got no template at all. Cluster sizes ran 343 down to 26, and
+     k-means splits large groups before it separates small ones. `--k 16` with
+     merge-by-name fixes it: several groups may carry one card and the largest
+     wins.
+   - **The ~11 px selected-card lift reproduces exactly**, at dy = −10/−11 with
+     correlation 0.13–0.19 recovering to 0.89–0.99. Two different recordings,
+     two different window positions, same offset — it is a property of the
+     game's UI, not of one capture.
+
+   The original elixir-ledger cross-check (**74.7%** of observed elixir drops
+   land within 0.6 of a real cost) still stands as an independent oracle and
+   has not been re-run against the new classifier.
+
+   **Ground truth was hand-labelled and is not perfect.** Every crop disputed
+   by either arm was re-adjudicated at 4x on evidence independent of both (the
+   printed cost digit; unmistakable art). My own blind-labelling error rate was
+   3/120 on the giant set and **1/120** on hog26 — the second pass used a
+   greyscale reference key, which is what a dimmed card actually looks like.
+   Every correction was a crop BOTH arms already read correctly, so each raised
+   both scores and favoured neither.
 
    Two prerequisites surfaced with it. The **first ~18 s of every recording has
    no match**: the elixir bar is not yet drawn so its ROI reads a *confident*

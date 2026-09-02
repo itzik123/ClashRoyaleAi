@@ -1,0 +1,173 @@
+[
+ {
+  "file": "clean_fireball_f533_s1.png",
+  "truth": "fireball",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 51.822
+ },
+ {
+  "file": "clean_giant_f1100_s1.png",
+  "truth": "giant",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 39.425
+ },
+ {
+  "file": "clean_minions_f857_s2.png",
+  "truth": "minions",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 28.548
+ },
+ {
+  "file": "clean_cannon_f533_s4.png",
+  "truth": "cannon",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 16.34
+ },
+ {
+  "file": "clean_valkyrie_f938_s3.png",
+  "truth": "valkyrie",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 38.168
+ },
+ {
+  "file": "clean_musketeer_f533_s3.png",
+  "truth": "musketeer",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 21.54
+ },
+ {
+  "file": "clean_archers_f1261_s2.png",
+  "truth": "archers",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 34.57
+ },
+ {
+  "file": "clean_minipekka_f1342_s2.png",
+  "truth": "minipekka",
+  "kind": "clean",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 28.568
+ },
+ {
+  "file": "dimmed_fireball_f372_s1.png",
+  "truth": "fireball",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.023
+ },
+ {
+  "file": "dimmed_giant_f372_s2.png",
+  "truth": "giant",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.022
+ },
+ {
+  "file": "dimmed_musketeer_f372_s3.png",
+  "truth": "musketeer",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.003
+ },
+ {
+  "file": "dimmed_giant_f453_s2.png",
+  "truth": "giant",
+  "kind": "dimmed",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 0.023
+ },
+ {
+  "file": "lifted_giant_f1599_s1.png",
+  "truth": "giant",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 35.937
+ },
+ {
+  "file": "lifted_valkyrie_f354_s3.png",
+  "truth": "valkyrie",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 38.993
+ },
+ {
+  "file": "lifted_valkyrie_f348_s3.png",
+  "truth": "valkyrie",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 39.391
+ },
+ {
+  "file": "lifted_minions_f1161_s2.png",
+  "truth": "minions",
+  "kind": "lifted",
+  "base": 14,
+  "height": 73,
+  "has_badge": true,
+  "colour": 29.36
+ },
+ {
+  "file": "empty_blank_f210_s1.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 56.459
+ },
+ {
+  "file": "empty_blank_f291_s3.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 56.3
+ },
+ {
+  "file": "empty_blank_f614_s2.png",
+  "truth": "blank",
+  "kind": "empty",
+  "base": 14,
+  "height": 73,
+  "has_badge": false,
+  "colour": 56.336
+ }
+]

@@ -49,12 +49,47 @@ MIN_ICON_MARGIN = 0.05
 ICON_SHAPE = (48, 40)
 
 
-def _normalise_icon(image: np.ndarray) -> np.ndarray:
-    """Grey, resized, contrast-normalised. See HandReader._read_slot."""
+def normalise_icon(image: np.ndarray) -> np.ndarray:
+    """Grey, resized, contrast-normalised. See HandReader._read_slot.
+
+    PUBLIC because three places need exactly this representation and must not
+    disagree about it: this reader, `tools/build_icon_templates.py` (which
+    CLUSTERS in it, so a template and a probe have to be comparable), and
+    `live/deck_hand.py` (which MATCHES in it). It was duplicated between the
+    first two, which is the setup for a silent drift -- change ICON_SHAPE in
+    one and matching degrades everywhere with nothing raising.
+    """
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(grey, (ICON_SHAPE[1], ICON_SHAPE[0]),
                        interpolation=cv2.INTER_AREA).astype(np.float32)
     return (small - small.mean()) / (small.std() + 1e-6)
+
+
+#: Kept so existing internal callers keep working.
+_normalise_icon = normalise_icon
+
+
+def has_cost_badge(crop: np.ndarray) -> bool:
+    """True if this slot actually holds a card. `crop` is BGR.
+
+    Every card icon carries a magenta elixir-cost badge low-centre. Nothing
+    else in the tray does -- not the blue crown card-back shown while the next
+    card slides in, and not the empty between-match tray -- which makes it a
+    far better "is this a card" test than any brightness or variance
+    heuristic.
+
+    That distinction cost a run. Filtering on `crop.std() < 18` let the empty
+    between-match tray through -- it has enough texture to pass -- and 1,525
+    of those crops formed a cluster of their own, displacing a real card out
+    of an eight-cluster budget.
+    """
+    h, w = crop.shape[:2]
+    badge = crop[int(h * 0.62):, int(w * 0.2):int(w * 0.8)]
+    if badge.size == 0:
+        return False
+    hsv = cv2.cvtColor(badge, cv2.COLOR_BGR2HSV)
+    magenta = cv2.inRange(hsv, np.array([135, 90, 90]), np.array([175, 255, 255]))
+    return float(magenta.mean()) / 255.0 > 0.04
 
 
 class HandCalibrationMissing(NotImplementedError):

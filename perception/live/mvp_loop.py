@@ -657,6 +657,19 @@ def main() -> int:
                          "so this is the integration test the live path cannot "
                          "be: deterministic, repeatable, and runnable with no "
                          "emulator.")
+    ap.add_argument("--frames-fps", type=float, default=None,
+                    help="treat --frames as a CONSTANT-RATE dump at this fps "
+                         "(no manifest.json). Only correct for stills "
+                         "extracted from a CFR video.")
+    ap.add_argument("--hand", choices=("auto", "deck_pool", "crbab"),
+                    default="auto",
+                    help="hand classifier: 'deck_pool' requires a pool "
+                         "covering this deck and fails if absent; 'auto' "
+                         "falls back to crbab with a warning; 'crbab' forces "
+                         "the incumbent")
+    ap.add_argument("--hand-pool", type=Path,
+                    default=Path(__file__).resolve().parent.parent
+                    / "config" / "templates" / "deck_pool_hog26")
     args = ap.parse_args()
 
     if args.frames and args.act:
@@ -664,12 +677,67 @@ def main() -> int:
 
     print(f"{'ACTING - will place real cards' if args.act else 'DRY RUN - watching only'}")
     if args.frames:
-        from capture.frames import RecordingSource  # noqa: PLC0415
-        source = RecordingSource(args.frames)
-        print(f"replaying {source.frame_count} frames from {args.frames}")
+        if args.frames_fps:
+            # A CONSTANT-RATE DUMP, DECLARED AS ONE.
+            #
+            # RecordingSource carries real per-frame capture stamps and is the
+            # right source for tools/record_match.py output, which is
+            # variable-rate by nature. A directory extracted from a CFR video
+            # has no manifest and genuinely IS constant-rate, so synthesising
+            # timestamps at a stated rate is correct rather than a fiction --
+            # but it has to be STATED, because doing it silently to a real
+            # variable-rate recording would bake drift into the clock
+            # templates. Hence a flag and not a fallback.
+            from capture.frames import FrameDirSource  # noqa: PLC0415
+            source = FrameDirSource(args.frames, fps=args.frames_fps)
+            print(f"replaying {source.frame_count} stills from {args.frames} "
+                  f"at a synthesised {args.frames_fps} fps")
+        else:
+            from capture.frames import RecordingSource  # noqa: PLC0415
+            source = RecordingSource(args.frames)
+            print(f"replaying {source.frame_count} frames from {args.frames}")
     else:
         source = WindowSource(args.window)
     detector = Detector(DECK)
+
+    # SWAP IN THE DECK-RESTRICTED HAND CLASSIFIER, AT THE COMPOSITION ROOT.
+    #
+    # `Detector.run` calls `self.card_detector.run(image) -> (cards, ready)`,
+    # and `DeckHandDetector` answers with the same shape, so this one binding
+    # is the whole integration -- no fork of the vendored detector.
+    #
+    # Measured on assets/live/match_practice_01 (tools/bench_hand.py), over
+    # 120 blind-labelled slot crops sampled across ALL in-match slots:
+    # identity 90.0% -> 96.7%, and impossible cycle transitions 60.0% -> 5.3%.
+    #
+    # The second number is the one that matters, and the reason is NOT that
+    # the incumbent hallucinates on empty slots -- measured, both arms name a
+    # card on 0.0% of the 87 genuinely empty ones. It is stable within-deck
+    # confusion: the incumbent reads Musketeer correctly only 46.2% of the
+    # time, mostly as Mini P.E.K.K.A, and a card that is CONSISTENTLY wrong
+    # produces a hand history the 8-card FIFO says is impossible.
+    #
+    # The pool is deck-specific by construction, so a pool built for another
+    # deck CANNOT be used -- it would silently map every unseen card onto
+    # whichever of its eight it least mismatches. That case falls back to the
+    # incumbent and says so loudly rather than failing to start, because the
+    # incumbent still works; it is merely worse.
+    if args.hand != "crbab":
+        try:
+            from live.deck_hand import DeckHandDetector  # noqa: PLC0415
+            detector.card_detector = DeckHandDetector(list(DECK), args.hand_pool)
+            print(f"hand classifier: deck_pool ({args.hand_pool})")
+        except Exception as exc:  # noqa: BLE001
+            if args.hand == "deck_pool":
+                raise
+            print("*" * 70)
+            print("WARNING: falling back to the CRBAB hand classifier.")
+            print(f"  {exc}")
+            print("  Identity will be materially worse -- see tools/bench_hand.py.")
+            print("*" * 70)
+    else:
+        print("hand classifier: crbab (incumbent)")
+
     # Recorded in the run's own output: a timing log that does not say which
     # execution provider produced it cannot be compared against another.
     print(f"execution provider: "

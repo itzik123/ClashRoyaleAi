@@ -1,0 +1,34 @@
+{
+  "25": {
+    "file": "card_25.png",
+    "name": "Cannon"
+  },
+  "7": {
+    "file": "card_7.png",
+    "name": "Fireball"
+  },
+  "15": {
+    "file": "card_15.png",
+    "name": "Hog Rider"
+  },
+  "40": {
+    "file": "card_40.png",
+    "name": "Ice Golem"
+  },
+  "72": {
+    "file": "card_72.png",
+    "name": "Ice Spirit"
+  },
+  "6": {
+    "file": "card_6.png",
+    "name": "Musketeer"
+  },
+  "24": {
+    "file": "card_24.png",
+    "name": "Skeletons"
+  },
+  "33": {
+    "file": "card_33.png",
+    "name": "The Log"
+  }
+}

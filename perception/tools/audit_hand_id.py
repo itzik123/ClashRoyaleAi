@@ -60,7 +60,14 @@ DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
 
 # A real hand holds this long between plays (readers/hand.py, measured over a
-# 326 s recording). Used only to express churn as a multiple.
+# 326 s recording of the GIANT deck). Used only to express churn as a multiple.
+#
+# IT IS DECK-SPECIFIC AND MUST NOT BE APPLIED ACROSS DECKS. The 2.6 Hog Cycle
+# averages 2.625 elixir a card against the Giant deck's 4.1, so it turns its
+# hand over roughly twice as fast by design, and scoring it against 9.3 s
+# reports a correct reading as "churning 2.3x too fast". Pass
+# `real_hold_seconds=None` for a deck with no measured figure: the churn
+# multiple is then omitted rather than computed against the wrong constant.
 REAL_HOLD_SECONDS = 9.3
 
 
@@ -100,10 +107,17 @@ def collapse_blanks(readings):
     return out
 
 
-def audit(readings: list[tuple[str, tuple[str, ...]]], fps: float) -> dict:
-    """Score a stream of 4-card hand readings against the three invariants."""
+def audit(readings: list[tuple[str, tuple[str, ...]]], fps: float,
+          deck=None, real_hold_seconds: float | None = REAL_HOLD_SECONDS) -> dict:
+    """Score a stream of 4-card hand readings against the three invariants.
+
+    `deck` defaults to this module's DECK, which is the GIANT recording's.
+    Passing the wrong one makes the off-deck count meaningless in the loudest
+    possible way -- every card in the hand is "off-deck" and the rate reads
+    100.0% for every arm, which is what it did before this parameter existed.
+    """
     readings = collapse_blanks(readings)
-    deck_names = {c.name for c in DECK}
+    deck_names = {c.name for c in (deck if deck is not None else DECK)}
 
     off_deck = 0
     duplicates = 0
@@ -175,7 +189,9 @@ def audit(readings: list[tuple[str, tuple[str, ...]]], fps: float) -> dict:
         "changes": changes,
         "distinct_hands": len({h for _n, h in readings}),
         "median_run_s": median_run_s,
-        "churn_multiple": (REAL_HOLD_SECONDS / median_run_s) if median_run_s else float("inf"),
+        "real_hold_s": real_hold_seconds,
+        "churn_multiple": ((real_hold_seconds / median_run_s)
+                           if (real_hold_seconds and median_run_s) else None),
         "early_returns": early_returns,
         "checked_returns": checked_returns,
     }
@@ -189,9 +205,13 @@ def report(title: str, stats: dict) -> None:
     print(f"  duplicate cards        {stats['duplicates']:>5}  ({100*stats['duplicates']/n:.1f}%)")
     print(f"  distinct hands read    {stats['distinct_hands']:>5}")
     print(f"  hand changes           {stats['changes']:>5}")
-    print(f"  median unchanged run   {stats['median_run_s']:.2f} s"
-          f"   (a real hand holds ~{REAL_HOLD_SECONDS} s"
-          f" -> churning {stats['churn_multiple']:.1f}x too fast)")
+    if stats.get("churn_multiple"):
+        print(f"  median unchanged run   {stats['median_run_s']:.2f} s"
+              f"   (a real hand holds ~{stats['real_hold_s']} s"
+              f" -> churning {stats['churn_multiple']:.1f}x too fast)")
+    else:
+        print(f"  median unchanged run   {stats['median_run_s']:.2f} s"
+              f"   (no measured hold time for this deck -- compare the arms)")
     if stats["checked_returns"]:
         pct = 100 * stats["early_returns"] / stats["checked_returns"]
         print(f"  IMPOSSIBLE early returns {stats['early_returns']:>3}"

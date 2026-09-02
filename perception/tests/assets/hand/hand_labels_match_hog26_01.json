@@ -1,0 +1,1203 @@
+[
+  {
+    "frame": 398,
+    "slot": 4,
+    "badge": true,
+    "colour": 15.55,
+    "truth": "skeletons",
+    "id": 0,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 306,
+    "slot": 4,
+    "badge": true,
+    "colour": 16.86,
+    "truth": "skeletons",
+    "id": 1,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 85,
+    "slot": 2,
+    "badge": false,
+    "colour": 52.69,
+    "truth": "blank",
+    "id": 2,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 97,
+    "slot": 1,
+    "badge": true,
+    "colour": 15.33,
+    "truth": "cannon",
+    "id": 3,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 285,
+    "slot": 3,
+    "badge": false,
+    "colour": 1.05,
+    "truth": "musketeer",
+    "id": 4,
+    "dimmed": true,
+    "empty": false,
+    "corrected_from": "hog_rider"
+  },
+  {
+    "frame": 91,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.77,
+    "truth": "cannon",
+    "id": 5,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 133,
+    "slot": 4,
+    "badge": true,
+    "colour": 18.92,
+    "truth": "the_log",
+    "id": 6,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 273,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.14,
+    "truth": "the_log",
+    "id": 7,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 57,
+    "slot": 1,
+    "badge": false,
+    "colour": 52.99,
+    "truth": "blank",
+    "id": 8,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 394,
+    "slot": 4,
+    "badge": false,
+    "colour": 52.81,
+    "truth": "blank",
+    "id": 9,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 58,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.26,
+    "truth": "the_log",
+    "id": 10,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 70,
+    "slot": 3,
+    "badge": true,
+    "colour": 20.76,
+    "truth": "hog_rider",
+    "id": 11,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 172,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.46,
+    "truth": "the_log",
+    "id": 12,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 79,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.81,
+    "truth": "cannon",
+    "id": 13,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 315,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.2,
+    "truth": "hog_rider",
+    "id": 14,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 352,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.22,
+    "truth": "hog_rider",
+    "id": 15,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 378,
+    "slot": 3,
+    "badge": true,
+    "colour": 22.8,
+    "truth": "musketeer",
+    "id": 16,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 255,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.21,
+    "truth": "hog_rider",
+    "id": 17,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 67,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.77,
+    "truth": "cannon",
+    "id": 18,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 375,
+    "slot": 1,
+    "badge": true,
+    "colour": 20.96,
+    "truth": "hog_rider",
+    "id": 19,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 214,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.81,
+    "truth": "fireball",
+    "id": 20,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 313,
+    "slot": 3,
+    "badge": false,
+    "colour": 0.83,
+    "truth": "musketeer",
+    "id": 21,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 425,
+    "slot": 4,
+    "badge": false,
+    "colour": 2.05,
+    "truth": "fireball",
+    "id": 22,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 169,
+    "slot": 2,
+    "badge": true,
+    "colour": 20.68,
+    "truth": "musketeer",
+    "id": 23,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 156,
+    "slot": 2,
+    "badge": true,
+    "colour": 21.24,
+    "truth": "musketeer",
+    "id": 24,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 324,
+    "slot": 3,
+    "badge": false,
+    "colour": 0.91,
+    "truth": "musketeer",
+    "id": 25,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 75,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.81,
+    "truth": "cannon",
+    "id": 26,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 154,
+    "slot": 2,
+    "badge": false,
+    "colour": 1.95,
+    "truth": "musketeer",
+    "id": 27,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 272,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.38,
+    "truth": "fireball",
+    "id": 28,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 304,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.6,
+    "truth": "hog_rider",
+    "id": 29,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 95,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.77,
+    "truth": "cannon",
+    "id": 30,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 103,
+    "slot": 2,
+    "badge": true,
+    "colour": 47.18,
+    "truth": "fireball",
+    "id": 31,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 184,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.82,
+    "truth": "ice_spirit",
+    "id": 32,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 280,
+    "slot": 4,
+    "badge": false,
+    "colour": 52.85,
+    "truth": "blank",
+    "id": 33,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 142,
+    "slot": 3,
+    "badge": true,
+    "colour": 16.72,
+    "truth": "skeletons",
+    "id": 34,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 389,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.26,
+    "truth": "hog_rider",
+    "id": 35,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 263,
+    "slot": 4,
+    "badge": false,
+    "colour": 1.91,
+    "truth": "the_log",
+    "id": 36,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 359,
+    "slot": 2,
+    "badge": true,
+    "colour": 18.98,
+    "truth": "the_log",
+    "id": 37,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 225,
+    "slot": 4,
+    "badge": true,
+    "colour": 16.69,
+    "truth": "skeletons",
+    "id": 38,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 303,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.58,
+    "truth": "fireball",
+    "id": 39,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 326,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.22,
+    "truth": "hog_rider",
+    "id": 40,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 179,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.82,
+    "truth": "ice_spirit",
+    "id": 41,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 114,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.48,
+    "truth": "the_log",
+    "id": 42,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 207,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.82,
+    "truth": "hog_rider",
+    "id": 43,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 140,
+    "slot": 3,
+    "badge": true,
+    "colour": 15.45,
+    "truth": "skeletons",
+    "id": 44,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 397,
+    "slot": 2,
+    "badge": true,
+    "colour": 19.14,
+    "truth": "the_log",
+    "id": 45,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 233,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.23,
+    "truth": "hog_rider",
+    "id": 46,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 124,
+    "slot": 3,
+    "badge": true,
+    "colour": 31.96,
+    "truth": "ice_golem",
+    "id": 47,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 155,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.44,
+    "truth": "ice_spirit",
+    "id": 48,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 136,
+    "slot": 3,
+    "badge": true,
+    "colour": 15.7,
+    "truth": "skeletons",
+    "id": 49,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 363,
+    "slot": 4,
+    "badge": false,
+    "colour": 0.7,
+    "truth": "cannon",
+    "id": 50,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 387,
+    "slot": 3,
+    "badge": true,
+    "colour": 31.69,
+    "truth": "ice_golem",
+    "id": 51,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 321,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.36,
+    "truth": "fireball",
+    "id": 52,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 419,
+    "slot": 2,
+    "badge": true,
+    "colour": 20.98,
+    "truth": "the_log",
+    "id": 53,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 267,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.34,
+    "truth": "fireball",
+    "id": 54,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 406,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.34,
+    "truth": "hog_rider",
+    "id": 55,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 330,
+    "slot": 4,
+    "badge": false,
+    "colour": 1.3,
+    "truth": "cannon",
+    "id": 56,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 264,
+    "slot": 3,
+    "badge": false,
+    "colour": 0.86,
+    "truth": "musketeer",
+    "id": 57,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 393,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.5,
+    "truth": "hog_rider",
+    "id": 58,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 281,
+    "slot": 3,
+    "badge": false,
+    "colour": 1.0,
+    "truth": "musketeer",
+    "id": 59,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 390,
+    "slot": 4,
+    "badge": true,
+    "colour": 17.52,
+    "truth": "cannon",
+    "id": 60,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 200,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.83,
+    "truth": "ice_spirit",
+    "id": 61,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 88,
+    "slot": 3,
+    "badge": true,
+    "colour": 20.73,
+    "truth": "hog_rider",
+    "id": 62,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 143,
+    "slot": 2,
+    "badge": false,
+    "colour": 1.03,
+    "truth": "musketeer",
+    "id": 63,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 178,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.82,
+    "truth": "ice_spirit",
+    "id": 64,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 205,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.81,
+    "truth": "ice_spirit",
+    "id": 65,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 366,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.24,
+    "truth": "hog_rider",
+    "id": 66,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 300,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.54,
+    "truth": "hog_rider",
+    "id": 67,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 50,
+    "slot": 1,
+    "badge": true,
+    "colour": 22.55,
+    "truth": "musketeer",
+    "id": 68,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 245,
+    "slot": 3,
+    "badge": false,
+    "colour": 27.19,
+    "truth": "blank",
+    "id": 69,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 379,
+    "slot": 3,
+    "badge": false,
+    "colour": 52.62,
+    "truth": "blank",
+    "id": 70,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 212,
+    "slot": 4,
+    "badge": false,
+    "colour": 1.12,
+    "truth": "ice_golem",
+    "id": 71,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 346,
+    "slot": 4,
+    "badge": false,
+    "colour": 1.21,
+    "truth": "cannon",
+    "id": 72,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 69,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.75,
+    "truth": "cannon",
+    "id": 73,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 73,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.42,
+    "truth": "the_log",
+    "id": 74,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 213,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.76,
+    "truth": "fireball",
+    "id": 75,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 351,
+    "slot": 3,
+    "badge": false,
+    "colour": 1.38,
+    "truth": "musketeer",
+    "id": 76,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 368,
+    "slot": 4,
+    "badge": true,
+    "colour": 14.4,
+    "truth": "cannon",
+    "id": 77,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 186,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.82,
+    "truth": "ice_spirit",
+    "id": 78,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 336,
+    "slot": 2,
+    "badge": false,
+    "colour": 2.25,
+    "truth": "fireball",
+    "id": 79,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 257,
+    "slot": 3,
+    "badge": false,
+    "colour": 0.54,
+    "truth": "musketeer",
+    "id": 80,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 360,
+    "slot": 4,
+    "badge": false,
+    "colour": 0.73,
+    "truth": "cannon",
+    "id": 81,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 358,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.17,
+    "truth": "hog_rider",
+    "id": 82,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 284,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.23,
+    "truth": "hog_rider",
+    "id": 83,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 237,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.62,
+    "truth": "fireball",
+    "id": 84,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 322,
+    "slot": 4,
+    "badge": false,
+    "colour": 52.82,
+    "truth": "blank",
+    "id": 85,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 355,
+    "slot": 3,
+    "badge": false,
+    "colour": 1.49,
+    "truth": "musketeer",
+    "id": 86,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 52,
+    "slot": 2,
+    "badge": true,
+    "colour": 15.68,
+    "truth": "skeletons",
+    "id": 87,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 106,
+    "slot": 2,
+    "badge": true,
+    "colour": 47.62,
+    "truth": "fireball",
+    "id": 88,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 93,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.42,
+    "truth": "the_log",
+    "id": 89,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 158,
+    "slot": 3,
+    "badge": true,
+    "colour": 37.44,
+    "truth": "ice_spirit",
+    "id": 90,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 271,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.19,
+    "truth": "hog_rider",
+    "id": 91,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 327,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.38,
+    "truth": "fireball",
+    "id": 92,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 81,
+    "slot": 3,
+    "badge": true,
+    "colour": 21.08,
+    "truth": "hog_rider",
+    "id": 93,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 376,
+    "slot": 1,
+    "badge": true,
+    "colour": 20.58,
+    "truth": "hog_rider",
+    "id": 94,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 391,
+    "slot": 2,
+    "badge": true,
+    "colour": 18.8,
+    "truth": "the_log",
+    "id": 95,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 277,
+    "slot": 4,
+    "badge": false,
+    "colour": 52.83,
+    "truth": "blank",
+    "id": 96,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 250,
+    "slot": 4,
+    "badge": false,
+    "colour": 4.92,
+    "truth": "cannon",
+    "id": 97,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 328,
+    "slot": 3,
+    "badge": false,
+    "colour": 0.91,
+    "truth": "musketeer",
+    "id": 98,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 145,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.8,
+    "truth": "the_log",
+    "id": 99,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 354,
+    "slot": 2,
+    "badge": false,
+    "colour": 2.1,
+    "truth": "the_log",
+    "id": 100,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 77,
+    "slot": 3,
+    "badge": true,
+    "colour": 20.74,
+    "truth": "hog_rider",
+    "id": 101,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 369,
+    "slot": 3,
+    "badge": false,
+    "colour": 2.34,
+    "truth": "musketeer",
+    "id": 102,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 353,
+    "slot": 2,
+    "badge": false,
+    "colour": 2.13,
+    "truth": "the_log",
+    "id": 103,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 344,
+    "slot": 2,
+    "badge": false,
+    "colour": 52.74,
+    "truth": "blank",
+    "id": 104,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 176,
+    "slot": 1,
+    "badge": true,
+    "colour": 15.86,
+    "truth": "cannon",
+    "id": 105,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 335,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.84,
+    "truth": "hog_rider",
+    "id": 106,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 289,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.26,
+    "truth": "fireball",
+    "id": 107,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 228,
+    "slot": 1,
+    "badge": false,
+    "colour": 0.24,
+    "truth": "hog_rider",
+    "id": 108,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 149,
+    "slot": 4,
+    "badge": true,
+    "colour": 19.32,
+    "truth": "the_log",
+    "id": 109,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 427,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.81,
+    "truth": "hog_rider",
+    "id": 110,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 231,
+    "slot": 4,
+    "badge": false,
+    "colour": 52.67,
+    "truth": "blank",
+    "id": 111,
+    "dimmed": false,
+    "empty": true
+  },
+  {
+    "frame": 274,
+    "slot": 2,
+    "badge": false,
+    "colour": 0.42,
+    "truth": "fireball",
+    "id": 112,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 146,
+    "slot": 2,
+    "badge": true,
+    "colour": 20.86,
+    "truth": "musketeer",
+    "id": 113,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 408,
+    "slot": 2,
+    "badge": true,
+    "colour": 19.5,
+    "truth": "the_log",
+    "id": 114,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 211,
+    "slot": 1,
+    "badge": false,
+    "colour": 1.86,
+    "truth": "hog_rider",
+    "id": 115,
+    "dimmed": true,
+    "empty": false
+  },
+  {
+    "frame": 71,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.75,
+    "truth": "cannon",
+    "id": 116,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 301,
+    "slot": 4,
+    "badge": true,
+    "colour": 15.5,
+    "truth": "skeletons",
+    "id": 117,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 165,
+    "slot": 1,
+    "badge": true,
+    "colour": 14.85,
+    "truth": "cannon",
+    "id": 118,
+    "dimmed": false,
+    "empty": false
+  },
+  {
+    "frame": 287,
+    "slot": 4,
+    "badge": false,
+    "colour": 2.7,
+    "truth": "ice_golem",
+    "id": 119,
+    "dimmed": true,
+    "empty": false
+  }
+]

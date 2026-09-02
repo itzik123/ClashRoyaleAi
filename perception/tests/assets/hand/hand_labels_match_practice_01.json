@@ -1,0 +1,965 @@
+[
+ {
+  "frame": 1751,
+  "slot": 2,
+  "truth": "minions",
+  "id": 0,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 930,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 1,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1532,
+  "slot": 1,
+  "truth": "giant",
+  "id": 2,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1421,
+  "slot": 2,
+  "truth": "minions",
+  "id": 3,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 430,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 4,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 523,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 5,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 2044,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 6,
+  "dimmed": false,
+  "empty": false,
+  "corrected_from": "minions"
+ },
+ {
+  "frame": 836,
+  "slot": 2,
+  "truth": "minions",
+  "id": 7,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1677,
+  "slot": 1,
+  "truth": "giant",
+  "id": 8,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1336,
+  "slot": 1,
+  "truth": "giant",
+  "id": 9,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 830,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 10,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1635,
+  "slot": 2,
+  "truth": "minions",
+  "id": 11,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 666,
+  "slot": 2,
+  "truth": "blank",
+  "id": 12,
+  "dimmed": false,
+  "empty": true
+ },
+ {
+  "frame": 584,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 13,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1067,
+  "slot": 2,
+  "truth": "minions",
+  "id": 14,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 835,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 15,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1050,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 16,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 629,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 17,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 379,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 18,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 766,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 19,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 2015,
+  "slot": 2,
+  "truth": "minions",
+  "id": 20,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 771,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 21,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1084,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 22,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 623,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 23,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1086,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 24,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 956,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 25,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 633,
+  "slot": 2,
+  "truth": "minipekka",
+  "id": 26,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1799,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 27,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 920,
+  "slot": 2,
+  "truth": "minions",
+  "id": 28,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1558,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 29,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 304,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 30,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1442,
+  "slot": 2,
+  "truth": "minions",
+  "id": 31,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 467,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 32,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1494,
+  "slot": 2,
+  "truth": "minions",
+  "id": 33,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1575,
+  "slot": 2,
+  "truth": "minions",
+  "id": 34,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1630,
+  "slot": 3,
+  "truth": "cannon",
+  "id": 35,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1016,
+  "slot": 2,
+  "truth": "minions",
+  "id": 36,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1994,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 37,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 644,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 38,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 220,
+  "slot": 2,
+  "truth": "archers",
+  "id": 39,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1342,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 40,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1477,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 41,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 900,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 42,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 591,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 43,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 967,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 44,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1571,
+  "slot": 2,
+  "truth": "minions",
+  "id": 45,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 214,
+  "slot": 4,
+  "truth": "blank",
+  "id": 46,
+  "dimmed": false,
+  "empty": true
+ },
+ {
+  "frame": 514,
+  "slot": 2,
+  "truth": "giant",
+  "id": 47,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1526,
+  "slot": 3,
+  "truth": "archers",
+  "id": 48,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1272,
+  "slot": 2,
+  "truth": "archers",
+  "id": 49,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1276,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 50,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1821,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 51,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1881,
+  "slot": 2,
+  "truth": "minions",
+  "id": 52,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1318,
+  "slot": 1,
+  "truth": "giant",
+  "id": 53,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 380,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 54,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 330,
+  "slot": 2,
+  "truth": "giant",
+  "id": 55,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 736,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 56,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1204,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 57,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1672,
+  "slot": 2,
+  "truth": "minions",
+  "id": 58,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1568,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 59,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 953,
+  "slot": 2,
+  "truth": "minions",
+  "id": 60,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1450,
+  "slot": 1,
+  "truth": "giant",
+  "id": 61,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1064,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 62,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 234,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 63,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1158,
+  "slot": 1,
+  "truth": "giant",
+  "id": 64,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1710,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 65,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1323,
+  "slot": 4,
+  "truth": "blank",
+  "id": 66,
+  "dimmed": false,
+  "empty": true
+ },
+ {
+  "frame": 1671,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 67,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 554,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 68,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 693,
+  "slot": 2,
+  "truth": "minions",
+  "id": 69,
+  "dimmed": true,
+  "empty": false,
+  "corrected_from": "giant"
+ },
+ {
+  "frame": 1744,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 70,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1229,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 71,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 362,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 72,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 275,
+  "slot": 3,
+  "truth": "minions",
+  "id": 73,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 238,
+  "slot": 3,
+  "truth": "minipekka",
+  "id": 74,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1513,
+  "slot": 1,
+  "truth": "giant",
+  "id": 75,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 420,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 76,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 741,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 77,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1767,
+  "slot": 1,
+  "truth": "giant",
+  "id": 78,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1361,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 79,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1761,
+  "slot": 3,
+  "truth": "minipekka",
+  "id": 80,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1169,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 81,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 263,
+  "slot": 3,
+  "truth": "minions",
+  "id": 82,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 313,
+  "slot": 2,
+  "truth": "giant",
+  "id": 83,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 403,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 84,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1516,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 85,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1716,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 86,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 2051,
+  "slot": 2,
+  "truth": "minions",
+  "id": 87,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 848,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 88,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 779,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 89,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1384,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 90,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1894,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 91,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 296,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 92,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 916,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 93,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1737,
+  "slot": 3,
+  "truth": "minipekka",
+  "id": 94,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 803,
+  "slot": 2,
+  "truth": "minions",
+  "id": 95,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1769,
+  "slot": 1,
+  "truth": "giant",
+  "id": 96,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1151,
+  "slot": 1,
+  "truth": "giant",
+  "id": 97,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1423,
+  "slot": 2,
+  "truth": "minions",
+  "id": 98,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1069,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 99,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1666,
+  "slot": 1,
+  "truth": "giant",
+  "id": 100,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1845,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 101,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1559,
+  "slot": 3,
+  "truth": "blank",
+  "id": 102,
+  "dimmed": false,
+  "empty": true
+ },
+ {
+  "frame": 1066,
+  "slot": 2,
+  "truth": "minions",
+  "id": 103,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1519,
+  "slot": 3,
+  "truth": "archers",
+  "id": 104,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1152,
+  "slot": 2,
+  "truth": "minions",
+  "id": 105,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 2011,
+  "slot": 1,
+  "truth": "cannon",
+  "id": 106,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 335,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 107,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 397,
+  "slot": 2,
+  "truth": "giant",
+  "id": 108,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1680,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 109,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 2008,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 110,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 876,
+  "slot": 1,
+  "truth": "fireball",
+  "id": 111,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 458,
+  "slot": 3,
+  "truth": "musketeer",
+  "id": 112,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 1291,
+  "slot": 1,
+  "truth": "giant",
+  "id": 113,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 292,
+  "slot": 2,
+  "truth": "giant",
+  "id": 114,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 1398,
+  "slot": 4,
+  "truth": "fireball",
+  "id": 115,
+  "dimmed": true,
+  "empty": false
+ },
+ {
+  "frame": 854,
+  "slot": 3,
+  "truth": "blank",
+  "id": 116,
+  "dimmed": false,
+  "empty": true
+ },
+ {
+  "frame": 1409,
+  "slot": 2,
+  "truth": "minions",
+  "id": 117,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 321,
+  "slot": 4,
+  "truth": "cannon",
+  "id": 118,
+  "dimmed": false,
+  "empty": false
+ },
+ {
+  "frame": 308,
+  "slot": 3,
+  "truth": "valkyrie",
+  "id": 119,
+  "dimmed": true,
+  "empty": false,
+  "corrected_from": "musketeer"
+ }
+]

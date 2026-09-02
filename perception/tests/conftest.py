@@ -58,7 +58,11 @@ def replay_path():
     files to one mid-session, which would make these tests pass or fail
     depending on timing.
     """
-    paths = sorted(ASSETS.glob("*.json"))
+    # `replay_*.json`, not `*.json`: this directory also holds ground-truth
+    # label sets, and a labels file sorting ahead of the replay silently
+    # became paths[0] and failed three tests inside Replay.__init__ with
+    # "list indices must be integers", which reads like a corrupt replay.
+    paths = sorted(ASSETS.glob("replay_*.json"))
     if not paths:
         pytest.skip(f"no replay fixture in {ASSETS}")
     return paths[0]

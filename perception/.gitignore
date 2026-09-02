@@ -39,6 +39,27 @@ config/templates/*
 # 4.6 KB for the set. Rebuild with tools/build_tower_digit_templates.py.
 !config/templates/tower_549x976/
 
+# ...and the restricted deck pool, for the SAME two reasons.
+#
+#   It is cut from assets/live/, which is ignored twenty lines up, so nobody
+#   but this machine can rebuild it.
+#
+#   tests/test_deck_hand.py asserts real readings against it -- identity for a
+#   clean, a dimmed and a LIFTED card, and `blank` for an empty slot. Without
+#   the files those tests SKIP rather than fail.
+#
+# 69 KB: eight 48x40 medians plus icons.json. The clusters.png montage is NOT
+# kept -- it is a labelling aid, regenerable with --cluster.
+#
+# NOTE A POOL IS DECK-SPECIFIC, hence one directory per deck:
+#   deck_pool_hog26  gym_wrapper.DEFAULT_DECK, the 2.6 Hog Cycle -- what
+#                    the live loop loads.
+#   deck_pool_giant  the July recordings' deck, which tests/ and the
+#                    match_practice_01 benchmark score against.
+# DeckHandDetector refuses a pool that does not cover the deck it is given
+# rather than mismapping it onto the nearest template.
+!config/templates/deck_pool_*/
+
 # Generated reports.
 out/
 *.divergence.json
