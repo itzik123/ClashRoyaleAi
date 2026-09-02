@@ -133,11 +133,40 @@ _EPS = 1e-9
 #: play just spends elixir on placements that do not work. The card head was
 #: not broken -- it was correctly pricing a broken placement head.
 #:
-#: THE ORDER IS WRONG, NOT THE MECHANISM. Fix what makes those cards worth
-#: playing (scenario injection creating the states, and a placement head that
-#: can exploit them), and the policy gradient should revive the cards on its
-#: own. Re-enable this only to accelerate a revival that is already happening,
-#: and re-measure WIN RATE when you do -- never the deck metric alone.
+#: THREAT-GATING DOES NOT RESCUE IT EITHER. The obvious repair was to fire the
+#: term only where a defence is called for. Built, wired, and measured:
+#:
+#:     UNGATED coef 0.20   win 0.620 -> 0.120
+#:     GATED   coef 0.20   win 0.600 -> 0.140     <- no better
+#:     GATED   coef 0.60   win 0.610 -> 0.350     <- non-monotone, i.e. noise
+#:
+#: And the gate verifiably gated: measured over 977 real decision rows it is
+#: open on 29.4% of them (94.4% inside scenarios, 26.9% outside, median threat
+#: 0 HP). So the term was restricted to under a third of rows and cost the same.
+#: The harm is not "playing these cards on quiet boards". It is playing them.
+#:
+#: WHY, AND IT CORRECTS AN EARLIER MEASUREMENT IN THIS FILE'S OWN HISTORY. The
+#: "+841 HP at the policy's own cell" figure that motivated the gate was GROSS:
+#: it used `inject`, which bypasses the elixir cost. Re-measured through
+#: `env.step`, which actually charges the 3 elixir, in threatened states with
+#: the Cannon in hand AND affordable -- the best case this card ever gets:
+#:
+#:     policy's own action        5241 HP conceded
+#:     forced Cannon at its cell  5056 HP conceded
+#:     -> +185 HP net, better in 6 of 14 states
+#:
+#: A coin flip. The card is not worth its elixir at this placement skill, so
+#: every mechanism that raises P(play) is buying a near-zero-value action with
+#: a real cost, and no conditioning fixes that. The other two cards are worse:
+#: Fireball costs 4 and its head is more diffuse than the Cannon's.
+#:
+#: THE CONSTRAINT IS THE PLACEMENT HEAD, WHICH IS WHERE THE ORIGINAL AUTOPSY
+#: PUT IT. The card head was never broken -- it was correctly pricing a broken
+#: placement head, and three independent attempts to overrule it (ungated,
+#: gated, and a live launch) all cost win rate. Fix P(good cell | card) first;
+#: the measured-positive tools for that are decision-time search (+0.319) and
+#: expert iteration (+0.045). Only then does raising P(play card) buy anything,
+#: and even then re-measure WIN RATE first -- never the deck metric alone.
 DECK_COVERAGE_COEF = float(os.environ.get("CLASH_DECK_COVERAGE_COEF", 0.0))
 
 
