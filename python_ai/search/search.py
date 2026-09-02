@@ -24,10 +24,13 @@ boundaries, from a script whose `main()` runs a whole experiment. The functions
 are the reusable half and now live here under public names; the harness kept
 its argparse.
 """
+import os
+
 import numpy as np
 import torch
 
 import clash_royale_env
+from python_ai.engine_constants import BOARD_H, BOARD_W
 from python_ai.models.policy_io import LSTM_HIDDEN
 from python_ai.rewards.weights import DRAW_PENALTY
 
@@ -62,6 +65,65 @@ def greedy_from_logits(net, obs_t, card_logits, card_embeds, spatial_map, hidden
     cell = place_logits.argmax(dim=-1)
     x_t, y_t = net.cell_to_xy(cell)
     return int(card_idx_t.item()), float(x_t.item()), float(y_t.item()), place_logits
+
+
+#: Placement top-1 probability below which a card's head is treated as having
+#: nothing useful for search to RANK, so the proposals are widened instead.
+#:
+#: MEASURED SITING, not chosen. Mean top-1 per deck card on the ep-32,484
+#: policy: Hog 0.7654, Musketeer 0.3939, Skeletons 0.3527 | Ice Golem 0.1259,
+#: Fireball 0.1074, Ice Spirit 0.0987, Cannon 0.0970, The Log 0.0288. The
+#: largest gap inside the diffuse region is 0.227, and 0.25 sits in it -- 1.4x
+#: below Skeletons and 2.0x above Ice Golem.
+#:
+#: NOT A DEAD-CARD DETECTOR. Ice Golem and Ice Spirit are two of the most-played
+#: cards in the deck and their heads are as flat as the Cannon's, because for a
+#: cheap cycle card placement genuinely matters less. This selects "search has
+#: nothing useful to rank here", which is the question search needs answered.
+#: Widening a card whose placement does not matter costs compute, not accuracy.
+WIDE_PROPOSAL_TOP1 = float(os.environ.get("CLASH_WIDE_PROPOSAL_TOP1", 0.25))
+
+#: Board stride for the widened sweep. (2, 2) reproduces the grid the measured
+#: arm used -- ~56 cells before the legality filter, against k_cells=2.
+WIDE_PROPOSAL_STRIDE = (2, 2)
+
+
+def propose_cells(place_logits, k_cells,
+                  top1=None, stride=WIDE_PROPOSAL_STRIDE):
+    """Cell indices for one card: the head's top-k, or a spread if it is flat.
+
+    `place_logits` is one row, already -inf on illegal cells.
+
+    A SHARP head is left exactly as it was -- search ranking its own top-k is
+    the right operation and the Hog measures 0.7654 top-1. A DIFFUSE head's
+    top-k is near-arbitrary, and search over it gained +58 tower HP against the
+    raw argmax while a wide sweep gained +994 (81% of the engine oracle). So the
+    widened set is drawn by BOARD POSITION, not by probability: drawing more
+    cells from a flat distribution just yields more of the same noise.
+    """
+    top1 = WIDE_PROPOSAL_TOP1 if top1 is None else top1
+    legal = torch.isfinite(place_logits)
+    if not bool(legal.any()):
+        return []
+
+    probs = torch.softmax(place_logits, dim=-1)
+    if float(probs.max()) >= top1:
+        return [int(c) for c in torch.topk(place_logits, k_cells).indices
+                if torch.isfinite(place_logits[int(c)])]
+
+    sx, sy = stride
+    out = []
+    for y in range(0, BOARD_H, sy):
+        for x in range(0, BOARD_W, sx):
+            idx = y * BOARD_W + x
+            if idx < place_logits.numel() and bool(legal[idx]):
+                out.append(idx)
+    # The argmax always survives: search must never be able to do WORSE than
+    # the head it is helping, which is the same reason greedy is candidate 0.
+    best = int(torch.topk(place_logits, 1).indices[0])
+    if best not in out and bool(legal[best]):
+        out.append(best)
+    return out
 
 
 @torch.no_grad()
@@ -117,8 +179,11 @@ def build_candidates(net, obs_t, card_logits, card_embeds, spatial_map, hidden_n
         c_t = c.view(1)
         place_logits = net.placement_given_card(hidden_next[0], card_embeds, c_t, obs_t,
                                                 spatial_map, hires_map=hires_map)
-        top_cells = torch.topk(place_logits[0], k_cells).indices
+        # Widened where the head is flat -- see propose_cells. Illegal cells
+        # are already filtered there, so the guard below is now belt-and-braces.
+        top_cells = propose_cells(place_logits[0], k_cells)
         for cell in top_cells:
+            cell = torch.tensor(cell)
             if not torch.isfinite(place_logits[0, cell]):
                 continue  # masked: illegal placement for this card class
             x_t, y_t = net.cell_to_xy(cell.view(1))
