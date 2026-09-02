@@ -1,8 +1,9 @@
 # The human placement prior
 
-**Status:** Phases A, B and C complete. Phase D (the A/B) specified and not yet run.
-The prior ships **OFF** (`CLASH_HUMAN_PRIOR_COEF=0`), so nothing in the training
-path behaves differently until the A/B is deliberately started.
+**Status:** Phases A–D complete. **The A/B is NEGATIVE — the prior makes the
+policy measurably worse: −0.0725 win rate, 95% CI [−0.1125, −0.0325],
+p = 0.00066.** It stays OFF (`CLASH_HUMAN_PRIOR_COEF=0`, the default it already
+shipped with), so no rollback was needed. Read Phase D before enabling it.
 
 ## Why this exists
 
@@ -203,13 +204,96 @@ per-card **modal share**.
   so the draw is uniform among them again — correct, since the starvation
   argument no longer distinguishes them.
 
-## Phase D — measurement (specified)
+## Phase D — measured, and NEGATIVE
 
-1. `tools/validate_pipeline.py` 20/20; side null at 0.50.
-2. Per-card **modal share**, not `ByCard_Min` — CLAUDE.md is explicit that
-   entropy flags the healthiest card and clears the dead ones.
-3. Paired win-rate A/B via `eval/stats.py`, **n >= 800**; the control arm's own
-   variance is +/-0.06.
+Two arms resumed from the same checkpoint (ep 32,484, stage 3, phase mirror —
+the one the deck-coverage work measured its dead cards on), bit-identical by
+md5, isolated via absolute `CLASH_WEIGHTS`, 75 minutes each, differing only in
+`CLASH_HUMAN_PRIOR_COEF`.
+
+### D0 — pre-flight, 22/22 PASS
+
+Side null 0.510 over 300 episodes (z = +0.35). C++ suite 701 cases, one
+failed-as-expected, exit 0.
+
+It caught a real defect in this work. `the gate declines on an empty board`
+iterates ADVISOR_CARDS and calls `target_logits_for`, which now falls through to
+the prior when a rule declines — so all 40 quiet states spoke and the check
+failed. The invariant won: `logits_for` takes `obs` and declines on a quiet
+board. Re-measured with the prior ON, all four advisor checks pass and coverage
+on visited states rises 45.6% → 54.6%.
+
+### D2 — the mechanism works, and is correctly aimed
+
+| card | ΔH(place\|card) | ΔKL(policy‖prior) |
+|---|---|---|
+| Musketeer | +0.117 | **−0.800** |
+| Ice Golem | +0.184 | **−0.548** |
+| Ice Spirit | +0.192 | **−0.396** |
+| Skeletons | +0.194 | **−0.381** |
+| The Log | +0.143 | +0.152 |
+| Cannon *(ruled)* | +0.054 | +0.030 |
+| Hog *(ruled)* | +0.031 | −0.159 |
+| Fireball *(ruled)* | −0.023 | +0.332 |
+
+Four of five targeted cards moved decisively toward the prior; the three ruled
+cards did not. No collapse — every modal share under 20% except Hog, already at
+62% in BOTH arms. So the term is not inert and not misaimed.
+
+### D3 — paired A/B, n = 800
+
+Paired on bit-identical openings via `env.snapshot()`, greedy both sides,
+opponent the C++ heuristic at 1.5x elixir.
+
+| | |
+|---|---|
+| control | **0.3187** |
+| treatment | **0.2462** |
+| paired delta | **−0.0725**, 95% CI **[−0.1125, −0.0325]** |
+| discordant | 112 better / 170 worse / 518 tied |
+| exact sign test | **p = 0.00066** |
+
+The in-training rolling win rate agreed independently: 0.36–0.39 treatment
+against 0.42–0.44 control.
+
+### Why, and what the Phase C defence got wrong
+
+Phase C defended serving a state-independent target on the grounds that the rows
+it covers were already getting the entropy bonus, which is equally
+state-independent. **That defence does not survive this measurement.** The
+entropy bonus is a WEAK, DIFFUSE push toward uniform that a trained policy
+largely resists. A KL to a specific distribution is a STRONG, DIRECTED pull. The
+swap was not neutral: it traded a state-DEPENDENT map the actor loss had learned
+for a state-INDEPENDENT one, and "2.53x better than uniform" does not make a
+state-independent target better than what the policy already had.
+
+The D1 entropy table predicted the shape of this: the prior sits at 0.92–0.96 of
+maximum entropy for Skeletons, Ice Spirit, Ice Golem and Musketeer — close
+enough to uniform that pulling toward it is mostly just spreading, and spreading
+a trained placement map costs win rate.
+
+### What the p-value does and does not license
+
+n = 800 is over EPISODES, which controls opening and opponent variance and makes
+the delta for THESE TWO CHECKPOINTS precise. There is still only n = 1 TRAINING
+RUN per arm, and this project measures the control arm's own across-run variance
+at 0.570–0.775. So "the prior harms training" is supported by two independent
+signals pointing the same way, not established — three or more arm pairs would
+be needed to separate the treatment from run variance.
+
+One confound points the safe way: the treatment ran MORE episodes (1,517 vs
+1,437) under equal compute and still lost, so the mismatch works against the
+treatment being secretly better.
+
+### Standing recommendation
+
+Leave `CLASH_HUMAN_PRIOR_COEF` at 0 — where it already shipped, so no rollback
+was needed. The mined prior remains valuable as a measured artifact (2.53x
+better than uniform at predicting real human placement), but serving it as a
+placement TARGET is refuted at this coefficient. Anything further — a much
+smaller coefficient, or gating it to the cards with real signal (The Log,
+Musketeer) rather than all five — is a new experiment with its own
+pre-registered criterion, not a rescue of this one.
 
 ## Known limitations
 

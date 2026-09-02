@@ -1,0 +1,40 @@
+  loaded model_weights.pth (episodes_completed=33921, clean_load=True)
+  loaded model_weights.pth (episodes_completed=34001, clean_load=True)
+  pair   25: A 0.240  B 0.240
+  pair   50: A 0.240  B 0.280
+  pair   75: A 0.280  B 0.253
+  pair  100: A 0.280  B 0.290
+  pair  125: A 0.296  B 0.256
+  pair  150: A 0.280  B 0.273
+  pair  175: A 0.280  B 0.269
+  pair  200: A 0.295  B 0.250
+  pair  225: A 0.302  B 0.236
+  pair  250: A 0.308  B 0.236
+  pair  275: A 0.298  B 0.229
+  pair  300: A 0.300  B 0.230
+  pair  325: A 0.298  B 0.234
+  pair  350: A 0.297  B 0.229
+  pair  375: A 0.307  B 0.229
+  pair  400: A 0.305  B 0.225
+  pair  425: A 0.296  B 0.228
+  pair  450: A 0.293  B 0.229
+  pair  475: A 0.301  B 0.236
+  pair  500: A 0.314  B 0.240
+  pair  525: A 0.314  B 0.238
+  pair  550: A 0.311  B 0.238
+  pair  575: A 0.310  B 0.240
+  pair  600: A 0.310  B 0.247
+  pair  625: A 0.312  B 0.243
+  pair  650: A 0.312  B 0.249
+  pair  675: A 0.316  B 0.247
+  pair  700: A 0.316  B 0.247
+  pair  725: A 0.312  B 0.244
+  pair  750: A 0.312  B 0.247
+  pair  775: A 0.314  B 0.245
+  pair  800: A 0.319  B 0.246
+
+800 paired openings, opponent 1.5x, greedy both sides
+  A  C:/Users/itzik/source/repos/ClashRoyaleEnv/_runs/prior_control/model_weights.pth: 0.3187
+  B  C:/Users/itzik/source/repos/ClashRoyaleEnv/_runs/prior_treat/model_weights.pth: 0.2462
+  paired delta -0.0725  95% CI [-0.1125, -0.0325]
+  112 better / 170 worse / 518 tied   sign test p = 0.0006616

@@ -1,0 +1,39 @@
+  loaded model_weights.pth (episodes_completed=33921, clean_load=True)
+
+=== A (control) === (5550 decision steps)
+  card          slot-obs  plays  modal cell  modal share   H/Hmax  KL||prior
+  Hog_Rider         2786    138      (2,15)       62.1%    0.070      3.327
+  Musketeer         3089    106      (14,8)       18.9%    0.376      2.039
+  Cannon            4842     31       (6,6)        8.7%    0.782      1.201
+  Ice_Golem         1171    170      (11,2)       16.7%    0.696      1.069
+  Skeletons          631    197      (14,8)       10.3%    0.470      0.947
+  Ice_Spirit         623    196      (14,8)        8.5%    0.677      0.814
+  The_Log           4957     29     (15,11)        3.4%    0.880      0.490
+  Fireball          4101     66     (16,28)        8.7%    0.516      0.864
+  loaded model_weights.pth (episodes_completed=34001, clean_load=True)
+
+=== B (treatment) === (5465 decision steps)
+  card          slot-obs  plays  modal cell  modal share   H/Hmax  KL||prior
+  Hog_Rider         2626    145      (2,15)       53.0%    0.074      3.168
+  Musketeer         2572    132      (14,8)       18.0%    0.643      1.239
+  Cannon            4485     40     (16,10)       11.4%    0.800      1.230
+  Ice_Golem         1309    176      (15,2)       18.0%    0.906      0.520
+  Skeletons          849    202      (14,8)        7.4%    0.716      0.566
+  Ice_Spirit         915    184      (15,2)       10.5%    0.904      0.418
+  The_Log           4846     24       (9,2)        9.8%    0.949      0.641
+  Fireball          4258     55     (16,26)       20.0%    0.543      1.195
+
+=== PAIRED DELTA (B - A) ===
+  card          d modal share   d H/Hmax  d KL||prior
+  Hog_Rider            -9.1%     +0.004       -0.159
+  Musketeer            -0.9%     +0.267       -0.800
+  Cannon               +2.7%     +0.018       +0.030
+  Ice_Golem            +1.4%     +0.210       -0.548
+  Skeletons            -2.9%     +0.246       -0.381
+  Ice_Spirit           +2.0%     +0.227       -0.396
+  The_Log              +6.5%     +0.069       +0.152
+  Fireball            +11.4%     +0.027       +0.332
+
+  Healthy treatment: modal share DOWN and KL||prior DOWN on the five
+  cards that previously had no target. Modal share UP would mean the
+  prior is sharpening a card onto one cell rather than spreading it.
