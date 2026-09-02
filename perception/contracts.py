@@ -34,12 +34,30 @@ from enum import Enum
 class Phase(Enum):
     """Which elixir-rate regime the match is currently in.
 
-    NOT CONSUMED BY THE SIMULATOR. GameManager::step() applies a single
-    `const float ELIXIR_REGEN_RATE = 0.035f` to both players for the entire
-    match; there is no multiplier, no overtime, and no phase concept anywhere
-    in the engine. (`oppElixirMultiplier` is a training-curriculum knob for
-    handicapping the built-in opponent -- it is not a game phase, and driving
-    it from here would silently corrupt the opponent model.)
+    THE SIMULATOR HAS PHASES SINCE 2026-09-02, and this docstring's previous
+    claim ("no multiplier, no overtime, and no phase concept anywhere in the
+    engine") is no longer true. `GameManager::elixirMultiplierAtTick` runs the
+    real schedule -- 1x, double from 2:00 (`DOUBLE_ELIXIR_TICK = 1200`), triple
+    from 3:00 (`TRIPLE_ELIXIR_TICK = 1800`) -- the multiplier is observation
+    scalar 9, and `elixir_multiplier_at_tick(tick)` is bound. See
+    `perception/UPSTREAM_REQUESTS.md` item 26.
+
+    What has NOT changed is that this enum is still not consumed by the
+    engine, and should not be: the engine derives its phase from its OWN clock,
+    so a mirror driven through `set_current_tick` is already correct and
+    pushing a Phase into it would be a second, conflicting source of truth.
+    This type remains the SENSOR's reading of what the screen shows.
+
+    Two differences from the engine's schedule are real and deliberate:
+    OVERTIME is a distinct member here because it differs in every respect
+    other than elixir (sudden death, tower activation), and the engine has no
+    overtime concept at all -- it runs a fixed 3600-tick match and resolves a
+    timeout on tower HP. Do not read these two as the same axis.
+
+    (`oppElixirMultiplier` is still a training-curriculum knob for handicapping
+    the built-in opponent -- it is not a game phase, it COMPOSES with the phase
+    rather than replacing it, and driving it from here would silently corrupt
+    the opponent model.)
 
     This field is produced, carried, logged, and asserted on -- and then
     ignored by bridge/sim_driver.py, on purpose. It is here so that the

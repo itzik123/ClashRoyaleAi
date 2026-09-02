@@ -1,4 +1,4 @@
-"""`perception.contracts.GameState` -> the 13,606-float observation.
+"""`perception.contracts.GameState` -> the observation vector the policy reads.
 
 WHY THIS FILE IS HERE AND NOT IN perception/
 --------------------------------------------
@@ -59,6 +59,15 @@ HAND_SIZE = _E.HAND_SIZE
 MAX_TROOP_HP = _E.MAX_TROOP_HP
 MAX_BUILDING_HP = _E.MAX_BUILDING_HP
 MAX_MATCH_ELIXIR = _E.MAX_MATCH_ELIXIR
+#: Normaliser for the elixir-phase scalar. Module level on the engine, not on
+#: ClashRoyaleEnv, because the phase schedule is a property of the match clock
+#: rather than of an env instance -- see bindings.cpp.
+MAX_ELIXIR_MULTIPLIER = engine.MAX_ELIXIR_MULTIPLIER
+#: The engine's tick rate. Derived in perception/timebase.py from 132 agreeing
+#: attackCooldown rows; restated here (with that source named) because this
+#: module may not import from perception/, the same fallback TRAINING_MAX_TICKS
+#: below uses for a genuinely unbound value.
+TICKS_PER_SECOND = 10.0
 
 CH_COUNT = _E.CH_COUNT
 CH_FLYING = _E.CH_FLYING
@@ -376,7 +385,7 @@ def encode(state, *, card_table_=None) -> np.ndarray:
     # bound (it is a constructor argument, not an engine constant), so it is
     # hardcoded here with this comment naming its source -- the pattern
     # perception/geometry.py uses for genuinely unbound values.
-    obs[e + 0] = min(state.seconds_elapsed * 10.0 / TRAINING_MAX_TICKS, 1.0)
+    obs[e + 0] = min(state.seconds_elapsed * TICKS_PER_SECOND / TRAINING_MAX_TICKS, 1.0)
     obs[e + 1] = min(state.my_elixir_spent / MAX_MATCH_ELIXIR, 1.0)
     opp_spend = (OPP_SPEND_WHEN_UNMEASURED if state.opp_elixir_spent is None
                  else min(state.opp_elixir_spent / MAX_MATCH_ELIXIR, 1.0))
@@ -394,4 +403,28 @@ def encode(state, *, card_table_=None) -> np.ndarray:
         at_full = full.full_hp_channel_value if full else 1.0
         obs[e + 3 + offset] = (0.0 if tower.destroyed
                                else float(tower.hp_fraction) * at_full)
+
+    # ELIXIR PHASE (scalar 9, added 2026-09-02).
+    #
+    # This line is the whole reason the phase feature is not silently broken in
+    # deployment. Nothing in the simulator uses this file, so a scalar that the
+    # engine writes and this encoder does not is zero on a real screen and
+    # correct in every training metric -- the identical failure mode
+    # `note_played_card` exists to prevent for the cycle blocks, and the
+    # identical reason the time-fraction scalar above ran 2x fast unnoticed.
+    #
+    # Derived from the engine's own schedule via the bound free function, so
+    # the two boundary ticks and the /3.0 normaliser each have exactly one
+    # definition. `seconds_elapsed * TICKS_PER_SECOND` is the same real-clock-to-tick
+    # conversion the time fraction above uses (10 ticks = 1 s).
+    #
+    # NOTE the asymmetry with the time fraction, which is deliberate: that one
+    # divides by TRAINING_MAX_TICKS (3600) because the net learned it as "a
+    # fraction of a 3600-tick match", whereas the phase is a function of
+    # ABSOLUTE elapsed time and means the same thing on a real screen as in the
+    # simulator. No max-ticks scaling belongs here, and applying one would put
+    # a live match into triple elixir at 1:30.
+    obs[e + 9] = (engine.elixir_multiplier_at_tick(
+                      int(state.seconds_elapsed * TICKS_PER_SECOND))
+                  / MAX_ELIXIR_MULTIPLIER)
     return obs

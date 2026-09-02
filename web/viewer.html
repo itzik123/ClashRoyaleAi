@@ -221,6 +221,34 @@
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
+  /* Elixir phase badge. Colour carries the phase as well as the text, because
+     the number is what changes and a reader scrubbing the timeline is watching
+     for the CHANGE, not reading the glyph. */
+  .elixir-phase {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 10px;
+    letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums;
+    border: 1px solid transparent;
+    transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  }
+  .elixir-phase.phase-1 {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.10);
+  }
+  .elixir-phase.phase-2 {
+    color: #e9b8ff;
+    background: rgba(186, 85, 255, 0.16);
+    border-color: rgba(186, 85, 255, 0.45);
+  }
+  .elixir-phase.phase-3 {
+    color: #ffd6f2;
+    background: rgba(255, 64, 190, 0.20);
+    border-color: rgba(255, 64, 190, 0.60);
+  }
   .speed-label {
     font-size: 12px;
     color: var(--text-muted);
@@ -722,6 +750,10 @@
 <span id="simChipCount">Simulation View</span>
   </button>
   <div class="tick-display" id="tickDisplay">Tick 0 / 0</div>
+  <!-- Elixir phase. Hidden entirely for a replay written before the engine had
+       phases (no "elixirPhases" block), rather than defaulting to x1 -- an old
+       replay genuinely has no phase, and showing one would be inventing it. -->
+  <div class="elixir-phase" id="elixirPhase" style="display:none" title="Elixir generation rate">x1</div>
   <span class="speed-label">Speed:</span>
   <select class="speed-select" id="speedSelect">
     <option value="4">0.25x</option>
@@ -1015,6 +1047,7 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const scrubber = document.getElementById('scrubber');
 const tickDisplay = document.getElementById('tickDisplay');
+const elixirPhase = document.getElementById('elixirPhase');
 const btnPlayPause = document.getElementById('btnPlayPause');
 const btnStepBack = document.getElementById('btnStepBack');
 const btnStepFwd = document.getElementById('btnStepFwd');
@@ -1865,6 +1898,28 @@ function updateUI() {
   // Tick display
   tickDisplay.textContent = `Tick ${tickData.tick} / ${gameData.ticks[gameData.ticks.length - 1].tick}`;
   scrubber.value = currentTick;
+
+  // Elixir phase (x1 / x2 / x3).
+  //
+  // The boundaries come from the replay's own "elixirPhases" block, written by
+  // GameLogger from GameManager's constants -- NOT from a table here. This
+  // page is a file:// document whose only input is the JSON, so anything it is
+  // not told it is structurally forced to hardcode, and a hardcoded copy of an
+  // engine constant is a scheduled defect rather than a discipline problem.
+  // That is exactly how this viewer ended up painting four of eighteen columns
+  // as the wrong terrain after the 2026-08-21 arena re-centring; the fix for
+  // that class of bug belongs in the FORMAT, and this reads the format.
+  const phases = gameData.elixirPhases;
+  if (phases) {
+    const mult = tickData.tick >= phases.tripleTick ? 3
+               : tickData.tick >= phases.doubleTick ? 2
+               : 1;
+    elixirPhase.textContent = `x${mult}`;
+    elixirPhase.className = `elixir-phase phase-${mult}`;
+    elixirPhase.style.display = '';
+  } else {
+    elixirPhase.style.display = 'none';
+  }
 
   // Elixir
   document.getElementById('elixirBarAI').style.width = (tickData.elixirAI / 10 * 100) + '%';

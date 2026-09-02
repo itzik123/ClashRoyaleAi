@@ -57,6 +57,31 @@ hidden: the relation is exact only while neither side's elixir CLAMPS at the
 the random play sampled here the opponent never capped. A policy that baits
 the opponent into overflowing would make the task genuinely non-trivial -- and
 that, not memory, is what a rising MAE would actually be detecting.
+
+WHAT THE ELIXIR PHASES CHANGED, 2026-09-02
+-------------------------------------------
+The caveat above stopped being hypothetical, and it did so without any policy
+baiting anyone. `UPSTREAM_REQUESTS.md` item 26 gave the match a real 1x/2x/3x
+schedule, and two things followed:
+
+  1. `regen_rate * t` is no longer a single slope. Cumulative income is
+     piecewise-linear with breakpoints at 1200 and 1800 ticks, so the ORIGINAL
+     basis `[t, spent, 1]` cannot fit it at all -- measured 1.4265, which is
+     no better than predict-the-mean. `_income()` below integrates the
+     schedule, and with that term the reconstruction is exact again. The
+     finding is unchanged; only the basis moved.
+
+  2. Tripling the income made the opponent overflow on its own, and THAT is
+     genuinely unrecoverable -- the cap discards elixir no scalar records.
+     Measured per episode against the exact analytic model: the three that
+     never capped residual at -0.035 (one tick of regen, i.e. noise); the
+     three that did carry +0.76, +1.63 and +5.38.
+
+So the conclusion this file was written to establish still holds in the
+overflow-free regime, and a rising MAE under phases is an OVERFLOW detector.
+It is still not a memory diagnostic. Note that the head this was written about
+was deleted on 2026-08-28 (replaced by `Aux/NextCard_CE`); the file is kept for
+the reasoning, which is what generalises.
 """
 import numpy as np
 import pytest
@@ -111,14 +136,63 @@ def test_the_extra_scalar_offsets_still_point_at_the_extra_scalars():
         "pointing at the time fraction")
 
 
+#: `ELIXIR_REGEN_RATE` is not bound (it is a private member of GameManager), so
+#: it is restated here with its source named -- the pattern perception/
+#: geometry.py uses for genuinely underivable values. Guarded by
+#: `test_the_regen_rate_this_file_assumes_is_still_the_engines` below, which
+#: MEASURES it rather than trusting this line.
+_REGEN_PER_TICK = 0.035     # GameManager.h: `const float ELIXIR_REGEN_RATE`
+
+#: The bar's ceiling (PlayerState clamps to it) and the env's default
+#: `max_ticks`, which the time scalar is normalised by. Neither is bound.
+_CAP = 10.0
+_MAX_TICKS = 3600.0
+
+#: Column indices into the design matrix built by `_collect`.
+C_T, C_OPP_SPENT, C_OWN_SPENT, C_BIAS, C_INCOME = 0, 1, 2, 3, 4
+
+
+def _income(t):
+    """Exact cumulative regen from tick 0 to tick `t`, integrating the phases.
+
+    THIS FUNCTION IS THE 2026-09-02 CHANGE. Before the elixir phases landed,
+    cumulative income was `rate * t` -- one term, one slope -- which is why the
+    original reconstruction needed only `[t, spent, 1]`. It is now a
+    piecewise-linear function of t with breakpoints at the two phase
+    boundaries, and no single coefficient on t can represent it.
+
+    Both boundaries are read from the engine, so a schedule change carries this
+    with it instead of silently invalidating every fit below.
+    """
+    d, tr = _CE.DOUBLE_ELIXIR_TICK, _CE.TRIPLE_ELIXIR_TICK
+    r = _REGEN_PER_TICK
+    return (r * min(t, d)
+            + 2.0 * r * max(0.0, min(t, tr) - d)
+            + 3.0 * r * max(0.0, t - tr))
+
+
 def _collect(episodes=6, seed=0):
-    """(design matrix, target) pairs of (time, opp_spent, own_spent, 1) -> opp elixir."""
+    """Design matrix and target for reconstructing the opponent's hidden elixir.
+
+    Columns: `[t_ticks, opp_spent, own_spent, 1, income(t)]`. The last is the
+    phase-integrated income above; `t_ticks` is kept alongside it so the tests
+    can contrast the OLD single-slope basis against the correct one.
+
+    Also returns, per sample, whether the opponent's bar has hit the 10.0 cap
+    at any point in that episode up to and including this sample. That flag is
+    load-bearing, and it is NOT the same as "this sample reads 10.0": once the
+    cap has discarded income, every LATER sample in the episode carries the
+    loss as a permanent offset. Counting only samples currently at the cap
+    undercounts the contamination by more than an order of magnitude --
+    measured 2026-09-02, 0.3% of samples sit at the cap while 3 of 6 EPISODES
+    are affected by it.
+    """
     rng = np.random.default_rng(seed)
-    X, y = [], []
+    X, y, tainted = [], [], []
     for _ in range(episodes):
         env = MicroRoyaleEnv({})
         obs = env.reset()
-        done, n = False, 0
+        done, n, capped = False, 0, False
         while not done and n < 400:
             res = env.step({"card_index": int(rng.integers(0, 5)),
                             "target_x": float(rng.integers(0, 18)),
@@ -128,17 +202,29 @@ def _collect(episodes=6, seed=0):
             o = np.asarray(obs[0] if isinstance(obs, tuple) else obs,
                            dtype=np.float32)
             if "opp_elixir" in info:
-                X.append([o[T_IDX], o[SPENT_OPP_IDX], o[SPENT_SELF_IDX], 1.0])
-                y.append(float(np.atleast_1d(info["opp_elixir"])[0]))
+                elixir = float(np.atleast_1d(info["opp_elixir"])[0])
+                if elixir >= _CAP - 1e-3:
+                    capped = True
+                t_ticks = float(o[T_IDX]) * _MAX_TICKS
+                X.append([t_ticks,
+                          float(o[SPENT_OPP_IDX]) * _CE.MAX_MATCH_ELIXIR,
+                          float(o[SPENT_SELF_IDX]) * _CE.MAX_MATCH_ELIXIR,
+                          1.0,
+                          _income(t_ticks)])
+                y.append(elixir)
+                tainted.append(capped)
             n += 1
-    return np.asarray(X), np.asarray(y)
+    return np.asarray(X), np.asarray(y), np.asarray(tainted, dtype=bool)
 
 
 @pytest.fixture(scope="module")
 def samples():
-    X, y = _collect()
+    X, y, tainted = _collect()
     assert len(y) > 500, f"only {len(y)} samples collected; too few to conclude"
-    return X, y
+    assert (~tainted).sum() > 200, (
+        f"only {(~tainted).sum()} overflow-free samples; the reconstruction "
+        "tests below are defined on that regime and cannot conclude")
+    return X, y, tainted
 
 
 def _mae(X, y, cols):
@@ -147,35 +233,129 @@ def _mae(X, y, cols):
     return float(np.abs(y - A @ w).mean())
 
 
-def test_opponent_elixir_is_an_affine_function_of_two_present_scalars(samples):
-    """THE FINDING. No recurrence required: four parameters reconstruct the
-    'hidden' target from the observation the agent already receives."""
-    X, y = samples
-    mae = _mae(X, y, [0, 1, 3])          # time, opp_spent, bias
+def test_the_regen_rate_this_file_assumes_is_still_the_engines():
+    """`_REGEN_PER_TICK` is a restated private constant, so measure it.
+
+    Read off the BAR over a window entirely inside single elixir, with nobody
+    spending. If `GameManager::ELIXIR_REGEN_RATE` moves, `_income` goes wrong
+    and every reconstruction below degrades for a reason that has nothing to do
+    with what those tests are about.
+    """
+    deck = [15, 6, 25, 40, 24, 72, 33, 7]
+    env = clash_royale_env.ClashRoyaleEnv(deck, deck, 3600)
+    env.reset()
+    env.set_elixir_for_team(0, 0.0)
+    before = env.get_elixir_for_team(0)
+    ticks = 20                     # 2 s, entirely within phase 1
+    env.step_self_play(4, 0.0, 0.0, 4, 0.0, 0.0, ticks)
+    measured = (env.get_elixir_for_team(0) - before) / ticks
+    assert measured == pytest.approx(_REGEN_PER_TICK, abs=1e-6), (
+        f"measured {measured} per tick against this file's assumed "
+        f"{_REGEN_PER_TICK}; update _REGEN_PER_TICK and re-derive _income")
+
+
+def test_opponent_elixir_is_an_affine_function_of_present_scalars(samples):
+    """THE ORIGINAL FINDING, still true -- but only once income is integrated.
+
+    No recurrence required: the 'hidden' target is reconstructed from scalars
+    the observation already carries, by ordinary least squares. What changed on
+    2026-09-02 is the BASIS, not the conclusion -- `income(t)` replaces a bare
+    `t` because the elixir phases made cumulative regen piecewise-linear.
+
+    Restricted to overflow-free samples, which is the regime the original
+    measurement was taken in and exactly the caveat the module docstring
+    already stated. See `test_overflow_is_what_makes_this_task_non_trivial`
+    for the other regime, which the phases turned from hypothetical to common.
+    """
+    X, y, tainted = samples
+    ok = ~tainted
+    mae = _mae(X[ok], y[ok], [C_INCOME, C_OPP_SPENT, C_BIAS])
     assert mae < 0.05, (
-        f"linear reconstruction MAE is {mae:.4f}; the affine relation "
-        "elixir = start + rate*t - spent is expected to hold to within "
-        "float noise while no elixir bar clamps at its cap. If this has "
-        "risen, check whether the engine changed ELIXIR_REGEN_RATE, whether "
-        "the extra-scalar ORDER moved (the offsets here are positional), or "
-        "whether the sampled policy now baits the opponent into overflowing "
-        "-- the last would make the aux task genuinely non-trivial.")
+        f"linear reconstruction MAE is {mae:.4f} on overflow-free samples; "
+        "elixir = start + integral(rate) - spent is expected to hold to within "
+        "float noise there. If this has risen, check whether the engine "
+        "changed ELIXIR_REGEN_RATE or the phase schedule (both feed _income), "
+        "or whether the extra-scalar ORDER moved -- the offsets here are "
+        "positional.")
+
+
+def test_a_single_slope_no_longer_fits_because_income_is_piecewise(samples):
+    """The 2026-09-02 regression guard, and it asserts a FAILURE.
+
+    Before the elixir phases, `[t, spent, 1]` reconstructed the target exactly
+    (MAE 0.0000, measured 2026-08-27 over 2,606 samples). It cannot any more,
+    because cumulative income has two breakpoints and one coefficient on t
+    cannot bend. Measured 2026-09-02: 1.4265 on overflow-free samples, against
+    a predict-the-mean baseline of the same order -- i.e. the naive basis is
+    now worth nothing at all.
+
+    Pinned deliberately rather than deleted. If someone reverts the phases or
+    makes them continuous, this fails and says so; the naive basis silently
+    starting to work again is exactly the kind of change that should not pass
+    unnoticed.
+    """
+    X, y, tainted = samples
+    ok = ~tainted
+    naive = _mae(X[ok], y[ok], [C_T, C_OPP_SPENT, C_BIAS])
+    correct = _mae(X[ok], y[ok], [C_INCOME, C_OPP_SPENT, C_BIAS])
+    assert naive > 10 * max(correct, 1e-3), (
+        f"the single-slope basis scores {naive:.4f} and the phase-integrated "
+        f"one {correct:.4f}. They are supposed to differ by an order of "
+        "magnitude: if they no longer do, elixir regen has become single-rate "
+        "again and CLAUDE.md's phase section is out of date.")
+
+
+def test_overflow_is_what_makes_this_task_non_trivial(samples):
+    """What the phases actually changed, and it is not the arithmetic.
+
+    The module docstring's closing caveat -- written 2026-08-27, before the
+    phases existed -- called this exactly: "a policy that baits the opponent
+    into overflowing would make the task genuinely non-trivial, and that, not
+    memory, is what a rising MAE would actually be detecting."
+
+    Nothing baits anyone. Tripling the income was enough: the opponent now
+    overflows unaided, and the cap DISCARDS elixir that no scalar records, so
+    the discarded amount is unrecoverable by any function of the present
+    observation. Measured 2026-09-02 per episode against the exact analytic
+    model: the three that never capped reconstruct to a residual of -0.035
+    (one tick of regen, i.e. noise), while the three that did carry +0.76,
+    +1.63 and +5.38.
+
+    So a rising `Aux/OppElixir_MAE` under phases is an overflow detector, and
+    still not a memory diagnostic.
+    """
+    X, y, tainted = samples
+    assert tainted.any(), (
+        "no sampled episode overflowed, so this test cannot conclude. Under "
+        "the phase schedule roughly half of them should; if none do, income "
+        "has been reduced or the opponent has started spending all of it.")
+    clean = _mae(X[~tainted], y[~tainted], [C_INCOME, C_OPP_SPENT, C_BIAS])
+    dirty = _mae(X[tainted], y[tainted], [C_INCOME, C_OPP_SPENT, C_BIAS])
+    assert dirty > 5 * max(clean, 1e-3), (
+        f"overflow-free samples reconstruct at MAE {clean:.4f} and "
+        f"overflow-contaminated ones at {dirty:.4f}. The gap IS the finding: "
+        "the cap destroys information the observation does not carry. If "
+        "these have converged, either the cap stopped binding or the "
+        "contamination flag is no longer tracking it.")
 
 
 def test_neither_scalar_alone_is_enough(samples):
-    """The control that makes the test above mean something.
+    """The control that makes the reconstruction test mean something.
 
     Without it, "a linear model fits" could be an artifact of the target
     barely varying. Each scalar ALONE must score no better than
     predict-the-mean, so the reconstruction is genuinely using both -- the
     same shape of control CLAUDE.md applied when it ruled out 'read your own
-    elixir', just carried through to the confound that was missed.
+    elixir', carried through to the confound that was missed.
     """
-    X, y = samples
-    baseline = float(np.abs(y - y.mean()).mean())
+    X, y, tainted = samples
+    ok = ~tainted
+    yy = y[ok]
+    baseline = float(np.abs(yy - yy.mean()).mean())
     assert baseline > 1.0, f"target too flat to conclude anything (MAE {baseline:.3f})"
-    for label, col in (("time", 0), ("opponent elixir spent", 1)):
-        alone = _mae(X, y, [col, 3])
+    for label, col in (("integrated income", C_INCOME),
+                       ("opponent elixir spent", C_OPP_SPENT)):
+        alone = _mae(X[ok], yy, [col, C_BIAS])
         assert alone > 0.9 * baseline, (
             f"{label} alone reaches MAE {alone:.4f} against a "
             f"predict-the-mean baseline of {baseline:.4f}; the two-scalar "
@@ -184,11 +364,11 @@ def test_neither_scalar_alone_is_enough(samples):
 
 def test_the_metric_cannot_distinguish_memory_from_arithmetic(samples):
     """Stated as the operational warning, so a reader who only runs the suite
-    still gets the point: the threshold CLAUDE.md gives (~1.3) is cleared by
-    an affine map with no state at all, by a margin of more than an order of
-    magnitude."""
-    X, y = samples
-    memoryless = _mae(X, y, [0, 1, 3])
+    still gets the point: the threshold CLAUDE.md gave (~1.3) is cleared by an
+    affine map with no state at all, by more than an order of magnitude."""
+    X, y, tainted = samples
+    ok = ~tainted
+    memoryless = _mae(X[ok], y[ok], [C_INCOME, C_OPP_SPENT, C_BIAS])
     claimed_memory_threshold = 1.3
     assert memoryless < claimed_memory_threshold / 10, (
         f"a stateless least-squares fit scores {memoryless:.4f} against the "

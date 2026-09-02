@@ -142,7 +142,29 @@ public:
     // train_selfplay.py's scripted opponents) stays valid unchanged.
     //   0 time fraction | 1 own elixir spent | 2 opp elixir spent
     //   3-5 own king/left/right tower HP | 6-8 enemy king/left/right tower HP
-    static constexpr int NUM_EXTRA_SCALARS = 9;
+    //   9 elixir phase multiplier / 3.0   (2026-09-02)
+    //
+    // Scalar 9 is APPENDED to this block rather than to the very end of the
+    // observation, which moves CYCLE_START by one. That is safe by
+    // construction and deliberately so: CYCLE_START is derived from
+    // EXTRA_SCALARS_START + NUM_EXTRA_SCALARS, and every consumer reads the
+    // bound offset rather than a literal (see the forward-offset note below,
+    // and engine_constants.py, which re-exports both). The alternative --
+    // appending after the cycle blocks to avoid moving anything -- would put a
+    // match-clock scalar outside the branch that encodes match-clock scalars,
+    // for no benefit the derivation does not already give.
+    //
+    // WHY THE PHASE IS OBSERVABLE AND NOT CHEATING, by the same test the
+    // cycle blocks are argued from: a human sees the "2x ELIXIR" banner and
+    // the match clock. This is the least hidden thing on the screen. Without
+    // it the state is not Markovian for the decision it governs -- the value
+    // of holding elixir for a bigger push depends on the rate that elixir
+    // will arrive at, and two boards identical except for the clock have
+    // genuinely different optimal play.
+    //
+    // Normalised by 3.0 (the maximum), so it reads 0.333 / 0.667 / 1.000 and
+    // stays on the same [0, 1] scale as every other scalar here.
+    static constexpr int NUM_EXTRA_SCALARS = 10;
 
     // --- OPPONENT CARD-CYCLE BLOCKS (2026-08-27, UPSTREAM_REQUESTS item 24) --
     // Two NUM_CARD_IDS-wide blocks appended AFTER the extra scalars, describing
@@ -195,10 +217,28 @@ public:
         + HAND_SIZE * NUM_CARD_IDS;                    // hand identity one-hots
     static constexpr int CYCLE_START = EXTRA_SCALARS_START + NUM_EXTRA_SCALARS;
     // Ceiling on cumulative per-match elixir spend used to normalize scalars
-    // 1-2: maxTicks(3600) * ELIXIR_REGEN_RATE(0.035) + 5 starting = 131, so
-    // 140 leaves headroom for the curriculum's opponent elixir multiplier
-    // without ever exceeding 1.0 in practice. Clamped anyway.
-    static constexpr float MAX_MATCH_ELIXIR = 140.0f;
+    // 1-2.
+    //
+    // RAISED 140 -> 280 on 2026-09-02, and this is NOT cosmetic. The old value
+    // was sized against a flat 1x match: 3600 * 0.035 + 5 starting = 131, with
+    // 140 leaving headroom. The elixir phases roughly double lifetime income --
+    //
+    //     1200 ticks @ 1x = 42     (0:00 - 2:00)
+    //     600 ticks  @ 2x = 42     (2:00 - 3:00)
+    //     1800 ticks @ 3x = 189    (3:00 - 6:00)
+    //                       ---
+    //                       273  + 5 starting = 278
+    //
+    // -- so at 140 BOTH spend scalars would have saturated at exactly 1.0 part
+    // way through the match and stayed there, going blind precisely when the
+    // elixir economy is the thing that decides the game. The clamp meant
+    // nothing would have raised; the input would just have gone constant. Same
+    // failure shape as the constants the 2026-08-07 speed fix invalidated: a
+    // normaliser calibrated against a measurement a later change moved.
+    // 280 covers the full-length worst case with margin to spare, and the
+    // curriculum's oppElixirMultiplier only ever scales the OPPONENT's income,
+    // which is scalar 2 and equally covered.
+    static constexpr float MAX_MATCH_ELIXIR = 280.0f;
 
 private:
     GameManager game;
@@ -450,6 +490,24 @@ private:
         }
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[0][which]);
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[1][which]);
+
+        // ELIXIR PHASE (scalar 9). Symmetric -- the phase is a property of the
+        // match clock, so both teams see the identical value and no mirroring
+        // applies, unlike the tower block above.
+        //
+        // Derived from GameManager's own schedule rather than recomputed from
+        // the time fraction at scalar 0. Recomputing here would need maxTicks
+        // AND the two boundaries restated in this file, and the whole point of
+        // elixirMultiplierAtTick being static and public is that this is the
+        // one place the answer comes from.
+        //
+        // NOT redundant with scalar 0 despite both deriving from the tick.
+        // Scalar 0 is currentTick/maxTicks, a smooth ramp; the phase is a step
+        // function of it. A ReLU MLP can represent a step, but it has to LEARN
+        // the two thresholds from a scalar whose own scale depends on maxTicks
+        // -- and the reward consequence of crossing 2:00 is discontinuous.
+        // Handing it over costs one float.
+        obs.push_back(game.getElixirMultiplier() / GameManager::MAX_ELIXIR_MULTIPLIER);
 
         // --- OPPONENT CARD CYCLE (item 24) ---------------------------------
         // Two NUM_CARD_IDS-wide blocks describing what the OTHER side has
@@ -958,6 +1016,12 @@ public:
     // observation's own tests could not previously say "one TAU after the
     // play" without re-deriving the clock from outside.
     int getCurrentTick() const { return currentTick; }
+
+    // The elixir phase in force (1.0 / 2.0 / 3.0). Forwarded from
+    // GameManager, which owns the schedule -- this is the accessor
+    // perception/, the replay logger and any probe read, so that none of them
+    // has to know the two boundary ticks.
+    float getElixirMultiplier() const { return game.getElixirMultiplier(); }
 
     // Record that `team` played `cardId` right now, WITHOUT spawning anything.
     //

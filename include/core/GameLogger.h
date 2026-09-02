@@ -261,6 +261,23 @@ public:
         }
         file << "},\n";
 
+        // Elixir phase schedule, in TICKS. Emitted for exactly the reason
+        // cardMeta and rollWidth/rollRange above are: web/viewer.html is a
+        // file:// page whose ONLY input is this JSON, so anything it is not
+        // told it is structurally forced to hardcode -- and a hardcoded copy
+        // of engine geometry is a scheduled defect, not a discipline problem.
+        // That is how the viewer ended up painting four of eighteen columns as
+        // the wrong terrain after the 2026-08-21 arena re-centring. The fix
+        // for that class of bug belongs in the FORMAT.
+        //
+        // A replay written before this field existed simply lacks it, and the
+        // viewer treats an absent block as "no phases" rather than assuming
+        // the current schedule -- which is the honest reading of an old file.
+        file << "  \"elixirPhases\": {"
+             << "\"doubleTick\":" << GameManager::DOUBLE_ELIXIR_TICK
+             << ",\"tripleTick\":" << GameManager::TRIPLE_ELIXIR_TICK
+             << "},\n";
+
         file << "  \"ticks\": [\n";
 
         for (size_t t = 0; t < snapshots.size(); ++t) {

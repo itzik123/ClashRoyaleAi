@@ -74,6 +74,35 @@ private:
     // Curriculum hook: scales the opponent's elixir regen relative to the base rate.
     // 1.0 = normal opponent, >1.0 = faster-elixir opponent for later training stages.
     float oppElixirMultiplier = 1.0f;
+
+    // --- REAL-GAME ELIXIR PHASES (2026-09-02) ------------------------------
+    // Until now regen was a flat 1x for the whole match. Real Clash Royale
+    // runs three phases, and this reproduces the REAL schedule rather than a
+    // rounder one: 3:00 of regular time with double elixir from 2:00, then up
+    // to 2:00 of overtime at triple from 3:00.
+    //
+    //   0:00 - 2:00   1x   one elixir per 2.857 s
+    //   2:00 - 3:00   2x   one per 1.429 s
+    //   3:00 +        3x   one per 0.952 s
+    //
+    // Ticks, not seconds: 10 ticks = 1 s, derived in perception/timebase.py
+    // from 132 agreeing attackCooldown rows. Stated as ticks here because
+    // currentTick is what this class actually counts -- converting at the
+    // comparison site would put a second copy of the 10 somewhere it can drift.
+    //
+    // WHY THIS MATTERS, measured 2026-09-02 over 4,229 decisions of
+    // model_weights_phase4.pth at stage 3: both sides ran at a MEAN OF 2.16
+    // and 1.81 elixir with P(>= 9.0) of exactly 0.0% -- they were not
+    // husbanding elixir, they were starved of it, spending every drop the tick
+    // it arrived. Income was therefore the binding constraint on how much can
+    // be on the board at once, and the board showed it: the best POSSIBLE
+    // Fireball (perfect information, best of all 612 centres) caught a median
+    // of ONE unit, and >= 3 units only 15.5% of the time. A 4-elixir spell
+    // whose best case is one target cannot be +EV, so the policy correctly
+    // learned not to play it. See perception/UPSTREAM_REQUESTS.md item 26.
+    // The schedule itself is PUBLIC (see below the constructor) -- ClashEnv,
+    // the bindings and GameLogger all need it, and a second copy of it in any
+    // of them is the arena-geometry failure over again.
     // How far short of the river a non-spell placement must stay on the
     // caller's own side (Board itself only enforces the river during
     // movement/clamping, not placement).
@@ -235,6 +264,39 @@ private:
     }
 
 public:
+    // --- REAL-GAME ELIXIR PHASE SCHEDULE -----------------------------------
+    // Ticks, not seconds: 10 ticks = 1 s (perception/timebase.py). See the
+    // long note beside ELIXIR_REGEN_RATE above for the measurement that
+    // motivated this and for why the phase is separate from
+    // oppElixirMultiplier.
+    static constexpr int DOUBLE_ELIXIR_TICK = 1200;   // 2:00
+    static constexpr int TRIPLE_ELIXIR_TICK = 1800;   // 3:00
+
+    // The largest value elixirMultiplierAtTick can return. Exists as a named
+    // constant, and is bound, because it is the NORMALISER for the observation
+    // scalar -- ClashEnv divides by it and perception/'s hand-built encoder
+    // must divide by the identical number or the live agent reads a phase the
+    // training agent never saw. A literal 3.0f in both places is precisely the
+    // second-copy hazard this codebase keeps re-learning.
+    static constexpr float MAX_ELIXIR_MULTIPLIER = 3.0f;
+
+    // Pure function of the tick, deliberately static: ClashEnv puts this in
+    // the observation, GameLogger writes the boundaries into the replay and
+    // the viewer reads them back. Every one of those consumers would otherwise
+    // restate the schedule, which is the failure this codebase has already had
+    // six times over with the arena geometry.
+    static constexpr float elixirMultiplierAtTick(int tick) {
+        if (tick >= TRIPLE_ELIXIR_TICK) return MAX_ELIXIR_MULTIPLIER;
+        if (tick >= DOUBLE_ELIXIR_TICK) return 2.0f;
+        return 1.0f;
+    }
+
+    // The multiplier in force right now. Note this is the SHARED phase, not
+    // oppElixirMultiplier -- the two are independent and compose (see step()):
+    // the phase is a property of the match clock and applies to both players,
+    // the curriculum multiplier is a per-opponent handicap on top of it.
+    float getElixirMultiplier() const { return elixirMultiplierAtTick(currentTick); }
+
     PlayerState playerAI;
     PlayerState playerOpponent;
 
@@ -907,8 +969,17 @@ public:
         currentTick++;
         board.currentTick = currentTick;
 
-        playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE, 10.0f);
-        playerOpponent.elixir = std::min(playerOpponent.elixir + ELIXIR_REGEN_RATE * oppElixirMultiplier, 10.0f);
+        // Read the phase ONCE, after currentTick++ above, and hand the same
+        // value to both players. Two reads of the same schedule straddling a
+        // write is the freeze off-by-one all over again (see CLAUDE.md, "one
+        // fact, two readers, and a write in between"); one read cannot desync.
+        // The phase multiplies the BASE rate, and oppElixirMultiplier then
+        // multiplies that -- so a stage-5 opponent at 1.5x in double elixir
+        // gets 3x, which is the intended composition, not a bug.
+        const float elixirPhase = getElixirMultiplier();
+        playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE * elixirPhase, 10.0f);
+        playerOpponent.elixir = std::min(
+            playerOpponent.elixir + ELIXIR_REGEN_RATE * elixirPhase * oppElixirMultiplier, 10.0f);
         playerAI.tick();
         playerOpponent.tick();
 

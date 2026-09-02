@@ -218,6 +218,108 @@ the recordings, not assumed. Don't "fix" one to match the other without
 revisiting `perception/track/opp_elixir.py`, whose missed-placement alarm
 depends on using the real rate.
 
+**The match runs 1x / 2x / 3x elixir, since 2026-09-02.** It was a flat 1x for
+this project's whole history — the simulator's economy was the opening two
+minutes of a real match stretched across all six.
+`GameManager::elixirMultiplierAtTick` is the single definition:
+**`DOUBLE_ELIXIR_TICK = 1200` (2:00)** and **`TRIPLE_ELIXIR_TICK = 1800`
+(3:00)**, the REAL game's schedule (3:00 regular with double from 2:00, then
+overtime at triple), not a rounder one.
+
+**Elixir was STARVED, which is what justified this** — measured over 4,229
+decisions of `model_weights_phase4.pth` at stage 3, before the change:
+
+| | mean | median | P(≥ 9.0) | P(≤ 4.0) |
+|---|---|---|---|---|
+| agent | 2.16 | 1.95 | **0.0%** | **91.0%** |
+| teacher | 1.81 | 1.45 | **0.0%** | 91.3% |
+
+Zero overflow in 4,229 decisions — `W_ELIXIR_OVERFLOW` never fired once. Both
+sides spent every drop the tick it arrived, so income genuinely was the binding
+constraint and added income gets spent rather than discarded. **Had the bars
+been pooling near 10.0 this change would have been refuted**, and that is the
+measurement to re-run before proposing any further economy change: pooling
+means the constraint is decision-making, not income.
+
+**And it is why Fireball was correctly unplayed.** Best-case catch, computed as
+an upper bound (perfect information, best of all 612 centres): **median ONE
+unit**, P(≥3 units) = 15.5%. A 4-elixir spell whose best possible play usually
+catches one target is not +EV, so declining it was right about the environment,
+not a training failure.
+
+**Read the phase placement honestly, because one of the two barely matters.**
+Match end tick is mean 1758 (2:56): **92% of matches reach 2:00 but only 8%
+reach 4:00**, and by share of ticks actually played, **32.1% fall after 2:00
+against 3.0% after 4:00**. Double elixir is a third of all gameplay; triple at
+the real 3:00 is ~8%, and triple at 4:00 — the placement originally proposed —
+would have been 3% and effectively inert.
+
+**The causal link "more elixir → bigger clusters" IS now measured, and it holds
+modestly.** Same policy, same stage, same 24 episodes across the change, so the
+engine is the only variable:
+
+| | flat 1x | 1x/2x/3x |
+|---|---|---|
+| enemy units on board, mean | 3.62 | 3.89 |
+| best Fireball catch, **median** | **1** | **1** |
+| P(catch ≥ 3) | 15.5% | 21.8% |
+| P(catch ≥ 4) | 6.1% | 10.4% |
+| agent elixir, mean | 2.16 | 2.50 |
+| agent P(≥ 9.0) | 0.0% | **0.6%** |
+
+The gain is real but lives in the **tail** — P(catch ≥ 4) rises 70% relative,
+while the **median best-case Fireball still catches exactly one unit**. Read
+that median before expecting Fireball to become obviously correct. And this is
+the pre-change policy throughout: it measures whether the ENVIRONMENT makes
+clusters at unchanged behaviour, not what a retrained policy would do.
+`DEFAULT_DECK` still bounds it — 2.6 Hog Cycle is nearly all single-body cards,
+so no amount of elixir makes a swarm in a mirror. What this buys Fireball is
+more 4-cost support alive at once (killing a Musketeer is an even trade plus
+chip), which is real but smaller than swarm-clearing.
+
+**Overflow became possible for the first time** (0.0% → 0.6%), so
+`W_ELIXIR_OVERFLOW` now fires where it never had — and that broke the premise
+of `test_aux_task_is_not_a_memory_probe.py`. That file's 2026-08-27 finding was
+that the deleted opponent-elixir head measured nothing, since the target is an
+affine function of two present scalars (MAE **0.0000**). Both halves moved:
+`rate*t` is no longer one slope, so the original basis now scores **1.4265** —
+no better than predict-the-mean — and integrating the schedule restores the
+exact fit; and the opponent now overflows unaided, which is genuinely
+unrecoverable because the cap discards elixir no scalar records (per episode:
+never-capped residual **−0.035**, capped **+0.76 / +1.63 / +5.38**). The
+conclusion survives in the overflow-free regime; a rising MAE under phases is
+an **overflow detector**, still not a memory diagnostic.
+
+The phase **composes** with the curriculum's `oppElixirMultiplier` rather than
+replacing it — a 1.5x stage-5 opponent in double elixir gets 3.0x. That is
+intended: the phase is a property of the match clock and applies to both
+players; the multiplier is a per-opponent handicap on top.
+
+**GAMEPLAY-AFFECTING, and the economy is the substrate every card's value sits
+on** — relative card value, how many cards are worth holding, when a push is
+affordable. Every win rate in "Measured baselines" was earned under a different
+economy, and the curriculum's win-rate gates are calibrated against a teacher
+that now plays a materially different late game.
+
+**`NUM_EXTRA_SCALARS` 9 → 10** for the multiplier (normalised by
+`MAX_ELIXIR_MULTIPLIER`), so `observation_size()` **13976 → 13977** and, because
+this one was appended to the extra scalars rather than to the end,
+`CYCLE_START` **13606 → 13607**. Every checkpoint needs migrating, but cheaply:
+`python_ai/tools/migrate_checkpoint_elixir_phase.py` zero-pads
+`scalar_mlp.extra` from `Linear(9, 12)` to `Linear(10, 12)` — **120 of
+1,900,165 parameters**, and the migrated net is bit-identical on every
+observation it could already see. **It pads the Adam moments too, and that is
+half the job**: the weight alone produces a file that loads a model fine and
+then throws on `optimizer.load_state_dict`.
+
+**`MAX_MATCH_ELIXIR` 140 → 280, and this was a latent defect the change would
+have tripped.** 140 was sized against a flat-1x match (`3600 × 0.035 + 5 =
+131`). Phased income reaches ~278, so **both** elixir-spend scalars would have
+saturated at 1.0 partway through every match and stayed there — the agent going
+blind to the economy exactly when it decides the game, with nothing raising.
+Same failure class as the constants the 2026-08-07 speed fix invalidated: a
+normaliser calibrated against a measurement a later change moved.
+
 **Troop movement was 4-5× too fast until 2026-08-07.** `CardStats::speed` is
 tiles per *tick*, so the registry's Giant `0.3f` meant **3.0 tiles/s** against
 a real-game Slow of ~0.75 — a Giant crossed bridge-to-tower in ~3.5 s.

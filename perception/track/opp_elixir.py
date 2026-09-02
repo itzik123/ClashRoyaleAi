@@ -25,13 +25,38 @@ and using its rate here would bias the balance roughly 1.3 elixir low by the
 three-minute mark -- turning the certain-proof alarm above into a steady
 stream of false positives. The two rates are kept apart deliberately.
 
-PHASE MULTIPLIERS ARE APPLIED HERE AND NOWHERE ELSE
-----------------------------------------------------
-Double and triple elixir change this calculation and nothing else in the
-pipeline, since the simulator has no phase concept to feed them into (see
-contracts.Phase). Confining them to this one module is what keeps that gap
-from leaking: the multiplier is a real-game fact used by a real-game model,
-and it never reaches the engine.
+PHASE MULTIPLIERS: THE SIMULATOR HAS THEM NOW (2026-09-02)
+-----------------------------------------------------------
+This section used to read "the simulator has no phase concept to feed them
+into", and confining the multipliers here was how that gap was kept from
+leaking. **That gap is closed.** `GameManager::elixirMultiplierAtTick` now runs
+the real 1x/2x/3x schedule (double from 2:00, triple from 3:00), the engine
+exposes `elixir_multiplier_at_tick(tick)` and the phase is observation scalar 9
+-- see `perception/UPSTREAM_REQUESTS.md` item 26.
+
+Two consequences, and neither is done here:
+
+  * The multiplier is no longer a real-game-only fact. A live mirror driven
+    through `set_current_tick` gets the correct phase automatically, because
+    the engine derives it from its own clock.
+  * `_PHASE_MULTIPLIER` below is therefore now a SECOND COPY of a schedule the
+    engine owns, which is exactly what CLAUDE.md's no-second-copies rule is
+    about. It is left alone deliberately for now, because the two are not yet
+    the same question: this table is keyed by `contracts.Phase` (a state the
+    SENSOR infers from the screen, and which carries OVERTIME as distinct for
+    reasons unrelated to elixir), while the engine's is keyed by tick. Merging
+    them means deciding whether the sensor should read the phase off the clock
+    instead of off the screen, which is a real design question and not a
+    rename.
+
+Until that is settled, the rates must be kept EQUAL by hand. If the engine's
+schedule moves and this table does not, the missed-placement alarm goes wrong
+in the late game only -- the hardest possible window to notice it in.
+
+WHY THE REAL RATE HERE AND THE ENGINE'S RATE THERE, still
+----------------------------------------------------------
+Unchanged by the above: the ~2% base-rate difference is deliberate and the
+phase multiplier composes on top of whichever base rate a given model uses.
 """
 
 from __future__ import annotations

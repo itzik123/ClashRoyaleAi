@@ -34,13 +34,30 @@ failures = []
 
 size = cre.ClashRoyaleEnv(DECK, DECK).observation_size()
 print(f"observation_size = {size}")
-# 13976 since 2026-08-27 (UPSTREAM_REQUESTS item 24): two NUM_CARD_IDS-wide
-# blocks carrying the opponent's seen[]/recency[] were appended behind the
-# extra scalars. Updated deliberately -- this literal is a tripwire for an
+# 13977 since 2026-09-02: the elixir-phase multiplier scalar (item 26) took
+# NUM_EXTRA_SCALARS 9 -> 10. Before that it was 13976 from the cycle blocks
+# (item 24). Updated deliberately -- this literal is a tripwire for an
 # ACCIDENTAL resize, since any change here kills every existing checkpoint, so
 # editing it is the acknowledgement that the change was intended.
-if size != 13976:
-    failures.append(f"observation_size is {size}, expected 13976")
+if size != 13977:
+    failures.append(f"observation_size is {size}, expected 13977")
+
+# The elixir phase must actually be in the vector, at the index the layout
+# says, and must be SYMMETRIC across teams -- the tower block two slots earlier
+# is mirrored, and a copy-paste of that mirroring here would be silent.
+_pe = cre.ClashRoyaleEnv(DECK, DECK)
+_pe.reset()
+_phase_idx = cre.ClashRoyaleEnv.EXTRA_SCALARS_START + 9
+for _tick, _want in ((0, 1.0), (1200, 2.0), (1800, 3.0)):
+    _pe.set_current_tick(_tick)
+    if abs(_pe.get_elixir_multiplier() - _want) > 1e-6:
+        failures.append(f"elixir multiplier at tick {_tick} is "
+                        f"{_pe.get_elixir_multiplier()}, expected {_want}")
+    for _team in (0, 1):
+        _got = _pe.get_observation_for_team(_team)[_phase_idx] * cre.MAX_ELIXIR_MULTIPLIER
+        if abs(_got - _want) > 1e-4:
+            failures.append(f"obs phase scalar (team {_team}) at tick {_tick} "
+                            f"is {_got}, expected {_want}")
 
 # ---- sight/attack geometry: a Musketeer 8 tiles from a Princess Tower must
 # ---- NOT be able to siege it for free.

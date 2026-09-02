@@ -860,3 +860,97 @@ TEST_CASE("the registry's two rolling spells are the only cards this rule catche
     REQUIRE(registry.getCard(7)->rollRange == 0.0f);    // Fireball unaffected
     REQUIRE(registry.getCard(100)->rollRange == 0.0f);  // Giant Snowball unaffected
 }
+
+// ============================================================================
+// REAL-GAME ELIXIR PHASES (2026-09-02)
+//
+// Added to THIS file rather than a new one deliberately: CLAUDE.md records
+// that a new test FILE needs the MSBuild run twice (CONFIGURE_DEPENDS re-globs
+// on the first pass but links from the pre-reconfigure target list, reporting a
+// green build with the file absent from the binary). Appending to an existing
+// file in tests/core/ cannot hit that.
+// ============================================================================
+
+TEST_CASE("elixir regen follows the real-game 1x/2x/3x phase schedule",
+          "[game_manager][elixir_phase]") {
+    // The schedule as a pure function, checked on BOTH sides of each boundary.
+    // A one-sided check passes for an off-by-one, which is the specific defect
+    // this engine has shipped twice (the freeze decrement, the bridge epsilon).
+    REQUIRE(GameManager::elixirMultiplierAtTick(0) == 1.0f);
+    REQUIRE(GameManager::elixirMultiplierAtTick(GameManager::DOUBLE_ELIXIR_TICK - 1) == 1.0f);
+    REQUIRE(GameManager::elixirMultiplierAtTick(GameManager::DOUBLE_ELIXIR_TICK) == 2.0f);
+    REQUIRE(GameManager::elixirMultiplierAtTick(GameManager::TRIPLE_ELIXIR_TICK - 1) == 2.0f);
+    REQUIRE(GameManager::elixirMultiplierAtTick(GameManager::TRIPLE_ELIXIR_TICK) == 3.0f);
+
+    // The boundaries themselves, against the 10-ticks-per-second conversion
+    // rather than as bare literals -- 1200 is meaningless without it.
+    REQUIRE(GameManager::DOUBLE_ELIXIR_TICK == 120 * 10);   // 2:00
+    REQUIRE(GameManager::TRIPLE_ELIXIR_TICK == 180 * 10);   // 3:00
+    REQUIRE(GameManager::MAX_ELIXIR_MULTIPLIER
+            == GameManager::elixirMultiplierAtTick(GameManager::TRIPLE_ELIXIR_TICK));
+}
+
+TEST_CASE("elixir income is actually multiplied, measured off the bar",
+          "[game_manager][elixir_phase]") {
+    std::vector<int> deck = { 15, 6, 25, 40, 24, 72, 33, 7 };
+
+    // Reads the BAR after stepping, not the schedule -- a test that asserted
+    // elixirMultiplierAtTick again here would be checking the same function
+    // twice and could not catch step() forgetting to apply it.
+    auto incomeOver = [&](int startTick, int ticks) {
+        GameManager game(deck, deck);
+        game.setCurrentTick(startTick);
+        game.setElixir(0, 0.0f);
+        const float before = game.playerAI.elixir;
+        for (int i = 0; i < ticks; ++i) game.step();
+        return game.playerAI.elixir - before;
+    };
+
+    // 20 ticks = 2 s. Short on purpose: PlayerState clamps the bar at 10.0, so
+    // a long window saturates and every phase reports the same number -- a
+    // measurement whose failure mode is "all arms agree" would look like the
+    // phases doing nothing at all.
+    REQUIRE(incomeOver(0, 20) == Catch::Approx(0.7f).margin(0.01f));
+    REQUIRE(incomeOver(GameManager::DOUBLE_ELIXIR_TICK, 20) == Catch::Approx(1.4f).margin(0.01f));
+    REQUIRE(incomeOver(GameManager::TRIPLE_ELIXIR_TICK, 20) == Catch::Approx(2.1f).margin(0.01f));
+
+    // Crossing a boundary mid-window. step() does currentTick++ BEFORE reading
+    // the phase, so stepping N from T covers ticks T+1..T+N: from 1190 that is
+    // 9 ticks at 1x (1191..1199) and 11 at 2x (1200..1210), i.e. 0.315 + 0.770.
+    // Tick 1200 IS 2:00 and correctly pays double; asserting an even 10/10
+    // split here would be asserting that the first tick of double elixir pays
+    // single. This is the case that pins PER-TICK evaluation -- a schedule
+    // sampled once per step() passes every assertion above.
+    REQUIRE(incomeOver(GameManager::DOUBLE_ELIXIR_TICK - 10, 20)
+            == Catch::Approx(1.085f).margin(0.01f));
+}
+
+TEST_CASE("the elixir phase composes with the curriculum's opponent multiplier",
+          "[game_manager][elixir_phase]") {
+    std::vector<int> deck = { 15, 6, 25, 40, 24, 72, 33, 7 };
+
+    auto oppIncomeOver = [&](int startTick, int ticks, float mult) {
+        GameManager game(deck, deck);
+        game.setOpponentElixirMultiplier(mult);
+        game.setCurrentTick(startTick);
+        game.setElixir(0, 0.0f);
+        game.setElixir(1, 0.0f);
+        const float before = game.playerOpponent.elixir;
+        for (int i = 0; i < ticks; ++i) game.step();
+        return std::make_pair(game.playerOpponent.elixir - before,
+                              game.playerAI.elixir);
+    };
+
+    // The phase scales the BASE rate and oppElixirMultiplier scales THAT, so a
+    // 1.5x opponent in double elixir gets 3.0x. That composition is the
+    // intended behaviour and not an accident: the phase is a property of the
+    // match clock and applies to both players, while the curriculum handicap
+    // is a per-opponent advantage on top of it.
+    REQUIRE(oppIncomeOver(0, 20, 1.5f).first == Catch::Approx(1.05f).margin(0.01f));
+    REQUIRE(oppIncomeOver(GameManager::DOUBLE_ELIXIR_TICK, 20, 1.5f).first
+            == Catch::Approx(2.10f).margin(0.01f));
+
+    // ...and the handicap must not leak into the AI's own bar in any phase.
+    REQUIRE(oppIncomeOver(GameManager::DOUBLE_ELIXIR_TICK, 20, 1.5f).second
+            == Catch::Approx(1.40f).margin(0.01f));
+}

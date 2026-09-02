@@ -19,7 +19,11 @@
 //     flying, anti-air, DPS, range, speed -- ally+enemy each) so air/ground
 //     counterplay and unit identity beyond raw HP fraction are actually
 //     visible in the observation (see NUM_CHANNELS's own comment).
-//   - NUM_EXTRA_SCALARS 0->9: appended scalars (time, elixir spent, tower HP).
+//   - NUM_EXTRA_SCALARS 0->9: appended scalars (time, elixir spent, tower HP),
+//     then 9->10 on 2026-09-02 for the elixir-phase multiplier (1x/2x/3x,
+//     normalised by GameManager::MAX_ELIXIR_MULTIPLIER). Note this one was
+//     appended to the EXTRA SCALARS rather than to the end of the vector, so
+//     unlike the cycle blocks it MOVED CYCLE_START -- by exactly one.
 //   - CYCLE_BLOCK_SIZE 0->370 (2026-08-27, UPSTREAM_REQUESTS item 24): two
 //     NUM_CARD_IDS-wide blocks carrying what the OPPONENT has played --
 //     seen[] and an exponentially-decaying recency[]. The card identities are
@@ -27,7 +31,7 @@
 //     agent the opponent's elixir SPEND on exactly that reasoning) and were
 //     being reduced to a scalar sum of costs, which is the one summary that
 //     destroys cycle information.
-// 18*34*21 + 1 + 4 + 4*185 + 9 + 2*185 = 13976.
+// 18*34*21 + 1 + 4 + 4*185 + 10 + 2*185 = 13977.
 //
 // Asserted BOTH ways on purpose, because the two catch different faults:
 //   * the FORMULA catches observationSize() disagreeing with the constants it
@@ -52,13 +56,19 @@ TEST_CASE("ClashEnv::observationSize matches its declared layout", "[clash_env]"
         + ClashEnv::CYCLE_BLOCK_SIZE;                    // opponent seen[] + recency[]
 
     REQUIRE(env.observationSize() == expected);
-    REQUIRE(env.observationSize() == 13976);
+    REQUIRE(env.observationSize() == 13977);
 
-    // The cycle blocks are a pure APPEND: everything that was in the vector
-    // before is still at the index it was at. CYCLE_START therefore equals the
-    // OLD observation size exactly, which is the cheapest possible check that
-    // nothing was inserted rather than added.
-    REQUIRE(ClashEnv::CYCLE_START == 13606);
+    // CYCLE_START is 13607 since 2026-09-02, one higher than the 13606 it sat
+    // at from the cycle blocks' own append. That is the elixir-phase scalar
+    // being added to the EXTRA SCALARS block, which sits in front of the cycle
+    // blocks and therefore shifts them.
+    //
+    // The literal is worth keeping even though it now moves: it is what
+    // distinguishes "one scalar was appended to the extra block" (this, +1)
+    // from "something was inserted in the middle of the spatial channels or
+    // the one-hots" (a much larger jump). The relationship asserted below is
+    // the invariant; this number is the tripwire.
+    REQUIRE(ClashEnv::CYCLE_START == 13607);
     REQUIRE(ClashEnv::EXTRA_SCALARS_START + ClashEnv::NUM_EXTRA_SCALARS
             == ClashEnv::CYCLE_START);
 

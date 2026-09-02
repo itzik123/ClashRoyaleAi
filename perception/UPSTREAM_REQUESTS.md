@@ -220,3 +220,191 @@ Proposal: bind named offsets (`EXTRA_TIME`, `EXTRA_SPENT_SELF`,
 `EXTRA_SPENT_OPP`, `EXTRA_TOWER_HP_BASE`) through `src/bindings.cpp` the way
 `CH_*` already is, and have Python derive from them. Cheap, and it removes a
 whole class of silent-drift bug before item 24 adds two more blocks to the tail.
+
+---
+
+## Item 26 — the match never leaves single elixir, and it caps two cards' EV
+
+**Status: IMPLEMENTED 2026-09-02.** GAMEPLAY-AFFECTING; see Blast radius.
+
+### The gap
+
+`GameManager::step` regenerated elixir at a flat `ELIXIR_REGEN_RATE = 0.035`
+per tick for the whole match. Real Clash Royale runs three phases -- single,
+double from 2:00, triple from 3:00 (overtime) -- so the simulator's economy was
+the opening two minutes of a real match, stretched over all six.
+
+The hypothesis this was raised under: with no double/triple phase the board
+never carries a large simultaneous push, so Fireball and Cannon never reach
+positive EV and a cheap-cycle policy dominates by construction.
+
+### Evidence
+
+Measured 2026-09-02 on `model_weights_phase4.pth` (ep 32,484) at teacher stage
+3, 24 episodes / 4,229 decisions, sampled (on-policy), before any change.
+
+**Elixir is not husbanded, it is STARVED.** This is the finding that carries
+the item:
+
+| | mean | median | P(>= 9.0) | P(<= 4.0) |
+|---|---|---|---|---|
+| agent | 2.16 | 1.95 | **0.0%** | **91.0%** |
+| teacher | 1.81 | 1.45 | **0.0%** | 91.3% |
+
+Zero overflow in 4,229 decisions -- `W_ELIXIR_OVERFLOW` never fires. Both sides
+spend every drop the tick it arrives, so income really is the binding
+constraint on how much can be on the board at once, and added income will be
+SPENT rather than discarded. (Had the bars been pooling near 10.0 the whole
+proposal would be refuted: more income would then be waste, and the constraint
+would have been decision-making instead.)
+
+**And the board shows it.** Best-case Fireball catch, computed as an upper
+bound -- perfect information, the best of all 612 placement centres, 2.5-tile
+radius from `CardRegistry.h:837`:
+
+```
+enemy units on board   mean 3.62   median 3   max 9
+BEST fireball catch    mean 1.51   median 1   max 5
+  P(catch >= 3 units) = 15.5%
+  P(catch >= 4 units) =  6.1%
+```
+
+A 4-elixir spell whose best possible play usually catches ONE unit cannot be
++EV, and the policy declining to play it is correct behaviour against the
+environment as it stood, not a training failure.
+
+### What the measurement REFUTED, and why the schedule is not the one proposed
+
+The proposal as raised put double at 2:00-4:00 and triple at 4:00-5:00. Match
+lengths say the triple phase would have been nearly inert there:
+
+```
+match end tick   mean 1758 (2:56)   median 1710   max 3556
+reached 2:00 (tick 1200):  92% of matches
+reached 4:00 (tick 2400):   8% of matches
+share of all ticks played that fall after 2:00:  32.1%
+share of all ticks played that fall after 4:00:   3.0%
+```
+
+Double elixir touches a THIRD of all gameplay. Triple at 4:00 touches 3% -- a
+whole code path, an observation value and a full retrain for something the
+agent would see in the last seconds of one match in twelve. Shipped with the
+REAL game's schedule instead (double 2:00, triple 3:00), which puts triple at
+~8% of ticks: still small, but 2.7x the proposed placement and correct as
+fidelity rather than a compromise.
+
+### The link that WAS unmeasured -- now measured, and it holds modestly
+
+"More elixir" -> "bigger clusters" was assumed when this was raised. Measured
+after the change, same policy, same stage 3, same 24 episodes (4,162 decisions
+against 4,229 before) so that the ONLY variable is the engine:
+
+| | flat 1x | 1x/2x/3x |
+|---|---|---|
+| enemy units on board, mean | 3.62 | **3.89** |
+| best Fireball catch, mean | 1.51 | **1.71** |
+| best Fireball catch, **median** | **1** | **1** |
+| P(catch >= 2) | 28.5% | **36.7%** |
+| P(catch >= 3) | 15.5% | **21.8%** |
+| P(catch >= 4) | 6.1% | **10.4%** |
+| best catch, max | 5 | **7** |
+| agent elixir, mean | 2.16 | **2.50** |
+| agent P(>= 9.0) | 0.0% | **0.6%** |
+
+**The direction is right and the size is modest.** P(catch >= 3) rises 41% in
+relative terms and P(catch >= 4) by 70%, so the improvement is real but lives
+in the TAIL -- the median best-case Fireball still catches exactly ONE unit.
+Anyone expecting Fireball to become obviously correct should read that median
+first.
+
+Two things this does NOT say. It is the SAME policy throughout, trained under
+flat elixir and never taught to exploit double, so this measures whether the
+ENVIRONMENT produces more clusters at unchanged behaviour -- the right
+controlled question, but not what a retrained policy would do. And
+`DEFAULT_DECK` still bounds it: 2.6 Hog Cycle is almost entirely single-body
+cards (only Skeletons gives 3), so no amount of elixir makes a swarm in a
+mirror. What double elixir actually buys Fireball is MORE 4-COST SUPPORT ALIVE
+AT ONCE -- killing a Musketeer is an even trade plus tower chip. Read a
+post-retrain Fireball number against that claim, not against "swarms now
+exist".
+
+**Overflow is now possible for the first time.** `P(>= 9.0)` moved 0.0% ->
+0.6% for the agent, so `W_ELIXIR_OVERFLOW` starts firing where it never had.
+That also broke the premise of
+`python_ai/tests/test_aux_task_is_not_a_memory_probe.py` -- see below.
+
+### An unplanned consequence: the old aux task is no longer trivial
+
+That test file documented (2026-08-27) that the deleted `Aux/OppElixir_MAE`
+head measured nothing, because the opponent's hidden elixir is an affine
+function of two scalars already in the observation: `start + rate*t - spent`,
+recoverable at **MAE 0.0000**. Its closing caveat said the relation holds only
+while nothing clamps at the 10 cap, and that a policy baiting the opponent into
+overflow "would make the task genuinely non-trivial".
+
+Nothing baited anyone; tripling the income was enough. Both halves moved:
+
+- `rate * t` is no longer a single slope, so the ORIGINAL basis now scores
+  **1.4265** -- no better than predict-the-mean. Integrating the schedule
+  (`[income(t), spent, 1]`) restores the exact fit.
+- The opponent now **overflows unaided**, and the cap discards elixir no scalar
+  records. Per episode against the exact analytic model: the three that never
+  capped residual at **-0.035** (one tick of regen, i.e. noise); the three that
+  did carry **+0.76, +1.63 and +5.38**.
+
+The file's conclusion survives in the overflow-free regime and its basis was
+updated; two tests were added pinning both new facts. A rising MAE under phases
+is an OVERFLOW detector, and still not a memory diagnostic.
+
+### What shipped
+
+- `GameManager::DOUBLE_ELIXIR_TICK` (1200) / `TRIPLE_ELIXIR_TICK` (1800) /
+  `MAX_ELIXIR_MULTIPLIER` (3.0), and `elixirMultiplierAtTick(tick)` as a public
+  static -- one definition, since ClashEnv, the bindings, GameLogger, the
+  viewer and `perception_encoder.py` all need it.
+- `step()` reads the phase ONCE per tick and hands the same value to both
+  players. The phase COMPOSES with `oppElixirMultiplier` rather than replacing
+  it, so a 1.5x curriculum opponent in double elixir gets 3.0x.
+- `NUM_EXTRA_SCALARS` 9 -> 10; scalar 9 is the multiplier / 3.0. Observable by
+  the same test the cycle blocks are argued from -- a human sees the "2x
+  ELIXIR" banner. Symmetric across teams, unlike the tower block.
+- **`MAX_MATCH_ELIXIR` 140 -> 280.** Latent defect the change would have
+  tripped: 140 was sized against a flat-1x match (3600 x 0.035 + 5 = 131).
+  Phased income reaches ~278, so BOTH spend scalars would have saturated at 1.0
+  part way through every match and stayed there -- going blind exactly when the
+  economy decides the game, with nothing raising.
+- `elixirPhases` block in the replay JSON, and the viewer's `x1/x2/x3` badge
+  reading it. The viewer is the structurally-forced-to-restate case, so the fix
+  belongs in the FORMAT (same argument as `cardMeta` and `rollWidth`).
+- `python_ai/tools/migrate_checkpoint_elixir_phase.py` -- zero-pads
+  `scalar_mlp.extra` from `Linear(9, 12)` to `Linear(10, 12)` AND the matching
+  Adam moments, which is half the job and is what would otherwise throw on
+  resume.
+
+### Blast radius
+
+**GAMEPLAY-AFFECTING, and about as wide as it gets.** The economy is the
+substrate every card's value sits on: relative card value, the correct number
+of cards to hold, when a push is affordable, and therefore every win rate in
+CLAUDE.md's "Measured baselines". The curriculum's win-rate gates are
+calibrated against a teacher that now plays a materially different late game.
+
+**Every checkpoint needs migrating**, though cheaply -- 120 of 1,900,165
+parameters. `observation_size()` 13976 -> **13977** and `CYCLE_START`
+13606 -> **13607**; both are derived everywhere that matters, and the two
+deliberate tripwires (`tests/core/test_clash_env.cpp`,
+`tools/audit/verify_pyd.py`) were updated as the acknowledgement.
+
+### Tests
+
+- `tests/core/test_game_manager.cpp` `[elixir_phase]` -- three cases: the
+  schedule on BOTH sides of each boundary, income MEASURED off the bar (not
+  re-asserting the schedule function), and composition with
+  `oppElixirMultiplier`. The mid-window crossing case pins per-TICK evaluation;
+  a schedule sampled once per `step()` passes every other assertion.
+- `tools/audit/elixir_phase_audit.cpp` -- the same measurements plus the
+  observation layout, runnable without the .pyd. Written because a training run
+  held the .pyd mapped while this was authored, so the ordinary build was
+  unavailable; it is the reason the C++ was verified at all before landing.
+- `tools/audit/verify_pyd.py` now checks the phase scalar is present, at the
+  index the layout claims, and symmetric across teams.

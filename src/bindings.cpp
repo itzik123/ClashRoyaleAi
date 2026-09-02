@@ -36,6 +36,19 @@ PYBIND11_MODULE(clash_royale_env, m) {
     m.def("arena_princess_y", &ArenaLayout::princessY, py::arg("team"),
           "Row of `team`'s two Princess Towers.");
 
+    // --- ELIXIR PHASE SCHEDULE (2026-09-02) --------------------------------
+    // Module level, not on the env class, because the consumers that most need
+    // it have no env: perception/'s hand-built observation encoder (which must
+    // write the identical scalar the training encoder writes, or the deployed
+    // agent reads a phase it was never trained on) and the replay viewer.
+    // Exposing the FUNCTION as well as the boundaries means neither has to
+    // restate the "two thresholds, three values" shape either.
+    m.attr("MAX_ELIXIR_MULTIPLIER") = GameManager::MAX_ELIXIR_MULTIPLIER;
+    m.def("elixir_multiplier_at_tick", &GameManager::elixirMultiplierAtTick,
+          py::arg("tick"),
+          "Elixir regeneration multiplier (1.0 / 2.0 / 3.0) in force at `tick`. "
+          "10 ticks = 1 second: double from 2:00, triple from 3:00.");
+
     py::class_<StepResult>(m, "StepResult")
         .def_readonly("observation", &StepResult::observation)
         .def_readonly("reward", &StepResult::reward)
@@ -159,6 +172,10 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // drift; see ClashEnv::setCurrentTick.
         .def("set_current_tick", &ClashEnv::setCurrentTick, py::arg("tick"))
         .def("get_current_tick", &ClashEnv::getCurrentTick)
+        // Elixir phase (1.0 / 2.0 / 3.0) at the current tick. Bound so that
+        // probes, perception/ and the tests read the schedule from the engine
+        // instead of restating DOUBLE_ELIXIR_TICK/TRIPLE_ELIXIR_TICK.
+        .def("get_elixir_multiplier", &ClashEnv::getElixirMultiplier)
         // Card-cycle tracking (item 24). `note_played_card` is for the live
         // mirror in perception/: `inject` places a BODY and deliberately
         // bypasses GameManager::playCard, which is where the cycle is hooked,
@@ -254,7 +271,13 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly_static("EXTRA_SCALARS_START", &ClashEnv::EXTRA_SCALARS_START)
         .def_readonly_static("CYCLE_START", &ClashEnv::CYCLE_START)
         .def_readonly_static("NUM_EXTRA_SCALARS", &ClashEnv::NUM_EXTRA_SCALARS)
-        .def_readonly_static("MAX_MATCH_ELIXIR", &ClashEnv::MAX_MATCH_ELIXIR);
+        .def_readonly_static("MAX_MATCH_ELIXIR", &ClashEnv::MAX_MATCH_ELIXIR)
+        // Elixir phase boundaries, in TICKS (10 ticks = 1 s). Bound from
+        // GameManager, which is where the schedule lives -- the viewer and
+        // perception/ both need the boundaries themselves and not just the
+        // current value, and neither may restate them.
+        .def_readonly_static("DOUBLE_ELIXIR_TICK", &GameManager::DOUBLE_ELIXIR_TICK)
+        .def_readonly_static("TRIPLE_ELIXIR_TICK", &GameManager::TRIPLE_ELIXIR_TICK);
 
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");
