@@ -109,31 +109,36 @@ _EPS = 1e-9
 #: hinge is ~150x larger in magnitude: one dead card at p = 0.0011 contributes
 #: log(0.02/0.0011)/4 = 0.725 raw, against 0.0047 before.
 #:
-#: MEASURED, not chosen. Three paired arms resuming the ep-32,484 checkpoint at
-#: stage 3, ~18 minutes each, all from an identical copy:
+#: DEFAULT 0.0 -- THE TERM IS OFF, BECAUSE IT IS MEASURED HARMFUL.
 #:
-#:     coef   d(MinCardProb)   DeckPen        H_card       ClipFrac
-#:     0.00        -0.00068    0.005 flat   0.34 -> 0.32   0.32 -> 0.33
-#:     0.05        +0.00096    0.53 -> 0.33 0.38 -> 0.43   0.32 -> 0.32
-#:     0.20        +0.00715    0.43 -> 0.13 0.38 -> 0.57   0.39 -> 0.34
+#: It works mechanically: the cards climb. It costs more win rate than the
+#: cards are worth. Paired arms resuming the ep-32,484 checkpoint at stage 3,
+#: all from an identical copy, scenario injection ON in every arm:
 #:
-#: Monotone in the coefficient, unlike the linear form's null, and the log
-#: shortfall itself falls 70% at 0.20 -- the direct confirmation that cards are
-#: climbing out rather than the statistic wobbling. 0.20 is 7x faster than 0.05
-#: and the stability side holds: actor loss unchanged in magnitude (-0.026 to
-#: -0.033 against the control's -0.032 to -0.039), critic slightly BETTER.
+#:     coef   Win_Rate_100      MinCardProb          H_card
+#:     0.00   0.600 -> 0.520    0.00126 -> 0.00058   0.34 -> 0.32
+#:     0.05   0.600 -> 0.340    0.00093 -> 0.00189   0.38 -> 0.43
+#:     0.20   0.620 -> 0.120    0.00177 -> 0.00892   0.38 -> 0.57
 #:
-#: THE COST IS ON H_card, AND IT IS PARTLY THE CURE. Card entropy rises to 0.57
-#: against `EntropyConfig.target_card = 0.35` -- but that target was calibrated
-#: on a policy using five of eight cards, and an eight-card policy legitimately
-#: carries more. The controller will respond by cutting `coef_card` toward its
-#: 0.01 floor, which is the right resolution: the entropy bonus was only ever a
-#: crude proxy for what this term now does properly.
+#: A clean dose-response in the WRONG direction: the harder the floor pushes,
+#: the better the deck coverage and the worse the agent plays. Confirmed live
+#: on a full launch, which reproduced the 0.20 arm exactly -- 0.60 -> 0.11 over
+#: 180 episodes, monotone, reward +1.96 -> -1.46. The 0.00 control isolates the
+#: cause: scenario injection alone costs 0.08, the floor costs the other 0.42.
 #:
-#: WATCH `Policy/Entropy_Coef_Card`. If it PINS at 0.01 for a sustained stretch
-#: while H_card stays above ~0.55, the two controllers are fighting and one is
-#: saturated -- back off to 0.10 (untested midpoint) rather than raising this.
-DECK_COVERAGE_COEF = float(os.environ.get("CLASH_DECK_COVERAGE_COEF", 0.20))
+#: WHY, and it is this module's own stated caveat turning out to be decisive
+#: rather than marginal (see WHAT IT CANNOT DO): a floor keeps a card's logit
+#: off zero, it cannot make the card GOOD. Cannon placement captures 27.5% of
+#: achievable value and Log/Fireball are worse, so forcing those cards into
+#: play just spends elixir on placements that do not work. The card head was
+#: not broken -- it was correctly pricing a broken placement head.
+#:
+#: THE ORDER IS WRONG, NOT THE MECHANISM. Fix what makes those cards worth
+#: playing (scenario injection creating the states, and a placement head that
+#: can exploit them), and the policy gradient should revive the cards on its
+#: own. Re-enable this only to accelerate a revival that is already happening,
+#: and re-measure WIN RATE when you do -- never the deck metric alone.
+DECK_COVERAGE_COEF = float(os.environ.get("CLASH_DECK_COVERAGE_COEF", 0.0))
 
 
 def enabled():
