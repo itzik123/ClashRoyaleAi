@@ -521,6 +521,34 @@ def threat_level(obs):
     return float(threat_map(obs).sum())
 
 
+#: Enemy HP on our half above which the deck-coverage floor is allowed to push.
+#: DERIVED from ElixirGate's own `threat_hp` default rather than restated: that
+#: value is calibrated as "just under a single Musketeer (721) and above a lone
+#: Minion (230), so any real commitment releases the reserve", which is exactly
+#: the question the floor needs answered -- is a defence actually called for.
+DECK_COVERAGE_THREAT_HP = 400.0
+
+
+def threat_level_batch(obs):
+    """`threat_level` over a (B, obs_dim) torch batch, in absolute enemy HP.
+
+    Exists because the PPO update needs this per ROW and cannot afford a numpy
+    round-trip per sample. It is deliberately written directly beneath the
+    scalar version and reproduces its arithmetic step for step -- channels,
+    the CH_COUNT correction, and the same `ceil(RIVER_Y)` cutoff -- because a
+    second, drifting definition of "threat" is exactly the defect class this
+    project has now found in eight arena constants.
+    `tests/test_threat_gated_deck_coverage.py` pins the two against each other.
+    """
+    import torch
+    sp = obs[:, :SPATIAL].reshape(-1, N_CH, BOARD_H, BOARD_W)
+    hp = sp[:, list(CH_ENEMY_TROOP)].sum(dim=1) * MAX_TROOP_HP
+    count = torch.clamp(sp[:, CH_ENEMY_COUNT] * MAX_CELL_UNITS, min=1.0)
+    per_cell = hp * count
+    per_cell = per_cell[:, :int(np.ceil(RIVER_Y)), :]
+    return per_cell.sum(dim=(1, 2))
+
+
 def threat_lane(obs):
     """-1 left, +1 right, 0 none -- which side the push is on.
 

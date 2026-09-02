@@ -202,6 +202,12 @@ def rollout():
             for _ in range(TINY.num_envs)]
     for e in envs:
         e.reset()
+        # A REAL THREAT on our half. The term is threat-gated, so on the empty
+        # board this fixture used to build it correctly measures nothing and
+        # reports NaN -- which is the gate working, not a failure. An enemy Hog
+        # (3151 HP) clears tactics.DECK_COVERAGE_THREAT_HP = 400 comfortably.
+        e.inject_enemy(15, 14.5, 14.0)
+        e.step(clash_royale_env.ClashRoyaleEnv.HAND_SIZE, 0.0, 0.0, 1)
     buf = RolloutBuffer(CORE_FIELDS)
     hx = torch.zeros(TINY.num_envs, LSTM_HIDDEN)
     cx = torch.zeros(TINY.num_envs, LSTM_HIDDEN)
@@ -244,7 +250,11 @@ def _run(net, batch, **kwargs):
 
 
 def test_the_update_reports_deck_coverage(rollout):
-    """Without a reported number, a dead card is invisible again."""
+    """Without a reported number, a dead card is invisible again.
+
+    Requires a THREATENED board: the term is gated, so on a quiet one it
+    measures nothing by design and reports NaN. See the fixture.
+    """
     net, batch = rollout
     stats = _run(copy.deepcopy(net), batch)
 

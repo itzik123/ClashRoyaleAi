@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-from python_ai.advisors import advisor_target
+from python_ai.advisors import advisor_target, tactics
 from python_ai.rl import deck_coverage
 from python_ai.rl.engine_stats import next_card_labels
 from python_ai.rl.optim_step import clip_and_step
@@ -398,10 +398,20 @@ class PPOUpdater:
                 # replaced by raising it: entropy is measured over hand SLOTS
                 # per decision, which a five-card policy satisfies exactly
                 # while three cards sit at zero. See rl/deck_coverage.py.
+                # THREAT-GATED. The ungated form cost 0.42 win-rate points: a
+                # Cannon is worth +841 tower HP under attack and ~nothing on a
+                # quiet board, so pushing it everywhere spent 3 elixir a time
+                # on boards that did not need it. `threat_level_batch` is the
+                # SAME definition the solvency gate uses, batched -- not a
+                # second copy.
+                with torch.no_grad():
+                    threat = (tactics.threat_level_batch(mb_obs_flat)
+                              > tactics.DECK_COVERAGE_THREAT_HP).float()
                 deck_pen, deck_min_p, deck_n = deck_coverage.deck_coverage_penalty(
                     cl_seq.reshape(-1, cl_seq.shape[-1]),
                     net.hand_card_ids(mb_obs_flat),
-                    mb_decision.reshape(-1))
+                    mb_decision.reshape(-1),
+                    threat=threat)
                 if deck_n:
                     deck_pens.append(float(deck_pen.detach()))
                     deck_min_probs.append(deck_min_p)

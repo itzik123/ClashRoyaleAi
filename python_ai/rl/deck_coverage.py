@@ -145,12 +145,17 @@ def enabled():
     return DECK_COVERAGE_COEF > 0.0
 
 
-def deck_coverage_penalty(card_logits, hand_ids, decision, floor=None):
+def deck_coverage_penalty(card_logits, hand_ids, decision, floor=None,
+                          threat=None):
     """mean over deck cards of `relu(log(floor / P(play card | card in hand)))`.
 
     card_logits: (N, hand_size + 1) -- the final column is the no-op arm.
     hand_ids:    (N, hand_size) long, -1 for an empty slot.
     decision:    (N,) float; rows at 0 are padding and contribute nothing.
+    threat:      (N,) float or None. Rows at 0 are QUIET boards and contribute
+                 nothing -- see the gate below. None means every row counts,
+                 which is the ungated behaviour and is measured harmful; it is
+                 kept only so the unit tests can exercise the raw hinge.
 
     Returns (penalty, min_p, n_cards). `penalty` carries gradient; `min_p` and
     `n_cards` are plain Python numbers for logging.
@@ -168,6 +173,15 @@ def deck_coverage_penalty(card_logits, hand_ids, decision, floor=None):
     probs = torch.softmax(card_logits, dim=-1)[:, :hand_size]
 
     valid = (hand_ids >= 0) & (decision.reshape(-1, 1) > 0)
+    if threat is not None:
+        # THE GATE. Without it this term cost 0.42 win-rate points: a Cannon is
+        # worth +841 tower HP when something is attacking and ~nothing on a
+        # quiet board, and an ungated floor raised P(play) in BOTH situations.
+        # Because `Training/Win_Rate_100` excludes scenario episodes, the whole
+        # measured cost landed on the ordinary boards where each forced play
+        # was 3 wasted elixir. Restricting the push to rows that actually carry
+        # a threat is the entire fix.
+        valid = valid & (threat.reshape(-1, 1) > 0)
     if not bool(valid.any()):
         # A minibatch of pure padding. Return a real zero that still carries a
         # grad_fn, so a caller adding this to its loss cannot get a NaN from a
