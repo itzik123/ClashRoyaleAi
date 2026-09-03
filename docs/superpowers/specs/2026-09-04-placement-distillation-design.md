@@ -113,7 +113,28 @@ Widening is ON, since it is what the gate measured. Note the consequence
 SCORE rather than truncated, so collection stays correct, but a wide run records
 only its best 8 candidates per row.
 
+**COLLECTION MUST USE `horizon = 20`, NOT the default 4.** The +768 HP the gate
+certified was measured with 20-decision rollouts behind the critic's ranking;
+collecting at horizon 4 would record labels from a materially weaker expert than
+the one that passed the gate, while looking identical in every log line. The
+cost is real — 29.5 s/episode against the pool — and it is the reason the round
+is sized by `--time-budget` rather than by an episode count.
+
+`SearchCfg`'s docstring warns that horizon degrades past ~12 because "a
+candidate rollout assumes BOTH SIDES NO-OP". That is not what happens here:
+`sim.step` runs the C++ opponent, so only OUR side no-ops during a rollout. The
+warning is about a different regime and does not bind this measurement.
+
 The output is a **seeded checkpoint, not a finished policy.**
+
+**Grafting it back needs `setup_ab_arm.py --base`, not a bare state dict.**
+`expert_distill` writes weights only; handing those to `train.py` takes the
+legacy path, resets `episodes_completed` to 0 and drops the rung. `--base`
+inherits the full training life from phase6 — including `curriculum_stage = 2`
+and, critically, the `teacher_table_size = 11` stamp, without which rung 2 is
+re-read as a legacy index and remapped to rung 4. Its own warning ("do NOT use
+`--base` across a change that moves the trunk") is satisfied precisely because
+the distillation freezes the trunk.
 
 ### 3. Build and commit the frozen state bank
 
@@ -176,9 +197,12 @@ wrong call in this project:
 
 Stated in advance so the run cannot be read charitably after the fact.
 
-- `quality_hi` does not move on the bank **immediately after distillation**, before
-  any PPO. The gate says search finds better cells; if distillation cannot
-  transfer that, the mechanism is broken and nothing downstream matters.
+- **The Log's** `quality_hi` does not move from 0.203 on the bank **immediately
+  after distillation**, before any PPO. The gate says search finds better cells
+  for this card specifically; if distillation cannot transfer that, the
+  mechanism is broken and nothing downstream matters. Read The Log, not an
+  average: Fireball sits at 0.675 with a non-significant gate, so it is expected
+  to move little and averaging the two would hide both facts.
 - `quality_hi` moves after distillation and then **decays back** over PPO
   episodes. That is the finding — PPO washes out distilled placement — and it
   argues for in-loop distillation rather than a one-shot round.
