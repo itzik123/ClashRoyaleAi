@@ -1213,6 +1213,73 @@ fixed. It is also the lesson phase 2 already learned one level up, where a
 ladder was replaced by PFSP because a ladder never revisits and so cannot
 prevent forgetting.
 
+### RESUMING INTO THE POOL: DROP THE RUNG FIRST (measured 2026-09-03)
+
+**A mirror-trained checkpoint resumed into the pool AT THE RUNG IT EARNED
+COLLAPSES.** Measured twice, from `model_weights_phase5.pth` (ep 32,484, rung 6
+after the legacy remap), two independent arms:
+
+| episodes in | 0 | 30 | 60 | 100 | 130 |
+|---|---|---|---|---|---|
+| arm A win rate | 0.58 | 0.47 | 0.34 | 0.16 | **0.00** |
+| arm B win rate | 0.58 | 0.47 | 0.35 | 0.24 | **0.00** |
+
+Both fired `[STALL] Curriculum DEMOTED to stage 5`, and arm A recovered to
+0.30 / 0.21 immediately after the demotion cleared the window.
+
+**THE CAUSE IS TWO DIFFICULTY AXES MOVING AT ONCE**, which is the trap the
+eleven-rung table above exists to remove -- applied to the rung axis and then
+NOT applied to the resume path. The checkpoint earned rung 6 against the MIRROR;
+resuming it into the pool asks it to absorb a 5-second teacher AND sixteen
+unfamiliar decks in the same episode.
+
+**And the number that made this look safe was measured on the wrong axis.** The
+"PFSP-weighted 0.422" above comes from `measure_deck_matchups.py` at **teacher
+rung 1**. It says nothing about rung 6, and it was used to argue a resume would
+start competitive. Read every pool win rate in this file with its RUNG attached.
+
+**At rung 2 the same checkpoint, same pool, same aux fix is healthy** -- win rate
+holds ~0.56 and mean episode reward goes **-2.19 -> +1.46** over the first 30
+episodes, against -1.7 to -2.8 for the rung-6 arms. So the recipe is: introduce
+the pool at a LOW rung and let the ladder climb it, changing one axis at a time.
+
+**Set the rung explicitly and STAMP `teacher_table_size` when you do.** Writing
+`curriculum_stage = 2` into a checkpoint that lacks the stamp gets it remapped as
+a legacy index to rung 4 -- the migration doing exactly its job on a number that
+did not need migrating.
+
+### THE STALE AUX HEAD, found the same day and NOT the cause
+
+`aux_card_head` predicts which of 185 cards the opponent plays next and reads
+`hx` with **no detach**, so its error backpropagates through the LSTM and the
+whole trunk. A mirror-trained checkpoint has seen 8 of those cards; the pool
+shows it ~60. Measured on resume:
+
+| | mirror run | pool resume | uniform = ln(185) |
+|---|---|---|---|
+| `NextCardCE` | 1.45-1.58 | **13.76** | 5.22 |
+
+**Worse than uniform** is the signature of a stale classifier: not ignorant,
+confidently wrong. `aux_card_scale = 0.02` was calibrated when the CE was ~1.5,
+putting the weighted term at ~0.015 -- comparable to the actor loss. At 13.76 it
+is 0.138 against an actor loss of ~0.020, i.e. the shared trunk pulled **~7x
+harder toward "learn 60 unfamiliar card identities" than toward "win"**.
+
+Fixed two ways: `ppo.py` rescales the aux term by a DETACHED factor so its
+magnitude cannot exceed the uniform CE (not `clamp(max=)`, which zeroes the
+gradient above the ceiling and would freeze the head exactly when it must
+relearn; at or below the ceiling the factor is 1.0 and every earlier run is
+bit-identical), and `tools/reset_aux_heads.py` re-initialises both aux heads --
+52,170 params, 2.75% of the net, none on the acting path, Adam moments zeroed.
+Verified: `NextCardCE` 13.76 -> 4.30 on the first update, and
+`probe_card_discrimination` returns bit-identical numbers afterwards, so the
+policy provably did not move.
+
+**IT IS NOT THE COLLAPSE CAUSE.** Arms A and B above differ by exactly this fix
+and their trajectories match within noise. A real defect, worth fixing, wrongly
+blamed at first -- recorded here so the next reader does not re-derive the
+attribution and stop there.
+
 **GAMEPLAY-AFFECTING**: the opponent distribution changed, so every curriculum
 gate is calibrated against a different opponent and **no win rate is comparable
 across this date**. Checkpoints still load — the observation and action space
