@@ -27,6 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -442,6 +443,39 @@ class PPOUpdater:
                             == aux_label_seq[tt, ee]).float()
                            * mb_aux_has).sum() / n_aux
 
+                # --- THE STALE-HEAD CAP (2026-09-03) ----------------------
+                # `aux_card_head` reads hx with NO detach, so its gradient runs
+                # back through the LSTM and the whole trunk -- by design, it is
+                # a representation-shaping term. `aux_card_scale = 0.02` was
+                # calibrated when its CE sat at ~1.5, which put the weighted
+                # term at ~0.015, i.e. comparable to the actor loss.
+                #
+                # THE 2026-09-03 DECK POOL INVALIDATED THAT CALIBRATION, and
+                # measured it: the opponent went from our 8 mirror cards to ~60
+                # across 16 decks, the head was fitted to the old 8, and its CE
+                # jumped to 13.76 -- against ln(185) = 5.22 for predicting
+                # UNIFORMLY. Worse than uniform is the signature of a stale
+                # classifier meeting a new label distribution: confidently
+                # wrong. The weighted term became 0.138 against an actor loss of
+                # ~0.020, so the shared trunk was being pulled ~7x harder toward
+                # "learn 60 unfamiliar card identities" than toward "win", and
+                # the policy's win rate fell 0.58 -> 0.00 in 126 episodes.
+                #
+                # Same failure class this file already records twice: a constant
+                # calibrated against a measurement a later change moved.
+                #
+                # The cap is a magnitude rescale, not a clamp. `clamp(max=)`
+                # gives ZERO gradient above the ceiling, which would freeze the
+                # head exactly when it most needs to relearn; multiplying by a
+                # DETACHED factor <= 1 keeps every gradient direction and only
+                # bounds the size. At or below the ceiling the factor is exactly
+                # 1.0, so the normal regime -- every run before this date -- is
+                # bit-identical.
+                aux_ceiling = math.log(new_aux_logits.shape[-1])
+                aux_for_grad = aux_loss * (
+                    aux_ceiling / aux_loss.detach().clamp_min(1e-6)
+                ).clamp(max=1.0)
+
                 # --- cycle-branch IDENTITY loss (2026-08-28) --------------
                 # Same label, same mask, different reader: this one is a
                 # linear head on the 24-dim ScalarEncoder cycle branch, which
@@ -477,7 +511,7 @@ class PPOUpdater:
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
                         + deck_coef * deck_pen
-                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_loss
+                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_for_grad
                         + cfg.cycle_id_coef * cycle_id_loss)
 
                 self.optimizer.zero_grad()
