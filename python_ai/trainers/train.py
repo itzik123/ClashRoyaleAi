@@ -28,6 +28,7 @@ the console read-out.
 """
 import math
 import os
+import random
 import subprocess
 import sys
 
@@ -47,6 +48,8 @@ import numpy as np  # noqa: E402
 import clash_royale_env  # noqa: E402
 import torch  # noqa: E402
 from python_ai.envs import gym_wrapper, scenarios  # noqa: E402
+from python_ai.opponents import deck_pool  # noqa: E402
+from python_ai.opponents.teacher import remap_legacy_stage  # noqa: E402
 from python_ai.rewards.shaping import building_hp_end  # noqa: E402
 from python_ai.rl.base_trainer import BaseTrainer  # noqa: E402
 from python_ai.rl.checkpointing import (  # noqa: E402
@@ -55,7 +58,8 @@ from python_ai.rl.checkpointing import (  # noqa: E402
 from python_ai.rl.config import PHASE1_ENTROPY, PPOConfig  # noqa: E402
 from python_ai.rl.seeding import worker_seeds  # noqa: E402
 from python_ai.rl.curriculum import (  # noqa: E402
-    CURRICULUM_STAGES, STALL_WIN_RATE, CurriculumManager,
+    CURRICULUM_STAGES, PLATEAU_MIN_WIN_RATE, PLATEAU_PATIENCE_EPISODES,
+    PLATEAU_WINDOW, STALL_WIN_RATE, CurriculumManager,
 )
 
 # Who plays team 1 in phase 1. "teacher" is the utility-search bot at a
@@ -85,6 +89,35 @@ PHASE1_OPPONENT = os.environ.get("CLASH_PHASE1_OPPONENT", "teacher")
 #: different episode mix and win rates are not comparable across it.
 PHASE1_DEFENSIVE_SCENARIO_PROB = float(os.environ.get(
     "CLASH_PHASE1_SCENARIO_PROB", scenarios.SCENARIO_INJECTION_PROB))
+
+#: THE OPPONENT'S DECK, and the single biggest change of 2026-09-03. `True` puts
+#: every enabled deck of `opponents/decks/meta_decks.json` in rotation, sampled
+#: per worker per episode by PFSP weight; `CLASH_PHASE1_DECK_POOL=0` restores
+#: the mirror, which is what every run before this date played.
+#:
+#: WHY THE MIRROR HAD TO GO, and it is not a diversity argument. Three of
+#: DEFAULT_DECK's eight cards sat at P(play | in hand) <= 0.009 for 30,000
+#: consecutive episodes, and the 2026-08-29 autopsy proved the card head was
+#: RIGHT: forced through `env.step`, a Cannon at the policy's own cell was worth
+#: +185 tower HP over the policy's own action, better in 6 of 14 states. Every
+#: attempt to overrule that -- a coverage floor at two coefficients, a threat
+#: gate, forced sampling at five doses -- cost win rate.
+#:
+#: The card was not underpriced. It was correctly priced FOR THE MIRROR. Cannon
+#: answers a tank walking at your tower, Fireball answers a medium-HP cluster,
+#: The Log answers a ground swarm, and a 2.6 mirror produces one Hog, one
+#: Musketeer and 1-elixir Skeletons respectively. The deck was dead because the
+#: opponent never asked the questions those three cards answer.
+#:
+#: The mirror is still IN the pool (`hog_26_mirror`), so nothing is lost; it is
+#: now one matchup of sixteen instead of all of them.
+#:
+#: GAMEPLAY-AFFECTING in the way that matters most: it changes the opponent
+#: distribution, so every curriculum gate is calibrated against a different
+#: opponent and NO win rate is comparable across this date. Checkpoints still
+#: load -- the observation and the action space are untouched.
+PHASE1_DECK_POOL = os.environ.get("CLASH_PHASE1_DECK_POOL", "1") not in (
+    "0", "false", "False", "")
 
 # --- Phase 2: once the agent is consistently strong against the mirror-
 # deck opponent at the final curriculum stage, switch to randomized
@@ -129,7 +162,15 @@ PHASE2_WIN_RATE_GATE = 0.80
 # Win_Rate_100 climbing 0.555 -> 0.624 (max 0.73) -- real progress, but on a
 # trajectory that would spend many more hours to clear a gate whose reward
 # is a harder version of an artificial handicap.
-PHASE2_MIN_CURRICULUM_STAGE = 4
+#
+# RENUMBERED 2026-09-03, and this is a trap the eleven-rung table sets for
+# every constant that names a stage by INDEX. The literal 4 meant "70 ticks of
+# lookahead" against the six-rung table and means "30 ticks" against this one,
+# so leaving it alone would have quietly moved phase-2 entry two rungs EARLIER
+# while looking like no change at all. Derived through the same remap the
+# checkpoint loader uses, so the intent -- the rung the old stage 4 was -- is
+# stated once and cannot drift from it.
+PHASE2_MIN_CURRICULUM_STAGE = remap_legacy_stage(4)
 
 # Win rate required to LEAVE the mirror phase. Split out from
 # PHASE2_WIN_RATE_GATE, which one constant was doing two unrelated jobs for:
@@ -236,18 +277,30 @@ MAX_EPISODES_PER_RANDOM_DECK = 1250
 RANDOM_OPPONENT_EPISODE_BUDGET = 5000
 
 def sample_random_deck():
-    # Correct-by-construction (not a raw random.sample over every
-    # registered card id, which would routinely violate CardRegistry::
-    # validateDeckSlots since Champions/Evolutions only fit some deck
-    # slots) -- see sampleRandomDeck's own comment in ClashEnv.h.
-    return clash_royale_env.sample_random_deck()
+    """The `random_opponent` phase's deck source.
 
+    Draws from the META POOL (opponents/deck_pool.py) when it is enabled, and
+    falls back to the engine's uniform registry draw when it is not.
 
-def sample_random_deck():
-    # Correct-by-construction (not a raw random.sample over every registered
-    # card id, which would routinely violate CardRegistry::validateDeckSlots
-    # since Champions/Evolutions only fit some deck slots) -- see
-    # sampleRandomDeck's own comment in ClashEnv.h.
+    THE FALLBACK IS THE OLD BEHAVIOUR AND IT IS A DIFFERENT DISTRIBUTION, not a
+    weaker version of the same one. `clash_royale_env.sample_random_deck()`
+    picks 8 of 132 cards uniformly, which produces Golem + P.E.K.K.A. + Mega
+    Knight + Sparky far more often than any human would queue; gym_wrapper's own
+    comment records that such decks beat a cycle deck "by tens of win-rate
+    points" in this engine. A RoyaleAPI ladder deck is curated and elixir-
+    balanced. Screening one of those two by measured win rate is a curriculum;
+    screening the other is damage control.
+
+    Correct-by-construction on the fallback path (not a raw random.sample over
+    every registered card id, which would routinely violate
+    CardRegistry::validateDeckSlots since Champions/Evolutions only fit some
+    deck slots) -- see sampleRandomDeck's own comment in ClashEnv.h. The pool
+    path cannot violate it either: deck_pool rejects Champions and Heroes at
+    load time.
+    """
+    if PHASE1_DECK_POOL:
+        decks = deck_pool.load_pool()
+        return list(random.choice(decks).card_ids)
     return clash_royale_env.sample_random_deck()
 
 
@@ -266,6 +319,7 @@ def make_env(seed=None):
             "opponent": PHASE1_OPPONENT,
             "teacher_stage": 0,
             "scenario_seed": seed,
+            "deck_pool": PHASE1_DECK_POOL,
             "defensive_scenario_prob": PHASE1_DEFENSIVE_SCENARIO_PROB})
     return _init
 
@@ -407,6 +461,13 @@ class Phase1Trainer(BaseTrainer):
 
         ally_end, enemy_end = building_hp_end(ctx.next_obs[i])
         self.metrics.finish_episode(i, ctx.raw_rewards[i], ally_end, enemy_end)
+        # The plateau detector reads its OWN 500-episode series, because the
+        # gate clears its 100-episode window on every advance and demotion and
+        # a "has the trend stopped" test cannot run on a series that is reset
+        # whenever anything happens. Fed here, from the same episodes and under
+        # the same scenario exclusion as the gate window above.
+        if self.metrics.outcomes:
+            self.curriculum.note_outcome(self.metrics.outcomes[-1])
         if self.episodes_completed % 10 == 0:
             self._print_progress()
 
@@ -425,7 +486,7 @@ class Phase1Trainer(BaseTrainer):
         advanced = self.curriculum.maybe_advance_stage(
             outcomes, self.episodes_completed)
         if advanced is not None:
-            self._on_stage_advanced(advanced)
+            self._on_stage_advanced(*advanced)
             return
 
         # The STALL valve. Mutually exclusive with the advance gate by
@@ -458,11 +519,21 @@ class Phase1Trainer(BaseTrainer):
             self.net, STAGE_CHECKPOINT_DIR, c.stage, self.episodes_completed,
             CURRICULUM_STAGES[c.stage]["teacher_stage"],
             f"entered phase 2 at win_rate={win_rate:.2f} (end of mirror phase)")
-        c.current_random_deck = sample_random_deck()
-        self.envs.call("set_opponent_deck", c.current_random_deck)
+        # WITH THE POOL ON, THE TRAINER MUST NOT PICK THE DECK. Pool sampling
+        # runs first in `reset()`, so a `set_opponent_deck` here is overwritten
+        # on the very next episode -- the trainer would print a deck the agent
+        # never plays, which is precisely the silent divergence this repo keeps
+        # paying for. The phase still does its real job (the budget, and the
+        # handoff to pipeline 2); it just stops pretending to choose an opponent
+        # that is already being chosen per episode, per worker.
+        if not PHASE1_DECK_POOL:
+            c.current_random_deck = sample_random_deck()
+            self.envs.call("set_opponent_deck", c.current_random_deck)
         self.envs.call("set_teacher_stage", c.teacher_stage)
+        deck_note = ("pool sampling continues" if PHASE1_DECK_POOL
+                     else f"deck={c.current_random_deck}")
         print(f">>> Phase advanced to random_opponent from stage {c.stage} "
-              f"(deck={c.current_random_deck}) - mirror win rate "
+              f"({deck_note}) - mirror win rate "
               f"{win_rate:.2f} reached the {PHASE2_ENTRY_WIN_RATE} entry "
               "threshold")
         print(f">>> Random-deck budget: {RANDOM_OPPONENT_EPISODE_BUDGET} "
@@ -470,18 +541,36 @@ class Phase1Trainer(BaseTrainer):
               f"{self.episodes_completed + RANDOM_OPPONENT_EPISODE_BUDGET})")
         self.writer.add_scalar("Training/Phase", 1, self.episodes_completed)
 
-    def _on_stage_advanced(self, new_stage):
-        # Snapshot labelled with the stage that was just CLEARED, not the one
-        # being entered -- it captures the policy that passed the gate.
+    def _on_stage_advanced(self, new_stage, reason="gate"):
+        """One rung up, by mastery ("gate") or by convergence ("plateau").
+
+        The REASON is printed and logged, not just the stage. A ladder position
+        reached by plateau is a weaker claim than one reached by the gate --
+        it says "this rung stopped teaching", not "this rung was beaten" -- and
+        a run that plateaued up every rung is at the top without having won
+        anything. That distinction has to survive into the logs, for the same
+        reason `demotions` does.
+        """
         cleared = new_stage - 1
         save_stage_snapshot(
             self.net, STAGE_CHECKPOINT_DIR, cleared, self.episodes_completed,
             CURRICULUM_STAGES[cleared]["teacher_stage"],
-            f"cleared stage {cleared} gate")
+            f"cleared stage {cleared} by {reason}")
         self.envs.call("set_teacher_stage", self.curriculum.teacher_stage)
-        print(f">>> Curriculum advanced to stage {new_stage} "
-              f"(teacher_stage={self.curriculum.teacher_stage})")
+        if reason == "plateau":
+            print(f">>> [PLATEAU] Curriculum advanced to stage {new_stage} "
+                  f"(teacher_stage={self.curriculum.teacher_stage}): the "
+                  f"{PLATEAU_WINDOW}-episode win rate stopped improving for "
+                  f"{PLATEAU_PATIENCE_EPISODES} episodes while staying above "
+                  f"{PLATEAU_MIN_WIN_RATE:.0%}. Plateau advances this run: "
+                  f"{self.curriculum.plateau_advances}.")
+        else:
+            print(f">>> Curriculum advanced to stage {new_stage} "
+                  f"(teacher_stage={self.curriculum.teacher_stage})")
         self.writer.add_scalar("Training/Curriculum_Stage", new_stage,
+                               self.episodes_completed)
+        self.writer.add_scalar("Training/Curriculum_PlateauAdvances",
+                               self.curriculum.plateau_advances,
                                self.episodes_completed)
 
     def _on_stage_demoted(self, new_stage):
@@ -505,6 +594,14 @@ class Phase1Trainer(BaseTrainer):
 
     def _rotate_random_deck(self, reason):
         c = self.curriculum
+        # See _on_entered_random_phase: with the pool on, the deck is already
+        # re-drawn every episode by every worker, so "rotate" has nothing left
+        # to rotate and setting one would be silently undone.
+        if PHASE1_DECK_POOL:
+            self.envs.call("set_teacher_stage", c.teacher_stage)
+            print(f">>> Deck ladder reset ({reason}); the meta pool keeps "
+                  "sampling per episode")
+            return
         c.current_random_deck = sample_random_deck()
         self.envs.call("set_opponent_deck", c.current_random_deck)
         self.envs.call("set_teacher_stage", c.teacher_stage)
@@ -512,6 +609,53 @@ class Phase1Trainer(BaseTrainer):
               f"(previous deck {reason})")
 
     # -- read-out -----------------------------------------------------------
+    #: How often the per-deck read-out is printed, in episodes. Rarer than the
+    #: progress line because it is a whole extra row and the EWMA behind it
+    #: moves on a scale of hundreds of episodes anyway.
+    DECK_READOUT_EVERY = 200
+
+    def _print_deck_pool(self):
+        """Per-deck win rates, averaged over the workers' local estimates.
+
+        PHASE 1 HAD NO PER-DECK DIAGNOSTIC AT ALL, and that is half of why the
+        2026-08-28 deck collapse ran 30,000 episodes unseen: every instrument
+        in the loop was an AGGREGATE, and an aggregate cannot see a per-member
+        failure. This is the eighth time this project has written that sentence
+        down, so the pool ships with its own read-out rather than waiting for
+        the first run to need one.
+
+        Averaged and not summed: each worker holds an independent EWMA over the
+        episodes IT played, so the mean across workers is the pooled estimate.
+        """
+        if not PHASE1_DECK_POOL or self.episodes_completed % self.DECK_READOUT_EVERY:
+            return
+        try:
+            per_worker = self.envs.call("get_deck_pool_stats")
+        except Exception:
+            return          # a worker that cannot answer must not kill a run
+        merged = {}
+        for stats in per_worker:
+            for name, rate in (stats or {}).items():
+                merged.setdefault(name, []).append(rate)
+        if not merged:
+            return
+        avg = {n: sum(v) / len(v) for n, v in merged.items()}
+        ordered = sorted(avg.items(), key=lambda kv: kv[1])
+        cells = "  ".join(f"{n[:14]} {r:.2f}" for n, r in ordered)
+        print(f"     Decks(win): {cells}")
+        for name, rate in avg.items():
+            self.writer.add_scalar(f"Decks/WinRate/{name}", rate,
+                                   self.episodes_completed)
+        # The MINIMUM is the number to watch, for the reason `ByCard_Min`
+        # exists on the placement head: a pool average stays healthy while one
+        # matchup is a total loss, and a matchup at ~0 is where the policy is
+        # learning nothing and the PFSP floor is all that keeps it in rotation.
+        self.writer.add_scalar("Decks/WinRate_Min", min(avg.values()),
+                               self.episodes_completed)
+        self.writer.add_scalar("Decks/WinRate_Spread",
+                               max(avg.values()) - min(avg.values()),
+                               self.episodes_completed)
+
     def _print_progress(self):
         m = self.metrics.summary()
         c = self.curriculum
@@ -524,6 +668,7 @@ class Phase1Trainer(BaseTrainer):
               f"Stage: {c.stage}{deck_stage_str} | Phase: {c.phase} | "
               f"EntCoef c/p: {self.entropy.coef_card:.4f}/"
               f"{self.entropy.coef_placement:.4f}")
+        self._print_deck_pool()
         w = self.writer
         w.add_scalar("Training/Avg_Reward_50", m["avg_reward"], ep)
         w.add_scalar("Reward/Episode_Shaping_Sum", m["avg_shaping"], ep)

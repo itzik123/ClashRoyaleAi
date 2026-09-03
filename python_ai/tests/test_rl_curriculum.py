@@ -7,7 +7,9 @@ CURRICULUM_STAGES and could not exercise a single transition.
 import pytest
 
 from python_ai.rl.curriculum import (
-    CURRICULUM_STAGES, OUTCOME_WINDOW, CurriculumManager, new_outcome_window,
+    CURRICULUM_STAGES, OUTCOME_WINDOW, PLATEAU_IMPROVEMENT,
+    PLATEAU_MIN_WIN_RATE, PLATEAU_PATIENCE_EPISODES, PLATEAU_WINDOW,
+    STAGE_WIN_RATE_GATE, CurriculumManager, new_outcome_window,
     window_win_rate,
 )
 
@@ -33,13 +35,29 @@ def manager(**kwargs):
 
 # --------------------------------------------------------------- the stages --
 def test_stages_are_competence_not_economy():
-    assert len(CURRICULUM_STAGES) == 6
+    assert len(CURRICULUM_STAGES) == 11
     for s in CURRICULUM_STAGES:
         assert "opp_elixir_multiplier" not in s, (
             "a curriculum stage must never carry an elixir multiplier again")
         assert "teacher_stage" in s
-    assert [s["teacher_stage"] for s in CURRICULUM_STAGES] == [0, 1, 2, 3, 4, 5]
-    assert [s["win_rate_threshold"] for s in CURRICULUM_STAGES] == [0.8] * 5 + [None]
+    assert [s["teacher_stage"] for s in CURRICULUM_STAGES] == list(range(11))
+    assert ([s["win_rate_threshold"] for s in CURRICULUM_STAGES]
+            == [STAGE_WIN_RATE_GATE] * 10 + [None])
+
+
+def test_the_gate_was_lowered_WITH_the_ladder_and_not_alone():
+    """The 0.80 -> 0.65 drop and the 6 -> 11 rung split are ONE change.
+
+    Either alone is a regression: keeping 0.80 across eleven rungs makes the
+    ladder strictly harder to climb than the six-rung version it replaced,
+    and lowering the gate without splitting the rungs just promotes faster
+    into the same cliff. Pinned together so neither can be reverted alone.
+    """
+    assert len(CURRICULUM_STAGES) >= 11
+    assert STAGE_WIN_RATE_GATE < 0.80
+    # Still a WINNING margin, not a participation trophy: a gate at or below
+    # 0.50 would advance an agent that is losing the matchup.
+    assert STAGE_WIN_RATE_GATE > 0.50
 
 
 def test_stage_count_matches_the_teacher_ladder():
@@ -67,9 +85,11 @@ def test_the_gate_reads_RAW_win_rate_not_decisive():
 # ------------------------------------------------------------- transitions --
 def test_the_stage_gate_needs_a_full_window_at_or_above_threshold():
     m = manager()
+    below = round((STAGE_WIN_RATE_GATE - 0.05) * OUTCOME_WINDOW) / OUTCOME_WINDOW
     assert m.maybe_advance_stage(_window(90), 100) is None      # not full
-    assert m.maybe_advance_stage(_full_window(0.79), 100) is None
-    assert m.maybe_advance_stage(_full_window(0.80), 100) == 1
+    assert m.maybe_advance_stage(_full_window(below), 100) is None
+    assert (m.maybe_advance_stage(_full_window(STAGE_WIN_RATE_GATE), 100)
+            == (1, "gate"))
     assert m.stage == 1
 
 
@@ -112,7 +132,7 @@ def test_the_phase_gate_must_be_evaluated_BEFORE_the_stage_gate():
     m = manager()
     m.stage = 4
     w = _full_window(0.90)          # clears both gates at once
-    assert m.maybe_advance_stage(w, 100) == 5
+    assert m.maybe_advance_stage(w, 100) == (5, "gate")
     assert len(w) == 0
     assert m.maybe_enter_random_phase(w, 100) is None
     assert m.phase == "mirror"
@@ -198,8 +218,32 @@ def test_state_survives_a_checkpoint_roundtrip():
 
 def test_a_legacy_checkpoint_without_the_phase_key_resumes_into_mirror():
     m = manager()
-    m.load_state_dict({"curriculum_stage": 2, "stage_start_episode": 40})
+    m.load_state_dict({"curriculum_stage": 2, "stage_start_episode": 40,
+                       "teacher_table_size": len(CURRICULUM_STAGES)})
     assert m.phase == "mirror" and m.stage == 2
+
+
+def test_a_pre_2026_09_03_stage_is_remapped_by_HORIZON_not_by_index():
+    """A saved stage indexes the teacher table that was LIVE when it was saved.
+
+    The table went 6 rungs -> 11, so reading an old index against the new table
+    is a silent demotion: old stage 3 is 5 s of lookahead and new rung 3 is 2 s.
+    The absence of the `teacher_table_size` stamp is what identifies an old
+    checkpoint, so the remap runs exactly once and never on its own output.
+    """
+    from python_ai.opponents.teacher import TEACHER_STAGES
+
+    for legacy, horizon in enumerate([0, 10, 30, 50, 70, 100]):
+        m = manager()
+        m.load_state_dict({"curriculum_stage": legacy, "stage_start_episode": 0})
+        assert TEACHER_STAGES[m.stage]["horizon_ticks"] == horizon, (
+            f"legacy stage {legacy} must resume at the SAME lookahead")
+
+    # And a checkpoint that already carries the stamp is left alone.
+    m = manager()
+    m.load_state_dict({"curriculum_stage": 3, "stage_start_episode": 0,
+                       "teacher_table_size": len(CURRICULUM_STAGES)})
+    assert m.stage == 3
 
 
 def test_random_phase_start_falls_back_to_the_deck_start_not_to_zero():

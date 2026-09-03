@@ -262,7 +262,10 @@ def test_cycle_tracker_agrees_with_the_engines_own_hand():
 def test_teacher_stages_are_competence_not_economy():
     from python_ai.opponents.teacher import TEACHER_STAGES
 
-    assert len(TEACHER_STAGES) == 6
+    # ELEVEN rungs since 2026-09-03 (was 6). The count is asserted so the
+    # table cannot shrink back silently, but every property below is what
+    # actually matters and holds at any length.
+    assert len(TEACHER_STAGES) == 11
     for s in TEACHER_STAGES:
         assert set(s) == {"horizon_ticks", "epsilon", "k_cells", "max_combos",
                           "reactive"}, (
@@ -428,16 +431,21 @@ def test_curriculum_lives_where_a_test_can_import_it():
 
 
 def test_curriculum_stages_are_competence_not_economy():
+    from python_ai.rl.curriculum import STAGE_WIN_RATE_GATE
+
     stages = _curriculum_stages_literal()
-    assert len(stages) == 6
+    assert len(stages) == 11          # was 6 before 2026-09-03
     for s in stages:
         assert "opp_elixir_multiplier" not in s, (
             "a curriculum stage must never carry an elixir multiplier again")
         assert "teacher_stage" in s
-    assert [s["teacher_stage"] for s in stages] == [0, 1, 2, 3, 4, 5]
-    # The gate itself is deliberately unchanged: 0.80 raw win rate on every
-    # stage but the last, which has no further auto-advance.
-    assert [s["win_rate_threshold"] for s in stages] == [0.8] * 5 + [None]
+    assert [s["teacher_stage"] for s in stages] == list(range(11))
+    # The gate moved 0.80 -> 0.65 WITH the rung split, and the two must not be
+    # separated: 0.80 across eleven rungs is a strictly harder ladder than the
+    # six-rung version it replaced. Read from the constant rather than
+    # restated, so retuning it stays a one-line change.
+    assert ([s["win_rate_threshold"] for s in stages]
+            == [STAGE_WIN_RATE_GATE] * 10 + [None])
 
 
 def test_curriculum_stage_count_matches_the_teacher_ladder():

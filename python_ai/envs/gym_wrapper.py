@@ -1,9 +1,12 @@
+import random
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 
 import clash_royale_env
 from python_ai.envs import scenario_offense, scenarios
+from python_ai.opponents import deck_pool
 
 # Real-meta Balloon Freeze deck, replacing the earlier Giant Beatdown archetype
 # entirely -- deliberate full restart (fresh net, not resumed), not a tune-up.
@@ -256,6 +259,45 @@ class MicroRoyaleEnv(gym.Env):
         self.opp_deck = env_config.get("opp_deck", list(ai_deck))
         self.current_opp_deck = list(self.opp_deck)
         self.randomize_opp_deck = env_config.get("randomize_opp_deck", False)
+
+        # --- THE META-DECK POOL (2026-09-03) --------------------------------
+        # `deck_pool` is None (off, and every existing caller is unchanged),
+        # True (the whole enabled pool), or a list of deck NAMES to restrict to.
+        # It takes precedence over randomize_opp_deck, which draws uniformly
+        # from the 132-card registry and is a completely different distribution
+        # -- see opponents/deck_pool.py's docstring for why "random deck" was
+        # never a substitute for "real deck".
+        pool_cfg = env_config.get("deck_pool", None)
+        self.deck_pool = None
+        self.current_deck_name = None
+        #: Per-worker local win-rate estimate, {deck name: rate}. Decentralized
+        #: exactly like selfplay_env's `pfsp_stats`: 8 workers each converge a
+        #: reasonable local estimate rather than synchronizing every episode.
+        self.deck_pool_stats = {}
+        self._deck_pool_counts = {}
+        if pool_cfg:
+            all_decks = deck_pool.load_pool()
+            if pool_cfg is not True:
+                want = set(pool_cfg)
+                all_decks = [d for d in all_decks if d.name in want]
+                if not all_decks:
+                    raise ValueError(f"deck_pool={pool_cfg!r} matched no deck")
+            self.deck_pool = all_decks
+            # Seeded from the pool file's measured priors, not from a flat 0.5
+            # -- see deck_pool.NEUTRAL_PRIOR. A uniform start feeds a fresh net
+            # the unwinnable decks as often as the mirror for the few thousand
+            # episodes the EWMA needs to separate them.
+            self.deck_pool_stats = {d.name: d.prior_win_rate for d in all_decks}
+            #: Matches this worker has actually played per deck, for the
+            #: count-weighted update in `_record_deck_outcome`.
+            self._deck_pool_counts = {d.name: 0 for d in all_decks}
+            # `is None`, not `or`: worker 0's seed is 0, and `0 or X` would
+            # silently hand exactly one worker per run an unseeded stream --
+            # the kind of off-by-falsy that makes a "seeded" run irreproducible
+            # in one env out of eight and nowhere else.
+            seed_cfg = env_config.get("scenario_seed")
+            self._deck_rng = random.Random(
+                random.randrange(1 << 30) if seed_cfg is None else seed_cfg)
         max_ticks = env_config.get("max_ticks", 3600)
         # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
         opp_elixir_multiplier = env_config.get("opp_elixir_multiplier", 1.0)
@@ -370,7 +412,32 @@ class MicroRoyaleEnv(gym.Env):
         # perception/UPSTREAM_REQUESTS.md item 23, section C.
         if seed is not None:
             self.game.seed(int(seed))
-        if self.randomize_opp_deck:
+        if self.deck_pool is not None:
+            # THE META-DECK POOL (2026-09-03). Sampled here, per worker, per
+            # episode -- the same decentralized shape selfplay_env uses for
+            # PFSP opponents and for the same reason: AsyncVectorEnv workers
+            # are separate OS processes, so a per-index call from the trainer
+            # does not exist and synchronizing a stats dict every episode would
+            # cost more than the local estimate is worth at 8 workers.
+            #
+            # Per EPISODE and not per rung: a PPO batch then contains a mix of
+            # matchups, which is what stops the policy specialising into
+            # whichever deck the current rung happens to be showing it. That is
+            # the same argument phase 2's league makes one level up.
+            picked = deck_pool.sample_deck(
+                self.deck_pool, self._deck_pool_weights(), self._deck_rng)
+            self.current_deck_name = picked.name
+            random_deck = list(picked.card_ids)
+            self.game.set_opponent_deck(random_deck)
+            # Recorded so a caller (and the teacher-sync test) can see WHICH
+            # deck this episode is actually against -- self.opp_deck is the
+            # fixed fallback and deliberately stays unchanged here.
+            self.current_opp_deck = random_deck
+            # Same reason as set_opponent_deck() below -- and this path is the
+            # easier one to miss, because it writes straight to self.game.
+            if self.teacher is not None:
+                self.teacher.set_deck(random_deck)
+        elif self.randomize_opp_deck:
             # Correct-by-construction (not random.sample(get_all_card_ids(), 8)
             # + hope): that naive draw includes Champions/Evolutions, which
             # only some deck slots accept, so it would routinely violate
@@ -620,7 +687,62 @@ class MicroRoyaleEnv(gym.Env):
             "champion_ability_slot2_ready": self.game.is_champion_ability_ready(0, 2),
         }
 
+        # One finished MATCH updates this worker's per-deck estimate. Gated on
+        # `terminated` and not `truncated`: a truncation is a scenario window or
+        # a step cap, which is not a match result and would enter a phantom loss
+        # for whichever deck happened to be up. Same rule train.py applies to
+        # the curriculum's own window, for the same reason.
+        if terminated and self.deck_pool is not None:
+            self._record_deck_outcome(
+                self.game.get_towers_alive(0) > self.game.get_towers_alive(1))
+
         return obs, reward, terminated, truncated, info
+
+    def _deck_pool_weights(self):
+        """PFSP weights over the pool from this worker's own win-rate estimates."""
+        return deck_pool.pfsp_weights(self.deck_pool_stats)
+
+    def _record_deck_outcome(self, won):
+        """Fold one finished match into this worker's local estimate.
+
+        An EWMA rather than a window: a window would need per-deck deques in
+        every worker and 16 decks x 8 workers of them, for an estimate that only
+        has to be roughly right -- PFSP weights are a sampling prior, not a
+        gate.
+
+        THE RATE IS COUNT-WEIGHTED EARLY: `alpha = max(0.05, 1/(n+1))` is the
+        running mean for the first few matches, decaying into the 0.05 EWMA. A
+        deck's estimate therefore reflects THIS policy within ~10 matches
+        instead of ~60.
+
+        That is an ESTIMATOR argument and deliberately not a win-rate claim. The
+        shipped priors come from a TRAINED policy, so for a fresh net their
+        ordering is right and their level is far too high, and a prior taken
+        from a different policy must not outlive contact with the current one --
+        which is exactly what `prior_win_rate`'s own contract promises. Measured
+        over 8 simulated seeds, the downstream effect on which decks actually
+        get sampled is INSIDE THE NOISE against a flat 0.05 (6.8-17.8% of
+        episodes on unwinnable decks either way), so do not cite this as a fix
+        for the cold start -- see CLAUDE.md, which records that a fresh policy
+        won 0 of its first 50-70 episodes against the pool with and without it.
+        """
+        name = self.current_deck_name
+        if name is None or name not in self.deck_pool_stats:
+            return
+        n = self._deck_pool_counts.get(name, 0) + 1
+        self._deck_pool_counts[name] = n
+        alpha = max(0.05, 1.0 / (n + 1))
+        prev = self.deck_pool_stats[name]
+        self.deck_pool_stats[name] = (1 - alpha) * prev + alpha * (1.0 if won else 0.0)
+
+    def get_deck_pool_stats(self):
+        """This worker's per-deck estimates, for the trainer's read-out.
+
+        Phase 1 had NO per-deck diagnostic at all, which is half of why the
+        2026-08-28 deck collapse ran for 30,000 episodes unseen. `envs.call`
+        returns one dict per worker and the trainer averages them.
+        """
+        return dict(self.deck_pool_stats)
 
     def set_opponent_deck(self, deck):
         # Also updates self.opp_deck (not just the live game instance) --

@@ -1,0 +1,366 @@
+{
+  "_comment": [
+    "The phase-1 opponent deck pool. EDIT THIS FILE, not the code.",
+    "",
+    "Cards are named, never numbered: ids are an engine detail and the registry",
+    "has gaps (16, 37, 38). `deck_pool.py` resolves each name through",
+    "clash_royale_env.get_all_card_ids(), which filters Evolutions OUT -- that",
+    "matters because an Evolution reuses its base card's name verbatim (id 1 and",
+    "id 128 are both 'Archers'), so a name is ambiguous over the full registry",
+    "and unambiguous over the playable set.",
+    "",
+    "FIELDS",
+    "  cards           exactly 8 distinct registry names. Champions and Heroes are",
+    "                  refused: the teacher never activates an ability, so it would",
+    "                  play a strictly worse card than the deck is named for.",
+    "  archetype       free text, for the read-out only.",
+    "  tags            priors, NOT the gate. 'anti_26' marks a deck the human meta",
+    "                  calls a direct counter to 2.6 Hog. MEASUREMENT DISAGREES:",
+    "                  tagged decks average a 0.589 win rate against the current",
+    "                  policy and untagged ones 0.433, so the tags are if anything",
+    "                  backwards for THIS engine. They gate nothing.",
+    "  prior_win_rate  optional; seeds the PFSP prior. Omit for 0.5. See",
+    "                  'measured' below and deck_pool.NEUTRAL_PRIOR.",
+    "  enabled         false keeps a deck in the file but out of the pool.",
+    "",
+    "To add a deck: copy a block, change the names, then run",
+    "  python_ai/venv/Scripts/python.exe -m python_ai.opponents.deck_pool",
+    "which validates every name and prints the resolved pool. Every failure",
+    "raises: a silently-dropped deck would still train, against a distribution",
+    "this file no longer describes."
+  ],
+  "schema_version": 1,
+  "source": "RoyaleAPI popular-ladder archetypes + web meta surveys, sampled 2026-09-03",
+  "decks": [
+    {
+      "name": "hog_26_mirror",
+      "archetype": "2.6 Hog Cycle (the mirror)",
+      "tags": [
+        "cycle",
+        "mirror"
+      ],
+      "enabled": true,
+      "cards": [
+        "Hog Rider",
+        "Musketeer",
+        "Cannon",
+        "Ice Golem",
+        "Skeletons",
+        "Ice Spirit",
+        "The Log",
+        "Fireball"
+      ],
+      "prior_win_rate": 1.0
+    },
+    {
+      "name": "dart_bait_cycle",
+      "archetype": "Log Bait / Dart Goblin cycle",
+      "tags": [
+        "bait",
+        "swarm"
+      ],
+      "enabled": true,
+      "cards": [
+        "Goblin Barrel",
+        "Dart Goblin",
+        "Knight",
+        "Princess",
+        "Goblin Gang",
+        "Ice Spirit",
+        "Cannon",
+        "The Log"
+      ],
+      "prior_win_rate": 0.533
+    },
+    {
+      "name": "three_musketeers_bridge",
+      "archetype": "Three Musketeers bridge spam",
+      "tags": [
+        "spam",
+        "cluster"
+      ],
+      "enabled": true,
+      "cards": [
+        "Three Musketeers",
+        "Battle Ram",
+        "Ice Golem",
+        "Elixir Collector",
+        "Minions",
+        "Zap",
+        "Bandit",
+        "Barbarian Barrel"
+      ],
+      "prior_win_rate": 0.4
+    },
+    {
+      "name": "rg_fisherman_cycle",
+      "archetype": "Royal Giant Fisherman 3.0 cycle",
+      "tags": [
+        "siege_tank"
+      ],
+      "enabled": true,
+      "cards": [
+        "Royal Giant",
+        "Fisherman",
+        "Royal Ghost",
+        "Hunter",
+        "Electro Spirit",
+        "Skeletons",
+        "Fireball",
+        "The Log"
+      ],
+      "prior_win_rate": 0.667
+    },
+    {
+      "name": "miner_poison_control",
+      "archetype": "Miner Poison chip control",
+      "tags": [
+        "control",
+        "swarm"
+      ],
+      "enabled": true,
+      "cards": [
+        "Miner",
+        "Poison",
+        "Minions",
+        "Wall Breakers",
+        "Skeleton Army",
+        "Bomb Tower",
+        "Barbarian Barrel",
+        "Valkyrie"
+      ],
+      "prior_win_rate": 0.1
+    },
+    {
+      "name": "royal_hogs_furnace",
+      "archetype": "Royal Hogs Furnace spam",
+      "tags": [
+        "spam",
+        "cluster"
+      ],
+      "enabled": true,
+      "cards": [
+        "Royal Hogs",
+        "Furnace",
+        "Fireball",
+        "Barbarian Barrel",
+        "Royal Ghost",
+        "Zappies",
+        "Mega Minion",
+        "Skeletons"
+      ],
+      "prior_win_rate": 0.167
+    },
+    {
+      "name": "giant_double_dragon",
+      "archetype": "Giant double-dragon beatdown",
+      "tags": [
+        "beatdown",
+        "air"
+      ],
+      "enabled": true,
+      "cards": [
+        "Giant",
+        "Baby Dragon",
+        "Inferno Dragon",
+        "Mega Minion",
+        "Zap",
+        "Arrows",
+        "Electro Wizard",
+        "Skeletons"
+      ],
+      "prior_win_rate": 0.333
+    },
+    {
+      "name": "xbow_30_cycle",
+      "archetype": "X-Bow 3.0 siege",
+      "tags": [
+        "siege"
+      ],
+      "enabled": true,
+      "cards": [
+        "X-Bow",
+        "Tesla",
+        "Archers",
+        "Skeletons",
+        "Ice Spirit",
+        "Fireball",
+        "The Log",
+        "Knight"
+      ],
+      "prior_win_rate": 0.867
+    },
+    {
+      "name": "pekka_bridge_spam",
+      "archetype": "P.E.K.K.A. bridge spam",
+      "tags": [
+        "beatdown",
+        "heavy"
+      ],
+      "enabled": true,
+      "cards": [
+        "P.E.K.K.A.",
+        "Battle Ram",
+        "Bandit",
+        "Royal Ghost",
+        "Electro Wizard",
+        "Zap",
+        "Poison",
+        "Minions"
+      ],
+      "prior_win_rate": 0.067
+    },
+    {
+      "name": "wall_breakers_cycle",
+      "archetype": "Wall Breakers cheap cycle pressure",
+      "tags": [
+        "cycle",
+        "spam"
+      ],
+      "enabled": true,
+      "cards": [
+        "Wall Breakers",
+        "Miner",
+        "Bats",
+        "Skeletons",
+        "Ice Spirit",
+        "Firecracker",
+        "Tesla",
+        "Barbarian Barrel"
+      ],
+      "prior_win_rate": 0.767
+    },
+    {
+      "name": "golem_beatdown",
+      "archetype": "Golem Night Witch beatdown",
+      "tags": [
+        "beatdown",
+        "heavy",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Golem",
+        "Night Witch",
+        "Baby Dragon",
+        "Mega Minion",
+        "Lumberjack",
+        "Tornado",
+        "Lightning",
+        "Barbarian Barrel"
+      ],
+      "prior_win_rate": 0.4
+    },
+    {
+      "name": "graveyard_control",
+      "archetype": "Graveyard Poison control",
+      "tags": [
+        "control",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Graveyard",
+        "Baby Dragon",
+        "Tornado",
+        "Poison",
+        "Knight",
+        "Skeletons",
+        "Ice Spirit",
+        "Barbarian Barrel"
+      ],
+      "prior_win_rate": 0.867
+    },
+    {
+      "name": "lavaloon",
+      "archetype": "Lava Hound Balloon air beatdown",
+      "tags": [
+        "beatdown",
+        "air",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Lava Hound",
+        "Balloon",
+        "Mega Minion",
+        "Tombstone",
+        "Skeleton Dragons",
+        "Arrows",
+        "Fireball",
+        "Miner"
+      ],
+      "prior_win_rate": 0.7
+    },
+    {
+      "name": "classic_log_bait_inferno",
+      "archetype": "Classic Log Bait with Inferno Tower",
+      "tags": [
+        "bait",
+        "swarm",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Goblin Barrel",
+        "Princess",
+        "Knight",
+        "Goblin Gang",
+        "Ice Spirit",
+        "Inferno Tower",
+        "Rocket",
+        "The Log"
+      ],
+      "prior_win_rate": 0.567
+    },
+    {
+      "name": "mega_knight_ram",
+      "archetype": "Mega Knight Battle Ram bridge spam",
+      "tags": [
+        "heavy",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Mega Knight",
+        "Battle Ram",
+        "Bats",
+        "Skeleton Army",
+        "Electro Spirit",
+        "Zap",
+        "Fireball",
+        "Dart Goblin"
+      ],
+      "prior_win_rate": 0.2
+    },
+    {
+      "name": "mortar_cycle",
+      "archetype": "Mortar cycle siege",
+      "tags": [
+        "siege",
+        "cycle",
+        "anti_26"
+      ],
+      "enabled": true,
+      "cards": [
+        "Mortar",
+        "Knight",
+        "Archers",
+        "Skeletons",
+        "Ice Spirit",
+        "The Log",
+        "Fireball",
+        "Bomber"
+      ],
+      "prior_win_rate": 0.8
+    }
+  ],
+  "measured": {
+    "date": "2026-09-03",
+    "harness": "python_ai/eval/measure_deck_matchups.py",
+    "weights": "model_weights_phase5.pth (episode 32,484)",
+    "teacher_rung": 1,
+    "episodes_per_deck": 30,
+    "note": "prior_win_rate seeds the PFSP prior so a fresh run does not spend its first few thousand episodes rediscovering which decks are unwinnable. It is a SEED and never a gate: the live per-deck estimate is count-weighted early (alpha = max(0.05, 1/(n+1))), so a deck this policy cannot beat falls under POOL_WINRATE_FLOOR within one to three matches per worker. These numbers come from a TRAINED policy, so for a fresh net read them as a difficulty ORDERING, not as a level."
+  }
+}

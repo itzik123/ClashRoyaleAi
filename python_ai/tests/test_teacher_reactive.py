@@ -268,13 +268,20 @@ def test_reactivity_is_a_competence_axis_and_the_short_rungs_do_without_it():
     which happens to also satisfy the cold-start argument rather than resting
     on it.
     """
+    # Stated as a PROPERTY rather than a literal list: the table went 6 rungs
+    # -> 11 on 2026-09-03 and a hardcoded list would have to be re-typed on
+    # every such change, which is how a guard quietly stops guarding.
     reactive = [cfg["reactive"] for cfg in T.TEACHER_STAGES]
-    assert reactive == [False, False, False, False, False, True]
+    top = len(T.TEACHER_STAGES) - 1
+    assert reactive[top] is True, "the top rung is where +0.1500 was measured"
+    assert not any(reactive[:top]), (
+        "no rung below the top may react -- every one of them prices attacks "
+        "below their true value")
 
     t = _teacher(team=0, reactive=True)
     t.set_stage(0)
     assert t.reactive_rollout is False
-    t.set_stage(5)
+    t.set_stage(top)
     assert t.reactive_rollout is True
 
 

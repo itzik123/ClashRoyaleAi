@@ -428,20 +428,73 @@ PROFILES = {
 # cold-start intent: phase 1's teacher models the RL AGENT, which at episode 0
 # cannot defend, so assuming a competent answer there would price every attack
 # as punished by an opponent who would not punish it.
+# ONE KNOB PER RUNG (2026-09-03). The six-rung version of this table moved
+# THREE and FOUR axes at once and called the bundle a "stage": 2 -> 3 was
+# horizon 30 -> 50 AND epsilon 0.10 -> 0.05 AND max_combos 2 -> 3, and 3 -> 4
+# added k_cells on top. So "advance one stage" was never a small step, and the
+# 2026-08-28 run paid for it -- 23,040 consecutive episodes (ep 9,640 ->
+# 32,680) at stage 3, win rate oscillating 0.15-0.60 against a 0.80 gate, never
+# once advancing. That is the entire measured cost of this table's granularity.
+#
+# Eleven rungs now, each moving ONE axis (rung 3 moves k_cells and combos
+# together only because `max_combos` is inert below COMBO_MIN_HORIZON_TICKS and
+# would otherwise be a knob that silently does nothing). The horizon axis is
+# 0/1/2/2/3/4/5/6/7/8.5/10 s -- the gradual progression the old table skipped.
+#
+# THE OLD STAGES ARE ALL STILL HERE, at rungs 0, 1, 4, 6, 8, 10, and they are
+# reachable by horizon so a checkpoint can be migrated exactly rather than
+# renumbered by guess -- see `remap_legacy_stage`. Nothing about the teacher's
+# top end changed: rung 10 is bit-identical to the old stage 5.
 TEACHER_STAGES = [
     {"horizon_ticks":   0, "epsilon": 0.30, "k_cells": 1, "max_combos": 0,
-     "reactive": False},                                       # rules only
-    {"horizon_ticks":  10, "epsilon": 0.15, "k_cells": 1, "max_combos": 0,
-     "reactive": False},                                       # 1 s
+     "reactive": False},                            # rules only  (old stage 0)
+    {"horizon_ticks":  10, "epsilon": 0.20, "k_cells": 1, "max_combos": 0,
+     "reactive": False},                            # 1 s         (old stage 1)
+    {"horizon_ticks":  20, "epsilon": 0.15, "k_cells": 1, "max_combos": 0,
+     "reactive": False},                            # 2 s
+    {"horizon_ticks":  20, "epsilon": 0.12, "k_cells": 2, "max_combos": 2,
+     "reactive": False},                            # 2 s + width and combos
     {"horizon_ticks":  30, "epsilon": 0.10, "k_cells": 2, "max_combos": 2,
-     "reactive": False},                                       # 3 s
+     "reactive": False},                            # 3 s         (old stage 2)
+    {"horizon_ticks":  40, "epsilon": 0.08, "k_cells": 2, "max_combos": 3,
+     "reactive": False},                            # 4 s
     {"horizon_ticks":  50, "epsilon": 0.05, "k_cells": 2, "max_combos": 3,
-     "reactive": False},                                       # 5 s
+     "reactive": False},                            # 5 s         (old stage 3)
+    {"horizon_ticks":  60, "epsilon": 0.04, "k_cells": 3, "max_combos": 3,
+     "reactive": False},                            # 6 s + width
     {"horizon_ticks":  70, "epsilon": 0.02, "k_cells": 3, "max_combos": 4,
-     "reactive": False},                                       # 7 s
+     "reactive": False},                            # 7 s         (old stage 4)
+    {"horizon_ticks":  85, "epsilon": 0.01, "k_cells": 3, "max_combos": 4,
+     "reactive": False},                            # 8.5 s
     {"horizon_ticks": 100, "epsilon": 0.00, "k_cells": 3, "max_combos": 4,
-     "reactive": True},                                        # 10 s
+     "reactive": True},                             # 10 s        (old stage 5)
 ]
+
+#: The six-rung table this replaced, by `horizon_ticks`. A saved
+#: `curriculum_stage` is an INDEX into whatever table was live when it was
+#: written, so resuming a pre-2026-09-03 checkpoint against the eleven-rung
+#: table would silently reinterpret it -- a run saved at the old stage 3 (5 s)
+#: would come back at the new rung 3 (2 s), a two-rung demotion reported
+#: nowhere. Horizon is the axis that is stable across both tables, so the remap
+#: is by lookup and not by arithmetic.
+_LEGACY_STAGE_HORIZONS = [0, 10, 30, 50, 70, 100]
+
+
+def remap_legacy_stage(stage):
+    """Old six-rung index -> the eleven-rung index with the same horizon.
+
+    Returns `stage` unchanged if it cannot be a legacy index. Called only from
+    `CurriculumManager.load_state_dict`, which records whether a checkpoint
+    predates the table so this cannot fire twice on the same number.
+    """
+    stage = int(stage)
+    if not 0 <= stage < len(_LEGACY_STAGE_HORIZONS):
+        return min(stage, len(TEACHER_STAGES) - 1)
+    want = _LEGACY_STAGE_HORIZONS[stage]
+    for i, cfg in enumerate(TEACHER_STAGES):
+        if cfg["horizon_ticks"] == want:
+            return i
+    return min(stage, len(TEACHER_STAGES) - 1)
 
 
 # Own-back-half cells used by `wincon_mode="cycle"` -- see UtilityTeacher's

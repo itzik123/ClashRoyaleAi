@@ -29,6 +29,58 @@ Rules that apply to every item below:
 
 ---
 
+## 0a. LAUNCH AND WATCH: the meta-deck pool + the eleven-rung ladder
+
+**Built and tested 2026-09-03, not yet run at length.** Branch
+`meta-deck-pool-and-finer-curriculum`. Everything below is the WATCH LIST for
+the first real run, because the two changes are gameplay-affecting and every
+curriculum gate is now calibrated against a different opponent.
+
+What changed: the phase-1 opponent plays a pool of 16 real meta decks
+(`opponents/decks/meta_decks.json`) sampled per episode by PFSP weight instead
+of our own deck; the teacher ladder went 6 rungs -> 11 with one knob per rung;
+the advance gate went 0.80 -> 0.65; and two new exits (plateau, backstop)
+guarantee no rung can hold a run that has stopped improving.
+
+**Watch, in priority order:**
+
+1. **`Decks/WinRate_Min` and the `Decks(win):` console row.** The pool's whole
+   risk is a matchup the agent never gets off the floor on. The MINIMUM is the
+   number that shows it; the pool average cannot, for the same reason the
+   placement head's aggregate entropy could not see a per-card collapse.
+2. **P(play | in hand) for Cannon / The Log / Fireball**, via
+   `eval/probe_card_usage.py`. **This is the prediction the whole deck-pool
+   change rests on and it is NOT yet demonstrated.** The 2026-09-03 sweep shows
+   the pool offers 1.5-2.9x the opportunity the mirror did; whether a policy
+   retrained on it actually picks those cards up is unmeasured. Baseline to beat
+   is the mirror-era 0.0053 / 0.0091 / 0.0011.
+3. **How many rungs are cleared by `[PLATEAU]` rather than by the gate.** A run
+   that plateaued up every rung is at the top having beaten nothing, which is a
+   materially weaker claim than the stage number suggests. Both are printed and
+   `Training/Curriculum_PlateauAdvances` logs the count.
+4. **Time per rung.** The failure being fixed was 23,040 episodes at one rung;
+   the backstop caps it near 4,000 by construction, so anything above that means
+   a valve is not firing and the guarantee is broken, not merely slow.
+
+**RESUME, do not restart.** Measured on the 16-deck pool, `model_weights_phase5.pth`
+(ep 32,484) averages 0.527 unweighted, clears 0.40 against 11 of 16 decks, and
+scores a PFSP-weighted **0.422** -- just above `PLATEAU_MIN_WIN_RATE`, so every
+valve is live from episode 1. A FRESH net by contrast won 0 of its first 100
+episodes against the pool (see CLAUDE.md, "THE COLD START IS REAL"). Nothing in
+the observation or action space moved, so the checkpoint loads unchanged.
+
+**Do NOT compare any win rate across this change**, in either direction. A
+mirror win rate and a PFSP-weighted pool win rate are different quantities --
+PFSP deliberately regulates the second toward the agent's worst matchups, which
+is why `PLATEAU_MIN_WIN_RATE` is 0.40 and is not a "the agent got worse" signal.
+
+**If the deck axis turns out to be too much at once**, the cheap fallback is
+`CLASH_PHASE1_DECK_POOL=0` (restores the mirror exactly) or trimming the pool
+via `enabled: false` in the JSON -- neither needs a code change or invalidates
+a checkpoint.
+
+---
+
 ## 0. NEXT UP — Stage 2: the live teacher-as-agent loop
 
 **The engine half landed 2026-08-24** (`UPSTREAM_REQUESTS.md` item 22,

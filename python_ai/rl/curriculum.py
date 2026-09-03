@@ -35,26 +35,117 @@ test could import it: the suite parsed `train.py` with `ast` to recover the
 literal. That worked and was a bad sign -- a constant nothing can import is a
 constant nothing can check.
 """
+import os
 from collections import deque
 
-#: Six rungs, indexing `opponents.teacher.TEACHER_STAGES`. The gate (raw win
-#: rate >= 0.80 over a full 100-episode window) is unchanged from the elixir era
-#: and so is the load-bearing ordering around it: the PHASE transition is
-#: evaluated BEFORE stage advancement, because the stage gate clears the outcome
-#: window when it fires and would otherwise always consume a window that
-#: satisfies both.
+#: The ordering around the gate is unchanged and still load-bearing: the PHASE
+#: transition is evaluated BEFORE stage advancement, because the stage gate
+#: clears the outcome window when it fires and would otherwise always consume a
+#: window that satisfies both.
+#:
+#: Advance gate, lowered 0.80 -> 0.65 on 2026-09-03 together with the eleven-rung
+#: teacher table. The two changes are one change and must not be separated: 0.80
+#: was priced against SIX rungs, and holding it while tripling the number of
+#: steps would make the ladder strictly harder to climb, not easier.
+#:
+#: 0.80 was also never really 0.80. This module's own stall-valve note records
+#: the measurement: the gate is re-tested on every episode over hundreds of
+#: OVERLAPPING windows, so an agent whose true skill is 0.70 clears one window
+#: 1.6% of the time and clears at least one within 3,000 episodes 91.6% of the
+#: time. The nominal number was an optional-stopping test, not a threshold.
+#:
+#: AND IT IS A MIRROR-MATCH GATE, which is what made it unreachable rather than
+#: merely strict. Demanding 0.80 while the opponent plays OUR OWN deck is
+#: demanding domination of a forward-simulating opponent holding identical
+#: resources; a symmetric matchup between comparable players sits near 0.50 by
+#: construction. The deck pool (opponents/deck_pool.py) is what makes a number
+#: above 0.50 a coherent ask at all, because a diverse pool contains matchups
+#: the agent can be genuinely favoured in.
+STAGE_WIN_RATE_GATE = float(os.environ.get("CLASH_STAGE_GATE", 0.65))
+
+#: Eleven rungs, indexing `opponents.teacher.TEACHER_STAGES` 1:1. The final rung
+#: keeps `None` -- there is still no auto-advance past the top and a stopping
+#: rule is still chosen by hand.
 CURRICULUM_STAGES = [
-    {"teacher_stage": 0, "win_rate_threshold": 0.80},
-    {"teacher_stage": 1, "win_rate_threshold": 0.80},
-    {"teacher_stage": 2, "win_rate_threshold": 0.80},
-    {"teacher_stage": 3, "win_rate_threshold": 0.80},
-    {"teacher_stage": 4, "win_rate_threshold": 0.80},
-    {"teacher_stage": 5, "win_rate_threshold": None},   # no further auto-advance
-]
+    {"teacher_stage": i, "win_rate_threshold": STAGE_WIN_RATE_GATE}
+    for i in range(10)
+] + [{"teacher_stage": 10, "win_rate_threshold": None}]
 
 #: Window the gates read. 100 episodes is a +/-0.1 sampling band on a win rate,
 #: which is the coarsest resolution the thresholds below are meaningful at.
 OUTCOME_WINDOW = 100
+
+#: --- the plateau valve -----------------------------------------------------
+#: THE STALL THAT MOTIVATED THIS, measured off runs/phase4: the 2026-08-28 run
+#: spent episodes 9,640 -> 32,680 -- 23,040 consecutive episodes, ~24 hours at
+#: the measured 943 ep/h -- at stage 3, win rate oscillating 0.15-0.60, and
+#: advanced ZERO times. Nothing in the loop could end that. The advance gate
+#: needs 0.80 and never saw it; the stall valve needs <=0.10 sustained over
+#: fifteen windows and only caught the two deepest troughs, demoting twice and
+#: climbing back both times.
+#:
+#: So the ladder had a gate for MASTERY and a valve for CATASTROPHE and nothing
+#: at all for the case that actually happened: an agent that is competitive,
+#: learning nothing further, and not failing. That band is where a curriculum
+#: run spends its time, and it was the one band with no exit.
+#:
+#: The rule is ordinary early stopping, on the quantity the noise does not move:
+#: a 500-episode mean rather than the 100-episode window, because the thing
+#: being detected is the absence of a TREND and a 100-episode window swings
+#: +/-0.1 on sampling alone. Advance when that mean has not improved by
+#: `PLATEAU_IMPROVEMENT` for `PLATEAU_PATIENCE_EPISODES` AND is at least
+#: `PLATEAU_MIN_WIN_RATE` -- competitive but converged. Below that floor the
+#: agent is not being held back by the rung, it is losing to it, and promotion
+#: would be the over-promotion the stall valve exists to undo.
+#:
+#: Applied to that stall the valve fires within ~2,000 episodes of entering the
+#: rung (a 500-episode window to establish the trend, then 1,500 of patience)
+#: instead of never. `test_curriculum_plateau.py` replays the real oscillation
+#: and bounds it under episode 4,000, so the saving is ~19,000 episodes --
+#: about 20 hours at the measured 943 ep/h.
+#:
+#: THE PLATEAU IS THE WORKHORSE AND THE GATE IS THE FAST PATH, once the deck
+#: pool is on, and that division of labour is forced by PFSP rather than chosen.
+#: PFSP weights a deck by `(1 - win_rate)^2`, so it deliberately spends the run
+#: on whatever the agent is doing WORST against -- which REGULATES the readable
+#: win rate toward the hard end of the pool. Measured on the 2026-09-03 sweep's
+#: own numbers (8 decks, 0.07-1.00): the agent beats three decks at 0.70-1.00
+#: and the episode-weighted pool win rate still reads 0.581. A LEVEL gate can
+#: therefore be structurally unreachable on a heterogeneous pool no matter how
+#: good the agent gets, which is the same shape of unreachability the 0.80
+#: mirror gate had, arriving by a different road.
+#:
+#: So `PLATEAU_MIN_WIN_RATE` is 0.40 and is NOT comparable to a mirror win rate.
+#: It is a floor on a PFSP-weighted mixture that is deliberately biased toward
+#: the agent's worst matchups; 0.40 there is a genuinely competitive agent,
+#: while 0.40 against a single fixed opponent would not be.
+PLATEAU_WINDOW = 500
+PLATEAU_PATIENCE_EPISODES = 1500
+PLATEAU_MIN_WIN_RATE = 0.40
+PLATEAU_IMPROVEMENT = 0.02
+
+#: --- the backstop ----------------------------------------------------------
+#: A HARD CEILING ON EPISODES AT ONE RUNG, and the reason it exists even though
+#: the plateau valve above should make it unreachable: the 2026-08-28 run burned
+#: 23,040 episodes at one rung, and the whole point of this change is that that
+#: must not be able to happen again for ANY reason -- including a reason nobody
+#: has thought of, and including a bug in the plateau valve itself.
+#:
+#: It fires DOWNWARD only, and covers exactly the gap the plateau valve leaves:
+#: a rung the agent has converged on BELOW `PLATEAU_MIN_WIN_RATE`. That state is
+#: not catastrophic enough for the 0.10 stall valve and not competitive enough
+#: to promote, so before this it could hold a run indefinitely -- which is
+#: precisely what the 2026-08-28 run did. Such a run is over-promoted, so it
+#: goes down a rung and tries again from a teacher it can score against.
+#:
+#: MEASURED FROM THE LAST IMPROVEMENT, not from the start of the rung. The first
+#: version of this used elapsed time and would have cut off an agent that was
+#: still climbing, which is worse than the stall it was added to prevent;
+#: `test_a_still_improving_rung_is_never_moved` pins that it cannot.
+#:
+#: 4,000 is ~2x the plateau's own worst case (a 500-episode window to establish
+#: the trend plus 1,500 of patience), so it never pre-empts the measured path.
+MAX_EPISODES_PER_RUNG = int(os.environ.get("CLASH_MAX_EPISODES_PER_RUNG", 4000))
 
 #: --- the stall valve -------------------------------------------------------
 #: The ladder above is otherwise STRICTLY ONE-WAY: `maybe_advance_stage` only
@@ -123,6 +214,19 @@ class CurriculumManager:
         #: a run whose ladder position is NOT evidence of competence, so this
         #: has to be visible and has to survive a resume.
         self.demotions = 0
+        #: How many rungs were cleared by PLATEAU rather than by the gate. Read
+        #: it as "how much of this ladder position is mastery and how much is
+        #: only convergence" -- a run that plateaued up every rung is at the top
+        #: without ever having beaten anything, and that has to be visible in
+        #: the same way `demotions` is.
+        self.plateau_advances = 0
+        #: The plateau detector's own state. `rung_history` is deliberately NOT
+        #: the gate's window: the gate CLEARS its window on every advance and
+        #: demotion, and a detector for "no trend" cannot run on a series that
+        #: is reset whenever anything happens.
+        self.rung_history = deque(maxlen=PLATEAU_WINDOW)
+        self.best_rung_mean = 0.0
+        self.best_rung_episode = 0
         self.phase = "mirror"
         self.deck_stage = 0
         self.deck_episode_start = 0
@@ -171,8 +275,37 @@ class CurriculumManager:
         self.stage_start_episode = episodes_completed
         return win_rate
 
+    def note_outcome(self, outcome):
+        """Feed the plateau detector one episode result (1 win / 0 otherwise).
+
+        Separate from `outcome_history` on purpose -- see `rung_history`. The
+        trainer calls this for exactly the episodes it also enters into the
+        gate's window, so a scenario episode is excluded from both or neither.
+        """
+        self.rung_history.append(1 if outcome == 1 else 0)
+
+    def rung_mean(self):
+        """Long-window win rate at this rung, or None until the window fills."""
+        if len(self.rung_history) < self.rung_history.maxlen:
+            return None
+        return sum(self.rung_history) / len(self.rung_history)
+
+    def _reset_rung_tracking(self, episodes_completed):
+        self.rung_history.clear()
+        self.best_rung_mean = 0.0
+        self.best_rung_episode = episodes_completed
+
     def maybe_advance_stage(self, outcome_history, episodes_completed):
-        """Mirror-phase stage gate. Returns the new stage, or None.
+        """Mirror-phase stage gate. Returns (new_stage, reason), or None.
+
+        Two ways up, and the second one is the 2026-09-03 addition:
+
+          "gate"     the 100-episode window cleared `win_rate_threshold`.
+                     Mastery.
+          "plateau"  the 500-episode mean has stopped improving while staying
+                     above `PLATEAU_MIN_WIN_RATE`. Convergence -- this rung has
+                     no gradient left to give, and 23,040 episodes of the
+                     2026-08-28 run went into proving there was no other exit.
 
         Guarded on the mirror phase: this block used to run in BOTH, harmless
         only while phase 2 required the FINAL stage. Now that phase 2 can start
@@ -184,13 +317,31 @@ class CurriculumManager:
         threshold = CURRICULUM_STAGES[self.stage]["win_rate_threshold"]
         if threshold is None or self.stage + 1 >= len(CURRICULUM_STAGES):
             return None
+
+        reason = None
         win_rate = window_win_rate(outcome_history)
-        if win_rate is None or win_rate < threshold:
+        long_mean = self.rung_mean()
+        if win_rate is not None and win_rate >= threshold:
+            reason = "gate"
+        else:
+            if long_mean is not None:
+                if long_mean > self.best_rung_mean + PLATEAU_IMPROVEMENT:
+                    self.best_rung_mean = long_mean
+                    self.best_rung_episode = episodes_completed
+                elif (episodes_completed - self.best_rung_episode
+                        >= PLATEAU_PATIENCE_EPISODES
+                        and long_mean >= PLATEAU_MIN_WIN_RATE):
+                    reason = "plateau"
+        if reason is None:
             return None
+
         self.stage += 1
+        if reason == "plateau":
+            self.plateau_advances += 1
         outcome_history.clear()
+        self._reset_rung_tracking(episodes_completed)
         self.stage_start_episode = episodes_completed
-        return self.stage
+        return self.stage, reason
 
     def maybe_demote_stage(self, outcome_history, episodes_completed):
         """Mirror-phase STALL valve. Returns the new stage, or None.
@@ -214,13 +365,44 @@ class CurriculumManager:
         if episodes_completed - self.stage_start_episode < STALL_PATIENCE_EPISODES:
             return None
         win_rate = window_win_rate(outcome_history)
-        if win_rate is None or win_rate > STALL_WIN_RATE:
+        long_mean = self.rung_mean()
+        # The ordinary catastrophe trigger, unchanged...
+        catastrophic = win_rate is not None and win_rate <= STALL_WIN_RATE
+        # ...plus the DOWNWARD BACKSTOP (2026-09-03), which closes the one gap
+        # the plateau valve leaves open. `maybe_advance_stage` promotes a
+        # converged rung only when it is at least PLATEAU_MIN_WIN_RATE; a run
+        # converged BELOW that floor is exactly the 2026-08-28 stall -- not
+        # catastrophic enough for the 0.10 valve, not competitive enough to
+        # promote, and previously able to sit there forever. It is over-promoted,
+        # so it goes DOWN.
+        #
+        # Conditioned on time since the last IMPROVEMENT and not on time at the
+        # rung, which the first version of this got wrong: an agent still
+        # climbing must never be moved, and `best_rung_episode` is the only
+        # quantity that distinguishes "stuck" from "slow".
+        #
+        # DEPENDS ON `maybe_advance_stage` HAVING RUN THIS EPISODE, because that
+        # is what refreshes `best_rung_episode`. train.py calls them in that
+        # order and returns early when the advance fires, so the value is always
+        # current here; reversing the order would freeze this backstop's clock
+        # and it would fire on an improving run. Pinned by
+        # `test_a_still_improving_rung_is_never_moved_by_the_backstop`, which
+        # calls both in the trainer's order.
+        capped_out = (long_mean is not None
+                      and long_mean < PLATEAU_MIN_WIN_RATE
+                      and episodes_completed - self.best_rung_episode
+                      >= MAX_EPISODES_PER_RUNG)
+        if not (catastrophic or capped_out):
             return None
         self.stage -= 1
         self.demotions += 1
         # Same bookkeeping an advance does: the rung must be judged on fresh
-        # episodes, and exploration re-boosts for the changed opponent.
+        # episodes, and exploration re-boosts for the changed opponent. The
+        # plateau tracker is reset here too -- a 500-episode mean carried across
+        # a rung change describes an opponent that is no longer being played,
+        # and would let a demotion immediately look like a plateau.
         outcome_history.clear()
+        self._reset_rung_tracking(episodes_completed)
         self.stage_start_episode = episodes_completed
         return self.stage
 
@@ -264,6 +446,12 @@ class CurriculumManager:
         return {
             "curriculum_stage": self.stage,
             "curriculum_demotions": self.demotions,
+            "curriculum_plateau_advances": self.plateau_advances,
+            #: Stamps which teacher table this index was written against. Its
+            #: ABSENCE is what identifies a pre-2026-09-03 checkpoint, so the
+            #: remap in load_state_dict runs exactly once and can never run on
+            #: an index it already converted.
+            "teacher_table_size": len(CURRICULUM_STAGES),
             "stage_start_episode": self.stage_start_episode,
             "phase": self.phase,
             "deck_curriculum_stage": self.deck_stage,
@@ -280,9 +468,30 @@ class CurriculumManager:
         in the phase, and defaulting to 0 would make the elapsed budget look
         like the full episode count and hand off immediately on resume.
         """
-        self.stage = state["curriculum_stage"]
+        # A saved stage is an INDEX into the teacher table that was live when it
+        # was written. The 2026-09-03 table went 6 rungs -> 11, so a checkpoint
+        # with no `teacher_table_size` stamp is indexing the old one and must be
+        # remapped by HORIZON -- otherwise a run saved at old stage 3 (5 s
+        # lookahead) silently resumes at new rung 3 (2 s), a two-rung demotion
+        # with no log line. Exactly the failure class as reinterpreting an
+        # observation layout across a size change.
+        from python_ai.opponents.teacher import remap_legacy_stage
+        saved_table = state.get("teacher_table_size")
+        stage = int(state["curriculum_stage"])
+        if saved_table is None or saved_table != len(CURRICULUM_STAGES):
+            remapped = remap_legacy_stage(stage)
+            if remapped != stage:
+                print(f">>> Curriculum: checkpoint stage {stage} was written "
+                      f"against a {saved_table or 6}-rung teacher table; "
+                      f"remapped to rung {remapped} (same lookahead horizon).")
+            stage = remapped
+        self.stage = stage
         self.demotions = state.get("curriculum_demotions", 0)
+        self.plateau_advances = state.get("curriculum_plateau_advances", 0)
         self.stage_start_episode = state["stage_start_episode"]
+        # Never restored: a 500-episode trend belongs to the episodes that
+        # produced it, and a resume has none of them in flight.
+        self._reset_rung_tracking(self.stage_start_episode)
         self.phase = state.get("phase", "mirror")
         self.deck_stage = state.get("deck_curriculum_stage", 0)
         self.deck_episode_start = state.get("phase_deck_episode_start", 0)

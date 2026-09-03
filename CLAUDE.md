@@ -1094,16 +1094,129 @@ Two sequential pipelines. `train.py` hands off by `subprocess.Popen`-ing
 0 bytes) and exiting.
 
 ```
-train.py            phase 1  "mirror"           vs the UtilityTeacher
+train.py            phase 1  "mirror"           vs the UtilityTeacher, which
+       |                                        since 2026-09-03 plays a POOL
+       |                                        of real meta decks, not ours
        |  win rate >= PHASE2_ENTRY_WIN_RATE (0.60)   <-- gates THIS step only
-       |  AND curriculum stage >= PHASE2_MIN_CURRICULUM_STAGE (4)
+       |  AND curriculum stage >= PHASE2_MIN_CURRICULUM_STAGE (rung 8)
        v
-                    phase 1  "random_opponent"  vs randomised decks
+                    phase 1  "random_opponent"  vs rotating pool decks
        |  RANDOM_OPPONENT_EPISODE_BUDGET (5,000) episodes IN THIS PHASE
        v
 train_selfplay.py   phase 2  PFSP league        vs frozen snapshots +
                                                4 scripted bots + exploiters
 ```
+
+### THE OPPONENT PLAYS REAL META DECKS, since 2026-09-03
+
+The phase-1 opponent played **our own deck** for every episode of every run this
+project has ever done (`opp_deck` defaults to `ai_deck`). It no longer does:
+`opponents/deck_pool.py` loads `opponents/decks/meta_decks.json` — 16 RoyaleAPI
+ladder archetypes, named cards, hand-editable — and each worker samples one per
+episode by PFSP weight. **The 2.6 mirror is still in the pool**, as one matchup
+of sixteen. `CLASH_PHASE1_DECK_POOL=0` restores the old behaviour.
+
+**THIS IS THE FIX FOR THE THREE DEAD CARDS, and the diagnosis is the 2026-08-29
+autopsy's own — read the other way round.** That autopsy established Cannon /
+The Log / Fireball sat at P(play | in hand) ≤ 0.009 for 30,000 episodes and that
+the card head was **right** to price them there: forced through `env.step` a
+Cannon at the policy's own cell was worth +185 tower HP, better in 6 of 14
+states. Three separate attempts to overrule it (coverage floor at two
+coefficients, a threat gate, forced sampling at five doses) all cost win rate.
+
+Every one of those measurements held the OPPONENT'S DECK fixed at the mirror.
+Measured with the deck as the independent variable
+(`eval/measure_deck_matchups.py`, 16 decks x 30 episodes, ep-32,484 policy,
+~82,000 decisions), **the 2.6 mirror ranks 16th of 16 on all three opportunity
+metrics at once**:
+
+| per decision, best case | mirror | pool median | ratio |
+|---|---|---|---|
+| Fireball catch (enemy HP) | **323** | 494 | 1.53x |
+| The Log catch (3.9x10.1 corridor) | **145** | 273 | 1.88x |
+| threat HP on our half (the Cannon's driver) | **270** | 503 | 1.86x |
+| enemy units on board | **1.0** | ~2.0 | ~2x |
+
+The extremes are wider: `royal_hogs_furnace` offers **884** of Fireball value
+(2.7x the mirror), `miner_poison_control` **427** of Log value (2.9x), and
+`mega_knight_ram` **858** of threat (3.2x). So the card was never underpriced —
+it was correctly priced FOR A DISTRIBUTION WE CHOSE. Cannon answers a tank
+walking at your tower, Fireball answers a medium-HP cluster, The Log answers a
+ground swarm, and a 2.6 mirror produces one Hog, one Musketeer and 1-elixir
+Skeletons respectively.
+
+**Read the take-up column honestly**: it stays at 0.00-0.06 for all three cards
+across ALL sixteen decks. This is a mirror-trained policy meeting these decks
+for the first time, so the pool changes what the cards are WORTH and does not by
+itself change what the policy does. **The dead cards are a retraining
+prediction, not a demonstrated fix.**
+
+**THE HUMAN META'S "COUNTERS TO 2.6" ARE NOT THIS ENGINE'S COUNTERS**, which is
+the finding that decides how the pool is filtered. Decks tagged `anti_26` from
+the real game's matchup lore (Tornado king-activation, Inferno Tower, Mega
+Knight, LavaLoon) average a **0.589** win rate against the current policy, while
+untagged decks average **0.433** — the tags are, if anything, backwards. What
+actually beats a cycle deck here is raw statline: P.E.K.K.A. bridge spam scores
+**0.067** and Mega Knight Ram **0.200**, while Graveyard control and Mortar
+cycle — both textbook 2.6 counters — sit at **0.867** and **0.800**. This is
+`gym_wrapper`'s own long-standing note ("giant units crush cycle decks in this
+engine") arriving from a new direction.
+
+So the pool is filtered by **measurement, never by the tags**. A deck under
+`POOL_WINRATE_FLOOR` (0.20) drops to `POOL_UNWINNABLE_WEIGHT` — about 9% of
+episodes across all such decks, rather than the 20% a shared floor gave — and
+climbs back out on its own as the agent improves, which a static exclusion list
+cannot do. The tags stay in the JSON as commentary and gate nothing.
+
+**THE COLD START IS REAL AND IS NOT SOLVED.** A random-init policy won **0 of
+its first 100 episodes** against the pool, against ~0.07 for the historical
+mirror run over the same span, and that was true both before and after the
+count-weighted estimator below -- so do not read the estimator as a fix for it.
+A fresh net against Mega Knight and Giant beatdown is simply harder than a fresh
+net against its own cycle deck. Watch the first ~1,000 episodes of any fresh run;
+if the win rate is still pinned at zero, trim the pool to the winnable band with
+`"enabled": false` (no code change, no checkpoint invalidated).
+
+**IT ONLY APPLIES TO A FRESH RUN, and that is the practical answer.** Measured
+on the same sweep, `model_weights_phase5.pth` (ep 32,484) averages **0.527**
+unweighted across the 16 decks, clears 0.40 against **11 of 16**, and scores a
+PFSP-weighted **0.422** -- just above `PLATEAU_MIN_WIN_RATE`, so the ladder's
+valves are live from the first episode. Resuming skips the cold start entirely,
+and nothing in the observation or action space moved, so the checkpoint loads
+unchanged. **Resume; do not restart.**
+
+Verified end to end on a COPY of that checkpoint: the loader announced
+`checkpoint stage 3 was written against a 6-rung teacher table; remapped to rung
+6 (same lookahead horizon)` and then trained at **0.51** over its first 26
+episodes at rung 6 -- the rung that consumed 23,040 episodes -- which is above
+`PLATEAU_MIN_WIN_RATE` and so is the condition for the ladder to move at all.
+
+**What IS established is that the SAMPLING self-corrects**, simulated against a
+policy 0.15x the strength of the one that produced the priors: the share of
+episodes spent on decks that policy cannot win falls from **42% at episode 0** to
+roughly 7-13% within a few hundred episodes, and the mix converges onto the decks
+it has the best chance against. That happens because the live estimate crosses
+`POOL_WINRATE_FLOOR` and PFSP parks the deck -- the mechanism working as intended.
+
+**The estimate is count-weighted early** -- `alpha = max(0.05, 1/(n+1))`, the
+running mean decaying into the EWMA -- so a deck's estimate reflects THIS policy
+within ~10 matches instead of ~60. That is an estimator-quality argument, not a
+measured win-rate gain: over 8 seeds the effect on episode share is inside the
+noise (6.8-17.8% either way). It is kept because a prior taken from a DIFFERENT
+policy must not outlive contact with the current one, which is exactly what the
+priors' own docstring promises.
+
+**Sampling is PFSP, NOT deck-at-a-time mastery**, and the spread is why: the
+measured win rates run 0.067 to 1.000, so a "beat each deck to a threshold"
+schedule stalls permanently on the first hard one — the exact failure being
+fixed. It is also the lesson phase 2 already learned one level up, where a
+ladder was replaced by PFSP because a ladder never revisits and so cannot
+prevent forgetting.
+
+**GAMEPLAY-AFFECTING**: the opponent distribution changed, so every curriculum
+gate is calibrated against a different opponent and **no win rate is comparable
+across this date**. Checkpoints still load — the observation and action space
+are untouched.
 
 **`PHASE2_ENTRY_WIN_RATE` does not gate the pipeline handoff**, despite its
 name. It gates `mirror` → `random_opponent`, together with a stage floor the
@@ -1365,21 +1478,73 @@ guaranteed-zero outcome, i.e. safe.
 
 ### Curriculum (both phases run the same ladder)
 
-Six stages, gated on **raw** win rate ≥ 0.80 over 100 episodes.
+**ELEVEN rungs since 2026-09-03**, gated on **raw** win rate ≥ **0.65** over
+100 episodes — plus a plateau valve and a backstop, because a level gate alone
+demonstrably cannot end a stall. It was six rungs at 0.80.
 
 **The rungs are the TEACHER'S LOOKAHEAD, not an elixir handicap** (corrected
 2026-08-25; this section still described the retired multiplier ladder — the
 pivot itself is in `DECISIONS.md`, "2026-08-19: the curriculum pivot"). Read
 `TEACHER_STAGES` in `opponents/teacher.py` for the live values:
 
-| stage | horizon | epsilon | k_cells | max_combos | reactive |
-|---|---|---|---|---|---|
-| 0 | 0 t (rules only) | 0.30 | 1 | 0 | no |
-| 1 | 10 t (1 s) | 0.15 | 1 | 0 | no |
-| 2 | 30 t (3 s) | 0.10 | 2 | 2 | no |
-| 3 | 50 t (5 s) | 0.05 | 2 | 3 | no |
-| 4 | 70 t (7 s) | 0.02 | 3 | 4 | no |
-| 5 | 100 t (10 s) | 0.00 | 3 | 4 | **yes** |
+| rung | horizon | epsilon | k_cells | max_combos | reactive | was |
+|---|---|---|---|---|---|---|
+| 0 | 0 t (rules only) | 0.30 | 1 | 0 | no | stage 0 |
+| 1 | 10 t (1 s) | 0.20 | 1 | 0 | no | stage 1 |
+| 2 | 20 t (2 s) | 0.15 | 1 | 0 | no | |
+| 3 | 20 t (2 s) | 0.12 | 2 | 2 | no | |
+| 4 | 30 t (3 s) | 0.10 | 2 | 2 | no | stage 2 |
+| 5 | 40 t (4 s) | 0.08 | 2 | 3 | no | |
+| 6 | 50 t (5 s) | 0.05 | 2 | 3 | no | stage 3 |
+| 7 | 60 t (6 s) | 0.04 | 3 | 3 | no | |
+| 8 | 70 t (7 s) | 0.02 | 3 | 4 | no | stage 4 |
+| 9 | 85 t (8.5 s) | 0.01 | 3 | 4 | no | |
+| 10 | 100 t (10 s) | 0.00 | 3 | 4 | **yes** | stage 5 |
+
+**WHY: the old table moved three and four knobs per rung**, so "advance one
+stage" was never a small step — 2 → 3 was horizon 30→50 *and* epsilon
+0.10→0.05 *and* max_combos 2→3. The measured cost is in
+`runs/phase4/train-20260828-rolling-spells.log`: **episodes 9,640 → 32,680,
+23,040 consecutive episodes (~24 h at 943 ep/h) at stage 3, win rate
+oscillating 0.15–0.60 against a 0.80 gate, ZERO advances.** Each rung now moves
+one axis (rung 3 moves two only because `max_combos` is inert below
+`COMBO_MIN_HORIZON_TICKS`).
+
+**A SAVED `curriculum_stage` IS AN INDEX INTO WHATEVER TABLE WAS LIVE**, so the
+6→11 change silently reinterprets every older checkpoint — old stage 3 is 5 s
+and new rung 3 is 2 s. `teacher.remap_legacy_stage` converts by HORIZON and
+`state_dict` now stamps `teacher_table_size` so the remap runs exactly once.
+The same trap caught two constants that named a rung by literal:
+`PHASE2_MIN_CURRICULUM_STAGE` (now `remap_legacy_stage(4)` = rung 8, still
+70 ticks) and `make_replays.play_and_log_vs_teacher(stage=...)` (now the derived
+top rung). **Grep for any new literal that indexes this table.**
+
+**Three ways off a rung, and the level gate is the weakest of them.**
+
+| exit | condition | meaning |
+|---|---|---|
+| gate | 100-ep win rate ≥ 0.65 | mastery |
+| **plateau** | 500-ep mean stopped improving for 1,500 ep, and ≥ 0.40 | converged |
+| backstop | 500-ep mean < 0.40 and no improvement for 4,000 ep | over-promoted → **demote** |
+| stall | 100-ep win rate ≤ 0.10 sustained | catastrophe → demote |
+
+The old ladder had only the first and last, i.e. a gate for MASTERY and a valve
+for CATASTROPHE and **nothing for the band in between** — which is where a
+curriculum run actually spends its time, and is exactly the state the 23,040
+episodes were spent in. Replaying that oscillation through the new manager fires
+before episode 4,000 (`test_curriculum_plateau.py`) -- ~19,000 episodes, about
+20 hours, returned to the run.
+
+**The plateau is the WORKHORSE and the gate is the fast path, and that is forced
+by PFSP rather than chosen.** With the deck pool on, sampling weights a deck by
+`(1 - win_rate)^2`, so the run is deliberately spent on the worst matchups and
+the readable win rate is REGULATED toward the hard end of the pool. Measured on
+the 2026-09-03 sweep's own numbers: the agent beats three decks at 0.70–1.00 and
+the episode-weighted pool win rate still reads **0.581**. So a level gate can be
+structurally unreachable on a heterogeneous pool no matter how strong the agent
+gets — the same unreachability the 0.80 mirror gate had, reached by a different
+road. `PLATEAU_MIN_WIN_RATE = 0.40` is a floor on that PFSP-weighted mixture and
+is **not comparable to a mirror win rate**.
 
 **The teacher's play bar tapers from 6.0 elixir, not 9.0, since 2026-08-28.**
 `play_margin = 3.0` is the utility a candidate must beat to be worth playing,
@@ -2285,6 +2450,15 @@ python_ai/           READ-ONLY by default — training runs here.
     scenario_offense.py  Proposal A, default-OFF.
 
   opponents/
+    deck_pool.py       The phase-1 opponent deck pool: loads meta_decks.json,
+                       validates every card against the registry, and holds the
+                       PFSP weighting. The enforcement point for "the opponent
+                       is a REAL deck, and which one is decided by measurement".
+    decks/meta_decks.json
+                       The pool itself -- 16 RoyaleAPI ladder archetypes, named
+                       cards, hand-editable, with the measured `prior_win_rate`
+                       that seeds PFSP. EDIT THIS, not the code; then run
+                       `python -m python_ai.opponents.deck_pool` to validate.
     teacher.py         UtilityTeacher: phase 1's opponent. Rules propose,
                        simulation ranks. Difficulty is lookahead, not elixir.
                        Since 2026-08-20 a candidate is a SEQUENCE of
@@ -2355,6 +2529,15 @@ python_ai/           READ-ONLY by default — training runs here.
                        harnesses each had their own copy.
     match_outcome.py   TimeoutRules' verdict, read from the engine.
     prove_*.py         Engine-scored: the engine is the oracle.
+    measure_deck_matchups.py
+                       Per-opponent-deck win rate AND the per-decision
+                       OPPORTUNITY each deck offers the three historically dead
+                       cards (best Fireball catch, best Log corridor catch,
+                       threat HP). Read the two together: opportunity is what
+                       the BOARD offers, take-up is what the policy does with
+                       it, and the 2026-09-03 finding is that the mirror is
+                       16th of 16 on opportunity while being the only deck the
+                       policy wins 100% of.
     prove_combos.py    Multi-card usage, the combos-on/off A/B, and the
                        lookahead sweep against a checkpoint. Reports USAGE and
                        WIN RATE separately, because a win-rate arm alone cannot

@@ -69,7 +69,9 @@ from python_ai.rl.replay import annotate_replay_with_agent_info  # noqa: E402
 from python_ai.search.search import (  # noqa: E402
     policy_head, greedy_from_logits, search_action, outcome_score,
 )
-from python_ai.opponents.teacher import UtilityTeacher  # noqa: E402
+from python_ai.opponents.teacher import (  # noqa: E402
+    TEACHER_STAGES, UtilityTeacher,
+)
 from python_ai.rl.teacher_debug import (  # noqa: E402
     CapturingTeacher, attach_teacher_debug,
 )
@@ -119,10 +121,16 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
 
 
 @torch.no_grad()
-def play_and_log_vs_teacher(net, env, device, path, stage=5, top_k=4,
+def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
                             seed=None, max_steps=400):
     """One episode of `net` against the UtilityTeacher, with the teacher's
     candidate rollouts recorded into the replay for the viewer.
+
+    `stage` defaults to the TOP rung, derived rather than written as a literal:
+    it was `stage=5`, which meant the final rung against the six-rung teacher
+    table and means the middle of the eleven-rung one -- so the default would
+    have silently started recording replays against a 4-second teacher instead
+    of a 10-second one.
 
     A SEPARATE FUNCTION FROM play_and_log, because the opponent is genuinely
     different plumbing rather than a parameter: play_and_log calls env.step(),
@@ -136,6 +144,8 @@ def play_and_log_vs_teacher(net, env, device, path, stage=5, top_k=4,
     put every opponent placement in its own back corner.
     """
     teacher = CapturingTeacher(list(DEFAULT_DECK), team=1, seed=seed, top_k=top_k)
+    if stage is None:
+        stage = len(TEACHER_STAGES) - 1
     teacher.set_stage(stage)
     teacher.reset()
 
@@ -225,7 +235,8 @@ def main():
                          "the heuristic, and record the teacher's candidate "
                          "rollouts into the replay for the viewer's Simulation "
                          "View. Not paired: one replay per opening.")
-    ap.add_argument("--teacher-stage", type=int, default=5,
+    ap.add_argument("--teacher-stage", type=int,
+                    default=len(TEACHER_STAGES) - 1,
                     help="teacher competence rung for --teacher-debug (0-5)")
     ap.add_argument("--teacher-top-k", type=int, default=4,
                     help="candidates per decision that get a predicted board. "
