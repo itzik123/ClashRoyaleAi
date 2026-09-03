@@ -307,6 +307,12 @@ def main():
     ap.add_argument("--max-steps", type=int, default=400)
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--opp-elixir", type=float, default=1.5)
+    ap.add_argument("--teacher-stage", type=int, default=None,
+                    help="collect against the UtilityTeacher at this curriculum "
+                         "rung, round-robin over the 16-deck pool -- i.e. the "
+                         "TRAINING distribution. Omitted, collection uses the "
+                         "original 2.6-mirror-vs-heuristic env, which is what "
+                         "every recorded dataset and the +0.045 result used.")
     ap.add_argument("--time-budget", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=None,
                    help="Seed every RNG so this run reproduces. Off by "
@@ -334,10 +340,17 @@ def main():
         net = load_net(resolve(args.weights), device)
         print(f"  search      : K<={1 + args.k_cards * args.k_cells} candidates, "
               f"horizon={args.horizon} steps")
-        print(f"  opponent    : HeuristicOpponent at {args.opp_elixir}x elixir")
+        if args.teacher_stage is None:
+            print(f"  opponent    : HeuristicOpponent at {args.opp_elixir}x elixir")
+            print("  distribution: 2.6 MIRROR -- 16th of 16 on opportunity for "
+                  "Cannon / The Log / Fireball. Pass --teacher-stage to collect "
+                  "on the training distribution instead.")
+        else:
+            print(f"  opponent    : UtilityTeacher at rung {args.teacher_stage}")
         data, meta = collect_expert_labels(
             net, args.collect, cfg, device, args.opp_elixir, args.max_ticks,
-            args.time_budget)
+            args.time_budget, pool_stage=args.teacher_stage,
+            seed0=(args.seed or 0))
         bc_pretrain.save_dataset(data, resolve(args.data))
         mb = data["obs"].nbytes / 2 ** 20
         print(f"\n  wrote {len(data['card'])} rows from {meta['episodes']} episodes "

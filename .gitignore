@@ -453,3 +453,9 @@ _replay_cache/
 # dataset: ~9 KB, consumed by advisors/human_prior.py at training time. The
 # blanket *.npz rule above exists for bc_pretrain demonstration dumps.
 !python_ai/advisors/data/*.npz
+# Frozen state banks for probe_card_discrimination. Committed DELIBERATELY: the
+# probe compares checkpoints on the SAME states, so an uncommitted bank means
+# every session re-bases its own baseline and no trend survives. That is exactly
+# what happened between 2026-09-03 and 2026-09-04 -- quality_hi 0.685 / 0.217
+# could not be extended, only re-measured. ~0.7 MB each, not a BC dump.
+!python_ai/eval/banks/*.npz
