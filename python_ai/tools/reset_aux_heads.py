@@ -47,6 +47,8 @@ import python_ai  # noqa: E402,F401
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 
+from python_ai.rl.checkpointing import atomic_save  # noqa: E402
+
 #: Prefixes whose parameters are re-initialised. Both are auxiliary readouts,
 #: neither is on the acting path.
 AUX_PREFIXES = ("aux_card_head.", "cycle_id_head.")
@@ -112,7 +114,10 @@ def main():
     if not names:
         raise SystemExit("no auxiliary head tensors found -- nothing reset")
 
-    torch.save(ck, dst)
+    # atomic_save, never torch.save: --out defaults to overwriting the SOURCE
+    # checkpoint in place, so an interrupted write here destroys the weights
+    # being reset rather than merely failing. Pinned by test_checkpoint_paths.
+    atomic_save(ck, dst)
     total = sum(t.numel() for t in ck["model"].values())
     print(f"reset {len(names)} tensors, {n:,} parameters "
           f"({n / total:.2%} of {total:,}) in {os.path.basename(dst)}")
