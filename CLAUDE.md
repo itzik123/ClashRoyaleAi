@@ -1248,6 +1248,52 @@ the pool at a LOW rung and let the ladder climb it, changing one axis at a time.
 a legacy index to rung 4 -- the migration doing exactly its job on a number that
 did not need migrating.
 
+### 490 EPISODES ON THE POOL: USAGE MOVES, SELECTIVITY DOES NOT
+
+The first real training run under the pool (rung 2, aux heads reset, ep 32,484
+-> 32,970), measured on a frozen 2,446-state bank with
+`eval/probe_card_discrimination.py`. `signal` is |delta| / step-to-step scatter
+across four checkpoints; below ~2 a trend is not separable from PPO jitter.
+
+| card | marginal | signal | ratio (hi/lo) | signal | place_q | signal |
+|---|---|---|---|---|---|---|
+| Fireball | 0.0080 -> **0.0159** | 3.6 | 5.32 -> 6.54 | **0.8** | 0.685 -> 0.685 | 0.0 |
+| The Log | 0.0186 -> **0.0284** | 2.3 | 5.28 -> **4.01** | 2.4 | 0.217 -> 0.231 | 1.6 |
+| Cannon | 0.0230 -> 0.0245 | 0.6 | 3.62 -> **2.79** | 4.3 | n/a | |
+
+**THE USAGE RISE IS REAL AND IT IS THE WRONG KIND.** Fireball's probability
+nearly doubled and The Log's rose by half, both above the jitter. But `p_lo`
+rose for all three cards with real signal (5.2 / 3.7 / 1.7) -- the policy is
+putting more mass on them ON BOARDS THAT OFFER THEM NOTHING -- and two of the
+three discrimination ratios FELL with signal above 2. Fireball's ratio gain is
+not established (0.8; it ran 5.32 -> 4.87 -> 7.85 -> 6.54).
+
+This is the marginal drift that made every previous attempt at these cards cost
+win rate, arriving from the environment side instead of from a coverage floor.
+Win rate over the same window oscillated 0.36-0.49 with no trend, and mean
+episode reward stayed positive throughout (0.8-2.3), so nothing broke -- it
+simply did not buy the conditional.
+
+**AND PLACEMENT DID NOT MOVE AT ALL** -- 0.685 -> 0.685 for Fireball, signal
+0.0. That is the number the 2026-08-29 autopsy identified as the binding
+constraint, and 490 episodes did not touch it. The card head is cheap to move
+and the placement head is not, so a short run necessarily produces exactly this
+shape: more usage, same aiming.
+
+**READ THE PER-CARD CONSTRAINT BEFORE EXPECTING ANY OF THIS TO CONVERT.**
+Fireball's placement head already collects **68.5%** of the achievable catch, so
+its usage rise plausibly converts. The Log's collects **21.7%**, so playing it
+more is playing a badly-aimed 2-elixir spell more often. One number for "the
+three dead cards" hides that they have different problems.
+
+**What this does NOT establish**: that the pool fails. 490 episodes is ~1.5% of
+the 32,000 that produced the policy being measured, the run was healthy
+throughout, and the opportunity the pool creates is measured and large. It
+establishes that the deck pool alone, on this timescale, moves the level and not
+the condition -- and that the next lever is the one the autopsy already named,
+placement, where this repo's measured-positive tools are decision-time search
+(+0.319) and expert iteration (+0.045).
+
 ### THE STALE AUX HEAD, found the same day and NOT the cause
 
 `aux_card_head` predicts which of 185 cards the opponent plays next and reads
