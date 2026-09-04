@@ -639,9 +639,10 @@ class Phase1Trainer(BaseTrainer):
         teacher the agent was not in fact beating.
         """
         self.envs.call("set_teacher_stage", self.curriculum.teacher_stage)
-        print(f">>> [STALL] Curriculum DEMOTED to stage {new_stage} "
-              f"(teacher_stage={self.curriculum.teacher_stage}) after a "
-              f"sustained win rate at or below {STALL_WIN_RATE:.0%}. "
+        reason = (getattr(self.curriculum, "last_demotion_reason", "")
+                  or f"sustained win rate at or below {STALL_WIN_RATE:.0%}")
+        print(f">>> [DEMOTED] Curriculum DEMOTED to stage {new_stage} "
+              f"(teacher_stage={self.curriculum.teacher_stage}): {reason}. "
               f"Demotions this run: {self.curriculum.demotions}.")
         self.writer.add_scalar("Training/Curriculum_Stage", new_stage,
                                self.episodes_completed)

@@ -214,6 +214,7 @@ class CurriculumManager:
         #: a run whose ladder position is NOT evidence of competence, so this
         #: has to be visible and has to survive a resume.
         self.demotions = 0
+        self.last_demotion_reason = ""
         #: How many rungs were cleared by PLATEAU rather than by the gate. Read
         #: it as "how much of this ladder position is mastery and how much is
         #: only convergence" -- a run that plateaued up every rung is at the top
@@ -394,6 +395,17 @@ class CurriculumManager:
                       >= MAX_EPISODES_PER_RUNG)
         if not (catastrophic or capped_out):
             return None
+        # WHICH valve fired, for the caller's log line. Both paths call
+        # `stage -= 1`, and the trainer's message used to hardcode the
+        # catastrophe wording -- so a BACKSTOP demotion reported "sustained win
+        # rate at or below 10%" while the actual rate was 0.39, and cost a
+        # reader a full investigation to discover the message was wrong.
+        self.last_demotion_reason = (
+            f"win rate {win_rate:.2f} at or below the {STALL_WIN_RATE:.0%} "
+            f"catastrophe floor" if catastrophic else
+            f"500-episode mean {long_mean:.2f} below the "
+            f"{PLATEAU_MIN_WIN_RATE:.0%} floor with no improvement for "
+            f"{MAX_EPISODES_PER_RUNG} episodes (backstop, not catastrophe)")
         self.stage -= 1
         self.demotions += 1
         # Same bookkeeping an advance does: the rung must be judged on fresh
