@@ -122,7 +122,7 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
 
 @torch.no_grad()
 def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
-                            seed=None, max_steps=400):
+                            seed=None, max_steps=400, opp_deck=None):
     """One episode of `net` against the UtilityTeacher, with the teacher's
     candidate rollouts recorded into the replay for the viewer.
 
@@ -143,7 +143,8 @@ def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
     (realY1 = BOARD_HEIGHT - 1 - y1); converting here would double-mirror and
     put every opponent placement in its own back corner.
     """
-    teacher = CapturingTeacher(list(DEFAULT_DECK), team=1, seed=seed, top_k=top_k)
+    teacher = CapturingTeacher(list(opp_deck or DEFAULT_DECK), team=1, seed=seed,
+                               top_k=top_k)
     if stage is None:
         stage = len(TEACHER_STAGES) - 1
     teacher.set_stage(stage)
@@ -186,6 +187,36 @@ def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
     return reward, steps, plays, teacher
 
 
+def resolve_opp_decks(spec, n):
+    """`n` opponent decks: DEFAULT_DECK, one named pool deck, or the pool.
+
+    THIS TOOL RECORDED THE 2.6 MIRROR UNCONDITIONALLY until 2026-09-04 -- both
+    `CE(...)` calls passed DEFAULT_DECK twice and the teacher was built from it
+    too. So every replay ever produced for the viewer showed the one matchup
+    that `measure_deck_matchups.py` ranks 16th of 16 on opportunity for Cannon /
+    The Log / Fireball, while the trainer had been playing a 16-deck pool since
+    2026-09-03. The visual evidence and the training distribution had silently
+    diverged.
+
+    Returns a list of (name, card_ids) of length `n`, cycling if the pool is
+    shorter, so replay i and replay i of another run face the same opponent.
+    """
+    if not spec:
+        return [("2.6 mirror (DEFAULT_DECK)", list(DEFAULT_DECK))] * n
+    from python_ai.opponents import deck_pool
+    pool = deck_pool.load_pool()
+    if spec == "pool":
+        chosen = [pool[i % len(pool)] for i in range(n)]
+    else:
+        match = [d for d in pool if d.name == spec]
+        if not match:
+            raise SystemExit(
+                f"--opp-deck {spec!r} matched no deck. Available: "
+                + ", ".join(sorted(d.name for d in pool)) + ", or 'pool'.")
+        chosen = [match[0]] * n
+    return [(d.name, list(d.card_ids)) for d in chosen]
+
+
 def _run_teacher_debug(args, net, device, outdir):
     """--teacher-debug: one replay per opening, teacher reasoning recorded.
 
@@ -195,19 +226,23 @@ def _run_teacher_debug(args, net, device, outdir):
     different artifact.
     """
     print(f"\nopponent : UtilityTeacher @ stage {args.teacher_stage}")
+    print(f"opp deck : {args.opp_deck or '2.6 mirror (DEFAULT_DECK)'}")
     print(f"net      : {args.original} (greedy)")
     print(f"capture  : top {args.teacher_top_k} candidates get a predicted board")
     print(f"out      : {outdir}\n")
 
+    decks = resolve_opp_decks(args.opp_deck, args.n)
     for i in range(args.n):
-        env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), args.max_ticks)
+        deck_name, opp = decks[i]
+        env = CE(list(DEFAULT_DECK), opp, args.max_ticks)
         env.seed(i)
         env.reset()
         path = os.path.join(outdir, f"replay_{i}_teacher_debug.json")
         t0 = time.time()
         reward, steps, plays, teacher = play_and_log_vs_teacher(
             net, env, device, path, stage=args.teacher_stage,
-            top_k=args.teacher_top_k, seed=i)
+            top_k=args.teacher_top_k, seed=i, opp_deck=opp)
+        print(f"  vs {deck_name}")
         recs = teacher.debug_records
         kinds = Counter(r["kind"] for r in recs)
         boards = sum(1 for r in recs for c in r["candidates"] if "final" in c)
@@ -227,6 +262,13 @@ def main():
     ap.add_argument("--distilled", default="model_weights_selfplay.pth")
     ap.add_argument("--outdir", default="replays_e3")
     ap.add_argument("--opp-elixir", type=float, default=1.5)
+    ap.add_argument("--opp-deck", default=None,
+                    help="opponent deck: a meta_decks.json NAME, or 'pool' to "
+                         "round-robin the whole 16-deck pool. Omitted, both "
+                         "sides play DEFAULT_DECK -- the 2.6 MIRROR, which is "
+                         "what this tool did unconditionally until 2026-09-04 "
+                         "and which ranks 16th of 16 on opportunity for "
+                         "Cannon / The Log / Fireball.")
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--search", action="store_true",
                     help="arm B uses 1-ply search instead of the distilled net")
@@ -259,13 +301,16 @@ def main():
         return
 
     print(f"\nopponent : HeuristicOpponent at {args.opp_elixir}x elixir")
+    print(f"opp deck : {args.opp_deck or '2.6 mirror (DEFAULT_DECK)'}")
     print(f"arm A    : {args.original} (greedy)")
     print(f"arm B    : {'same net + 1-ply search' if args.search else args.distilled + ' (greedy)'}")
     print(f"out      : {outdir}\n")
 
     rows = []
+    decks = resolve_opp_decks(args.opp_deck, args.n)
     for i in range(args.n):
-        root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), args.max_ticks)
+        deck_name, opp = decks[i]
+        root = CE(list(DEFAULT_DECK), opp, args.max_ticks)
         root.set_opponent_elixir_multiplier(args.opp_elixir)
         root.reset()
         base = root.snapshot()  # the shared opening both arms play
