@@ -59,7 +59,19 @@ POOL_WINRATE_FLOOR = 0.20                   # opponents/deck_pool.py
 
 
 def scalars(run_dir):
-    """Every scalar series in the newest event file under `run_dir`."""
+    """Every scalar series under `run_dir`, MERGED across all event files.
+
+    Reading only the newest file was wrong across a restart: each run writes its
+    own tfevents, and low-cadence series (`Decks/WinRate/*` fires every
+    DECK_READOUT_EVERY episodes) are simply absent from a fresh one for a while.
+    The report then printed "worst deck None", which reads as a failure when it
+    only means "this file is young" -- and this session restarted three times,
+    so it misfired every time.
+
+    Series are concatenated and sorted by step, then de-duplicated keeping the
+    LAST value written for a step, so a re-run that revisits episode numbers
+    reports the newer measurement rather than a stale one.
+    """
     try:
         from tensorboard.backend.event_processing.event_accumulator import (
             EventAccumulator)
@@ -67,13 +79,21 @@ def scalars(run_dir):
         return {}
     cands = [p for p in glob.glob(os.path.join(run_dir, "*"))
              if "tfevents" in os.path.basename(p)]
-    cands += glob.glob(os.path.join(run_dir, "runs", "*"))
+    cands += [p for p in glob.glob(os.path.join(run_dir, "runs", "*"))
+              if "tfevents" in os.path.basename(p)]
     if not cands:
         return {}
-    ea = EventAccumulator(max(cands, key=os.path.getmtime))
-    ea.Reload()
-    return {tag: [(e.step, e.value) for e in ea.Scalars(tag)]
-            for tag in ea.Tags().get("scalars", [])}
+    merged = {}
+    for path in sorted(cands, key=os.path.getmtime):   # oldest first
+        try:
+            ea = EventAccumulator(path)
+            ea.Reload()
+        except Exception:
+            continue        # a half-written event file must not kill the watch
+        for tag in ea.Tags().get("scalars", []):
+            merged.setdefault(tag, {}).update(
+                {e.step: e.value for e in ea.Scalars(tag)})
+    return {tag: sorted(pts.items()) for tag, pts in merged.items()}
 
 
 def last(series, n=1):
