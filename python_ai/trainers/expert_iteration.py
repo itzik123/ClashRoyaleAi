@@ -415,9 +415,24 @@ def main():
               f"(null {base_match['cell_match']:.4f}, modal {modal:.3f}, "
               f"delta {new_match['cell_match'] - base_match['cell_match']:+.4f})")
         print(f"    critic drift |dV|    {v_drift:.6f}   aux |d| {aux_drift:.6f}")
-        if not args.full_finetune and (v_drift != 0.0 or aux_drift != 0.0):
-            print("    !! NONZERO under --freeze-trunk. The freeze did not take; the critic")
-            print("       that generated these labels is moving underneath the experiment.")
+        # TOLERANCE, not `!= 0.0`. The exact comparison fired on every frozen
+        # run: `critic_drift` re-runs V(s) through the net, and CPU conv/matmul
+        # reduction order is not deterministic across calls, so an untouched
+        # trunk still yields ~1e-8. The message printed "NONZERO" directly under
+        # a value rendered "0.000000", which is how a guard teaches people to
+        # ignore it.
+        #
+        # The AUTHORITATIVE check is tensor identity, not a forward pass:
+        # verified on this exact path, 44 tensors bit-identical, 0 trunk tensors
+        # moved, and only card_head + place_ctx/place_up changed. 1e-5 sits far
+        # above the noise and far below any real drift -- the --full-finetune
+        # arm, which genuinely moves the trunk, measured 0.048086.
+        FREEZE_DRIFT_TOL = 1e-5
+        if not args.full_finetune and (v_drift > FREEZE_DRIFT_TOL
+                                       or aux_drift > FREEZE_DRIFT_TOL):
+            print(f"    !! ABOVE {FREEZE_DRIFT_TOL:g} under --freeze-trunk. The freeze did not")
+            print("       take; the critic that generated these labels is moving")
+            print("       underneath the experiment.")
         atomic_save({"model": student.state_dict(),
                     "distilled_from": os.path.basename(args.weights),
                     "labels": os.path.basename(args.data),
