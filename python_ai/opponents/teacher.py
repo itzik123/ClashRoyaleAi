@@ -128,6 +128,7 @@ import itertools
 import numpy as np
 
 import clash_royale_env as E
+from python_ai import engine_constants as EC
 from python_ai.advisors import tactics
 
 CE = E.ClashRoyaleEnv
@@ -259,6 +260,114 @@ def card_roles(deck):
     return dict(_card_table_cached(tuple(deck))["roles"])
 
 
+# How long a tower-threat probe rolls forward. A siege building has to survive
+# its deploy time, acquire and then out-range the tower; 1200 ticks (2:00) is
+# comfortably past that and still well inside a match.
+TOWER_THREAT_PROBE_TICKS = 1200
+#: Deck for the probes below. Contents are irrelevant -- the card under test is
+#: injected, never played from hand -- but a ClashRoyaleEnv needs eight ids.
+_PROBE_DECK = None
+
+
+def _probe_env():
+    """An empty board, both sides holding some legal deck."""
+    global _PROBE_DECK
+    if _PROBE_DECK is None:
+        _PROBE_DECK = list(E.get_all_card_ids())[:HAND_SIZE * 2]
+    env = CE(_PROBE_DECK, _PROBE_DECK, 3600)
+    env.reset()
+    return env
+
+
+def _enemy_tower_hp(env):
+    return sum(max(0.0, env.get_tower_hp(1, s)) for s in (0, 1, 2))
+
+
+@functools.lru_cache(maxsize=1)
+def own_half_max_row():
+    """The furthest-forward row a BUILDING may legally occupy, from the engine.
+
+    This is the siege row and there is no second copy of it: `ArenaLayout` owns
+    the geometry and `get_own_half_max_y` is how Python reads it.
+    """
+    return int(_probe_env().get_own_half_max_y())
+
+
+@functools.lru_cache(maxsize=256)
+def siege_reach(card_id):
+    """Enemy tower HP a BUILDING takes from the furthest-forward legal row.
+
+    MEASURED, never a name list. Sweeping all 170 legal cells for a Mortar on
+    2026-09-06: exactly 34 of them damage the enemy tower (rows 13-15) and the
+    other 136 do precisely ZERO. Cannon, Tesla, Inferno Tower, Bomb Tower and
+    Tombstone score 0 from every cell; Mortar reads 1596 and X-Bow 3824.
+
+    So this is not "is the building good" -- it is the sharp, binary question of
+    whether the card has any route to a tower at all, which is what decides
+    whether a deck HAS a win condition.
+
+    `step_self_play`, never `step`: plain `step` runs the C++ HeuristicOpponent,
+    which would defend against the probe. And the score is enemy tower HP
+    actually lost, not `get_tower_damage_dealt`, which reads 1620 on a board
+    with nothing whatever on it.
+    """
+    if not E.get_card_info(card_id)["is_building"]:
+        return 0.0
+    best = 0.0
+    row = float(own_half_max_row())
+    for x in (float(int(EC.BOARD_CENTER_X)), float(int(EC.LEFT_LANE_X)),
+              float(int(EC.RIGHT_LANE_X))):
+        env = _probe_env()
+        if not env.is_valid_placement(card_id, x, row, 0):
+            continue
+        before = _enemy_tower_hp(env)
+        env.inject(card_id, x, row, 0, -1.0, 0)
+        for _ in range(TOWER_THREAT_PROBE_TICKS // 10):
+            env.step_self_play(HAND_SIZE, 0.0, 0.0, HAND_SIZE, 0.0, 0.0, 10,
+                               False, False, False, False)
+        best = max(best, before - _enemy_tower_hp(env))
+    return best
+
+
+@functools.lru_cache(maxsize=256)
+def spell_spawns_bodies(card_id):
+    """Does this SPELL put friendly bodies on the board?
+
+    THE DISCRIMINATOR HAS TO BE THE SPAWN, not the damage. Every direct spell
+    hurts a tower it is cast on -- Fireball, Rocket and Poison all do -- so
+    "does it damage the enemy tower" would promote Rocket to win condition in
+    log bait and Fireball in mortar cycle. What makes Goblin Barrel a win
+    condition is that it delivers three bodies onto the tower, and bodies are
+    the thing a spell cannot otherwise produce.
+
+    Measured on an empty board: Goblin Barrel 3 bodies, Graveyard 1, Fireball /
+    The Log / Rocket / Zap / Arrows / Poison / Tornado 0.
+    """
+    if not E.get_card_info(card_id)["is_spell"]:
+        return 0
+    env = _probe_env()
+    env.inject(card_id, float(int(EC.LEFT_LANE_X)), float(EC.princess_y(1)),
+               0, -1.0, 0)
+    peak = 0
+    for _ in range(6):                      # past the ~10-tick cast delay
+        env.step_self_play(HAND_SIZE, 0.0, 0.0, HAND_SIZE, 0.0, 0.0, 10,
+                           False, False, False, False)
+        obs = np.asarray(env.get_observation_for_team(0), np.float32)
+        peak = max(peak, sum(int((obs[ch * PLANE:(ch + 1) * PLANE] > 1e-6).sum())
+                             for ch in CH_ALLY_TROOP))
+    return peak
+
+
+def threatens_tower_alone(card_id):
+    """Can this card damage an enemy tower with no help from a troop?
+
+    The two ways a deck without a building-targeter still wins: a siege building
+    that out-ranges the tower from the own half, and a spell that delivers
+    bodies onto it.
+    """
+    return siege_reach(card_id) > 0.0 or spell_spawns_bodies(card_id) > 0
+
+
 def _card_table_uncached(deck):
     """One injection pass, two derived tables.
 
@@ -300,6 +409,22 @@ def _card_table_uncached(deck):
         # The win condition is the one that actually threatens a tower, i.e. the
         # most expensive -- the same tiebreak _find_win_condition uses.
         roles[max(targeters, key=lambda c: E.get_card_info(c)["cost"])] = "wincon"
+    else:
+        # NO BUILDING-TARGETER AT ALL. Five of the sixteen pool decks are in
+        # this case -- mortar and xbow cycle, both bait decks, and graveyard --
+        # and until 2026-09-06 they got `wincon_id = None`, which every combo
+        # family bails on. The teacher was left purely reactive with them:
+        # measured against an opponent doing NOTHING it never spent one elixir
+        # on the Mortar, the X-Bow, the Goblin Barrel or the Graveyard, and ran
+        # the full 3600 ticks out against xbow and graveyard without closing.
+        #
+        # The fallback fires ONLY here, so the eleven decks that already
+        # resolved a win condition are bit-identical and no win rate earned
+        # against them moves.
+        threats = [c for c in deck if threatens_tower_alone(c)]
+        if threats:
+            roles[max(threats,
+                      key=lambda c: (E.get_card_info(c)["cost"], c))] = "wincon"
     return {"roles": roles, "hp": hp}
 
 
@@ -1313,6 +1438,11 @@ class UtilityTeacher:
         if role == "wincon":
             if self.wincon_mode == "cycle":
                 return list(WINCON_DUD_CELLS)
+            info = E.get_card_info(card_id)
+            if info["is_building"]:
+                return self._siege_cells(obs)[:k]
+            if info["is_spell"]:
+                return self._tower_cells(obs)[:k]
             x, y, _ = tactics.best_hog_cell(obs)
             cells = [(x, y)]
             if k > 1:
@@ -1350,6 +1480,53 @@ class UtilityTeacher:
             cells.append((float(tactics.BRIDGE_XS[self.lane_bias]),
                           float(tactics.BRIDGE_ROW)))
         return cells[:k]
+
+    def _siege_cells(self, obs):
+        """Where a Mortar or an X-Bow has to stand to threaten anything.
+
+        The furthest-forward legal row, which `own_half_max_row` reads off the
+        engine. This is not a preference: sweeping all 170 legal cells, 34 damage
+        the enemy tower and 136 do exactly ZERO, so a siege building one row too
+        far back is worth precisely as much as not playing it.
+
+        Centre first -- an X-Bow at x 7-10 on that row measured 3824 against 2534
+        out at the edge, because the centre column reaches BOTH Princess Towers.
+        The threatened lane comes second so the ranker can prefer the lane that
+        is actually under pressure.
+        """
+        row = float(own_half_max_row())
+        bx, _by, _ = tactics.best_hog_cell(obs)
+        cells = [(float(int(EC.BOARD_CENTER_X)), row), (float(int(bx)), row)]
+        other = (tactics.BRIDGE_XS[1] if int(bx) == tactics.BRIDGE_XS[0]
+                 else tactics.BRIDGE_XS[0])
+        cells.append((float(other), row))
+        return cells
+
+    def _tower_cells(self, obs):
+        """Where a spawning spell has to land: ON an enemy Princess Tower.
+
+        Goblin Barrel measured 1320 there against 600 thrown into our own half.
+        The old path sent it through `_top_spell_cells`, which aims at ENEMY
+        TROOP CLUSTERS -- so on a quiet board it proposed the argmax of an
+        all-zero map, cell (0, 0), and the barrel was never worth playing.
+
+        The weaker tower first: a spell win condition wins by finishing one
+        tower, not by spreading chip across two.
+        """
+        y = float(EC.princess_y(1))
+        lanes = [(float(int(EC.LEFT_LANE_X)), y, 1), (float(int(EC.RIGHT_LANE_X)), y, 2)]
+        lanes.sort(key=lambda c: self._enemy_tower_fraction(obs, c[2]))
+        return [(x, yy) for x, yy, _slot in lanes]
+
+    def _enemy_tower_fraction(self, obs, slot):
+        """Enemy Princess Tower HP, normalised, straight off the observation.
+
+        Extra scalars 6-8 are enemy king / left / right -- the same tail
+        `gym_wrapper` re-scales for the lethal-spell term. Read forward from
+        EXTRA_SCALARS_START, never backward from the end: the layout grows by
+        appending and a backward offset is a scheduled defect.
+        """
+        return float(obs[EC.EXTRA_SCALARS_START + 6 + slot])
 
     def _top_spell_cells(self, obs, k):
         """Top-k cells of the catch map with non-maximum suppression, so the

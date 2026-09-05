@@ -140,19 +140,27 @@ def test_the_estimate_leaves_an_optimistic_prior_within_a_few_matches():
     hard-but-winnable -- which for a fresh net are unwinnable -- for thousands
     of episodes. Measured on a fresh run: 0 wins in 50 episodes.
 
-    The count-weighted rate has to clear the pool's own floor fast enough that
-    PFSP parks such a deck almost immediately.
+    The count-weighted rate has to collapse an optimistic prior within a handful
+    of matches, so PFSP re-weights on THIS policy's evidence rather than on the
+    one the priors were measured from.
+
+    MEASURED AGAINST THE PRIOR, not against POOL_WINRATE_FLOOR, which this test
+    used as its yardstick until 2026-09-06 and which is now 0.0 -- nothing can
+    sit below that, so the old assertion could no longer fail. The floor moving
+    says nothing about the estimator, which is what this test is for.
     """
-    from python_ai.opponents import deck_pool as dp
     env = _env(deck_pool=["mega_knight_ram"])
     env.reset()
-    assert env.deck_pool_stats["mega_knight_ram"] >= dp.POOL_WINRATE_FLOOR, (
-        "this deck's prior should start at or above the floor for the test to "
-        "be measuring anything")
+    prior = env.deck_pool_stats["mega_knight_ram"]
+    assert prior > 0.10, (
+        "this deck's prior should start optimistic for the test to measure "
+        "anything")
     for _ in range(3):
         env._record_deck_outcome(False)
-    assert env.deck_pool_stats["mega_knight_ram"] < dp.POOL_WINRATE_FLOOR, (
-        "three losses must be enough to park a deck this policy cannot win")
+    after = env.deck_pool_stats["mega_knight_ram"]
+    assert after < prior / 3.0, (
+        f"three losses moved the estimate only {prior:.3f} -> {after:.3f}; a "
+        f"count-weighted rate must collapse an optimistic prior fast")
 
 
 def test_a_late_estimate_is_still_stable_against_noise():

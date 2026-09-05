@@ -89,6 +89,12 @@ def test_the_scenario_window_truncates_rather_than_terminating():
     is worth zero.
     """
     env = gym_wrapper.MicroRoyaleEnv({"defensive_scenario_prob": 1.0})
+    # ENGINE seed, not just the gym seed. reset(seed=) drives the scenario
+    # sampler; the opening HAND comes from the engine's own unseeded mt19937,
+    # which every ClashRoyaleEnv built earlier in the session advances. So this
+    # test's outcome depended on what else the suite had constructed before it,
+    # and it failed intermittently under -q with no change to its own subject.
+    env.game.seed(3)
     env.reset(seed=3)
     assert env.scenario_max_steps is not None
 

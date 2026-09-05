@@ -408,3 +408,77 @@ deliberate tripwires (`tests/core/test_clash_env.cpp`,
   unavailable; it is the reason the C++ was verified at all before landing.
 - `tools/audit/verify_pyd.py` now checks the phase scalar is present, at the
   index the layout claims, and symmetric across teams.
+
+---
+
+## Item 27 — Graveyard spawns ONE skeleton and deals zero tower damage from any cell
+
+**Status: OPEN, proposal only. Class:** card behaviour (`CardRegistry.h`).
+**Found** 2026-09-06 while auditing whether the UtilityTeacher can pilot every
+deck in the phase-1 pool.
+
+### The measurement
+
+Graveyard (card id 110, cost 5, `is_spell`) was swept over **all 588 of its
+legal cells** on an empty board, both sides no-op, 1200 ticks per cell, scored
+as enemy Princess/King Tower HP **actually lost**:
+
+```
+Mortar          34 / 170 legal cells damage the enemy tower   best 1596
+X-Bow           34 / 170                                      best 3824
+Goblin Barrel  588 / 588                                      best 1320
+Graveyard        0 / 588                                      best    0
+```
+
+Body count on an empty board, sampled every 10 ticks after the cast:
+
+```
+Goblin Barrel   3, 3, 2, 1, 1, 0, 0 ...      (three goblins, ~50 ticks)
+Skeletons       3, 0, 0 ...                  (the 1-cost card, for scale)
+Graveyard       1, 1, 0, 0, 0, 0, 0 ...      ONE body, dead inside 20 ticks
+```
+
+Reproduced through the real play path as well as through `inject` --
+`set_hand_for_team` + `step_self_play(slot, 3.0, 27.0, ...)` on the enemy
+Princess Tower gives the same one body and the same **0** tower damage at
+t = 20, 40, 70, 120, 220, 420, 820 and 1210 ticks.
+
+### Why it matters
+
+`graveyard_control` is one of the sixteen phase-1 opponent decks, so a 5-elixir
+card that does nothing makes it a **seven-card deck**. That is not a small
+handicap and it contaminates a measurement the project has already leaned on:
+the agent's 0.925 greedy win rate against `graveyard_control` (2026-09-05,
+40 episodes) reads as strength and is substantially the opponent being a card
+down. It is the softest deck in the pool on the passive-opponent probe both
+before and after the teacher was fixed (4,323 tower damage against a pool median
+of ~7,500, and the only deck still needing 2,520 ticks to close against an
+opponent doing nothing).
+
+In the real game Graveyard spawns roughly 15-20 skeletons over ~10 seconds
+inside a radius; one body that dies immediately is not a weaker version of that,
+it is a different card.
+
+### What is NOT being claimed
+
+The exact spawn count, interval and radius are **not** measured here and no
+number is proposed for them — the probe establishes only that the current
+behaviour (one body, once) cannot be right for a 5-elixir win condition, not
+what the right figures are. Whoever fixes it should take the count/interval from
+the same catalogue the sight-range and speed-tier reworks used.
+
+### Blast radius
+
+**GAMEPLAY-AFFECTING.** `graveyard_control` becomes materially stronger, so
+every win rate measured against that deck is invalidated — including the 0.925
+above and whatever the current run records before a fix lands. Nothing else in
+the pool plays Graveyard, and `DEFAULT_DECK` does not, so the agent's own
+behaviour and every checkpoint are untouched. No observation or action-space
+change; no checkpoint migration.
+
+### Interim handling
+
+None. The deck is **left enabled**: with the win-rate floor now off
+(`deck_pool.POOL_WINRATE_FLOOR`, 2026-09-06) PFSP already parks a deck the agent
+beats at the 0.05 minimum weight, so `graveyard_control` costs ~0.5% of episodes
+and disabling it would buy nothing while hiding the defect.
