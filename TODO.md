@@ -57,6 +57,43 @@ desirable consequence of it.
 
 ---
 
+## 0d. PLATEAU_IMPROVEMENT is calibrated faster than the agent learns
+
+**Observed 2026-09-06, not fixed, and deliberately so.**
+
+The plateau valve refreshes its clock only when the progress signal gains
+`PLATEAU_IMPROVEMENT` (0.02) over the best seen at that rung. Measured on the
+live run at rung 3, the agent improved steadily and was promoted anyway:
+
+    ep 105,600  0.574   worst 0.07
+    ep 107,800  0.624   worst 0.15   <- last refresh of best_rung_episode
+    ep 109,200  0.637   worst 0.17   <- +0.013 since, so no refresh
+    ep ~109,300 PLATEAU -> rung 4
+
++0.013 per 1,500 episodes is real learning -- the worst deck more than doubled
+across that window -- but it is under the 0.02 the valve wants, so the clock ran
+out on an improving agent. The threshold is a RATE and it is set faster than
+this agent's actual rate.
+
+**WHY IT IS NOT BEING CHANGED.** Lowering it invites noise to refresh the clock
+forever, which is the stall the valve exists to end; raising the patience only
+slows it. Both are guesses at a constant, and this file already records three
+changes to this control loop in one session, each of which exposed the next
+problem. A fourth under the same time pressure is how a control loop gets worse.
+
+**And it is no longer costly, which is the actual argument.** The regression
+detector added the same day means a premature promotion self-corrects: if the
+new rung makes the agent worse it is demoted on measured evidence rather than on
+a constant. The loop is closed even when the threshold is wrong.
+
+**If it is to be fixed, fix the SHAPE, not the number.** Fit a slope over the
+rung's progress history and advance when the slope is indistinguishable from
+zero, which needs no rate constant at all. Measure it against both real series
+already recorded here: the rung-3 plateau (0.641/0.640/0.641/0.640/0.637/0.639)
+must advance, and this rung-3 climb (0.574 -> 0.637) must not.
+
+---
+
 ## 0b. ✅ FIXED (2026-09-06) — the plateau valve was a timer, not a detector
 
 **Measured, then triggered, then fixed and confirmed, all on the live phase-9
