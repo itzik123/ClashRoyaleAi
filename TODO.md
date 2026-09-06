@@ -29,10 +29,10 @@ Rules that apply to every item below:
 
 ---
 
-## 0b. THE PLATEAU VALVE IS A TIMER, NOT A DETECTOR, UNDER PFSP
+## 0b. ✅ FIXED (2026-09-06) — the plateau valve was a timer, not a detector
 
-**Measured 2026-09-06 on the live phase-9 run. Not yet fixed — the harm is not
-yet demonstrated, and the trigger for acting is stated below.**
+**Measured, then triggered, then fixed and confirmed, all on the live phase-9
+run. Commit `d7ab2e2`.**
 
 `curriculum.py`'s plateau valve advances a rung when the 500-episode win rate
 has not improved by `PLATEAU_IMPROVEMENT` (0.02) for
@@ -68,16 +68,36 @@ readable rate (it is a competitiveness floor and is correct as it stands); chang
 only what the improvement test reads. Additive, with the current behaviour as the
 fallback when no deck estimates exist, so the mirror path is untouched.
 
-**WHY IT IS NOT DONE YET.** The valve being blind is measured; the valve being
-HARMFUL is not. The agent is still improving after both advances, and the
-backstop and stall valves cover over-promotion. Restarting a healthy run to
-change a control constant on an unproven harm is the optional-stopping mistake
-this file warns about elsewhere.
+**THE TRIGGER FIRED, HARDER THAN ITS OWN THRESHOLD.** It was stated in advance
+as "fails to improve by >= 0.02 over the 2,000 episodes after an advance". What
+actually happened after the rung 3 -> 4 promotion at ep 87,540 is that the mean
+FELL, inside 600 episodes:
 
-**The falsifiable trigger, stated in advance:** if the unweighted per-deck mean
-fails to improve by >= 0.02 over the 2,000 episodes following a plateau advance,
-the escalation is outrunning the learning and the fix goes in. The rate to beat
-is its own history — 0.071/1,000 episodes at rung 2, 0.035/1,000 at rung 3.
+| ep | unweighted mean | worst deck | |
+|---|---|---|---|
+| 87,600 | 0.535 | 0.11 | rung 4 |
+| 88,200 | 0.522 | 0.09 | rung 4 |
+| 88,600 | 0.515 | 0.08 | demoted to rung 3 here |
+| 89,200 | 0.539 | 0.10 | |
+| 90,200 | **0.563** | **0.11** | |
+
+The readable win rate collapsed 0.50 -> 0.19 over the same span. **Neither
+existing valve would have ended it**: the stall valve needs <= 0.10 and the
+backstop needs 4,000 episodes, so the run would have sat there ~4.7 hours.
+
+**THE FIX, AND THE CONFIRMATION.** `CurriculumManager.note_progress` takes an
+improvement signal the caller owns; phase 1 passes the unweighted per-deck mean.
+The floor test still reads the readable rate — that one is a competitiveness
+question and is right as it stands. Demoting to rung 3 reversed the decline
+immediately and learning resumed at **+0.030/1,000 episodes**, against rung 3's
+own earlier +0.035/1,000 — so the rung, not the policy, was the cause.
+
+**What is NOT established:** whether the ladder can now reach the top rungs at
+all. The valve no longer advances on a flat readable rate, so from here a rung
+ends only on the 0.65 gate or on the progress signal genuinely flattening. If a
+run later sits at one rung for many thousands of episodes with the progress
+signal still creeping, that is this change's failure mode and the thing to
+watch — it is the 2026-08-28 stall arriving by a third road.
 
 ---
 
