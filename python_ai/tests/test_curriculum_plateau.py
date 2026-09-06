@@ -357,3 +357,60 @@ def test_a_genuinely_weak_rung_is_still_demoted():
             demoted = ep
             break
     assert demoted is not None, "a genuinely weak rung must still be demoted"
+
+
+def test_a_rung_that_makes_the_agent_WORSE_is_demoted():
+    """OVER-PROMOTION IS A REGRESSION, NOT A LOW LEVEL, and the 2026-09-06 floor
+    fix could no longer see it.
+
+    Moving both floors onto the progress signal stopped the backstop demoting a
+    strong agent whose READABLE rate was regulated low -- correct -- but it also
+    meant a rung that is actively destroying a 0.64 agent no longer trips
+    anything, because 0.58 is still far above the 0.40 floor. Measured twice on
+    the live run, both times at rung 3 -> 4 (horizon 20 -> 30 ticks):
+
+        first  0.535 -> 0.522 over   600 episodes
+        second 0.637 -> 0.583 over 1,800 episodes, worst deck 0.12 -> 0.07
+
+    Both were caught by hand. This is the detector for it: a sustained fall from
+    the best this rung has seen, which is the quantity "over-promoted" actually
+    means.
+    """
+    mgr = manager(stage=4)
+    hist = new_outcome_window()
+    demoted = None
+    trace = [0.637, 0.626, 0.608, 0.599, 0.596, 0.591, 0.583]   # the real series
+    for i, ep in enumerate(range(0, 14000, 200)):
+        for k in range(200):
+            w = k % 2                      # 0.50 in ANY trailing window; a
+            mgr.note_outcome(w)            # block of wins then losses leaves the
+            hist.append(w)                 # 100-deep window all zeros and trips
+                                           # the stall valve instead.
+
+        mgr.note_progress(trace[min(i, len(trace) - 1)])
+        mgr.maybe_advance_stage(hist, ep)
+        if mgr.maybe_demote_stage(hist, ep) is not None:
+            demoted = ep
+            break
+    assert demoted is not None, (
+        "a rung that took the agent from 0.637 to 0.583 was never demoted")
+
+
+def test_ordinary_noise_around_a_plateau_is_not_a_regression():
+    """The contrast that keeps the detector honest: a flat rung wobbling inside
+    the noise band must NOT demote, or every plateau becomes a demotion and the
+    ladder can never hold a level."""
+    mgr = manager(stage=4)
+    hist = new_outcome_window()
+    wobble = [0.640, 0.637, 0.641, 0.638, 0.642, 0.639, 0.640]
+    for i, ep in enumerate(range(0, 14000, 200)):
+        for k in range(200):
+            w = k % 2                      # 0.50 in ANY trailing window; a
+            mgr.note_outcome(w)            # block of wins then losses leaves the
+            hist.append(w)                 # 100-deep window all zeros and trips
+                                           # the stall valve instead.
+
+        mgr.note_progress(wobble[i % len(wobble)])
+        mgr.maybe_advance_stage(hist, ep)
+        assert mgr.maybe_demote_stage(hist, ep) is None, (
+            f"demoted at ep {ep} on noise inside a plateau")
