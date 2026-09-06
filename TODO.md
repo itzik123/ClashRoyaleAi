@@ -29,6 +29,58 @@ Rules that apply to every item below:
 
 ---
 
+## 0b. THE PLATEAU VALVE IS A TIMER, NOT A DETECTOR, UNDER PFSP
+
+**Measured 2026-09-06 on the live phase-9 run. Not yet fixed — the harm is not
+yet demonstrated, and the trigger for acting is stated below.**
+
+`curriculum.py`'s plateau valve advances a rung when the 500-episode win rate
+has not improved by `PLATEAU_IMPROVEMENT` (0.02) for
+`PLATEAU_PATIENCE_EPISODES` (1500) while staying above `PLATEAU_MIN_WIN_RATE`.
+Its own docstring records that **PFSP regulates the readable win rate toward the
+hard end of the pool** — and then draws that conclusion only for the level GATE
+("a level gate can be structurally unreachable"). The same regulation makes the
+plateau's IMPROVEMENT test insensitive, which the docstring does not say.
+
+Measured over ep 83,128 -> 87,540, deck pool on, floor off:
+
+| | ep 83,200 | ep 87,400 |
+|---|---|---|
+| unweighted per-deck mean | **0.301** | **0.534** |
+| worst deck | 0.01 | 0.11 |
+| decks below 0.20 | 10 | 2 |
+| PFSP-weighted readable win rate | ~0.50 | ~0.50 (flat) |
+
+**The agent improved by 23 points on every one of sixteen decks and the readable
+signal did not move, so the valve fired TWICE during the fastest learning of the
+run** — rung 2 -> 3 at ep 85,340 and 3 -> 4 at ep 87,540, ~2,200 episodes apart,
+which is the establishing window plus the patience. Under PFSP that condition is
+satisfied by construction, so the valve is a **timer on a ~2,200-episode period**
+rather than a convergence detector. Extrapolated, it walks rung 2 -> 10 in
+~18,000 episodes regardless of what the agent learns.
+
+**THE FIX IS THE SIGNAL, NOT THE PATIENCE.** Raising
+`PLATEAU_PATIENCE_EPISODES` only slows the timer; it stays blind. The detector
+should test improvement on a quantity PFSP does not regulate — the **unweighted
+mean of the per-deck estimates**, which moved 0.301 -> 0.534 over exactly the
+window the valve called flat. Keep the `PLATEAU_MIN_WIN_RATE` floor on the
+readable rate (it is a competitiveness floor and is correct as it stands); change
+only what the improvement test reads. Additive, with the current behaviour as the
+fallback when no deck estimates exist, so the mirror path is untouched.
+
+**WHY IT IS NOT DONE YET.** The valve being blind is measured; the valve being
+HARMFUL is not. The agent is still improving after both advances, and the
+backstop and stall valves cover over-promotion. Restarting a healthy run to
+change a control constant on an unproven harm is the optional-stopping mistake
+this file warns about elsewhere.
+
+**The falsifiable trigger, stated in advance:** if the unweighted per-deck mean
+fails to improve by >= 0.02 over the 2,000 episodes following a plateau advance,
+the escalation is outrunning the learning and the fix goes in. The rate to beat
+is its own history — 0.071/1,000 episodes at rung 2, 0.035/1,000 at rung 3.
+
+---
+
 ## 0a. LAUNCH AND WATCH: the meta-deck pool + the eleven-rung ladder
 
 **Built and tested 2026-09-03, not yet run at length.** Branch
