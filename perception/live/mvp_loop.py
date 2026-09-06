@@ -37,6 +37,7 @@ This can place real cards in a real match. Acting has to be asked for with
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -633,6 +634,43 @@ class NeuralPolicy:
         self._was_in_game = in_game
 
 
+
+def _sim_id_to_detector_name(sim_id: int) -> str | None:
+    """Simulator card id -> the detector's own class name, or None if unknown.
+
+    Slugged from the ENGINE's card name rather than hand-typed, and every deck
+    card is checked against CRBAB's `Cards` namespace at first use, so a deck
+    change that breaks the mapping raises here instead of silently handing the
+    confirmation oracle an empty expectation (which reads as "the placement
+    never landed").
+    """
+    if sim_id is None or int(sim_id) < 0:
+        return None
+    import clash_royale_env as _E  # noqa: PLC0415
+
+    try:
+        engine_name = _E.get_card_info(int(sim_id))["name"]
+    except Exception:
+        return None
+    slug = engine_name.lower().replace(" ", "_").replace(".", "").replace("-", "_")
+    if slug not in _detector_card_names():
+        raise RuntimeError(
+            f"card {sim_id} ({engine_name!r}) slugs to {slug!r}, which the "
+            f"detector does not know. The confirmation oracle would silently "
+            f"expect no units for it.")
+    return slug
+
+
+@functools.lru_cache(maxsize=1)
+def _detector_card_names() -> frozenset[str]:
+    import dataclasses  # noqa: PLC0415
+
+    from clashroyalebuildabot.namespaces.cards import Cards  # noqa: PLC0415
+
+    return frozenset(getattr(Cards, f.name).name
+                     for f in dataclasses.fields(Cards))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seconds", type=float, default=60.0)
@@ -1000,15 +1038,36 @@ def main() -> int:
                     # Recorded only after the tap returns, so an adb failure
                     # leaves the board available to retry.
                     gate.record(board_index)
-                    # The card NAME comes from the detector's own hand crops
-                    # ([1:5] -- cards[0] is the Next preview), not from DECK
-                    # order: the hand cycles, so slot 2 is a different card
-                    # minute to minute, and the whole point of the confirmer is
-                    # to know which card we asked for.
+                    # THE NAME MUST COME FROM THE HAND THE POLICY READ, which
+                    # is `gs.my_hand` (deck_hand.DeckHandDetector, matching
+                    # deck-specific templates). It used to come from
+                    # `state.cards[1:5]`, CRBAB's stock icon detector -- a
+                    # SECOND, noisier read of the same slots.
+                    #
+                    # Measured on the 2026-09-06 live run, 35 placements: the
+                    # two disagreed on 18 of them, 51%. The tracked hand was
+                    # self-consistent throughout (0 duplicate cards, 0 cards
+                    # outside DEFAULT_DECK, 6 unreadable slots in 140) while the
+                    # stock read produced names like "blank" for slots that held
+                    # a real card.
+                    #
+                    # That mislabelling propagates: `expected_unit_names` builds
+                    # the confirmation oracle's target from THIS name, so a
+                    # wrong name makes the oracle hunt for a unit that was never
+                    # played and report "no evidence it landed". The run's
+                    # 27% unit-appeared rate is therefore mostly a measurement
+                    # artefact, not 73% missed taps.
+                    #
+                    # Falls back to the stock crop only where the tracked slot
+                    # is unreadable, which is the one case it carries more
+                    # information than nothing.
                     hand_names = [c.name for c in state.cards[1:5]]
+                    tracked_name = _sim_id_to_detector_name(
+                        gs.my_hand[decision.slot]
+                        if decision.slot < len(gs.my_hand) else -1)
                     rec = confirmer.issue(
                         gs, slot=decision.slot,
-                        card_name=hand_names[decision.slot],
+                        card_name=tracked_name or hand_names[decision.slot],
                         card_sim_id=(gs.my_hand[decision.slot]
                                      if decision.slot < len(gs.my_hand) else -1),
                         tile=tuple(decision.tile),
