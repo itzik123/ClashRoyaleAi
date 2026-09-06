@@ -50,9 +50,18 @@ class SearchCfg:
     is ~9x cheaper than width. Measured sweep (cured net vs heuristic@1.5x,
     n=80 paired): horizon 4 -> 0.667, 8 -> 0.925, 12 -> 0.963, 20 -> 0.875.
 
-    It degrades past ~12 because a candidate rollout assumes BOTH SIDES NO-OP,
-    and 20 s of that stops resembling the game. That is the same reason
-    `opponents/teacher.py` caps its own lookahead at 10 s.
+    CORRECTED 2026-09-06: a candidate rollout does NOT assume both sides no-op.
+    OUR side no-ops, and the OPPONENT is whatever drives the rollout -- the C++
+    HeuristicOpponent by default, because `sim.step` runs it, or an explicit
+    model passed to `search.rollout`. Verified on the board rather than argued:
+    a rollout of 400 ticks with our side idle put 2 enemy bodies out and took
+    1302 of our tower hp.
+    
+    The sentence this replaces cost a wrong diagnosis. The real mismatch is that
+    search optimised against the HEURISTIC while phase 1's opponent became the
+    UtilityTeacher, which is why every horizon in this sweep now measures
+    negative against the teacher (-0.313 at 4, -0.531 at 8, -0.469 at 12) while
+    these numbers still reproduce against the heuristic they were taken from.
     """
 
     #: Decision steps rolled forward. 1 step = 1 s of engine time.

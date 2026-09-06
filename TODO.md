@@ -94,7 +94,79 @@ must advance, and this rung-3 climb (0.574 -> 0.637) must not.
 
 ---
 
-## 0e. SEARCH IS NET-NEGATIVE AGAINST THE TEACHER -- expert iteration is closed
+## 0e. Search: an opponent model halves the damage and does not rescue it
+
+**Measured 2026-09-06 on ep-111k, `eval/search_vs_greedy_pool_ab.py`.**
+
+### The rollout opponent was the C++ heuristic, not nobody
+
+`SearchCfg`'s docstring claimed "a candidate rollout assumes BOTH SIDES NO-OP"
+and that sentence is WRONG -- it cost a whole wrong diagnosis before anyone
+looked at the board. `sim.step` runs the C++ HeuristicOpponent, so only OUR side
+no-ops. Verified: a 400-tick rollout with our side idle put 2 enemy bodies out
+and took 1302 of our tower hp. The docstring is corrected.
+
+So the real mismatch was HEURISTIC vs TEACHER: search optimised against the
+opponent every historical result was measured against, while phase 1's opponent
+had become the UtilityTeacher.
+
+### Giving the rollout the right opponent helps, and is not enough
+
+`search.rollout(sim, card, x, y, horizon, opponent=None)` takes any object with
+`act(env, obs_own)`, which is `UtilityTeacher`'s own interface. Frontier decks,
+horizon 4, widening off, n=30, **greedy 0.467 in BOTH arms** -- the control that
+makes the pairing trustworthy:
+
+| rollout opponent | search | delta |
+|---|---|---|
+| C++ HeuristicOpponent | 0.300 | -0.167 [-0.400, +0.067] |
+| UtilityTeacher rules-only | 0.400 | **-0.067** [-0.233, +0.100] |
+
+Harmful -> break-even. Search still beats greedy on NO deck: three ties, two
+losses. **Expert iteration stays closed** -- there is no expert better than the
+student, and CLAUDE.md records that distilling a weak one degrades selectivity.
+
+### AND IT DOES NOT EXPLAIN THE HORIZON CURVE, which was the other hypothesis
+
+Long rollouts were blamed on the opponent model. They are not: at horizon 12 the
+teacher model measures ~-0.42, against -0.469 for the heuristic. Unchanged. The
+opponent model and the horizon degradation are INDEPENDENT problems and were
+wrongly conflated.
+
+### The live hypothesis, not yet measured
+
+**Our own side no-ops for the whole rollout.** Every candidate is scored as "I
+play this, then stand still while a competent opponent answers", which is mildly
+pessimistic over 4 s and grossly so over 12 -- fitting the shape exactly, since
+the opponent model helped at h4 and did nothing at h12.
+
+**The obstacle is structural, not a knob.** Scoring is ONE batched network
+forward over all candidates' final observations. Making our side act needs a
+forward per candidate per step -- 52 at K=13/h=4 against 1 today. Any attempt
+should first check whether a CHEAP proxy for our own continuation (the advisor
+in `advisors/tactics.py`, which needs no network) closes the gap, because the
+full version may simply be unaffordable.
+
+### shipping.py
+
+`USE_SEARCH = False`; the deployable agent runs greedy. The case is now weaker
+than when it was set -- search is break-even at h4 rather than harmful -- but
+greedy is still >= search and costs ~1.5x less, so there is no reason to enable
+it. Pinned by `test_shipping_does_not_use_search_until_it_is_re_validated`.
+
+### The methodology note that cost two wrong conclusions
+
+`PoolTeacherEnv` seeds the ENGINE but `UtilityTeacher` holds its own numpy RNG,
+built unseeded by gym_wrapper; below rung 10 its epsilon is non-zero, so the two
+arms faced opponents making different random choices and the pairing was only
+partial. Caught by the greedy control -- which cannot be affected by search --
+reading 0.750 in one run and 0.875 in another on identical seeds. On that bad
+harness h4-without-widening read -0.031 and prompted the wrong calls that
+"search is neutral at h4" and "widening is the culprit"; seeded, the same cell
+reads -0.313.
+
+**A paired harness needs a control that MUST be constant, and it has to be read
+every run.** Every result above quotes its greedy control for that reason.
 
 **Measured 2026-09-06 on ep-111k, `eval/search_vs_greedy_pool_ab.py`. This
 supersedes the +0.319 that item 2 and `shipping.py` are built on.**

@@ -220,9 +220,64 @@ def terminal_score(reward, weight):
     return -DRAW_PENALTY * weight
 
 
+
+class _RolloutResult:
+    """`step_self_play` in the shape `step` returns, so one rollout loop serves
+    both opponent paths."""
+    __slots__ = ("observation", "reward", "done")
+
+    def __init__(self, observation, reward, done):
+        self.observation = observation
+        self.reward = reward
+        self.done = done
+
+
+def rollout(sim, card, x, y, horizon, opponent=None, skip_frames=10):
+    """Play one candidate forward on `sim` and return the final step result.
+
+    THE OPPONENT IS THE POINT OF THIS FUNCTION. `sim.step(...)` drives the C++
+    HeuristicOpponent -- not, as SearchCfg's docstring long claimed, nobody --
+    so search has always optimised against the heuristic. That was invisible
+    while the heuristic WAS the opponent, and became a measured -0.313 to -0.531
+    win rate once phase 1 moved to the UtilityTeacher (see
+    `tests/test_search_opponent_model.py` for the table).
+
+    `opponent` is any object with `act(env, obs_own) -> (slot, x, y)`, which is
+    exactly `UtilityTeacher`'s interface, so the real opponent can be dropped in
+    unchanged. `None` keeps the heuristic path bit-identical, so every result
+    measured before this parameter existed still reproduces.
+
+    OUR side no-ops after the candidate action, which is unchanged and is a
+    separate approximation: search models what the OPPONENT does next, not what
+    we would do next.
+    """
+    if opponent is None:
+        result = sim.step(card, x, y, skip_frames)
+        done = result.done
+        for _ in range(horizon - 1):
+            if done:
+                break
+            result = sim.step(NOOP, 0.0, 0.0, skip_frames)
+            done = result.done
+        return result
+
+    our_card, our_x, our_y = card, x, y
+    result = None
+    for _ in range(horizon):
+        obs1 = np.asarray(sim.get_observation_for_team(1), dtype=np.float32)
+        slot, ox, oy = opponent.act(sim, obs1)
+        raw = sim.step_self_play(our_card, our_x, our_y, slot, ox, oy,
+                                 skip_frames, False, False, False, False)
+        result = _RolloutResult(raw.observation0, float(raw.reward0), raw.done)
+        if result.done:
+            break
+        our_card, our_x, our_y = NOOP, 0.0, 0.0
+    return result
+
+
 @torch.no_grad()
 def search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden_next,
-                   greedy, cfg, device, return_details=False):
+                   greedy, cfg, device, return_details=False, opponent=None):
     """Roll every candidate forward on its own snapshot, score, pick the best.
 
     `return_details` appends the full (candidates, scores) pair as a 4th return
@@ -246,13 +301,15 @@ def search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden
     terminal = []
     for card_idx, x, y in cands:
         sim = env.snapshot()
-        result = sim.step(card_idx, x, y)
+        # RESET PER CANDIDATE, not per search step. The model carries state --
+        # UtilityTeacher tracks its own cycle and any pending combo -- and
+        # letting candidate i's rollout leave that state for candidate i+1 makes
+        # the two scores incomparable, which is the one thing a ranking must not
+        # be.
+        if opponent is not None:
+            opponent.reset()
+        result = rollout(sim, card_idx, x, y, cfg.horizon, opponent)
         done = result.done
-        for _ in range(cfg.horizon - 1):
-            if done:
-                break
-            result = sim.step(NOOP, 0.0, 0.0)
-            done = result.done
         final_obs.append(sim.get_observation_for_team(0))
         terminal.append((done, float(result.reward)))
 
@@ -286,7 +343,7 @@ def search_action(net, env, obs_t, card_logits, card_embeds, spatial_map, hidden
 # --------------------------------------------------------------------------
 
 @torch.no_grad()
-def play_episode(net, env, device, use_search, cfg):
+def play_episode(net, env, device, use_search, cfg, opponent=None):
     hidden = (torch.zeros(1, LSTM_HIDDEN, device=device),
               torch.zeros(1, LSTM_HIDDEN, device=device))
     obs = env.get_observation_for_team(0)
@@ -303,7 +360,7 @@ def play_episode(net, env, device, use_search, cfg):
         if use_search:
             action, deviated, n_cands = search_action(
                 net, env, obs_t, card_logits, card_embeds, spatial_map,
-                hidden_next, greedy, cfg, device)
+                hidden_next, greedy, cfg, device, opponent=opponent)
             deviations += int(deviated)
             cand_total += n_cands
         else:

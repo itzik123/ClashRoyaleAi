@@ -61,6 +61,7 @@ import python_ai  # noqa: E402,F401
 from python_ai.eval.stats import paired  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.opponents.deck_pool import load_pool  # noqa: E402
+from python_ai.opponents.teacher import UtilityTeacher  # noqa: E402
 from python_ai.rl.checkpointing import weights_path  # noqa: E402
 from python_ai.search.config import SearchCfg  # noqa: E402
 from python_ai.search.search import outcome_score, play_episode  # noqa: E402
@@ -104,6 +105,14 @@ def main():
                          "the config and the one most likely to be stale.")
     ap.add_argument("--seed", type=int, default=90601)
     ap.add_argument("--decks", default="", help="comma-separated subset")
+    ap.add_argument("--opponent-model", action="store_true",
+                    help="drive search's ROLLOUTS with a UtilityTeacher playing "
+                         "the same deck as the real opponent, instead of the "
+                         "C++ HeuristicOpponent that `sim.step` runs by "
+                         "default. Rules-only (horizon 0) -- the full teacher "
+                         "ranks its own candidates by rollout, which inside a "
+                         "rollout is recursion, and costs 5.0 ms against "
+                         "0.6 ms per decision.")
     args = ap.parse_args()
 
     torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
@@ -126,6 +135,8 @@ def main():
     print(f"search    : horizon {cfg.horizon}, k_cards {cfg.k_cards}, "
           f"k_cells {cfg.k_cells}, max {cfg.max_candidates} candidates")
     print(f"trials    : {args.n} paired ({2 * args.n} episodes)\n")
+    print(f"rollout   : "
+          f"{'UtilityTeacher rules-only' if args.opponent_model else 'C++ HeuristicOpponent'}")
 
     a_scores, b_scores = [], []
     per_deck = defaultdict(lambda: [0.0, 0.0, 0])
@@ -150,7 +161,16 @@ def main():
         rA, _sA, _d, _c = play_episode(net, envA, device, False, cfg)
 
         envB = _seeded(PoolTeacherEnv(args.stage, args.max_ticks, seed, deck), seed)
-        rB, sB, dB, cB = play_episode(net, envB, device, True, cfg)
+        opp = None
+        if args.opponent_model:
+            # The SAME deck the real opponent holds: a model playing a different
+            # deck would be a different opponent, which is the confound this
+            # whole change is about.
+            opp = UtilityTeacher(list(deck.card_ids), team=1, epsilon=0.0,
+                                 horizon_ticks=0, k_cells=1, max_combos=0,
+                                 seed=seed)
+            opp.reset()
+        rB, sB, dB, cB = play_episode(net, envB, device, True, cfg, opponent=opp)
 
         sa, sb = outcome_score(rA), outcome_score(rB)
         a_scores.append(sa)

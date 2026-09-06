@@ -104,6 +104,33 @@ import python_ai  # noqa: E402,F401
 # by assuming the numbers in the docstring carry over.
 SHIPPING_WEIGHTS = "model_weights_selfplay.pth"
 
+#: THE SHIPPING SWITCH. False since 2026-09-06: search is measured NEGATIVE
+#: against the opponent phase 1 actually trains on, so the deployable agent
+#: runs its policy GREEDY.
+#:
+#: Paired, seeded, UtilityTeacher rung 3 on the 16-deck pool, ep-111k policy,
+#: `eval/search_vs_greedy_pool_ab.py`. The greedy control reads 0.844 in all
+#: three, which is what makes the pairing credible:
+#:
+#:     horizon  4   greedy 0.844   search 0.531   -0.313 [-0.531, -0.125]
+#:     horizon  8   greedy 0.844   search 0.312   -0.531 [-0.719, -0.313]
+#:     horizon 12   greedy 0.844   search 0.375   -0.469 [-0.688, -0.250]
+#:
+#: and on THIS file's own configuration, -0.433 [-0.633, -0.233], p = 0.00098.
+#:
+#: A FLAG rather than a deletion, because the fault is not in the search. A
+#: candidate rollout is stepped by the C++ HeuristicOpponent (`sim.step` runs
+#: it), while the real opponent forward-simulates -- so search optimises against
+#: a materially different and weaker opponent than the one it then faces. Every
+#: positive search result in this repo, including the +0.319 and the horizon
+#: sweep below, was measured against that same heuristic, which is why they held
+#: at the time and do not now. Give the rollout the right opponent and this can
+#: come back on -- after a re-measurement, which
+#: `test_shipping_does_not_use_search_until_it_is_re_validated` exists to force.
+#:
+#: Widening needs no separate switch: with search off it never runs.
+USE_SEARCH = False
+
 SEARCH_HORIZON = 12        # decision steps rolled forward; 1 step = 1 s
 SEARCH_K_CARDS = 3         # top-k card head arms expanded
 SEARCH_K_CELLS = 2         # top-k cells per expanded card
