@@ -228,6 +228,28 @@ class CurriculumManager:
         self.rung_history = deque(maxlen=PLATEAU_WINDOW)
         self.best_rung_mean = 0.0
         self.best_rung_episode = 0
+        #: An improvement signal PFSP does NOT regulate, or None on a path that
+        #: has none (the mirror, where there are no per-deck estimates).
+        #:
+        #: MEASURED 2026-09-06, live phase-9 run, ep 83,128 -> 87,540: the
+        #: unweighted per-deck mean went 0.301 -> 0.534 with every one of
+        #: sixteen decks improving, while the readable win rate sat at ~0.50 --
+        #: so this valve fired TWICE, calling the fastest learning of the run a
+        #: plateau, and the rung it promoted to then made the agent WORSE
+        #: (mean 0.535 -> 0.522, readable rate to 0.21, within 600 episodes).
+        #:
+        #: The cause is stated in this module's own docstring and then applied
+        #: only to the level GATE: PFSP weights a deck by `(1 - win_rate)^2`, so
+        #: it spends the run on the worst matchups and pins the readable rate no
+        #: matter how good the agent gets. "Has not improved for 1,500 episodes"
+        #: is therefore satisfied BY CONSTRUCTION, which turns the valve from a
+        #: convergence detector into a timer with a ~2,200-episode period.
+        #:
+        #: Raising PLATEAU_PATIENCE_EPISODES would only slow a blind timer. What
+        #: changes is WHAT THE IMPROVEMENT TEST READS. The
+        #: `PLATEAU_MIN_WIN_RATE` floor still reads the readable rate, which is
+        #: correct: that one is a competitiveness check, not a trend.
+        self.progress_signal = None
         self.phase = "mirror"
         self.deck_stage = 0
         self.deck_episode_start = 0
@@ -291,6 +313,21 @@ class CurriculumManager:
             return None
         return sum(self.rung_history) / len(self.rung_history)
 
+    def note_progress(self, value):
+        """Offer an improvement signal PFSP does not regulate.
+
+        The caller owns what it means; phase 1 passes the UNWEIGHTED mean of the
+        per-deck win-rate estimates, which is the quantity that moved while the
+        readable rate did not. `None` restores the pre-2026-09-06 behaviour
+        exactly, which is what the mirror path (no deck pool) gets.
+        """
+        self.progress_signal = None if value is None else float(value)
+
+    def _improvement_signal(self, long_mean):
+        """What the plateau's trend test reads: the progress signal if the
+        caller supplied one, else the long window as before."""
+        return long_mean if self.progress_signal is None else self.progress_signal
+
     def _reset_rung_tracking(self, episodes_completed):
         self.rung_history.clear()
         self.best_rung_mean = 0.0
@@ -326,8 +363,12 @@ class CurriculumManager:
             reason = "gate"
         else:
             if long_mean is not None:
-                if long_mean > self.best_rung_mean + PLATEAU_IMPROVEMENT:
-                    self.best_rung_mean = long_mean
+                # TREND on a signal PFSP does not regulate; FLOOR on the
+                # readable rate. Two different questions, so two different
+                # quantities -- see `progress_signal`.
+                trend = self._improvement_signal(long_mean)
+                if trend > self.best_rung_mean + PLATEAU_IMPROVEMENT:
+                    self.best_rung_mean = trend
                     self.best_rung_episode = episodes_completed
                 elif (episodes_completed - self.best_rung_episode
                         >= PLATEAU_PATIENCE_EPISODES

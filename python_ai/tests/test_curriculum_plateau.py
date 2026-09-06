@@ -245,3 +245,68 @@ def test_no_rung_can_hold_a_run_that_has_stopped_improving():
             f"a rung converged at win rate {level} held the run for "
             f"{MAX_EPISODES_PER_RUNG * 2} episodes")
         assert moved_at <= MAX_EPISODES_PER_RUNG + 50
+
+
+# --------------------------------------------------------------------------
+# 2026-09-06: the improvement test must read a signal PFSP does not regulate.
+# --------------------------------------------------------------------------
+
+def _flat_readable_rising_progress(mgr, episodes, progress_at):
+    """Feed a win rate pinned at 0.50 while the progress signal climbs."""
+    hist = new_outcome_window()
+    out = []
+    for ep in range(0, episodes, 10):
+        for i in range(10):
+            w = 1 if i < 5 else 0          # exactly 0.50, forever
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(progress_at(ep))
+        r = mgr.maybe_advance_stage(hist, ep)
+        if r:
+            out.append((ep, r))
+    return out
+
+
+def test_a_regulated_win_rate_does_not_look_like_a_plateau():
+    """PFSP weights a deck by (1-wr)^2, so it drives the readable win rate
+    toward the agent's worst matchups and PINS it no matter how much the agent
+    improves. Measured on the live phase-9 run, ep 83,128 -> 87,540: the
+    unweighted per-deck mean went 0.301 -> 0.534 on all sixteen decks while the
+    readable rate sat at ~0.50 -- and the valve fired twice, calling the fastest
+    learning of the run a plateau.
+
+    So the improvement test must read a quantity PFSP does not regulate.
+    """
+    mgr = manager(stage=2)
+    fired = _flat_readable_rising_progress(
+        mgr, 8000, lambda ep: 0.30 + 0.00003 * ep)   # 0.30 -> 0.54, as measured
+    assert fired == [], (
+        f"advanced {len(fired)} times while the agent was improving: {fired}")
+
+
+def test_a_genuine_plateau_still_advances_on_the_progress_signal():
+    """The anti-stall purpose is preserved: when the signal the agent actually
+    moves stops moving, the rung must still end. Otherwise this trades the
+    2026-08-28 stall back in."""
+    mgr = manager(stage=2)
+    fired = _flat_readable_rising_progress(mgr, 8000, lambda ep: 0.50)
+    assert fired, "a genuinely flat progress signal must still plateau out"
+    assert fired[0][1][1] == "plateau"
+
+
+def test_without_a_progress_signal_the_old_behaviour_is_unchanged():
+    """The mirror path has no deck estimates, so it must keep reading the long
+    window exactly as before -- the fallback is what makes this additive."""
+    mgr = manager(stage=2)
+    hist = new_outcome_window()
+    fired = []
+    for ep in range(0, 8000, 10):
+        for i in range(10):
+            w = 1 if i < 5 else 0
+            mgr.note_outcome(w)
+            hist.append(w)
+        r = mgr.maybe_advance_stage(hist, ep)
+        if r:
+            fired.append((ep, r))
+    assert fired and fired[0][1][1] == "plateau", (
+        "with no progress signal the valve must behave as it did before")

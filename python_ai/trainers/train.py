@@ -713,6 +713,18 @@ class Phase1Trainer(BaseTrainer):
         self.writer.add_scalar("Decks/WinRate_Spread",
                                max(avg.values()) - min(avg.values()),
                                self.episodes_completed)
+        # THE PLATEAU VALVE'S TREND SIGNAL. The readable win rate cannot serve:
+        # PFSP weights a deck by (1 - win_rate)^2, so it regulates that number
+        # toward the worst matchups and it stays ~0.50 however much the agent
+        # improves. Measured ep 83,128 -> 87,540, this mean went 0.301 -> 0.534
+        # with all sixteen decks rising while the readable rate was flat, and
+        # the valve advanced the rung twice on the strength of that flatness.
+        # Unweighted deliberately: the PFSP weighting is the very thing being
+        # corrected for, so re-applying it here would reintroduce the blindness.
+        self.curriculum.note_progress(sum(avg.values()) / len(avg))
+        self.writer.add_scalar("Decks/WinRate_UnweightedMean",
+                               sum(avg.values()) / len(avg),
+                               self.episodes_completed)
 
     def _print_progress(self):
         m = self.metrics.summary()
