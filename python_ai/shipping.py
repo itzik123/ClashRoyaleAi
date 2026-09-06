@@ -1,5 +1,25 @@
 """The shipping agent: which weights, which search settings, and why.
 
+> **WARNING (2026-09-06): THE SEARCH SETTINGS BELOW ARE MEASURED NEGATIVE
+> AGAINST THE CURRENT OPPONENT. Ship the policy GREEDY until this is
+> re-validated.**
+>
+> Every number in this file was measured against the C++ HeuristicOpponent.
+> Re-measured against the UtilityTeacher on the 16-deck pool with the ep-111k
+> policy (`eval/search_vs_greedy_pool_ab.py`, paired, n=30, seeded teacher),
+> this exact configuration -- horizon 12 -- scores:
+>
+>     greedy 0.700   search 0.267   delta -0.433 [-0.633, -0.233]  p = 0.00098
+>
+> and it is negative at horizon 4 and 8 as well. The cause is not a regression
+> in search: a candidate rollout assumes BOTH SIDES NO-OP, which models the C++
+> heuristic passably and a forward-simulating teacher badly. See TODO 0e for the
+> full table and for the two hypotheses that were tested and refuted.
+>
+> The horizon sweep below is therefore a record of what was true against the
+> heuristic, not a current recommendation.
+
+
 ONE PLACE that names the deployable configuration, so an evaluation and a
 deployment cannot silently drift onto different settings -- the same reason
 `search.config.SearchCfg` is a frozen dataclass rather than an argparse

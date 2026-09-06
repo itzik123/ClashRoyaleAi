@@ -94,6 +94,73 @@ must advance, and this rung-3 climb (0.574 -> 0.637) must not.
 
 ---
 
+## 0e. SEARCH IS NET-NEGATIVE AGAINST THE TEACHER -- expert iteration is closed
+
+**Measured 2026-09-06 on ep-111k, `eval/search_vs_greedy_pool_ab.py`. This
+supersedes the +0.319 that item 2 and `shipping.py` are built on.**
+
+Paired, same seed and pool deck per trial, UtilityTeacher rung 3, widening off,
+n=32 each. The greedy control reads **0.844 in all three**, which is the proof
+the pairing is real:
+
+| horizon | greedy | search | delta |
+|---|---|---|---|
+| 4 | 0.844 | 0.531 | **-0.313** [-0.531, -0.125] |
+| 8 | 0.844 | 0.312 | **-0.531** [-0.719, -0.313] |
+| 12 | 0.844 | 0.375 | **-0.469** [-0.688, -0.250] |
+
+Deviation rate 23-27%, so search really is choosing differently; this is not a
+vacuous null. It is negative at every horizon, on the frontier decks as well as
+the pool (-0.267), and with widening on or off (-0.433 vs -0.469 at h12, CIs
+fully overlapping).
+
+**THE CAUSE IS THE OPPONENT MODEL, NOT A BUG.** A candidate rollout assumes BOTH
+SIDES NO-OP. That is a passable model of the C++ HeuristicOpponent, which the
++0.319 and the +0.4025 horizon sweep were both measured against, and a bad model
+of the UtilityTeacher, which forward-simulates. CLAUDE.md attached exactly this
+caveat to the original result -- "says nothing about neural opponents" -- and
+this is that caveat coming due. Nothing regressed; the regime changed.
+
+**TWO HYPOTHESES TESTED AND REFUTED**, recorded so they are not re-run:
+* *Widening dilutes the candidate set.* At h12, off vs on is -0.469 vs -0.433.
+  It costs something at h4 but is not the driver. (`candidates/dec` 2.5 vs 21.9.)
+* *The 2026-09-06 match rules broke terminal scoring.* `terminal_weight` 1.0 vs
+  10.0 is -0.531 vs -0.469. Indistinguishable.
+
+### What this means for the plan
+
+**Do not run expert iteration.** There is no expert: distilling a policy from
+something no better than itself teaches nothing, and CLAUDE.md records that a
+weak expert actively DEGRADES selectivity (3.07 -> 2.31 -> 2.17 as data grew).
+
+**`shipping.py` is affected and this is the urgent half.** It ships horizon 12
+search, whose measured cost on its own configuration is **-0.433** [-0.633,
+-0.233], p=0.00098. Its sweep (0.563 -> 0.963) was measured against the C++
+heuristic and has never been re-run against the teacher. The deployable agent
+should run its policy greedy until search is re-validated.
+
+**If search is to be rescued, the lever is the ROLLOUT, not the horizon.** Give
+the rollout an opponent model -- the cheapest being the UtilityTeacher's own
+rules, which are the same code the opponent uses. `teacher.py`'s docstring
+already anticipates this: "If the rollout ever gains an opponent model, this is
+the candidate that starts paying."
+
+### A methodology note that cost two wrong conclusions here
+
+The first three runs used an UNSEEDED teacher. `PoolTeacherEnv` seeds the engine
+but `UtilityTeacher` holds its own numpy RNG, and below rung 10 its epsilon is
+non-zero -- 0.12 at rung 3 -- so the two arms faced opponents making different
+random choices and the pairing was only partial. It was caught by the greedy
+control, which cannot be affected by search, reading 0.750 in one run and 0.875
+in another on identical seeds. On that bad harness h4-without-widening read
+-0.031 and looked neutral; seeded, the same cell reads -0.313.
+
+**A paired harness needs a control that MUST be constant, and it needs to be
+read every run.** Both wrong conclusions here -- "search is neutral at h4" and
+"widening is the culprit" -- came from not having looked at it.
+
+---
+
 ## 0b. ✅ FIXED (2026-09-06) — the plateau valve was a timer, not a detector
 
 **Measured, then triggered, then fixed and confirmed, all on the live phase-9
