@@ -126,12 +126,24 @@ Harmful -> break-even. Search still beats greedy on NO deck: three ties, two
 losses. **Expert iteration stays closed** -- there is no expert better than the
 student, and CLAUDE.md records that distilling a weak one degrades selectivity.
 
-### AND IT DOES NOT EXPLAIN THE HORIZON CURVE, which was the other hypothesis
+### The model helps UNIFORMLY, and the horizon problem is separate
 
-Long rollouts were blamed on the opponent model. They are not: at horizon 12 the
-teacher model measures ~-0.42, against -0.469 for the heuristic. Unchanged. The
-opponent model and the horizon degradation are INDEPENDENT problems and were
-wrongly conflated.
+Read at n=24 this looked "unchanged at horizon 12" and that was premature. The
+completed runs show the model worth about the same at both horizons:
+
+| horizon | heuristic rollout | teacher rollout | gain |
+|---|---|---|---|
+| 4 | -0.167 | -0.067 | +0.100 |
+| 12 | -0.469 | **-0.333** [-0.600, -0.067], p=0.041 | +0.136 |
+
+So the opponent model is worth roughly **+0.12 win rate to search, at any
+horizon** -- a real and consistent effect. It does not rescue search because
+search starts further behind than that: -0.167 at h4 becomes break-even, -0.469
+at h12 stays clearly negative.
+
+**The horizon degradation is therefore a SEPARATE problem and survives the fix.**
+Something makes a 12-step rollout worse than a 4-step one by ~0.27 even with the
+right opponent, and it is not the opponent.
 
 ### The live hypothesis, not yet measured
 
