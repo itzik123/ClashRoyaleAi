@@ -372,7 +372,7 @@ class CurriculumManager:
                     self.best_rung_episode = episodes_completed
                 elif (episodes_completed - self.best_rung_episode
                         >= PLATEAU_PATIENCE_EPISODES
-                        and long_mean >= PLATEAU_MIN_WIN_RATE):
+                        and trend >= PLATEAU_MIN_WIN_RATE):
                     reason = "plateau"
         if reason is None:
             return None
@@ -430,8 +430,23 @@ class CurriculumManager:
         # and it would fire on an improving run. Pinned by
         # `test_a_still_improving_rung_is_never_moved_by_the_backstop`, which
         # calls both in the trainer's order.
-        capped_out = (long_mean is not None
-                      and long_mean < PLATEAU_MIN_WIN_RATE
+        # THE FLOOR READS THE UNREGULATED SIGNAL TOO, since 2026-09-06, and for
+        # the same reason the plateau's trend test does one function up.
+        #
+        # PFSP weights a deck by (1 - win_rate)^2, so the readable rate is
+        # driven toward the agent's WORST matchups and stays there however
+        # strong it gets. Measured on the live phase-9 run: an unweighted
+        # per-deck mean of 0.62 -- beating fourteen decks of sixteen -- while
+        # `long_mean` read 0.29. This test fired on the 0.29 and demoted rung
+        # 3 -> 2 -> 1, weakening the teacher on an agent that was improving,
+        # and would have continued to rung 0.
+        #
+        # "Is the agent competitive here" is a LEVEL question and so needs a
+        # level the sampler does not regulate. Falls back to `long_mean` when no
+        # progress signal is supplied, which is the mirror path.
+        floor_signal = self._improvement_signal(long_mean)
+        capped_out = (floor_signal is not None
+                      and floor_signal < PLATEAU_MIN_WIN_RATE
                       and episodes_completed - self.best_rung_episode
                       >= MAX_EPISODES_PER_RUNG)
         if not (catastrophic or capped_out):

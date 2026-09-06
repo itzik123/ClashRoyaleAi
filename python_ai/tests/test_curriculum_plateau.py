@@ -310,3 +310,50 @@ def test_without_a_progress_signal_the_old_behaviour_is_unchanged():
             fired.append((ep, r))
     assert fired and fired[0][1][1] == "plateau", (
         "with no progress signal the valve must behave as it did before")
+
+
+def test_a_regulated_win_rate_does_not_look_like_over_promotion():
+    """The BACKSTOP has the same blind spot the plateau valve had, and the fix
+    is the same signal.
+
+    Measured on the live phase-9 run 2026-09-06: the agent sat at an unweighted
+    per-deck mean of 0.62 across all sixteen decks -- beating fourteen of them --
+    while the PFSP-weighted readable rate was pinned at 0.29, because PFSP
+    concentrates sampling on the two it cannot beat. The backstop read 0.29
+    against its 0.40 floor and demoted rung 3 -> 2 -> 1, weakening the teacher
+    on an agent that was getting stronger. Left alone it walks to rung 0.
+
+    A floor is a LEVEL question, so it needs a level the sampler does not
+    regulate. `PLATEAU_MIN_WIN_RATE` is applied to the progress signal for the
+    same reason the trend test already is.
+    """
+    mgr = manager(stage=3)
+    hist = new_outcome_window()
+    for ep in range(0, 12000, 10):
+        for i in range(10):
+            w = 1 if i < 3 else 0          # readable rate pinned at 0.30
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(0.62)            # ...while the agent is plainly strong
+        mgr.maybe_advance_stage(hist, ep)  # trainer order: advance, then demote
+        assert mgr.maybe_demote_stage(hist, ep) is None, (
+            f"demoted at ep {ep} an agent averaging 0.62 across the pool")
+
+
+def test_a_genuinely_weak_rung_is_still_demoted():
+    """The backstop's purpose is not traded away: an agent that really is under
+    the floor on the unregulated signal, and not improving, still goes down."""
+    mgr = manager(stage=3)
+    hist = new_outcome_window()
+    demoted = None
+    for ep in range(0, 12000, 10):
+        for i in range(10):
+            w = 1 if i < 3 else 0
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(0.22)            # weak on every deck, not just the mix
+        mgr.maybe_advance_stage(hist, ep)
+        if mgr.maybe_demote_stage(hist, ep) is not None:
+            demoted = ep
+            break
+    assert demoted is not None, "a genuinely weak rung must still be demoted"
