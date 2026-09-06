@@ -271,6 +271,12 @@ public:
     // oppElixirMultiplier.
     static constexpr int DOUBLE_ELIXIR_TICK = 1200;   // 2:00
     static constexpr int TRIPLE_ELIXIR_TICK = 1800;   // 3:00
+    // Triple elixir and the end of regulation are the SAME instant in the real
+    // game, and MatchRules owns that instant for the match-end rules. Asserted
+    // rather than derived: the dependency only runs one way (MatchRules knows
+    // nothing about elixir), and this still fails the build if the two drift.
+    static_assert(TRIPLE_ELIXIR_TICK == MatchRules::REGULATION_END_TICK,
+                  "overtime and triple elixir both begin when regulation ends");
 
     // The largest value elixirMultiplierAtTick can return. Exists as a named
     // constant, and is bound, because it is the NORMALISER for the observation
@@ -1000,7 +1006,10 @@ public:
         board.commitPendingEntities(currentTick);
         board.resolveCollisions();
 
-        MatchRules::Outcome outcome = MatchRules::evaluate(board);
+        // evaluateAtTick, not evaluate: from 3:00 a crown lead ends the match
+        // (regulation win) and so does the first crown taken after it (sudden
+        // death). See MatchRules::evaluateAtTick.
+        MatchRules::Outcome outcome = MatchRules::evaluateAtTick(board, currentTick);
         if (outcome.over) {
             gameOver = true;
             loserTeam = outcome.loserTeam;

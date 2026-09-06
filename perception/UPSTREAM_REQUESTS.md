@@ -411,74 +411,59 @@ deliberate tripwires (`tests/core/test_clash_env.cpp`,
 
 ---
 
-## Item 27 — Graveyard spawns ONE skeleton and deals zero tower damage from any cell
+## Item 27 — Graveyard's spawn CADENCE exactly cancelled a tower's fire rate
 
-**Status: OPEN, proposal only. Class:** card behaviour (`CardRegistry.h`).
-**Found** 2026-09-06 while auditing whether the UtilityTeacher can pilot every
-deck in the phase-1 pool.
+**Status: FIXED 2026-09-06** on the maintainer's explicit instruction.
+**Class:** card balance data (`CardRegistry.h`).
 
-### The measurement
+### The first diagnosis here was WRONG, and how it was wrong is the useful part
 
-Graveyard (card id 110, cost 5, `is_spell`) was swept over **all 588 of its
-legal cells** on an empty board, both sides no-op, 1200 ticks per cell, scored
-as enemy Princess/King Tower HP **actually lost**:
+This item originally read "Graveyard spawns ONE skeleton and deals zero tower
+damage from any cell", and concluded the spawn machinery was broken. The zero
+was real and reproducible; the explanation was not.
 
-```
-Mortar          34 / 170 legal cells damage the enemy tower   best 1596
-X-Bow           34 / 170                                      best 3824
-Goblin Barrel  588 / 588                                      best 1320
-Graveyard        0 / 588                                      best    0
-```
+The probe counted **instantaneous** bodies on the board next to an enemy
+Princess Tower, and read 1. Re-run where nothing can kill the skeletons -- our
+own back corner -- the count climbs 1,2,3,...,**9** and stops, which is exactly
+what `withRepeats(9, 10)` asks for. The machinery was always fine.
 
-Body count on an empty board, sampled every 10 ticks after the cast:
+What the original probe actually measured was a **kill rate equal to the spawn
+rate**. One 81-hp Skeleton per 10 ticks meets a Princess Tower firing once per
+10 ticks, so each one dies before its successor lands and the standing
+population is permanently 1. Zero of them ever survive long enough to attack,
+which is why all 588 legal cells scored 0.
 
-```
-Goblin Barrel   3, 3, 2, 1, 1, 0, 0 ...      (three goblins, ~50 ticks)
-Skeletons       3, 0, 0 ...                  (the 1-cost card, for scale)
-Graveyard       1, 1, 0, 0, 0, 0, 0 ...      ONE body, dead inside 20 ticks
-```
+**A saturating measurement again** -- CLAUDE.md's own rule, "when a
+measurement's failure mode is maximal permissiveness it needs an internal
+control that MUST fire". Here the failure mode was maximal *suppression*: an
+instantaneous count cannot distinguish "nothing spawned" from "everything
+spawned and died on schedule". The control that settles it is a board where
+death is impossible, and it costs one line.
 
-Reproduced through the real play path as well as through `inject` --
-`set_hand_for_team` + `step_self_play(slot, 3.0, 27.0, ...)` on the enemy
-Princess Tower gives the same one body and the same **0** tower damage at
-t = 20, 40, 70, 120, 220, 420, 820 and 1210 ticks.
+### The real defect, and the fix
 
-### Why it matters
+The cadence, not the mechanism. Published card: one Skeleton every **0.5 s**,
+totalling **12** since the 2026-01-06 balance change. The registry had one per
+**1.0 s**, totalling 9 -- half the arrival rate, which is precisely the rate at
+which a tower deletes them one for one.
 
-`graveyard_control` is one of the sixteen phase-1 opponent decks, so a 5-elixir
-card that does nothing makes it a **seven-card deck**. That is not a small
-handicap and it contaminates a measurement the project has already leaned on:
-the agent's 0.925 greedy win rate against `graveyard_control` (2026-09-05,
-40 episodes) reads as strength and is substantially the opponent being a card
-down. It is the softest deck in the pool on the passive-opponent probe both
-before and after the teacher was fixed (4,323 tower damage against a pool median
-of ~7,500, and the only deck still needing 2,520 ticks to close against an
-opponent doing nothing).
+    .withRepeats(9, 10)   ->   .withRepeats(12, 5)
 
-In the real game Graveyard spawns roughly 15-20 skeletons over ~10 seconds
-inside a radius; one body that dies immediately is not a weaker version of that,
-it is a different card.
-
-### What is NOT being claimed
-
-The exact spawn count, interval and radius are **not** measured here and no
-number is proposed for them — the probe establishes only that the current
-behaviour (one body, once) cannot be right for a 5-elixir win condition, not
-what the right figures are. Whoever fixes it should take the count/interval from
-the same catalogue the sight-range and speed-tier reworks used.
+Arrivals now outrun a tower's fire rate 2:1, which is the mechanic that makes
+the card work in the real game.
 
 ### Blast radius
 
-**GAMEPLAY-AFFECTING.** `graveyard_control` becomes materially stronger, so
-every win rate measured against that deck is invalidated — including the 0.925
-above and whatever the current run records before a fix lands. Nothing else in
-the pool plays Graveyard, and `DEFAULT_DECK` does not, so the agent's own
-behaviour and every checkpoint are untouched. No observation or action-space
-change; no checkpoint migration.
+**GAMEPLAY-AFFECTING.** `graveyard_control` goes from effectively a seven-card
+deck to a real one, so every win rate measured against it is invalid -- in
+particular the agent's 0.925 (2026-09-05, 40 greedy episodes), which was largely
+the opponent being a card down. Nothing else in the pool plays Graveyard and
+`DEFAULT_DECK` does not, so the agent's own action space and every checkpoint
+are untouched.
 
-### Interim handling
+### Not changed, and deliberately
 
-None. The deck is **left enabled**: with the win-rate floor now off
-(`deck_pool.POOL_WINRATE_FLOOR`, 2026-09-06) PFSP already parks a deck the agent
-beats at the 0.05 minimum weight, so `graveyard_control` costs ~0.5% of episodes
-and disabling it would buy nothing while hiding the defect.
+The deploy delay is 8 ticks against the real card's 2.2 s (22 ticks), so the
+engine's Graveyard starts sooner than it should. Left alone: it is a separate
+question from the cadence, it moves the card in the opposite direction, and one
+gameplay change at a time is how this repo keeps win rates attributable.

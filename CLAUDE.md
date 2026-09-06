@@ -1308,11 +1308,26 @@ Re-measured after the fix, same probe:
 win rate is comparable across this date. The eleven unchanged decks moved ±10%
 in this probe, which is the teacher's own unseeded profile draw, not an effect.
 
-**GRAVEYARD IS BROKEN IN THE ENGINE and the fix does not reach it.** It spawns
-**one** skeleton, dead inside 20 ticks, and deals **zero** tower damage from all
-588 legal cells, through `inject` and through the real `playCard` path alike.
-`graveyard_control` is a seven-card deck, which is most of why the agent scored
-0.925 against it. C++, so a proposal: `UPSTREAM_REQUESTS.md` item 27.
+**GRAVEYARD'S CADENCE EXACTLY CANCELLED A TOWER'S FIRE RATE (fixed 2026-09-06).**
+It dealt **zero** tower damage from all 588 legal cells -- and the first
+explanation given here, "it spawns only one skeleton", was WRONG. Counted where
+nothing can kill them, the bodies climb 1,2,...,**9** exactly as
+`withRepeats(9, 10)` asks. What the zero measured was a KILL RATE EQUAL TO THE
+SPAWN RATE: one 81-hp Skeleton per 10 ticks against a Princess Tower firing once
+per 10 ticks leaves a standing population of 1 forever and lets none of them
+live long enough to swing.
+
+**An instantaneous count cannot tell "nothing spawned" from "everything spawned
+and died on schedule."** That is the saturating-measurement trap in the mirror:
+the "maximal permissiveness" rule under Measurement discipline has a twin where
+the failure mode is maximal SUPPRESSION, and it needs the same thing -- a
+control that must fire, here a board on which death is impossible.
+
+Real card: one Skeleton every **0.5 s**, 12 total since the 2026-01-06 balance
+change. Now `withRepeats(12, 5)`, so arrivals outrun a tower 2:1, which is the
+mechanic the card is built on. GAMEPLAY-AFFECTING: `graveyard_control` stops
+being a seven-card deck, so the agent's 0.925 against it is void.
+`UPSTREAM_REQUESTS.md` item 27.
 
 **The general shape, which this project keeps meeting:** a rule that is correct
 for the case it was written against, silently returning "nothing" outside it.

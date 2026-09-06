@@ -29,6 +29,34 @@ Rules that apply to every item below:
 
 ---
 
+## 0c. The overflow test lost its regime to the match-end rules
+
+`test_aux_task_is_not_a_memory_probe.py::test_overflow_is_what_makes_this_task_non_trivial`
+**skips** as of 2026-09-06 instead of running.
+
+Its sampler plays ordinary matches and needs some of them to reach the elixir
+cap. The match-end rules added the same day end a match at 3:00 whenever the
+crowns differ, and TRIPLE elixir begins at exactly 3:00 -- so the opponent now
+reaches triple elixir only in OVERTIME, and overflow went from "roughly half of
+episodes" (measured 2026-09-02, old rules) to none in the sample.
+
+**The finding is not refuted and the skip must not be read as one.** A cap still
+discards elixir no scalar records, so `Aux/OppElixir_MAE` would still be an
+overflow detector rather than a memory diagnostic. What is gone is this
+sampler's ability to REACH that regime by playing matches.
+
+**The fix is to construct the state rather than fish for it.** `set_elixir_for_team`
+and `set_current_tick` (UPSTREAM item 22) can put the opponent at the cap
+directly, which tests the actual claim -- reconstruction fails once the cap has
+discarded income -- without depending on how long a match happens to run, and
+makes the test deterministic into the bargain. Roughly an hour's work.
+
+**Do not "fix" it by lengthening matches or reverting the rules.** The new
+behaviour is the real game's, and overflow becoming rare is a genuine and
+desirable consequence of it.
+
+---
+
 ## 0b. ✅ FIXED (2026-09-06) — the plateau valve was a timer, not a detector
 
 **Measured, then triggered, then fixed and confirmed, all on the live phase-9

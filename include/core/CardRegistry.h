@@ -925,6 +925,11 @@ private:
         // Bandit (this engine has no discrete "currently jumping" movement
         // state to gate river-ignoring on more precisely than "always") --
         // see Bandit's own registry comment.
+        // Verified 2026-09-06 against the published table: hp 3993, area
+        // damage 268, spawn damage 429 is an exact LEVEL 11 row, which is the
+        // level the rest of this registry is written at. Left alone -- the card
+        // is internally consistent, and the matchup question it was briefly
+        // blamed for is a MECHANICS question, not a stats one.
         add(troop(48, "Mega Knight", 7.0f, Archetype::MeleeSquad, 3993, SPEED_MEDIUM, 1.2f, 268, 17, 'X')
             .withSplash(1.5f)
             .withSpawnEffect(1.3f, 430)
@@ -1326,10 +1331,24 @@ private:
         // Goblins' own combat stats are what actually hits.
         add(spell(109, "Goblin Barrel", 3.0f, 0.5f, 0, 8, '[')
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(goblinBarrelGoblinStats())));
-        // Graveyard: rains Skeletons over 9s -- one small spawn per tick
-        // via withRepeats, same cadence mechanism as Poison's DoT.
+        // Graveyard: rains Skeletons via withRepeats, same cadence mechanism
+        // as Poison's DoT.
+        //
+        // THE RATE IS THE CARD, and 9-at-1.0s made it worth exactly nothing.
+        // Measured 2026-09-06: a Graveyard cast anywhere -- all 588 legal cells
+        // -- dealt ZERO enemy tower damage, because an 81-hp Skeleton arriving
+        // once per 10 ticks meets a Princess Tower firing once per 10 ticks, so
+        // each one dies before the next appears and none ever lands a hit. The
+        // spawn machinery was never broken (9 bodies do appear where nothing can
+        // kill them); the CADENCE was, and it was tuned to exactly cancel out.
+        //
+        // The real card spawns one Skeleton every 0.5s and totals 12 after the
+        // 2026-01-06 balance change, i.e. arrivals outrun a tower's fire rate
+        // 2:1, which is precisely why they connect in the real game.
+        // 12 at 5 ticks. GAMEPLAY-AFFECTING: graveyard_control goes from
+        // effectively a seven-card deck to a real one.
         add(spell(110, "Graveyard", 5.0f, 4.0f, 0, 8, ']')
-            .withRepeats(9, 10)
+            .withRepeats(12, 5)
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(graveyardSkeletonStats())));
         // Royal Delivery: drops a single shielded Royal-Recruit-shaped
         // defender at the target; also deals its own landing-impact damage.
