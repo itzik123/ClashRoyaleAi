@@ -102,7 +102,12 @@ import python_ai  # noqa: E402,F401
 # The surviving 2.6 Hog Cycle baseline (episode 31,312). Replace this with the
 # Episode 0 run's output once that run has been measured -- not before, and not
 # by assuming the numbers in the docstring carry over.
-SHIPPING_WEIGHTS = "model_weights_selfplay.pth"
+#: model_weights_selfplay.pth was DELETED in the 2026-08-19 cleanup, so this
+#: pointed at a missing file and every deployment path raised
+#: FileNotFoundError. Frozen copy of phase 9 at ep 115,173 -- the only
+#: checkpoint that loads clean against the current observation layout, and
+#: a COPY so a resumed training run cannot mutate what ships.
+SHIPPING_WEIGHTS = "model_weights_live.pth"
 
 #: THE SHIPPING SWITCH. False since 2026-09-06: search is measured NEGATIVE
 #: against the opponent phase 1 actually trains on, so the deployable agent

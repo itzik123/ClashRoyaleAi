@@ -529,15 +529,33 @@ class NeuralPolicy:
             if self._gate is not None:
                 # Veto spends that would leave us unable to answer, but only
                 # while nothing is attacking, and only up to what the opponent
-                # could actually punish with (their elixir, from the net's own
-                # auxiliary head using the PREVIOUS step's state -- the mask has
-                # to exist before this step's LSTM runs).
+                # could actually punish with (their elixir, reconstructed from
+                # the observation -- see below for why it is no longer the net's
+                # own head).
+                from python_ai.advisors import tactics  # noqa: PLC0415
                 o = obs[0].numpy()
                 # From the net, not sliced here -- see
                 # MicroRoyaleNet.hand_costs_from_obs, which replaced three
                 # copies of this offset arithmetic (this was the third).
                 costs = self.net.hand_costs_from_obs(obs)[0].tolist()
-                opp = float(self.net.predict_opp_elixir(self._hx)[0])
+                # DERIVED, not predicted. `net.predict_opp_elixir` was deleted
+                # on 2026-08-28 -- the head was measured to be an affine
+                # function of two scalars the observation already carries
+                # (ordinary least squares on them scores MAE 0.0000), so it
+                # learned nothing and was replaced by the next-card head. This
+                # call was never updated, and it raised AttributeError on the
+                # first in-game frame, i.e. `--policy neural` could not survive
+                # entering a match at all.
+                #
+                # `tactics.opp_elixir_estimate` is the same reconstruction the
+                # teacher uses: start + regen*t - their observed cumulative
+                # spend. It reads a FLAT regen rate and the match has run
+                # 1x/2x/3x phases since 2026-09-02, so it under-reads after
+                # 2:00 -- which opens the solvency gate slightly more often
+                # than it should late in a game. Noted rather than fixed here:
+                # the gate is off by default (`--no-tactical` is the A/B arm,
+                # and `USE_SOLVENCY_GATE` ships False).
+                opp = float(tactics.opp_elixir_estimate(o))
                 allow = torch.tensor([self._gate.mask(o, costs, opp)],
                                      dtype=torch.bool)
                 card_mask = card_mask & allow
@@ -636,7 +654,11 @@ def main() -> int:
                     help="scripted exercises the joints; neural is the agent")
     ap.add_argument("--checkpoint", type=Path,
                     default=Path(__file__).resolve().parents[2] / "python_ai"
-                    / "model_weights_selfplay.pth")
+                    / "model_weights_live.pth",
+                    help="model_weights_selfplay.pth was deleted in the "
+                         "2026-08-19 cleanup, so this default pointed at a "
+                         "missing file and --policy neural raised "
+                         "FileNotFoundError before a single frame was read")
     ap.add_argument("--no-tactical", action="store_true",
                     help="disable the advisor override and solvency gate, so the "
                          "network alone decides where -- the A/B control arm")
