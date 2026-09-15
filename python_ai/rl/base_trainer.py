@@ -613,6 +613,7 @@ class BaseTrainer:
         # excluded, and strictly so: `decision` is built as
         # `(card_mask.sum(1) > 1) * valid`, so valid==0 implies decision==0.
         adv_norm = gae_mod.normalize(advantages, mask=batch["decision"])
+        self._note_placements(batch)
 
         with torch.no_grad():
             keep = batch["valid"] > 0.5
@@ -636,9 +637,39 @@ class BaseTrainer:
             ent_coef_placement=self.entropy.coef_placement,
             coverage_coef=PLACEMENT_COVERAGE_COEF)
 
+    def _note_placements(self, batch):
+        """Feed this rollout's REAL placements (card id, cell) to the modal-share
+        window. Rows that placed nothing -- the no-op, a phantom autoreset step,
+        a forced step -- are dropped."""
+        from python_ai.rl.placement_stats import ModalShareWindow
+        if getattr(self, "_modal_share", None) is None:
+            self._modal_share = ModalShareWindow()
+        with torch.no_grad():
+            cards = batch["card_actions"].reshape(-1)
+            cells = batch["placement_actions"].reshape(-1)
+            placed = (cards < self.net.hand_size) & (batch["decision"].reshape(-1) > 0.5)
+            if not bool(placed.any()):
+                self._modal_share.add_update([], [])
+                return
+            obs = batch["obs"].reshape(-1, batch["obs"].shape[-1])[placed]
+            hand = self.net.hand_card_ids(obs)
+            ids = hand.gather(1, cards[placed].view(-1, 1)).squeeze(1)
+            self._modal_share.add_update(ids.tolist(), cells[placed].tolist())
+
     def log_update(self, stats):
         """TensorBoard series shared by both pipelines, plus the controller step."""
         w, ep = self.writer, self.episodes_completed
+        # MODAL SHARE per card -- the conditional-collapse detector CLAUDE.md
+        # names as the right one (not ByCard_Min). Not logged anywhere until
+        # 2026-09-15 (audit 08). Above ~0.6 at a sharp head, a card is being
+        # placed on one cell regardless of the board.
+        shares = getattr(self, "_modal_share", None)
+        shares = shares.shares() if shares is not None else {}
+        if shares:
+            from python_ai.engine_constants import card_name
+            for cid, share in shares.items():
+                w.add_scalar(f"Placement/ModalShare/{card_name(cid)}", share, ep)
+            w.add_scalar("Placement/ModalShare_Max", max(shares.values()), ep)
         w.add_scalar("Loss/Actor", stats.actor_loss, ep)
         w.add_scalar("Loss/Critic", stats.critic_loss, ep)
         w.add_scalar("Loss/Entropy", stats.entropy, ep)

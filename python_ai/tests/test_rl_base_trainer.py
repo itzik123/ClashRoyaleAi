@@ -452,3 +452,15 @@ def test_an_interrupt_saves_before_it_exits(workdir, monkeypatch):
     ck = torch.load(workdir / "model_weights.pth", map_location="cpu", weights_only=False)
     assert ck["episodes_completed"] >= 0
     assert "lineage_started_at" in ck
+
+
+@pytest.mark.slow
+def test_placement_modal_share_is_fed_from_the_real_rollout(workdir):
+    """The window must receive this run's placements, or the scalar never
+    appears and the collapse detector is silently absent again."""
+    from python_ai.rl.placement_stats import ModalShareWindow
+    trainer = _phase1(updates=2)
+    window = trainer._modal_share
+    assert isinstance(window, ModalShareWindow)
+    plays = sum(sum(c.values()) for upd in window._updates for c in upd.values())
+    assert plays > 0, "no placements reached the modal-share window"

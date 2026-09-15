@@ -246,6 +246,15 @@ def main():
         say(OK if plateau < max(1.0, stage) else WARN, "ladder",
             f"rung {int(stage)}, {int(plateau)} rung(s) left by PLATEAU rather "
             f"than by the gate")
+    modal = sc.get("Placement/ModalShare_Max", [])
+    if modal:
+        m = _last(modal, 3)
+        worst = max(((tag.split("/")[-1], v[-1][1]) for tag, v in sc.items()
+                     if tag.startswith("Placement/ModalShare/") and v),
+                    key=lambda kv: kv[1], default=("?", m))
+        say(WARN if m > 0.60 else OK, "placement modal share",
+            f"max {m:.2f} ({worst[0]} {worst[1]:.2f}) -- above 0.60 a card is "
+            f"landing on one cell whatever the board")
     dmin = _last(sc.get("Decks/WinRate_Min", []), 1)
     if dmin is not None:
         say(OK, "worst deck", f"win rate {dmin:.2f}")
