@@ -246,6 +246,11 @@ def main():
         say(OK if plateau < max(1.0, stage) else WARN, "ladder",
             f"rung {int(stage)}, {int(plateau)} rung(s) left by PLATEAU rather "
             f"than by the gate")
+    rdev = _last(sc.get("Loss/Ratio_Dev_First_Minibatch", []), 5)
+    if rdev is not None:
+        say(ALARM if rdev > 1e-3 else OK, "ratio self-check",
+            f"max |ratio-1| at epoch 0 = {rdev:.2e} -- above 1e-3 the rollout and "
+            f"the update disagree about what the policy did")
     modal = sc.get("Placement/ModalShare_Max", [])
     if modal:
         m = _last(modal, 3)

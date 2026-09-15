@@ -573,9 +573,10 @@ class MicroRoyaleEnv(gym.Env):
             # its own back corner.
             obs1 = np.asarray(self.game.get_observation_for_team(1), dtype=np.float32)
             slot1, x1, y1 = self.teacher.act(self.game, obs1)
+            opp_ab1, opp_ab2 = self.teacher.ability_flags(self.game, obs1)
             step_result = self.game.step_self_play(
                 card_idx, target_x, target_y, slot1, x1, y1, skip_frames,
-                activate_ability_slot1, activate_ability_slot2, False, False)
+                activate_ability_slot1, activate_ability_slot2, opp_ab1, opp_ab2)
             obs = np.array(step_result.observation0, dtype=np.float32)
             reward = float(step_result.reward0)
             terminated = bool(step_result.done)

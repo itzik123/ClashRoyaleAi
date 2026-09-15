@@ -35,12 +35,16 @@ The audit and its fixes are in `CLAUDE.md` ("2026-09-15: the pre-launch audit");
 the operator's steps are `FINAL_RUN_RUNBOOK.md`. These were found and left open
 on purpose, each with the reason.
 
-1. **Champion / Hero ability training is not implemented.** `validate_deck`
-   refuses such a deck at startup. Needs: ability readiness in the observation
-   (today it rides only in `info`, so the policy cannot see it), sampling and a
-   buffered or recomputable mask, the log-prob in the PPO ratio, an entropy term,
-   phase 2's opponent net doing the same, and the teacher using abilities (it
-   never does). Engine + both trainers; do it only if the chosen deck needs it.
+1. **Champion / Hero ability training: IMPLEMENTED 2026-09-16, with two gaps.**
+   `rl/abilities.py`, sampled and scored in the joint action, phase-2 opponent and
+   a heuristic mirror teacher included. What is still missing:
+   (a) **readiness is not in the OBSERVATION** -- it rides in `info` and is used
+   only as the action mask, so the policy cannot see "my ability is ready" and
+   must infer it; putting it in the extra scalars is an engine change and would
+   move `observation_size()`.
+   (b) **`trainers/exploiter.py` has its own rollout loop and does not sample
+   abilities** -- harmless while `EXPLOITER_ENABLED = False`, a silent asymmetry
+   if it is ever turned on with a Champion deck.
 
 2. **Does the aux anti-alignment persist after the warm-up?** Measured only over
    the first 12 updates from init (LSTM 1.67x the other terms at cosine -0.84).

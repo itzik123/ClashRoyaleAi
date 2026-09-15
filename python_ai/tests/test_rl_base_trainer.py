@@ -464,3 +464,70 @@ def test_placement_modal_share_is_fed_from_the_real_rollout(workdir):
     assert isinstance(window, ModalShareWindow)
     plays = sum(sum(c.values()) for upd in window._updates for c in upd.values())
     assert plays > 0, "no placements reached the modal-share window"
+
+
+@pytest.mark.slow
+def test_a_champion_deck_trains_with_its_ability_in_the_ratio(workdir, monkeypatch):
+    """2026-09-16: ability training. A Champion deck used to raise at setup.
+
+    Readiness is forced ON for every step so the activate arm is sampled and
+    scored on every row (the engine refuses an unready activation harmlessly).
+    The epoch-0 ratio must be 1: the ability log-prob stored at rollout and the
+    one recomputed in the update come from the same masked logits.
+    """
+    import numpy as np
+    from python_ai.envs import gym_wrapper
+    from python_ai.rl import abilities
+    from python_ai.trainers.train import PHASE1_OPPONENT, Phase1Trainer
+
+    deck = [6, 116, 40, 24, 72, 33, 7, 52]          # Golden Knight in deck slot 1
+    sent = []
+    real_ready = abilities.ready_from_infos
+    monkeypatch.setattr(abilities, "ready_from_infos",
+                        lambda infos, n, slots: real_ready({f"champion_ability_slot{s}_ready":
+                                                            np.ones(n, bool) for s in slots},
+                                                           n, slots))
+    cfg = PPOConfig(num_envs=2, update_timestep=20, bptt_chunk=10,
+                    num_minibatches=1, ppo_epochs=1,
+                    save_every_episodes=10 ** 9, replay_every_episodes=10 ** 9)
+
+    class Harness(Phase1Trainer):
+        def __init__(self):
+            super().__init__(cfg)
+            self.log_dir = "runs/test"
+            self.stats = None
+
+        def ability_engine_slots(self):
+            return [1]
+
+        def build_envs(self):
+            def make():
+                return gym_wrapper.MicroRoyaleEnv(
+                    {"opponent": PHASE1_OPPONENT, "teacher_stage": 0,
+                     "ai_deck": deck, "deck_pool": False})
+            envs = gym.vector.SyncVectorEnv([make for _ in range(cfg.num_envs)])
+            real_step = envs.step
+
+            def step(action):
+                sent.append(np.asarray(action["activate_ability_slot1"]).copy())
+                return real_step(action)
+            envs.step = step
+            return envs
+
+        def run_update(self):
+            self.stats = super().run_update()
+            return self.stats
+
+        def should_stop(self):
+            return self.stats is not None
+
+        def on_finish(self):
+            self.envs.close()
+
+    monkeypatch.setattr("python_ai.envs.deck_contract.validate_deck",
+                        lambda deck, strict=True: [])
+    t = Harness()
+    t.run()
+    assert t.net.num_ability_slots == 1
+    assert t.stats.ratio_dev_first < 1e-4, t.stats.ratio_dev_first
+    assert any(a.any() for a in sent), "no activation ever reached the env"

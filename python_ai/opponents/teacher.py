@@ -2084,6 +2084,30 @@ class UtilityTeacher:
         return float(d) / max(1.0, cost)
 
     # -- the decision ------------------------------------------------------
+    def ability_flags(self, env, obs_own):
+        """(activate slot 1, activate slot 2) for this decision.
+
+        A HEURISTIC, and a deliberately plain one: activate a ready Champion
+        ability when the opponent has a real force on the board. Until
+        2026-09-16 the teacher never activated anything, so the mirror of a
+        Champion deck played the Champion as a plain troop. Readiness alone is
+        not enough -- it is true from the second a Champion lands with elixir
+        to spare (measured for Golden Knight, Archer Queen and Monk), so it
+        would spend the ability on arrival. The force bar is the advisor's own
+        threat constant, not a new number.
+        """
+        from python_ai.rl.abilities import ability_engine_slots
+        slots = ability_engine_slots(self.deck)
+        if not slots:
+            return (False, False)
+        enemy_hp = float(tactics.enemy_hp_map(obs_own).sum())
+        if enemy_hp <= tactics.DECK_COVERAGE_THREAT_HP:
+            return (False, False)
+        flags = {1: False, 2: False}
+        for slot in slots:
+            flags[slot] = bool(env.is_champion_ability_ready(self.team, slot))
+        return (flags[1], flags[2])
+
     def act(self, env, obs_own):
         """(slot, x, y) in our own frame. slot == HAND_SIZE means hold."""
         self.cycle.observe(env.get_hand_for_team(self.team))

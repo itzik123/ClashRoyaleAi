@@ -484,7 +484,7 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # measured at 67.7% of the rollout's network time.
             (features1, card_embeds1, spatial_map1,
              hires_map1) = self.opponent_net.extract_features_hires(obs1_t)
-            (logits1, _, _, _,
+            (logits1, ab1_1, ab2_1, _,
              (self.opponent_hx, self.opponent_cx)) = self.opponent_net.step_lstm_and_card(
                 features1, (self.opponent_hx, self.opponent_cx), card_mask1)
             card_idx1_t = Categorical(logits=logits1).sample()
@@ -496,8 +496,20 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             card_idx1 = card_idx1_t.item()
             x1 = x1_t.item()
             y1 = y1_t.item()
-        # Deck has no Champion -- see gym_wrapper.DEFAULT_DECK_ABILITY_SLOTS.
-        return card_idx1, x1, y1, False, False
+            # Its OWN Champion decisions, under its own readiness -- otherwise
+            # the league's neural opponents would never use a Champion the
+            # trainee is learning to use (rl/abilities.py).
+            from python_ai.rl import abilities as ability_mod
+            slots = ability_mod.ability_engine_slots(self.deck)
+            logits = [l for l in (ab1_1, ab2_1) if l is not None]
+            flags = {1: False, 2: False}
+            if slots and logits:
+                ready = torch.tensor([[bool(self.game.is_champion_ability_ready(1, s))
+                                       for s in slots]])
+                acts, _, _ = ability_mod.sample(logits, ready)
+                for k, slot in enumerate(slots):
+                    flags[slot] = bool(acts[0, k])
+        return card_idx1, x1, y1, flags[1], flags[2]
 
     def _scripted_opponent_action(self, obs1):
         """Delegate to the hand-written heuristics.

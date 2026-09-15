@@ -93,7 +93,11 @@ timeout tiebreak. `W_ELIXIR_OVERFLOW` never fires at init (P(elixir >= 9) = 0.00
 **Teacher: the top rung froze on a full bar.** The rung-10 reactive counter
 answered every attack, so against an opponent banked on 10 elixir every push
 scored negative (30 of 116 passive matches). It switches off after
-`COUNTER_PASSIVE_DECISIONS` (8) decisions of opponent inactivity.
+`COUNTER_PASSIVE_DECISIONS` (8) decisions of opponent inactivity. **Re-measured
+after all of today's teacher and stat fixes**, same 29 decks x 4 seeds at rung 10
+against a do-nothing opponent: failed to three-crown **30 -> 3**, ran the clock out
+**13 -> 0**, mean ticks **1097 -> 615**, 0 crashes. The three are two X-Bow decks
+taking two crowns by regulation (slow siege) and the no-win-condition control.
 
 **Cold start** (a random-init net lives at rung 0):
 - Rung 0 had no valve at all; 4,000 episodes at 0.00 fired nothing. New
@@ -129,6 +133,23 @@ sized against a CE of ~ln(8); a fresh 185-way head starts at ln(185) = 5.22.
 measurement, not a measured win-rate gain; the refutation experiment is stated at
 the constant. Whether the anti-alignment persists after the ramp is open (TODO).
 
+**Champion / Hero abilities are trained (2026-09-16).** Before this a Champion
+deck could not be trained at all: nothing sampled an ability and `setup` raised.
+`rl/abilities.py` owns the three things that go silently wrong -- ENGINE SLOTS
+ARE DECK INDICES 1 AND 2 (a lone Champion at index 2 is head 0 driving slot 2,
+not slot 1), the activate arm is MASKED BY READINESS (`is_champion_ability_ready`,
+which the env surfaces per slot; an unready activation would otherwise put noise
+in the ratio), and the log-prob is computed from the same masked logits at
+rollout and update. The ability is part of the JOINT action, so a row counts as a
+DECISION when the card head had a choice OR an ability was ready. Phase 2's frozen
+opponent samples its own abilities; the phase-1 mirror teacher activates by a
+plain heuristic (ready AND enemy force > `DECK_COVERAGE_THREAT_HP` on the board --
+readiness alone fires the instant a Champion lands, measured for Golden Knight,
+Archer Queen and Monk). With no Champion in the deck there are no heads, no buffer
+fields and no extra terms, and that path is unchanged -- pinned by the epoch-0
+ratio self-check, now logged every update as
+`Loss/Ratio_Dev_First_Minibatch` (must read ~0; a Champion deck measures < 1e-4).
+
 **Preflight gates made honest**: the engine-staleness check compared mtimes and
 failed on a verified-current build (content-based now); the side null needed a
 deleted checkpoint (a seeded random-init net now, a sharper subject).
@@ -141,7 +162,7 @@ deleted checkpoint (a seeded random-init net now, a sharper subject).
 - **The Fireball-keyed spell shaping terms** stay keyed to id 7 (deriving them in
   `rewards/weights.py` would create an import cycle; ~1.5% of the objective).
   `validate_deck` warns when they are dead.
-- **Champion ability training.** Not implemented; such a deck is refused at start.
+- ~~**Champion ability training.**~~ **IMPLEMENTED 2026-09-16** -- see below.
 
 **Refuted, do not re-raise:** the recurrent PPO core is sound (ratio at epoch 0
 max |r-1| 4.8e-07, values 1e-08, masks recomputed bit-identically, LSTM state

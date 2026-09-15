@@ -32,14 +32,15 @@ def test_the_shipped_deck_has_no_errors_and_names_its_win_condition():
     assert "Hog Rider" in text(report)
 
 
-def test_a_champion_deck_is_an_error_with_the_reason():
+def test_a_champion_deck_trains_and_says_the_ability_path_is_new():
+    """Refused until 2026-09-16, when ability training landed. Still flagged:
+    the path is new and the mirror teacher uses the ability heuristically."""
     deck = D.parse_deck("musketeer,golden knight,ice golem,skeletons,ice spirit,"
                         "the log,fireball,miner")
     report = DC.validate_deck(deck, strict=False)
-    assert "ERROR" in levels(report)
-    assert "ability" in text(report).lower()
-    with pytest.raises(ValueError, match="ability"):
-        DC.validate_deck(deck, strict=True)
+    assert "ERROR" not in levels(report), text(report)
+    assert any(lvl == "WARN" and "ability" in msg.lower() for lvl, msg in report)
+    DC.validate_deck(deck, strict=True)
 
 
 def test_a_deck_without_fireball_warns_that_the_spell_terms_are_off():

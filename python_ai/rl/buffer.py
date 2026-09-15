@@ -70,6 +70,12 @@ TRUNCATION_FIELDS = ("boot_nonterminal", "trunc_flag", "trunc_boot")
 #: Present only when the advisor is enabled (`advisors.advisor_target.enabled`).
 ADVISOR_FIELDS = ("coverage_target", "coverage_has")
 
+#: Champion ability actions and the readiness mask they were sampled under, one
+#: column per Champion head (see rl/abilities.py). Stored only when the deck has
+#: a Champion. The mask is BUFFERED, not recomputed: readiness comes from the
+#: engine (cooldown, elixir, deployment) and is not in the observation.
+ABILITY_FIELDS = ("ability_actions", "ability_ready")
+
 
 class RolloutBuffer:
     """Append-only per-step storage, stacked to (T, N, ...) for the update."""

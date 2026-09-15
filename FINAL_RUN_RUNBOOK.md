@@ -29,7 +29,7 @@ Read the output:
 
 | line | meaning |
 |---|---|
-| `ERROR ... Champion/Hero` | **This deck cannot be trained.** Ability sampling is not implemented; the trainer refuses to start. Pick a deck without a Champion/Hero. |
+| `WARN ... Champion/Hero` | Trainable since 2026-09-16 (the ability is sampled and scored), but the path is NEW and the mirror teacher activates by a plain heuristic. Watch `Policy/Entropy_Ability` and a replay early on. |
 | `win condition: X (N tower HP per elixir)` | the card the reward's win-condition term and the mirror teacher both build around. `WEAK` below 200 is a warning, not a blocker. |
 | `WARN no win condition resolves` | the win-condition reward term is off for this deck. |
 | `advisor target speaks for K/8 cards` | the placement head gets a rule-based target for these K cards and only an entropy bonus for the rest. 0/8 is a warning. |
@@ -125,6 +125,9 @@ placement modal share.
 
 What to look at, in order:
 
+0. **`Loss/Ratio_Dev_First_Minibatch`** must stay ~0 (float noise, < 1e-3). It is
+   the PPO self-check: the policy the rollout acted under and the one the update
+   scores must agree.
 1. **`Training/Win_Rate_100` and `Training/Avg_Reward_50`.** A random-init policy
    wins ~0 of its first hundred games against the pool; reward moves before win
    rate. A do-nothing policy reads about -8.2 reward per episode at rung 0.
@@ -173,7 +176,9 @@ and refuses to restart more than 4 times an hour.
 
 ## 6. Known limits going in
 
-- **No Champion/Hero decks** (ability training not implemented).
+- **Champion/Hero ability training is new** (2026-09-16) and has never run at
+  length. The mirror teacher uses the ability heuristically, so a Champion deck's
+  early rungs are easier than they look.
 - The teacher has **no air-defence concept**; air decks meet a weak mirror early.
 - The lethal/value spell shaping terms are keyed to **Fireball**.
 - Spawner huts (Barbarian Hut, Tombstone) measure as tower threats alone, so a

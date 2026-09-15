@@ -36,6 +36,7 @@ from torch.distributions import Categorical
 from python_ai.advisors import advisor_target, tactics
 from python_ai.rl import deck_coverage
 from python_ai.rl.engine_stats import next_card_labels
+from python_ai.rl import abilities as ability_mod
 from python_ai.rl.optim_step import clip_and_step
 
 
@@ -96,6 +97,14 @@ class UpdateStats:
     #: min over deck cards of P(play card | card in hand). The direct readout
     #: the 2026-08-28 run never had: it sat near 0.001 for 30,000 episodes.
     deck_min_card_prob: float = 0.0
+    #: max |ratio - 1| over the FIRST minibatch of epoch 0, where the weights
+    #: have not moved yet and the ratio must be exactly 1. Anything else means
+    #: the rollout's log-probs and the update's disagree -- the classic
+    #: recurrent-PPO self-check, now logged every update.
+    ratio_dev_first: float = 0.0
+    #: Mean Champion-ability entropy (fraction of log 2) over rows where an
+    #: activation was legal; nan when the deck has no Champion or none was ready.
+    ent_ability: float = float("nan")
     #: card id -> H(placement | card) as a fraction of that card's own
     #: reachable maximum. THE conditional-collapse detector: the aggregate
     #: provably cannot see a per-card collapse, because a mixture of eight
@@ -196,6 +205,11 @@ class PPOUpdater:
             batch["aux_opp_played"], masks_seq, valid_seq)
         hx_in_seq, cx_in_seq = batch["hx_in"], batch["cx_in"]
         coverage_slot_seq = batch["coverage_slot"]
+        n_ability = int(getattr(net, "num_ability_slots", 0) or 0)
+        ability_actions_seq = batch.get("ability_actions") if n_ability else None
+        ability_ready_seq = batch.get("ability_ready") if n_ability else None
+        ratio_dev_first = None
+        ent_ability_log = []
         coverage_target_seq = batch.get("coverage_target")
         coverage_has_seq = batch.get("coverage_has")
         if coverage_has_seq is None:
@@ -288,16 +302,30 @@ class PPOUpdater:
                 # resulting weights are bit-identical.
                 active_rows = (mb_decision.reshape(-1) > 0).nonzero(
                     as_tuple=True)[0]
-                (cl_seq, pl_seq, new_values, new_aux_logits,
-                 _, cf_pl_seq) = net.forward_sequence(
+                fwd = net.forward_sequence(
                     feats_seq, card_embeds_seq, spatial_seq, mb_obs_seq,
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
                     extra_card_idx_seq=cf_idx, hires_seq=hires_seq,
-                    active_rows=active_rows)
+                    active_rows=active_rows,
+                    # Passed only when there ARE abilities, so a Champion-less
+                    # deck calls forward_sequence with exactly the old
+                    # signature -- which is what a test that wraps it expects.
+                    **({"with_ability": True} if ability_actions_seq is not None else {}))
+                (cl_seq, pl_seq, new_values, new_aux_logits,
+                 _, cf_pl_seq) = fwd[:6]
                 card_dist_t = Categorical(logits=cl_seq)
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)
                                 + place_dist_t.log_prob(mb_place_actions))
+                # The Champion ability is part of the JOINT action, scored under
+                # the readiness mask it was sampled with (rl/abilities.py).
+                ent_ability_frac = None
+                if ability_actions_seq is not None:
+                    mb_ready = ability_ready_seq[tt, ee].bool()
+                    ab_lp, ab_ent = ability_mod.log_prob_and_entropy(
+                        fwd[6], mb_ready, ability_actions_seq[tt, ee])
+                    new_logprobs = new_logprobs + ab_lp
+                    ent_ability_frac = (ab_ent * mb_ready.float()) / math.log(2.0)
 
                 # --- normalize each head by the entropy it can ACTUALLY reach.
                 # Both distributions are already masked to their legal arms, so
@@ -325,6 +353,10 @@ class PPOUpdater:
                 n_decision = mb_decision.sum().clamp(min=1.0)
 
                 ratios = torch.exp(new_logprobs - mb_old_logprobs)
+                if ratio_dev_first is None:
+                    with torch.no_grad():
+                        dev = ((ratios - 1.0).abs() * mb_decision)
+                        ratio_dev_first = float(dev.max()) if has_decision else 0.0
                 surr1 = ratios * mb_adv
                 surr2 = torch.clamp(ratios, 1 - cfg.eps_clip,
                                     1 + cfg.eps_clip) * mb_adv
@@ -421,6 +453,15 @@ class PPOUpdater:
                 # maximum (divided per step above), so no second division here.
                 entropy_bonus = (ent_coef_card * ent_card_mean
                                  + ent_coef_placement * ent_place_mean)
+                if ent_ability_frac is not None:
+                    # Same coefficient as the card head, and the same "fraction
+                    # of the reachable maximum" units: a ready ability is a
+                    # 2-way choice (log 2); an unready one carries none.
+                    n_ready = ability_ready_seq[tt, ee].float().sum().clamp(min=1.0)
+                    ent_ab_mean = ent_ability_frac.sum() / n_ready
+                    entropy_bonus = entropy_bonus + ent_coef_card * ent_ab_mean
+                    if bool(ability_ready_seq[tt, ee].any()):
+                        ent_ability_log.append(float(ent_ab_mean.detach()))
 
                 # Auxiliary NEXT-OPPONENT-CARD loss (cross-entropy).
                 #
@@ -603,6 +644,9 @@ class PPOUpdater:
             nonfinite_skips=nonfinite_skips,
             per_card_placement_entropy={
                 cid: float(np.mean(v)) for cid, v in percard_place_ent.items()},
+            ratio_dev_first=float(ratio_dev_first or 0.0),
+            ent_ability=(float(np.mean(ent_ability_log)) if ent_ability_log
+                         else float("nan")),
         )
 
     def _collect_per_card(self, percard, noop_log, new_ent_place, mb_obs_flat,

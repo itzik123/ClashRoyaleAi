@@ -44,12 +44,13 @@ def validate_deck(deck, *, strict=True):
     # --- hard blockers ------------------------------------------------------
     champions = [c for c in deck if info[c]["is_champion"] or info[c]["is_hero"]]
     if champions:
-        out.append(("ERROR",
-                    f"{', '.join(name(c) for c in champions)} is a Champion/Hero: the "
-                    f"training loop does not sample, store or score ability "
-                    f"activations (rl/base_trainer.py raises NotImplementedError), "
-                    f"so the ability would never be used. Restore ability-head "
-                    f"training before choosing this deck."))
+        out.append(("WARN",
+                    f"{', '.join(name(c) for c in champions)} is a Champion/Hero: its "
+                    f"ability is trained since 2026-09-16 (rl/abilities.py), but "
+                    f"that path is new, and the phase-1 mirror teacher uses the "
+                    f"ability by a plain heuristic (ready + an enemy force on the "
+                    f"board). Watch Policy/Entropy_Ability and the ability's use in "
+                    f"replays early in the run."))
 
     # --- the win condition ---------------------------------------------------
     roles = teacher.card_roles(deck)

@@ -51,9 +51,10 @@ from python_ai.rewards.shaping import (
 )
 from python_ai.rewards.weights import DRAW_PENALTY
 from python_ai.rl import gae as gae_mod
+from python_ai.rl import abilities as ability_mod
 from python_ai.rl.engine_stats import reseat_prev_stats
 from python_ai.rl.buffer import (
-    ADVISOR_FIELDS, CORE_FIELDS, TRUNCATION_FIELDS, RolloutBuffer,
+    ABILITY_FIELDS, ADVISOR_FIELDS, CORE_FIELDS, TRUNCATION_FIELDS, RolloutBuffer,
 )
 from python_ai.rl.config import aux_warmup_scale
 from python_ai.rl.checkpointing import (
@@ -154,9 +155,15 @@ class BaseTrainer:
         """A single non-vectorized env for the periodic demo replay, or None."""
         return None
 
+    def ability_engine_slots(self):
+        """Engine slot (deck index 1 or 2) driven by each Champion head, in
+        order -- see rl/abilities.py for why a head is not "the Nth slot"."""
+        from python_ai.deck import DEFAULT_DECK
+        from python_ai.rl.abilities import ability_engine_slots
+        return ability_engine_slots(DEFAULT_DECK)
+
     def num_ability_slots(self):
-        from python_ai.envs.gym_wrapper import DEFAULT_DECK_ABILITY_SLOTS
-        return DEFAULT_DECK_ABILITY_SLOTS
+        return len(self.ability_engine_slots())
 
     def load_checkpoint(self):
         """Restore weights + training state. Returns True on a FULL resume.
@@ -236,18 +243,12 @@ class BaseTrainer:
         self.net = MicroRoyaleNet(
             num_ability_slots=self.num_ability_slots()).to(self.device)
         self.optimizer = optim.Adam(self.net.parameters(), lr=cfg.lr)
-        # This loop no longer samples/stores/scores Champion abilities at all --
-        # with a Champion-less deck they were pure noise in the PPO ratio and
-        # the entropy bonus. Fail LOUDLY rather than silently ignoring a
-        # Champion that IS in the deck: the net would build the heads, nothing
-        # would ever sample them, and the bot would simply never use its
-        # Champion with nothing saying why.
-        if self.num_ability_slots() > 0:
-            raise NotImplementedError(
-                "the deck contains a Champion (num_ability_slots > 0), but this "
-                "training loop's ability sampling was removed when the deck had "
-                "none. Restore the ability_dist sampling/buffering/log-prob "
-                "branches before training this deck.")
+        # Champion abilities are sampled, buffered and scored since 2026-09-16
+        # (rl/abilities.py). With a Champion-less deck there are no heads, no
+        # buffer fields and no extra terms: that path is unchanged.
+        self._ability_slots = self.ability_engine_slots()
+        self._ability_ready = torch.zeros(
+            (cfg.num_envs, len(self._ability_slots)), dtype=torch.bool)
 
         # Built BEFORE the resume: `restore_common` refills the outcome window
         # from the checkpoint, and a metrics object created afterwards would
@@ -269,6 +270,8 @@ class BaseTrainer:
             fields += list(TRUNCATION_FIELDS)
         if advisor_target.enabled():
             fields += list(ADVISOR_FIELDS)
+        if self.num_ability_slots() > 0:
+            fields += list(ABILITY_FIELDS)
         self.buffer = RolloutBuffer(fields)
         self.advisor_legal = (advisor_target.build_legal_table(self.net)
                               if advisor_target.enabled() else {})
@@ -359,7 +362,7 @@ class BaseTrainer:
                 # pinned in tests/test_rollout_no_redundant_conv.py.
                 features, card_embeds, spatial_map, hires_map = \
                     net.extract_features_hires(obs_tensor)
-                card_logits, _, _, state_value, (self._hx, self._cx) = \
+                card_logits, ab1_logits, ab2_logits, state_value, (self._hx, self._cx) = \
                     net.step_lstm_and_card(features, (hx_in, cx_in), card_mask)
                 card_dist = Categorical(logits=card_logits)
                 card_idx = card_dist.sample()
@@ -370,23 +373,35 @@ class BaseTrainer:
                 placement_cell = placement_dist.sample()
                 total_logprob = (card_dist.log_prob(card_idx)
                                  + placement_dist.log_prob(placement_cell))
+                # Champion abilities: part of the JOINT action, sampled under
+                # the readiness the engine reported with THIS observation.
+                ability_ready = self._ability_ready.to(self.device)
+                ability_logits = [l for l in (ab1_logits, ab2_logits) if l is not None]
+                ability_actions, ability_logprob, _ = ability_mod.sample(
+                    ability_logits, ability_ready)
+                if ability_logits:
+                    total_logprob = total_logprob + ability_logprob
 
             target_x, target_y = net.cell_to_xy(placement_cell)
             action = {
                 "card_index": card_idx.cpu().numpy(),
                 "target_x": target_x.cpu().numpy().reshape(cfg.num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(cfg.num_envs, 1),
-                # Deck has no Champion -> nothing to activate. Explicit zeros
-                # rather than omitted: AsyncVectorEnv's Dict-space iteration
-                # requires every action_space key to be present.
-                "activate_ability_slot1": np.zeros(cfg.num_envs, dtype=np.int64),
-                "activate_ability_slot2": np.zeros(cfg.num_envs, dtype=np.int64),
             }
+            # Both keys always present (AsyncVectorEnv's Dict space requires it);
+            # zeros for a Champion-less deck, exactly as before.
+            action.update(ability_mod.action_dict(
+                ability_actions, self._ability_slots, cfg.num_envs))
 
             next_obs, raw_rewards, terminateds, truncateds, infos = \
                 self.envs.step(action)
             dones = terminateds | truncateds
             stats = extract_engine_stats(infos, cfg.num_envs)
+            # Readiness for the NEXT decision. A missing key (a phantom
+            # autoreset step) reads not-ready, which can never fabricate a legal
+            # activation.
+            next_ability_ready = ability_mod.ready_from_infos(
+                infos, cfg.num_envs, self._ability_slots)
 
             boot = self._truncation_bootstrap(dones, raw_rewards, next_obs,
                                               truncateds)
@@ -432,7 +447,11 @@ class BaseTrainer:
                 "obs": obs_tensor,
                 "card_actions": card_idx,
                 "placement_actions": placement_cell,
-                "decision": (card_mask.sum(dim=1) > 1).float() * valid,
+                # A row is a DECISION if the card head had a real choice OR a
+                # Champion ability could be activated. For a Champion-less deck
+                # the second term is all-False and this is unchanged.
+                "decision": ((card_mask.sum(dim=1) > 1)
+                             | ability_ready.any(dim=1)).float() * valid,
                 "hx_in": hx_in,
                 "cx_in": cx_in,
                 "logprobs": total_logprob,
@@ -452,6 +471,9 @@ class BaseTrainer:
                 row["boot_nonterminal"] = boot["nonterminal"] * valid
                 row["trunc_flag"] = boot["flag"]
                 row["trunc_boot"] = boot["value"]
+            if self._ability_slots:
+                row["ability_actions"] = ability_actions
+                row["ability_ready"] = ability_ready
             if advisor_target.enabled():
                 row["coverage_target"] = cov["target"]
                 row["coverage_has"] = cov["has"]
@@ -477,6 +499,7 @@ class BaseTrainer:
 
             self._obs = next_obs
             self._prev_stats = stats
+            self._ability_ready = next_ability_ready
             self._prev2_dones = self._prev_dones
             self._prev_dones = dones
 
@@ -679,6 +702,10 @@ class BaseTrainer:
         w.add_scalar("Loss/Entropy", stats.entropy, ep)
         w.add_scalar("Loss/Total", stats.total_loss, ep)
         w.add_scalar("Loss/Clip_Fraction", stats.clip_frac, ep)
+        # The recurrent-PPO self-check, every update: must read ~0 (float noise).
+        w.add_scalar("Loss/Ratio_Dev_First_Minibatch", stats.ratio_dev_first, ep)
+        if stats.ent_ability == stats.ent_ability:          # not nan
+            w.add_scalar("Policy/Entropy_Ability", stats.ent_ability, ep)
         w.add_scalar("Loss/Critic_Explained_Variance", self._explained_variance, ep)
         w.add_scalar("Loss/Value_Clip_Range", self._vf_clip_range, ep)
         w.add_scalar("Loss/Entropy_Card", stats.ent_card, ep)

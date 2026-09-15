@@ -1265,7 +1265,7 @@ class MicroRoyaleNet(nn.Module):
     def forward_sequence(self, feats_seq, card_embeds_seq, spatial_seq, obs_seq,
                          card_mask_seq, card_idx_seq, reset_seq, hidden_state,
                          extra_card_idx_seq=None, hires_seq=None,
-                         active_rows=None):
+                         active_rows=None, with_ability=False):
         """
         חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
         מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
@@ -1383,8 +1383,16 @@ class MicroRoyaleNet(nn.Module):
         if extra_card_idx_seq is not None:
             extra_logits = _placement(extra_card_idx_seq).view(L, B, -1)
 
-        return (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
+        out = (card_logits.view(L, B, -1), place_logits.view(L, B, -1),
                 values.view(L, B), aux.view(L, B, -1), (hx, cx), extra_logits)
+        if not with_ability:
+            return out
+        # One (L, B, 2) logit tensor per Champion head, off flat_hx -- the same
+        # input step_lstm_and_card gives the heads at rollout time.
+        ability = [h(flat_hx).view(L, B, 2)
+                   for h in (self.ability_slot1_head, self.ability_slot2_head)
+                   if h is not None]
+        return out + (ability,)
 
     def predict_opp_next_card(self, hx):
         """Logits over card ids for the opponent's NEXT play. (Batch, C).
