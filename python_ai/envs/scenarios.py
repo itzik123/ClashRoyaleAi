@@ -207,7 +207,13 @@ def _scenario_fireball_tower_value(rng):
     currently misses by 7.7-11.5 tiles. Spawned just in front of the tower so
     both fall inside a single 2.5 radius.
     """
-    tower_x = 4.0 if rng.random() < 0.5 else 14.0
+    # DERIVED from ArenaLayout. This was `4.0 if ... else 14.0` -- the arena
+    # from BEFORE the 2026-08-21 re-centring, mirrored about 9.0 instead of 8.5,
+    # so the left-lane cluster sat one tile off its tower and the right-lane one
+    # on it: a lane asymmetry in 30% of injected scenarios. The seventh stale
+    # copy of the arena this repo has found; `_BRIDGE_LANES` above already
+    # derived correctly.
+    tower_x = EC.LEFT_LANE_X if rng.random() < 0.5 else EC.RIGHT_LANE_X
     n = int(rng.integers(2, 5))
     cx, cy = tower_x, 25.6
     spawns = []
@@ -265,8 +271,39 @@ SCENARIOS = [
     (_scenario_fireball_tower_value, 1.5),
 ]
 
-def sample_scenario(rng):
-    builders, weights = zip(*SCENARIOS)
-    weights = np.array(weights, dtype=np.float64)
+#: Scenarios whose correct answer is an AREA-DAMAGE SPELL. They draw only when
+#: the trainee's deck holds one (see `_deck_weights`).
+_SPELL_SCENARIOS = (_scenario_fireball_swarm, _scenario_fireball_tower_value)
+
+
+def _deck_weights(deck):
+    """SCENARIOS' weights with the spell scenarios zeroed for a deck that cannot
+    answer them.
+
+    60% of the injection weight -- 18% of ALL phase-1 episodes -- is two boards
+    whose answer is a spell. A deck with no area-damage spell still drew them and
+    was taught a reflex it cannot express; `giant_commit` was removed on
+    2026-08-19 for the same defect at 17% ("a dead entry here is worse than
+    none"). For the shipped deck (Fireball) the weights are unchanged.
+    """
+    from python_ai.advisors import card_probes
+    has_spell = any(card_probes.spell_effect(int(c)) is not None for c in deck)
+    return [0.0 if (b in _SPELL_SCENARIOS and not has_spell) else w
+            for b, w in SCENARIOS]
+
+
+def spell_scenario_share(deck):
+    """Fraction of injected scenarios that are spell scenarios, for this deck."""
+    w = _deck_weights(deck)
+    total = sum(w)
+    return sum(wi for (b, _), wi in zip(SCENARIOS, w) if b in _SPELL_SCENARIOS) / total
+
+
+def sample_scenario(rng, deck=None):
+    """One scenario dict. `deck` defaults to the trainee's (python_ai.deck)."""
+    if deck is None:
+        from python_ai.deck import DEFAULT_DECK as deck
+    builders = [b for b, _ in SCENARIOS]
+    weights = np.array(_deck_weights(tuple(deck)), dtype=np.float64)
     weights /= weights.sum()
     return builders[rng.choice(len(builders), p=weights)](rng)

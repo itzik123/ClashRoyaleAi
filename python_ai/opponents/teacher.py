@@ -253,9 +253,10 @@ def card_roles(deck):
     A hardcoded `{15: "wincon"}` would silently mean "Hog Rider" forever and be
     wrong the next time `DEFAULT_DECK` changes -- which it already has, twice.
 
-    `_find_win_condition` is deliberately NOT refactored into this. It answers a
-    narrower question, it sits in the reward path, and changing it to serve a
-    new caller is risk with no benefit.
+    The win condition itself comes from `resolve_win_condition`, which
+    `gym_wrapper._find_win_condition` now shares. The two used to be separate
+    copies, and both ranked by cost -- which is how the agent's reward term came
+    to credit an Ice Golem as a win condition (audit 07, F2).
     """
     return dict(_card_table_cached(tuple(deck))["roles"])
 
@@ -277,6 +278,12 @@ def _probe_env():
     env = CE(_PROBE_DECK, _PROBE_DECK, 3600)
     env.reset()
     return env
+
+
+@functools.lru_cache(maxsize=1)
+def _probe_env_cached():
+    """One shared empty board for pure legality queries (never stepped)."""
+    return _probe_env()
 
 
 def _enemy_tower_hp(env):
@@ -368,6 +375,141 @@ def threatens_tower_alone(card_id):
     return siege_reach(card_id) > 0.0 or spell_spawns_bodies(card_id) > 0
 
 
+#: How long the win-condition probe rolls a lone attacker forward. SHORT on
+#: purpose: over two minutes almost anything that walks at an undefended tower
+#: eventually takes it, so a long window saturates and stops separating a Hog
+#: from an Ice Golem. Thirty seconds measures what the card is FOR.
+WINCON_PROBE_TICKS = 300
+
+#: A win condition must take at least this much enemy tower HP per elixir in
+#: WINCON_PROBE_TICKS, alone, from where it is played to attack.
+#:
+#: MEASURED 2026-09-15 (`wincon_damage_per_elixir`, 300 ticks):
+#:
+#:     Mighty Miner 1636   Royal Hogs 773   Goblin Drill 664   Ram Rider 652
+#:     X-Bow 637   Hog Rider 634   Battle Ram 634   Miner 582   Royal Giant 525
+#:     Giant 507   Balloon 507   Goblin Giant 422   Mortar 399   Wall Breakers 350
+#:     Golem 312   Electro Giant 256   Goblin Barrel 240   GRAVEYARD 146
+#:     Lava Hound 129   Ice Golem 84   Skeleton Barrel 81   Fireball 0   Cannon 0
+#:
+#: So the floor can NOT separate "real win condition" from "cheap tank": a
+#: Graveyard (146) is a genuine win condition and scores below a Lava Hound, and
+#: a Skeleton Barrel (81) scores level with an Ice Golem (84). A floor at 150
+#: would have silently returned None for graveyard_control -- the very
+#: regression the 2026-09-06 fix removed. The window also saturates at one
+#: Princess (2534 HP), which is why so many cards read 2534/cost.
+#:
+#: The floor therefore only excludes cards with NO route to a tower. RANKING is
+#: what fixes the measured defects (Miner over Ice Golem, Balloon over Lava
+#: Hound). A deck whose best candidate is weak still gets one -- the teacher
+#: stays offensive -- and `validate_deck` WARNS about it at startup.
+WINCON_MIN_DAMAGE_PER_ELIXIR = 50.0
+#: Below this the resolved win condition is reported as WEAK by validate_deck.
+WINCON_WEAK_DAMAGE_PER_ELIXIR = 200.0
+
+
+def _roll_idle(env, ticks):
+    for _ in range(ticks // 10):
+        env.step_self_play(HAND_SIZE, 0.0, 0.0, HAND_SIZE, 0.0, 0.0, 10,
+                           False, False, False, False)
+
+
+def _attack_cell(card_id, env):
+    """Where this card is PLAYED to attack, or None when it has no such cell.
+
+    A walking building-targeter starts on our own side of the left bridge; a
+    deploy-anywhere troop (Miner, Goblin Drill) goes next to the enemy tower,
+    which is the entire point of the card; a body-spawning spell lands on it.
+    """
+    info = E.get_card_info(card_id)
+    lane_x = float(int(EC.LEFT_LANE_X))
+    tower_y = float(EC.princess_y(1))
+    if info["is_spell"]:
+        # The cell must be one the card can actually be CAST on. `inject`
+        # bypasses legality, and a rolling spell (Barbarian Barrel) is confined
+        # to our own half and the river -- injected onto the tower anyway it
+        # scored 617 and was promoted to win condition of graveyard_control
+        # over the Graveyard itself.
+        return (lane_x, tower_y) if env.is_valid_placement(card_id, lane_x, tower_y, 0) else None
+    if info.get("deploy_anywhere", False):
+        for dy in (3.0, 4.0, 2.0, 5.0):
+            for dx in (0.0, 1.0, -1.0, 2.0):
+                x, y = lane_x + dx, tower_y - dy
+                if env.is_valid_placement(card_id, x, y, 0):
+                    return (x, y)
+        return None
+    return (lane_x, float(own_half_max_row()))
+
+
+@functools.lru_cache(maxsize=512)
+def wincon_damage_per_elixir(card_id):
+    """Enemy tower HP per elixir this card takes ALONE, from its attack cell.
+
+    MEASURED, not ranked by cost. Ranking by cost was the defect this replaces:
+    "the most expensive building-targeter" promoted a 2-elixir Ice Golem to win
+    condition on any deck whose real win condition is not a building-targeter
+    (a Miner deck), and inverted LavaLoon (Lava Hound over Balloon). Buildings
+    reuse `siege_reach`, which already sweeps the siege row over 1200 ticks.
+
+    Scored as enemy tower HP ACTUALLY LOST, never `get_tower_damage_dealt`.
+    """
+    info = E.get_card_info(card_id)
+    cost = max(float(info["cost"]), 1.0)
+    if info["is_building"]:
+        return siege_reach(card_id) / cost
+    if info["is_spell"] and spell_spawns_bodies(card_id) == 0:
+        return 0.0
+    env = _probe_env()
+    cell = _attack_cell(card_id, env)
+    if cell is None:
+        return 0.0
+    before = _enemy_tower_hp(env)
+    env.inject(card_id, cell[0], cell[1], 0, -1.0, -1)
+    _roll_idle(env, WINCON_PROBE_TICKS)
+    return (before - _enemy_tower_hp(env)) / cost
+
+
+def _wincon_eligible(card_id, is_building_targeter):
+    """Could this card be a deck's route to a tower at all?
+
+    A building-targeter walks past defenders; a deploy-anywhere troop skips
+    them; a siege building out-ranges the tower; a spawning spell delivers
+    bodies onto it. A Knight or a P.E.K.K.A. also damages an EMPTY tower, so
+    measured damage alone would promote them -- eligibility is by CLASS, and
+    measurement only ranks within it.
+    """
+    info = E.get_card_info(card_id)
+    if info["is_building"]:
+        return siege_reach(card_id) > 0.0
+    if info["is_spell"]:
+        return spell_spawns_bodies(card_id) > 0
+    return is_building_targeter or bool(info.get("deploy_anywhere", False))
+
+
+def resolve_win_condition(deck, building_targeters):
+    """THE deck's win condition, or None. One definition for the whole repo.
+
+    Used by the teacher's role table AND by `gym_wrapper._find_win_condition`,
+    which feeds the agent's `W_WIN_CONDITION_DAMAGE` reward term. Two copies of
+    this question had already diverged once each way.
+    """
+    eligible = [c for c in deck
+                if _wincon_eligible(c, c in building_targeters)]
+    scored = []
+    for c in eligible:
+        per = wincon_damage_per_elixir(c)
+        if per >= WINCON_MIN_DAMAGE_PER_ELIXIR:
+            scored.append((per * max(float(E.get_card_info(c)["cost"]), 1.0), per, c))
+    if not scored:
+        return None
+    # Ranked by ABSOLUTE tower damage, then by damage per elixir. Per-elixir
+    # first was measured wrong: the probe saturates at one Princess (2534), so
+    # every card that takes a tower reads 2534/cost and the CHEAPEST wins --
+    # which named the Miner (1746 absolute) over the Balloon (2534) in LavaLoon.
+    # The per-elixir tiebreak still puts Hog (634) over Giant (507) at 2534.
+    return max(scored, key=lambda t: (t[0], t[1], -t[2]))[2]
+
+
 def _card_table_uncached(deck):
     """One injection pass, two derived tables.
 
@@ -404,27 +546,15 @@ def _card_table_uncached(deck):
             roles[cid] = "ranged"
         else:
             roles[cid] = "melee"
-    if targeters:
-        # More than one building-targeter is normal (2.6 has Hog AND Ice Golem).
-        # The win condition is the one that actually threatens a tower, i.e. the
-        # most expensive -- the same tiebreak _find_win_condition uses.
-        roles[max(targeters, key=lambda c: E.get_card_info(c)["cost"])] = "wincon"
-    else:
-        # NO BUILDING-TARGETER AT ALL. Five of the sixteen pool decks are in
-        # this case -- mortar and xbow cycle, both bait decks, and graveyard --
-        # and until 2026-09-06 they got `wincon_id = None`, which every combo
-        # family bails on. The teacher was left purely reactive with them:
-        # measured against an opponent doing NOTHING it never spent one elixir
-        # on the Mortar, the X-Bow, the Goblin Barrel or the Graveyard, and ran
-        # the full 3600 ticks out against xbow and graveyard without closing.
-        #
-        # The fallback fires ONLY here, so the eleven decks that already
-        # resolved a win condition are bit-identical and no win rate earned
-        # against them moves.
-        threats = [c for c in deck if threatens_tower_alone(c)]
-        if threats:
-            roles[max(threats,
-                      key=lambda c: (E.get_card_info(c)["cost"], c))] = "wincon"
+    # ONE resolver, measured -- see resolve_win_condition. The two branches this
+    # replaces ranked by COST: "most expensive building-targeter", with a
+    # siege/spawning-spell fallback only when there was none. Measured
+    # 2026-09-15 (audit 05) that promoted a 2-elixir Ice Golem on a Miner deck,
+    # returned None for Miner control outright (a Miner targets ground), and
+    # inverted LavaLoon.
+    wincon = resolve_win_condition(deck, set(targeters))
+    if wincon is not None:
+        roles[wincon] = "wincon"
     return {"roles": roles, "hp": hp}
 
 
@@ -676,6 +806,20 @@ COUNTER_DELAY_TICKS = 10
 # Same shape as COMBO_MIN_HORIZON_TICKS: never simulate half an interaction and
 # score it as though it were whole.
 COUNTER_MIN_HORIZON_TICKS = 100
+
+#: The counter models an opponent who ANSWERS. It is switched off while the real
+#: opponent has spent no elixir for this many consecutive decisions (~8 s at one
+#: decision per second), and back on the moment they play.
+#:
+#: MEASURED 2026-09-15 (audit 05, BUG 2): unconditional, it froze the top-rung
+#: teacher against a passive opponent in 30 of 116 matches -- a banked 10-elixir
+#: opponent can always afford the imagined answer, so every attack scored
+#: negative and the teacher held with a full bar. Rung 10 is where the curriculum
+#: ends, and "the agent banks elixir and holds" is exactly the state it froze in.
+#: Eight decisions is long enough that ordinary tempo (a player waiting a few
+#: seconds for elixir) keeps the counter on, and short enough that a genuinely
+#: passive opponent is punished within one push.
+COUNTER_PASSIVE_DECISIONS = 8
 
 # THE GAP IS A SEARCHED AXIS, not a constant, and that is the change that made
 # combos reachable at all.
@@ -1009,6 +1153,10 @@ class UtilityTeacher:
         self.cycle.reset()
         self.pending = None
         self.pending_ticks = 0
+        #: Opponent reactivity, read from the engine each decision -- see
+        #: COUNTER_PASSIVE_DECISIONS.
+        self._opp_spent_seen = None
+        self._opp_idle_decisions = 0
         if self._fixed_profile:
             self.profile = self._resolve_profile(self._fixed_profile)
         else:
@@ -1443,6 +1591,10 @@ class UtilityTeacher:
                 return self._siege_cells(obs)[:k]
             if info["is_spell"]:
                 return self._tower_cells(obs)[:k]
+            if info.get("deploy_anywhere", False):
+                # A Miner's value is that it skips the bridge. Sending it there
+                # (best_hog_cell) played it as a slow ground troop.
+                return self._beside_tower_cells(card_id, obs)[:k]
             x, y, _ = tactics.best_hog_cell(obs)
             cells = [(x, y)]
             if k > 1:
@@ -1501,6 +1653,31 @@ class UtilityTeacher:
                  else tactics.BRIDGE_XS[0])
         cells.append((float(other), row))
         return cells
+
+    def _beside_tower_cells(self, card_id, obs):
+        """Legal cells just in front of each enemy Princess, weaker tower first.
+
+        For a deploy-anywhere troop. The tower's own cell is illegal for a BODY
+        (its footprint), so this steps toward the river until the engine
+        accepts the placement -- the engine decides, not a copied radius.
+        """
+        out = []
+        for x, y in self._tower_cells(obs):
+            for dy in (3.0, 4.0, 2.0, 5.0):
+                if self.env_valid(card_id, x, y - dy):
+                    out.append((x, y - dy))
+                    break
+        return out or self._tower_cells(obs)
+
+    def env_valid(self, card_id, x, y):
+        """`is_valid_placement` for an OWN-FRAME cell, on a shared probe board.
+
+        Own frame is team 0's frame (`_to_board` mirrors afterwards), so this
+        asks as team 0. Legality is mirror-symmetric -- audit 06 compared all
+        132 cards x 612 cells for both teams and found zero asymmetries -- and
+        board-state independent for the enemy half.
+        """
+        return _probe_env_cached().is_valid_placement(card_id, float(x), float(y), 0)
 
     def _tower_cells(self, obs):
         """Where a spawning spell has to land: ON an enemy Princess Tower.
@@ -1694,12 +1871,34 @@ class UtilityTeacher:
             return {}
         if self.horizon_ticks < COUNTER_MIN_HORIZON_TICKS:
             return {}
+        if getattr(self, "_opp_idle_decisions", 0) >= COUNTER_PASSIVE_DECISIONS:
+            # The real opponent is not answering anything; do not score our
+            # attacks against an answer they are demonstrably not giving.
+            return {}
         out = {}
         for st in cand.steps:
             if st.y < tactics.BRIDGE_ROW - 1:
                 continue
             out[int(st.delay_ticks) + COUNTER_DELAY_TICKS] = (st.x, st.y)
         return out
+
+    def _observe_opponent_spend(self, env):
+        """Count consecutive decisions in which the opponent spent no elixir.
+
+        Reads the engine's cumulative spend rather than inferring plays from
+        the hand, because a play that the engine refused spends nothing and is
+        not an answer.
+        """
+        try:
+            spent = float(env.get_elixir_spent(1 - self.team))
+        except Exception:                          # a stub env without the stat
+            return
+        prev = getattr(self, "_opp_spent_seen", None)
+        if prev is not None and spent <= prev + 1e-6:
+            self._opp_idle_decisions = getattr(self, "_opp_idle_decisions", 0) + 1
+        else:
+            self._opp_idle_decisions = 0
+        self._opp_spent_seen = spent
 
     def counter_action(self, s, cell):
         """The opponent's (slot, x, y) for one chunk, in THEIR own frame."""
@@ -1888,6 +2087,7 @@ class UtilityTeacher:
     def act(self, env, obs_own):
         """(slot, x, y) in our own frame. slot == HAND_SIZE means hold."""
         self.cycle.observe(env.get_hand_for_team(self.team))
+        self._observe_opponent_spend(env)
         self.last_kind = "noop"
         # The clock first, so a plan that comes due this decision is offered
         # this decision. See `tick_plan`.

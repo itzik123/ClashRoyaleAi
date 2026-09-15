@@ -462,7 +462,7 @@ def best_hog_cell(obs, legal=None):
     return float(x), float(y), 0.0
 
 
-def hog_should_commit(obs, multiplier=1.0):
+def hog_should_commit(obs, multiplier=1.0, cost=None):
     """Is NOW the moment to send the win condition? (timing, not placement)
 
     Three conditions, all necessary:
@@ -493,16 +493,18 @@ def hog_should_commit(obs, multiplier=1.0):
         return False
     if threat_level(obs) > HOG_MAX_THREAT:
         return False
-    if own_elixir(obs) < HOG_COST + HOG_DEFENSIVE_RESERVE:
+    # `cost` is the WALKING WIN CONDITION's own cost (a Royal Giant is 6, not
+    # the Hog's 4); None keeps the historical Hog value for existing callers.
+    if own_elixir(obs) < (HOG_COST if cost is None else float(cost)) + HOG_DEFENSIVE_RESERVE:
         return False
     if opp_elixir_estimate(obs, multiplier) > HOG_MAX_OPP_ELIXIR:
         return False
     return True
 
 
-def hog_advice(obs, legal=None, multiplier=1.0):
-    """(x, y) to commit the Hog now, or None to say nothing this step."""
-    if not hog_should_commit(obs, multiplier):
+def hog_advice(obs, legal=None, multiplier=1.0, cost=None):
+    """(x, y) to commit the win condition now, or None to say nothing this step."""
+    if not hog_should_commit(obs, multiplier, cost):
         return None
     x, y, _rank = best_hog_cell(obs, legal)
     return x, y

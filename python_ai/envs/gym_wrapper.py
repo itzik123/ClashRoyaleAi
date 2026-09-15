@@ -128,53 +128,43 @@ from python_ai.opponents import deck_pool
 #
 # Verified against the live registry: all 8 ids exist, no Champions, and
 # validate_deck_slots returns "" (legal).
-DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]
+#
+# The deck itself now lives in `python_ai.deck`, which reads CLASH_DECK -- ids or
+# names -- and validates it against the engine. Re-exported here because ~40
+# call sites import it from this module. To train a different deck, set
+# CLASH_DECK; do not edit this line.
+from python_ai.deck import DEFAULT_DECK  # noqa: E402
 
 
 def _find_win_condition(deck):
-    """The deck's win condition = its BUILDING-TARGETER, found by asking the engine.
+    """The deck's win condition, or None -- delegated to the ONE resolver.
 
-    A building-targeter is the only unit that walks past your defenders to hit
-    a tower, which is what makes it the win condition -- and it is the reason
-    the win-condition reward term can use `get_damage_dealt_by_card` at all:
-    such a unit attacks nothing else, so its total damage IS tower damage.
+    This used to be its own copy: "the most expensive BUILDING-TARGETER", found
+    by injection. The injection technique was right; the ranking was not, and
+    it was a second copy of a question the teacher also answers. Measured
+    2026-09-15 (audit 07 F2, audit 05):
 
-    DERIVED, not written down. `get_card_info` exposes cost/is_spell/
-    is_building but no archetype, so the class is recovered the same way
-    perception_encoder.build_card_table recovers every other attribute: inject
-    the card onto an empty board and see which type channel the observation
-    lights up. ClashEnv.h's type offsets are 0 melee / 1 ranged / 2
-    BUILDING-TARGETER / 3 building. A hardcoded `WIN_CONDITION_ID = 15` would
-    silently mean "Hog Rider" forever and be wrong the next time the deck
-    changes -- exactly the drift that made a test inject a Musketeer while its
-    comment said Archers.
+      * it returned None for every deck whose route to a tower is a siege
+        building, a spawning spell or a deploy-anywhere troop (Mortar, X-Bow,
+        Graveyard, Goblin Barrel, Miner) -- silently switching off
+        `W_WIN_CONDITION_DAMAGE`, the term added precisely so the win condition
+        is worth playing;
+      * on a deck with no real building-targeting win condition it promoted a
+        2-elixir Ice Golem, so the reward paid the agent to throw its tank at
+        towers -- a wrong objective, which is worse than a missing one.
 
-    Returns None if the deck has no building-targeter, which is a legitimate
-    deck (the win-condition reward term then contributes nothing rather than
-    crashing or, worse, crediting an arbitrary card).
+    `teacher.resolve_win_condition` ranks eligible cards (building-targeter,
+    deploy-anywhere, siege building, spawning spell) by MEASURED tower damage
+    per elixir from where each is actually played, with a floor, so the agent's
+    reward and the teacher's plan now name the same card.
+
+    Returns None when nothing qualifies, which is a legitimate deck; the
+    win-condition term then contributes nothing, and `validate_deck` says so
+    loudly at startup rather than letting it go silent.
     """
-    import numpy as _np
-    E = clash_royale_env.ClashRoyaleEnv
-    plane = E.BOARD_WIDTH * E.BOARD_HEIGHT
-    found = []
-    for cid in deck:
-        info = clash_royale_env.get_card_info(cid)
-        if info["is_spell"] or info["is_building"]:
-            continue
-        env = E(deck, deck, 100)
-        env.reset()
-        env.inject(cid, 9.0, 8.0, 0)
-        env.step(E.HAND_SIZE, 0.0, 0.0, 1)
-        obs = _np.asarray(env.get_observation_for_team(0), _np.float32)
-        # channel 2 = ally building-targeter ("tank") in ClashEnv's 0-3 block
-        if obs[2 * plane:3 * plane].max() > 1e-6:
-            found.append(cid)
-    if not found:
-        return None
-    # More than one (e.g. Hog + Ice Golem, which also targets buildings): the
-    # win condition is the one that actually threatens a tower, i.e. the
-    # highest-cost such card. Ice Golem is a 2-cost shield, not a win condition.
-    return max(found, key=lambda c: clash_royale_env.get_card_info(c)["cost"])
+    from python_ai.opponents import teacher as _teacher
+    return next((c for c, r in _teacher.card_roles(list(deck)).items()
+                 if r == "wincon"), None)
 
 
 WIN_CONDITION_ID = _find_win_condition(DEFAULT_DECK)

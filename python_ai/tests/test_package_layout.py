@@ -62,11 +62,18 @@ def test_the_shared_test_helpers_are_importable_by_their_package_path():
 
 
 def test_no_python_module_is_left_loose_at_the_package_root():
-    """Only the package marker, the pytest bootstrap, the shipping config and
-    the engine constants belong here. Everything else has a home."""
+    """Only the package marker, the pytest bootstrap, the shipping config, the
+    engine constants and the trainee's deck belong here. Everything else has a
+    home.
+
+    `deck.py` joined on 2026-09-15 for the same reason `engine_constants.py` is
+    here: it is a LEAF every layer reads (envs, advisors, rewards-adjacent
+    tools, both trainers) and it imports nothing from python_ai, so any
+    subpackage that owned it would create an import edge pointing the wrong way.
+    """
     loose = {p.name for p in PKG.glob("*.py")}
     assert loose == {"__init__.py", "conftest.py", "shipping.py",
-                     "engine_constants.py"}, loose
+                     "engine_constants.py", "deck.py"}, loose
 
 
 def test_importing_the_package_makes_the_compiled_engine_importable():

@@ -52,7 +52,8 @@ import os
 
 import numpy as np
 
-from python_ai.advisors import human_prior, tactics
+from python_ai.advisors import card_probes, human_prior, tactics
+from python_ai.deck import DEFAULT_DECK
 
 CANNON_ID = tactics.CANNON_ID
 FIREBALL_ID = tactics.FIREBALL_ID
@@ -61,17 +62,41 @@ BOARD_W = tactics.BOARD_W
 BOARD_H = tactics.BOARD_H
 N_CELLS = BOARD_H * BOARD_W
 
-# Which advisor rule produces each card's surface. "cell" means the rule yields
-# a single cell rather than a scored map, so its target is a delta.
-ADVISOR_CARDS = {
-    CANNON_ID: "building",
-    FIREBALL_ID: "spell",
-    # The GIANT entry was removed on 2026-08-17. It is not in DEFAULT_DECK --
-    # the deck became 2.6 Hog Cycle on 2026-08-16 -- so the rule could never
-    # fire, and a dead entry here is worse than none: it makes the advisor look
-    # like it covers a win condition when it covers nothing.
-    HOG_ID: "wincon",
-}
+# Which advisor rule produces each card's surface, DERIVED FROM THE DECK.
+#
+# This was three literal ids -- Cannon 25 "building", Fireball 7 "spell", Hog 15
+# "wincon" -- pruned by hand whenever the deck changed (a GIANT entry was removed
+# on 2026-08-17). Measured 2026-09-15 (audit 07, F1): on 5 of 8 plausible
+# replacement decks none of the three is present, so this term trained on ZERO
+# cards with nothing raising. A rule fits a card by what the card DOES, and
+# `card_probes` measures that:
+#
+#   spell     a damaging area spell castable on the enemy half, no bodies --
+#             scored with ITS OWN measured radius and damage
+#   building  a building that attacks and has no route to a tower (not a Mortar,
+#             not an Elixir Collector)
+#   wincon    the deck's win condition, when it WALKS to the tower (Hog, Giant,
+#             Balloon); a Miner or a siege building is not a bridge commit
+#
+# For the shipped 2.6 deck this is {25: building, 7: spell, 15: wincon}, card for
+# card what the literal table said.
+def advisor_cards_for(deck):
+    """{card_id: "building" | "spell" | "wincon"} for the cards a rule fits."""
+    from python_ai.opponents.teacher import card_roles
+    wincon = next((c for c, r in card_roles(list(deck)).items() if r == "wincon"), None)
+    out = {}
+    for cid in deck:
+        cid = int(cid)
+        if card_probes.spell_effect(cid) is not None:
+            out[cid] = "spell"
+        elif card_probes.building_defends(cid):
+            out[cid] = "building"
+        elif cid == wincon and card_probes.walking_building_targeter(cid):
+            out[cid] = "wincon"
+    return out
+
+
+ADVISOR_CARDS = advisor_cards_for(DEFAULT_DECK)
 
 # Temperature on the STANDARDIZED score. Read this off the target's own entropy,
 # never tuned on the outcome -- CLAUDE.md's expert-iteration entry records a run
@@ -154,7 +179,9 @@ def _advisor_logits_for(obs, card_id, legal, T=None):
         # the measurement says to refuse -- and a rule that always speaks would
         # teach the head a CONSTANT bridge cell regardless of board, which is
         # precisely the collapse the 2026-08-14 cure undid.
-        advice = tactics.hog_advice(obs, legal=legal)
+        advice = tactics.hog_advice(
+            obs, legal=legal,
+            cost=float(tactics.E.get_card_info(int(card_id))["cost"]))
         if advice is None:
             return None
         x, y = advice
@@ -166,7 +193,12 @@ def _advisor_logits_for(obs, card_id, legal, T=None):
         return flat
 
     if kind == "spell":
-        flat = tactics.spell_catch_map(obs).reshape(-1).astype(np.float32).copy()
+        # The card's OWN measured area and damage: a Poison is 3.5 tiles, a
+        # Fireball 2.5. Scoring every spell with Fireball's disc was the old
+        # behaviour and is exactly what it still does for Fireball.
+        radius, damage = card_probes.spell_effect(int(card_id))
+        flat = (tactics.spell_catch_map(obs, radius, 0, damage)
+                .reshape(-1).astype(np.float32).copy())
         if float(flat[legal].max()) <= 0.0:
             return None                      # nothing worth spelling anywhere
         flat[~legal] = _NEG_INF
