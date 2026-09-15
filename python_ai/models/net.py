@@ -44,10 +44,44 @@ PLACEMENT_ROWS = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
 # קשיחה בפייתון -- בדיוק סוג ה-drift שהפרויקט הזה כבר נכווה ממנו.
 _ALL_IDS = clash_royale_env.get_all_card_ids()
 NUM_CARD_IDS_LIVE = clash_royale_env.ClashRoyaleEnv.NUM_CARD_IDS
+
+
+def _registered_card_ids(num_card_ids):
+    """Every id the ENGINE can put in a hand -- Evolutions included.
+
+    `get_all_card_ids()` deliberately filters the 41 Evolutions (ids 123-163)
+    out, and that is right for sampling a random deck. It is WRONG for anything
+    describing what a hand can hold: the engine accepts an Evolution in deck
+    slots 0 and 2 and plays it normally (Evolution Archers: 242 legal cells).
+    Deriving the legality table and the spell flags from the filtered list left
+    every Evolution row all-False, so an Evolution in the deck was a card the
+    policy could never place (audit 06, E-2). Probed through `get_card_info`,
+    which raises on the gaps (16, 37, 38, ...), rather than restated.
+    """
+    ids = []
+    for cid in range(num_card_ids):
+        try:
+            clash_royale_env.get_card_info(cid)
+        except ValueError:
+            continue
+        ids.append(cid)
+    return ids
+
+
+_REGISTERED_IDS = _registered_card_ids(NUM_CARD_IDS_LIVE)
 _spell_flags = torch.zeros(NUM_CARD_IDS_LIVE)
-for _cid in _ALL_IDS:
-    if clash_royale_env.get_card_info(_cid)["is_spell"]:
+#: 1.0 where the card may be placed on the ENEMY half as far as the ROW rule is
+#: concerned: spells, and deploy-anywhere troops (Miner, Goblin Drill). The
+#: engine-derived legality table still decides the exact cells. Kept separate
+#: from `_spell_flags` because "is a spell" and "ignores the own-half rule" are
+#: different facts that only coincided while no deck held a Miner.
+_row_free_flags = torch.zeros(NUM_CARD_IDS_LIVE)
+for _cid in _REGISTERED_IDS:
+    _info = clash_royale_env.get_card_info(_cid)
+    if _info["is_spell"]:
         _spell_flags[_cid] = 1.0
+    if _info["is_spell"] or _info.get("deploy_anywhere", False):
+        _row_free_flags[_cid] = 1.0
 
 
 
@@ -92,7 +126,8 @@ def _build_placement_legality(num_card_ids, placement_rows, board_width):
 
     cells = placement_rows * board_width
     table = torch.zeros(num_card_ids + 1, cells, dtype=torch.bool)
-    known = set(_env.get_all_card_ids())
+    # Every id a HAND can hold, Evolutions included -- see _registered_card_ids.
+    known = set(_registered_card_ids(num_card_ids))
     for cid in range(num_card_ids):
         if cid not in known:
             # Unknown id: leave the row all-False. It can never be the chosen
@@ -437,6 +472,15 @@ class MicroRoyaleNet(nn.Module):
         # (num_card_ids,) -- 1.0 אם הקלף הוא לחש. buffer ולא פרמטר: זו עובדה
         # על המנוע, לא משהו שנלמד, אבל היא חייבת לנוע יחד עם הרשת ל-device.
         self.register_buffer("spell_flags", _spell_flags[:num_card_ids].clone())
+        # (num_card_ids,) -- 1.0 where the own-half ROW rule does not apply
+        # (spells AND deploy-anywhere troops). This, not spell_flags, is what
+        # placement_mask reads. persistent=False for the same reason as the
+        # legality tables below: it is a fact about the engine, and a checkpoint
+        # copy of it could restore the pre-2026-09-15 values that confined a
+        # Miner to its own half.
+        self.register_buffer("row_free_flags",
+                             _row_free_flags[:num_card_ids].clone(),
+                             persistent=False)
 
         # (num_card_ids + 1, placement_cells) bool -- אילו תאים המנוע באמת
         # מקבל לכל קלף. השורה האחרונה היא fallback מתירני ל-no-op.
@@ -1381,7 +1425,10 @@ class MicroRoyaleNet(nn.Module):
         onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
         onehots = onehots.view(batch, self.hand_size, self.num_card_ids)
         # (Batch, hand_size) -- 1.0 היכן שהמשבצת מחזיקה לחש
-        slot_is_spell = (onehots * self.spell_flags.view(1, 1, -1)).sum(dim=-1)
+        # "spell" here means "exempt from the own-half ROW rule", which covers
+        # deploy-anywhere troops too (row_free_flags). Reading spell_flags
+        # instead confined a Miner to its own half: audit 06, E-1.
+        slot_is_spell = (onehots * self.row_free_flags.view(1, 1, -1)).sum(dim=-1)
         # הרחבה למשבצת ה-no-op (אף פעם לא לחש)
         slot_is_spell = torch.cat(
             [slot_is_spell, torch.zeros(batch, 1, device=obs.device, dtype=slot_is_spell.dtype)], dim=1)
