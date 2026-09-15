@@ -28,6 +28,130 @@ hardcoded with a comment naming the header where not.
 
 ---
 
+## 2026-09-15: the pre-launch audit — read this before the from-scratch run
+
+The next run starts **from scratch** with a **different deck** (chosen later).
+Checkpoint invalidation was therefore free, and the audit hunted for anything
+that would crash, silently switch off, or quietly mis-tune under that. The
+operator's side is `FINAL_RUN_RUNBOOK.md`; this is what is now true of the code.
+Reports and probes lived in the session scratchpad; every number below was
+measured on the rebuilt `.pyd`.
+
+**The recurring bug, four more times: a mechanism keyed to the 2.6 deck that goes
+SILENT under another deck.** None raised, warned or logged. Now:
+
+- **The deck is `CLASH_DECK`** (ids or names; `python_ai/deck.py`, re-exported as
+  `gym_wrapper.DEFAULT_DECK`). **`envs/deck_contract.validate_deck` prints what the
+  deck turns on and off at the top of every run** and refuses a Champion/Hero deck
+  (ability training is not implemented) before any env is built. The checkpoint
+  records the deck; resuming under a different one warns loudly.
+- **The advisor target is derived, not three literal ids.** On 5 of 8 plausible
+  replacement decks Cannon 25 / Fireball 7 / Hog 15 were all absent, so the
+  coverage term (10% of log 612 on the placement head) trained on zero cards.
+  `advisors/card_probes.py` measures what a card does by injection — a spell's
+  radius and damage (Fireball reads exactly 2.5 / 689), whether a building
+  actually attacks (behaviourally: Elixir Collector's DPS *channel* is non-zero),
+  whether a troop walks to buildings. The shipped deck's table is unchanged.
+- **ONE win-condition resolver** (`teacher.resolve_win_condition`, used by the
+  teacher AND by `gym_wrapper._find_win_condition`, which feeds
+  `W_WIN_CONDITION_DAMAGE`). Both copies ranked by cost: the reward went dead for
+  siege/spell/Miner decks and credited a 2-elixir Ice Golem on a Champion deck;
+  the teacher named Wall Breakers in Miner control and Lava Hound in LavaLoon.
+  Eligible cards (building-targeter, deploy-anywhere, siege building, spawning
+  spell) are ranked by MEASURED tower damage from a LEGAL attack cell, absolute
+  first then per elixir. Two traps found while fixing it: per-elixir first named
+  the Miner over the Balloon (the 300-tick probe saturates at one Princess, so
+  cheap cards win), and a rolling spell probed on a cell it cannot be cast on beat
+  the Graveyard. The floor only excludes no-route cards: a Skeleton Barrel (81 HP
+  per elixir, a real win condition) scores level with an Ice Golem (84, a tank),
+  so no floor separates "real win condition" from "tank".
+- **Scenario injection follows the deck**: 60% of its weight is boards only an
+  area spell answers, now drawn only if the deck holds one. It also held a
+  **seventh stale arena copy** (`tower_x = 4.0 / 14.0`, the pre-re-centring layout).
+- **Placement mask**: deploy-anywhere troops (Miner 242 vs engine 520 cells) had
+  the enemy half deleted by the own-half row rule; **every Evolution** had an
+  all-False legality row because the table iterated `get_all_card_ids()`, which
+  filters Evolutions out. Validated against the engine's behaviour (elixir spent),
+  not against the predicate.
+
+**Engine (UPSTREAM item 28): damage to a SPAWNED body was booked as TOWER
+damage** — the collector called "not in CardRegistry" a tower, and spawned bodies
+are unregistered too (810 for one Goblin Barrel). It fed the agent's tower
+potential and the teacher's rollout. `DamageDealtEvent.targetIsTower` now carries
+the target's own `isTower()`. C++ suite **714 cases, 713 pass, 1 expected failure,
+exit 0**.
+
+**Reward: +0.084 on the first real step of every episode.** On the autoreset
+phantom step `infos` is empty and elixir defaults to 0; the next step's solvency
+potential was diffed against that. Twice the term's legitimate per-episode
+magnitude, and the entire reason it failed to telescope. `engine_stats.reseat_prev_stats`.
+Also measured, NOT changed: the tower PBRS term telescopes exactly but Phi(terminal)
+is not zeroed (-0.465 per episode at init), so it is not policy-invariant as
+documented — it carries an implicit terminal tower-HP bonus aligned with the
+timeout tiebreak. `W_ELIXIR_OVERFLOW` never fires at init (P(elixir >= 9) = 0.00%).
+
+**Teacher: the top rung froze on a full bar.** The rung-10 reactive counter
+answered every attack, so against an opponent banked on 10 elixir every push
+scored negative (30 of 116 passive matches). It switches off after
+`COUNTER_PASSIVE_DECISIONS` (8) decisions of opponent inactivity.
+
+**Cold start** (a random-init net lives at rung 0):
+- Rung 0 had no valve at all; 4,000 episodes at 0.00 fired nothing. New
+  `floor_alarm` (`>>> [FLOOR]`, `Training/Curriculum_FloorAlarm`) after 1,000.
+- PFSP's cold-start branch was unreachable with the floor at 0.0, and the shipped
+  deck priors (measured against a trained 2.6 policy) sent a fresh net the four
+  hardest decks 59.9% of the time. The no-signal branch is reachable and UNIFORM;
+  the priors survive only as `prior_win_rate_vs_26hog_2026_09_03` (not read).
+- 30% of `note_progress` calls were dropped behind the scenario return; the
+  6->11 remap re-ran on any table-size change; `setup_ab_arm` wrote unstamped
+  stages (`--stage 5` became rung 10); the plateau tracker reset on every resume.
+  All fixed.
+
+**An unattended run survives now**: a resume error crashes instead of moving the
+checkpoint to `.bak` and deleting the TensorBoard log; checkpoint replace retries
+Windows `PermissionError` and keeps a `.prev`; Ctrl-C saves; phase 2 follows
+`CLASH_WEIGHTS`/`CLASH_LOGDIR` and the handoff is watched for 60 s; **phase 2's
+opponent pool is this lineage's snapshots only** (`lineage_started_at`;
+`historical_checkpoints/` held 51 from the previous run); `monitor_run` reads win
+rate, the floor alarm, reward, rung and modal share; `run_watchdog` follows the
+handoff instead of spawning duplicate phase-2 trainers. New
+`Placement/ModalShare/<card>` — the collapse detector this file names and nothing
+logged.
+
+**The next-card aux loss fights the policy at a fresh start — now ramped in.**
+Measured from a random init at the from-scratch config over 12 real updates, with
+the aux gradient isolated by a two-pass difference: on the LSTM it grew from 0.62x
+to **1.67x** the size of every other term combined (CNN trunk 0.63x -> **2.01x**),
+with cosine to them falling -0.37 -> **-0.84** (trunk -0.90). The coefficient was
+sized against a CE of ~ln(8); a fresh 185-way head starts at ln(185) = 5.22.
+`PPOConfig.aux_warmup_episodes` = 2000 ramps it linearly from 0
+(`CLASH_AUX_WARMUP_EPISODES=0` restores the old behaviour). This is a MECHANISM
+measurement, not a measured win-rate gain; the refutation experiment is stated at
+the constant. Whether the anti-alignment persists after the ramp is open (TODO).
+
+**Preflight gates made honest**: the engine-staleness check compared mtimes and
+failed on a verified-current build (content-based now); the side null needed a
+deleted checkpoint (a seeded random-init net now, a sharper subject).
+
+**Measured and deliberately NOT changed:**
+- **Observation channels 0-7 (assign vs max).** A swarm deck hides **21.3%** of
+  troop HP (2.6: 0.8%, control: 1.7%), but max would recover only ~2.3 points —
+  the loss is one-value-per-cell, not the write rule. Not worth a late change to
+  every HP estimate the teacher and advisor read.
+- **The Fireball-keyed spell shaping terms** stay keyed to id 7 (deriving them in
+  `rewards/weights.py` would create an import cycle; ~1.5% of the objective).
+  `validate_deck` warns when they are dead.
+- **Champion ability training.** Not implemented; such a deck is refused at start.
+
+**Refuted, do not re-raise:** the recurrent PPO core is sound (ratio at epoch 0
+max |r-1| 4.8e-07, values 1e-08, masks recomputed bit-identically, LSTM state
+threading correct, placement entropy normalised by the REACHABLE cell count). The
+team-1 placement mask is a true mirror (80,784 comparisons, 0 asymmetries). The
+zero-gradient `cnn_trunk.6/7.reduce/spread` at init are NOT dead: they sit behind
+the zero-initialised `expand`, which does receive gradient.
+
+---
+
 ## Environment — the things that waste an hour
 
 **`clash_royale_env.pyd` is built for Python 3.11 only.** The default `python`
@@ -74,8 +198,9 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-08-26 after the C++ simulator audit: **673 test cases, 6,511
-assertions**. 668 pass and **exactly one fails "as expected"** --
+Measured 2026-09-15 after the pre-launch audit: **714 test cases, 8,169
+assertions**, 713 pass and **exactly one fails "as expected"** -- (673 / 6,511 on
+2026-08-26)
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
 second failure is a real regression. (It read 650 cases / 6,423 assertions on
@@ -849,8 +974,12 @@ own plays** (the heuristic opponent's are logged nowhere), and **the training
 run rewrites that directory continuously** — observed dropping from 8 files to
 1 within minutes. Frozen fixtures live in `perception/tests/assets/`.
 
-`DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]` (`python_ai/envs/gym_wrapper.py`)
-— **the classic 2.6 Hog Cycle**, since 2026-08-16: Hog Rider, Musketeer,
+> **Since 2026-09-15 the deck is `CLASH_DECK`** (`python_ai/deck.py`); the list
+> below is `SHIPPED_DECK`, what runs when it is unset. The next run uses a
+> different deck — read "2026-09-15: the pre-launch audit" first.
+
+`DEFAULT_DECK = [15, 6, 25, 40, 24, 72, 33, 7]` (`python_ai/deck.py`, re-exported by
+`python_ai/envs/gym_wrapper.py`) — **the classic 2.6 Hog Cycle**, since 2026-08-16: Hog Rider, Musketeer,
 Cannon, Ice Golem, Skeletons, Ice Spirit, The Log, Fireball. Costs 1-4, avg
 2.625, spread 3. Win condition Hog Rider (4); 3 of 8 hit air (Musketeer, Ice
 Spirit, and Fireball as a spell); **two** spells (Fireball, The Log).
@@ -1216,7 +1345,9 @@ unweighted across the 16 decks, clears 0.40 against **11 of 16**, and scores a
 PFSP-weighted **0.422** -- just above `PLATEAU_MIN_WIN_RATE`, so the ladder's
 valves are live from the first episode. Resuming skips the cold start entirely,
 and nothing in the observation or action space moved, so the checkpoint loads
-unchanged. **Resume; do not restart.**
+unchanged. **Resume; do not restart.** *(Superseded for the 2026-09 final run,
+which restarts on a new deck by choice: see the pre-launch audit section — the
+cold-start fixes there exist for exactly this.)*
 
 Verified end to end on a COPY of that checkpoint: the loader announced
 `checkpoint stage 3 was written against a 6-rung teacher table; remapped to rung
@@ -2664,6 +2795,8 @@ python_ai/           READ-ONLY by default — training runs here.
                        ONCE from the bindings. The enforcement point for
                        CLAUDE.md's no-second-copies rule.
   shipping.py          The deployable configuration, named in one place.
+  deck.py              THE trainee deck: CLASH_DECK (ids or names), validated
+                       against the engine. A leaf every layer may import.
 
   models/
     net.py             MicroRoyaleNet (was model.py). ALL observation-layout

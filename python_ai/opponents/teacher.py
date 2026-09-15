@@ -393,8 +393,8 @@ WINCON_PROBE_TICKS = 300
 #:     Lava Hound 129   Ice Golem 84   Skeleton Barrel 81   Fireball 0   Cannon 0
 #:
 #: So the floor can NOT separate "real win condition" from "cheap tank": a
-#: Graveyard (146) is a genuine win condition and scores below a Lava Hound, and
-#: a Skeleton Barrel (81) scores level with an Ice Golem (84). A floor at 150
+#: Skeleton Barrel (81) is a genuine win condition and scores level with an Ice
+#: Golem (84), and a Graveyard (146) sits barely above a Lava Hound (129). A floor at 150
 #: would have silently returned None for graveyard_control -- the very
 #: regression the 2026-09-06 fix removed. The window also saturates at one
 #: Princess (2534 HP), which is why so many cards read 2534/cost.

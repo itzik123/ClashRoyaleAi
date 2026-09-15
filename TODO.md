@@ -29,6 +29,65 @@ Rules that apply to every item below:
 
 ---
 
+## 00. Pre-launch audit follow-ups (2026-09-15) — open, none blocks the run
+
+The audit and its fixes are in `CLAUDE.md` ("2026-09-15: the pre-launch audit");
+the operator's steps are `FINAL_RUN_RUNBOOK.md`. These were found and left open
+on purpose, each with the reason.
+
+1. **Champion / Hero ability training is not implemented.** `validate_deck`
+   refuses such a deck at startup. Needs: ability readiness in the observation
+   (today it rides only in `info`, so the policy cannot see it), sampling and a
+   buffered or recomputable mask, the log-prob in the PPO ratio, an entropy term,
+   phase 2's opponent net doing the same, and the teacher using abilities (it
+   never does). Engine + both trainers; do it only if the chosen deck needs it.
+
+2. **Does the aux anti-alignment persist after the warm-up?** Measured only over
+   the first 12 updates from init (LSTM 1.67x the other terms at cosine -0.84).
+   Re-measure with `scratchpad`-style two-pass differencing at ~2k, 10k and 30k
+   episodes of the real run. If it persists, the candidates are a smaller
+   coefficient or a PCGrad-style projection of the aux gradient on the shared
+   modules (costs a second backward per minibatch -- price it first).
+
+3. **The Fireball-keyed shaping terms** (`W_LETHAL_SPELL`, `W_SPELL_VALUE_START`)
+   are dead without card 7. Deriving the deck's damage spell inside
+   `rewards/weights.py` creates an import cycle through the teacher; the fix is to
+   compute it in the env (which already fills `fireball_*` info keys) and pass
+   damage/cost through the stats dict. ~1.5% of the objective at init.
+
+4. **The tower PBRS term is not policy-invariant.** It telescopes exactly, but
+   Phi(terminal) is never zeroed (-0.465 per episode at init), so it carries an
+   implicit terminal tower-HP bonus. Aligned with TimeoutRules' tiebreak and
+   probably benign; documented as invariant, which it is not. Decide, then fix
+   either the code or the documentation.
+
+5. **The teacher has no air-defence concept** (zero hits for any air term in
+   `teacher.py`/`tactics.py`). At rung 0 a lone Balloon takes a full Princess 2 of
+   4 seeds; at rung 10 the rollout usually finds the Musketeer. An air-heavy agent
+   deck meets a weak early mirror.
+
+6. **Spawner huts measure as tower threats** (`siege_reach`: Barbarian Hut 6182,
+   Tombstone 1134, Goblin Cage 1348), so a deck built around one may name the hut
+   as its win condition.
+
+7. **Engine stat inexactness, not fixed:** last-hit overkill is booked as tower
+   damage (a Giant "deals" 3,795 to remove 3,546); `ElixirValueKilledCollector`
+   credits zero elixir for a spawned body, so a Fireball clearing a Goblin Gang
+   earns no value.
+
+8. **Phase 2's per-opponent PFSP win rates are not checkpointed** (per worker,
+   lost on every resume). Same merge-and-reseed pattern as the phase-1 deck pool.
+
+9. **`CLASH_*` settings are not stamped in the checkpoint** (only the deck is), so
+   a resume under different env vars continues under a different config silently.
+
+10. **Two curriculum clocks** (audit 04 C7): the patience constants count scenario
+    episodes, the windows they gate do not, so every patience is ~30% shorter
+    than the run it was calibrated on. Documented; not changed on a control loop
+    already changed several times.
+
+---
+
 ## 0c. The overflow test lost its regime to the match-end rules
 
 `test_aux_task_is_not_a_memory_probe.py::test_overflow_is_what_makes_this_task_non_trivial`
@@ -754,6 +813,13 @@ From `perception/README.md` and `perception/BOT_REQUESTS.md`.
 
 Recorded so they are not re-proposed. Each was measured, not assumed.
 
+- **Observation channels 0-7 max-instead-of-assign** (the queued "clean restart"
+  change). Measured 2026-09-15 against true per-tick entity HP: the 2.6 deck hides
+  0.8% of troop HP, a control deck 1.7%, a swarm deck 21.3% -- but a max rule would
+  recover only ~2.3 points of that (78.7% -> 81.0% represented), because the loss
+  is one value per cell, not the write order. Not worth changing every HP estimate
+  the teacher and the advisor read. A real fix is a different encoding (a summed
+  HP channel next to CH_COUNT), which is an observation change to price on its own.
 - **A fifth Hog-specific policy mechanism.** Four returned null. The open
   question is the engine's offence/defence cost balance, and deploy time was the
   answer to it — item 1 is the follow-through, not a fifth mechanism.
