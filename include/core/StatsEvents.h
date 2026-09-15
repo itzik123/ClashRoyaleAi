@@ -15,6 +15,14 @@ struct DamageDealtEvent {
     int targetTeam;
     int amount;
     int tick;
+    // The TARGET's own Entity::isTower(), stamped at the emit site. A tower is
+    // not identifiable from targetCardId: towers carry unregistered sentinel
+    // ids, and so do spawned helper bodies (Goblin Barrel's goblins, a
+    // Graveyard's skeletons: -1, -10 .. -48). Classifying by registry absence
+    // booked a tower shooting those bodies as TOWER damage -- 810 for one
+    // Goblin Barrel -- which fed the agent's tower potential directly.
+    // Defaulted and last, so an 8-value aggregate init still means "not a tower".
+    bool targetIsTower = false;
 };
 
 struct EntityDiedEvent {

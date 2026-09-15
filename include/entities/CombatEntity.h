@@ -1088,7 +1088,7 @@ public:
                 int jumpDamage = static_cast<int>(getCurrentDamage() * jumpDamageMultiplier);
                 target->takeDamage(jumpDamage);
                 board.statsEvents.notifyDamageDealt(
-                    { id, team, cardId, target->id, target->cardId, target->team, jumpDamage, board.currentTick });
+                    { id, team, cardId, target->id, target->cardId, target->team, jumpDamage, board.currentTick, target->isTower() });
                 applySplashDamage(board, target->position, jumpSplashRadius, target->id, id, team, cardId, jumpDamage);
                 currentCooldown = static_cast<float>(attackCooldown);
             } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
@@ -1454,7 +1454,7 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
         if (origin.distanceTo(entity->position) > radius) continue;
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
-            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick, entity->isTower() });
     }
 }
 
@@ -1526,7 +1526,7 @@ inline void applyLineSplashDamage(Board& board, const Vector2D& origin, const Ve
 
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
-            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+            { attackerId, attackerTeam, attackerCardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick, entity->isTower() });
     }
 }
 

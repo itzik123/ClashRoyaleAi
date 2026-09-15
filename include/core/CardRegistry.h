@@ -53,10 +53,10 @@ struct CardDefinition {
     bool isSpell;
     // True only for Archetype::DefensiveBuilding cards (Cannon/Tesla/Bomb
     // Tower/Inferno Tower) -- Towers aren't in this registry at all (built
-    // directly by GameManager with a negative sentinel cardId), so stats
-    // code classifying a DamageDealtEvent's targetCardId treats "not found
-    // in the registry" as a Tower, itself also a building. See
-    // stats/StatsCollectors.h's DamageByTargetTypeCollector.
+    // directly by GameManager with a negative sentinel cardId). Stats code
+    // must NOT treat "not found in the registry" as a Tower: spawned helper
+    // bodies are unregistered too. DamageDealtEvent::targetIsTower carries the
+    // target's own isTower() -- see stats/StatsCollectors.h.
     bool isBuilding;
     // The footprint GameManager::isValidPlacement keeps clear of an existing
     // building -- see CardFactories::placementRadius. Unused for spells.

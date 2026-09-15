@@ -23,6 +23,6 @@ public:
         self.position = victim->position;
         victim->takeDamage(bonusDamage);
         board.statsEvents.notifyDamageDealt(
-            { self.id, self.team, self.cardId, victim->id, victim->cardId, victim->team, bonusDamage, board.currentTick });
+            { self.id, self.team, self.cardId, victim->id, victim->cardId, victim->team, bonusDamage, board.currentTick, victim->isTower() });
     }
 };

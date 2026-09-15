@@ -52,7 +52,7 @@ public:
             int dealt = isTower ? rollDamage / 2 : rollDamage;
             entity->takeDamage(dealt);
             board.statsEvents.notifyDamageDealt(
-                { self.id, self.team, self.cardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick });
+                { self.id, self.team, self.cardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick, entity->isTower() });
         }
     }
 };

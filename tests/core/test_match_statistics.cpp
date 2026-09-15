@@ -39,9 +39,11 @@ TEST_CASE("MatchStatistics splits damage dealt into troop vs building, per attac
     board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 1, 100, 1 });
     // team0/card5 hits team1's Cannon (targetCardId 25 -- a building)
     board.statsEvents.notifyDamageDealt({ 1, 0, 5, 11, 25, 1, 60, 2 });
-    // team1/card6 hits team0's King Tower (targetCardId -2, GameManager::TOWER_KING_ID --
-    // not in CardRegistry at all, must still be classified as a building)
-    board.statsEvents.notifyDamageDealt({ 2, 1, 6, 12, -2, 0, 40, 3 });
+    // team1/card6 hits team0's King Tower (targetCardId -2, GameManager::TOWER_KING_ID).
+    // The tower is identified by the event's targetIsTower -- the target's own
+    // isTower() -- not by the id being absent from CardRegistry, which spawned
+    // bodies share. A tower is still a building.
+    board.statsEvents.notifyDamageDealt({ 2, 1, 6, 12, -2, 0, 40, 3, true });
 
     REQUIRE(stats.troopDamageDealt(0) == 100);
     REQUIRE(stats.buildingDamageDealt(0) == 60);
@@ -220,4 +222,19 @@ TEST_CASE("MatchStatistics::attach re-subscribes fresh collectors, discarding th
 
     boardA.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 20, 1, 999, 2 }); // stale board's bus
     REQUIRE(stats.totalDamageDealt(0) == 0); // unaffected -- no longer subscribed to boardA
+}
+
+TEST_CASE("an UNREGISTERED target is a troop unless the event says it is a tower",
+          "[match_statistics][damage_by_target_type][spawned]") {
+    // Spawned helper bodies carry unregistered negative ids (-1, -10 .. -48),
+    // exactly like the tower sentinels, so registry absence cannot identify a
+    // tower. The event carries the target's own isTower() instead.
+    Board board;
+    MatchStatistics stats;
+    stats.attach(board);
+    board.statsEvents.notifyDamageDealt({ 1, 1, 6, 30, -20, 0, 70, 1 });          // a spawned Goblin
+    board.statsEvents.notifyDamageDealt({ 1, 1, 6, 31, -3, 0, 40, 2, true });     // a Princess Tower
+    REQUIRE(stats.towerDamageDealt(1) == 40);
+    REQUIRE(stats.troopDamageDealt(1) == 70);
+    REQUIRE(stats.buildingDamageDealt(1) == 40);
 }

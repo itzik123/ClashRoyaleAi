@@ -70,15 +70,23 @@ public:
     void onDamageDealt(const DamageDealtEvent& e) override {
         if (e.targetTeam == e.attackerTeam) return;
         int t = (e.attackerTeam == 0) ? 0 : 1;
-        // Resolved once. A targetCardId not in CardRegistry is a Tower, which
-        // GameManager builds directly with a negative sentinel id and never
-        // registers -- that absence IS the discriminator, no polymorphism or
-        // dynamic_cast needed here.
+        // A tower is identified by the TARGET'S OWN TYPE, stamped on the event
+        // (DamageDealtEvent::targetIsTower), never by its id. Until 2026-09-15
+        // this read "targetCardId not in CardRegistry is a Tower" -- and spawned
+        // helper bodies are not in the registry either, so a tower shooting a
+        // Goblin Barrel's goblins booked TOWER damage for its owner (measured:
+        // 810 for one Barrel, 1080 for a Graveyard, 1440 for a Battle Ram's
+        // Barbarians, with the other side's towers untouched). Same fix as
+        // MatchRules' King: identify by type, not by a discriminator that
+        // something else can also wear. An unregistered NON-tower (a spawned
+        // body) falls through to troop damage below.
         const CardDefinition* def = CardRegistry::getInstance().getCard(e.targetCardId);
-        if (def == nullptr) {
+        if (e.targetIsTower) {
             towerDamageByTeam[t] += e.amount;
             buildingDamageByTeam[t] += e.amount;
-        } else if (def->isBuilding) {
+        } else if (def != nullptr && def->isBuilding) {
+            // `def` IS null for every spawned body -- that is the whole bug
+            // this block fixes -- so it must be checked, not assumed.
             buildingDamageByTeam[t] += e.amount;
         } else {
             troopDamageByTeam[t] += e.amount;

@@ -50,7 +50,7 @@ public:
             target->takeDamage(dashDamage);
             board.statsEvents.notifyDamageDealt(
                 { self.id, self.team, self.cardId, target->id, target->cardId, target->team,
-                  dashDamage, board.currentTick });
+                  dashDamage, board.currentTick, target->isTower() });
 
             if (dynamic_cast<Tower*>(target.get()) != nullptr) break; // stops after hitting a Crown Tower
         }

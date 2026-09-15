@@ -161,3 +161,57 @@ TEST_CASE("each hand slot's card-identity block is a true one-hot", "[clash_env]
         REQUIRE(obs[base + hotIndex] == Catch::Approx(1.0f));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Damage to a SPAWNED body is not TOWER damage (2026-09-15, UPSTREAM item 28).
+//
+// DamageByTargetTypeCollector classified "targetCardId not in CardRegistry" as
+// a Tower. Spawned helper bodies (Goblin Barrel's goblins, Graveyard's
+// skeletons, Goblin Gang, a Battle Ram's Barbarians) ALSO carry unregistered
+// negative ids, so an enemy tower shooting them was booked as that tower's
+// owner having dealt TOWER damage. Measured through the .pyd: a team-0 Goblin
+// Barrel dropped on the team-1 left Princess, both sides idle 300 ticks, read
+// getTowerDamageDealt(1) == 810 while every team-0 tower was untouched.
+//
+// That stat is the agent's tower potential (W_BLDG) and the teacher's rollout
+// "tower taken", so it paid the agent for its towers killing an opponent's
+// Goblin Barrel and charged it when its own spawns were shot.
+// ---------------------------------------------------------------------------
+namespace {
+int towerHpTotal(const ClashEnv& env, int team) {
+    int total = 0;
+    for (int slot = 0; slot < 3; ++slot) total += static_cast<int>(env.getTowerHp(team, slot));
+    return total;
+}
+}
+
+TEST_CASE("a tower shooting SPAWNED bodies books no tower damage for its owner",
+          "[stats][tower_damage][spawned]") {
+    const std::vector<int> deck = { 109, 110, 112, 81, 24, 72, 33, 7 };
+    for (int cardId : { 109, 110, 112, 81 }) {   // Goblin Barrel, Graveyard, Goblin Gang, Battle Ram
+        ClashEnv env(deck, { 15, 6, 25, 40, 24, 72, 33, 7 }, 3600);
+        env.seed(3);
+        const int team0Before = towerHpTotal(env, 0);
+        env.inject(cardId, 3.0f, 25.0f, 0, -1.0f, 0);
+        const int noop = ClashEnv::HAND_SIZE;
+        for (int t = 0; t < 30; ++t) env.stepSelfPlay(noop, 0, 0, noop, 0, 0, 10);
+        INFO("card " << cardId);
+        // Precondition: team 0's towers were genuinely never hit, so any
+        // team-1 tower damage recorded is misclassified.
+        REQUIRE(towerHpTotal(env, 0) == team0Before);
+        CHECK(env.getTowerDamageDealt(1) == 0);
+    }
+}
+
+TEST_CASE("CONTROL: a tower hit is still booked as tower damage",
+          "[stats][tower_damage][spawned]") {
+    // Must fire, or the case above passes on a collector that books nothing.
+    ClashEnv env({ 15, 6, 25, 40, 24, 72, 33, 7 }, { 15, 6, 25, 40, 24, 72, 33, 7 }, 3600);
+    env.seed(3);
+    const int team1Before = towerHpTotal(env, 1);
+    env.inject(15, 3.0f, 22.0f, 0, -1.0f, 0);     // Hog Rider at the enemy left Princess
+    const int noop = ClashEnv::HAND_SIZE;
+    for (int t = 0; t < 30; ++t) env.stepSelfPlay(noop, 0, 0, noop, 0, 0, 10);
+    REQUIRE(towerHpTotal(env, 1) < team1Before);
+    CHECK(env.getTowerDamageDealt(0) > 0);
+}

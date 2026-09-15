@@ -148,7 +148,7 @@ private:
     void applyHit(Board& board, const std::shared_ptr<Entity>& t) {
         t->takeDamage(damage);
         board.statsEvents.notifyDamageDealt(
-            { attackerId, team, attackerCardId, t->id, t->cardId, t->team, damage, board.currentTick });
+            { attackerId, team, attackerCardId, t->id, t->cardId, t->team, damage, board.currentTick, t->isTower() });
         // On-hit effects (e.g. Ice Wizard's freeze) fire on arrival, not
         // when the shot was fired -- they ride along with the projectile
         // instead of applying instantly at the shooter. Only meaningful

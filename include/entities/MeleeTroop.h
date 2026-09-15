@@ -25,7 +25,7 @@ protected:
         int dealt = getCurrentDamage();
         target->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(
-            { id, team, cardId, target->id, target->cardId, target->team, dealt, board.currentTick });
+            { id, team, cardId, target->id, target->cardId, target->team, dealt, board.currentTick, target->isTower() });
         applyOnHitEffects(target);
         applySplashDamage(board, target->position, splashRadius, target->id, id, team, cardId, dealt);
     }

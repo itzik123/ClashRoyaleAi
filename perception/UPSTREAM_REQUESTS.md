@@ -467,3 +467,90 @@ The deploy delay is 8 ticks against the real card's 2.2 s (22 ticks), so the
 engine's Graveyard starts sooner than it should. Left alone: it is a separate
 question from the cadence, it moves the card in the opposite direction, and one
 gameplay change at a time is how this repo keeps win rates attributable.
+
+---
+
+## Item 28 — damage to a SPAWNED body was booked as TOWER damage
+
+**Status: IMPLEMENTED 2026-09-15**, in the pre-launch audit for the from-scratch
+run, under the maintainer's standing instruction for that audit to use judgement
+rather than stop for sign-off. **Class:** statistics / reward input.
+**NOT gameplay-affecting** (no entity behaves differently). **Reward-affecting**:
+the agent's tower potential and the teacher's rollout score both read this stat.
+
+### The gap
+
+`DamageByTargetTypeCollector::onDamageDealt` (`include/core/stats/StatsCollectors.h`)
+classified a target as a Tower when `CardRegistry::getCard(e.targetCardId) ==
+nullptr`. Towers carry unregistered sentinel ids (`TOWER_KING_ID = -2`,
+`TOWER_PRINCESS_ID = -3`) — and so do spawned helper bodies (`-1`, `-10 .. -48`:
+Goblin Barrel's goblins, a Graveyard's skeletons, Goblin Gang, a Battle Ram's
+Barbarians). A tower shooting those bodies was booked as its owner dealing TOWER
+damage. The same shape as the Mortar/King symbol clash: a discriminator that
+something else can also wear.
+
+### Evidence
+
+Audit 05's `t5_towerstat_probe.py`: a team-0 card injected in front of the team-1
+left Princess, both sides idle 300 ticks, team 0's towers provably untouched.
+
+| team-0 card | `get_tower_damage_dealt(1)` BEFORE | AFTER | team-0 tower HP lost |
+|---|---|---|---|
+| Hog Rider / Knight / Giant / Musketeer / Skeletons / Barbarians / Minions / Lava Hound / Golem / Miner / Balloon (controls) | 0 | 0 | 0 |
+| **Goblin Gang** | **540** | 0 | 0 |
+| **Goblin Barrel** | **810** | 0 | 0 |
+| **Graveyard** | **1080** | 0 | 0 |
+| **Battle Ram** (death-spawned Barbarians) | **1440** | 0 | 0 |
+
+After the fix that damage appears under `get_troop_damage_dealt(1)` instead
+(Goblin Barrel 810, Graveyard 1080, Battle Ram 2160 including the Ram itself).
+
+Consequences, both measured by audit 05:
+
+* **the agent's reward** — `rewards/shaping.py`'s tower potential reads
+  `team0_tower_damage - team1_tower_damage`, so the agent was PAID `W_BLDG` for
+  its towers killing an opponent's Goblin Barrel and CHARGED when its own spawns
+  were shot. Five of the sixteen opponent pool decks field such cards.
+* **the teacher** — `rollout_stats` reads `tower_taken =
+  get_tower_damage_dealt(opp)`, so every attack whose bodies are spawned was
+  scored as the teacher's own tower being hit (`def -12.96` for a Goblin Barrel
+  with no counter in the rollout). This alone froze `graveyard_control` at the
+  top rung (1/0/1/3 crowns against a do-nothing opponent -> 3/3/3/3 with
+  tower HP read directly).
+
+### What shipped
+
+`DamageDealtEvent` gains `bool targetIsTower = false`, last and defaulted so an
+8-value aggregate init still compiles and still means "not a tower". Every one of
+the 12 production emit sites stamps it from the target's own `isTower()`. The
+collector classifies on the flag; an unregistered NON-tower falls through to troop
+damage, with `def` null-checked (the first build dereferenced it and segfaulted on
+the first spawned body — caught by the suite before anything else ran).
+
+### Blast radius
+
+* `test_match_statistics.cpp`'s King-tower case built its event with a bare `-2`
+  and relied on registry absence; it now passes `targetIsTower = true`. It was a
+  test double wearing the discriminator.
+* Buildings-vs-troops classification is unchanged (still the registry's
+  `isBuilding`), so `buildingDamageDealt` and every deployed-building number keep
+  their meaning. Only tower damage for spawned targets moved.
+* Every win rate earned against spawner decks, and every teacher score involving a
+  spawned attacker, was earned on the wrong stat. Checkpoints still load.
+
+### Not fixed, recorded
+
+* **Last-hit overkill** is still booked in full (a Giant deals 3,795 "tower
+  damage" to remove 3,546 HP). Small, and it only inflates the final hit on a
+  dying tower.
+* **`ElixirValueKilledCollector` credits zero elixir for a spawned body** (it
+  skips unregistered victims), so a Fireball clearing a Goblin Gang earns no
+  value. A valuation approximation, not a sign error.
+
+### Tests
+
+`tests/core/test_clash_env.cpp` `[stats][tower_damage][spawned]`: four spawners,
+each asserting zero booked tower damage WITH the precondition that team 0's towers
+were genuinely untouched, plus a CONTROL that a real tower hit is still booked.
+`tests/core/test_match_statistics.cpp`: an unregistered target is a troop unless
+the event says tower. Suite: 714 cases, 713 passed, 1 failed as expected, exit 0.
