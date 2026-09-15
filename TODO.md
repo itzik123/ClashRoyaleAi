@@ -29,6 +29,294 @@ Rules that apply to every item below:
 
 ---
 
+## 0c. The overflow test lost its regime to the match-end rules
+
+`test_aux_task_is_not_a_memory_probe.py::test_overflow_is_what_makes_this_task_non_trivial`
+**skips** as of 2026-09-06 instead of running.
+
+Its sampler plays ordinary matches and needs some of them to reach the elixir
+cap. The match-end rules added the same day end a match at 3:00 whenever the
+crowns differ, and TRIPLE elixir begins at exactly 3:00 -- so the opponent now
+reaches triple elixir only in OVERTIME, and overflow went from "roughly half of
+episodes" (measured 2026-09-02, old rules) to none in the sample.
+
+**The finding is not refuted and the skip must not be read as one.** A cap still
+discards elixir no scalar records, so `Aux/OppElixir_MAE` would still be an
+overflow detector rather than a memory diagnostic. What is gone is this
+sampler's ability to REACH that regime by playing matches.
+
+**The fix is to construct the state rather than fish for it.** `set_elixir_for_team`
+and `set_current_tick` (UPSTREAM item 22) can put the opponent at the cap
+directly, which tests the actual claim -- reconstruction fails once the cap has
+discarded income -- without depending on how long a match happens to run, and
+makes the test deterministic into the bargain. Roughly an hour's work.
+
+**Do not "fix" it by lengthening matches or reverting the rules.** The new
+behaviour is the real game's, and overflow becoming rare is a genuine and
+desirable consequence of it.
+
+---
+
+## 0d. PLATEAU_IMPROVEMENT is calibrated faster than the agent learns
+
+**Observed 2026-09-06, not fixed, and deliberately so.**
+
+The plateau valve refreshes its clock only when the progress signal gains
+`PLATEAU_IMPROVEMENT` (0.02) over the best seen at that rung. Measured on the
+live run at rung 3, the agent improved steadily and was promoted anyway:
+
+    ep 105,600  0.574   worst 0.07
+    ep 107,800  0.624   worst 0.15   <- last refresh of best_rung_episode
+    ep 109,200  0.637   worst 0.17   <- +0.013 since, so no refresh
+    ep ~109,300 PLATEAU -> rung 4
+
++0.013 per 1,500 episodes is real learning -- the worst deck more than doubled
+across that window -- but it is under the 0.02 the valve wants, so the clock ran
+out on an improving agent. The threshold is a RATE and it is set faster than
+this agent's actual rate.
+
+**WHY IT IS NOT BEING CHANGED.** Lowering it invites noise to refresh the clock
+forever, which is the stall the valve exists to end; raising the patience only
+slows it. Both are guesses at a constant, and this file already records three
+changes to this control loop in one session, each of which exposed the next
+problem. A fourth under the same time pressure is how a control loop gets worse.
+
+**And it is no longer costly, which is the actual argument.** The regression
+detector added the same day means a premature promotion self-corrects: if the
+new rung makes the agent worse it is demoted on measured evidence rather than on
+a constant. The loop is closed even when the threshold is wrong.
+
+**If it is to be fixed, fix the SHAPE, not the number.** Fit a slope over the
+rung's progress history and advance when the slope is indistinguishable from
+zero, which needs no rate constant at all. Measure it against both real series
+already recorded here: the rung-3 plateau (0.641/0.640/0.641/0.640/0.637/0.639)
+must advance, and this rung-3 climb (0.574 -> 0.637) must not.
+
+---
+
+## 0e. Search: an opponent model halves the damage and does not rescue it
+
+**Measured 2026-09-06 on ep-111k, `eval/search_vs_greedy_pool_ab.py`.**
+
+### The rollout opponent was the C++ heuristic, not nobody
+
+`SearchCfg`'s docstring claimed "a candidate rollout assumes BOTH SIDES NO-OP"
+and that sentence is WRONG -- it cost a whole wrong diagnosis before anyone
+looked at the board. `sim.step` runs the C++ HeuristicOpponent, so only OUR side
+no-ops. Verified: a 400-tick rollout with our side idle put 2 enemy bodies out
+and took 1302 of our tower hp. The docstring is corrected.
+
+So the real mismatch was HEURISTIC vs TEACHER: search optimised against the
+opponent every historical result was measured against, while phase 1's opponent
+had become the UtilityTeacher.
+
+### Giving the rollout the right opponent helps, and is not enough
+
+`search.rollout(sim, card, x, y, horizon, opponent=None)` takes any object with
+`act(env, obs_own)`, which is `UtilityTeacher`'s own interface. Frontier decks,
+horizon 4, widening off, n=30, **greedy 0.467 in BOTH arms** -- the control that
+makes the pairing trustworthy:
+
+| rollout opponent | search | delta |
+|---|---|---|
+| C++ HeuristicOpponent | 0.300 | -0.167 [-0.400, +0.067] |
+| UtilityTeacher rules-only | 0.400 | **-0.067** [-0.233, +0.100] |
+
+Harmful -> break-even. Search still beats greedy on NO deck: three ties, two
+losses. **Expert iteration stays closed** -- there is no expert better than the
+student, and CLAUDE.md records that distilling a weak one degrades selectivity.
+
+### The model helps UNIFORMLY, and the horizon problem is separate
+
+Read at n=24 this looked "unchanged at horizon 12" and that was premature. The
+completed runs show the model worth about the same at both horizons:
+
+| horizon | heuristic rollout | teacher rollout | gain |
+|---|---|---|---|
+| 4 | -0.167 | -0.067 | +0.100 |
+| 12 | -0.469 | **-0.333** [-0.600, -0.067], p=0.041 | +0.136 |
+
+So the opponent model is worth roughly **+0.12 win rate to search, at any
+horizon** -- a real and consistent effect. It does not rescue search because
+search starts further behind than that: -0.167 at h4 becomes break-even, -0.469
+at h12 stays clearly negative.
+
+**The horizon degradation is therefore a SEPARATE problem and survives the fix.**
+Something makes a 12-step rollout worse than a 4-step one by ~0.27 even with the
+right opponent, and it is not the opponent.
+
+### The live hypothesis, not yet measured
+
+**Our own side no-ops for the whole rollout.** Every candidate is scored as "I
+play this, then stand still while a competent opponent answers", which is mildly
+pessimistic over 4 s and grossly so over 12 -- fitting the shape exactly, since
+the opponent model helped at h4 and did nothing at h12.
+
+**The obstacle is structural, not a knob.** Scoring is ONE batched network
+forward over all candidates' final observations. Making our side act needs a
+forward per candidate per step -- 52 at K=13/h=4 against 1 today. Any attempt
+should first check whether a CHEAP proxy for our own continuation (the advisor
+in `advisors/tactics.py`, which needs no network) closes the gap, because the
+full version may simply be unaffordable.
+
+### shipping.py
+
+`USE_SEARCH = False`; the deployable agent runs greedy. The case is now weaker
+than when it was set -- search is break-even at h4 rather than harmful -- but
+greedy is still >= search and costs ~1.5x less, so there is no reason to enable
+it. Pinned by `test_shipping_does_not_use_search_until_it_is_re_validated`.
+
+### The methodology note that cost two wrong conclusions
+
+`PoolTeacherEnv` seeds the ENGINE but `UtilityTeacher` holds its own numpy RNG,
+built unseeded by gym_wrapper; below rung 10 its epsilon is non-zero, so the two
+arms faced opponents making different random choices and the pairing was only
+partial. Caught by the greedy control -- which cannot be affected by search --
+reading 0.750 in one run and 0.875 in another on identical seeds. On that bad
+harness h4-without-widening read -0.031 and prompted the wrong calls that
+"search is neutral at h4" and "widening is the culprit"; seeded, the same cell
+reads -0.313.
+
+**A paired harness needs a control that MUST be constant, and it has to be read
+every run.** Every result above quotes its greedy control for that reason.
+
+**Measured 2026-09-06 on ep-111k, `eval/search_vs_greedy_pool_ab.py`. This
+supersedes the +0.319 that item 2 and `shipping.py` are built on.**
+
+Paired, same seed and pool deck per trial, UtilityTeacher rung 3, widening off,
+n=32 each. The greedy control reads **0.844 in all three**, which is the proof
+the pairing is real:
+
+| horizon | greedy | search | delta |
+|---|---|---|---|
+| 4 | 0.844 | 0.531 | **-0.313** [-0.531, -0.125] |
+| 8 | 0.844 | 0.312 | **-0.531** [-0.719, -0.313] |
+| 12 | 0.844 | 0.375 | **-0.469** [-0.688, -0.250] |
+
+Deviation rate 23-27%, so search really is choosing differently; this is not a
+vacuous null. It is negative at every horizon, on the frontier decks as well as
+the pool (-0.267), and with widening on or off (-0.433 vs -0.469 at h12, CIs
+fully overlapping).
+
+**THE CAUSE IS THE OPPONENT MODEL, NOT A BUG.** A candidate rollout assumes BOTH
+SIDES NO-OP. That is a passable model of the C++ HeuristicOpponent, which the
++0.319 and the +0.4025 horizon sweep were both measured against, and a bad model
+of the UtilityTeacher, which forward-simulates. CLAUDE.md attached exactly this
+caveat to the original result -- "says nothing about neural opponents" -- and
+this is that caveat coming due. Nothing regressed; the regime changed.
+
+**TWO HYPOTHESES TESTED AND REFUTED**, recorded so they are not re-run:
+* *Widening dilutes the candidate set.* At h12, off vs on is -0.469 vs -0.433.
+  It costs something at h4 but is not the driver. (`candidates/dec` 2.5 vs 21.9.)
+* *The 2026-09-06 match rules broke terminal scoring.* `terminal_weight` 1.0 vs
+  10.0 is -0.531 vs -0.469. Indistinguishable.
+
+### What this means for the plan
+
+**Do not run expert iteration.** There is no expert: distilling a policy from
+something no better than itself teaches nothing, and CLAUDE.md records that a
+weak expert actively DEGRADES selectivity (3.07 -> 2.31 -> 2.17 as data grew).
+
+**`shipping.py` is affected and this is the urgent half.** It ships horizon 12
+search, whose measured cost on its own configuration is **-0.433** [-0.633,
+-0.233], p=0.00098. Its sweep (0.563 -> 0.963) was measured against the C++
+heuristic and has never been re-run against the teacher. The deployable agent
+should run its policy greedy until search is re-validated.
+
+**If search is to be rescued, the lever is the ROLLOUT, not the horizon.** Give
+the rollout an opponent model -- the cheapest being the UtilityTeacher's own
+rules, which are the same code the opponent uses. `teacher.py`'s docstring
+already anticipates this: "If the rollout ever gains an opponent model, this is
+the candidate that starts paying."
+
+### A methodology note that cost two wrong conclusions here
+
+The first three runs used an UNSEEDED teacher. `PoolTeacherEnv` seeds the engine
+but `UtilityTeacher` holds its own numpy RNG, and below rung 10 its epsilon is
+non-zero -- 0.12 at rung 3 -- so the two arms faced opponents making different
+random choices and the pairing was only partial. It was caught by the greedy
+control, which cannot be affected by search, reading 0.750 in one run and 0.875
+in another on identical seeds. On that bad harness h4-without-widening read
+-0.031 and looked neutral; seeded, the same cell reads -0.313.
+
+**A paired harness needs a control that MUST be constant, and it needs to be
+read every run.** Both wrong conclusions here -- "search is neutral at h4" and
+"widening is the culprit" -- came from not having looked at it.
+
+---
+
+## 0b. ✅ FIXED (2026-09-06) — the plateau valve was a timer, not a detector
+
+**Measured, then triggered, then fixed and confirmed, all on the live phase-9
+run. Commit `d7ab2e2`.**
+
+`curriculum.py`'s plateau valve advances a rung when the 500-episode win rate
+has not improved by `PLATEAU_IMPROVEMENT` (0.02) for
+`PLATEAU_PATIENCE_EPISODES` (1500) while staying above `PLATEAU_MIN_WIN_RATE`.
+Its own docstring records that **PFSP regulates the readable win rate toward the
+hard end of the pool** — and then draws that conclusion only for the level GATE
+("a level gate can be structurally unreachable"). The same regulation makes the
+plateau's IMPROVEMENT test insensitive, which the docstring does not say.
+
+Measured over ep 83,128 -> 87,540, deck pool on, floor off:
+
+| | ep 83,200 | ep 87,400 |
+|---|---|---|
+| unweighted per-deck mean | **0.301** | **0.534** |
+| worst deck | 0.01 | 0.11 |
+| decks below 0.20 | 10 | 2 |
+| PFSP-weighted readable win rate | ~0.50 | ~0.50 (flat) |
+
+**The agent improved by 23 points on every one of sixteen decks and the readable
+signal did not move, so the valve fired TWICE during the fastest learning of the
+run** — rung 2 -> 3 at ep 85,340 and 3 -> 4 at ep 87,540, ~2,200 episodes apart,
+which is the establishing window plus the patience. Under PFSP that condition is
+satisfied by construction, so the valve is a **timer on a ~2,200-episode period**
+rather than a convergence detector. Extrapolated, it walks rung 2 -> 10 in
+~18,000 episodes regardless of what the agent learns.
+
+**THE FIX IS THE SIGNAL, NOT THE PATIENCE.** Raising
+`PLATEAU_PATIENCE_EPISODES` only slows the timer; it stays blind. The detector
+should test improvement on a quantity PFSP does not regulate — the **unweighted
+mean of the per-deck estimates**, which moved 0.301 -> 0.534 over exactly the
+window the valve called flat. Keep the `PLATEAU_MIN_WIN_RATE` floor on the
+readable rate (it is a competitiveness floor and is correct as it stands); change
+only what the improvement test reads. Additive, with the current behaviour as the
+fallback when no deck estimates exist, so the mirror path is untouched.
+
+**THE TRIGGER FIRED, HARDER THAN ITS OWN THRESHOLD.** It was stated in advance
+as "fails to improve by >= 0.02 over the 2,000 episodes after an advance". What
+actually happened after the rung 3 -> 4 promotion at ep 87,540 is that the mean
+FELL, inside 600 episodes:
+
+| ep | unweighted mean | worst deck | |
+|---|---|---|---|
+| 87,600 | 0.535 | 0.11 | rung 4 |
+| 88,200 | 0.522 | 0.09 | rung 4 |
+| 88,600 | 0.515 | 0.08 | demoted to rung 3 here |
+| 89,200 | 0.539 | 0.10 | |
+| 90,200 | **0.563** | **0.11** | |
+
+The readable win rate collapsed 0.50 -> 0.19 over the same span. **Neither
+existing valve would have ended it**: the stall valve needs <= 0.10 and the
+backstop needs 4,000 episodes, so the run would have sat there ~4.7 hours.
+
+**THE FIX, AND THE CONFIRMATION.** `CurriculumManager.note_progress` takes an
+improvement signal the caller owns; phase 1 passes the unweighted per-deck mean.
+The floor test still reads the readable rate — that one is a competitiveness
+question and is right as it stands. Demoting to rung 3 reversed the decline
+immediately and learning resumed at **+0.030/1,000 episodes**, against rung 3's
+own earlier +0.035/1,000 — so the rung, not the policy, was the cause.
+
+**What is NOT established:** whether the ladder can now reach the top rungs at
+all. The valve no longer advances on a flat readable rate, so from here a rung
+ends only on the 0.65 gate or on the progress signal genuinely flattening. If a
+run later sits at one rung for many thousands of episodes with the progress
+signal still creeping, that is this change's failure mode and the thing to
+watch — it is the 2026-08-28 stall arriving by a third road.
+
+---
+
 ## 0a. LAUNCH AND WATCH: the meta-deck pool + the eleven-rung ladder
 
 **Built and tested 2026-09-03, not yet run at length.** Branch

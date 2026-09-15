@@ -235,3 +235,29 @@ def test_search_action_uses_the_shared_terminal_score():
     assert "terminal_score" in body
     assert not re.search(r"reward\s*\*\s*cfg\.terminal_weight", body), (
         "terminal scoring re-inlined in search_action")
+
+
+def test_shipping_does_not_use_search_until_it_is_re_validated():
+    """Search is measured NEGATIVE against the opponent phase 1 actually trains
+    on, so the deployable agent runs its policy greedy.
+
+    Paired, seeded, UtilityTeacher rung 3 on the 16-deck pool, ep-111k policy
+    (`eval/search_vs_greedy_pool_ab.py`), greedy control constant at 0.844:
+
+        horizon  4   greedy 0.844  search 0.531   -0.313
+        horizon  8   greedy 0.844  search 0.312   -0.531
+        horizon 12   greedy 0.844  search 0.375   -0.469
+
+    and on shipping's own configuration, -0.433 [-0.633, -0.233], p = 0.00098.
+
+    This is a FLAG and not a deletion because the cause is the rollout's
+    opponent model, not the search: candidate rollouts are stepped by the C++
+    HeuristicOpponent while the real opponent forward-simulates. Fix that and
+    the flag can come back on -- with a re-measurement, which is what this test
+    is here to force.
+    """
+    from python_ai import shipping
+    assert shipping.USE_SEARCH is False, (
+        "shipping enabled search again -- re-run "
+        "eval/search_vs_greedy_pool_ab.py against the teacher first and put "
+        "the number in this test")

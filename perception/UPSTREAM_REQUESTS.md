@@ -408,3 +408,62 @@ deliberate tripwires (`tests/core/test_clash_env.cpp`,
   unavailable; it is the reason the C++ was verified at all before landing.
 - `tools/audit/verify_pyd.py` now checks the phase scalar is present, at the
   index the layout claims, and symmetric across teams.
+
+---
+
+## Item 27 — Graveyard's spawn CADENCE exactly cancelled a tower's fire rate
+
+**Status: FIXED 2026-09-06** on the maintainer's explicit instruction.
+**Class:** card balance data (`CardRegistry.h`).
+
+### The first diagnosis here was WRONG, and how it was wrong is the useful part
+
+This item originally read "Graveyard spawns ONE skeleton and deals zero tower
+damage from any cell", and concluded the spawn machinery was broken. The zero
+was real and reproducible; the explanation was not.
+
+The probe counted **instantaneous** bodies on the board next to an enemy
+Princess Tower, and read 1. Re-run where nothing can kill the skeletons -- our
+own back corner -- the count climbs 1,2,3,...,**9** and stops, which is exactly
+what `withRepeats(9, 10)` asks for. The machinery was always fine.
+
+What the original probe actually measured was a **kill rate equal to the spawn
+rate**. One 81-hp Skeleton per 10 ticks meets a Princess Tower firing once per
+10 ticks, so each one dies before its successor lands and the standing
+population is permanently 1. Zero of them ever survive long enough to attack,
+which is why all 588 legal cells scored 0.
+
+**A saturating measurement again** -- CLAUDE.md's own rule, "when a
+measurement's failure mode is maximal permissiveness it needs an internal
+control that MUST fire". Here the failure mode was maximal *suppression*: an
+instantaneous count cannot distinguish "nothing spawned" from "everything
+spawned and died on schedule". The control that settles it is a board where
+death is impossible, and it costs one line.
+
+### The real defect, and the fix
+
+The cadence, not the mechanism. Published card: one Skeleton every **0.5 s**,
+totalling **12** since the 2026-01-06 balance change. The registry had one per
+**1.0 s**, totalling 9 -- half the arrival rate, which is precisely the rate at
+which a tower deletes them one for one.
+
+    .withRepeats(9, 10)   ->   .withRepeats(12, 5)
+
+Arrivals now outrun a tower's fire rate 2:1, which is the mechanic that makes
+the card work in the real game.
+
+### Blast radius
+
+**GAMEPLAY-AFFECTING.** `graveyard_control` goes from effectively a seven-card
+deck to a real one, so every win rate measured against it is invalid -- in
+particular the agent's 0.925 (2026-09-05, 40 greedy episodes), which was largely
+the opponent being a card down. Nothing else in the pool plays Graveyard and
+`DEFAULT_DECK` does not, so the agent's own action space and every checkpoint
+are untouched.
+
+### Not changed, and deliberately
+
+The deploy delay is 8 ticks against the real card's 2.2 s (22 ticks), so the
+engine's Graveyard starts sooner than it should. Left alone: it is a separate
+question from the cadence, it moves the card in the opposite direction, and one
+gameplay change at a time is how this repo keeps win rates attributable.

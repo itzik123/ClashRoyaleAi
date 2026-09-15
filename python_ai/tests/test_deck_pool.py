@@ -136,7 +136,8 @@ def test_a_deck_below_the_win_rate_floor_is_parked_at_the_minimum():
     state -- the exact failure the 2026-08-19 curriculum pivot exists to avoid.
     Uncapped `(1-wr)^2` would give it the LARGEST weight of all.
     """
-    w = deck_pool.pfsp_weights({"hopeless": 0.02, "hard": 0.25, "even": 0.50})
+    w = deck_pool.pfsp_weights({"hopeless": 0.02, "hard": 0.25, "even": 0.50},
+                               floor=0.20)
     assert w["hopeless"] < w["hard"], (
         "an unwinnable deck must not attract the most training time")
 
@@ -169,14 +170,16 @@ def test_a_pool_nothing_can_beat_yet_falls_back_to_EASIEST_first():
     floor the deck axis has no signal and should hand back the most winnable
     opponent instead.
     """
-    w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "least_bad": 0.19})
+    w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "least_bad": 0.19},
+                               floor=0.20)
     assert w["least_bad"] > w["bad"] > w["awful"]
     assert sum(w.values()) == pytest.approx(1.0)
 
 
 def test_one_winnable_deck_is_enough_to_restore_normal_pfsp():
     """The fallback is for 'nothing works', not 'most things do not'."""
-    w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "ok": 0.55})
+    w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "ok": 0.55},
+                               floor=0.20)
     assert w["ok"] > w["awful"], "normal PFSP must resume once anything clears"
 
 
@@ -187,8 +190,53 @@ def test_the_shipped_pool_carries_measured_priors():
     priors = {d.name: d.prior_win_rate for d in decks}
     assert any(p != deck_pool.NEUTRAL_PRIOR for p in priors.values()), (
         "the pool file has lost its measured priors")
+    # The episode-share half of this test moved to
+    # test_the_shipped_pool_now_spends_the_run_on_the_decks_it_loses_to, which
+    # asserts the OPPOSITE now that the floor is off. What stays here is that
+    # the priors exist at all.
+
+
+# --------------------------------------------------------------------------
+# 2026-09-06: the floor is OFF by default. See POOL_WINRATE_FLOOR's own comment
+# for the measurement; the mechanism is kept and tested, only the default moved.
+# --------------------------------------------------------------------------
+
+def test_the_win_rate_floor_is_off_by_default():
+    """A deck the agent cannot beat YET must attract the most training time.
+
+    The floor was parking six of sixteen decks at 0.84% of episodes each while
+    the two decks the teacher could not even pilot took 53% between them -- so
+    it was selecting for TEACHER INCOMPETENCE, not for deck difficulty. The
+    heavy decks (Royal Giant, Royal Hogs, Mega Knight, P.E.K.K.A.) are exactly
+    the ones a 2.6 cycle deck exists to defend against, and are the only place
+    the agent can learn to hold a big push.
+    """
+    w = deck_pool.pfsp_weights({"crushing": 0.00, "hard": 0.25, "easy": 0.85})
+    assert w["crushing"] > w["hard"] > w["easy"], (
+        "with the floor off, plain (1-wr)^2 must rank the hardest deck first")
+
+
+def test_the_floor_mechanism_still_works_when_asked_for():
+    """Kept, not deleted: `floor=` restores the old behaviour in one argument,
+    which is what makes turning it off a reversible decision rather than a
+    rewrite."""
+    w = deck_pool.pfsp_weights({"hopeless": 0.02, "hard": 0.25, "even": 0.50},
+                               floor=0.20)
+    assert w["hopeless"] < w["hard"]
+
+
+def test_the_shipped_pool_now_spends_the_run_on_the_decks_it_loses_to():
+    """The inverse of the assertion this file carried until 2026-09-06.
+
+    That one required <10% of episode 0 to go to decks measured unwinnable. It
+    was the right guard for a FRESH net -- which is not the case being run: a
+    checkpoint at 83k episodes resumed at a LOW rung meets those decks against a
+    teacher with a 2-second lookahead and 15% random actions, which is winnable.
+    Rung and deck are two difficulty axes and only one of them is being raised.
+    """
+    decks = deck_pool.load_pool()
+    priors = {d.name: d.prior_win_rate for d in decks}
     w = deck_pool.pfsp_weights(priors)
-    unwinnable = sum(v for n, v in w.items()
-                     if priors[n] < deck_pool.POOL_WINRATE_FLOOR)
-    assert unwinnable < 0.10, (
-        f"{unwinnable:.0%} of episode 0 goes to decks measured unwinnable")
+    hard = sum(v for n, v in w.items() if priors[n] < 0.20)
+    assert hard > 0.30, (
+        f"only {hard:.0%} of episodes go to the decks the agent loses to")

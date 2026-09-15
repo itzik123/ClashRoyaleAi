@@ -111,10 +111,93 @@ def verify_cell_roundtrip(net):
     return n_cells
 
 def make_env(opp_elixir, max_ticks):
+    """The ORIGINAL collection env: 2.6 mirror vs the C++ HeuristicOpponent.
+
+    Kept unchanged and still the default, because the +0.045 win-rate result was
+    measured through it and every recorded dataset was collected on it. See
+    `make_pool_env` for why it is the wrong distribution for the placement work.
+    """
     env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), max_ticks)
     env.set_opponent_elixir_multiplier(opp_elixir)
     env.reset()
     return env
+
+
+class PoolTeacherEnv:
+    """The RAW-env surface `collect_episode` needs, driven by the training env.
+
+    WHY THIS EXISTS. `make_env` above puts `DEFAULT_DECK` on BOTH sides against
+    the C++ heuristic -- the 2.6 mirror, which `measure_deck_matchups.py` ranks
+    **16th of 16** on opportunity for Cannon / The Log / Fireball: 323 HP of
+    Fireball catch against a pool median of 494, and 145 of Log catch against
+    273. Collecting placement labels there gathers them on precisely the
+    distribution the 2026-09-03 deck pool was built to escape, and the states
+    where these cards matter barely occur.
+
+    It is a SILENT defect, which is why it gets a class and a docstring rather
+    than a flag: a run collected on the mirror trains, reports plausible losses
+    and a plausible deviation rate, and teaches aiming for boards the agent no
+    longer sees.
+
+    `collect_episode` speaks the raw `ClashRoyaleEnv` protocol
+    (`get_observation_for_team` / `snapshot` / a `step` returning an object with
+    `.observation`, `.reward`, `.done`) while the teacher and the deck pool live
+    on the gym wrapper, so this adapts one to the other rather than rewriting
+    the collector around a second env API.
+
+    ONE ASYMMETRY, DELIBERATE AND WORTH KNOWING: `snapshot()` hands back a raw
+    engine copy, so search's candidate ROLLOUTS are stepped by the C++
+    HeuristicOpponent while the real episode is played by the UtilityTeacher.
+    That is inherent to search -- `search_action` has always rolled out this way
+    and does so in deployment too -- and it is a property of the SCORER, not of
+    the state distribution this class exists to correct.
+    """
+
+    class _Result:
+        __slots__ = ("observation", "reward", "done")
+
+        def __init__(self, observation, reward, done):
+            self.observation = observation
+            self.reward = reward
+            self.done = done
+
+    def __init__(self, stage, max_ticks, seed, deck):
+        from python_ai.envs import gym_wrapper
+
+        self._gym = gym_wrapper.MicroRoyaleEnv({
+            "ai_deck": list(DEFAULT_DECK),
+            "opp_deck": list(deck.card_ids),
+            # The key is `opponent`. `opponent_kind` is NOT read by gym_wrapper
+            # and falls back to "builtin" silently -- it cost this session's
+            # first gate measurement, which ran against the heuristic while
+            # reporting the teacher.
+            "opponent": "teacher",
+            "teacher_stage": int(stage),
+            "max_ticks": int(max_ticks),
+        })
+        self._gym.game.seed(seed)
+        self._gym.reset()
+        self.deck_name = deck.name
+        self.game = self._gym.game
+
+    def get_observation_for_team(self, team):
+        return self._gym.game.get_observation_for_team(team)
+
+    def snapshot(self):
+        return self._gym.game.snapshot()
+
+    def observation_size(self):
+        return self._gym.game.observation_size()
+
+    def step(self, card, x, y):
+        obs, reward, term, trunc, _ = self._gym.step(
+            {"card_index": card, "target_x": x, "target_y": y})
+        return self._Result(obs, float(reward), bool(term or trunc))
+
+
+def make_pool_env(stage, max_ticks, seed, deck):
+    """Phase 1's real distribution: UtilityTeacher at `stage`, playing `deck`."""
+    return PoolTeacherEnv(stage, max_ticks, seed, deck)
 
 # --------------------------------------------------------------------------
 # stage 1: collect expert labels
@@ -212,8 +295,26 @@ def collect_episode(net, env, device, cfg, episode_index):
     return rows, reward, steps, deviations
 
 def collect_expert_labels(net, n_episodes, cfg, device, opp_elixir, max_ticks,
-                          time_budget=0.0):
+                          time_budget=0.0, pool_stage=None, seed0=0):
+    """Play `n_episodes` with search on and return the labelled rows.
+
+    `pool_stage=None` keeps the original 2.6-mirror-vs-heuristic distribution
+    bit-identically, because that is what every recorded dataset and the +0.045
+    result were measured on. Setting it to a curriculum rung switches to the
+    training distribution -- UtilityTeacher at that rung, round-robin over the
+    16-deck pool -- which is the only distribution on which labels for Cannon /
+    The Log / Fireball mean anything. See `PoolTeacherEnv`.
+    """
     verify_cell_roundtrip(net)
+    pool = None
+    if pool_stage is not None:
+        from python_ai.opponents import deck_pool
+        # Round-robin, not PFSP: this is a LABELLING pass, and weighting it
+        # toward the decks the policy loses to would bias the placement labels
+        # toward those boards rather than covering the pool.
+        pool = deck_pool.load_pool()
+        print(f"  collecting on the TRAINING distribution: teacher rung "
+              f"{pool_stage}, {len(pool)} pool decks round-robin")
     acc = {k: [] for k in ("obs", "card", "cell", "episode", "greedy_card", "greedy_cell",
                            "cand_card", "cand_cell", "cand_value", "cand_n")}
     scores, dev_total, dev_steps = [], 0, 0
@@ -223,7 +324,11 @@ def collect_expert_labels(net, n_episodes, cfg, device, opp_elixir, max_ticks,
         if time_budget and (time.perf_counter() - started) > time_budget:
             print(f"  [time budget reached after {ep} episodes]")
             break
-        env = make_env(opp_elixir, max_ticks)
+        if pool is None:
+            env = make_env(opp_elixir, max_ticks)
+        else:
+            env = make_pool_env(pool_stage, max_ticks, seed0 + ep,
+                                pool[ep % len(pool)])
         rows, reward, steps, dev = collect_episode(net, env, device, cfg, ep)
         for k in acc:
             acc[k].extend(rows[k])

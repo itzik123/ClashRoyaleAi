@@ -67,26 +67,14 @@ public:
     }
 
     static MatchRules::Outcome resolve(const Board& board) {
-        int aliveCount[2] = { 0, 0 };
-        int weakestHp[2] = { std::numeric_limits<int>::max(),
-                             std::numeric_limits<int>::max() };
-
-        for (const auto& entity : board.getEntities()) {
-            if (!entity->isAlive()) continue;
-            // Towers only -- Cannon/Tombstone and other player-placed
-            // buildings are not crowns and must not count toward either
-            // criterion. dynamic_cast rather than a symbol check so this
-            // keeps working if tower symbols are ever changed for the
-            // renderer (King is 'R', Princess 'P' today).
-            if (dynamic_cast<const Tower*>(entity.get()) == nullptr) continue;
-
-            int team = entity->team;
-            if (team != 0 && team != 1) continue;
-
-            aliveCount[team]++;
-            weakestHp[team] = std::min(weakestHp[team], entity->hp);
-        }
-
-        return decide(aliveCount, weakestHp);
+        // The census moved to MatchRules on 2026-09-06, because the overtime
+        // rule added there asks the same question every tick and two copies of
+        // "count the surviving towers" is the duplication this repo keeps
+        // paying for. `isTower()` replaced the dynamic_cast: it is the same
+        // virtual dispatch, equally immune to the renderer symbols the old
+        // comment here was guarding against, and it is what MatchRules::
+        // evaluate already trusted one function away.
+        const MatchRules::TowerCensus c = MatchRules::census(board);
+        return decide(c.alive, c.weakestHp);
     }
 };

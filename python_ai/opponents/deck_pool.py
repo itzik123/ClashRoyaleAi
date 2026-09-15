@@ -216,11 +216,45 @@ def load_pool(path=None, *, allow_champions=False, include_disabled=False):
 #: being sampled is a deck the policy is free to forget.
 POOL_MIN_WEIGHT = 0.05
 
-#: Below this measured win rate a deck is not teaching, it is only losing. The
-#: curriculum pivot's whole finding is that a mispriced opponent inverts the
-#: ranking of strategy classes; a deck the agent cannot win against at any rung
-#: does that on the deck axis. Read `measure_deck_matchups.py` before moving it.
-POOL_WINRATE_FLOOR = 0.20
+#: OFF since 2026-09-06 (0.0). The mechanism is kept and `pfsp_weights(floor=)`
+#: restores it in one argument; only the default moved.
+#:
+#: WHAT IT WAS FOR: below this measured win rate a deck is not teaching, it is
+#: only losing, and the curriculum pivot's finding is that a mispriced opponent
+#: inverts the ranking of strategy classes.
+#:
+#: WHY IT IS OFF. Measured 2026-09-06, the floor was answering the wrong
+#: question. Its input is a win rate, and a win rate against this pool confounds
+#: two things: how hard the deck is, and whether the TEACHER can pilot it. It
+#: could not pilot five of the sixteen -- with mortar, xbow, both bait decks and
+#: graveyard it never spent one elixir on the card the deck is named for. So the
+#: floor read "the agent beats this deck" as "this deck is winnable" when the
+#: cause was a broken opponent, and read "the agent loses to this deck" as
+#: "structurally lost" when the cause was a teacher that happens to pilot heavy
+#: decks correctly (send the expensive building-targeter to the bridge IS the
+#: Royal Giant plan).
+#:
+#: The episode shares it produced, against the 2026-09-05 per-deck measurement:
+#:
+#:     dart_bait_cycle  0.20 win -> 26.7% of episodes   teacher never played the Barrel
+#:     mortar_cycle     0.20 win -> 26.7%               teacher never played the Mortar
+#:     rg_fisherman     0.00 win ->  0.84%
+#:     royal_hogs       0.00 win ->  0.84%
+#:     mega_knight_ram  0.00 win ->  0.84%
+#:
+#: Over half the run went to two decks the opponent could not play, and the
+#: three that beat it 40-0 got 0.84% each. A 2.6 cycle deck is BUILT to answer a
+#: big push with minimal elixir -- two Cannons, a full cycle inside one defence
+#: -- so those matchups are the only place that skill can be learned, and they
+#: were the ones being skipped.
+#:
+#: THE SAFETY ARGUMENT IS NOW CARRIED BY THE RUNG, WHICH IS THE RIGHT AXIS.
+#: The floor's real worry is a zero-gradient matchup. Difficulty in this
+#: curriculum is the teacher's lookahead, and at a low rung (2 s horizon, 0.15
+#: epsilon) a Mega Knight deck is winnable. Resuming a strong checkpoint at a
+#: LOW rung with the whole pool live raises one axis and lowers the other,
+#: which is exactly what CLAUDE.md's "DROP THE RUNG FIRST" section prescribes.
+POOL_WINRATE_FLOOR = 0.0
 
 #: Keep-alive weight for a deck BELOW that floor -- smaller than
 #: `POOL_MIN_WEIGHT`, and the difference is the whole point.

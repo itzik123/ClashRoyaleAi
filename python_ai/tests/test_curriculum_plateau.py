@@ -245,3 +245,172 @@ def test_no_rung_can_hold_a_run_that_has_stopped_improving():
             f"a rung converged at win rate {level} held the run for "
             f"{MAX_EPISODES_PER_RUNG * 2} episodes")
         assert moved_at <= MAX_EPISODES_PER_RUNG + 50
+
+
+# --------------------------------------------------------------------------
+# 2026-09-06: the improvement test must read a signal PFSP does not regulate.
+# --------------------------------------------------------------------------
+
+def _flat_readable_rising_progress(mgr, episodes, progress_at):
+    """Feed a win rate pinned at 0.50 while the progress signal climbs."""
+    hist = new_outcome_window()
+    out = []
+    for ep in range(0, episodes, 10):
+        for i in range(10):
+            w = 1 if i < 5 else 0          # exactly 0.50, forever
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(progress_at(ep))
+        r = mgr.maybe_advance_stage(hist, ep)
+        if r:
+            out.append((ep, r))
+    return out
+
+
+def test_a_regulated_win_rate_does_not_look_like_a_plateau():
+    """PFSP weights a deck by (1-wr)^2, so it drives the readable win rate
+    toward the agent's worst matchups and PINS it no matter how much the agent
+    improves. Measured on the live phase-9 run, ep 83,128 -> 87,540: the
+    unweighted per-deck mean went 0.301 -> 0.534 on all sixteen decks while the
+    readable rate sat at ~0.50 -- and the valve fired twice, calling the fastest
+    learning of the run a plateau.
+
+    So the improvement test must read a quantity PFSP does not regulate.
+    """
+    mgr = manager(stage=2)
+    fired = _flat_readable_rising_progress(
+        mgr, 8000, lambda ep: 0.30 + 0.00003 * ep)   # 0.30 -> 0.54, as measured
+    assert fired == [], (
+        f"advanced {len(fired)} times while the agent was improving: {fired}")
+
+
+def test_a_genuine_plateau_still_advances_on_the_progress_signal():
+    """The anti-stall purpose is preserved: when the signal the agent actually
+    moves stops moving, the rung must still end. Otherwise this trades the
+    2026-08-28 stall back in."""
+    mgr = manager(stage=2)
+    fired = _flat_readable_rising_progress(mgr, 8000, lambda ep: 0.50)
+    assert fired, "a genuinely flat progress signal must still plateau out"
+    assert fired[0][1][1] == "plateau"
+
+
+def test_without_a_progress_signal_the_old_behaviour_is_unchanged():
+    """The mirror path has no deck estimates, so it must keep reading the long
+    window exactly as before -- the fallback is what makes this additive."""
+    mgr = manager(stage=2)
+    hist = new_outcome_window()
+    fired = []
+    for ep in range(0, 8000, 10):
+        for i in range(10):
+            w = 1 if i < 5 else 0
+            mgr.note_outcome(w)
+            hist.append(w)
+        r = mgr.maybe_advance_stage(hist, ep)
+        if r:
+            fired.append((ep, r))
+    assert fired and fired[0][1][1] == "plateau", (
+        "with no progress signal the valve must behave as it did before")
+
+
+def test_a_regulated_win_rate_does_not_look_like_over_promotion():
+    """The BACKSTOP has the same blind spot the plateau valve had, and the fix
+    is the same signal.
+
+    Measured on the live phase-9 run 2026-09-06: the agent sat at an unweighted
+    per-deck mean of 0.62 across all sixteen decks -- beating fourteen of them --
+    while the PFSP-weighted readable rate was pinned at 0.29, because PFSP
+    concentrates sampling on the two it cannot beat. The backstop read 0.29
+    against its 0.40 floor and demoted rung 3 -> 2 -> 1, weakening the teacher
+    on an agent that was getting stronger. Left alone it walks to rung 0.
+
+    A floor is a LEVEL question, so it needs a level the sampler does not
+    regulate. `PLATEAU_MIN_WIN_RATE` is applied to the progress signal for the
+    same reason the trend test already is.
+    """
+    mgr = manager(stage=3)
+    hist = new_outcome_window()
+    for ep in range(0, 12000, 10):
+        for i in range(10):
+            w = 1 if i < 3 else 0          # readable rate pinned at 0.30
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(0.62)            # ...while the agent is plainly strong
+        mgr.maybe_advance_stage(hist, ep)  # trainer order: advance, then demote
+        assert mgr.maybe_demote_stage(hist, ep) is None, (
+            f"demoted at ep {ep} an agent averaging 0.62 across the pool")
+
+
+def test_a_genuinely_weak_rung_is_still_demoted():
+    """The backstop's purpose is not traded away: an agent that really is under
+    the floor on the unregulated signal, and not improving, still goes down."""
+    mgr = manager(stage=3)
+    hist = new_outcome_window()
+    demoted = None
+    for ep in range(0, 12000, 10):
+        for i in range(10):
+            w = 1 if i < 3 else 0
+            mgr.note_outcome(w)
+            hist.append(w)
+        mgr.note_progress(0.22)            # weak on every deck, not just the mix
+        mgr.maybe_advance_stage(hist, ep)
+        if mgr.maybe_demote_stage(hist, ep) is not None:
+            demoted = ep
+            break
+    assert demoted is not None, "a genuinely weak rung must still be demoted"
+
+
+def test_a_rung_that_makes_the_agent_WORSE_is_demoted():
+    """OVER-PROMOTION IS A REGRESSION, NOT A LOW LEVEL, and the 2026-09-06 floor
+    fix could no longer see it.
+
+    Moving both floors onto the progress signal stopped the backstop demoting a
+    strong agent whose READABLE rate was regulated low -- correct -- but it also
+    meant a rung that is actively destroying a 0.64 agent no longer trips
+    anything, because 0.58 is still far above the 0.40 floor. Measured twice on
+    the live run, both times at rung 3 -> 4 (horizon 20 -> 30 ticks):
+
+        first  0.535 -> 0.522 over   600 episodes
+        second 0.637 -> 0.583 over 1,800 episodes, worst deck 0.12 -> 0.07
+
+    Both were caught by hand. This is the detector for it: a sustained fall from
+    the best this rung has seen, which is the quantity "over-promoted" actually
+    means.
+    """
+    mgr = manager(stage=4)
+    hist = new_outcome_window()
+    demoted = None
+    trace = [0.637, 0.626, 0.608, 0.599, 0.596, 0.591, 0.583]   # the real series
+    for i, ep in enumerate(range(0, 14000, 200)):
+        for k in range(200):
+            w = k % 2                      # 0.50 in ANY trailing window; a
+            mgr.note_outcome(w)            # block of wins then losses leaves the
+            hist.append(w)                 # 100-deep window all zeros and trips
+                                           # the stall valve instead.
+
+        mgr.note_progress(trace[min(i, len(trace) - 1)])
+        mgr.maybe_advance_stage(hist, ep)
+        if mgr.maybe_demote_stage(hist, ep) is not None:
+            demoted = ep
+            break
+    assert demoted is not None, (
+        "a rung that took the agent from 0.637 to 0.583 was never demoted")
+
+
+def test_ordinary_noise_around_a_plateau_is_not_a_regression():
+    """The contrast that keeps the detector honest: a flat rung wobbling inside
+    the noise band must NOT demote, or every plateau becomes a demotion and the
+    ladder can never hold a level."""
+    mgr = manager(stage=4)
+    hist = new_outcome_window()
+    wobble = [0.640, 0.637, 0.641, 0.638, 0.642, 0.639, 0.640]
+    for i, ep in enumerate(range(0, 14000, 200)):
+        for k in range(200):
+            w = k % 2                      # 0.50 in ANY trailing window; a
+            mgr.note_outcome(w)            # block of wins then losses leaves the
+            hist.append(w)                 # 100-deep window all zeros and trips
+                                           # the stall valve instead.
+
+        mgr.note_progress(wobble[i % len(wobble)])
+        mgr.maybe_advance_stage(hist, ep)
+        assert mgr.maybe_demote_stage(hist, ep) is None, (
+            f"demoted at ep {ep} on noise inside a plateau")

@@ -124,6 +124,13 @@ PLATEAU_PATIENCE_EPISODES = 1500
 PLATEAU_MIN_WIN_RATE = 0.40
 PLATEAU_IMPROVEMENT = 0.02
 
+#: How far the progress signal must fall BELOW the best this rung has seen
+#: before the rung is judged to be making the agent worse. Twice
+#: PLATEAU_IMPROVEMENT on purpose: `best_rung_mean` only advances on a rise of
+#: PLATEAU_IMPROVEMENT, so a band of exactly that width is the noise a converged
+#: rung shows by construction, and a fall of twice it is not noise.
+REGRESSION_MARGIN = 2 * PLATEAU_IMPROVEMENT
+
 #: --- the backstop ----------------------------------------------------------
 #: A HARD CEILING ON EPISODES AT ONE RUNG, and the reason it exists even though
 #: the plateau valve above should make it unreachable: the 2026-08-28 run burned
@@ -214,6 +221,7 @@ class CurriculumManager:
         #: a run whose ladder position is NOT evidence of competence, so this
         #: has to be visible and has to survive a resume.
         self.demotions = 0
+        self.last_demotion_reason = ""
         #: How many rungs were cleared by PLATEAU rather than by the gate. Read
         #: it as "how much of this ladder position is mastery and how much is
         #: only convergence" -- a run that plateaued up every rung is at the top
@@ -227,6 +235,30 @@ class CurriculumManager:
         self.rung_history = deque(maxlen=PLATEAU_WINDOW)
         self.best_rung_mean = 0.0
         self.best_rung_episode = 0
+        #: An improvement signal PFSP does NOT regulate, or None on a path that
+        #: has none (the mirror, where there are no per-deck estimates).
+        #:
+        #: MEASURED 2026-09-06, live phase-9 run, ep 83,128 -> 87,540: the
+        #: unweighted per-deck mean went 0.301 -> 0.534 with every one of
+        #: sixteen decks improving, while the readable win rate sat at ~0.50 --
+        #: so this valve fired TWICE, calling the fastest learning of the run a
+        #: plateau, and the rung it promoted to then made the agent WORSE
+        #: (mean 0.535 -> 0.522, readable rate to 0.21, within 600 episodes).
+        #:
+        #: The cause is stated in this module's own docstring and then applied
+        #: only to the level GATE: PFSP weights a deck by `(1 - win_rate)^2`, so
+        #: it spends the run on the worst matchups and pins the readable rate no
+        #: matter how good the agent gets. "Has not improved for 1,500 episodes"
+        #: is therefore satisfied BY CONSTRUCTION, which turns the valve from a
+        #: convergence detector into a timer with a ~2,200-episode period.
+        #:
+        #: Raising PLATEAU_PATIENCE_EPISODES would only slow a blind timer. What
+        #: changes is WHAT THE IMPROVEMENT TEST READS. The
+        #: `PLATEAU_MIN_WIN_RATE` floor still reads the readable rate, which is
+        #: correct: that one is a competitiveness check, not a trend.
+        self.progress_signal = None
+        #: Progress as the current rung began. See `_reset_rung_tracking`.
+        self.rung_entry_progress = None
         self.phase = "mirror"
         self.deck_stage = 0
         self.deck_episode_start = 0
@@ -290,10 +322,39 @@ class CurriculumManager:
             return None
         return sum(self.rung_history) / len(self.rung_history)
 
+    def note_progress(self, value):
+        """Offer an improvement signal PFSP does not regulate.
+
+        The caller owns what it means; phase 1 passes the UNWEIGHTED mean of the
+        per-deck win-rate estimates, which is the quantity that moved while the
+        readable rate did not. `None` restores the pre-2026-09-06 behaviour
+        exactly, which is what the mirror path (no deck pool) gets.
+        """
+        self.progress_signal = None if value is None else float(value)
+        # Latch the rung's entry level on the FIRST signal it ever sees. A rung
+        # usually starts before the deck stats have been polled -- always so on
+        # a resume, where `_reset_rung_tracking` runs during load -- so taking
+        # the baseline only at reset would leave it None for the whole first
+        # rung and make a regression there undetectable.
+        if self.rung_entry_progress is None:
+            self.rung_entry_progress = self.progress_signal
+
+    def _improvement_signal(self, long_mean):
+        """What the plateau's trend test reads: the progress signal if the
+        caller supplied one, else the long window as before."""
+        return long_mean if self.progress_signal is None else self.progress_signal
+
     def _reset_rung_tracking(self, episodes_completed):
         self.rung_history.clear()
         self.best_rung_mean = 0.0
         self.best_rung_episode = episodes_completed
+        # Progress as this rung STARTED, which is what "has this rung helped or
+        # hurt" must be measured against. `best_rung_mean` cannot serve: it only
+        # updates once the 500-episode window has filled, so on a rung that
+        # begins declining it is first recorded several hundred episodes in and
+        # is already below the true entry level -- measured, it read 0.608 for a
+        # rung entered at 0.637, hiding a fifth of the fall.
+        self.rung_entry_progress = self.progress_signal
 
     def maybe_advance_stage(self, outcome_history, episodes_completed):
         """Mirror-phase stage gate. Returns (new_stage, reason), or None.
@@ -325,12 +386,31 @@ class CurriculumManager:
             reason = "gate"
         else:
             if long_mean is not None:
-                if long_mean > self.best_rung_mean + PLATEAU_IMPROVEMENT:
-                    self.best_rung_mean = long_mean
+                # TREND on a signal PFSP does not regulate; FLOOR on the
+                # readable rate. Two different questions, so two different
+                # quantities -- see `progress_signal`.
+                trend = self._improvement_signal(long_mean)
+                if trend > self.best_rung_mean + PLATEAU_IMPROVEMENT:
+                    self.best_rung_mean = trend
                     self.best_rung_episode = episodes_completed
                 elif (episodes_completed - self.best_rung_episode
                         >= PLATEAU_PATIENCE_EPISODES
-                        and long_mean >= PLATEAU_MIN_WIN_RATE):
+                        and trend >= PLATEAU_MIN_WIN_RATE
+                        # STOPPED IMPROVING AND GETTING WORSE ARE DIFFERENT
+                        # STATES AND NEED OPPOSITE RESPONSES, which this branch
+                        # could not tell apart: a rung that is destroying the
+                        # agent also satisfies "has not improved", so the valve
+                        # PROMOTED it -- and did so before the backstop below
+                        # ever got the chance to demote. Measured on the live
+                        # run at rung 3 -> 4, twice.
+                        #
+                        # A converged rung wobbles inside PLATEAU_IMPROVEMENT by
+                        # construction, since that is the band that updates
+                        # `best_rung_mean`. Falling twice that far is not a
+                        # plateau, and the demotion path owns it.
+                        and (self.rung_entry_progress is None
+                             or trend >= self.rung_entry_progress
+                             - REGRESSION_MARGIN)):
                     reason = "plateau"
         if reason is None:
             return None
@@ -388,12 +468,60 @@ class CurriculumManager:
         # and it would fire on an improving run. Pinned by
         # `test_a_still_improving_rung_is_never_moved_by_the_backstop`, which
         # calls both in the trainer's order.
-        capped_out = (long_mean is not None
-                      and long_mean < PLATEAU_MIN_WIN_RATE
+        # THE FLOOR READS THE UNREGULATED SIGNAL TOO, since 2026-09-06, and for
+        # the same reason the plateau's trend test does one function up.
+        #
+        # PFSP weights a deck by (1 - win_rate)^2, so the readable rate is
+        # driven toward the agent's WORST matchups and stays there however
+        # strong it gets. Measured on the live phase-9 run: an unweighted
+        # per-deck mean of 0.62 -- beating fourteen decks of sixteen -- while
+        # `long_mean` read 0.29. This test fired on the 0.29 and demoted rung
+        # 3 -> 2 -> 1, weakening the teacher on an agent that was improving,
+        # and would have continued to rung 0.
+        #
+        # "Is the agent competitive here" is a LEVEL question and so needs a
+        # level the sampler does not regulate. Falls back to `long_mean` when no
+        # progress signal is supplied, which is the mirror path.
+        floor_signal = self._improvement_signal(long_mean)
+        capped_out = (floor_signal is not None
+                      and floor_signal < PLATEAU_MIN_WIN_RATE
                       and episodes_completed - self.best_rung_episode
                       >= MAX_EPISODES_PER_RUNG)
-        if not (catastrophic or capped_out):
+
+        # OVER-PROMOTION IS A REGRESSION, NOT A LOW LEVEL -- and moving the
+        # floor onto the progress signal above made the old test blind to it.
+        # A rung that is actively destroying a 0.64 agent leaves it at 0.58,
+        # which is nowhere near the 0.40 floor, so nothing fired.
+        #
+        # Measured twice on the live run, both at rung 3 -> 4 (the first horizon
+        # increase, 20 -> 30 ticks): 0.535 -> 0.522 over 600 episodes, then
+        # 0.637 -> 0.583 over 1,800 with the worst deck 0.12 -> 0.07. Both were
+        # caught by hand, which is not a mechanism.
+        #
+        # REGRESSION_MARGIN is 2x PLATEAU_IMPROVEMENT so the detector cannot
+        # fire on the wobble a converged rung shows: `best_rung_mean` only
+        # updates on a rise of PLATEAU_IMPROVEMENT, so a band of exactly that
+        # width is ordinary noise by construction and anything twice it is not.
+        regressed = (self.progress_signal is not None
+                     and self.rung_entry_progress is not None
+                     and self.progress_signal
+                     < self.rung_entry_progress - REGRESSION_MARGIN)
+        if not (catastrophic or capped_out or regressed):
             return None
+        # WHICH valve fired, for the caller's log line. Both paths call
+        # `stage -= 1`, and the trainer's message used to hardcode the
+        # catastrophe wording -- so a BACKSTOP demotion reported "sustained win
+        # rate at or below 10%" while the actual rate was 0.39, and cost a
+        # reader a full investigation to discover the message was wrong.
+        self.last_demotion_reason = (
+            f"win rate {win_rate:.2f} at or below the {STALL_WIN_RATE:.0%} "
+            f"catastrophe floor" if catastrophic else
+            f"progress fell to {self.progress_signal:.2f} from {self.rung_entry_progress:.2f} "
+            f"at this rung -- the rung is making the agent worse, not merely "
+            f"failing to help (regression, not catastrophe)" if regressed else
+            f"500-episode mean {long_mean:.2f} below the "
+            f"{PLATEAU_MIN_WIN_RATE:.0%} floor with no improvement for "
+            f"{MAX_EPISODES_PER_RUNG} episodes (backstop, not catastrophe)")
         self.stage -= 1
         self.demotions += 1
         # Same bookkeeping an advance does: the rung must be judged on fresh

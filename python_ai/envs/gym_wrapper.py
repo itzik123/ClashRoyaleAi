@@ -735,6 +735,38 @@ class MicroRoyaleEnv(gym.Env):
         prev = self.deck_pool_stats[name]
         self.deck_pool_stats[name] = (1 - alpha) * prev + alpha * (1.0 if won else 0.0)
 
+    def set_deck_pool_stats(self, stats, counts=None):
+        """Seed this worker's estimates from a resumed checkpoint.
+
+        WHY THIS EXISTS. `deck_pool_stats` was initialised from
+        `prior_win_rate` on every env construction and lived only in worker
+        memory, so EVERY RESTART discarded what the run had learned about the
+        pool. Measured on the 2026-09-04 run after 12,589 episodes: the agent
+        had learned xbow_30_cycle 0.181 and mortar_cycle 0.176, against JSON
+        priors of 0.867 and 0.800 -- and PFSP weights by `(1 - rate)^2`, so
+        those two decks' sampling weight was wrong by a factor of ~37 on resume.
+        The 100-episode win rate fell 0.42 -> 0.143 and took ~500 episodes to
+        recover, every restart, invisibly.
+
+        COUNTS ARE NOT OPTIONAL. `alpha = max(0.05, 1/(n+1))`, so restoring the
+        rates while leaving counts at zero gives the very next match alpha = 1.0
+        and overwrites the restored estimate with a single game's outcome -- a
+        restore that erases itself on contact, which would look exactly like the
+        bug it was meant to fix.
+        """
+        if not self.deck_pool_stats:
+            return          # pool disabled for this worker; nothing to seed
+        for name, rate in (stats or {}).items():
+            if name in self.deck_pool_stats:
+                self.deck_pool_stats[name] = float(rate)
+        for name, n in (counts or {}).items():
+            if name in self._deck_pool_counts:
+                self._deck_pool_counts[name] = int(n)
+
+    def get_deck_pool_counts(self):
+        """Matches played per deck by this worker -- the other half of a resume."""
+        return dict(self._deck_pool_counts)
+
     def get_deck_pool_stats(self):
         """This worker's per-deck estimates, for the trainer's read-out.
 

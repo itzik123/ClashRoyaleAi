@@ -1168,6 +1168,39 @@ episodes across all such decks, rather than the 20% a shared floor gave — and
 climbs back out on its own as the agent improves, which a static exclusion list
 cannot do. The tags stay in the JSON as commentary and gate nothing.
 
+> **AND THAT FILTER WAS MEASURING THE WRONG THING. `POOL_WINRATE_FLOOR` is 0.0
+> — OFF — since 2026-09-06.** Its input is a win rate, and a win rate against
+> this pool confounds *how hard the deck is* with *whether the teacher can
+> pilot it*. It could not pilot five of the sixteen (next section), so the
+> floor read "the agent beats this deck" as "winnable" when the cause was a
+> broken opponent, and "the agent loses to this deck" as "structurally lost"
+> when the cause was a teacher that pilots heavy decks correctly by accident —
+> "send the most expensive building-targeter to the bridge" **is** the Royal
+> Giant plan.
+>
+> The episode shares it produced, against the 2026-09-05 per-deck measurement:
+>
+> | deck | win | share of episodes | |
+> |---|---|---|---|
+> | dart_bait_cycle | 0.20 | **26.7%** | teacher never played the Barrel |
+> | mortar_cycle | 0.20 | **26.7%** | teacher never played the Mortar |
+> | rg_fisherman / royal_hogs / mega_knight_ram | 0.00 | **0.84% each** | |
+>
+> **Over half the run went to two decks the opponent could not play, and the
+> three that beat it 40-0 got 0.84% each.** On the shipped priors it is worse:
+> 2% of episodes total to every deck below the floor. A 2.6 cycle deck is BUILT
+> to answer a big push with minimal elixir — two Cannons, a whole cycle inside
+> one defence — so those matchups are the only place that skill can be learned,
+> and they were the ones being skipped.
+>
+> **The zero-gradient worry is real and belongs to the RUNG, not the deck.**
+> Difficulty here is the teacher's lookahead. Measured 2026-09-06 on the
+> ep-83,128 policy against the FIXED teacher, 20 greedy episodes per deck:
+> `rg_fisherman_cycle` scores **0.800 at rung 2** against **0.000 at rung 10**.
+> So a deck is not unwinnable, it is unwinnable *at a rung* — and the fix for a
+> hopeless matchup is to lower the rung, which the ladder then climbs back.
+> `pfsp_weights(floor=...)` restores the old behaviour in one argument.
+
 **THE COLD START IS REAL AND IS NOT SOLVED.** A random-init policy won **0 of
 its first 100 episodes** against the pool, against ~0.07 for the historical
 mirror run over the same span, and that was true both before and after the
@@ -1212,6 +1245,94 @@ schedule stalls permanently on the first hard one — the exact failure being
 fixed. It is also the lesson phase 2 already learned one level up, where a
 ladder was replaced by PFSP because a ladder never revisits and so cannot
 prevent forgetting.
+
+### THE TEACHER COULD NOT PILOT 5 OF THE 16 DECKS (fixed 2026-09-06)
+
+`card_roles` promotes **the most expensive BUILDING-TARGETER** to win condition.
+That is right for a Hog, a Giant, a Royal Giant or a Battle Ram and finds
+**nothing** in a deck whose route to a tower is a siege building or a spell —
+so `mortar_cycle`, `xbow_30_cycle`, both bait decks and `graveyard_control` got
+`wincon_id = None`, and **every combo family bails on that**. The teacher was
+left purely reactive with a third of the pool.
+
+**Measured against an opponent that does NOTHING** (`step_self_play`, both sides
+no-op — plain `step` runs the C++ heuristic, which defends). A competent pilot
+of any of these decks should three-crown a defenceless opponent inside three
+minutes:
+
+| deck | twr dmg | ticks | elixir spent | the named card's own spend |
+|---|---|---|---|---|
+| hog_26_mirror | 8515 | 718 | 23.4 | Hog Rider 6.0 |
+| xbow_30_cycle | 2486 | **3600 (timeout)** | **6.0** | X-Bow **0.0** |
+| graveyard_control | 2407 | **3600 (timeout)** | **6.1** | Graveyard **0.0** |
+| mortar_cycle | 4683 | 1769 | 15.0 | Mortar **0.0** |
+| classic_log_bait | 5405 | 1734 | 7.9 | Goblin Barrel **0.0** |
+
+**It never spent one elixir on the card the deck is named for**, and with X-Bow
+and Graveyard it could not finish a defenceless match in the full 3600 ticks,
+spending 6 of ~278 available income — **2.2%**.
+
+**AND THE CELL IS AS LOAD-BEARING AS THE CARD.** Sweeping every legal cell,
+scored as enemy tower HP actually lost:
+
+| card | cells that damage the tower | best | where |
+|---|---|---|---|
+| Mortar | **34 of 170** | 1596 | rows 13-15 only |
+| X-Bow | **34 of 170** | 3824 | row 15, centre columns |
+| Goblin Barrel | 588 of 588 | 1320 | on the enemy tower (600 in our own half) |
+| Graveyard | **0 of 588** | **0** | nowhere — see below |
+
+A siege building one row too far back is worth *exactly* as much as not playing
+it — 136 of its 170 legal cells score precisely zero. So `best_building_cell`'s
+defensive answer was not merely suboptimal, it was total.
+
+**The fix is derived by injection, never a card-name list** — the technique
+`_card_table_uncached` already uses. `siege_reach(card_id)` injects a building at
+the furthest-forward legal row and reads tower HP lost; `spell_spawns_bodies`
+injects a spell and counts friendly bodies. **The spawn, not the damage, is the
+discriminator for a spell**: every direct spell hurts a tower it is cast on, so
+"does it damage the tower" would promote Rocket in log bait and Fireball in
+mortar cycle. The fallback fires **only when no building-targeter exists**, so
+the eleven decks that already resolved a win condition are bit-identical.
+
+Re-measured after the fix, same probe:
+
+| deck | before | after |
+|---|---|---|
+| mortar_cycle | 4683 / 1769 t | **8930 / 882 t** — now the pool's strongest |
+| xbow_30_cycle | 2486 / **3600 t** | **8424 / 1529 t**, 75% three-crowns |
+| classic_log_bait | 5405 / 1734 t | **7994 / 512 t** |
+| graveyard_control | 2407 / **3600 t** | 4323 / 2520 t — still last, see item 27 |
+
+**GAMEPLAY-AFFECTING**: five of sixteen opponents got materially stronger, so no
+win rate is comparable across this date. The eleven unchanged decks moved ±10%
+in this probe, which is the teacher's own unseeded profile draw, not an effect.
+
+**GRAVEYARD'S CADENCE EXACTLY CANCELLED A TOWER'S FIRE RATE (fixed 2026-09-06).**
+It dealt **zero** tower damage from all 588 legal cells -- and the first
+explanation given here, "it spawns only one skeleton", was WRONG. Counted where
+nothing can kill them, the bodies climb 1,2,...,**9** exactly as
+`withRepeats(9, 10)` asks. What the zero measured was a KILL RATE EQUAL TO THE
+SPAWN RATE: one 81-hp Skeleton per 10 ticks against a Princess Tower firing once
+per 10 ticks leaves a standing population of 1 forever and lets none of them
+live long enough to swing.
+
+**An instantaneous count cannot tell "nothing spawned" from "everything spawned
+and died on schedule."** That is the saturating-measurement trap in the mirror:
+the "maximal permissiveness" rule under Measurement discipline has a twin where
+the failure mode is maximal SUPPRESSION, and it needs the same thing -- a
+control that must fire, here a board on which death is impossible.
+
+Real card: one Skeleton every **0.5 s**, 12 total since the 2026-01-06 balance
+change. Now `withRepeats(12, 5)`, so arrivals outrun a tower 2:1, which is the
+mechanic the card is built on. GAMEPLAY-AFFECTING: `graveyard_control` stops
+being a seven-card deck, so the agent's 0.925 against it is void.
+`UPSTREAM_REQUESTS.md` item 27.
+
+**The general shape, which this project keeps meeting:** a rule that is correct
+for the case it was written against, silently returning "nothing" outside it.
+`wincon_id = None` did not raise, did not warn, and reads downstream as a
+teacher that is merely passive.
 
 ### RESUMING INTO THE POOL: DROP THE RUNG FIRST (measured 2026-09-03)
 

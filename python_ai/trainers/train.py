@@ -327,6 +327,14 @@ def make_env(seed=None):
 class Phase1Trainer(BaseTrainer):
     """PPO vs the teacher, with the two-phase curriculum on top."""
 
+    #: Set by load_checkpoint, read by _apply_curriculum_to_envs. Class-level
+    #: defaults because a FRESH start returns from load_checkpoint before
+    #: either is assigned, while _apply_curriculum_to_envs still runs -- the
+    #: empty dicts then mean "no estimate to restore, use the JSON priors",
+    #: which is the pre-2026-09-04 behaviour exactly.
+    _restored_deck_stats = {}
+    _restored_deck_counts = {}
+
     pipeline_name = "pipeline1"
     #: Defensive scenario windows can now expire here, exactly as in pipeline 2.
     #: Without this the window would be reported as a TERMINAL and the critic
@@ -402,6 +410,8 @@ class Phase1Trainer(BaseTrainer):
                 return False
             self.restore_common(checkpoint)
             self.curriculum.load_state_dict(checkpoint)
+            self._restored_deck_stats = checkpoint.get("deck_pool_stats") or {}
+            self._restored_deck_counts = checkpoint.get("deck_pool_counts") or {}
             self._apply_curriculum_to_envs()
             print(f"Resumed from {self.weight_path}: "
                   f"episode {self.episodes_completed}, "
@@ -432,9 +442,56 @@ class Phase1Trainer(BaseTrainer):
                 and self.curriculum.current_random_deck is not None):
             self.envs.call("set_opponent_deck",
                            self.curriculum.current_random_deck)
+        # Restore the PFSP deck estimate. Every worker is seeded with the POOLED
+        # rates rather than its own former ones -- workers are interchangeable
+        # and the pooled estimate is strictly better than any single worker's.
+        if self._restored_deck_stats:
+            self.envs.call("set_deck_pool_stats", self._restored_deck_stats,
+                           self._restored_deck_counts)
+            worst = min(self._restored_deck_stats.items(), key=lambda kv: kv[1])
+            print(f">>> Restored PFSP deck estimates for "
+                  f"{len(self._restored_deck_stats)} decks "
+                  f"(worst: {worst[0]} {worst[1]:.3f}) -- without this the pool "
+                  f"resets to meta_decks.json priors and the win rate dips for "
+                  f"~500 episodes while it re-learns.")
+
+    def _merged_deck_pool(self):
+        """(rates, counts) pooled across workers, or (None, None).
+
+        Rates are AVERAGED -- each worker holds an independent EWMA over the
+        episodes it played, so the mean is the pooled estimate, the same way
+        `_log_deck_stats` already reads them. Counts are averaged too and only
+        decide `alpha = max(0.05, 1/(n+1))`, which floors at n = 19; after a
+        real run every count is far past that, so the exact convention does not
+        matter as long as it is not zero.
+        """
+        if not PHASE1_DECK_POOL or self.envs is None:
+            return None, None
+        try:
+            rates = self.envs.call("get_deck_pool_stats")
+            counts = self.envs.call("get_deck_pool_counts")
+        except Exception:
+            return None, None       # a worker that cannot answer must not
+                                    # break checkpointing
+        def _avg(dicts, cast):
+            merged = {}
+            for d in dicts:
+                for k, v in (d or {}).items():
+                    merged.setdefault(k, []).append(v)
+            return {k: cast(sum(v) / len(v)) for k, v in merged.items()} or None
+        return _avg(rates, float), _avg(counts, int)
 
     def checkpoint_payload(self):
-        return self.curriculum.state_dict()
+        payload = self.curriculum.state_dict()
+        # The PFSP deck estimate is expensive to learn and was previously
+        # thrown away on every restart -- see MicroRoyaleEnv.set_deck_pool_stats
+        # for the measurement. Absent keys simply mean an older checkpoint, and
+        # the loader falls back to the JSON priors as before.
+        rates, counts = self._merged_deck_pool()
+        if rates:
+            payload["deck_pool_stats"] = rates
+            payload["deck_pool_counts"] = counts or {}
+        return payload
 
     # -- the phase machine --------------------------------------------------
     def should_stop(self):
@@ -582,9 +639,10 @@ class Phase1Trainer(BaseTrainer):
         teacher the agent was not in fact beating.
         """
         self.envs.call("set_teacher_stage", self.curriculum.teacher_stage)
-        print(f">>> [STALL] Curriculum DEMOTED to stage {new_stage} "
-              f"(teacher_stage={self.curriculum.teacher_stage}) after a "
-              f"sustained win rate at or below {STALL_WIN_RATE:.0%}. "
+        reason = (getattr(self.curriculum, "last_demotion_reason", "")
+                  or f"sustained win rate at or below {STALL_WIN_RATE:.0%}")
+        print(f">>> [DEMOTED] Curriculum DEMOTED to stage {new_stage} "
+              f"(teacher_stage={self.curriculum.teacher_stage}): {reason}. "
               f"Demotions this run: {self.curriculum.demotions}.")
         self.writer.add_scalar("Training/Curriculum_Stage", new_stage,
                                self.episodes_completed)
@@ -654,6 +712,18 @@ class Phase1Trainer(BaseTrainer):
                                self.episodes_completed)
         self.writer.add_scalar("Decks/WinRate_Spread",
                                max(avg.values()) - min(avg.values()),
+                               self.episodes_completed)
+        # THE PLATEAU VALVE'S TREND SIGNAL. The readable win rate cannot serve:
+        # PFSP weights a deck by (1 - win_rate)^2, so it regulates that number
+        # toward the worst matchups and it stays ~0.50 however much the agent
+        # improves. Measured ep 83,128 -> 87,540, this mean went 0.301 -> 0.534
+        # with all sixteen decks rising while the readable rate was flat, and
+        # the valve advanced the rung twice on the strength of that flatness.
+        # Unweighted deliberately: the PFSP weighting is the very thing being
+        # corrected for, so re-applying it here would reintroduce the blindness.
+        self.curriculum.note_progress(sum(avg.values()) / len(avg))
+        self.writer.add_scalar("Decks/WinRate_UnweightedMean",
+                               sum(avg.values()) / len(avg),
                                self.episodes_completed)
 
     def _print_progress(self):

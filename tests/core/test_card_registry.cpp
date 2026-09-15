@@ -9,6 +9,7 @@
 #include "Building.h"
 #include "AreaSpell.h"
 #include "Projectile.h"
+#include "Tower.h"
 #include <vector>
 #include <tuple>
 #include <map>
@@ -1049,7 +1050,51 @@ TEST_CASE("Graveyard rains Skeletons over its duration, one small batch per tick
     for (const auto& e : board.getEntities()) {
         if (e->name == "Skeletons") skeletonCount++;
     }
-    REQUIRE(skeletonCount == 9); // 9 applications, one Skeleton each
+    // 12, from the published card: one Skeleton every 0.5 s, 12 total since
+    // the 2026-01-06 balance change.
+    REQUIRE(skeletonCount == 12);
+}
+
+TEST_CASE("Graveyard spawns faster than a Princess Tower can kill", "[card_registry][spell][spawn]") {
+    // THE RULE THE CARD IS BUILT ON, asserted as a RELATIONSHIP rather than as
+    // the number 5, so retuning either side stays free and letting them collide
+    // again does not.
+    //
+    // Measured 2026-09-06: at the previous 10-tick cadence Graveyard dealt ZERO
+    // tower damage from all 588 of its legal cells. All nine Skeletons really
+    // did spawn -- but one 81-hp body per 10 ticks against a tower firing once
+    // per 10 ticks is a standing population of 1 forever, and none of them ever
+    // lived long enough to swing. Counting the bodies could not see that, which
+    // is why this second case exists next to the count above.
+    Board board;
+    CardRegistry::getInstance().getCard(110)->spawnEntity(9.0f, 9.0f, 0, board);
+    board.commitPendingEntities();
+    auto spell = std::dynamic_pointer_cast<AreaSpell>(board.getEntities().back());
+    REQUIRE(spell != nullptr);
+
+    auto living = [&board]() {
+        int n = 0;
+        for (const auto& e : board.getEntities())
+            if (e->name == "Skeletons") n++;
+        return n;
+    };
+
+    std::vector<int> arrivals;
+    int last = living();
+    for (int tick = 0; tick < 200 && spell->isAlive(); ++tick) {
+        spell->update(board);
+        board.commitPendingEntities();
+        if (living() > last) { arrivals.push_back(tick); last = living(); }
+    }
+    REQUIRE(arrivals.size() >= 2);
+
+    int widestGap = 0;
+    for (size_t i = 1; i < arrivals.size(); ++i)
+        widestGap = std::max(widestGap, arrivals[i] - arrivals[i - 1]);
+
+    // The yardstick is read from a real Princess Tower, not written here.
+    Tower princess(999, 3.0f, 6.0f, 2534, 1, 7.0f, 50, 10, 'P');
+    REQUIRE(widestGap < princess.getAttackCooldown());
 }
 
 TEST_CASE("Royal Delivery deals landing damage and drops a single shielded defender", "[card_registry][spell][spawn]") {

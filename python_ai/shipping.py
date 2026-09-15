@@ -1,5 +1,25 @@
 """The shipping agent: which weights, which search settings, and why.
 
+> **WARNING (2026-09-06): THE SEARCH SETTINGS BELOW ARE MEASURED NEGATIVE
+> AGAINST THE CURRENT OPPONENT. Ship the policy GREEDY until this is
+> re-validated.**
+>
+> Every number in this file was measured against the C++ HeuristicOpponent.
+> Re-measured against the UtilityTeacher on the 16-deck pool with the ep-111k
+> policy (`eval/search_vs_greedy_pool_ab.py`, paired, n=30, seeded teacher),
+> this exact configuration -- horizon 12 -- scores:
+>
+>     greedy 0.700   search 0.267   delta -0.433 [-0.633, -0.233]  p = 0.00098
+>
+> and it is negative at horizon 4 and 8 as well. The cause is not a regression
+> in search: a candidate rollout assumes BOTH SIDES NO-OP, which models the C++
+> heuristic passably and a forward-simulating teacher badly. See TODO 0e for the
+> full table and for the two hypotheses that were tested and refuted.
+>
+> The horizon sweep below is therefore a record of what was true against the
+> heuristic, not a current recommendation.
+
+
 ONE PLACE that names the deployable configuration, so an evaluation and a
 deployment cannot silently drift onto different settings -- the same reason
 `search.config.SearchCfg` is a frozen dataclass rather than an argparse
@@ -82,7 +102,39 @@ import python_ai  # noqa: E402,F401
 # The surviving 2.6 Hog Cycle baseline (episode 31,312). Replace this with the
 # Episode 0 run's output once that run has been measured -- not before, and not
 # by assuming the numbers in the docstring carry over.
-SHIPPING_WEIGHTS = "model_weights_selfplay.pth"
+#: model_weights_selfplay.pth was DELETED in the 2026-08-19 cleanup, so this
+#: pointed at a missing file and every deployment path raised
+#: FileNotFoundError. Frozen copy of phase 9 at ep 115,173 -- the only
+#: checkpoint that loads clean against the current observation layout, and
+#: a COPY so a resumed training run cannot mutate what ships.
+SHIPPING_WEIGHTS = "model_weights_live.pth"
+
+#: THE SHIPPING SWITCH. False since 2026-09-06: search is measured NEGATIVE
+#: against the opponent phase 1 actually trains on, so the deployable agent
+#: runs its policy GREEDY.
+#:
+#: Paired, seeded, UtilityTeacher rung 3 on the 16-deck pool, ep-111k policy,
+#: `eval/search_vs_greedy_pool_ab.py`. The greedy control reads 0.844 in all
+#: three, which is what makes the pairing credible:
+#:
+#:     horizon  4   greedy 0.844   search 0.531   -0.313 [-0.531, -0.125]
+#:     horizon  8   greedy 0.844   search 0.312   -0.531 [-0.719, -0.313]
+#:     horizon 12   greedy 0.844   search 0.375   -0.469 [-0.688, -0.250]
+#:
+#: and on THIS file's own configuration, -0.433 [-0.633, -0.233], p = 0.00098.
+#:
+#: A FLAG rather than a deletion, because the fault is not in the search. A
+#: candidate rollout is stepped by the C++ HeuristicOpponent (`sim.step` runs
+#: it), while the real opponent forward-simulates -- so search optimises against
+#: a materially different and weaker opponent than the one it then faces. Every
+#: positive search result in this repo, including the +0.319 and the horizon
+#: sweep below, was measured against that same heuristic, which is why they held
+#: at the time and do not now. Give the rollout the right opponent and this can
+#: come back on -- after a re-measurement, which
+#: `test_shipping_does_not_use_search_until_it_is_re_validated` exists to force.
+#:
+#: Widening needs no separate switch: with search off it never runs.
+USE_SEARCH = False
 
 SEARCH_HORIZON = 12        # decision steps rolled forward; 1 step = 1 s
 SEARCH_K_CARDS = 3         # top-k card head arms expanded

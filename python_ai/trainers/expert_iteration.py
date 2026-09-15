@@ -307,6 +307,12 @@ def main():
     ap.add_argument("--max-steps", type=int, default=400)
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--opp-elixir", type=float, default=1.5)
+    ap.add_argument("--teacher-stage", type=int, default=None,
+                    help="collect against the UtilityTeacher at this curriculum "
+                         "rung, round-robin over the 16-deck pool -- i.e. the "
+                         "TRAINING distribution. Omitted, collection uses the "
+                         "original 2.6-mirror-vs-heuristic env, which is what "
+                         "every recorded dataset and the +0.045 result used.")
     ap.add_argument("--time-budget", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=None,
                    help="Seed every RNG so this run reproduces. Off by "
@@ -334,10 +340,17 @@ def main():
         net = load_net(resolve(args.weights), device)
         print(f"  search      : K<={1 + args.k_cards * args.k_cells} candidates, "
               f"horizon={args.horizon} steps")
-        print(f"  opponent    : HeuristicOpponent at {args.opp_elixir}x elixir")
+        if args.teacher_stage is None:
+            print(f"  opponent    : HeuristicOpponent at {args.opp_elixir}x elixir")
+            print("  distribution: 2.6 MIRROR -- 16th of 16 on opportunity for "
+                  "Cannon / The Log / Fireball. Pass --teacher-stage to collect "
+                  "on the training distribution instead.")
+        else:
+            print(f"  opponent    : UtilityTeacher at rung {args.teacher_stage}")
         data, meta = collect_expert_labels(
             net, args.collect, cfg, device, args.opp_elixir, args.max_ticks,
-            args.time_budget)
+            args.time_budget, pool_stage=args.teacher_stage,
+            seed0=(args.seed or 0))
         bc_pretrain.save_dataset(data, resolve(args.data))
         mb = data["obs"].nbytes / 2 ** 20
         print(f"\n  wrote {len(data['card'])} rows from {meta['episodes']} episodes "
@@ -402,9 +415,24 @@ def main():
               f"(null {base_match['cell_match']:.4f}, modal {modal:.3f}, "
               f"delta {new_match['cell_match'] - base_match['cell_match']:+.4f})")
         print(f"    critic drift |dV|    {v_drift:.6f}   aux |d| {aux_drift:.6f}")
-        if not args.full_finetune and (v_drift != 0.0 or aux_drift != 0.0):
-            print("    !! NONZERO under --freeze-trunk. The freeze did not take; the critic")
-            print("       that generated these labels is moving underneath the experiment.")
+        # TOLERANCE, not `!= 0.0`. The exact comparison fired on every frozen
+        # run: `critic_drift` re-runs V(s) through the net, and CPU conv/matmul
+        # reduction order is not deterministic across calls, so an untouched
+        # trunk still yields ~1e-8. The message printed "NONZERO" directly under
+        # a value rendered "0.000000", which is how a guard teaches people to
+        # ignore it.
+        #
+        # The AUTHORITATIVE check is tensor identity, not a forward pass:
+        # verified on this exact path, 44 tensors bit-identical, 0 trunk tensors
+        # moved, and only card_head + place_ctx/place_up changed. 1e-5 sits far
+        # above the noise and far below any real drift -- the --full-finetune
+        # arm, which genuinely moves the trunk, measured 0.048086.
+        FREEZE_DRIFT_TOL = 1e-5
+        if not args.full_finetune and (v_drift > FREEZE_DRIFT_TOL
+                                       or aux_drift > FREEZE_DRIFT_TOL):
+            print(f"    !! ABOVE {FREEZE_DRIFT_TOL:g} under --freeze-trunk. The freeze did not")
+            print("       take; the critic that generated these labels is moving")
+            print("       underneath the experiment.")
         atomic_save({"model": student.state_dict(),
                     "distilled_from": os.path.basename(args.weights),
                     "labels": os.path.basename(args.data),
