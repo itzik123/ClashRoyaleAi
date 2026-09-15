@@ -484,13 +484,27 @@ def validate_side_null(net_path, episodes=300):
     place.
     """
     banner("6. Side null (policy vs a bit-exact copy of itself)")
-    if not os.path.exists(net_path):
-        check("side null", False, f"missing {net_path}")
-        return
-    from python_ai.models.policy_io import load_net
     dev = torch.device("cpu")
-    a = load_net(net_path, dev, verbose=False)
-    b = load_net(net_path, dev, verbose=False)
+    if os.path.exists(net_path):
+        from python_ai.models.policy_io import load_net
+        a = load_net(net_path, dev, verbose=False)
+        b = load_net(net_path, dev, verbose=False)
+    else:
+        # NO CHECKPOINT IS NOT A REASON TO SKIP THIS. It used to FAIL with
+        # "missing", and the checkpoint it wanted was deleted on 2026-08-19, so
+        # the one side-asymmetry detector this project has was unrunnable for
+        # weeks. A seeded random-init net against a bit-exact copy of itself is
+        # a SHARPER subject: an untrained policy has no side-specific skill, so
+        # any deviation from 0.50 is structural.
+        from python_ai.deck import DEFAULT_DECK
+        from python_ai.envs.gym_wrapper import DEFAULT_DECK_ABILITY_SLOTS
+        from python_ai.models.net import MicroRoyaleNet
+        print(f"    no {net_path}; using a seeded random-init net (a sharper "
+              f"subject for a structural asymmetry)", flush=True)
+        torch.manual_seed(0)
+        a = MicroRoyaleNet(num_ability_slots=DEFAULT_DECK_ABILITY_SLOTS).to(dev).eval()
+        b = MicroRoyaleNet(num_ability_slots=DEFAULT_DECK_ABILITY_SLOTS).to(dev).eval()
+        b.load_state_dict(a.state_dict())
     for p in list(a.parameters()) + list(b.parameters()):
         p.requires_grad_(False)
 
@@ -585,6 +599,44 @@ def _newest_source_mtime():
     return newest
 
 
+def _sources_changed_since(built, root=None):
+    """Engine sources whose CONTENT changed after `built` (a POSIX mtime).
+
+    MTIME ALONE CRIES WOLF. On 2026-09-15 tooling rewrote six headers byte for
+    byte; `git status` was clean, the .pyd was verified current behaviourally,
+    and this gate still FAILED. A file therefore counts only if it is newer than
+    the build AND either differs from HEAD (an uncommitted edit) or was last
+    committed after the build. Falls back to mtime when git is unavailable.
+    """
+    root = root or python_ai.REPO_ROOT
+    changed = []
+    for d in CPP_SOURCE_DIRS:
+        for dirpath, _dirs, files in os.walk(os.path.join(root, d)):
+            for f in files:
+                if not f.endswith((".h", ".hpp", ".cpp")):
+                    continue
+                full = os.path.join(dirpath, f)
+                if os.path.getmtime(full) <= built:
+                    continue
+                rel = os.path.relpath(full, root).replace(os.sep, "/")
+                try:
+                    dirty = subprocess.run(
+                        ["git", "diff", "--quiet", "HEAD", "--", rel], cwd=root,
+                        capture_output=True).returncode != 0
+                    untracked = subprocess.run(
+                        ["git", "ls-files", "--error-unmatch", rel], cwd=root,
+                        capture_output=True).returncode != 0
+                    committed = subprocess.run(
+                        ["git", "log", "-1", "--format=%ct", "--", rel], cwd=root,
+                        capture_output=True, text=True).stdout.strip()
+                except OSError:
+                    changed.append(rel)
+                    continue
+                if dirty or untracked or (committed and float(committed) > built):
+                    changed.append(rel)
+    return sorted(changed)
+
+
 def _find_cpp_suite():
     """Newest ClashRoyaleTests.exe in the most-preferred dir that holds one."""
     for d in CPP_BUILD_DIRS:
@@ -606,10 +658,13 @@ def validate_cpp():
               "ClashRoyaleTests.exe not found in " + "/".join(CPP_BUILD_DIRS))
         return
 
-    built, newest = os.path.getmtime(exe), _newest_source_mtime()
+    built = os.path.getmtime(exe)
     stamp = lambda t: time.strftime("%m-%d %H:%M", time.localtime(t))  # noqa: E731
-    check("the test binary post-dates the engine source", built >= newest,
-          f"{where}/ built {stamp(built)}, newest source {stamp(newest)}")
+    stale = _sources_changed_since(built)
+    check("the test binary post-dates the engine source", not stale,
+          f"{where}/ built {stamp(built)}; "
+          + (f"changed since: {', '.join(stale[:5])}" if stale
+             else "no source content changed since"))
 
     t0 = time.time()
     p = subprocess.run([exe], capture_output=True, text=True, timeout=1800)

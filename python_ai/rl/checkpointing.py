@@ -24,7 +24,26 @@ import torch
 import python_ai
 
 
-def atomic_save(payload, path):
+#: Retries for `os.replace` on Windows, where it fails with PermissionError while
+#: ANY other handle has the destination open -- measured (audit 08): a reader
+#: holding the checkpoint made the replace raise and the trainer die.
+#: `monitor_run.py` opens the checkpoint on every check, so this is not rare.
+_REPLACE_RETRIES = 20
+_REPLACE_BACKOFF_S = 0.5
+
+
+def _replace_with_retry(src, dst):
+    import time as _time
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            _time.sleep(_REPLACE_BACKOFF_S)
+
+
+def atomic_save(payload, path, keep_previous=False):
     """`torch.save` that cannot leave a TRUNCATED file at `path`.
 
     THE LIVE CHECKPOINT IS THE RUN. `save_checkpoint` used to overwrite it in
@@ -64,7 +83,14 @@ def atomic_save(payload, path):
             # while the CONTENT it points at is still only in the page cache,
             # which is the same truncated file by a slower route.
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        if keep_previous and os.path.exists(path):
+            # ONE backup generation. There was a single copy of a multi-day
+            # run's training state (audit 08, gap 6). A COPY, not a rename: a
+            # rename of a file another process has open fails on Windows, and
+            # the copy leaves the live file in place if anything below fails.
+            import shutil
+            shutil.copy2(path, path + ".prev")
+        _replace_with_retry(tmp, path)
     except BaseException:
         # BaseException, not Exception: KeyboardInterrupt is the single most
         # likely way a training run is interrupted mid-save.
@@ -154,6 +180,11 @@ HISTORICAL_CHECKPOINT_INTERVAL_EPISODES = 2000
 # SEVERAL stages' opponents, which requires having kept the per-stage weights.
 STAGE_CHECKPOINT_DIR = run_path("stage_checkpoints")
 
+def _teacher_table_size():
+    from python_ai.rl.curriculum import CURRICULUM_STAGES
+    return len(CURRICULUM_STAGES)
+
+
 def save_stage_snapshot(net, directory, stage, episodes_completed, teacher_stage, reason):
     """Weights-only snapshot tagged with the curriculum state it was taken at.
 
@@ -169,6 +200,9 @@ def save_stage_snapshot(net, directory, stage, episodes_completed, teacher_stage
     atomic_save({
         "model": net.state_dict(),
         "curriculum_stage": stage,
+        # Stamped so a snapshot copied over a resume target is not remapped as
+        # a legacy six-rung index (audit 04 C4).
+        "teacher_table_size": _teacher_table_size(),
         "episodes_completed": episodes_completed,
         "teacher_stage": teacher_stage,
         "reason": reason,

@@ -87,13 +87,34 @@ STALL_REBOOST_COOLDOWN_EPISODES = 1000
 # reacting to.
 ENTROPY_STALE_REBOOST_EPISODES = 1500
 
-WEIGHT_PATH = weights_path("model_weights_selfplay.pth")
+def selfplay_paths():
+    """(selfplay checkpoint, phase-1 bootstrap, TensorBoard dir) for THIS run.
+
+    FOLLOWS PHASE 1'S REDIRECTION (audit 08, gap 3). These were constants, so a
+    phase 1 run under CLASH_WEIGHTS / CLASH_LOGDIR handed off to a child that
+    bootstrapped from python_ai/model_weights.pth -- which did not exist, so it
+    crashed at startup, or which belonged to another run, so it trained the
+    wrong network. The child inherits the environment, so deriving from it is
+    enough. Without redirection the three paths are exactly the old defaults.
+    """
+    w = os.environ.get("CLASH_WEIGHTS")
+    if w:
+        bootstrap = weights_path(w)
+        stem, ext = os.path.splitext(bootstrap)
+        weights = stem + "_selfplay" + (ext or ".pth")
+    else:
+        bootstrap = weights_path("model_weights.pth")
+        weights = weights_path("model_weights_selfplay.pth")
+    logdir = os.environ.get("CLASH_LOGDIR")
+    logdir = run_path(logdir + "_selfplay") if logdir else run_path("runs/clash_royale_selfplay")
+    return weights, bootstrap, logdir
+
 
 # Pipeline #1's final artifact -- read ONCE, only to seed a from-scratch
 # pipeline #2 run (bare weights only; pipeline #2 keeps its own separate
 # episode count/optimizer state in WEIGHT_PATH from then on, so pipeline #1's
 # own checkpoint is never overwritten by this script).
-BOOTSTRAP_FROM_PATH = weights_path("model_weights.pth")
+WEIGHT_PATH, BOOTSTRAP_FROM_PATH, SELFPLAY_LOG_DIR = selfplay_paths()
 
 
 class Phase2Trainer(BaseTrainer):
@@ -102,7 +123,7 @@ class Phase2Trainer(BaseTrainer):
     pipeline_name = "pipeline2"
     replay_prefix = "selfplay_replay"
     weight_path = WEIGHT_PATH
-    log_dir = run_path("runs/clash_royale_selfplay")
+    log_dir = SELFPLAY_LOG_DIR
     #: A scenario window can end an episode without a king dying, so the critic
     #: must bootstrap V(final_obs) there rather than learn a terminal 0.
     uses_truncation_bootstrap = True
@@ -172,7 +193,8 @@ class Phase2Trainer(BaseTrainer):
 
     def _refresh_pool(self, initial=False):
         self.historical_pool = league.discover_historical_checkpoints(
-            self.episodes_completed)
+            self.episodes_completed,
+            since=getattr(self, "lineage_started_at", None))
         if initial and not self.historical_pool:
             raise RuntimeError(
                 f"No historical snapshot is at least MIN_OPPONENT_AGE_EPISODES "
@@ -252,6 +274,10 @@ class Phase2Trainer(BaseTrainer):
             state = (bootstrap["model"]
                      if isinstance(bootstrap, dict) and "model" in bootstrap
                      else bootstrap)
+            # Same lineage as the phase 1 that produced these weights -- its
+            # snapshots are this run's opponent pool, the previous run's are not.
+            if isinstance(bootstrap, dict):
+                self.lineage_started_at = float(bootstrap.get("lineage_started_at", 0.0))
             load_state_dict_flexible(
                 self.net, state,
                 f"pipeline2 bootstrap from pipeline1 ({BOOTSTRAP_FROM_PATH})")

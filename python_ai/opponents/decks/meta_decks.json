@@ -21,6 +21,14 @@
     "                  backwards for THIS engine. They gate nothing.",
     "  prior_win_rate  optional; seeds the PFSP prior. Omit for 0.5. See",
     "                  'measured' below and deck_pool.NEUTRAL_PRIOR.",
+    "  prior_win_rate_vs_26hog_2026_09_03",
+    "                  PROVENANCE ONLY, not read. The old prior_win_rate values,",
+    "                  measured against a TRAINED 2.6 Hog Cycle policy. Renamed",
+    "                  2026-09-15 for the from-scratch run on a new deck: for a",
+    "                  random-init net they sent the four hardest decks 59.9% of",
+    "                  episodes, bought no episode-share benefit over uniform, and",
+    "                  a wrongly-HIGH prior self-seals (audit 04, C3). Restore by",
+    "                  renaming the key back, only for a policy they describe.",
     "  enabled         false keeps a deck in the file but out of the pool.",
     "",
     "To add a deck: copy a block, change the names, then run",
@@ -50,7 +58,7 @@
         "The Log",
         "Fireball"
       ],
-      "prior_win_rate": 1.0
+      "prior_win_rate_vs_26hog_2026_09_03": 1.0
     },
     {
       "name": "dart_bait_cycle",
@@ -70,7 +78,7 @@
         "Cannon",
         "The Log"
       ],
-      "prior_win_rate": 0.533
+      "prior_win_rate_vs_26hog_2026_09_03": 0.533
     },
     {
       "name": "three_musketeers_bridge",
@@ -90,7 +98,7 @@
         "Bandit",
         "Barbarian Barrel"
       ],
-      "prior_win_rate": 0.4
+      "prior_win_rate_vs_26hog_2026_09_03": 0.4
     },
     {
       "name": "rg_fisherman_cycle",
@@ -109,7 +117,7 @@
         "Fireball",
         "The Log"
       ],
-      "prior_win_rate": 0.667
+      "prior_win_rate_vs_26hog_2026_09_03": 0.667
     },
     {
       "name": "miner_poison_control",
@@ -129,7 +137,7 @@
         "Barbarian Barrel",
         "Valkyrie"
       ],
-      "prior_win_rate": 0.1
+      "prior_win_rate_vs_26hog_2026_09_03": 0.1
     },
     {
       "name": "royal_hogs_furnace",
@@ -149,7 +157,7 @@
         "Mega Minion",
         "Skeletons"
       ],
-      "prior_win_rate": 0.167
+      "prior_win_rate_vs_26hog_2026_09_03": 0.167
     },
     {
       "name": "giant_double_dragon",
@@ -169,7 +177,7 @@
         "Electro Wizard",
         "Skeletons"
       ],
-      "prior_win_rate": 0.333
+      "prior_win_rate_vs_26hog_2026_09_03": 0.333
     },
     {
       "name": "xbow_30_cycle",
@@ -188,7 +196,7 @@
         "The Log",
         "Knight"
       ],
-      "prior_win_rate": 0.867
+      "prior_win_rate_vs_26hog_2026_09_03": 0.867
     },
     {
       "name": "pekka_bridge_spam",
@@ -208,7 +216,7 @@
         "Poison",
         "Minions"
       ],
-      "prior_win_rate": 0.067
+      "prior_win_rate_vs_26hog_2026_09_03": 0.067
     },
     {
       "name": "wall_breakers_cycle",
@@ -228,7 +236,7 @@
         "Tesla",
         "Barbarian Barrel"
       ],
-      "prior_win_rate": 0.767
+      "prior_win_rate_vs_26hog_2026_09_03": 0.767
     },
     {
       "name": "golem_beatdown",
@@ -249,7 +257,7 @@
         "Lightning",
         "Barbarian Barrel"
       ],
-      "prior_win_rate": 0.4
+      "prior_win_rate_vs_26hog_2026_09_03": 0.4
     },
     {
       "name": "graveyard_control",
@@ -269,7 +277,7 @@
         "Ice Spirit",
         "Barbarian Barrel"
       ],
-      "prior_win_rate": 0.867
+      "prior_win_rate_vs_26hog_2026_09_03": 0.867
     },
     {
       "name": "lavaloon",
@@ -290,7 +298,7 @@
         "Fireball",
         "Miner"
       ],
-      "prior_win_rate": 0.7
+      "prior_win_rate_vs_26hog_2026_09_03": 0.7
     },
     {
       "name": "classic_log_bait_inferno",
@@ -311,7 +319,7 @@
         "Rocket",
         "The Log"
       ],
-      "prior_win_rate": 0.567
+      "prior_win_rate_vs_26hog_2026_09_03": 0.567
     },
     {
       "name": "mega_knight_ram",
@@ -331,7 +339,7 @@
         "Fireball",
         "Dart Goblin"
       ],
-      "prior_win_rate": 0.2
+      "prior_win_rate_vs_26hog_2026_09_03": 0.2
     },
     {
       "name": "mortar_cycle",
@@ -352,7 +360,7 @@
         "Fireball",
         "Bomber"
       ],
-      "prior_win_rate": 0.8
+      "prior_win_rate_vs_26hog_2026_09_03": 0.8
     }
   ],
   "measured": {

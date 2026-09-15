@@ -65,6 +65,37 @@ def extract_engine_stats(infos, num_envs):
     return stats
 
 
+def reseat_prev_stats(stats, prev_stats, first_real):
+    """`prev_stats` with the rows of `first_real` envs replaced by `stats`' own.
+
+    THE PHANTOM-STEP HOLE THIS CLOSES. Under NEXT_STEP autoreset the step after
+    `done` returns `{}` for info, so every key above takes its default -- and
+    that step's shaping is correctly masked by `* (1 - prev_dones)`. But the
+    trainer then carries those FABRICATED stats forward as the previous state of
+    the new episode's first real step. The defaults are zero-contribution for
+    counters (the delta clamp) and for the tower potential (Phi(0) = 0); they are
+    NOT for the solvency potential, where Phi(elixir=0) = -0.1. Measured
+    2026-09-15: +0.084 on the first real step of every episode, unmasked, twice
+    the solvency term's whole legitimate per-episode magnitude.
+
+    Substituting the current row makes that single transition's potential term
+    (gamma-1)*Phi(s1) ~= 0 and every delta term exactly 0 -- which is correct,
+    since the true s0 was never observed. Envs mid-episode are untouched.
+
+    first_real: (num_envs,) bool -- envs whose PREVIOUS step was the phantom.
+    """
+    first_real = np.asarray(first_real, dtype=bool)
+    if prev_stats is None or not first_real.any():
+        return prev_stats
+    out = {}
+    for key, prev in prev_stats.items():
+        prev = np.asarray(prev)
+        cur = np.asarray(stats[key])
+        cond = first_real.reshape((-1,) + (1,) * (prev.ndim - 1))
+        out[key] = np.where(cond, cur, prev).astype(prev.dtype, copy=False)
+    return out
+
+
 def opponent_played_card(infos, num_envs):
     """Which card the opponent played during THIS step, or -1 for none.
 

@@ -92,6 +92,17 @@ DECK_SIZE = 8
 #:
 #: They are a SEED and never a gate: nothing reads `prior_win_rate` after the
 #: first episode of a worker's life.
+#:
+#: AND AS OF 2026-09-15 THE SHIPPED FILE CARRIES NONE. Those priors described a
+#: TRAINED 2.6 Hog policy. For the from-scratch run on a new deck they were
+#: wrong twice over, and simulated across 8 workers (audit 04, C3) they bought
+#: no episode-share benefit over uniform -- a fresh net loses to everything and
+#: every estimate collapses within ~10 matches regardless of the start -- while
+#: costing a 3.2x larger estimate error at episode 3,000. Worse, a wrongly-HIGH
+#: prior self-seals: a high estimate buys a low PFSP weight and so no samples to
+#: correct it (xbow_30_cycle shipped at 0.867 and read 0.36 against a true
+#: 0.02). The numbers are kept in the JSON as
+#: `prior_win_rate_vs_26hog_2026_09_03`, which the loader does not read.
 NEUTRAL_PRIOR = 0.5
 
 
@@ -273,8 +284,22 @@ POOL_WINRATE_FLOOR = 0.0
 POOL_UNWINNABLE_WEIGHT = 0.02
 
 
+#: The signal level below which PFSP has nothing to rank with. NOT the retired
+#: `POOL_WINRATE_FLOOR`: that was a GATE (park a deck below it) and was removed
+#: because a win rate confounds deck difficulty with teacher competence. This is
+#: a TIE-BREAK for when literally every deck reads near zero -- there is then no
+#: ranking to confound, and `(1 - wr)^2` would hand a policy that is losing
+#: everything the matchup it loses hardest.
+#:
+#: MEASURED (audit 04, C2, 2026-09-15): with the gate at 0.0 the fallback below
+#: had become UNREACHABLE -- rates are clamped to [0, 1], so `wr >= 0.0` always
+#: held -- and every test of it passed an explicit `floor=0.20` that production
+#: never uses. A random-init net got the four hardest decks 59.9% of the time.
+POOL_SIGNAL_FLOOR = 0.05
+
+
 def pfsp_weights(win_rates, *, min_weight=POOL_MIN_WEIGHT,
-                 floor=POOL_WINRATE_FLOOR):
+                 floor=POOL_WINRATE_FLOOR, signal_floor=POOL_SIGNAL_FLOOR):
     """{deck: weight} from {deck: measured win rate}, PFSP-style.
 
     `(1 - wr)^2` is phase 2's own curve, reused deliberately rather than
@@ -295,14 +320,18 @@ def pfsp_weights(win_rates, *, min_weight=POOL_MIN_WEIGHT,
     # losing everything the matchup it loses hardest -- and the flat
     # unwinnable weight would make the draw uniform, which is no better.
     #
-    # Fall back to EASIEST-FIRST. The rung ladder is the difficulty axis; when
-    # the deck axis has nothing to say, it should hand back the most winnable
-    # opponent and let the agent get a foothold. Symmetric with the normal
-    # case, which hands back the least winnable one it can still beat.
-    if rates and not any(wr >= floor for wr in rates.values()):
-        weights = {n: max(wr, 0.01) ** 2 for n, wr in rates.items()}
-        total = sum(weights.values())
-        return {k: v / total for k, v in weights.items()}
+    # Fall back to UNIFORM (see below). The rung ladder is the difficulty axis;
+    # when the deck axis has nothing to say it should say nothing, rather than
+    # rank on noise in either direction.
+    if rates and not any(wr >= max(floor, signal_floor) for wr in rates.values()):
+        # UNIFORM, not easiest-first. Below signal_floor the differences
+        # between decks are one to four wins per hundred -- noise, not a
+        # ranking -- so the honest encoding of "no signal" is equal shares.
+        # The old easiest-first rule (bare `wr**2`) also sent the hardest deck
+        # to 0.1% of episodes, an exclusion in all but name and against the
+        # standing rule that hard decks are the point. The RUNG is the axis
+        # that should carry a cold start, not the deck mix.
+        return {k: 1.0 / len(rates) for k in rates}
 
     weights = {}
     for name, wr in rates.items():

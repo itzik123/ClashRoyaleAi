@@ -115,7 +115,7 @@ REFERENCE_ROSTER_BASE_ELO = 1000
 REFERENCE_ROSTER_ELO_STEP = 150
 
 def discover_historical_checkpoints(current_episode=None,
-                                    directory=None):
+                                    directory=None, since=None):
     """All ELIGIBLE *.pth files in HISTORICAL_CHECKPOINT_DIR, oldest-saved-first
     (mtime). Save order is the ordering signal, not filenames -- pipeline #1
     and this same script both drop snapshots into this one shared folder, on
@@ -141,6 +141,14 @@ def discover_historical_checkpoints(current_episode=None,
     """
     directory = HISTORICAL_CHECKPOINT_DIR if directory is None else directory
     paths = glob.glob(os.path.join(directory, "*.pth"))
+    # THIS LINEAGE ONLY. `since` is when the run's phase 1 started from scratch
+    # (BaseTrainer.lineage_started_at). The directory is shared across runs, and
+    # on 2026-09-15 it held 51 snapshots from the previous lineage: a fresh run's
+    # phase 2 would have built its PFSP pool and its Elo roster from a different
+    # deck's policies without saying so (audit 08). None/0 disables the filter,
+    # which is what a legacy checkpoint without the stamp gets.
+    if since:
+        paths = [p for p in paths if os.path.getmtime(p) >= float(since)]
     if current_episode is not None:
         eligible = []
         for p in paths:

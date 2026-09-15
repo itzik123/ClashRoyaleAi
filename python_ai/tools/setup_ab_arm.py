@@ -156,6 +156,7 @@ def main():
         return
 
     from python_ai.models.net import MicroRoyaleNet
+    from python_ai.rl.curriculum import CURRICULUM_STAGES
     probe = MicroRoyaleNet(num_ability_slots=0)
     fresh_opt = torch.optim.Adam(probe.parameters(), lr=3e-4).state_dict()
 
@@ -163,6 +164,10 @@ def main():
         "model": model,
         "optimizer": fresh_opt,
         "curriculum_stage": args.stage,
+        # STAMP THE TABLE, or load_state_dict reads this index as a legacy
+        # six-rung one and remaps it by horizon: --stage 5 silently became
+        # rung 10, the top of the ladder (audit 04 C4).
+        "teacher_table_size": len(CURRICULUM_STAGES),
         "stage_start_episode": args.episodes,
         "episodes_completed": args.episodes,
         "outcome_history": deque(maxlen=100),

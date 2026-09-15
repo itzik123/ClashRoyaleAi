@@ -377,3 +377,78 @@ def test_a_live_step_is_neither_terminal_nor_truncated(net, fresh_obs):
     assert float(out["flag"][0]) == 0.0
     assert float(out["nonterminal"][0]) == 1.0, (
         "an ongoing episode must still bootstrap the next stored value")
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-15: the deck is part of a run's identity.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_setup_prints_the_deck_contract_and_the_checkpoint_records_the_deck(workdir, capsys):
+    """A run's log must say what deck it trained and what that deck turns off,
+    and its checkpoint must say which deck produced it -- the deck became a
+    CLASH_DECK setting on 2026-09-15, so it is no longer implied by the code."""
+    from python_ai.deck import DEFAULT_DECK
+    trainer = _phase1()
+    assert "[DECK INFO] deck:" in capsys.readouterr().out
+    ck = torch.load(workdir / "model_weights.pth", map_location="cpu",
+                    weights_only=False)
+    assert ck["deck"] == list(DEFAULT_DECK)
+
+
+@pytest.mark.slow
+def test_resuming_a_checkpoint_from_a_different_deck_is_loud(workdir, capsys, monkeypatch):
+    first = _phase1()
+    ck = torch.load(workdir / "model_weights.pth", map_location="cpu",
+                    weights_only=False)
+    ck["deck"] = [0, 1, 3, 5, 6, 7, 8, 10]
+    torch.save(ck, workdir / "model_weights.pth")
+    capsys.readouterr()
+    _phase1()
+    assert "DIFFERENT DECK" in capsys.readouterr().out
+
+
+@pytest.mark.slow
+def test_a_resume_error_crashes_and_destroys_nothing(workdir, monkeypatch):
+    """Audit 08, gap 2. `except RuntimeError` on resume used to move the live
+    checkpoint to .bak, rmtree the TensorBoard log, print "starting fresh" -- and
+    then continue in whatever half-restored state the exception left (measured:
+    the checkpoint's weights and episode count, without its deck stats). A resume
+    that cannot complete must STOP, with the checkpoint and the log untouched."""
+    from python_ai.trainers.train import Phase1Trainer
+    _phase1()
+    ckpt = workdir / "model_weights.pth"
+    logdir = workdir / "runs" / "test"
+    assert ckpt.exists()
+    os.makedirs(logdir, exist_ok=True)
+    (logdir / "keep.txt").write_text("history")
+
+    def boom(self):
+        raise RuntimeError("a worker failed while restoring")
+
+    monkeypatch.setattr(Phase1Trainer, "_apply_curriculum_to_envs", boom)
+    with pytest.raises(RuntimeError, match="worker failed"):
+        _phase1()
+    assert ckpt.exists(), "the live checkpoint was moved aside"
+    assert (logdir / "keep.txt").exists(), "the TensorBoard log was deleted"
+
+
+@pytest.mark.slow
+def test_an_interrupt_saves_before_it_exits(workdir, monkeypatch):
+    """Audit 08, gap 6: Ctrl-C lost up to CLASH_SAVE_EVERY episodes."""
+    from python_ai.trainers.train import Phase1Trainer
+    calls = {"n": 0}
+    real = Phase1Trainer.collect_rollout
+
+    def interrupt_second(self):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real(self)
+
+    monkeypatch.setattr(Phase1Trainer, "collect_rollout", interrupt_second)
+    with pytest.raises(KeyboardInterrupt):
+        _phase1(updates=5)
+    ck = torch.load(workdir / "model_weights.pth", map_location="cpu", weights_only=False)
+    assert ck["episodes_completed"] >= 0
+    assert "lineage_started_at" in ck

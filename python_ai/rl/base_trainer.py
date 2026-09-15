@@ -32,6 +32,7 @@ deliberate: an override that could silently alter the ratio is the failure this
 refactor exists to make impossible.
 """
 import os
+import time
 import shutil
 from dataclasses import dataclass
 from typing import Optional
@@ -50,6 +51,7 @@ from python_ai.rewards.shaping import (
 )
 from python_ai.rewards.weights import DRAW_PENALTY
 from python_ai.rl import gae as gae_mod
+from python_ai.rl.engine_stats import reseat_prev_stats
 from python_ai.rl.buffer import (
     ADVISOR_FIELDS, CORE_FIELDS, TRUNCATION_FIELDS, RolloutBuffer,
 )
@@ -88,6 +90,11 @@ class StepContext:
     stats: dict
     prev_stats: Optional[dict]
     prev_dones: np.ndarray
+
+
+def _trainee_deck():
+    from python_ai.deck import DEFAULT_DECK
+    return DEFAULT_DECK
 
 
 class BaseTrainer:
@@ -130,6 +137,7 @@ class BaseTrainer:
         self._obs = None
         self._prev_stats = None
         self._prev_dones = None
+        self._prev2_dones = None
 
     # ======================================================================
     # subclass surface
@@ -212,6 +220,16 @@ class BaseTrainer:
             print(f"Deterministic run: seed={cfg.seed} "
                   "(torch, numpy, stdlib random, and per-worker env seeds)")
 
+        # THE DECK CONTRACT, first line of the log. The deck became a CLASH_DECK
+        # setting on 2026-09-15; the pre-launch audit found four mechanisms that
+        # silently switch off under a different deck, and this is where a run
+        # says which ones its deck turns off. strict: a Champion deck cannot be
+        # trained (no ability sampling) and should not get as far as the envs.
+        from python_ai.deck import DEFAULT_DECK
+        from python_ai.envs.deck_contract import print_report, validate_deck
+        print_report(validate_deck(DEFAULT_DECK, strict=False))
+        validate_deck(DEFAULT_DECK, strict=True)
+
         print(f"Initializing {cfg.num_envs} vectorized environments...")
         self.envs = self.build_envs()
         self.net = MicroRoyaleNet(
@@ -235,6 +253,11 @@ class BaseTrainer:
         # silently discard it -- which is the curriculum gate's entire input.
         self.metrics = EpisodeMetrics(cfg.num_envs)
 
+        #: When this LINEAGE began -- a fresh phase 1. A resume overwrites it from
+        #: the checkpoint; phase 2 inherits it from the phase-1 checkpoint it
+        #: bootstraps from. Used to keep a previous run's snapshots out of the
+        #: PFSP pool (league.discover_historical_checkpoints(since=...)).
+        self.lineage_started_at = time.time()
         self.full_resume = self.load_checkpoint()
         if not self.full_resume and os.path.exists(self.log_dir):
             shutil.rmtree(self.log_dir)
@@ -266,6 +289,10 @@ class BaseTrainer:
             seed=_engine_seeds if self.cfg.seed is not None else None)
         self._prev_stats = None
         self._prev_dones = np.zeros(cfg.num_envs, dtype=bool)
+        #: dones from TWO steps ago: the envs whose PREVIOUS step was the
+        #: phantom post-autoreset step, i.e. which are on their first real step
+        #: now. See engine_stats.reseat_prev_stats.
+        self._prev2_dones = np.zeros(cfg.num_envs, dtype=bool)
         self._hx = torch.zeros(cfg.num_envs, LSTM_HIDDEN).to(self.device)
         self._cx = torch.zeros(cfg.num_envs, LSTM_HIDDEN).to(self.device)
         self._last_save_ep = self.episodes_completed
@@ -275,13 +302,22 @@ class BaseTrainer:
     def run(self):
         self.setup()
         print(f"Training started on {self.cfg.num_envs} CPU cores simultaneously!")
-        while not self.should_stop():
-            self.collect_rollout()
-            stats = self.run_update()
-            self.log_update(stats)
+        try:
+            while not self.should_stop():
+                self.collect_rollout()
+                stats = self.run_update()
+                self.log_update(stats)
+                self.buffer.clear()
+                self._hx, self._cx = self._hx.detach(), self._cx.detach()
+                self.periodic(stats)
+        except KeyboardInterrupt:
+            # Ctrl-C used to lose everything since the last periodic save --
+            # up to CLASH_SAVE_EVERY episodes (audit 08, gap 6). The rollout in
+            # flight is discarded; the network as of the last update is kept.
+            print(">>> Interrupted -- saving the checkpoint before exiting.")
             self.buffer.clear()
-            self._hx, self._cx = self._hx.detach(), self._cx.detach()
-            self.periodic(stats)
+            self.save_checkpoint()
+            raise
         self.on_finish()
         if self.writer is not None:
             self.writer.close()
@@ -364,12 +400,18 @@ class BaseTrainer:
             # holds if this is the SAME gamma GAE uses below. w_spell likewise
             # -- omitting it silently pinned the Fireball-value term at its
             # START weight forever instead of annealing it to zero.
+            # The first REAL step of a new episode must not be shaped against
+            # the phantom step's fabricated defaults: Phi_solvency(elixir=0) is
+            # -0.1, so it paid +0.084 on every episode's first step (audit 03,
+            # R1). `prev_for_shaping` substitutes that env's own current row.
+            prev_for_shaping = reseat_prev_stats(stats, self._prev_stats,
+                                                 self._prev2_dones)
             shaping = compute_shaping(
-                stats, self._prev_stats, gamma=cfg.gamma,
+                stats, prev_for_shaping, gamma=cfg.gamma,
                 w_spell=spell_value_weight(self.episodes_completed))
             shaping = shaping * (1.0 - self._prev_dones)
             flawless = flawless_defense_bonus(dones, raw_rewards, stats,
-                                              self._prev_stats)
+                                              prev_for_shaping)
             shaped_rewards = raw_rewards + shaping - draw_penalty + flawless
             self.metrics.accumulate(shaped_rewards, shaping)
 
@@ -434,6 +476,7 @@ class BaseTrainer:
 
             self._obs = next_obs
             self._prev_stats = stats
+            self._prev2_dones = self._prev_dones
             self._prev_dones = dones
 
     def _draw_coverage(self, obs_tensor, card_mask):
@@ -753,10 +796,14 @@ class BaseTrainer:
             "optimizer": self.optimizer.state_dict(),
             "episodes_completed": self.episodes_completed,
             "outcome_history": list(self.metrics.outcomes),
+            # Which deck produced these weights. Not implied by the code any
+            # more: CLASH_DECK sets it (python_ai/deck.py).
+            "deck": list(_trainee_deck()),
+            "lineage_started_at": float(getattr(self, "lineage_started_at", 0.0)),
         }
         payload.update(self.entropy.state_dict())
         payload.update(self.checkpoint_payload())
-        atomic_save(payload, self.weight_path)
+        atomic_save(payload, self.weight_path, keep_previous=True)
         if verbose:
             print(f">>> Checkpoint saved to {self.weight_path} "
                   f"(episode {self.episodes_completed})")
@@ -777,6 +824,15 @@ class BaseTrainer:
             print("Optimizer state NOT restored (architecture mismatch above) "
                   "-- starting the optimizer fresh; network weights were still "
                   "warm-started where shapes matched.")
+        saved_deck = checkpoint.get("deck")
+        if saved_deck is not None and list(saved_deck) != list(_trainee_deck()):
+            print(f">>> WARNING: resuming a checkpoint trained on a DIFFERENT DECK "
+                  f"{list(saved_deck)} with CLASH_DECK={list(_trainee_deck())}. The "
+                  f"weights load, but card embeddings, placement habits and every "
+                  f"win rate belong to the old deck.")
+        # Legacy checkpoints predate the stamp: 0.0 disables the lineage filter
+        # rather than excluding that run's own older snapshots.
+        self.lineage_started_at = float(checkpoint.get("lineage_started_at", 0.0))
         self.episodes_completed = checkpoint["episodes_completed"]
         self.entropy.load_state_dict(checkpoint)
         self.metrics.outcomes.extend(checkpoint.get("outcome_history", []))

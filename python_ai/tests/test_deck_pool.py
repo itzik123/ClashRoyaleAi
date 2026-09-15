@@ -161,18 +161,19 @@ def test_sampling_respects_the_weights():
     assert len(set(picks)) > 1, "a floor must still let the others through"
 
 
-def test_a_pool_nothing_can_beat_yet_falls_back_to_EASIEST_first():
-    """The state every fresh run starts in, and PFSP inverts in it.
+def test_a_pool_nothing_can_beat_yet_is_sampled_uniformly():
+    """The state every fresh run starts in.
 
     `(1 - wr)^2` ranks a 0.02 deck above a 0.19 one, so a policy losing
-    everything would be handed the matchup it loses hardest; a flat unwinnable
-    weight makes the draw uniform, which is no better. When nothing clears the
-    floor the deck axis has no signal and should hand back the most winnable
-    opponent instead.
+    everything would be handed the matchup it loses hardest. When nothing
+    clears the (explicitly requested) gate the deck axis has no usable ranking
+    and hands out equal shares. Until 2026-09-15 this branch was EASIEST-first
+    and -- with the production gate at 0.0 -- unreachable; see
+    test_deck_pool_cold_start.py.
     """
     w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "least_bad": 0.19},
                                floor=0.20)
-    assert w["least_bad"] > w["bad"] > w["awful"]
+    assert max(w.values()) == pytest.approx(min(w.values()))
     assert sum(w.values()) == pytest.approx(1.0)
 
 
@@ -183,17 +184,18 @@ def test_one_winnable_deck_is_enough_to_restore_normal_pfsp():
     assert w["ok"] > w["awful"], "normal PFSP must resume once anything clears"
 
 
-def test_the_shipped_pool_carries_measured_priors():
-    """A uniform 0.5 start feeds a fresh net the unwinnable decks as often as
-    the mirror for the thousands of episodes the EWMA needs to separate them."""
+def test_the_shipped_pool_keeps_its_old_priors_only_as_provenance():
+    """The 2.6-measured priors are kept in the file, under a key the loader does
+    not read -- see test_deck_pool_cold_start.py for why the run starts from
+    NEUTRAL_PRIOR instead."""
+    import json
+    raw = json.loads(open(deck_pool.DEFAULT_POOL_PATH, encoding="utf-8").read())         if hasattr(deck_pool, "DEFAULT_POOL_PATH") else None
     decks = deck_pool.load_pool()
-    priors = {d.name: d.prior_win_rate for d in decks}
-    assert any(p != deck_pool.NEUTRAL_PRIOR for p in priors.values()), (
-        "the pool file has lost its measured priors")
-    # The episode-share half of this test moved to
-    # test_the_shipped_pool_now_spends_the_run_on_the_decks_it_loses_to, which
-    # asserts the OPPOSITE now that the floor is off. What stays here is that
-    # the priors exist at all.
+    assert all(d.prior_win_rate == deck_pool.NEUTRAL_PRIOR for d in decks)
+    if raw is not None:
+        entries = raw["decks"] if isinstance(raw, dict) and "decks" in raw else raw
+        assert any("prior_win_rate_vs_26hog_2026_09_03" in e for e in entries
+                   if isinstance(e, dict))
 
 
 # --------------------------------------------------------------------------
@@ -225,18 +227,11 @@ def test_the_floor_mechanism_still_works_when_asked_for():
     assert w["hopeless"] < w["hard"]
 
 
-def test_the_shipped_pool_now_spends_the_run_on_the_decks_it_loses_to():
-    """The inverse of the assertion this file carried until 2026-09-06.
-
-    That one required <10% of episode 0 to go to decks measured unwinnable. It
-    was the right guard for a FRESH net -- which is not the case being run: a
-    checkpoint at 83k episodes resumed at a LOW rung meets those decks against a
-    teacher with a 2-second lookahead and 15% random actions, which is winnable.
-    Rung and deck are two difficulty axes and only one of them is being raised.
-    """
+def test_the_shipped_pool_starts_uniform_for_a_new_policy():
+    """Replaces the 2026-09-06 assertion that episode 0 is spent on the decks a
+    TRAINED 2.6 policy lost to. For a from-scratch run on a new deck nothing is
+    known yet, and the run starts from equal shares; the live estimator ranks
+    the decks within ~10 matches each."""
     decks = deck_pool.load_pool()
-    priors = {d.name: d.prior_win_rate for d in decks}
-    w = deck_pool.pfsp_weights(priors)
-    hard = sum(v for n, v in w.items() if priors[n] < 0.20)
-    assert hard > 0.30, (
-        f"only {hard:.0%} of episodes go to the decks the agent loses to")
+    w = deck_pool.pfsp_weights({d.name: d.prior_win_rate for d in decks})
+    assert max(w.values()) == pytest.approx(min(w.values()))

@@ -174,6 +174,21 @@ MAX_EPISODES_PER_RUNG = int(os.environ.get("CLASH_MAX_EPISODES_PER_RUNG", 4000))
 STALL_WIN_RATE = 0.10
 STALL_PATIENCE_EPISODES = 1500
 
+#: --- the FLOOR alarm (2026-09-15, audit 04 C1) ------------------------------
+#: Rung 0 has no demotion target, so the stall valve is structurally silent
+#: there -- and rung 0 is where a FROM-SCRATCH run begins. Every other failure
+#: path in this class also funnels down to rung 0 and then stops reporting. So
+#: the one state that cannot be escaped was also the one state never announced:
+#: driven through this class, 4,000 episodes at rung 0 and a 0.00 win rate
+#: fired no event of any kind, and `monitor_run.py` read no win rate at all.
+#:
+#: NOT a demotion -- there is nowhere to go, and `maybe_demote_stage` is right
+#: to refuse. It exists so a dead run is LOUD. 0.05 is one win in twenty;
+#: 1,000 episodes is about an hour at the measured 943 ep/h, so a dead run is
+#: visible inside the first hour rather than at the first human check-in.
+FLOOR_ALARM_WIN_RATE = 0.05
+FLOOR_ALARM_PATIENCE_EPISODES = 1000
+
 
 def window_win_rate(outcome_history):
     """Raw win rate over a FULL window, or None if the window is not full yet.
@@ -217,6 +232,9 @@ class CurriculumManager:
 
         self.stage = 0
         self.stage_start_episode = 0
+        #: Episode the floor alarm last fired at; see `floor_alarm`. Not
+        #: persisted -- a resume re-arming it once is correct.
+        self._last_floor_alarm = -10 ** 9
         #: How many times the stall valve has fired. A run that has demoted is
         #: a run whose ladder position is NOT evidence of competence, so this
         #: has to be visible and has to survive a resume.
@@ -423,6 +441,28 @@ class CurriculumManager:
         self.stage_start_episode = episodes_completed
         return self.stage, reason
 
+    def floor_alarm(self, outcome_history, episodes_completed):
+        """A message when rung 0 has stopped producing wins, else None.
+
+        Fires at most once per FLOOR_ALARM_PATIENCE_EPISODES. Mirror phase at
+        rung 0 only: above it the stall valve owns the case and CAN act.
+        """
+        if self.phase != "mirror" or self.stage > 0:
+            return None
+        if episodes_completed - self.stage_start_episode < FLOOR_ALARM_PATIENCE_EPISODES:
+            return None
+        if episodes_completed - self._last_floor_alarm < FLOOR_ALARM_PATIENCE_EPISODES:
+            return None
+        win_rate = window_win_rate(outcome_history)
+        if win_rate is None or win_rate > FLOOR_ALARM_WIN_RATE:
+            return None
+        self._last_floor_alarm = episodes_completed
+        return (f"win rate {win_rate:.2f} at the BOTTOM rung for "
+                f"{episodes_completed - self.stage_start_episode} episodes. There "
+                f"is no easier teacher to demote to, so this will not correct "
+                f"itself: the opponent is not what is wrong. Check the reward "
+                f"magnitudes, the masks and the deck before waiting longer.")
+
     def maybe_demote_stage(self, outcome_history, episodes_completed):
         """Mirror-phase STALL valve. Returns the new stage, or None.
 
@@ -586,6 +626,16 @@ class CurriculumManager:
             "phase_deck_episode_start": self.deck_episode_start,
             "random_phase_episode_start": self.random_phase_episode_start,
             "current_random_deck": self.current_random_deck,
+            # The plateau/regression tracker. NOT persisted until 2026-09-15, so
+            # every resume re-established the plateau window from scratch and
+            # delayed the plateau exit by up to ~2,000 episodes per crash, and
+            # re-baselined the regression detector on the post-crash rung
+            # (audit 08, gap 5).
+            "rung_history": list(self.rung_history),
+            "best_rung_mean": self.best_rung_mean,
+            "best_rung_episode": self.best_rung_episode,
+            "rung_entry_progress": self.rung_entry_progress,
+            "progress_signal": self.progress_signal,
         }
 
     def load_state_dict(self, state):
@@ -606,20 +656,42 @@ class CurriculumManager:
         from python_ai.opponents.teacher import remap_legacy_stage
         saved_table = state.get("teacher_table_size")
         stage = int(state["curriculum_stage"])
-        if saved_table is None or saved_table != len(CURRICULUM_STAGES):
+        if saved_table is None:
             remapped = remap_legacy_stage(stage)
             if remapped != stage:
                 print(f">>> Curriculum: checkpoint stage {stage} was written "
-                      f"against a {saved_table or 6}-rung teacher table; "
+                      f"against the 6-rung teacher table; "
                       f"remapped to rung {remapped} (same lookahead horizon).")
             stage = remapped
+        elif saved_table != len(CURRICULUM_STAGES):
+            # ONLY the unstamped 6 -> 11 migration above is known. This branch
+            # used to re-run it on ANY size mismatch: measured (audit 04 C5),
+            # one added rung sent a rung-3 checkpoint to rung 7 while printing
+            # "(same lookahead horizon)", which was false. A table edit needs
+            # its own migration; until one is written, keep the index and say so.
+            clamped = min(stage, len(CURRICULUM_STAGES) - 1)
+            print(f">>> Curriculum: checkpoint stage {stage} was written against "
+                  f"a {saved_table}-rung table and this one has "
+                  f"{len(CURRICULUM_STAGES)}. NOT remapping (remap_legacy_stage "
+                  f"only knows the 6->11 transition); resuming at rung {clamped}. "
+                  f"Verify the rung by hand.")
+            stage = clamped
         self.stage = stage
         self.demotions = state.get("curriculum_demotions", 0)
         self.plateau_advances = state.get("curriculum_plateau_advances", 0)
         self.stage_start_episode = state["stage_start_episode"]
-        # Never restored: a 500-episode trend belongs to the episodes that
-        # produced it, and a resume has none of them in flight.
+        # Restored when present. The old comment here -- "a 500-episode trend
+        # belongs to the episodes that produced it" -- is true, and those
+        # episodes WERE played at this rung by these weights; discarding them
+        # cost up to ~2,000 episodes of plateau delay per crash. Legacy
+        # checkpoints without the keys fall back to a fresh tracker.
         self._reset_rung_tracking(self.stage_start_episode)
+        if "rung_history" in state:
+            self.rung_history.extend(state["rung_history"])
+            self.best_rung_mean = float(state.get("best_rung_mean", self.best_rung_mean))
+            self.best_rung_episode = int(state.get("best_rung_episode", self.best_rung_episode))
+            self.rung_entry_progress = state.get("rung_entry_progress", self.rung_entry_progress)
+            self.progress_signal = state.get("progress_signal", self.progress_signal)
         self.phase = state.get("phase", "mirror")
         self.deck_stage = state.get("deck_curriculum_stage", 0)
         self.deck_episode_start = state.get("phase_deck_episode_start", 0)

@@ -397,37 +397,35 @@ class Phase1Trainer(BaseTrainer):
             return False
         checkpoint = torch.load(self.weight_path, map_location=self.device,
                                 weights_only=False)
-        try:
-            if not (isinstance(checkpoint, dict) and "model" in checkpoint
-                    and "optimizer" in checkpoint):
-                # Legacy checkpoint: bare model state_dict, no training state.
-                from python_ai.models.policy_io import load_state_dict_flexible
-                load_state_dict_flexible(
-                    self.net, checkpoint,
-                    f"pipeline1 legacy resume ({self.weight_path})")
-                print(f"Loaded legacy weights-only checkpoint from "
-                      f"{self.weight_path} (training state starts fresh).")
-                return False
-            self.restore_common(checkpoint)
-            self.curriculum.load_state_dict(checkpoint)
-            self._restored_deck_stats = checkpoint.get("deck_pool_stats") or {}
-            self._restored_deck_counts = checkpoint.get("deck_pool_counts") or {}
-            self._apply_curriculum_to_envs()
-            print(f"Resumed from {self.weight_path}: "
-                  f"episode {self.episodes_completed}, "
-                  f"curriculum stage {self.curriculum.stage}, "
-                  f"phase {self.curriculum.phase}")
-            return True
-        except RuntimeError:
-            # Genuinely unexpected/corrupt checkpoint -- load_state_dict_flexible
-            # already handles ordinary architecture-shape mismatches without
-            # raising, so reaching here means something else is wrong. Keep it
-            # as a backup and start fresh.
-            backup = self.weight_path + ".bak"
-            os.replace(self.weight_path, backup)
-            print(f"Saved weights are incompatible with the current "
-                  f"architecture; moved to {backup}, starting fresh.")
+        # NO `except RuntimeError: move to .bak and start fresh` any more.
+        # Measured (audit 08, gap 2): a RuntimeError from a worker during
+        # restore took that path, moved the live checkpoint aside, and
+        # setup() then DELETED the TensorBoard log -- while the process
+        # carried on with the checkpoint's weights and episode count and
+        # announced a fresh start. The restore is not transactional, so
+        # there is no safe way to continue: crash, with the checkpoint and
+        # the log untouched. load_state_dict_flexible still absorbs ordinary
+        # architecture-shape changes without raising.
+        if not (isinstance(checkpoint, dict) and "model" in checkpoint
+                and "optimizer" in checkpoint):
+            # Legacy checkpoint: bare model state_dict, no training state.
+            from python_ai.models.policy_io import load_state_dict_flexible
+            load_state_dict_flexible(
+                self.net, checkpoint,
+                f"pipeline1 legacy resume ({self.weight_path})")
+            print(f"Loaded legacy weights-only checkpoint from "
+                  f"{self.weight_path} (training state starts fresh).")
             return False
+        self.restore_common(checkpoint)
+        self.curriculum.load_state_dict(checkpoint)
+        self._restored_deck_stats = checkpoint.get("deck_pool_stats") or {}
+        self._restored_deck_counts = checkpoint.get("deck_pool_counts") or {}
+        self._apply_curriculum_to_envs()
+        print(f"Resumed from {self.weight_path}: "
+              f"episode {self.episodes_completed}, "
+              f"curriculum stage {self.curriculum.stage}, "
+              f"phase {self.curriculum.phase}")
+        return True
 
     def _apply_curriculum_to_envs(self):
         """Push the restored curriculum state into the workers.
@@ -512,6 +510,14 @@ class Phase1Trainer(BaseTrainer):
         # Pinned by tests/test_phase1_scenarios_do_not_break_the_gate.py.
         is_scenario = ctx.infos.get(
             "is_scenario", np.zeros(self.cfg.num_envs, dtype=np.float32))[i] > 0.5
+        # The deck read-out -- and the plateau valve's progress signal it feeds
+        # via note_progress -- must run BEFORE the scenario return. A scenario
+        # episode still consumed an episode number (base_trainer increments
+        # before calling this), so returning first dropped the whole 200-episode
+        # read-out whenever that episode was a scenario: ~30% of note_progress
+        # calls, and Decks/WinRate_Min with them (audit 04, C6). It self-gates on
+        # the episode count, so calling it on every episode is free.
+        self._print_deck_pool()
         if is_scenario:
             self.metrics.reset_env(i)
             return
@@ -554,6 +560,13 @@ class Phase1Trainer(BaseTrainer):
         if demoted is not None:
             self._on_stage_demoted(demoted)
             return
+
+        # Rung 0 has no valve of its own; see curriculum.FLOOR_ALARM_*.
+        alarm = self.curriculum.floor_alarm(outcomes, self.episodes_completed)
+        if alarm is not None:
+            print(f">>> [FLOOR] {alarm}")
+            self.writer.add_scalar("Training/Curriculum_FloorAlarm", 1.0,
+                                   self.episodes_completed)
 
         event = self.curriculum.step_random_deck_curriculum(
             outcomes, self.episodes_completed)
@@ -738,7 +751,15 @@ class Phase1Trainer(BaseTrainer):
               f"Stage: {c.stage}{deck_stage_str} | Phase: {c.phase} | "
               f"EntCoef c/p: {self.entropy.coef_card:.4f}/"
               f"{self.entropy.coef_placement:.4f}")
-        self._print_deck_pool()
+        # _print_deck_pool moved to on_episode_end so scenario episodes do not
+        # drop it (audit 04 C6). The ladder's provenance counters are logged on
+        # THIS cadence rather than only when they change, so "the ladder walked
+        # to the top by plateau alone" is a readable curve (audit 04 C8).
+        self.writer.add_scalar("Training/Curriculum_PlateauAdvances",
+                               self.curriculum.plateau_advances,
+                               self.episodes_completed)
+        self.writer.add_scalar("Training/Curriculum_Demotions",
+                               self.curriculum.demotions, self.episodes_completed)
         w = self.writer
         w.add_scalar("Training/Avg_Reward_50", m["avg_reward"], ep)
         w.add_scalar("Reward/Episode_Shaping_Sum", m["avg_shaping"], ep)
@@ -777,29 +798,48 @@ class Phase1Trainer(BaseTrainer):
         print(f">>> Pipeline #1 stopped at episode {self.episodes_completed} "
               f"(phase={self.curriculum.phase}) -- final checkpoint saved to "
               f"{self.weight_path}.")
-        launch_pipeline2()
+        launch_pipeline2(log_dir=os.path.dirname(os.path.abspath(self.log_dir)))
 
 
-def launch_pipeline2():
-    """Start train_selfplay.py and return, so nobody has to watch for the
-    moment pipeline 1 finishes.
+def launch_pipeline2(log_dir=None, wait_seconds=60.0):
+    """Start train_selfplay.py, confirm it survives startup, and return.
 
-    `-u` is not optional. Python block-buffers stdout when it is redirected to
-    a file, so without it the handoff produces a 0-byte log for a long stretch
-    and the live strategy read-out -- whose entire purpose is watching the run
-    as it happens -- is invisible until a buffer happens to flush.
+    `-u` is not optional: Python block-buffers a redirected stdout, and the live
+    read-out would stay invisible until a buffer happened to flush.
 
-    An ABSOLUTE path, not a bare filename: the two pipelines live in
-    python_ai/trainers/ while the run's cwd is python_ai/ (where the
-    checkpoints are).
+    WATCHED FOR `wait_seconds` (audit 08, gap 3). The Popen handle used to be
+    discarded and the parent exited, so a child that died at startup -- a
+    missing bootstrap checkpoint, an import error -- ended a multi-day run in
+    silence, its traceback in a log nobody was reading. A child that exits
+    non-zero inside the window now raises here, so phase 1 exits non-zero too.
+
+    The logs are ANCHORED next to the run's TensorBoard directories and APPENDED:
+    they used to be cwd-relative and truncating, so a relaunch erased the first
+    attempt's traceback.
     """
-    out = open("training_selfplay_pfsp.log", "w")
-    err = open("training_selfplay_pfsp_err.log", "w")
+    import time as _time
+    log_dir = log_dir or run_path("runs")
+    os.makedirs(log_dir, exist_ok=True)
+    out_path = os.path.join(log_dir, "training_selfplay_pfsp.log")
+    err_path = os.path.join(log_dir, "training_selfplay_pfsp_err.log")
+    out = open(out_path, "a")
+    err = open(err_path, "a")
     target = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "train_selfplay.py")
-    subprocess.Popen([sys.executable, "-u", target], stdout=out, stderr=err)
-    print(">>> Launched train_selfplay.py (pipeline #2) -- see "
-          "training_selfplay_pfsp.log / training_selfplay_pfsp_err.log")
+    proc = subprocess.Popen([sys.executable, "-u", target], stdout=out, stderr=err)
+    deadline = _time.monotonic() + float(wait_seconds)
+    while True:
+        rc = proc.poll()
+        if rc is not None:
+            if rc != 0:
+                raise RuntimeError(
+                    f"pipeline #2 exited with code {rc} during startup -- see "
+                    f"{err_path}")
+            break
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(min(1.0, float(wait_seconds)))
+    print(f">>> Launched train_selfplay.py (pipeline #2) -- see {out_path} / {err_path}")
 
 
 def train_ppo():
