@@ -55,6 +55,7 @@ from python_ai.rl.engine_stats import reseat_prev_stats
 from python_ai.rl.buffer import (
     ADVISOR_FIELDS, CORE_FIELDS, TRUNCATION_FIELDS, RolloutBuffer,
 )
+from python_ai.rl.config import aux_warmup_scale
 from python_ai.rl.checkpointing import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
     atomic_save, run_path, save_historical_snapshot, weights_path,
@@ -635,7 +636,10 @@ class BaseTrainer:
             batch, adv_norm, returns, vf_clip_range,
             ent_coef_card=self.entropy.coef_card,
             ent_coef_placement=self.entropy.coef_placement,
-            coverage_coef=PLACEMENT_COVERAGE_COEF)
+            coverage_coef=PLACEMENT_COVERAGE_COEF,
+            # The next-card aux loss is ramped in; see PPOConfig.aux_warmup_episodes.
+            aux_scale=aux_warmup_scale(self.episodes_completed,
+                                       cfg.aux_warmup_episodes))
 
     def _note_placements(self, batch):
         """Feed this rollout's REAL placements (card id, cell) to the modal-share

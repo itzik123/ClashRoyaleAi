@@ -151,7 +151,7 @@ class PPOUpdater:
 
     def update(self, batch, advantages_norm, returns, vf_clip_range,
                ent_coef_card, ent_coef_placement, coverage_coef,
-               collect_per_card=True, deck_coverage_coef=None):
+               collect_per_card=True, deck_coverage_coef=None, aux_scale=1.0):
         """Run `ppo_epochs` passes over the rollout and return an UpdateStats.
 
         `batch` is `RolloutBuffer.stack()`; `advantages_norm` and `returns` come
@@ -511,7 +511,8 @@ class PPOUpdater:
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
                         + deck_coef * deck_pen
-                        + cfg.aux_card_coef * cfg.aux_card_scale * aux_for_grad
+                        + (cfg.aux_card_coef * cfg.aux_card_scale * float(aux_scale)
+                           * aux_for_grad)
                         + cfg.cycle_id_coef * cycle_id_loss)
 
                 self.optimizer.zero_grad()

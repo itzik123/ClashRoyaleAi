@@ -243,6 +243,26 @@ class PPOConfig:
     #: LOGGED diagnostic stays in interpretable nats.
     aux_card_scale: float = 0.02
 
+    #: Episodes over which the aux term is ramped linearly from 0 to its full
+    #: weight. 0 = no warm-up, the pre-2026-09-15 behaviour exactly.
+    #:
+    #: MEASURED 2026-09-15, fresh init, from-scratch phase-1 config, 12 real
+    #: updates: on the shared LSTM the aux gradient grew from 0.62x to 1.67x the
+    #: size of every other term combined (CNN trunk 0.63x -> 2.01x), with cosine
+    #: to them falling -0.37 -> -0.84 (trunk down to -0.90). It out-pulled and
+    #: opposed the policy and critic on their shared representation in exactly
+    #: the window where a random-init net has to find its first wins. The weight
+    #: above was sized against a CE of ~ln(8) = 2.08; a fresh 185-way head starts
+    #: at ln(185) = 5.22.
+    #:
+    #: A mechanism measurement, NOT a measured win-rate gain. 2,000 episodes is
+    #: ~160 updates (~2 h at 943 ep/h): long enough for the policy to get a
+    #: foothold at rung 0, short enough that the memory task still shapes the
+    #: LSTM for the whole run. Refuted if a paired from-scratch A/B at 0 vs 2000
+    #: shows the warm-up arm no better on reward at episode 2,000 and worse on
+    #: Aux/NextCard_CE afterwards.
+    aux_warmup_episodes: int = int(os.environ.get("CLASH_AUX_WARMUP_EPISODES", 2000))
+
     #: --- Cycle-branch identity loss (2026-08-28) --------------------------
     #: Weight on the cross-entropy that trains MicroRoyaleNet.predict_cycle_card
     #: -- the SAME next-card label as `aux_card_coef`, read off the 24-dim
@@ -414,3 +434,13 @@ def log_reachable(n):
     entropy and is excluded from every average by the decision mask anyway.
     """
     return math.log(max(2, n))
+
+
+def aux_warmup_scale(episodes_completed, warmup_episodes):
+    """Multiplier on the aux loss: linear 0 -> 1 over `warmup_episodes`.
+
+    See PPOConfig.aux_warmup_episodes for the measurement.
+    """
+    if warmup_episodes <= 0:
+        return 1.0
+    return float(min(1.0, max(0.0, episodes_completed / float(warmup_episodes))))
