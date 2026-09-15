@@ -126,8 +126,10 @@ def check_placement(ckpt_path, episodes, opp_elixir):
     dev = torch.device("cpu")
     net = load_net(ckpt_path, dev, verbose=False)
     deck = list(gym_wrapper.DEFAULT_DECK)
-    watch = {tactics.CANNON_ID: "Cannon", tactics.FIREBALL_ID: "Fireball",
-             tactics.GIANT_ID: "Giant"}
+    # EVERY card of the trainee's deck. This watched Cannon, Fireball and Giant
+    # -- a Giant is not in the deck, so a third of the collapse detector watched
+    # nothing -- and it has to follow CLASH_DECK anyway.
+    watch = {int(c): E.get_card_info(int(c))["name"] for c in deck}
     cells = {c: [] for c in watch}
     top1 = {c: [] for c in watch}
 
@@ -208,6 +210,46 @@ def main():
     if steps:
         say(OK, "episodes", f"latest update at episode {steps[-1]}")
 
+    # --- IS THE AGENT WINNING ANYTHING ----------------------------------------
+    # Added 2026-09-15 (audit 08). Every other check here is a NaN test, a norm
+    # or memory, and all of them read healthy on a run that has lost 4,000
+    # straight games. A from-scratch run starts at rung 0, where the curriculum
+    # has no valve of its own, so this is the only automated place a dead run
+    # can become visible.
+    wr = sc.get("Training/Win_Rate_100", [])
+    stage = _last(sc.get("Training/Curriculum_Stage", []), 1)
+    if wr:
+        last = _last(wr, 3)
+        span = wr[-1][0] - wr[0][0]
+        best = max(v for _s, v in wr)
+        if last <= 0.05 and span >= 1000 and best <= 0.05:
+            level = ALARM
+        elif last <= 0.15:
+            level = WARN
+        else:
+            level = OK
+        say(level, "win rate",
+            f"{last:.3f} now, best {best:.3f}, over {span} episodes of history"
+            + (f", rung {int(stage)}" if stage is not None else ""))
+    else:
+        say(WARN, "win rate", "no Training/Win_Rate_100 yet")
+    rew = sc.get("Training/Avg_Reward_50", [])
+    if len(rew) >= 2:
+        say(OK, "reward", f"{_last(rew[:3], 3):+.3f} -> {_last(rew, 3):+.3f}")
+    if sc.get("Training/Curriculum_FloorAlarm"):
+        n = len(sc["Training/Curriculum_FloorAlarm"])
+        say(ALARM, "floor alarm",
+            f"fired {n}x -- the run sat at rung 0 without winning; the teacher "
+            f"cannot get easier, so this will not correct itself")
+    plateau = _last(sc.get("Training/Curriculum_PlateauAdvances", []), 1)
+    if stage is not None and plateau is not None:
+        say(OK if plateau < max(1.0, stage) else WARN, "ladder",
+            f"rung {int(stage)}, {int(plateau)} rung(s) left by PLATEAU rather "
+            f"than by the gate")
+    dmin = _last(sc.get("Decks/WinRate_Min", []), 1)
+    if dmin is not None:
+        say(OK, "worst deck", f"win rate {dmin:.2f}")
+
     # --- the spell anneal, the thing that was dead code --------------------
     w = sc.get("Shaping/SpellValueWeight", [])
     if len(w) >= 2:
@@ -251,7 +293,14 @@ def main():
     ck = os.path.join(run_dir, args.ckpt)
     if os.path.exists(ck):
         age_min = (time.time() - os.path.getmtime(ck)) / 60.0
-        blob = torch.load(ck, map_location="cpu", weights_only=False)
+        # Load a COPY. On Windows the trainer's checkpoint replace fails while
+        # any handle has the file open, and this check used to be that handle
+        # (audit 08, gap 4).
+        import shutil
+        import tempfile
+        tmp_ck = os.path.join(tempfile.gettempdir(), f"monitor_{os.getpid()}.pth")
+        shutil.copy2(ck, tmp_ck)
+        blob = torch.load(tmp_ck, map_location="cpu", weights_only=False)
         model = blob["model"] if isinstance(blob, dict) and "model" in blob else blob
         norms = {k: float(v.float().norm()) for k, v in model.items()
                  if hasattr(v, "float")}

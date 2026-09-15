@@ -18,6 +18,14 @@ the checkpoint too, so a resume no longer throws away what the run learned about
 the pool. Before that fix an automatic restarter would have quietly degraded the
 run every time it fired.
 
+FOLLOWS THE HANDOFF (2026-09-15, audit 08). Phase 1 ends by launching phase 2
+and exiting. This used to match only `*trainers.train*`, which misses the
+phase-2 child (`...trainers\train_selfplay.py`) and any launch by path: after
+the handoff it saw "process gone", relaunched PHASE 1, which found its budget
+spent and launched ANOTHER phase 2 -- up to five phase-2 trainers on one
+checkpoint. It now recognises both phases in every launch form, relaunches the
+phase whose checkpoint is furthest along, and watches that phase's log.
+
 REFUSES TO RESTART-LOOP. If more than `--max-restarts` fire inside one hour the
 watchdog stops and says so: something is repeatably broken and relaunching it
 faster is not the answer.
@@ -34,18 +42,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 import python_ai  # noqa: E402
 
 
+def classify(cmdline):
+    """"phase1", "phase2" or None for one process command line.
+
+    Separator-agnostic: a module launch spells it `trainers.train`, a path
+    launch `trainers\\train.py` or `trainers/train.py`.
+    """
+    c = (cmdline or "").replace("\\", "/")
+    if "trainers.train_selfplay" in c or "trainers/train_selfplay" in c:
+        return "phase2"
+    if ("trainers/train.py" in c or c.rstrip().endswith("trainers.train")
+            or "trainers.train " in c):
+        return "phase1"
+    return None
+
+
 def trainer_pids():
-    """PIDs of live trainer processes, matched on the module they run."""
+    """{pid: phase} for live trainer processes of either phase."""
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
-             "Where-Object { $_.CommandLine -like '*trainers.train*' } | "
-             "Select-Object -ExpandProperty ProcessId"],
+             "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
             capture_output=True, text=True, timeout=60)
-        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
     except Exception:
-        return []
+        return {}
+    found = {}
+    for line in out.stdout.splitlines():
+        pid, _, cmd = line.partition("|")
+        phase = classify(cmd)
+        if phase and pid.strip().isdigit():
+            found[int(pid)] = phase
+    return found
+
+
+def phase_to_resume():
+    """The phase whose checkpoint is furthest along: phase 2 once one exists."""
+    from python_ai.trainers.train_selfplay import selfplay_paths
+    weights, _bootstrap, _logdir = selfplay_paths()
+    return "phase2" if os.path.exists(weights) else "phase1"
 
 
 def last_episode(log_path):
@@ -64,21 +99,28 @@ def last_episode(log_path):
     return None
 
 
-def launch(log_path, env_extra):
+def launch(log_path, env_extra, phase="phase1"):
     env = dict(os.environ)
     env.update(env_extra)
     fh = open(log_path, "a", buffering=1, errors="replace")
     fh.write(f"\n=== watchdog relaunch {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    module = ("python_ai.trainers.train_selfplay" if phase == "phase2"
+              else "python_ai.trainers.train")
     return subprocess.Popen(
-        [sys.executable, "-u", "-m", "python_ai.trainers.train"],
+        [sys.executable, "-u", "-m", module],
         stdout=fh, stderr=subprocess.STDOUT, cwd=python_ai.REPO_ROOT, env=env)
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--log", required=True)
-    ap.add_argument("--weights", default="model_weights_phase7.pth")
-    ap.add_argument("--logdir", default="runs/phase7")
+    ap.add_argument("--log", required=True,
+                    help="phase 1's console log; phase 2's is found from --logdir")
+    # NO DEFAULT checkpoint. This defaulted to model_weights_phase7.pth, which
+    # exists: a watchdog started with defaults resumed an old run.
+    ap.add_argument("--weights", default=None,
+                    help="CLASH_WEIGHTS for the trainer; unset = the default path")
+    ap.add_argument("--logdir", default=None,
+                    help="CLASH_LOGDIR for the trainer; unset = the default")
     ap.add_argument("--save-every", default="250")
     ap.add_argument("--num-envs", default=None)
     ap.add_argument("--check-every", type=float, default=120.0)
@@ -88,11 +130,19 @@ def main():
                          "checkpoint write pauses the loop, so a tight bound "
                          "would kill a healthy run mid-update.")
     ap.add_argument("--max-restarts", type=int, default=4)
-    args = ap.parse_args()
+    return ap
 
-    env_extra = {"CLASH_WEIGHTS": args.weights,
-                 "CLASH_LOGDIR": args.logdir,
-                 "CLASH_SAVE_EVERY": args.save_every}
+
+def main():
+    args = build_parser().parse_args()
+
+    env_extra = {"CLASH_SAVE_EVERY": args.save_every}
+    # Set in THIS process too, so phase_to_resume() resolves the same paths the
+    # trainer will.
+    if args.weights:
+        env_extra["CLASH_WEIGHTS"] = os.environ["CLASH_WEIGHTS"] = args.weights
+    if args.logdir:
+        env_extra["CLASH_LOGDIR"] = os.environ["CLASH_LOGDIR"] = args.logdir
     if args.num_envs:
         env_extra["CLASH_NUM_ENVS"] = args.num_envs
 
@@ -102,10 +152,19 @@ def main():
           f"{args.check_every:.0f}s, stall bound {args.stall_minutes:.0f}m",
           flush=True)
 
+    from python_ai.rl.checkpointing import run_path
+    # Where launch_pipeline2 writes phase 2's console log.
+    phase2_log = os.path.join(
+        os.path.dirname(os.path.abspath(
+            run_path(args.logdir or "runs/clash_royale_experiment"))),
+        "training_selfplay_pfsp.log")
+
     while True:
         time.sleep(args.check_every)
         pids = trainer_pids()
-        ep = last_episode(args.log)
+        phase = phase_to_resume()
+        log = phase2_log if phase == "phase2" else args.log
+        ep = last_episode(log)
         now = time.time()
 
         if ep is not None and ep != last_ep:
@@ -131,7 +190,7 @@ def main():
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                            capture_output=True)
         time.sleep(5)
-        launch(args.log, env_extra)
+        launch(log, env_extra, phase)
         restarts.append(now)
         last_move = now
         time.sleep(90)                         # let it boot before judging it
