@@ -129,7 +129,7 @@ import numpy as np
 
 import clash_royale_env as E
 from python_ai import engine_constants as EC
-from python_ai.advisors import tactics
+from python_ai.advisors import card_probes, tactics
 
 CE = E.ClashRoyaleEnv
 
@@ -363,6 +363,43 @@ def spell_spawns_bodies(card_id):
         peak = max(peak, sum(int((obs[ch * PLANE:(ch + 1) * PLANE] > 1e-6).sum())
                              for ch in CH_ALLY_TROOP))
     return peak
+
+
+def spell_geometry(card_id):
+    """(radius, damage) the teacher aims `card_id` with: the card's OWN, measured.
+
+    Every spell used to be aimed with FIREBALL's disc -- `tactics.spell_catch_map`
+    called with its defaults (radius 2.5, a 689 cap per unit) whatever was in
+    hand, in `_top_spell_cells`, both spell combos and the rung 0-1 rules gate.
+    `advisor_target` was moved to per-card geometry on 2026-09-15; this was the
+    copy that audit missed.
+
+    Measured 2026-09-16 on 320 mid-match boards against eight pool decks, each
+    cell scored by the ENGINE (the elixir value the cast actually killed):
+
+        Rocket    1.85 -> 2.54  (+38%; better on 75 boards, worse on 4)
+        Zap       0.62 -> 0.69  (+11%; 5 / 0)
+        Poison    1.42 -> 1.52  (+7%; 18 / 8)
+        Arrows    1.50 -> 1.56  (+4%; 7 / 2)
+        Lightning 3.50 -> 3.50  (8 / 8)
+        Fireball  identical cell on 320 / 320 -- the 2.6 mirror is unchanged
+
+    Rocket is the one that mattered: capped at Fireball's 689, a Rocket on a
+    tank scored no better than a Rocket on a Skeleton pile, so a 6-elixir spell
+    went to swarms. A card the probe declines (The Log, a roller) keeps the
+    Fireball disc it was aimed with before -- its value is a corridor, which no
+    disc describes.
+    """
+    effect = card_probes.spell_effect(int(card_id))
+    if effect is None:
+        return tactics.FIREBALL_RADIUS, tactics.FIREBALL_DAMAGE
+    return effect
+
+
+def spell_catch_for(obs, card_id):
+    """`tactics.spell_catch_map` for THIS spell's own radius and damage."""
+    radius, damage = spell_geometry(card_id)
+    return tactics.spell_catch_map(obs, radius, 0, damage)
 
 
 def threatens_tower_alone(card_id):
@@ -1531,12 +1568,12 @@ class UtilityTeacher:
         spells = [c for c in slots if self.roles.get(c) == "spell"]
         if not spells:
             return []
-        catch = tactics.spell_catch_map(obs)
+        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
+        catch = spell_catch_for(obs, spell)
         if float(catch.max()) <= 0.0:
             return []
         i = int(np.argmax(catch))
         scell = (float(i % BOARD_W), float(i // BOARD_W))
-        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
         pusher = None
         if (self.wincon_mode == "attack" and self.wincon_id in slots):
             pusher = self.wincon_id
@@ -1570,10 +1607,10 @@ class UtilityTeacher:
         spells = [c for c in slots if self.roles.get(c) == "spell"]
         if not spells:
             return []
-        catch = tactics.spell_catch_map(obs)
+        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
+        catch = spell_catch_for(obs, spell)
         if float(catch.max()) <= 0.0:
             return []
-        spell = min(spells, key=lambda c: E.get_card_info(c)["cost"])
         i = int(np.argmax(catch))
         scell = (float(i % BOARD_W), float(i // BOARD_W))
         bx, by, _ = tactics.best_hog_cell(obs)
@@ -1604,7 +1641,7 @@ class UtilityTeacher:
             return cells[:k]
 
         if role == "spell":
-            return self._top_spell_cells(obs, k)
+            return self._top_spell_cells(obs, k, card_id)
 
         if role == "building":
             x, y, _ = tactics.best_building_cell(obs)
@@ -1705,11 +1742,13 @@ class UtilityTeacher:
         """
         return float(obs[EC.EXTRA_SCALARS_START + 6 + slot])
 
-    def _top_spell_cells(self, obs, k):
-        """Top-k cells of the catch map with non-maximum suppression, so the
-        second candidate is a different DECISION and not the same blast shifted
-        one tile."""
-        m = tactics.spell_catch_map(obs).copy()
+    def _top_spell_cells(self, obs, k, card_id):
+        """Top-k cells of THIS spell's catch map with non-maximum suppression, so
+        the second candidate is a different DECISION and not the same blast
+        shifted one tile. Map and suppression disc are the card's own -- see
+        `spell_geometry`."""
+        radius, _damage = spell_geometry(card_id)
+        m = spell_catch_for(obs, card_id).copy()
         cells = []
         for _ in range(k):
             i = int(np.argmax(m))
@@ -1718,7 +1757,7 @@ class UtilityTeacher:
             cells.append((x, y))
             if v <= 0.0:
                 break
-            for dy, dx in tactics._disc_offsets(tactics.FIREBALL_RADIUS):
+            for dy, dx in tactics._disc_offsets(radius):
                 ay, ax = int(y) + dy, int(x) + dx
                 if 0 <= ay < BOARD_H and 0 <= ax < BOARD_W:
                     m[ay, ax] = 0.0
@@ -2176,10 +2215,14 @@ class UtilityTeacher:
             elif c.role == "building" and threat > 0.0:
                 pri = 2.5
             elif c.role == "spell":
-                caught = tactics.spell_catch_map(obs_own).max()
-                # Only cast when it actually catches something worth 4 elixir --
-                # forcing Fireball once dropped win rate 97% -> 23%.
-                pri = 2.0 if caught >= tactics.FIREBALL_DAMAGE else 0.0
+                # Only cast when the catch uses the spell's FULL damage -- for a
+                # Fireball, something worth its 4 elixir; forcing Fireball once
+                # dropped win rate 97% -> 23%. The spell's own map and its own
+                # damage: Fireball's 689 held a Zap back from a 243-HP Skeleton
+                # clump and threw a Rocket at a lone Musketeer.
+                _radius, full = spell_geometry(c.card_id)
+                caught = spell_catch_for(obs_own, c.card_id).max()
+                pri = 2.0 if caught >= full else 0.0
             elif c.role == "wincon" and tactics.hog_should_commit(obs_own):
                 pri = 1.5
             if pri > best_pri:
