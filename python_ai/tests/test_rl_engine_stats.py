@@ -28,8 +28,9 @@ def test_an_entirely_empty_infos_dict_yields_a_complete_stats_dict():
                 "team0_tower_damage", "team1_tower_damage",
                 "team0_elixir_spent", "team1_elixir_spent",
                 "team0_elixir_current", "team0_towers_alive",
-                "team1_towers_alive", "enemy_tower_hp", "fireball_in_hand",
-                "fireball_value_killed", "fireball_elixir_spent",
+                "team1_towers_alive", "enemy_tower_hp", "spell_in_hand",
+                "spell_value_killed", "spell_elixir_spent", "spell_damage",
+                "spell_cost",
                 "team0_wincon_damage"):
         assert key in stats, f"{key} missing -- compute_shaping would KeyError"
 
@@ -87,13 +88,17 @@ def test_a_solvent_all_default_pair_produces_exactly_zero_shaping():
     overflow penalty is 0. A full bar would fail this test correctly -- capping
     out is meant to cost something on every step it is true.
     """
-    from python_ai.rewards.weights import (
-        ELIXIR_OVERFLOW_THRESHOLD, SPELL_SOLVENCY_RESERVE,
-    )
+    # SOLVENCY_RESERVE is the solvency POTENTIAL's reserve, which is what the
+    # docstring means. This imported the spell term's SPELL_SOLVENCY_RESERVE
+    # until 2026-09-16 -- also 4.0, so it passed by coincidence, and that
+    # constant no longer exists (the spell term's reserve is the deck spell's
+    # own cost, and a spell-less default has none).
+    from python_ai.rewards.elixir_shaping import SOLVENCY_RESERVE
+    from python_ai.rewards.weights import ELIXIR_OVERFLOW_THRESHOLD
     prev = extract_engine_stats({}, N)
     cur = extract_engine_stats({}, N)
     solvent = np.full(N, 5.0, dtype=np.float32)
-    assert SPELL_SOLVENCY_RESERVE <= 5.0 <= ELIXIR_OVERFLOW_THRESHOLD
+    assert SOLVENCY_RESERVE <= 5.0 <= ELIXIR_OVERFLOW_THRESHOLD
     prev["team0_elixir_current"] = solvent
     cur["team0_elixir_current"] = solvent.copy()
     assert np.allclose(compute_shaping(cur, prev, gamma=0.99), 0.0)
@@ -113,7 +118,7 @@ def test_a_full_elixir_bar_costs_something_on_every_step_it_is_true():
 
 
 def test_a_missing_key_never_fabricates_a_lethal_spell_opportunity():
-    """`enemy_tower_hp` and `fireball_in_hand` default to the NO-OPPORTUNITY
+    """`enemy_tower_hp` and the `spell_*` keys default to the NO-OPPORTUNITY
     state, so an absent key can only ever zero the potential."""
     from python_ai.rewards.shaping import lethal_spell_potential
     stats = extract_engine_stats({}, N)

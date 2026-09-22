@@ -44,7 +44,9 @@ RECORDED = {
     "W_SPELL_VALUE_FINAL": 0.0,
     "SPELL_VALUE_ANNEAL_EPISODES": 40000,
     "SPELL_VALUE_ANNEAL_START": 0,
-    "SPELL_SOLVENCY_RESERVE": 4.0,
+    # SPELL_SOLVENCY_RESERVE (4.0) was retired 2026-09-16: the reserve is now the
+    # deck spell's own cost, which for the 2.6 deck's Fireball is still 4.0 --
+    # `test_damage_spell_is_deck_derived` pins that the 2.6 reward is unchanged.
 }
 
 
@@ -57,10 +59,12 @@ def test_the_placement_coverage_coefficient_is_unchanged():
     assert PLACEMENT_COVERAGE_COEF == 0.02
 
 
-def test_the_spell_reserve_matches_fireballs_own_cost():
+def test_the_spell_reserve_is_the_spells_own_cost_not_a_constant():
     """"Enough elixir to answer with one more card" is what makes the solvency
-    gate on the spell term asymmetric rather than arbitrary."""
-    assert W.SPELL_SOLVENCY_RESERVE == W.FIREBALL_COST
+    gate on the spell term asymmetric rather than arbitrary -- and "one more
+    card" means THE DECK'S spell, so it must not survive as a Fireball literal.
+    Behaviour is pinned in test_damage_spell_is_deck_derived."""
+    assert not hasattr(W, "SPELL_SOLVENCY_RESERVE")
 
 
 def test_the_solvency_reserve_and_its_weight_come_from_one_definition():

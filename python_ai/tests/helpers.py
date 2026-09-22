@@ -48,7 +48,15 @@ def chunk_fixture():
 
 
 def shaping_stats(fireball_killed):
-    """Minimal stats/prev pair where a Fireball has just killed some value."""
+    """Minimal stats/prev pair where a Fireball has just killed some value.
+
+    The spell is the 2.6 deck's Fireball, supplied through `spell_damage` /
+    `spell_cost` the way the envs publish it (689 / 4 -- the values
+    `card_probes.damage_spell` measures for it, which
+    `test_damage_spell_is_deck_derived` pins). A fixture, deliberately: these
+    tests pin the FORMULA, and one reading the live deck would move its own
+    expected answers with CLASH_DECK.
+    """
     z = np.zeros(1, dtype=np.float32)
     base = {
         "team0_troop_damage": z.copy(), "team1_troop_damage": z.copy(),
@@ -58,11 +66,13 @@ def shaping_stats(fireball_killed):
         "team0_elixir_current": np.array([7.0], dtype=np.float32),
         "team0_towers_alive": np.array([3]), "team1_towers_alive": np.array([3]),
         "enemy_tower_hp": np.zeros((1, 3), dtype=np.float32),
-        "fireball_in_hand": z.copy(),
-        "fireball_value_killed": z.copy(), "fireball_elixir_spent": z.copy(),
+        "spell_in_hand": z.copy(),
+        "spell_value_killed": z.copy(), "spell_elixir_spent": z.copy(),
+        "spell_damage": np.array([689.0], dtype=np.float32),
+        "spell_cost": np.array([4.0], dtype=np.float32),
     }
     prev = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
     cur = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
-    cur["fireball_value_killed"] = np.array([fireball_killed], dtype=np.float32)
-    cur["fireball_elixir_spent"] = np.array([4.0], dtype=np.float32)
+    cur["spell_value_killed"] = np.array([fireball_killed], dtype=np.float32)
+    cur["spell_elixir_spent"] = np.array([4.0], dtype=np.float32)
     return cur, prev

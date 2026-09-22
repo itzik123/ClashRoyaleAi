@@ -223,9 +223,16 @@ W_WIN_CONDITION_DAMAGE = float(os.environ.get("CLASH_W_WINCON_DAMAGE", 1.0))
 MAX_ELIXIR_PER_STEP = 10.0
 
 # --- Lethal spell cycling (heuristic 2) -------------------------------------
-# Fireball's damage, read from the registry rather than copied, so a balance
-# change can never leave this silently wrong. See CLAUDE.md's rule about second
-# copies of engine constants in Python.
+# THE SPELL THESE TERMS USE IS THE DECK'S, NOT FIREBALL'S, since 2026-09-16:
+# `advisors.card_probes.damage_spell` names it by measurement and the envs
+# publish its tower damage and cost as `spell_damage` / `spell_cost`. It cannot
+# be derived HERE -- this module is a leaf the teacher imports, and the probe
+# reaches the teacher -- which is why the lethal term was keyed to card 7 until
+# then (TODO.md 00.3).
+#
+# The Fireball constants below are no longer read by any reward term. They
+# survive as `advisors.tactics`' default spell geometry, read from the registry
+# where it can be (the cost) rather than copied.
 FIREBALL_CARD_ID = 7
 
 FIREBALL_DAMAGE = float(clash_royale_env.get_card_info(FIREBALL_CARD_ID)["damage"]) \
@@ -252,9 +259,10 @@ SPELL_VALUE_ANNEAL_EPISODES = int(os.environ.get(
 # the only reason it is not always 0.
 SPELL_VALUE_ANNEAL_START = int(os.environ.get("CLASH_SPELL_ANNEAL_START", 0))
 
-# Elixir that must remain after a cast for its POSITIVE reward to count. Set to
-# Fireball's own cost: enough to answer with one more card.
-SPELL_SOLVENCY_RESERVE = 4.0
+# The elixir that must remain after a cast for its POSITIVE reward to count is
+# the deck spell's OWN cost -- "enough to answer with one more card" -- and so
+# rides in on `spell_cost` rather than living here. It was
+# `SPELL_SOLVENCY_RESERVE = 4.0`, Fireball's cost, until 2026-09-16.
 
 # --- elixir solvency --------------------------------------------------------
 # Potential-based, therefore policy-invariant: it CANNOT change which policy is

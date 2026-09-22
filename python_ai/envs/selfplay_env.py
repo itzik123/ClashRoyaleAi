@@ -26,12 +26,13 @@ from torch.distributions import Categorical
 
 import clash_royale_env
 from python_ai.envs import scenarios, scripted_opponents
+from python_ai.advisors import card_probes
 from python_ai.envs.gym_wrapper import (
     DEFAULT_DECK, DEFAULT_DECK_ABILITY_SLOTS, WIN_CONDITION_ID, _to_scalar,
+    deck_spell_info,
 )
 from python_ai.models.net import MicroRoyaleNet
 from python_ai.models.policy_io import LSTM_HIDDEN, load_state_dict_flexible
-from python_ai.rewards.weights import FIREBALL_CARD_ID
 
 # --- Pipeline #2: Historical Self-Play (League / PFSP) ---
 # Pipeline #1 (train.py) teaches the bot to beat a random-but-unskilled
@@ -140,6 +141,8 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         super().__init__()
         env_config = env_config or {}
         self.deck = env_config.get("deck", list(DEFAULT_DECK))
+        # The card the two spell reward terms follow -- gym_wrapper.deck_spell_info.
+        self._damage_spell = card_probes.damage_spell(self.deck)
         max_ticks = env_config.get("max_ticks", 3600)
         # Tower Troops: per-match config, not a per-step action -- see
         # gym_wrapper.py's identical wiring. NONE (the default) reproduces
@@ -609,13 +612,11 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
             # normalized in its appended scalar tail (indices 6-8 = enemy
             # king/left/right), so this is a re-scale of data the net already
             # sees rather than a new engine call.
-            # Heuristic-1 inputs (rewards.shaping.spell_value_shaping). BOTH are needed:
-            # value-destroyed alone makes a whiffed spell free, which is the
-            # guaranteed-zero trap that parked the Cannon in a back corner.
-            "fireball_value_killed": self.game.get_elixir_value_killed_by(FIREBALL_CARD_ID, 0),
-            "fireball_elixir_spent": self.game.get_elixir_spent_on_card(FIREBALL_CARD_ID, 0),
+            # Inputs to both spell terms, for THIS deck's damage spell -- the
+            # same builder pipeline 1 uses (gym_wrapper.deck_spell_info), so the
+            # two pipelines cannot publish different keys.
+            **deck_spell_info(self.game, self._damage_spell),
             "enemy_tower_hp": np.asarray(obs[clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 6:clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
-            "fireball_in_hand": float(FIREBALL_CARD_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),
             "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),

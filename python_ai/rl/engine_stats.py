@@ -17,8 +17,10 @@ The defaults are therefore not cosmetic:
       counter that appears to go backwards into a delta of exactly 0.
   towers_alive        -> 3 (a full set), so a missing key yields a zero crown
       delta rather than a phantom three-crown swing.
-  enemy_tower_hp / fireball_in_hand -> the "no opportunity" state, so a missing
-      key can only ever zero the lethal-spell potential, never fabricate one.
+  enemy_tower_hp / spell_* -> the "no opportunity" state, so a missing key can
+      only ever zero the lethal-spell potential, never fabricate one. That
+      includes `spell_damage` and `spell_cost`: 0.0 is "this deck has no damage
+      spell", under which both spell terms are structurally zero.
 """
 import numpy as np
 import torch
@@ -36,11 +38,14 @@ _INT_KEYS = (
     "team0_wincon_damage",
 )
 _FLOAT_KEYS = ("team0_elixir_spent", "team1_elixir_spent")
-#: Heuristic-1 inputs (`spell_value_shaping`). BOTH are needed: value-destroyed
-#: alone makes a whiffed spell free, which is the guaranteed-zero trap that
-#: parked the Cannon in a back corner.
-_SPELL_KEYS = ("fireball_in_hand", "fireball_value_killed",
-               "fireball_elixir_spent")
+#: Inputs to the two spell terms, for the DECK'S damage spell
+#: (`card_probes.damage_spell`), not card id 7. value_killed and elixir_spent
+#: are BOTH needed: value-destroyed alone makes a whiffed spell free, which is
+#: the guaranteed-zero trap that parked the Cannon in a back corner.
+#: spell_damage / spell_cost are per-env constants of the deck, published every
+#: step so a missing key defaults to "no spell" like everything else here.
+_SPELL_KEYS = ("spell_in_hand", "spell_value_killed", "spell_elixir_spent",
+               "spell_damage", "spell_cost")
 
 
 def extract_engine_stats(infos, num_envs):

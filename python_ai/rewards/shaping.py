@@ -14,9 +14,9 @@ from python_ai.engine_constants import (
 )
 from python_ai.rewards.elixir_shaping import solvency_shaping
 from python_ai.rewards.weights import (
-    ELIXIR_OVERFLOW_THRESHOLD, FIREBALL_COST, FIREBALL_DAMAGE,
+    ELIXIR_OVERFLOW_THRESHOLD,
     FLAWLESS_REQUIRES_CROWN, MAX_ELIXIR_PER_STEP, SOLVENCY_COEF,
-    SOLVENCY_ENABLED, SPELL_SOLVENCY_RESERVE, SPELL_VALUE_ANNEAL_EPISODES,
+    SOLVENCY_ENABLED, SPELL_VALUE_ANNEAL_EPISODES,
     SPELL_VALUE_ANNEAL_START, W_BLDG, W_ELIXIR_OVERFLOW, W_ELIXIR_TRADE,
     W_FLAWLESS_DEFENSE, W_LETHAL_SPELL, W_SPELL_VALUE_FINAL,
     W_SPELL_VALUE_START, W_TOWER_DESTROYED, W_TROOPS,
@@ -32,7 +32,7 @@ _MONOTONE_UP = (
     "team0_tower_damage", "team1_tower_damage",
     "team0_wincon_damage",
     "team0_elixir_spent", "team1_elixir_spent",
-    "fireball_value_killed", "fireball_elixir_spent",
+    "spell_value_killed", "spell_elixir_spent",
 )
 #: ...and the ones that only ever DECREASE, for which a reset looks like a rise.
 #: Needed on its own: an episode that ended with towers already lost restores
@@ -106,7 +106,7 @@ def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
 
     STRICTLY potential-based, and it is worth being explicit about what that
     buys and what it does NOT. PBRS telescopes over an episode to
-    gamma^T*Phi(s_T) - Phi(s_0); both ends are 0 here (no tower is in Fireball
+    gamma^T*Phi(s_T) - Phi(s_0); both ends are 0 here (no tower is in spell
     range at the start, and the game is over at the end), so this term's total
     contribution to any episode's return is EXACTLY ZERO. By Ng et al. that
     makes it policy-invariant: it cannot make the agent value Fireball more at
@@ -123,11 +123,28 @@ def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
     All three conditions matter. Tower-in-range alone would reward states the
     agent cannot act on; requiring the card in hand and the elixir to cast it
     makes the potential track an ACTIONABLE opportunity.
+
+    THE SPELL IS THE DECK'S, NOT FIREBALL'S, since 2026-09-16. `spell_damage`
+    and `spell_cost` ride in on the stats dict from whichever card
+    `card_probes.damage_spell` named, so a Rocket deck gets a Rocket-sized
+    lethal window. A deck with no damaging spell publishes 0.0 for both, and
+    `hp > 0.0` then makes `hp <= 0.0` false for every tower -- the term is
+    structurally zero rather than zero by luck.
+
+    `spell_damage` is the spell's measured damage TO A CROWN TOWER, not to a
+    troop. They are equal in this engine today and 15-30% apart in the real
+    game; see `card_probes.spell_tower_damage` for why the window is keyed to
+    the one that stays right if the engine is corrected.
+
+    The keys are REQUIRED. A default would have to be some spell's constants,
+    and a silent fallback to Fireball's is exactly the defect this replaced.
     """
     hp = stats["enemy_tower_hp"]                       # (num_envs, 3) absolute
-    in_range = np.any((hp > 0.0) & (hp <= FIREBALL_DAMAGE), axis=1)
-    actionable = (stats["fireball_in_hand"] > 0.5) & \
-                 (stats["team0_elixir_current"] >= FIREBALL_COST)
+    damage = np.reshape(np.asarray(stats["spell_damage"], dtype=np.float32), (-1, 1))
+    cost = np.asarray(stats["spell_cost"], dtype=np.float32)
+    in_range = np.any((hp > 0.0) & (hp <= damage), axis=1)
+    actionable = (stats["spell_in_hand"] > 0.5) & \
+                 (stats["team0_elixir_current"] >= cost)
     return w * (in_range & actionable).astype(np.float32)
 
 def spell_value_weight(eps_done, start=None, length=None):
@@ -185,12 +202,30 @@ def spell_value_shaping(stats, prev_stats, w):
     "Fireball at our own bridge with 4 elixir left and a push incoming" case
     unprofitable at best rather than merely less profitable, which is the
     spam-failure this whole term has to avoid.
+
+    THE DENOMINATOR IS THE DECK'S SPELL COST, since 2026-09-16, and it is the
+    half of this that a hardcoded 4.0 got WRONG rather than merely approximate:
+    the quantity is a ratio centred on break-even, so pricing a 6-cost Rocket at
+    4 turns an even trade into a +0.5 reward and teaches the policy that Rocket
+    spam pays. The solvency reserve moves with it for the same reason -- it
+    means "enough left to answer with one more card", which is the spell's own
+    cost; the retired `SPELL_SOLVENCY_RESERVE = 4.0` was that number for
+    Fireball specifically.
+
+    A deck with no damaging spell publishes `spell_cost = 0.0`, and that is
+    GUARDED rather than divided by: the counters are also zero so the arithmetic
+    would give 0/0 -> nan, and a nan reward propagates into the advantage,
+    through the optimizer, and kills the net silently. The term is then exactly
+    zero.
     """
-    killed = np.maximum(0.0, stats["fireball_value_killed"] - prev_stats["fireball_value_killed"])
-    spent = np.maximum(0.0, stats["fireball_elixir_spent"] - prev_stats["fireball_elixir_spent"])
-    casts = spent / FIREBALL_COST
-    traded = killed / FIREBALL_COST - casts
-    solvent = (stats["team0_elixir_current"] >= SPELL_SOLVENCY_RESERVE).astype(np.float32)
+    cost = np.asarray(stats["spell_cost"], dtype=np.float32)
+    killed = np.maximum(0.0, stats["spell_value_killed"] - prev_stats["spell_value_killed"])
+    spent = np.maximum(0.0, stats["spell_elixir_spent"] - prev_stats["spell_elixir_spent"])
+    have_spell = cost > 0.0
+    safe_cost = np.where(have_spell, cost, 1.0)
+    casts = spent / safe_cost
+    traded = (killed / safe_cost - casts) * have_spell.astype(np.float32)
+    solvent = (stats["team0_elixir_current"] >= safe_cost).astype(np.float32)
     return (w * np.where(traded > 0.0, traded * solvent, traded)).astype(np.float32)
 
 def tower_potential(stats, w_bldg=W_BLDG):

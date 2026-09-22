@@ -48,8 +48,12 @@ def _stats(n=1, **over):
         "team0_tower_damage": z.copy(), "team1_tower_damage": z.copy(),
         "team0_wincon_damage": z.copy(),
         "team0_elixir_spent": z.copy(), "team1_elixir_spent": z.copy(),
-        "fireball_in_hand": z.copy(), "fireball_value_killed": z.copy(),
-        "fireball_elixir_spent": z.copy(),
+        "spell_in_hand": z.copy(), "spell_value_killed": z.copy(),
+        "spell_elixir_spent": z.copy(),
+        # A fixture 2.6-deck Fireball, as the envs publish it -- see
+        # helpers.shaping_stats for why a fixture and not the live deck.
+        "spell_damage": np.full(n, 689.0, dtype=np.float32),
+        "spell_cost": np.full(n, 4.0, dtype=np.float32),
         "enemy_tower_hp": np.zeros((n, 3), dtype=np.float32),
         "team0_elixir_current": np.full(n, 5.0, dtype=np.float32),
         "team0_towers_alive": np.full(n, 3, dtype=np.int64),

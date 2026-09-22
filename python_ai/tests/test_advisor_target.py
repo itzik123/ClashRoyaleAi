@@ -126,7 +126,7 @@ def test_compute_shaping_actually_responds_to_w_spell():
         "w_spell is not reaching spell_value_shaping -- the dead-code bug is back")
 
     none_cast, prev2 = shaping_stats(fireball_killed=0.0)
-    none_cast["fireball_elixir_spent"] = np.zeros(1, dtype=np.float32)
+    none_cast["spell_elixir_spent"] = np.zeros(1, dtype=np.float32)
     assert float(off[0]) == pytest.approx(
         float(train_shaping.compute_shaping(none_cast, prev2, SHAPING_TEST_GAMMA, w_spell=0.0)[0]))
 

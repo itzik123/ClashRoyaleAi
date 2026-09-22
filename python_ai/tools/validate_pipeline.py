@@ -451,16 +451,21 @@ def validate_spell_anneal():
     base = {k: z.copy() for k in (
         "team0_troop_damage", "team1_troop_damage", "team0_building_damage",
         "team1_building_damage", "team0_tower_damage", "team1_tower_damage",
-        "team0_elixir_spent", "team1_elixir_spent", "fireball_in_hand",
-        "fireball_value_killed", "fireball_elixir_spent")}
+        "team0_elixir_spent", "team1_elixir_spent", "spell_in_hand",
+        "spell_value_killed", "spell_elixir_spent")}
+    # A FIXTURE 4-cost spell, whatever the training deck holds: this check pins
+    # the anneal's wiring, not the deck (a spell-less deck zeroes the term, and
+    # would make "responds to the weight" fail for a reason that is not a bug).
+    base["spell_damage"] = np.array([689.0], dtype=np.float32)
+    base["spell_cost"] = np.array([4.0], dtype=np.float32)
     base["team0_elixir_current"] = np.array([7.0], dtype=np.float32)
     base["team0_towers_alive"] = np.array([3])
     base["team1_towers_alive"] = np.array([3])
     base["enemy_tower_hp"] = np.zeros((1, 3), dtype=np.float32)
     prev = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
     cur = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in base.items()}
-    cur["fireball_value_killed"] = np.array([8.0], dtype=np.float32)
-    cur["fireball_elixir_spent"] = np.array([4.0], dtype=np.float32)
+    cur["spell_value_killed"] = np.array([8.0], dtype=np.float32)
+    cur["spell_elixir_spent"] = np.array([4.0], dtype=np.float32)
 
     hot = float(shaping.compute_shaping(cur, prev, PPOConfig.gamma, w_spell=w0)[0])
     cold = float(shaping.compute_shaping(cur, prev, PPOConfig.gamma, w_spell=wend)[0])

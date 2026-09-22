@@ -14,20 +14,29 @@ win conditions: inject the card on an empty board and read the engine. Every
 probe is cached per card id and costs milliseconds.
 
 Values that the probes reproduce exactly, as a check that they measure what the
-registry means (2026-09-15):
+registry means (2026-09-16):
 
     Fireball   radius 2.5   damage 689      (CardRegistry: spell(7, ..., 2.5f, 689, ...))
-    Arrows 3.5 / 369   Zap 2.5 / 192   Poison 3.5 / 368   Rocket 2.0 / 1485
+    Arrows 3.5 / 369   Zap 2.5 / 192   Poison 3.5 / 736   Rocket 2.0 / 1485
 
 A spell's radius is the largest CENTRE distance at which a STATIONARY target
 takes damage. Stationary matters: a first version let the target walk during
 the cast delay and read Fireball at 1.0.
+
+**A spell's damage is its WHOLE effect, read until it stops.** Until 2026-09-16
+the probe idled a fixed 40 ticks and so cut every damage-over-time spell off
+halfway: Poison is `spell(32, ..., 92, ...).withRepeats(8, 10)` = 736 over 80
+ticks and read **368**; Goblin Curse, 43 x 6 = 258, read **129**. This
+docstring then quoted the 368 as proof the probe "reproduces exactly" what the
+registry means -- a check anchored on the truncated reading, so it could not
+fail. `_settled_damage` now idles until the damage stops moving.
 """
 import functools
 
 import numpy as np
 
 import clash_royale_env as E
+from python_ai import engine_constants as EC
 
 CE = E.ClashRoyaleEnv
 HAND = CE.HAND_SIZE
@@ -60,6 +69,31 @@ def _idle(e, ticks):
         e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 10)
 
 
+#: A spell's effect is over once its damage has not moved for this long. Longer
+#: than any registered gap between two pulses of one spell (every `withRepeats`
+#: interval is 10 ticks or less) and longer than any cast delay (Rocket's 15).
+_SETTLE_TICKS = 50
+
+
+def _settled_damage(e, read):
+    """Idle `e` until `read(e)` stops changing, and return its final value.
+
+    The damage-over-time fix. Bounded by `_HOLD_TICKS` because a held target is
+    only held that long; no registered non-spawning spell comes near it (Poison,
+    the longest, is done at 80).
+    """
+    value, quiet, elapsed = read(e), 0, 0
+    while elapsed < _HOLD_TICKS - 10:
+        _idle(e, 10)
+        elapsed += 10
+        now = read(e)
+        quiet = quiet + 10 if now == value else 0
+        value = now
+        if quiet >= _SETTLE_TICKS and elapsed >= _SETTLE_TICKS:
+            break
+    return value
+
+
 def _damage_to_enemy_target(card_id, target_id, dx):
     """Troop damage team 0 deals after casting `card_id` at the centre, with
     one enemy `target_id` held stationary `dx` tiles to the side."""
@@ -68,8 +102,7 @@ def _damage_to_enemy_target(card_id, target_id, dx):
     e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 1)
     before = e.get_troop_damage_dealt(0)
     e.inject(card_id, _CX, _CY, 0, -1.0, 0)
-    _idle(e, 40)
-    return e.get_troop_damage_dealt(0) - before
+    return _settled_damage(e, lambda env: env.get_troop_damage_dealt(0)) - before
 
 
 @functools.lru_cache(maxsize=512)
@@ -103,6 +136,76 @@ def spell_effect(card_id):
     if radius <= 0.0:
         return None
     return float(radius), float(damage)
+
+
+@functools.lru_cache(maxsize=512)
+def spell_tower_damage(card_id):
+    """Crown Tower HP one cast of `card_id` removes, cast on the tower's centre.
+
+    Team 0 casts on team 1's LEFT Princess Tower -- position from the bound
+    arena, never restated -- on an otherwise empty board, and the tower's own HP
+    loss is read once the effect has settled.
+
+    THIS IS NOT `spell_effect`'s DAMAGE, and the difference is the whole reason
+    it exists. The real game deals a spell's "Crown Tower damage", a published
+    15-30% of its troop damage (Fireball 159 of 688, Rocket 371 of 1484, The Log
+    41 of 268). This engine currently charges towers 100% -- measured for every
+    registered spell on 2026-09-16, and proposed as a C++ fix in
+    `perception/UPSTREAM_REQUESTS.md`. A lethal window keyed to the TROOP number
+    would be correct today and silently 4x too wide the day that proposal lands,
+    which is precisely the one-change-later failure this repo keeps recording.
+    Measuring the tower is right under both engines.
+    """
+    info = E.get_card_info(card_id)
+    if not info["is_spell"]:
+        return 0.0
+    e = _env()
+    x, y = float(EC.LEFT_LANE_X), float(EC.princess_y(1))
+    if not e.is_valid_placement(card_id, x, y, 0):
+        return 0.0
+    before = e.get_tower_hp(1, 1)
+    e.inject(card_id, x, y, 0, -1.0, 0)
+    return float(before - _settled_damage(e, lambda env: env.get_tower_hp(1, 1)))
+
+
+def damage_spell(deck):
+    """(card_id, tower_damage, cost) for the deck's finishing spell, or None.
+
+    THE DECK'S spell, not card id 7. Two reward terms are built on this one card
+    -- `W_LETHAL_SPELL` ("a tower is inside my spell's damage and I can cast it")
+    and `W_SPELL_VALUE_START` (the trade ratio a cast earns) -- and both were
+    keyed to Fireball, so a deck without it trained under a quietly smaller
+    objective with nothing raising: measured over 12 seeded matches, a Hog deck
+    carrying Rocket instead of Fireball had BOTH terms at exactly zero on all
+    2,372 steps. See TODO.md item 00.3.
+
+    **Picked by TOWER damage, not by cost or by hand order.** Both terms are
+    about FINISHING: the lethal window is literally "tower hp <= damage", and a
+    deck carrying Zap and Rocket must key it to the Rocket. Cost breaks a tie
+    only because the cheaper of two equal spells is the one a cycle deck can
+    actually reach, and the id breaks that in turn so the answer is
+    deterministic. The damage is `spell_tower_damage`'s -- what the spell does
+    to the thing the window is about -- not the troop damage.
+
+    Candidates are the cards `spell_effect` accepts: damaging area spells. That
+    declines rollers (a corridor, not a disc) and spawning spells (a Goblin
+    Barrel is a win condition, not a finisher). So a deck whose only spell is The
+    Log returns None; that is a legitimate deck, both terms then contribute
+    exactly zero, and `validate_deck` says so at startup rather than letting it
+    go silent.
+    """
+    best = None
+    for cid in sorted({int(c) for c in deck}):
+        if spell_effect(cid) is None:
+            continue
+        damage = spell_tower_damage(cid)
+        if damage <= 0.0:
+            continue
+        cost = float(E.get_card_info(cid)["cost"])
+        key = (-damage, cost, cid)
+        if best is None or key < best[0]:
+            best = (key, (cid, damage, cost))
+    return None if best is None else best[1]
 
 
 @functools.lru_cache(maxsize=512)

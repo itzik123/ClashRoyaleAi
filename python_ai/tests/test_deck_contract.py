@@ -43,11 +43,28 @@ def test_a_champion_deck_trains_and_says_the_ability_path_is_new():
     DC.validate_deck(deck, strict=True)
 
 
-def test_a_deck_without_fireball_warns_that_the_spell_terms_are_off():
+def test_a_deck_without_fireball_keys_the_spell_terms_to_its_own_spell():
+    """This deck WARNED "no Fireball: the spell terms contribute nothing" until
+    2026-09-16. They follow the deck's own damage spell now -- here Lightning --
+    so the report names it, with the numbers the terms actually use."""
     deck = D.parse_deck("royal giant,fisherman,hunter,electro spirit,skeletons,"
                         "lightning,the log,cannon")
     report = DC.validate_deck(deck, strict=False)
-    assert any(lvl == "WARN" and "spell" in msg.lower() for lvl, msg in report), text(report)
+    spell_lines = [(lvl, msg) for lvl, msg in report if "spell reward terms" in msg]
+    assert spell_lines, text(report)
+    lvl, msg = spell_lines[0]
+    assert lvl == "INFO" and "Lightning" in msg, msg
+    assert "1057" in msg and "6 elixir" in msg, msg
+
+
+def test_a_deck_with_no_damaging_spell_warns_that_the_spell_terms_are_off():
+    """The Log is a ROLLER, which the damage-spell resolver declines (its value
+    is a corridor, not a disc), so a Log-only deck has no finishing spell."""
+    deck = D.parse_deck("hog rider,musketeer,cannon,ice golem,skeletons,"
+                        "ice spirit,the log,knight")
+    report = DC.validate_deck(deck, strict=False)
+    assert any(lvl == "WARN" and "no damaging area spell" in msg
+               for lvl, msg in report), text(report)
 
 
 def test_advisor_coverage_is_reported():

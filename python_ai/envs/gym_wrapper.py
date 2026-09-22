@@ -5,6 +5,7 @@ from gymnasium import spaces
 import numpy as np
 
 import clash_royale_env
+from python_ai.advisors import card_probes
 from python_ai.envs import scenario_offense, scenarios
 from python_ai.opponents import deck_pool
 
@@ -168,8 +169,33 @@ def _find_win_condition(deck):
 
 
 WIN_CONDITION_ID = _find_win_condition(DEFAULT_DECK)
-# Card id of the deck's only spell -- see train.lethal_spell_potential.
-train_FIREBALL_ID = 7
+
+
+def deck_spell_info(game, spell):
+    """The five `spell_*` info keys for team 0's damage spell, or all zeros.
+
+    `spell` is `card_probes.damage_spell(deck)` -- (card_id, tower_damage, cost)
+    or None. It replaces `train_FIREBALL_ID = 7`, which keyed both spell reward
+    terms to Fireball whatever the deck (TODO.md 00.3): with a Rocket in its
+    place they read exactly zero on every one of 2,372 measured steps.
+
+    ONE builder for both envs. Pipeline 2 builds its ClashRoyaleEnv directly
+    rather than through this module, and a key only one pipeline supplies is a
+    term that silently contributes zero for a whole phase -- the shape
+    `team0_wincon_damage`'s comment in selfplay_env already records.
+    """
+    if spell is None:
+        return {"spell_in_hand": 0.0, "spell_value_killed": 0.0,
+                "spell_elixir_spent": 0.0, "spell_damage": 0.0, "spell_cost": 0.0}
+    card_id, damage, cost = spell
+    return {
+        "spell_in_hand": float(card_id in list(game.get_hand())),
+        "spell_value_killed": game.get_elixir_value_killed_by(card_id, 0),
+        "spell_elixir_spent": game.get_elixir_spent_on_card(card_id, 0),
+        "spell_damage": float(damage),
+        "spell_cost": float(cost),
+    }
+
 
 # How many Champion ability slots this deck actually has (0, 1 or 2 -- see
 # CardRegistry::validateDeckSlots).
@@ -246,6 +272,9 @@ class MicroRoyaleEnv(gym.Env):
         # את הסוכן במשחק כמעט-אבוד מראש ואות הניצחון/הפסד נעלם. גיוון חפיסות שייך
         # לשלב קוריקולום מאוחר, אחרי שהסוכן לומד לנצח במשחק מאוזן.
         self.ai_deck = list(ai_deck)
+        # The card the two spell reward terms follow, measured by injection and
+        # cached per process -- see deck_spell_info.
+        self._damage_spell = card_probes.damage_spell(self.ai_deck)
         self.opp_deck = env_config.get("opp_deck", list(ai_deck))
         self.current_opp_deck = list(self.opp_deck)
         self.randomize_opp_deck = env_config.get("randomize_opp_deck", False)
@@ -620,13 +649,11 @@ class MicroRoyaleEnv(gym.Env):
             # normalized in its appended scalar tail (indices 6-8 = enemy
             # king/left/right), so this is a re-scale of data the net already
             # sees rather than a new engine call.
-            # Heuristic-1 inputs (train.spell_value_shaping). BOTH are needed:
-            # value-destroyed alone makes a whiffed spell free, which is the
-            # guaranteed-zero trap that parked the Cannon in a back corner.
-            "fireball_value_killed": self.game.get_elixir_value_killed_by(train_FIREBALL_ID, 0),
-            "fireball_elixir_spent": self.game.get_elixir_spent_on_card(train_FIREBALL_ID, 0),
+            # Inputs to both spell terms (rewards.shaping.spell_value_shaping and
+            # lethal_spell_potential), for THIS deck's damage spell -- see
+            # deck_spell_info.
+            **deck_spell_info(self.game, self._damage_spell),
             "enemy_tower_hp": np.asarray(obs[clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 6:clash_royale_env.ClashRoyaleEnv.EXTRA_SCALARS_START + 9], dtype=np.float32) * clash_royale_env.ClashRoyaleEnv.MAX_BUILDING_HP,
-            "fireball_in_hand": float(train_FIREBALL_ID in list(self.game.get_hand())),
             "team0_tower_damage": self.game.get_tower_damage_dealt(0),
             "team1_tower_damage": self.game.get_tower_damage_dealt(1),
             "team1_building_damage": self.game.get_building_damage_dealt(1),

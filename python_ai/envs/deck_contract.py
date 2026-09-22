@@ -10,12 +10,13 @@ no exception, no warning, no log line, and a run that looks healthy:
   * the advisor-target term (10% of log(612) on the placement head) trained on
     zero cards for 5 of 8 plausible replacement decks;
   * the win-condition reward went dead for siege/spell/Miner decks;
-  * the lethal-spell and value-spell terms are keyed to Fireball (id 7);
+  * the lethal-spell and value-spell terms were keyed to Fireball (id 7);
   * 60% of scenario injection builds boards whose answer is a Fireball.
 
-Several of those are FIXED (the advisor and the win condition are derived now);
-the rest are reported here, so a deck choice is an informed one and the log of a
-run records what it trained with.
+Several of those are FIXED (the advisor, the win condition and, since
+2026-09-16, the spell terms are derived now); the rest are reported here, so a
+deck choice is an informed one and the log of a run records what it trained
+with.
 """
 import clash_royale_env as E
 
@@ -75,13 +76,22 @@ def validate_deck(deck, *, strict=True):
            f"entropy bonus only for: {', '.join(uncovered) or 'none'}")
     out.append(("WARN" if not table else "INFO", msg))
 
-    # --- Fireball-keyed reward terms and scenarios ----------------------------
-    if W.FIREBALL_CARD_ID not in deck:
+    # --- the spell reward terms and scenarios ----------------------------------
+    # Keyed to the DECK'S damage spell since 2026-09-16 (they were keyed to card
+    # id 7, and silently zero for any deck without Fireball -- TODO.md 00.3).
+    spell = card_probes.damage_spell(deck)
+    if spell is None:
         out.append(("WARN",
-                    f"no Fireball: the lethal-spell (W_LETHAL_SPELL={W.W_LETHAL_SPELL}) "
-                    f"and value-spell (W_SPELL_VALUE_START={W.W_SPELL_VALUE_START}) "
-                    f"reward terms are keyed to card id {W.FIREBALL_CARD_ID} and "
-                    f"contribute nothing"))
+                    f"no damaging area spell: the lethal-spell "
+                    f"(W_LETHAL_SPELL={W.W_LETHAL_SPELL}) and value-spell "
+                    f"(W_SPELL_VALUE_START={W.W_SPELL_VALUE_START}) reward terms "
+                    f"contribute nothing for this deck"))
+    else:
+        sid, tower_dmg, cost = spell
+        out.append(("INFO",
+                    f"spell reward terms follow {name(sid)}: lethal window at enemy "
+                    f"tower hp <= {tower_dmg:.0f} (its measured Crown Tower damage), "
+                    f"trades priced at {cost:.0f} elixir"))
     spell_scen = getattr(scenarios, "spell_scenario_share", None)
     if spell_scen is not None:
         share = spell_scen(deck)

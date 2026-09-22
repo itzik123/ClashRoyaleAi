@@ -169,8 +169,8 @@ def test_matches_compute_shaping_when_wired_in():
     base = {k: np.zeros(n, dtype=np.float32) for k in (
         "team0_troop_damage", "team1_troop_damage", "team0_building_damage",
         "team1_building_damage", "team0_tower_damage", "team1_tower_damage",
-        "team0_elixir_spent", "team1_elixir_spent", "fireball_value_killed",
-        "fireball_elixir_spent", "fireball_in_hand")}
+        "team0_elixir_spent", "team1_elixir_spent", "spell_value_killed",
+        "spell_elixir_spent", "spell_in_hand", "spell_damage", "spell_cost")}
     base["team0_towers_alive"] = np.full(n, 3.0, dtype=np.float32)
     base["team1_towers_alive"] = np.full(n, 3.0, dtype=np.float32)
     base["enemy_tower_hp"] = np.full((n, 3), 2534.0, dtype=np.float32)
