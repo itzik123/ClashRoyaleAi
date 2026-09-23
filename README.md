@@ -207,6 +207,9 @@ audit of the reward function and curriculum. Perception reads the elixir bar
 and your own hand from live gameplay. Detecting the opponent's placements is
 blocked until more recordings are available.
 
+Every release from v0.1.0 onward, with what changed and whether it affects
+checkpoints, is listed in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+
 ### Roadmap
 
 - [ ] Cross-platform wheels (`pip install`) for Linux and macOS
