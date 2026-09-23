@@ -1881,6 +1881,16 @@ Sparse `±1` on win/loss plus `compute_shaping()`:
 The PBRS form keeps the `γ` — Ng et al.'s policy-invariance result requires it,
 and dropping it is a different (biased) shaping that looks almost identical.
 
+**And the γ alone is not enough: Φ(terminal) is never zeroed, so the tower term
+is NOT policy-invariant** (TODO 00.4, measured 2026-09-23). It telescopes
+exactly to γ^T·Φ(s_T), a disguised terminal reward: over 16 seeded rung-3 mirror
+matches, **+0.107 on wins and −0.169 on losses** (range ±0.41) — a tower-margin
+bonus worth 10-17% of the ±1 outcome, sign-aligned with it and with the timeout
+tiebreak. The lethal-spell and solvency potentials leave smaller residues
+(nonzero in 2 of 16 matches, up to +0.125 and −0.019). Kept, as a benign bias;
+making all three strictly invariant is one line (`γΦ(s′)` times `1 − done` in
+`compute_shaping`) and is an objective change for the maintainer to choose.
+
 **Deployed buildings are priced with the troops, not with the towers**
 (2026-08-06). The potential used to read the engine's `buildingDamageDealt`,
 which is towers *plus* deployed buildings, so damage to the agent's own Cannon

@@ -68,6 +68,12 @@ on purpose, each with the reason.
    implicit terminal tower-HP bonus. Aligned with TimeoutRules' tiebreak and
    probably benign; documented as invariant, which it is not. Decide, then fix
    either the code or the documentation.
+   **Documentation fixed 2026-09-23; the CODE decision is still yours.** Measured
+   on 16 seeded rung-3 mirror matches: tower residue +0.107 on wins / -0.169 on
+   losses; the lethal and solvency potentials leave residues too (2 of 16
+   matches, up to +0.125 / -0.019) -- the lethal docstring had claimed "EXACTLY
+   ZERO". `weights.py`, `shaping.py` and `CLAUDE.md` now say what is true. The
+   code option is one line: `(1 - done)` on the `gamma*Phi(s')` half.
 
 5. **The teacher has no air-defence concept** (zero hits for any air term in
    `teacher.py`/`tactics.py`). At rung 0 a lone Balloon takes a full Princess 2 of

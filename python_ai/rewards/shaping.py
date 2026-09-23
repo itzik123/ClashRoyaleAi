@@ -104,13 +104,17 @@ def lethal_spell_potential(stats, w=W_LETHAL_SPELL):
     """Phi(s): 1 when a finishing spell is genuinely available AND an enemy
     tower is inside its damage, 0 otherwise.
 
-    STRICTLY potential-based, and it is worth being explicit about what that
-    buys and what it does NOT. PBRS telescopes over an episode to
-    gamma^T*Phi(s_T) - Phi(s_0); both ends are 0 here (no tower is in spell
-    range at the start, and the game is over at the end), so this term's total
-    contribution to any episode's return is EXACTLY ZERO. By Ng et al. that
-    makes it policy-invariant: it cannot make the agent value Fireball more at
-    the optimum, and it cannot be farmed by cycling in and out of the state.
+    Potential-based, and it is worth being explicit about what that buys and
+    what it does NOT. PBRS telescopes over an episode to
+    gamma^T*Phi(s_T) - Phi(s_0). Phi(s_0) is 0 (no tower is in spell range at
+    the start). Phi(s_T) is USUALLY 0 but not always -- "the game is over at
+    the end" does not zero a potential, and a match that ends with a surviving
+    tower inside the window and the spell in hand leaves +W_LETHAL_SPELL on the
+    table: measured nonzero in 2 of 16 seeded mirror matches, up to +0.125
+    (TODO 00.4; see weights.py's policy-invariance note). Where it is 0 the term
+    is policy-invariant by Ng et al.: it cannot make the agent value the spell
+    more at the optimum, and it cannot be farmed by cycling in and out of the
+    state.
 
     What it does is redistribute credit. The sparse signal for "cycle the spell
     into hand while their tower is low, then finish" is otherwise buried at the

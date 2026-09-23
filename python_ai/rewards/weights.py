@@ -13,12 +13,29 @@ sum dwarfs +/-1, lower these.
 WHICH TERMS ARE POLICY-INVARIANT, because it is the property that matters most
 here and it is not uniform:
 
-  potential-based (cannot change the optimum, only the speed of finding it)
+  potential-based IN FORM (gamma*Phi(s') - Phi(s))
       the tower term (W_BLDG), the lethal-spell term (W_LETHAL_SPELL), the
       solvency term (SOLVENCY_COEF)
   DELIBERATELY BIASING (changes the optimum, eyes open)
       W_TOWER_DESTROYED, W_FLAWLESS_DEFENSE, W_WIN_CONDITION_DAMAGE,
       W_SPELL_VALUE_START, DRAW_PENALTY
+
+"Potential-based IN FORM" is not "policy-invariant", and until 2026-09-23 this
+list said it was. Ng et al.'s invariance needs Phi(terminal) = 0 in an episodic
+task; nothing here zeroes it, so each term telescopes to a TERMINAL reward in
+disguise, gamma^T * Phi(s_T). Measured over 16 seeded rung-3 teacher mirror
+matches (TODO 00.4), exact telescoping verified on every episode:
+
+    tower     nonzero 16/16   +0.107 on wins, -0.169 on losses, range +/-0.41
+    lethal    nonzero  2/16   up to +0.125 (a match ends with a tower in range)
+    solvency  nonzero  2/16   at most -0.019
+
+So the tower term is, in effect, a terminal tower-MARGIN bonus worth 10-17% of
+the +/-1 outcome, sign-aligned with it and with TimeoutRules' tiebreak. That is
+why it has not been "fixed": it is a benign bias, but it IS a bias. Making all
+three strictly invariant is one line in compute_shaping -- multiply the
+gamma*Phi(s') half by (1 - done) -- and it is an OBJECTIVE change, so it is the
+maintainer's decision, not a cleanup.
 
 Every biasing term is there because a policy-invariant version was measured and
 found to leave PURE DEFENCE as the true optimum -- win-condition usage decayed

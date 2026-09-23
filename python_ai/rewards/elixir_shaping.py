@@ -108,7 +108,12 @@ def solvency_potential(elixir, reserve=SOLVENCY_RESERVE, w=W_SOLVENCY):
 
 def solvency_shaping(stats, prev_stats, gamma,
                      reserve=SOLVENCY_RESERVE, w=W_SOLVENCY):
-    """F = gamma*Phi(s') - Phi(s), the policy-invariant discounted form.
+    """F = gamma*Phi(s') - Phi(s), the discounted form Ng et al.'s invariance needs.
+
+    Needs, not guarantees: invariance also requires Phi(terminal) = 0, which
+    nothing here enforces. A match that ends with the bar below the reserve
+    leaves gamma^T * Phi(s_T) < 0 behind -- measured small (at most -0.019, in
+    2 of 16 mirror matches); see `rewards/weights.py`'s policy-invariance note.
 
     THE DISCOUNT IS REQUIRED, NOT DEFAULTED, and that is the whole guarantee.
     This term and the tower term in `shaping.py` are the two potential-based
