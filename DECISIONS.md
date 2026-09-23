@@ -3630,6 +3630,75 @@ transposed coordinates. All thirty now read `engine_constants.BOARD_W`.
 
 ---
 
+## 2026-09-23: after the pre-launch audit -- main could not start a run
+
+One unattended session, commits `6fabb53 .. 7188328`. Python only; the two
+engine findings are proposals (`perception/UPSTREAM_REQUESTS.md` items 29, 30).
+
+**The first finding was that `main` was broken.** A session on 2026-09-16 had
+left TODO 00.3 half-applied and uncommitted: `rewards/shaping.py` read `spell_*`
+keys nothing produced, so `compute_shaping` raised `KeyError` on the first step
+of every episode. The runbook's launch would have died at once. The work was
+FINISHED rather than reverted (its design was right), and the original is kept
+as a tagged stash, `superseded-wip-00.3-2026-09-16`.
+
+What landed, each with its control:
+
+| item | what was wrong | the control that held |
+|---|---|---|
+| 00.3 spell terms | keyed to card 7; a Rocket deck read 0 on 2,372 of 2,372 steps | 2.6 deck bit-identical, 0 of 2,280 steps differ |
+| spell probe | read DoT spells for 40 ticks: Poison 368 of 736 | only 2 of 22 spells' values moved; every radius identical |
+| teacher spell aim | every spell aimed with Fireball's disc; Rocket +38% value with its own | Fireball's cell identical on 320/320 boards |
+| 0c overflow test | failed 3 in 20 on untouched main (flag = "touched the cap") | constructed: identical scalars, elixir 7.00 vs 0.45 |
+| 00.6 spawners | Splashyard named TOMBSTONE its win condition | all 16 pool decks resolve as before |
+| 00.4 PBRS docs | "EXACTLY ZERO" / "policy-invariant" were false | measured residues; code left, one-line option given |
+| 00.9 settings stamp | a resume under different CLASH_* was silent | a same-settings resume prints nothing |
+| 00.5 air defence | rung 0-1 answered a Balloon with Skeletons | Hog control bit-identical; Balloon 1481 -> 1131 |
+| 00.8 phase-2 PFSP | per-opponent estimates lost on every resume | a real match is counted exactly once |
+
+Every behaviour-change test was checked to FAIL with the old behaviour patched
+back in, and every control to pass under both.
+
+**Three first readings of mine were wrong, and each was caught by measuring
+before acting.** They are the part of this entry most worth keeping:
+
+- **"The overflow test failure is mine."** The teacher commit landed just before
+  it appeared. Twenty runs of the test's own sampler on untouched main: 3
+  failures on each side. Pre-existing; fixed on its own merits.
+- **"The observation's anti-air channel says every card hits air."** A probe read
+  1.0 for Knight, Hog and Skeletons. The channel is right per entity; the probe
+  took the max over a whole plane that also holds the caster's own TOWERS, which
+  all target air. Read at the card's own cell, all 13 cards were correct. The
+  same mistake is now warned against in `card_probes.damages_air`.
+- **"Spells beat win conditions per elixir."** Rocket's 247 tower HP per elixir
+  looked like it out-scored real win conditions -- but the resolver scores those
+  on an EMPTY board, where it saturates at one Princess (an undefended Hog reads
+  634). The comparison was dropped before it reached a document.
+
+**Measured and left for a decision:**
+
+- **Spells hit Crown Towers for 100% of their damage** (UPSTREAM 29). Real game:
+  15-30%. One Rocket on a tower pays the agent +0.185 shaping (real +0.046); in
+  48 teacher-vs-teacher matches direct spells are 7.0% of all tower damage (1.3%
+  at real ratios), 83% of it The Log, 53% of whose casts roll into a tower.
+- **Spawned Spear Goblins and Rascal Girls cannot hit air** (UPSTREAM 30):
+  Goblin Gang, Rascals and Goblin Hut deal 0 to a held Balloon over 50 s; their
+  helpers lack `.withTargetsAir()`. Night Witch's bats also dealt 0, cause NOT
+  established.
+- **The ladder's bottom is flat.** A rung-r teacher against rung 0, 2.6 mirror,
+  24 seat-swapped matches each: rungs 1 and 2 score 0.375 and 0.583 -- not
+  measurably harder than rung 0 -- while rung 3-4 reach 0.79 and rungs 5-10 win
+  every match. A lone push is defended WORSE at rung 2 than at rung 0 (Hog 1294
+  vs 687 tower HP lost, 12 seeds): a 2 s rollout cannot see a push arrive. Not
+  harmful to learning (an agent that clears rung 0 clears these quickly), but
+  three rungs of little signal.
+
+Python suite 931 -> 1000 passed (2 skipped); the runbook's pre-flight 22/22 on
+the new main; 28 plausible trainee decks, three of them Champion decks, pass a
+construct-and-play sweep and are tabled in `FINAL_RUN_RUNBOOK.md`.
+
+---
+
 # ARCHIVE — `perception/UPSTREAM_REQUESTS.md` and `perception/BOT_REQUESTS.md` (retired 2026-08-24)
 
 Both backlog files were worked to empty on 2026-08-24: every item was either
