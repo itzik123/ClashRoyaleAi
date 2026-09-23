@@ -1,12 +1,9 @@
-// What a building-targeter's sightRange actually BUYS the defender.
+// What a building-targeter's sightRange buys the defender.
+// BuildingTargeter::findTarget diverts to the nearest building in sight, so for
+// this archetype sightRange is the Cannon-pull range, the interaction
+// tactics.py's Cannon rule is built on.
 //
-// BuildingTargeter::findTarget diverts to "closest non-tower building within
-// effectiveSightTo(it), else the lane tower". So for this archetype sightRange
-// IS the Cannon-pull range -- the distance at which a defensive building drags
-// a win condition off the tower. That is the interaction tactics.py's whole
-// Cannon rule is built on.
-//
-// Measures, per card: the greatest centre-to-centre distance at which a Cannon
+// Measures, per card, the greatest centre-to-centre distance at which a Cannon
 // still takes aggro, and the tower HP that pull is worth over a full push.
 
 #include "GameManager.h"
@@ -31,16 +28,14 @@ int team0TowerHp(GameManager& g) {
     return t;
 }
 
-// Enemy (team 1) building-targeter walks down the left lane at the bridge.
-// Cannon sits `gap` tiles closer to our tower, same column.
-// Cannon offset LATERALLY off the lane, so only sight range decides whether
-// the unit diverts -- an in-lane Cannon is walked into eventually no matter
-// what sightRange is, which would measure the path, not the aggro radius.
+// An enemy (team 1) building-targeter walks down the left lane from the bridge;
+// the Cannon is offset laterally off the lane, so only sight decides whether
+// the unit diverts (an in-lane Cannon gets walked into regardless).
 //
-// The pull is read as TRAJECTORY DEVIATION against a no-Cannon control, not as
-// "the Cannon lost hp": Building::update decays hp every 10 ticks on its own,
-// so a damage test reports a pull at every offset, saturating the sweep.
-// Deviation is decay-free and works for air units the Cannon cannot shoot.
+// The pull is read as trajectory deviation against a no-Cannon control, not as
+// the Cannon losing hp: Building::update decays hp on its own, so a damage test
+// would report a pull at every offset. Deviation also works for air units the
+// Cannon cannot shoot.
 float lateralDeviation(int cardId, float dx, int ticks) {
     GameManager control(DECK, DECK), test(DECK, DECK);
     CardRegistry::getInstance().getCard(cardId)->spawnEntity(4.0f, 18.0f, 1, control.getBoard());

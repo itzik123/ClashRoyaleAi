@@ -4,15 +4,10 @@
 #include "AreaSpell.h"
 #include "Board.h"
 
-// Goblinstein's "Lightning Link": anchors a repeating shock zone at the
-// Monster's current position (self here IS the Monster -- see its
-// CardRegistry entry) -- reuses AreaSpell's existing multi-tick support
-// (remainingHits/tickInterval, the same mechanism Poison/Graveyard already
-// use) rather than a new "periodic ability" primitive. This is actually a
-// closer match to the real card than "follows the Monster around" would
-// be: the sourced mechanic explicitly anchors to a fixed ground position
-// (a "glowing receiver" stays behind and keeps working even after the
-// Monster dies), which a stationary AreaSpell models directly.
+// Goblinstein's "Lightning Link" (fired by the Monster): a repeating shock zone
+// anchored where the Monster stands, as a multi-hit AreaSpell. Anchored rather
+// than following him, like the real card's receiver, which keeps working after
+// the Monster dies.
 class GoblinsteinLightningLinkEffect : public IAbilityEffect {
     float radius;
     int damagePerTick;

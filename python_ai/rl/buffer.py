@@ -1,21 +1,9 @@
 """The rollout buffer: one list per stored quantity, stacked into (T, N, ...).
 
-Both pipelines declared fifteen-to-eighteen bare Python lists, appended to them
-in the rollout, `torch.stack`ed each one by hand, and cleared each one by hand
-at the end of the update. That is three places where adding a field means
-editing three lists in two files, and the failure mode when one is missed is
-silent: a buffer that is never cleared grows without bound, and one that is
-never stacked raises far from where it was forgotten.
-
-The field set is declared ONCE, at construction, and `add()` refuses a partial
-row -- so a field that exists is always the same length as every other.
-
-WHY THE FIELD SET IS A CONSTRUCTOR ARGUMENT rather than fixed: pipeline 2 stores
-three extra quantities for correct bootstrapping through a truncation
-(`boot_nonterminal`, `trunc_flag`, `trunc_boot`), and the advisor-target fields
-only exist when the advisor is enabled. Declaring them makes the difference
-between the two pipelines visible in one line instead of implied by which
-`append` calls happen to run.
+The field set is declared once, at construction, and `add()` refuses a partial
+row, so every field always has the same length. It is a constructor argument
+because pipeline 2 stores truncation-bootstrap fields and the advisor fields
+exist only when the advisor is on.
 """
 import torch
 
@@ -24,56 +12,41 @@ CORE_FIELDS = (
     "obs",
     "card_actions",
     "placement_actions",
-    #: 1 on steps where the agent actually had a CHOICE (>=2 legal actions), 0
-    #: where the affordability mask left only the forced no-op. On a forced step
-    #: the sampled action has probability exactly 1, so its log-prob is exactly
-    #: 0, the PPO ratio is a constant 1, and the actor/entropy terms contribute
-    #: exactly zero gradient -- including them in the loss DENOMINATOR anyway
-    #: would silently scale the actor gradient down by ~3.7x, since only ~27% of
-    #: steps have any affordable card. The critic still uses `valid`: the value
-    #: function must be learned on every real state, choice or not.
+    #: 1 where the agent had a choice (>= 2 legal actions). A forced step has
+    #: log-prob 0 and contributes no gradient, so counting it in the actor's
+    #: denominator would shrink the step ~3.7x. The critic uses `valid`.
     "decision",
-    #: LSTM state as it was ENTERING each timestep -- the starting state for
-    #: whichever truncated-BPTT chunk begins there. Captured before the forward
-    #: pass and already detached, since the rollout runs under no_grad.
+    #: LSTM state entering each timestep: where a truncated-BPTT chunk starting
+    #: there resumes.
     "hx_in",
     "cx_in",
     "logprobs",
     "values",
     "rewards",
     "masks",
-    #: 0 on phantom auto-reset steps. Under gymnasium's NEXT_STEP autoreset an
-    #: env whose PREVIOUS step ended the episode does not execute the sampled
-    #: action at all -- the worker just calls reset() -- so that step is not a
-    #: real transition and must be excluded from every loss term.
+    #: 0 on phantom auto-reset steps, whose sampled action never ran; excluded
+    #: from every loss.
     "valid",
-    #: Which card the opponent played on THIS step (-1 for none). Supervision
-    #: for the auxiliary head only, never an input. Stored as the raw per-step
-    #: stream rather than as the next-card LABEL, because turning one into the
-    #: other needs the whole (T, N) block and the episode boundaries -- see
-    #: engine_stats.next_card_labels, run once per update.
+    #: The opponent's play on this step (-1 for none), as a raw stream;
+    #: engine_stats.next_card_labels turns it into labels once per update.
+    #: Supervision only, never an input.
     "aux_opp_played",
-    #: The affordable-but-not-necessarily-chosen slot the coverage term scores.
-    #: Sampled ONCE at rollout time and buffered, never resampled inside a PPO
-    #: epoch: an advisor target has to be computed against the observation the
-    #: slot was drawn on, and a fresh draw would pair one card's logits with
-    #: another card's target.
+    #: The affordable slot the coverage term scores, drawn once at rollout
+    #: time; the advisor target must match the observation it was drawn on.
     "coverage_slot",
 )
 
-#: Pipeline 2 only. Correct-bootstrap GAE bookkeeping: `boot_nonterminal` is 0
-#: only on TRUE terminals (bootstrap otherwise), `trunc_flag` marks steps whose
-#: next-state value must come from the captured `trunc_boot` rather than from
-#: the next (already-reset) episode's V.
+#: Pipeline 2 only: `boot_nonterminal` is 0 only on true terminals;
+#: `trunc_flag` marks steps whose next-state value is the captured
+#: `trunc_boot`.
 TRUNCATION_FIELDS = ("boot_nonterminal", "trunc_flag", "trunc_boot")
 
-#: Present only when the advisor is enabled (`advisors.advisor_target.enabled`).
+#: Only when the advisor is enabled.
 ADVISOR_FIELDS = ("coverage_target", "coverage_has")
 
-#: Champion ability actions and the readiness mask they were sampled under, one
-#: column per Champion head (see rl/abilities.py). Stored only when the deck has
-#: a Champion. The mask is BUFFERED, not recomputed: readiness comes from the
-#: engine (cooldown, elixir, deployment) and is not in the observation.
+#: Champion ability actions and their readiness mask, one column per Champion
+#: head (rl/abilities.py). Readiness is buffered because it is not in the
+#: observation.
 ABILITY_FIELDS = ("ability_actions", "ability_ready")
 
 
@@ -87,11 +60,8 @@ class RolloutBuffer:
         self._data = {name: [] for name in self.fields}
 
     def add(self, **values):
-        """Store one timestep. Every declared field must be supplied.
-
-        Refusing a partial row is the point: a buffer where one list is shorter
-        than the others stacks into a silently misaligned batch, and the
-        misalignment shows up as a corrupted PPO ratio rather than an error.
+        """Store one timestep; every declared field must be supplied, since a
+        short list would stack into a silently misaligned batch.
         """
         missing = set(self.fields) - set(values)
         extra = set(values) - set(self.fields)
@@ -109,7 +79,7 @@ class RolloutBuffer:
         return name in self._data
 
     def stack(self):
-        """{field: (T, N, ...) tensor}. Does not clear -- see `clear()`."""
+        """{field: (T, N, ...) tensor}. Does not clear."""
         if not len(self):
             raise RuntimeError("stack() on an empty rollout buffer")
         return {name: torch.stack(values) for name, values in self._data.items()}
@@ -117,27 +87,9 @@ class RolloutBuffer:
     def drain(self):
         """`stack()`, then release the per-step lists.
 
-        `torch.stack` ALLOCATES and copies -- the batch it returns does not view
-        the stored tensors -- so from the moment it returns there are two full
-        copies of every field alive, and the list half is dead weight nothing
-        reads again.
-
-        The update used to run with both resident, because the caller cleared
-        only after it returned. At the production shape that is expensive:
-
-            obs 13606 x 8 envs x 4 bytes = 0.435 MB/step
-            x 500 steps                  = 217.7 MB
-            both copies                  = 435.4 MB
-
-        held across the PPO update, i.e. ~87% of the cycle, against a main
-        process measured at 1194 MB private commit. Draining at the stack point
-        gives ~218 MB back for exactly the phase that needs it most, and costs
-        nothing: the batch already owns its storage.
-
-        Safe precisely BECAUSE stack does not alias, which
-        `tests/test_rl_buffer_drain.py` pins as a separate premise rather than
-        assuming -- if that ever changed, draining would pull storage out from
-        under the update.
+        `torch.stack` copies, so the lists are dead weight during the update
+        (~218 MB of observations at the production shape). Safe only because
+        stack does not alias; `tests/test_rl_buffer_drain.py` pins that.
         """
         batch = self.stack()
         self.clear()

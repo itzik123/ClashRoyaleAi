@@ -1,16 +1,9 @@
-"""`validate_deck`: every deck-dependent mechanism that would otherwise go SILENT.
+"""`validate_deck`: one preflight that says what the deck turns on and off, so no
+deck-keyed mechanism goes silent.
 
-The pre-launch audit (2026-09-15) found the same bug four times: a mechanism
-keyed to the 2.6 deck that, under another deck, quietly contributed nothing --
-the advisor-target term, the win-condition reward, the Fireball-keyed spell
-terms, the Fireball-only scenarios. None raised or logged. The general antidote
-is one preflight that says, at the top of the run log, what this deck turns on
-and what it turns off.
-
-ERROR  -- the run cannot train this deck (a Champion: ability sampling is not
-          implemented, and base_trainer raises anyway -- say why, up front).
-WARN   -- the run will train, with a named mechanism off or weak.
-INFO   -- facts worth having in the log.
+ERROR  the run cannot train this deck
+WARN   the run will train, with a named mechanism off or weak
+INFO   facts worth having in the log
 """
 import pytest
 
@@ -33,8 +26,9 @@ def test_the_shipped_deck_has_no_errors_and_names_its_win_condition():
 
 
 def test_a_champion_deck_trains_and_says_the_ability_path_is_new():
-    """Refused until 2026-09-16, when ability training landed. Still flagged:
-    the path is new and the mirror teacher uses the ability heuristically."""
+    """Still flagged: the ability path is new and the mirror teacher uses the
+    ability heuristically.
+    """
     deck = D.parse_deck("musketeer,golden knight,ice golem,skeletons,ice spirit,"
                         "the log,fireball,miner")
     report = DC.validate_deck(deck, strict=False)
@@ -44,9 +38,9 @@ def test_a_champion_deck_trains_and_says_the_ability_path_is_new():
 
 
 def test_a_deck_without_fireball_keys_the_spell_terms_to_its_own_spell():
-    """This deck WARNED "no Fireball: the spell terms contribute nothing" until
-    2026-09-16. They follow the deck's own damage spell now -- here Lightning --
-    so the report names it, with the numbers the terms actually use."""
+    """The spell terms follow the deck's own damage spell (here Lightning), and
+    the report names it with the numbers the terms use.
+    """
     deck = D.parse_deck("royal giant,fisherman,hunter,electro spirit,skeletons,"
                         "lightning,the log,cannon")
     report = DC.validate_deck(deck, strict=False)
@@ -58,8 +52,9 @@ def test_a_deck_without_fireball_keys_the_spell_terms_to_its_own_spell():
 
 
 def test_a_deck_with_no_damaging_spell_warns_that_the_spell_terms_are_off():
-    """The Log is a ROLLER, which the damage-spell resolver declines (its value
-    is a corridor, not a disc), so a Log-only deck has no finishing spell."""
+    """The Log is a roller, which the damage-spell resolver declines (its value is
+    a corridor, not a disc), so a Log-only deck has no finishing spell.
+    """
     deck = D.parse_deck("hog rider,musketeer,cannon,ice golem,skeletons,"
                         "ice spirit,the log,knight")
     report = DC.validate_deck(deck, strict=False)

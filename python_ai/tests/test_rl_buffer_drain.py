@@ -1,27 +1,10 @@
-"""The rollout buffer must not hold two copies of the observations through the
-PPO update.
+"""The rollout buffer does not hold two copies of the observations through the PPO
+update.
 
-`stack()` returns NEW contiguous (T, N, ...) tensors -- `torch.stack` allocates
-and copies, it does not view the inputs. So from the moment it returns there
-are two full copies of every field alive: the per-step list, and the stacked
-batch. The list is dead weight at that point; nothing reads it again until the
-next rollout overwrites it.
-
-`run()` cleared the buffer AFTER `run_update()` returned, so both copies stayed
-resident for the whole update -- which is ~87% of the cycle's wall clock. For
-the observation field alone, at the production shape:
-
-    obs dim 13606 x 8 envs x 4 bytes         = 0.435 MB per step
-    x 500 steps                              = 217.7 MB
-    both copies                              = 435.4 MB held through the update
-
-against a main process measured at 1194 MB private commit. Draining at the
-stack point releases ~218 MB for the expensive phase, at the cost of nothing:
-the batch already owns its storage.
-
-The tests below pin BOTH halves -- that the stacked batch is genuinely
-independent of the lists (or draining would corrupt the update), and that the
-lists are actually released.
+`stack()` allocates new tensors, so after it returns the per-step lists are
+dead weight; draining at the stack point frees them for the update, the most
+expensive phase (~218 MB of observations at the production shape). These pin
+both halves: the batch is independent of the lists, and the lists are released.
 """
 import pytest
 import torch
@@ -40,8 +23,9 @@ def _filled(n=4, width=3):
 
 
 def test_stack_does_not_alias_the_stored_tensors():
-    """The premise draining depends on. If `stack` ever returned views,
-    releasing the lists would pull storage out from under the update."""
+    """The premise of draining: if `stack` returned views, releasing the lists
+    would pull storage out from under the update.
+    """
     buf = _filled()
     batch = buf.stack()
     original = buf._data["obs"][0].clone()
@@ -70,9 +54,9 @@ def test_drain_empties_the_buffer():
 
 
 def test_the_drained_batch_survives_the_release():
-    """The batch must remain fully usable after the lists are gone -- this is
-    the whole point, and an aliasing regression would show up here as garbage
-    rather than as an exception."""
+    """The batch stays fully usable after the lists are gone; an aliasing
+    regression would show up here as garbage rather than an exception.
+    """
     buf = _filled(n=4, width=3)
     batch = buf.drain()
     assert batch["obs"].shape == (4, 3, 5)
@@ -82,7 +66,7 @@ def test_the_drained_batch_survives_the_release():
 
 
 def test_drain_releases_the_underlying_storage():
-    """Not just the list -- the tensors themselves must become unreferenced."""
+    """The tensors themselves must become unreferenced, not just the list."""
     import weakref
     buf = _filled(n=3)
     ref = weakref.ref(buf._data["obs"][0])
@@ -100,8 +84,9 @@ def test_drain_on_an_empty_buffer_refuses_like_stack():
 
 
 def test_a_second_drain_refuses_rather_than_returning_a_stale_batch():
-    """Draining twice is a caller bug; it must not silently hand back an empty
-    or half-built batch."""
+    """Draining twice is a caller bug and must not hand back an empty or
+    half-built batch.
+    """
     buf = _filled()
     buf.drain()
     with pytest.raises(RuntimeError):
@@ -110,8 +95,7 @@ def test_a_second_drain_refuses_rather_than_returning_a_stale_batch():
 
 @pytest.mark.slow
 def test_run_update_leaves_the_buffer_empty(tmp_path, monkeypatch):
-    """End to end: after an update the per-step lists are already released,
-    without waiting for run()'s later clear()."""
+    """End to end: after an update the per-step lists are already released."""
     import gymnasium as gym
 
     from python_ai.envs import gym_wrapper
@@ -154,7 +138,7 @@ def test_run_update_leaves_the_buffer_empty(tmp_path, monkeypatch):
             "the per-step lists were still resident after run_update -- both "
             "copies are alive through the most expensive phase of the cycle")
         assert stats.nonfinite_skips == 0
-        # and run()'s later clear() must remain harmless
+        # ...and run()'s later clear() stays harmless.
         t.buffer.clear()
         assert len(t.buffer) == 0
     finally:

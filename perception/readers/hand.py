@@ -1,29 +1,20 @@
 """Our four hand slots and the next-card slot, by template matching.
 
-The slots are at fixed positions and show one of eight known icons -- our own
-deck, which we are told in advance. So this is a 1-of-8 classification against
-templates cropped from the recording itself, not open-set recognition. That
-is the easiest problem anywhere in this pipeline, and it is worth doing well
-because it produces two things nothing else can:
+The slots are fixed and show one of our own eight known icons, so this is
+1-of-8 classification against templates cropped from the recording itself. It
+produces two things nothing else can:
 
-  1. `incoming_card` for bridge/sim_driver.py. Knowing which card slid into a
-     vacated slot is what collapses the simulator's candidate pool onto our
-     real cycle -- see that module. Without it the pool can only be narrowed
-     by play failures, which is far slower and sometimes not enough.
+  1. `incoming_card` for bridge/sim_driver.py: knowing which card slid into a
+     vacated slot collapses the simulator's candidate pool onto our real
+     cycle far faster than play failures alone.
+  2. A free cross-check on the elixir bar: unaffordable slots are dimmed, so
+     the set of dimmed slots brackets the elixir value from both sides (see
+     readers/elixir.cross_check).
 
-  2. A free cross-check on the elixir bar. An unaffordable slot is rendered
-     dimmed, so the set of dimmed slots brackets the elixir value from both
-     sides at no extra cost -- see readers/elixir.cross_check. Two
-     independent readings of the same quantity, and neither needs a label.
-
-DIMMING IS MEASURED RELATIVE TO THE SLOT'S OWN HISTORY
-------------------------------------------------------
-The absolute brightness of a card icon depends on the card -- a Skeleton Army
-icon is darker than a Fireball icon before any dimming is applied. So an
-absolute threshold misclassifies whole cards as permanently unaffordable.
-What is stable is the RATIO between a slot's current brightness and the
-brightest that same card has been observed at, which is what `is_dimmed`
-uses.
+Dimming is measured relative to the slot's own history: icons differ in
+absolute brightness, so a fixed threshold would mark dark cards permanently
+unaffordable. `is_dimmed` uses the ratio to the brightest that card has been
+seen.
 """
 
 from __future__ import annotations
@@ -33,31 +24,26 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-# Below this fraction of a card's own observed maximum brightness, the slot
-# is treated as dimmed. The game's dimming is substantial (roughly half
-# value); 0.75 sits well clear of compression noise and shimmer.
+# Below this fraction of a card's own observed maximum brightness, the slot is
+# dimmed. The game dims by roughly half; 0.75 is clear of compression noise.
 DIM_RATIO_THRESHOLD = 0.75
 
-# Correlation of contrast-normalised crops: 1.0 is a perfect match, 0.0 is
-# unrelated. Calibrated against measured scores on this batch.
+# Correlation of contrast-normalised crops (1.0 perfect, 0.0 unrelated),
+# calibrated on this batch.
 MIN_ICON_SCORE = 0.30
 MIN_ICON_MARGIN = 0.05
 
-# Icon crops are normalised to this (h, w) before matching. Must match the
-# shape tools/build_icon_templates.py clusters at, or the two representations
-# are not comparable.
+# Icon crops are normalised to this (h, w) before matching; must equal what
+# tools/build_icon_templates.py clusters at.
 ICON_SHAPE = (48, 40)
 
 
 def normalise_icon(image: np.ndarray) -> np.ndarray:
     """Grey, resized, contrast-normalised. See HandReader._read_slot.
 
-    PUBLIC because three places need exactly this representation and must not
-    disagree about it: this reader, `tools/build_icon_templates.py` (which
-    CLUSTERS in it, so a template and a probe have to be comparable), and
-    `live/deck_hand.py` (which MATCHES in it). It was duplicated between the
-    first two, which is the setup for a silent drift -- change ICON_SHAPE in
-    one and matching degrades everywhere with nothing raising.
+    Public because three places must agree on it: this reader,
+    `tools/build_icon_templates.py` (which clusters in it) and
+    `live/deck_hand.py` (which matches in it).
     """
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(grey, (ICON_SHAPE[1], ICON_SHAPE[0]),
@@ -65,23 +51,17 @@ def normalise_icon(image: np.ndarray) -> np.ndarray:
     return (small - small.mean()) / (small.std() + 1e-6)
 
 
-#: Kept so existing internal callers keep working.
+#: Kept for existing internal callers.
 _normalise_icon = normalise_icon
 
 
 def has_cost_badge(crop: np.ndarray) -> bool:
     """True if this slot actually holds a card. `crop` is BGR.
 
-    Every card icon carries a magenta elixir-cost badge low-centre. Nothing
-    else in the tray does -- not the blue crown card-back shown while the next
-    card slides in, and not the empty between-match tray -- which makes it a
-    far better "is this a card" test than any brightness or variance
-    heuristic.
-
-    That distinction cost a run. Filtering on `crop.std() < 18` let the empty
-    between-match tray through -- it has enough texture to pass -- and 1,525
-    of those crops formed a cluster of their own, displacing a real card out
-    of an eight-cluster budget.
+    Every card icon carries a magenta elixir-cost badge low-centre; nothing
+    else in the tray does (not the blue card-back shown while the next card
+    slides in, not the empty between-match tray). A better "is this a card"
+    test than any brightness or variance heuristic.
     """
     h, w = crop.shape[:2]
     badge = crop[int(h * 0.62):, int(w * 0.2):int(w * 0.8)]
@@ -122,10 +102,9 @@ class HandReading:
 class HandReader:
     """Reads the hand from calibrated slot ROIs and per-card icon templates.
 
-    `icons` maps a simulator card id to a template cropped from THIS
-    recording at THIS resolution. Templates from elsewhere would need
-    rescaling, and a rescaled template matches systematically worse in a way
-    that looks like a hard frame rather than a setup error.
+    `icons` maps a simulator card id to a template cropped from this recording
+    at this resolution. A rescaled template matches systematically worse in a
+    way that looks like a hard frame rather than a setup error.
     """
 
     slot_rois: list[tuple[int, int, int, int]]
@@ -161,20 +140,10 @@ class HandReader:
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         brightness = float(gray.mean())
 
-        # Matched on contrast-normalised greyscale, not raw BGR.
-        #
-        # The same representation the icon templates were CLUSTERED with, and
-        # that is the point: clustering separated all eight cards perfectly,
-        # so it is demonstrably sufficient, while raw-BGR matching on the same
-        # icons flickered badly -- 0.790 mean confidence, 14% of hands
-        # containing a duplicate or an off-deck card, and phantom "plays"
-        # 0.8s apart in one slot, which the engine's own 20-tick slot cooldown
-        # makes impossible.
-        #
-        # The reason is the affordability dimming: an unaffordable slot is
-        # rendered darker AND lower contrast, which moves raw pixel values a
-        # long way. Subtracting the mean and dividing by the standard
-        # deviation removes exactly that, which is why the clusters were clean.
+        # Matched on contrast-normalised greyscale, the representation the
+        # templates were clustered in, not raw BGR: an unaffordable slot is
+        # darker and lower-contrast, which moves raw pixels a long way, and
+        # mean/std normalisation removes exactly that.
         probe = _normalise_icon(patch)
         scores: dict[int, float] = {}
         for card_id, template in self.icons.items():
@@ -210,19 +179,11 @@ class HandReader:
 class HandStabiliser:
     """Debounces hand readings, and emits a play only on a settled change.
 
-    WITHOUT THIS THE PLAY STREAM IS MOSTLY FICTION. Playing a card is an
-    animation: the icon lifts out of the slot, the next card slides in, and
-    for a few frames the slot holds a blend of the two. Every one of those
-    intermediate frames matches SOME template, so a naive
-    before/after comparison reports a chain of plays where there was one.
-
-    Measured on a 326-second recording at 6fps: 69 "plays", of which 32 were
-    closer together than the engine's own 20-tick (2s) hand-slot cooldown
-    makes possible -- three changes in one slot inside 1.5s, in one case.
-
-    A hand state has to be observed `hold` times in a row before it is
-    believed. Transients never survive that; a real play does, because the
-    new hand persists until the next play.
+    Playing a card is an animation: the icon lifts out, the next slides in, and
+    for a few frames the slot holds a blend that matches some template, so a
+    naive before/after comparison reports a chain of plays where there was one.
+    A hand state must be seen `hold` times in a row before it is believed;
+    transients never survive that, and a real play persists until the next.
     """
 
     hold: int = 2
@@ -265,18 +226,12 @@ def infer_play_from_hand_change(
 
     Returns (slot_index, played_card, incoming_card), or None.
 
-    This is what makes our side of the dataset self-labelling: a card
-    vacating a slot IS a placement, and the card that replaces it is the
-    queue front. No tap logger, no manual annotation, no extra tooling -- the
-    label comes from the same frames the detector is being trained on.
+    This makes our side of the dataset self-labelling: a card vacating a slot
+    is a placement, and its replacement is the queue front. It labels the card
+    and the time; the tile still has to come from the board.
 
-    What it does NOT give is WHERE the card was placed, which still has to
-    come from the board. So this labels the card and the time for free, and
-    leaves only the tile to be recovered.
-
-    Returns None when more than one slot changed: two simultaneous changes
-    mean frames were dropped between the readings, and guessing which card
-    went with which slot would fabricate a label.
+    None when more than one slot changed: frames were dropped between the
+    readings, and pairing cards with slots would fabricate a label.
     """
     if len(before) != len(after):
         return None

@@ -1,38 +1,17 @@
 """Is a battle actually running right now?
 
-WHY THIS EXISTS
----------------
-`mvp_loop.perceive()` gated exactly one thing on the screen -- the elixir
-ledger -- and built the GameState unconditionally. So every reader ran on the
-lobby, the matchmaking screen and the victory screen, and their output went
-into the same stream the agent acts on.
+Every reader would otherwise run on the lobby, matchmaking and victory screens
+and feed the stream the agent acts on. A quarter of a live capture is not a
+battle: the card slots are empty, so the classifier reports whatever its blank
+padding settles on, and the elixir ROI reads a confident 0.00. None of that is
+a classifier error, and none of it can be debounced downstream.
 
-Measured over the 2,510-frame live capture in
-`assets/live/match_practice_01`, using the vendored ScreenDetector as the gate:
-
-                              ungated        gated on in_game
-    off-deck cards read         7.8%              0.5%
-    duplicate cards             8.7%              1.7%
-    median unchanged hand      0.60 s            1.20 s
-    frames kept                 100%             74.5%
-
-A quarter of every capture is not a battle. The card slots there are empty, so
-the classifier is forced onto its blank padding and reports whatever the
-Hungarian assignment settles on; the elixir ROI reads a confident 0.00 because
-the bar has not been drawn yet. None of that is a classifier error and none of
-it can be debounced away downstream -- it is a question nobody asked.
-
-WHY DEBOUNCE, AND WHY ASYMMETRICALLY
-------------------------------------
-Per-decile on the same capture, the detector reads `in_game` on 100% of frames
-through the middle of the match and mixes `unknown`/`lobby` only at the two
-boundaries. So mid-match blips are not the risk; the boundaries are.
-
-Entering is held for `ENTER_HOLD` frames because acting on a half-loaded arena
-is worse than missing the first second of it. Leaving is held for `EXIT_HOLD`,
-which is longer, because a single dropped frame at the wrong moment would end
-the match in our bookkeeping while the real one is still being played -- and
-`on_match_end` resets the ledger, which is not recoverable.
+The screen classifier reads `in_game` on every frame mid-match and mixes
+`unknown`/`lobby` only at the boundaries, so the debounce is asymmetric.
+Entering is held `ENTER_HOLD` frames: acting on a half-loaded arena is worse
+than missing its first second. Leaving is held longer, `EXIT_HOLD`: one dropped
+frame must not end the match in our bookkeeping, since `on_match_end` resets
+the ledger irrecoverably.
 """
 
 from __future__ import annotations
@@ -41,20 +20,18 @@ from dataclasses import dataclass, field
 
 IN_GAME = "in_game"
 
-# Frames of agreement before a transition is believed. Capture runs at ~5 Hz,
-# so these are ~0.4 s in and ~1.2 s out.
+# Frames of agreement before a transition is believed: at ~5 Hz capture, ~0.4 s
+# in and ~1.2 s out.
 ENTER_HOLD = 2
 EXIT_HOLD = 6
 
 
 @dataclass
 class MatchState:
-    """Debounced "a battle is running", from the screen classification.
-
-    Feed it every frame's screen name. `in_match` is the gate; `started` and
-    `ended` fire exactly once per transition so callers can reset per-match
-    state (the elixir ledger, the cycle tracker) without tracking edges
-    themselves.
+    """Debounced "a battle is running", from the screen classification. Feed it
+    every frame's screen name. `in_match` is the gate; `started` and `ended`
+    fire once per transition so callers can reset per-match state (ledger,
+    cycle tracker).
     """
 
     enter_hold: int = ENTER_HOLD
@@ -78,7 +55,7 @@ class MatchState:
 
         if looks_live == self.in_match:
             # Agreeing with the current belief clears any pending flip, so a
-            # transition needs CONSECUTIVE disagreement rather than cumulative.
+            # transition needs consecutive disagreement.
             self._agree = 0
         else:
             self._agree += 1

@@ -1,53 +1,38 @@
 """Generate perception/mapping/card_map.json from the live CardRegistry.
 
-Run this after any change to CardRegistry.h. It PRESERVES every hand-authored
-field in the existing map (see MERGE POLICY) and only refreshes what it can
-prove from the engine, so re-running it is safe and non-destructive.
+Run after any change to CardRegistry.h. It preserves every hand-authored field
+(see merge policy) and refreshes only what it can prove from the engine, so
+re-running is safe.
 
     perception/.venv/Scripts/python.exe perception/tools/gen_card_map.py
 
-WHY THIS IS GENERATED AND NOT HAND-WRITTEN
-------------------------------------------
-CardDefinition::name already holds real Clash Royale card names verbatim
-("Hog Rider", "Elite Barbarians", "The Log"). So the bulk of the mapping is
-mechanical and should never be typed by hand -- typing it by hand is how you
-get a map that is 95% right and wrong in a way nothing detects.
+CardDefinition::name holds real card names verbatim, so the bulk of the map is
+mechanical and should never be typed by hand. What the generator leaves for a
+human:
 
-WHAT THE GENERATOR CANNOT DO, AND LEAVES FOR A HUMAN
-----------------------------------------------------
-1. Evolutions share the base card's name exactly. Registry id 1 and id 128
-   are both "Archers"; id 0 and id 135 are both "Knight". A name is therefore
-   structurally incapable of identifying a card on its own, which is why the
-   schema carries `sim_id` and `sim_evo_id` as separate fields and
-   PlacementEvent carries an `is_evolution` flag rather than folding the
-   evolved variant into the id. The generator pairs them by name, which is
-   sound precisely BECAUSE addEvolution() copies the base name -- but the
-   pairing is still marked for review, since a future card whose evolution is
-   registered under a different name would pair silently wrong.
+1. Evolutions share the base card's name (ids 1 and 128 are both "Archers"), so
+   a name cannot identify a card; the schema carries `sim_id` and `sim_evo_id`
+   separately and PlacementEvent an `is_evolution` flag. Pairing by name is
+   sound because addEvolution() copies the base name, but is marked for review
+   in case a future evolution is registered under another name.
 
-2. Cards that exist in the real game and NOT in the simulator cannot be
-   enumerated from here at all -- the engine has no notion of what it is
-   missing. Those rows have to be added by hand with `sim_id: null`, and
-   until they are, detecting one of those cards raises rather than guessing.
-   See detect/ and bridge/sim_driver.py for the defined behaviour.
+2. Real cards missing from the simulator cannot be enumerated from here. They
+   are added by hand with `sim_id: null`; until then detecting one raises (see
+   detect/ and bridge/sim_driver.py).
 
 3. Whether ids 165-175 ("Spirit Empress", "Hero Knight", "Hero Wizard", ...)
-   correspond to anything in the build being recorded is not knowable from
-   the registry. They are emitted with needs_review: true and
-   real_verified: false, which keeps them out of the detector's label set
-   until a human confirms them.
+   exist in the build being recorded is not knowable from the registry. They
+   are emitted with needs_review: true and real_verified: false, which keeps
+   them out of the detector's label set.
 
-MERGE POLICY
-------------
-Regenerating never discards human input. For every entry already present:
+Merge policy, for every entry already present:
   * `real_verified`, `real_only`, `aliases`, `notes` are preserved verbatim.
   * `sim_id`, `sim_evo_id`, `cost`, `is_spell`, `is_building`, `is_champion`,
     `is_hero` are refreshed from the engine.
   * `needs_review` is cleared only where the engine now agrees with a
-    human-verified row; it is never set back to false automatically.
-Rows present in the file but absent from the registry are kept and marked
-`sim_id: null` with a note, rather than deleted -- a card disappearing from
-the registry is a fact worth surfacing, not worth silently erasing.
+    human-verified row, never reset automatically.
+Rows absent from the registry are kept, marked `sim_id: null` with a note,
+rather than deleted.
 """
 
 from __future__ import annotations
@@ -66,9 +51,8 @@ from geometry import _engine_module  # noqa: E402
 MAP_PATH = _PERCEPTION_ROOT / "mapping" / "card_map.json"
 
 # Registry ids whose real-game counterpart cannot be confirmed from the
-# registry alone -- see point 3 in the module docstring. Kept as an explicit
-# range check rather than a name prefix match so a card named "Heroic
-# Something" that IS real does not get swept up by accident.
+# registry (point 3 above). A range check rather than a name prefix, so a real
+# card named "Heroic Something" is not swept up.
 _UNVERIFIED_ID_MIN = 165
 
 # CardRegistry.h registers Evolutions in this id band (addEvolution).
@@ -77,12 +61,8 @@ _EVOLUTION_ID_MAX = 163
 
 
 def slugify(name: str) -> str:
-    """Canonical key for a card.
-
-    Punctuation is stripped rather than normalised because the registry is
-    internally inconsistent about it -- id 13 is "P.E.K.K.A." while id 5 is
-    "Mini PEKKA" -- so any scheme that preserves dots would key the same real
-    card two different ways depending on which row it came from.
+    """Canonical key for a card. Punctuation is stripped because the registry is
+    inconsistent about it (id 13 "P.E.K.K.A.", id 5 "Mini PEKKA").
     """
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
@@ -91,8 +71,7 @@ def build_rows(engine) -> dict[str, dict]:
     """Registry -> map rows, keyed by slug."""
     playable = set(engine.get_all_card_ids())
 
-    # Evolution ids are excluded from get_all_card_ids() (ClashEnv.h's
-    # getAllCardIds skips isEvolution), so they have to be probed directly.
+    # getAllCardIds skips Evolutions, so they are probed directly.
     evolutions: dict[str, int] = {}
     for cid in range(_EVOLUTION_ID_MIN, _EVOLUTION_ID_MAX + 1):
         try:
@@ -116,8 +95,8 @@ def build_rows(engine) -> dict[str, dict]:
             "is_champion": info["is_champion"],
             "is_hero": info["is_hero"],
             # False until a human confirms this card exists, under this name,
-            # in the build actually being recorded. The detector's label set
-            # is filtered on this -- see mapping/__init__.py.
+            # in the build being recorded. The detector's label set filters on
+            # it (mapping/__init__.py).
             "real_verified": not unverified,
             "real_only": False,
             "aliases": [],

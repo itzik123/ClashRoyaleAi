@@ -1,16 +1,8 @@
-"""Every reward weight, pinned to the value the recorded win rates were earned at.
+"""Every reward weight, pinned to the value on record.
 
-READ THIS BEFORE "FIXING" A FAILURE HERE. This test is meant to fail when a
-weight changes. That is its job: CLAUDE.md's standing rule is that a
-gameplay-affecting change invalidates the win-rate history, and a weight that
-can be edited without anything noticing is a silent invalidation. If you are
-retuning deliberately, change the number here too and say so in the commit --
-the failure is the paperwork, not an obstacle.
-
-It exists because a weight moving unnoticed has already happened in a subtler
-form: `spell_value_weight` was dead code for a whole training era because no
-test ever varied its argument, so the anneal its own comment block described
-never ran and every win rate in that period was earned at a constant 0.08.
+This test is meant to fail when a weight changes: a gameplay-affecting change
+invalidates the win-rate history and must not happen unnoticed. If retuning
+deliberately, change the number here too and say so in the commit.
 """
 import pytest
 
@@ -19,13 +11,13 @@ from python_ai.rewards import weights as W
 from python_ai.rewards.elixir_shaping import SOLVENCY_RESERVE, W_SOLVENCY
 from python_ai.rl.coverage import PLACEMENT_COVERAGE_COEF
 
-#: name -> the value on record. Grouped by what the term does.
+#: name -> the value on record, grouped by what the term does.
 RECORDED = {
     # the potential-based tower term
     "W_BLDG": 0.5,
     "W_TROOPS": 0.1,
     "W_ELIXIR_TRADE": 0.03,
-    # the DELIBERATELY biasing terms
+    # the deliberately biasing terms
     "W_TOWER_DESTROYED": 0.6,
     "W_FLAWLESS_DEFENSE": 0.5,
     "FLAWLESS_REQUIRES_CROWN": True,
@@ -37,16 +29,14 @@ RECORDED = {
     "MAX_ELIXIR_PER_STEP": 10.0,
     "SOLVENCY_ENABLED": True,
     "SOLVENCY_COEF": 0.1,
-    # the spell terms
+    # the spell terms (the solvency reserve is the deck spell's own cost; see
+    # test_damage_spell_is_deck_derived)
     "FIREBALL_CARD_ID": 7,
     "W_LETHAL_SPELL": 0.15,
     "W_SPELL_VALUE_START": 0.08,
     "W_SPELL_VALUE_FINAL": 0.0,
     "SPELL_VALUE_ANNEAL_EPISODES": 40000,
     "SPELL_VALUE_ANNEAL_START": 0,
-    # SPELL_SOLVENCY_RESERVE (4.0) was retired 2026-09-16: the reserve is now the
-    # deck spell's own cost, which for the 2.6 deck's Fireball is still 4.0 --
-    # `test_damage_spell_is_deck_derived` pins that the 2.6 reward is unchanged.
 }
 
 
@@ -60,24 +50,25 @@ def test_the_placement_coverage_coefficient_is_unchanged():
 
 
 def test_the_spell_reserve_is_the_spells_own_cost_not_a_constant():
-    """"Enough elixir to answer with one more card" is what makes the solvency
-    gate on the spell term asymmetric rather than arbitrary -- and "one more
-    card" means THE DECK'S spell, so it must not survive as a Fireball literal.
-    Behaviour is pinned in test_damage_spell_is_deck_derived."""
+    """"Enough elixir to answer with one more card" means the deck's own spell, so
+    no Fireball literal. Behaviour is pinned in
+    test_damage_spell_is_deck_derived.
+    """
     assert not hasattr(W, "SPELL_SOLVENCY_RESERVE")
 
 
 def test_the_solvency_reserve_and_its_weight_come_from_one_definition():
     """`elixir_shaping` owns them; `weights` re-exports the coefficient so the
-    term can be ablated from one place. Two literals would drift."""
+    term can be ablated from one place.
+    """
     assert W.SOLVENCY_COEF == W_SOLVENCY
     assert SOLVENCY_RESERVE == 4.0
 
 
 def test_fireballs_damage_and_cost_are_read_from_the_registry():
-    """Not copied. A balance change must propagate, never leave this silently
-    wrong -- the 689 in the source is a FALLBACK for a registry that does not
-    expose `damage`, not a second copy of it."""
+    """Not copied: the 689 in the source is a fallback for a registry that does
+    not expose `damage`.
+    """
     import clash_royale_env
     info = clash_royale_env.get_card_info(W.FIREBALL_CARD_ID)
     assert W.FIREBALL_COST == float(info["cost"])
@@ -86,15 +77,14 @@ def test_fireballs_damage_and_cost_are_read_from_the_registry():
 
 
 def test_the_own_tower_total_is_read_from_a_fresh_board_not_written_out():
-    """2*2534 + 4008 = 9076 today, and the tower HPs are exactly the kind of
-    number a balance pass moves."""
+    """2*2534 + 4008 = 9076 today, and tower HP is what a balance pass moves.
+    """
     assert EC.OWN_TOWER_HP_TOTAL == pytest.approx(9076.0)
 
 
 def test_the_env_overridable_weights_are_the_ones_meant_to_be_ablated():
-    """Overridability is a deliberate, short list: a term is env-overridable so
-    an A/B can run BYTE-IDENTICAL code in both arms, which is the only way the
-    comparison attributes the difference to the term rather than to two scripts.
+    """The env-overridable weights are a short deliberate list: overriding lets an
+    A/B run byte-identical code in both arms.
     """
     import pathlib
 
@@ -102,9 +92,8 @@ def test_the_env_overridable_weights_are_the_ones_meant_to_be_ablated():
     src = pathlib.Path(python_ai.PACKAGE_DIR, "rewards",
                        "weights.py").read_text(encoding="utf-8")
     import re
-    # Every CLASH_* literal in the file, not just the ones on the same line as
-    # os.environ.get -- one of them wraps onto a continuation line, and a regex
-    # that missed it would report a shorter list than reality.
+    # Every CLASH_* literal in the file, including one that wraps onto a
+    # continuation line.
     knobs = set(re.findall(r'"(CLASH_[A-Z_]+)"', src))
     assert knobs == {"CLASH_W_WINCON_DAMAGE", "CLASH_SPELL_ANNEAL_EPISODES",
                      "CLASH_SPELL_ANNEAL_START", "CLASH_SOLVENCY",
@@ -112,9 +101,9 @@ def test_the_env_overridable_weights_are_the_ones_meant_to_be_ablated():
 
 
 def test_the_biasing_terms_are_documented_as_biasing():
-    """Every non-potential-based term biases the optimum by construction, and
-    this project's rule is that such a term is stated rather than hidden. The
-    module docstring carries the list; this checks it did not lose an entry."""
+    """Every non-potential-based term biases the optimum by construction and must
+    be listed as such in the module docstring.
+    """
     import pathlib
 
     import python_ai
@@ -128,19 +117,10 @@ def test_the_biasing_terms_are_documented_as_biasing():
 
 
 def test_fireballs_damage_has_exactly_one_definition_in_the_package():
-    """Two modules each carried `FIREBALL_DAMAGE = 689.0`.
-
-    Neither could derive it -- `get_card_info` exposes cost, name, is_spell and
-    placement_radius, but NOT damage -- so `weights.py` uses a
-    derive-if-available-else-literal expression and `tactics.py` had a bare
-    literal under a comment claiming it was "read from the registry", which it
-    was not.
-
-    That is the worst shape for a second copy: nothing derives it, so nothing
-    catches the two drifting apart, and a balance change to Fireball would
-    leave the shaping term and the placement advisor disagreeing about the same
-    physical fact -- one deciding a tower is lethal, the other deciding the
-    spell does not catch enough value.
+    """Fireball's damage has one definition. `get_card_info` exposes no damage, so
+    nothing derives it, and two copies could drift with nothing to catch it:
+    the shaping term and the placement advisor would disagree about the same
+    fact.
     """
     import pathlib
     import re
@@ -158,9 +138,8 @@ def test_fireballs_damage_has_exactly_one_definition_in_the_package():
             if not m:
                 continue
             rhs = m.group(1)
-            # An ALIAS (`= W.FIREBALL_DAMAGE`) re-exports the one definition
-            # and is not a second copy. A SOURCE is a numeric literal or a
-            # registry read -- those are what can drift apart.
+            # An alias (`= W.FIREBALL_DAMAGE`) re-exports the one definition; a
+            # source is a numeric literal or a registry read.
             if re.search(r"\d", rhs) or "get_card_info" in rhs:
                 defs.append(f"{rel}:{i}: {line.strip()}")
     assert len(defs) == 1, (
@@ -169,8 +148,7 @@ def test_fireballs_damage_has_exactly_one_definition_in_the_package():
 
 
 def test_the_advisor_and_the_shaping_term_agree_on_fireball():
-    """The property the single definition buys. Kept as a separate assertion
-    because it is the one that matters at runtime."""
+    """The runtime property the single definition buys."""
     from python_ai.advisors import tactics
     from python_ai.rewards import weights
     assert tactics.FIREBALL_DAMAGE == weights.FIREBALL_DAMAGE

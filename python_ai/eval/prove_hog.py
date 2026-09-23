@@ -1,29 +1,13 @@
-"""Is the policy's HOG placement worse than chance, or is it a valuation?
+"""Is the policy's Hog placement worse than chance, or is low usage a valuation?
 
-The 2.6 run at ep 6,053 plays Hog Rider on 0.8% of decisions. That is the same
-shape as the Giant/Cannon/Fireball collapse this project already cured once --
-but low usage has TWICE turned out to mean different things here, and the two
-need different responses:
+Low usage can mean a broken placement head (the card is worthless where it
+lands, so the card head is right to drop it) or a correct valuation. The
+discriminator: score the policy's own cell against a random legal cell on
+identical states, engine-scored. Better than random means the head works and
+the low usage is a valuation; worse means the head is the lever.
 
-  * BROKEN FUNCTION -- the placement head returns a fixed/bad cell, the card is
-    genuinely worthless, and the card head is right to drop it. This is what
-    PLACEMENT_COLLAPSE.md found: the policy's Cannon cell preserved 121 HP
-    against a random legal cell's 396, i.e. significantly WORSE THAN CHANCE. A
-    policy cannot be correctly valuing a card it places worse than random.
-
-  * CORRECT VALUATION -- the card really is a bad play in this engine and the
-    policy is right. This project has been burned assuming otherwise: forcing
-    Fireball usage dropped win rate 97% -> 23%.
-
-The discriminator is the same one that settled it before: score the policy's
-OWN chosen cell against a RANDOM LEGAL cell, paired on identical states, with
-the ENGINE doing the scoring. Better than random => the function works and the
-low usage is a valuation. Worse than random => broken, and fixing the head is
-the lever.
-
-Metric is ENEMY TOWER DAMAGE over HORIZON ticks, because that is what a win
-condition is for -- not value-killed, which scores a Hog's whole purpose at
-zero (it ignores troops by design).
+The metric is enemy tower damage over HORIZON ticks, since that is what a win
+condition is for; value-killed would score a Hog at zero.
 """
 import argparse
 import os
@@ -35,9 +19,7 @@ import numpy as np
 from python_ai.eval import stats
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -53,17 +35,14 @@ from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 E = CE.ClashRoyaleEnv
 NOOP = E.HAND_SIZE
 HOG = 15
-HORIZON = 600          # ticks = 60 s: long enough to cross AND hit a tower
-                       # (a lone Hog from the bridge measured 317 damage in 40 s)
+HORIZON = 600          # 60 s: long enough to cross and hit a tower
 
 
 def hog_damage(env, x, y, baseline):
-    """Enemy tower damage caused by adding a Hog at (x,y), over its lifetime.
+    """Enemy tower damage added by a Hog injected at (x, y), net of `baseline`.
 
-    Injection costs no elixir, so the rest of the match is untouched -- the same
-    protocol prove_placement.py / prove_giant.py use. `baseline` is the same
-    state run forward with NO Hog, so this isolates the Hog's contribution from
-    whatever was already going to happen.
+    Injection costs no elixir, so the rest of the match is untouched;
+    `baseline` is the same state run forward with no Hog.
     """
     s = env.snapshot()
     before = s.get_tower_damage_dealt(0)
@@ -120,10 +99,9 @@ def main():
                 cl, _, _, _, (hx2, cx2) = net.step_lstm_and_card(feats, (hx, cx), mask)
                 ids = net.hand_card_ids(obs)[0].tolist()
 
-                # Score the Hog wherever it is IN HAND -- not only where the
-                # policy chose to play it. At 0.8% usage, conditioning on the
-                # play would give almost no states and would also select
-                # exactly the atypical ones.
+                # Score the Hog wherever it is in hand, not only where it was
+                # played: conditioning on the play gives few states, and
+                # atypical ones.
                 if HOG in ids:
                     slot = ids.index(HOG)
                     pl = net.placement_given_card(hx2, embeds, torch.tensor([slot]),
@@ -150,11 +128,7 @@ def main():
 
     p = np.array(pol, float); r = np.array(rnd, float)
     d = p - r
-    # THE SHARED bootstrap, not a sixth hand-rolled copy. It is seeded by
-    # default, so re-running this measurement reproduces its own CI -- and this
-    # script's verdict below BRANCHES on the CI bounds, so an unseeded resample
-    # could flip "BETTER than chance" to "indistinguishable" between two runs
-    # of identical data.
+    # Seeded, so a re-run reproduces the CI the verdict below branches on.
     _, ci_lo, ci_hi = stats.bootstrap_ci(d)
     better = int((d > 1e-9).sum()); worse = int((d < -1e-9).sum())
     from collections import Counter

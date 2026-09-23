@@ -63,30 +63,22 @@ TEST_CASE("CombatEntity::findTarget picks the closest enemy", "[combat_entity][t
 TEST_CASE("findTarget never picks an enemy beyond sightRange, even if it's the only one on the board",
         "[combat_entity][targeting][sight_range]") {
     Board board;
-    // Distance 7.0, comfortably outside the default 5.5 either way. The
-    // invariant this case protects has never moved: sightRange gates targeting
-    // on its own, and a huge attackRange does not let an attacker acquire
-    // something outside its sight.
+    // Distance 7.0, outside the default 5.5: a huge attackRange does not let an
+    // attacker acquire what it cannot see.
     auto farEnemy = std::make_shared<DummyEntity>(1, 0.0f, 7.0f, 1000, 1);
     spawn(board, farEnemy);
 
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10); // huge attackRange
     attacker->update(board);
 
-    REQUIRE(attacker->attackCount == 0); // never even acquired as a target, despite being well within attackRange
+    REQUIRE(attacker->attackCount == 0); // never acquired, though within attackRange
 }
 
 TEST_CASE("sight is measured CENTRE-TO-CENTRE against the raw sightRange",
         "[combat_entity][targeting][sight_range][centre_to_centre]") {
-    // CHANGED 2026-08-28, and this case is the unit-level statement of the
-    // rule. It previously asserted the OPPOSITE -- that an enemy at 6.0 is
-    // visible to a 5.5-sight attacker "because the 0.8 of body radius between
-    // the two centres is not empty space" -- i.e. it pinned the radius
-    // inflation that let a Hog Rider's catalogued 9.5 reach 10.9.
-    //
-    // 5.5 now means 5.5. Both halves are asserted so the rule is bounded from
-    // both sides: a uniformly-blind engine fails the second REQUIRE, and the
-    // old surface-to-surface engine fails the first.
+    // Sight is strict centre-to-centre: 5.5 means 5.5. Bounded from both sides:
+    // a uniformly blind engine fails the second REQUIRE, a radius-inflated one
+    // the first.
     Board board;
 
     SECTION("just OUTSIDE the raw sightRange: not acquired") {
@@ -138,10 +130,8 @@ TEST_CASE("findTarget falls back to the nearest enemy Tower when nothing else is
 
 TEST_CASE("a closer enemy Tower DOES take priority over a farther in-sight enemy",
         "[combat_entity][targeting][sight_range][tower][nearest_building]") {
-    // INVERTED 2026-08-28. This case previously asserted the opposite, and
-    // that hardcoded preference was the defect: any non-tower enemy in sight
-    // beat a tower at ANY distance. Targets now compete purely on distance
-    // once in sight, ranked by footprint (Entity::getTargetingRadius).
+    // Once in sight, targets compete on distance, towers included, ranked by
+    // footprint (Entity::getTargetingRadius).
     Board board;
     auto inSightEnemy = std::make_shared<DummyEntity>(1, 0.0f, 4.0f, 1000, 1); // dist 4.0
     auto closerTower = std::make_shared<Tower>(2, 0.0f, 1.0f, 4008, 1, 7.0f, 90, 10, 'R'); // dist 1.0
@@ -174,32 +164,25 @@ TEST_CASE("A default CombatEntity's sightRange is 5.5 tiles", "[combat_entity][t
     REQUIRE(attacker->sightRange == Catch::Approx(5.5f));
 }
 
-// ---------------- target-lock ----------------
-// Once an attacker has picked a target, it stays committed to that fight
-// instead of re-running "who's closest" every tick -- matches the real
-// game, where a new enemy wandering closer mid-fight doesn't steal a
-// unit's attention. The lock only breaks when the target dies or leaves
-// effective range (e.g. a future knockback/pull effect), for every
-// attacker alike -- mobile or stationary. See
-// CombatEntity::update()/resolveCurrentTarget().
+// --- target lock ---
+// Once fighting, an attacker stays on its target rather than re-choosing the
+// closest each tick; the lock breaks only when the target dies or leaves
+// effective range. See CombatEntity::update() / resolveCurrentTarget().
 
 TEST_CASE("An attacker stays locked onto its target even when a closer enemy shows up mid-fight", "[combat_entity][targeting][lock]") {
     Board board;
     auto original = std::make_shared<DummyEntity>(1, 0.0f, 2.0f, 1000, 1, 'O');
     spawn(board, original);
 
-    // attackCooldown 1: attacks every single update() call, so attackCount/
-    // lastTargetId reflect this tick's target choice, not stale data from
-    // a still-cooling-down previous hit (same reasoning as
-    // makeRampingAttacker's cooldown-1 choice below).
+    // attackCooldown 1: attacks every call, so attackCount and lastTargetId
+    // reflect this tick's choice.
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 20.0f, 50, 1);
     attacker->update(board); // locks onto the only enemy around
 
     REQUIRE(attacker->lastTargetId == original->id);
 
-    // A much closer enemy arrives (e.g. Skeletons walking right up next to
-    // the attacker) -- the real-game rule is that this does NOT steal the
-    // attacker away from the fight it's already committed to.
+    // A much closer enemy arrives; it must not steal the attacker from its
+    // fight.
     auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.1f, 1000, 1, 'C');
     spawn(board, closer);
 
@@ -221,13 +204,12 @@ TEST_CASE("A stun breaks the target lock too, unlike a plain closer enemy showin
     auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.1f, 1000, 1, 'C');
     spawn(board, closer);
 
-    // Same setup as the "stays locked" test above -- but this time the
-    // attacker gets stunned first. slowFactor 1.0 is neutral (doesn't
-    // actually slow the cooldown), just marks this tick as frozen.
+    // As above, but stunned first. slowFactor 1.0 only marks the tick as
+    // frozen.
     attacker->applyFreeze(1, 1.0f);
     attacker->update(board);
 
-    REQUIRE(attacker->lastTargetId == closer->id); // lock broken by the stun: switched to the closer enemy
+    REQUIRE(attacker->lastTargetId == closer->id); // the stun broke the lock: switched to the closer enemy
 }
 
 TEST_CASE("Unlike an active fight, chasing a not-yet-reached target has no lock -- a closer enemy steals aggro",
@@ -235,10 +217,8 @@ TEST_CASE("Unlike an active fight, chasing a not-yet-reached target has no lock 
     Board board;
     auto original = std::make_shared<DummyEntity>(1, 0.0f, 5.0f, 1000, 1, 'O'); // dist 5.0: in sight, not in attack range
 
-    // currentTargetId is protected (only StationaryCombatant's own
-    // lastTargetId/attackCount instrumentation exposes it, and that class
-    // can't move) -- this test verifies the same switch through publicly
-    // observable position/hp instead.
+    // currentTargetId is protected, and StationaryCombatant cannot move, so the
+    // switch is checked through position and hp.
     auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 0.5f, 1.0f, 100, 10, 'p');
     attacker->setIgnoresRiver(true);
     spawn(board, original);
@@ -247,10 +227,8 @@ TEST_CASE("Unlike an active fight, chasing a not-yet-reached target has no lock 
     REQUIRE(original->hp == 1000); // too far to actually land a hit yet
     REQUIRE(attacker->position.y == Catch::Approx(0.5f));
 
-    // A much closer enemy shows up mid-chase, right next to the attacker's
-    // new position -- unlike the mid-FIGHT case above, this DOES steal the
-    // attacker's attention, because it was never actually locked on (still
-    // approaching, not yet in range).
+    // A much closer enemy arrives mid-chase: unlike mid-fight, this does steal
+    // the attacker, which was never locked on.
     auto closer = std::make_shared<DummyEntity>(3, 0.0f, 0.6f, 1000, 1, 'C'); // dist 0.1 from the attacker's new spot
     spawn(board, closer);
 
@@ -278,8 +256,8 @@ TEST_CASE("An attacker acquires a new target once its locked target dies", "[com
 
 TEST_CASE("An attacker drops its lock and re-targets once the locked target leaves range", "[combat_entity][targeting][lock]") {
     Board board;
-    // attackRange 1.0 -> effective range 1.8 (implicit radii on both sides);
-    // 1.5 stays comfortably inside it.
+    // attackRange 1.0 -> effective 1.8 (implicit radii on both sides); 1.5 is
+    // inside it.
     auto original = std::make_shared<DummyEntity>(1, 0.0f, 1.5f, 1000, 1, 'O');
     spawn(board, original);
 
@@ -293,7 +271,7 @@ TEST_CASE("An attacker drops its lock and re-targets once the locked target leav
     spawn(board, inRange);
 
     attacker->update(board);
-    REQUIRE(attacker->lastTargetId == inRange->id); // dropped the unreachable lock, picked up the reachable one
+    REQUIRE(attacker->lastTargetId == inRange->id); // dropped the unreachable lock, took the reachable one
     REQUIRE(attacker->attackCount == 2);
 }
 
@@ -301,7 +279,7 @@ TEST_CASE("CombatEntity attacks only within effective range (attackRange + impli
     Board board;
 
     SECTION("target just inside effective range is attacked") {
-        // attackRange=1.0, implicit radius 0.4 for both sides => effective 1.8
+        // attackRange 1.0 plus implicit radius 0.4 on each side: effective 1.8
         auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.7f, 100, 1);
         spawn(board, enemy);
 
@@ -483,8 +461,7 @@ TEST_CASE("CombatEntity::onDeath is a no-op when no death effect is set (default
 
 namespace {
     std::shared_ptr<StationaryCombatant> makeRampingAttacker() {
-        // attackCooldown = 1 so it attacks every single tick, keeping
-        // "number of update() calls" aligned with ticksOnTarget.
+        // Cooldown 1, so update() calls stay aligned with ticksOnTarget.
         auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 5.0f, 1000, 1);
         attacker->rampMidTick = 20;
         attacker->rampFullTick = 40;
@@ -536,10 +513,8 @@ TEST_CASE("Ramping damage resets to stage 1 when the attacker switches targets",
 
     for (int i = 0; i < 40; ++i) attacker->update(board); // fully ramped against enemyA
 
-    // enemyA dies -- the attacker's target-lock (see CombatEntity::update)
-    // only lets go once the locked target is no longer valid, so a switch
-    // has to be earned this way now; a still-alive enemyA would keep the
-    // attacker locked on even with a closer enemy nearby.
+    // enemyA dies: the lock lets go only when the target is no longer valid, so
+    // this is how a switch happens.
     enemyA->takeDamage(enemyA->hp);
     auto enemyB = std::make_shared<DummyEntity>(3, 0.0f, 0.5f, 1000000, 1, 'B');
     spawn(board, enemyB);
@@ -575,7 +550,7 @@ TEST_CASE("A card without ramping configured (rampFullTick 0, the default) alway
     REQUIRE(enemy->hp == 1000000 - 50 * 1000); // every one of the 50 hits dealt the full 1000
 }
 
-// ---------------- ramp grace period + 4th stage (Inferno Dragon Evolution) ----------------
+// --- ramp grace period and fourth stage (Inferno Dragon Evolution) ---
 
 namespace {
     std::shared_ptr<StationaryCombatant> makeGracePeriodRampingAttacker() {
@@ -717,10 +692,9 @@ TEST_CASE("A card without split targets configured (maxSplitTargets 1, the defau
     REQUIRE(far->hp == 1000); // never targeted at all
 }
 
-// ---------------- splash damage ----------------
-// See CombatEntity::applySplashDamage. Distinct from split-target above:
-// splash hits everyone within a fixed radius of the primary target's
-// position (an area), not "the N closest enemies to the attacker" (a count).
+// --- splash damage ---
+// See CombatEntity::applySplashDamage. Unlike split targets, splash hits
+// everyone within a radius of the primary target (an area, not a count).
 
 TEST_CASE("Splash attacker damages a nearby second enemy in addition to its primary target", "[combat_entity][splash]") {
     Board board;
@@ -793,9 +767,9 @@ TEST_CASE("A card without splash configured (splashRadius 0, the default) only e
     REQUIRE(nearby->hp == 1000); // no splash: never touched
 }
 
-// ---------------- shields ----------------
-// See CombatEntity::takeDamage. Applies to any damage source (direct hit,
-// splash, spell) since it's implemented in takeDamage() itself.
+// --- shields ---
+// In takeDamage(), so every damage source (direct hit, splash, spell) goes
+// through it.
 
 TEST_CASE("Shield absorbs damage before real hp, dollar for dollar", "[combat_entity][shield]") {
     auto defender = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 500, 0, 1.0f, 0, 10);
@@ -834,10 +808,9 @@ TEST_CASE("A card without a shield (shieldHp 0, the default) takes damage direct
     REQUIRE(defender->hp == 420);
 }
 
-// ---------------- charge/dash bonus damage ----------------
-// Needs an attacker that actually moves (StationaryCombatant never does),
-// so these use the real MeleeTroop with setIgnoresRiver(true) to keep
-// movement a straight line, sidestepping bridge/waypoint routing.
+// --- charge bonus damage ---
+// Needs an attacker that moves, so the real MeleeTroop, with
+// setIgnoresRiver(true) to keep movement straight.
 
 TEST_CASE("An attacker deals bonus charge damage after moving far enough without attacking", "[combat_entity][charge]") {
     Board board;
@@ -849,7 +822,7 @@ TEST_CASE("An attacker deals bonus charge damage after moving far enough without
     attacker->chargeThreshold = 3.0f;
     attacker->chargeMultiplier = 2.0f;
 
-    attacker->update(board); // moves 4.0 toward the target (still out of the 1.8 effective range): chargeProgress = 4.0
+    attacker->update(board); // moves 4.0 toward the target, still outside range: chargeProgress 4.0
     REQUIRE(target->hp == 10000); // not in range yet, no hit landed
 
     attacker->update(board); // now within range (dist 1.0 <= 1.8): charged hit lands
@@ -885,7 +858,7 @@ TEST_CASE("Charge resets after landing a hit -- the next attack isn't charged ag
     attacker->update(board); // in range: charged hit (200)
     REQUIRE(target->hp == 10000 - 200);
 
-    attacker->update(board); // still in range, cooldown just expired: attacks again, but charge was reset to 0 by the previous hit
+    attacker->update(board); // in range and off cooldown again; the previous hit reset the charge
     REQUIRE(target->hp == 10000 - 200 - 100); // second hit is base damage, not charged
 }
 
@@ -905,7 +878,7 @@ TEST_CASE("chargeIsSticky keeps every subsequent hit charged instead of resettin
     attacker->update(board); // in range: charged hit (200), sticks now
     REQUIRE(target->hp == 10000 - 200);
 
-    attacker->update(board); // would normally reset to base damage -- stays charged instead
+    attacker->update(board); // would normally reset to base damage; stays charged
     REQUIRE(target->hp == 10000 - 200 - 200);
 
     attacker->update(board); // and again, indefinitely ("constantly ramming")
@@ -1052,10 +1025,8 @@ TEST_CASE("Hook instantly pulls an out-of-range target to just inside melee rang
 }
 
 TEST_CASE("A hook can never drag a Building, even if one were somehow targeted", "[combat_entity][hook][building]") {
-    // Not a real in-game scenario (hook-wielding cards target troops), but
-    // confirms the "buildings never move" invariant holds structurally
-    // inside pullToward itself, regardless of caller -- not just for
-    // AreaSpell's knockback and Evolved Valkyrie's pull.
+    // Not a real card scenario, but "buildings never move" must hold inside
+    // pullToward whatever the caller.
     Board board;
     auto target = std::make_shared<Building>(1, 0.0f, 5.0f, 10000, 1, 'C', 5.0f, 10, 10);
     spawn(board, target);
@@ -1111,9 +1082,8 @@ TEST_CASE("A card without hook configured (hookRange 0, the default) never pulls
 
 TEST_CASE("Hook can pull a target across the river in one motion (Fisherman) -- pullToward has no river check of its own",
         "[combat_entity][hook][river]") {
-    // Board's default river band is y 15.5-17.5 (see Board.h). Target sits
-    // just past the far edge, attacker on the near side -- a single hook
-    // pull (unclamped, unlike normal Troop movement) carries it clean across.
+    // River band 15.5-17.5. One hook pull (unclamped, unlike walking) carries
+    // the target across.
     Board board;
     auto target = std::make_shared<DummyEntity>(1, 0.0f, 18.5f, 10000, 1);
     spawn(board, target);
@@ -1123,7 +1093,7 @@ TEST_CASE("Hook can pull a target across the river in one motion (Fisherman) -- 
 
     attacker->update(board); // dist 5.0, within hookRange -- hooks across the river band
 
-    REQUIRE(target->position.y == Catch::Approx(15.2f)); // 18.5 - 3.3 (5.0 - 1.8 + 0.1) -- now past the river, on the attacker's side
+    REQUIRE(target->position.y == Catch::Approx(15.2f)); // 18.5 - 3.3: now across the river, on the attacker's side
 }
 
 // ---------------- invisibility ----------------
@@ -1177,7 +1147,7 @@ TEST_CASE("findTarget skips an invisible unit entirely, even if it's the closest
     spawn(board, visible);
 
     auto attacker = std::make_shared<StationaryCombatant>(3, 0.0f, 0.0f, 100, 0, 20.0f, 50, 10);
-    attacker->sightRange = 20.0f; // visible is placed at dist 10, beyond the default; this test is about invisibility, not sight
+    attacker->sightRange = 20.0f; // enemy at dist 10, past the default sight; this test is about invisibility
     attacker->update(board);
 
     REQUIRE(attacker->lastTargetId == visible->id); // skips the invisible, closer ghost entirely
@@ -1196,7 +1166,7 @@ TEST_CASE("Periodic effect doesn't fire before a full interval has elapsed", "[c
     auto effect = std::make_shared<RecordingPeriodicEffect>();
     unit->periodicEffect = effect;
     unit->periodicIntervalTicks = 5;
-    unit->periodicTicksUntilNext = 5; // matches CardFactories::applyCardMetadata's initialization
+    unit->periodicTicksUntilNext = 5; // as CardFactories::applyCardMetadata initialises it
 
     for (int i = 0; i < 4; ++i) unit->update(board);
 
@@ -1227,7 +1197,7 @@ TEST_CASE("A card without a periodic effect configured (periodicIntervalTicks 0,
     Board board;
     auto unit = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 1.0f, 0, 10);
     for (int i = 0; i < 50; ++i) unit->update(board);
-    REQUIRE_NOTHROW(unit->update(board)); // no periodicEffect set at all: must not crash trying to fire one
+    REQUIRE_NOTHROW(unit->update(board)); // no periodicEffect: must not crash
 }
 
 // ---------------- buffs and curses ----------------
@@ -1240,7 +1210,7 @@ TEST_CASE("A damage buff multiplies getCurrentDamage while active, then expires"
     auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 100, 0, 1.0f, 100, 1);
     attacker->applyBuff(1.5f, 3);
 
-    attacker->update(board); // tick 1: buffed (3 ticks remaining before this decrements to 2)
+    attacker->update(board); // tick 1: buffed (3 ticks, decremented to 2)
     REQUIRE(target->hp == 100000 - 150); // 100 * 1.5
 
     for (int i = 0; i < 2; ++i) attacker->update(board); // buff expires (2 more decrements: 2 -> 1 -> 0)
@@ -1254,7 +1224,7 @@ TEST_CASE("A curse multiplies incoming damage in takeDamage while active, then e
     defender->applyCurse(1.5f, 2);
 
     defender->takeDamage(100);
-    REQUIRE(defender->hp == 100000 - 150); // 100 * 1.5, curse ticks not decremented by takeDamage itself
+    REQUIRE(defender->hp == 100000 - 150); // 100 * 1.5; takeDamage does not decrement the curse
 
     Board board;
     defender->update(board); // curseTicksRemaining 2 -> 1
@@ -1367,7 +1337,7 @@ TEST_CASE("A card without burstEveryNAttacks configured (the default) always dea
 }
 
 TEST_CASE("applyDot deals periodic damage independent of freeze/curse, then stops", "[combat_entity][evolution]") {
-    Board board; // no enemy present -- victim has nothing to attack, isolating its own status-tick behavior
+    Board board; // no enemy: isolates the victim's own status ticking
     auto victim = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 1000, 0, 1.0f, 10, 5);
     spawn(board, victim);
 
@@ -1385,8 +1355,7 @@ TEST_CASE("applyDot deals periodic damage independent of freeze/curse, then stop
 
 TEST_CASE("PoisonOnHit applies the DoT mark to whatever gets hit", "[combat_entity][evolution]") {
     Board board;
-    // Range 0.1: can never reach the attacker 1.0 away, so it never fights
-    // back -- isolates the mark landing on it from its own attack side effects.
+    // Range 0.1, so it never fights back; isolates the mark.
     auto victim = std::make_shared<StationaryCombatant>(1, 0.0f, 1.0f, 1000, 1, 0.1f, 5, 100);
     spawn(board, victim);
 
@@ -1550,7 +1519,7 @@ namespace {
         mutable int timesFired = 0;
         void apply(CombatEntity& self) const override {
             timesFired++;
-            self.hp += 5; // arbitrary marker so the effect's own application is independently observable
+            self.hp += 5; // a marker, so the effect's application is observable
         }
     };
 }
@@ -1609,7 +1578,7 @@ TEST_CASE("chargeGrantsInvulnerability blocks damage once past half the charge t
     spawn(board, target);
 
     auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
-    attacker->sightRange = 10.0f; // target is placed at dist 10, beyond the default; this test is about charge, not sight
+    attacker->sightRange = 10.0f; // target at dist 10, past the default sight; this test is about charge
     attacker->chargeThreshold = 4.0f;
     attacker->chargeMultiplier = 2.0f;
     attacker->chargeGrantsInvulnerability = true;
@@ -1618,7 +1587,7 @@ TEST_CASE("chargeGrantsInvulnerability blocks damage once past half the charge t
     attacker->takeDamage(50);
     REQUIRE(attacker->hp == 450); // not yet invulnerable
 
-    attacker->update(board); // moves another 1.0: chargeProgress 2.0, at half -- invulnerable now
+    attacker->update(board); // another 1.0: chargeProgress 2.0, half the threshold, invulnerable
     attacker->takeDamage(50);
     REQUIRE(attacker->hp == 450); // fully blocked
 }
@@ -1629,7 +1598,7 @@ TEST_CASE("A charging attacker without chargeGrantsInvulnerability takes damage 
     spawn(board, target);
 
     auto attacker = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 500, 0, 1.0f, 1.0f, 10, 10, 'u');
-    attacker->sightRange = 10.0f; // target is placed at dist 10, beyond the default; this test is about charge, not sight
+    attacker->sightRange = 10.0f; // target at dist 10, past the default sight; this test is about charge
     attacker->chargeThreshold = 4.0f;
     attacker->chargeMultiplier = 2.0f;
     // chargeGrantsInvulnerability left false (the default)
@@ -1656,15 +1625,11 @@ TEST_CASE("resetCooldownOnFreeze fully restarts the attack cooldown instead of j
     attacker->applyFreeze(5, 0.5f);
     REQUIRE(attacker->attackCount == 1); // hasn't fired again yet
 
-    // Cooldown was reset to the full 10 (not left at the 9 it had already
-    // drained to) -- with 5 frozen ticks draining at freezeSlow (0.5/tick:
-    // 10 -> 7.5) followed by normal ticks (-1/tick) until it clears, the
-    // next attack needs 13 total update() calls after the freeze lands.
-    // Without the reset it would only need 12 (draining from 9 instead of
-    // 10) -- asserting exactly 13, not merely "eventually," is what
-    // actually distinguishes reset-on-freeze from plain freeze.
+    // The cooldown resets to the full 10 rather than staying at 9: five frozen
+    // ticks drain 0.5 each (10 -> 7.5), then normal ticks drain 1, so the next
+    // attack takes exactly 13 calls, against 12 without the reset.
     for (int i = 0; i < 12; ++i) attacker->update(board);
-    REQUIRE(attacker->attackCount == 1); // still not ready -- would already be ready without the reset
+    REQUIRE(attacker->attackCount == 1); // not ready yet; would be without the reset
     attacker->update(board);
     REQUIRE(attacker->attackCount == 2); // ready on the 13th
 }
@@ -1741,10 +1706,9 @@ TEST_CASE("A transformed attacker self-destructs once its post-transform lifetim
     attacker->transformBecomesStationary = true;
 
     attacker->takeDamage(600);
-    // The triggering update() both starts the transform AND ticks the
-    // countdown once in the same call (transformTicksRemaining 3 -> 2),
-    // so exactly `transformLifetimeTicks` total update() calls (not one
-    // more) elapse before it self-destructs.
+    // The triggering update() starts the transform and ticks the countdown
+    // once, so exactly transformLifetimeTicks calls elapse before it
+    // self-destructs.
     attacker->update(board); // remaining 3 -> 2
     REQUIRE(attacker->isAlive());
     attacker->update(board); // remaining 2 -> 1
@@ -1765,14 +1729,14 @@ TEST_CASE("transformKillsSelf kills the entity and fires transformDeathEffect, s
     auto normalDeathEffect = std::make_shared<RecordingDeathEffect>();
     attacker->transformDeathEffect = transformEffect;
     attacker->deathEffect = normalDeathEffect;
-    spawn(board, attacker); // needs to be on the board for cleanDeadEntities to find it below
+    spawn(board, attacker); // on the board, so cleanDeadEntities finds it
 
     attacker->takeDamage(600); // 400/1000 = 40%, at/below the 50% threshold
     attacker->update(board);
 
     REQUIRE_FALSE(attacker->isAlive());
     REQUIRE(transformEffect->applied); // fires immediately, from inside update()
-    REQUIRE_FALSE(normalDeathEffect->applied); // NOT fired yet -- that's Board::cleanDeadEntities' job
+    REQUIRE_FALSE(normalDeathEffect->applied); // not yet: that is Board::cleanDeadEntities' job
 
     board.cleanDeadEntities();
     REQUIRE(normalDeathEffect->applied); // the ordinary death pipeline still runs too, independently
@@ -1787,10 +1751,9 @@ TEST_CASE("A lethal hit that skips straight past the transform threshold does no
     auto transformEffect = std::make_shared<RecordingDeathEffect>();
     attacker->transformDeathEffect = transformEffect;
 
-    // One hit straight from 100% to 0% -- this attacker is never observed
-    // alive at <=50%, so its own update() (where the transform check
-    // lives) never gets a chance to run again; GameManager::step() only
-    // calls update() on entities that are still isAlive().
+    // One hit from 100% to 0%: the attacker is never alive at <= 50%, so its
+    // transform check never runs (GameManager::step() updates only living
+    // entities).
     attacker->takeDamage(1000);
     REQUIRE_FALSE(attacker->isAlive());
     REQUIRE_FALSE(transformEffect->applied); // no bonus kamikaze spawn from an ordinary kill
@@ -1829,7 +1792,7 @@ TEST_CASE("A target outside the jump window is walked toward normally, not jumpe
     attacker->jumpMaxRange = 5.0f;
     attacker->jumpDamageMultiplier = 2.0f;
     attacker->jumpSplashRadius = 2.2f;
-    attacker->sightRange = 10.0f; // wide enough to still see tooFar; this test is about the jump window, not sight
+    attacker->sightRange = 10.0f; // wide enough to see tooFar; this test is about the jump window
 
     attacker->update(board);
 
@@ -1839,16 +1802,10 @@ TEST_CASE("A target outside the jump window is walked toward normally, not jumpe
 
 TEST_CASE("Jump can land inside the river band without being clamped back, when riverIgnores is set (Mega Knight)",
         "[combat_entity][jump][river]") {
-    // The jump only travels dist-minus-effectiveAttackRange (stopping just
-    // inside melee range, not landing exactly on the target) -- close to,
-    // but not always past, the river's own 2-tile width (y 15.5-17.5,
-    // Board's default). Uses a real Troop (not a test-only CombatEntity) so
-    // this exercises the actual end-of-update() clampPosition() call, the
-    // same one that would otherwise shove a plain river-respecting troop
-    // back to the near edge -- see CardRegistry.h's Mega Knight
-    // registration for why riverIgnores is set at all (a documented
-    // approximation, since this engine can't gate river-ignoring on "only
-    // during the jump").
+    // The jump stops just inside melee range, which may land inside the 2-tile
+    // river band. A real Troop exercises the end-of-update clampPosition(),
+    // which would otherwise shove it back to the near bank; Mega Knight ignores
+    // the river (see its registration).
     Board board;
     auto target = std::make_shared<DummyEntity>(1, 0.0f, 18.0f, 10000, 1); // enemy side, dist 4.5 from the attacker
     spawn(board, target);
@@ -1860,9 +1817,9 @@ TEST_CASE("Jump can land inside the river band without being clamped back, when 
     attacker->jumpDamageMultiplier = 2.0f;
     attacker->jumpSplashRadius = 2.2f;
 
-    attacker->update(board); // jumps 2.6 (4.5 - 2.0 + 0.1) toward the target, landing at y=16.1 -- inside the river band
+    attacker->update(board); // jumps 2.6 (4.5 - 2.0 + 0.1), landing at y=16.1 inside the river band
 
-    REQUIRE(attacker->position.y == Catch::Approx(16.1f)); // NOT clamped back to 15.5 (riverY_start)
+    REQUIRE(attacker->position.y == Catch::Approx(16.1f)); // not clamped back to 15.5
 }
 
 // ---------------- piercing-line splash (Bowler, Magic Archer) ----------------
@@ -1909,7 +1866,7 @@ TEST_CASE("rangeFalloff deals full damage at point-blank range", "[combat_entity
 
     attacker->update(board);
 
-    REQUIRE(target->hp > 1000 - 84); // less than full 84 would land at dist 0, but very close to it at 0.5
+    REQUIRE(target->hp > 1000 - 84); // less than the full 84 at dist 0, but close to it at 0.5
     REQUIRE(target->hp <= 1000 - 84 * 0.5); // never weaker than the min fraction
 }
 
@@ -1938,7 +1895,8 @@ TEST_CASE("A card without rangeFalloff configured (the default) always deals ful
     REQUIRE(target->hp == 1000 - 84); // no falloff: full damage regardless of distance
 }
 
-// ---------------- distance-band bonus damage (Archers' Power Shot, Executioner's Axe Smash) ----------------
+// --- distance-band bonus damage (Archers' Power Shot, Executioner's Axe Smash)
+// ---
 
 TEST_CASE("rangeBandBonus applies its multiplier when the attack distance falls inside the band",
         "[combat_entity][range_band]") {

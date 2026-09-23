@@ -4,18 +4,10 @@
 #include <limits>
 #include <memory>
 
-// Closest-in-spirit-to CombatEntity::findTarget()'s own eligibility filter,
-// but selecting by HP extreme instead of distance -- used by Hero Giant's
-// throw (highest-HP within a short range) and Hero Mega Minion's warp
-// (lowest-HP anywhere on the board, maxRadius <= 0 meaning unbounded).
-// Excludes every BUILDING -- deployed ones (Cannon, Tombstone, X-Bow) as well
-// as Crown Towers -- because both sourced Hero abilities say "enemy TROOP".
-// This used to exclude only `isTower()`, and a Cannon is the highest-HP thing
-// inside Hero Giant's 3-tile grab radius far more often than a troop is, so
-// Hurl spent most of its uses throwing a stationary building into the other
-// lane. `isBuilding()` is strictly wider than `isTower()` (Tower derives from
-// Building), so nothing that was excluded before is admitted now.
-// Returns nullptr if nothing eligible is found.
+// The enemy troop with the highest or lowest HP, for Hero Giant's throw
+// (highest, within range) and Hero Mega Minion's warp (lowest; maxRadius <= 0
+// means unbounded). Excludes every building, since both abilities target
+// troops. nullptr if none.
 inline std::shared_ptr<Entity> findHpExtremeEnemy(Board& board, const Vector2D& origin,
         float maxRadius, int myTeam, bool wantHighestHp) {
     std::shared_ptr<Entity> best;

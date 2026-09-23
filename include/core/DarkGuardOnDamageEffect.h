@@ -2,13 +2,9 @@
 #include "OnDamageTakenEffect.h"
 #include "CombatEntity.h"
 
-// Minion Horde Evolution's "Dark Guard": taking damage from a troop or
-// spell turns the hit member invisible (untargetable) for a fixed
-// duration -- reuses temporaryInvisibilityTicksRemaining, the same field
-// Archer Queen's Cloaking Cape/Boss Bandit's Getaway Grenade set, just
-// triggered from taking damage instead of an activated ability. No hit-
-// speed change accompanies this (temporaryHitSpeedMultiplier is left at
-// its default 1.0), unlike those two.
+// Minion Horde Evolution's "Dark Guard": a member hit by a troop or spell turns
+// untargetable for a fixed duration. Unlike the Cloaking Cape, no hit-speed
+// change.
 class DarkGuardOnDamageEffect : public IOnDamageTakenEffect {
     int durationTicks;
 

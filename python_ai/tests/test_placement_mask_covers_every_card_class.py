@@ -1,31 +1,13 @@
-"""The placement mask must agree with the ENGINE for every CLASS of card a deck
-can hold -- not only the eight the current deck happens to hold.
+"""The placement mask agrees with the engine for every class of card a deck can
+hold.
 
-Two classes were silently wrong until 2026-09-15, and both were invisible on
-`DEFAULT_DECK` because it contains neither:
+* Deploy-anywhere troops (Miner 52, Goblin Drill 98 / 153): the table allows
+  the enemy half, so no row rule may delete it.
+* Evolutions (ids 123-163): `get_all_card_ids()` filters them out, so the
+  legality table and the spell flags must include them explicitly.
 
-* **deploy-anywhere troops (Miner 52, Goblin Drill 98 / 153).** `placement_mask`
-  first built a ROW mask -- own half for anything that is not a spell -- and then
-  ANDed it with the engine-derived legality table. The table correctly says a
-  Miner may go on the enemy half; the row mask then deleted exactly that half.
-  Measured (audit 06, E-1): Miner mask 242 cells against an engine 520, rows
-  16..33 lost; Goblin Drill 170 against 372. The card's whole purpose is the
-  enemy half, so a Miner-control deck would have trained with a Miner that could
-  only be played defensively.
-
-* **Evolutions (ids 123-163).** `_build_placement_legality` iterated only over
-  `get_all_card_ids()`, which filters Evolutions out, so every Evolution row
-  stayed all-False, and `_spell_flags` missed Evolution spells for the same
-  reason. The engine accepts Evolutions in deck slots 0 and 2 and plays them
-  normally (Evolution Archers: 242 legal cells), so an Evolution in the deck was
-  a card the policy could never place.
-
-Why these tests are not circular. The project's standing rule is "never
-validate a mask against the predicate that generated it". The bug here is the
-mask DISAGREEING with that predicate, so comparing the two does catch it -- but
-every test also drives a real placement through `step_self_play` and reads
-whether the engine took the elixir, so the ground truth is the engine's
-behaviour and not `is_valid_placement`'s say-so.
+Not circular: besides comparing mask and predicate, every test plays a real
+placement through `step_self_play` and checks the engine took the elixir.
 """
 import numpy as np
 import pytest
@@ -37,8 +19,7 @@ from python_ai.models.net import MicroRoyaleNet
 CE = E.ClashRoyaleEnv
 BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 NOOP = CE.HAND_SIZE
-#: Eight ordinary cards (Musketeer .. Fireball, plus Knight), so a deck built
-#: around a card that is ALREADY one of them still has eight.
+#: Eight ordinary cards, so a deck built around one of them still has eight.
 FILLER = [6, 25, 40, 24, 72, 33, 7, 0]
 
 
@@ -72,7 +53,8 @@ def _mask_for_slot0(net, game):
 
 
 def _engine_accepts(card, index, x, y):
-    """Ground truth: play the card and see whether the engine took the elixir."""
+    """Ground truth: play the card and see whether the engine took the elixir.
+    """
     g = _game_holding(card, index)
     g.set_elixir_for_team(0, 10.0)
     before = g.get_elixir_spent_on_card(card, 0)
@@ -80,7 +62,7 @@ def _engine_accepts(card, index, x, y):
     return g.get_elixir_spent_on_card(card, 0) > before
 
 
-# --- deploy-anywhere troops -------------------------------------------------
+# --- deploy-anywhere troops ---
 
 @pytest.mark.parametrize("card", [52, 98])     # Miner, Goblin Drill
 def test_a_deploy_anywhere_troop_keeps_the_enemy_half(net, card):
@@ -97,8 +79,9 @@ def test_a_deploy_anywhere_troop_keeps_the_enemy_half(net, card):
 
 @pytest.mark.parametrize("card", [52, 98])
 def test_the_engine_really_accepts_a_deploy_anywhere_troop_deep_in_the_enemy_half(net, card):
-    """The non-circular half: pick a cell the FIXED mask allows on the enemy
-    half, and prove the engine plays the card there."""
+    """The non-circular half: a cell the mask allows on the enemy half, played
+    through the engine.
+    """
     g = _game_holding(card, 0)
     mask = _mask_for_slot0(net, g)
     enemy = [(int(x), int(y)) for y, x in np.argwhere(mask) if y >= 20]
@@ -108,15 +91,16 @@ def test_the_engine_really_accepts_a_deploy_anywhere_troop_deep_in_the_enemy_hal
 
 
 def test_an_ordinary_troop_still_cannot_cross_the_river(net):
-    """The control that must still fire: the fix must not open the enemy half
-    for troops that are NOT deploy-anywhere."""
+    """Control: the enemy half stays closed to troops that are not
+    deploy-anywhere.
+    """
     g = _game_holding(6, 0)                        # Musketeer
     mask = _mask_for_slot0(net, g)
     assert mask[:16].any()
     assert not mask[18:].any(), "a Musketeer was allowed onto the enemy half"
 
 
-# --- Evolutions ---------------------------------------------------------------
+# --- Evolutions ---
 
 EVO_ARCHERS, EVO_ZAP = 128, 124
 
@@ -135,8 +119,9 @@ def test_an_evolution_troop_in_hand_can_be_placed_where_the_engine_plays_it(net)
 
 
 def test_an_evolution_spell_is_flagged_as_a_spell(net):
-    """An Evolution spell must get the spell row rule (whole board), or it is
-    confined to our own half like a troop."""
+    """An Evolution spell gets the spell rule (whole board), not a troop's own
+    half.
+    """
     assert float(net.spell_flags[EVO_ZAP]) == 1.0
     g = _game_holding(EVO_ZAP, 0)
     mask = _mask_for_slot0(net, g)

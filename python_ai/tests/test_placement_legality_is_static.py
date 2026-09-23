@@ -1,29 +1,14 @@
-"""What the placement-legality cache may and may not assume about board state.
+"""What the placement-legality cache may assume about board state.
 
-`net._build_placement_legality` probes `is_valid_placement` for every
-(card, cell) at construction. Its original premise was that legality is fully
-board-state-independent ("208/288 legal cells on an empty board and 208/288
-with six troops down, zero cells changed").
+`net._build_placement_legality` probes `is_valid_placement` for every (card,
+cell) at construction: a base table plus a per-tower delta for our own two
+Princesses (a destroyed own Princess frees its footprint; see
+test_placement_mask_after_tower_loss.py). The assumptions left, each a tripwire
+for an engine change:
 
-THAT PREMISE WAS ONLY TRUE OF TROOPS. Measured 2026-08-27:
-
-    troops on the board            no change
-    ENEMY princess destroyed       no change
-    OUR OWN princess destroyed     +9 cells -- its 3x3 footprint clears
-
-So the cache is now base table + a per-tower delta for our own two Princesses,
-applied at mask time from the observation. The own-tower case and the mask that
-tracks it live in `test_placement_mask_after_tower_loss.py`.
-
-What remains HERE is the set of assumptions the cache still rests on, each as a
-tripwire that fails the day the engine changes underneath it:
-
-  * an ENEMY tower dying still changes nothing -- if that ever stops being
-    true, the delta table has to cover team 1 as well, and until it does the
-    mask would silently forbid cells the agent earned by taking a tower;
-  * troops still change nothing -- otherwise legality becomes genuinely
-    per-step and a cached table cannot work at all;
-  * the cached table still agrees with the engine cell-for-cell.
+  * an enemy tower dying changes nothing (else the delta table needs a team-1 half);
+  * troops change nothing (else legality is per-step and no cached table works);
+  * the cached table agrees with the engine cell for cell.
 """
 import pytest
 
@@ -51,11 +36,9 @@ def game():
 
 @pytest.mark.parametrize("slot", [1, 2])
 def test_destroying_an_ENEMY_princess_does_not_change_legality(game, slot):
-    """TRIPWIRE. The delta table covers our OWN towers only, because an enemy
-    tower dying was measured to change nothing. If the engine ever adds
-    deploy-zone extension on taking a tower -- which the real game HAS -- this
-    fails, and the delta table must grow a team-1 half before the mask starts
-    forbidding cells the agent just earned.
+    """Tripwire: the delta table covers our own towers only. If the engine ever
+    extends the deploy zone on taking a tower (the real game does), this fails
+    and the table must grow a team-1 half.
     """
     before = _legal(game, DECK[0])
     assert game.destroy_tower(1, slot) is True
@@ -68,8 +51,9 @@ def test_destroying_an_ENEMY_princess_does_not_change_legality(game, slot):
 
 
 def test_troops_on_the_board_do_not_change_legality(game):
-    """The other half of the premise: if troops mattered, legality would be
-    per-step and no cached table could work at all."""
+    """If troops mattered, legality would be per-step and no cached table could
+    work.
+    """
     before = _legal(game, DECK[0])
     for cid, x, y in ((15, 4, 20), (6, 9, 22), (24, 13, 21),
                       (40, 8, 19), (33, 5, 23), (72, 12, 24)):
@@ -83,9 +67,9 @@ def test_troops_on_the_board_do_not_change_legality(game):
 
 
 def test_the_cached_table_agrees_with_the_engine_cell_for_cell():
-    """The cache is only worth trusting if it matches the predicate it came
-    from -- checked against a live engine on an INTACT board, which is the
-    state the base table is built for."""
+    """The cache must match the engine on an intact board, the state the base
+    table is built for.
+    """
     net = MicroRoyaleNet(num_ability_slots=0)
     table = net._placement_legal
     assert table is not None, "no cached legality table; is the .pyd current?"
@@ -103,9 +87,9 @@ def test_the_cached_table_agrees_with_the_engine_cell_for_cell():
 
 
 def test_the_delta_table_is_populated_for_our_own_towers():
-    """Guards against the delta silently coming out empty -- which would make
-    the mask fix a no-op while every test that only checks the INTACT board
-    still passed."""
+    """An empty delta would make the mask fix a no-op while every intact-board
+    test still passed.
+    """
     net = MicroRoyaleNet(num_ability_slots=0)
     assert net._placement_freed is not None
     assert int(net._placement_freed.sum()) > 0

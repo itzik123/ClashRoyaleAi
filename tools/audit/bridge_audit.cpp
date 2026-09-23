@@ -1,12 +1,10 @@
-// Bridge navigation stress instrument.
+// Bridge navigation stress instrument. Drives the real GameManager tick loop
+// and reads every unit's position every tick; the Catch2 suite asserts end
+// states, and "units lag or get stuck on bridges" is a property of the
+// trajectory.
 //
-// NOT a test: a measurement harness. It drives the real GameManager tick loop
-// and reads every unit's position every tick, which nothing in the Catch2
-// suite does -- those assert on end states, and the reported symptom
-// ("units lag or get stuck on bridges") is a property of the TRAJECTORY.
-//
-// Compiled standalone against the header-only engine (tools/audit/build.ps1)
-// so it needs no CMake target and cannot perturb the shipped build.
+// Compiled standalone against the header-only engine (tools/audit/build.ps1),
+// so it needs no CMake target.
 
 #include "GameManager.h"
 #include "CardRegistry.h"
@@ -80,26 +78,18 @@ Verdict judge(const Track& t) {
 
         float dy = b.y - a.y;
         int s = (dy > 1e-5f) ? 1 : (dy < -1e-5f ? -1 : 0);
-        // Captured BEFORE lastDySign is advanced: both the reversal count and
-        // the snap test below need the PREVIOUS direction, and reading
-        // lastDySign after the update makes "s != lastDySign" identically
-        // false -- a detector that reports zero no matter what happens.
+        // Captured before lastDySign advances: both the reversal count and the
+        // snap test need the previous direction.
         int prevDySign = lastDySign;
         bool reversed = (s != 0 && prevDySign != 0 && s != prevDySign);
         if (reversed) v.reversals++;
         if (s != 0) lastDySign = s;
 
         bool inRiver = (b.y > RIVER_START && b.y < RIVER_END);
-        // Snapped out of the river band back onto a bank edge -- clampToBoard's
-        // signature, and a loss of crossing progress.
-        //
-        // The REVERSAL clause is load-bearing and was added after the first
-        // version of this detector reported 2 snaps each for Giant, Musketeer
-        // and Valkyrie that were all false positives: those three have speeds
-        // (0.06, 0.10, 0.10) that divide the 7.5 tiles from the spawn row
-        // evenly, so they LAND on y=17.5000 exactly in the ordinary course of
-        // walking 17.44 -> 17.50 -> 17.56. Landing on a bank edge is only
-        // evidence of a clamp if the unit was pushed BACKWARD onto it.
+        // Snapped out of the river band onto a bank edge: clampToBoard's
+        // signature, a loss of crossing progress. Only counts with a reversal:
+        // units whose speed divides the distance evenly land exactly on y=17.5
+        // in ordinary walking.
         if (wasInRiver && !inRiver && reversed &&
             (std::fabs(b.y - RIVER_START) < 1e-4f || std::fabs(b.y - RIVER_END) < 1e-4f)) {
             v.bankSnaps++;
@@ -123,8 +113,7 @@ struct Scenario {
     bool northbound = true;   // which bank counts as "crossed"
 };
 
-// python_ai/envs/gym_wrapper.py DEFAULT_DECK -- the 2.6 Hog Cycle. Both sides
-// get it so the board is the one training actually runs on.
+// DEFAULT_DECK, the 2.6 Hog Cycle, on both sides: the board training runs on.
 const std::vector<int>& defaultDeck() {
     static const std::vector<int> d = { 15, 6, 25, 40, 24, 72, 33, 7 };
     return d;
@@ -187,10 +176,8 @@ std::vector<Track> runScenario(const Scenario& sc, double* msPerTick = nullptr) 
 // ---------------------------------------------------------------- solo sweep
 
 void soloSweep(const std::vector<int>& cards, int team) {
-    // Team 1 crosses the other way: spawned in the north half, must reach the
-    // south bank. Tested explicitly because the trap this harness was written
-    // to find is direction-specific -- the old Catch2 sweep missed it precisely
-    // by pairing each bank with only one direction of travel.
+    // Team 1 crosses the other way, from the north half to the south bank: the
+    // exit trap is direction-specific.
     const bool north = (team == 0);
     const float spawnY = north ? 10.0f : 23.0f;
     const float goal = north ? RIVER_END : RIVER_START;
@@ -281,12 +268,9 @@ void crowdSweep(int cardId, int count) {
     std::cout << "bank snaps:   " << snaps << "\n";
 }
 
-// ---------------------------------------------------------------- snap diag
-//
-// Prints the trajectory around every "bank snap" -- a unit that was inside the
-// river band and then found itself exactly on a bank edge, i.e. clampToBoard
-// moved it. Losing crossing progress that way is the second signal the solo
-// sweep reports, and it needs to be looked at rather than guessed at.
+// --- snap diagnostics ---
+// Prints the trajectory around every bank snap (a unit inside the river band
+// that ends exactly on a bank edge, i.e. clampToBoard moved it).
 
 void snapDiag(int cardId) {
     std::cout << "\n=== BANK SNAP DIAGNOSTIC: " << cardName(cardId) << " ===\n";
@@ -344,8 +328,7 @@ void latency() {
 int main(int argc, char** argv) {
     std::string mode = (argc > 1) ? argv[1] : "all";
 
-    // DEFAULT_DECK movers, plus tanks that are not in it, because the report
-    // named tanks specifically.
+    // DEFAULT_DECK movers plus tanks outside it, since the report named tanks.
     std::vector<int> movers = {
         15,  // Hog Rider      (win condition)
         6,   // Musketeer      (ranged)

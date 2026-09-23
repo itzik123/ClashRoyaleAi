@@ -5,24 +5,12 @@
 #include "OnHitEffect.h"
 #include <memory>
 
-// Area damage triggered on death (Giant Skeleton's bomb, Golem/Ice Golem/
-// Balloon's explosion) -- everyone within radius of the death position,
-// same team exclusion as applySplashDamage. No stats event fired for this
-// damage (same "not a real attacker" treatment as Building's own decay
-// damage -- the dying entity is already gone by the time this runs, so
-// there's no attacker identity left to attribute a DamageDealtEvent to).
+// Area damage on death (Giant Skeleton's bomb; Golem, Ice Golem and Balloon
+// explosions). No DamageDealtEvent: the dying entity is gone, so there is no
+// attacker to attribute.
 //
-// `onHit` is the same optional slot AreaSpell already carries, for the same
-// reason: Ice Golem's death explosion SLOWS what it damages. nullptr -- the
-// default, and every caller that predates it -- leaves behaviour
-// bit-identical; the loop below gains one null-guarded call after the damage
-// lands and nothing else.
-//
-// It exists because without it the only place to hang Ice Golem's slow was its
-// ATTACK, a mechanic the real card does not have -- see the registry entry for
-// card id 40. On-hit effects only mean anything against a CombatEntity, so the
-// narrowing cast happens here, the one place that needs it, exactly as
-// AreaSpell::update and Projectile::applyHit already do.
+// `onHit` is the optional slot AreaSpell also has; Ice Golem's death explosion
+// slows what it hits. nullptr leaves behaviour unchanged.
 class AreaDamageOnDeath : public IDeathEffect {
     float radius;
     int damage;

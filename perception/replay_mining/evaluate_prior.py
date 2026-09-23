@@ -1,19 +1,17 @@
 """The pre-registered kill criterion: does conditioning earn its place?
 
-Compares, on HELD-OUT episodes, the log-likelihood a human placement receives
-under three models:
+Compares, on held-out episodes, the log-likelihood a human placement gets under
+three models:
 
     uniform       1/|legal|                       -- knows nothing
     marginal      P(cell | card)                  -- knows where the card goes
     conditional   P(cell | card, context) + backoff
 
 If `conditional` does not beat `marginal` out of sample, the context features
-are not carrying information and the honest thing is to ship the marginal alone
-rather than a key that looks sophisticated and predicts nothing.
+carry no information and the marginal ships alone.
 
-Split by EPISODE, never by placement. Placements inside one match are heavily
-correlated -- same player, same opponent, same board -- so a per-placement split
-leaks the test set into training and inflates every number.
+Split by episode, never by placement: placements within a match are correlated
+(same player, opponent and board), so a per-placement split leaks the test set.
 """
 from __future__ import annotations
 
@@ -47,7 +45,8 @@ def legal_masks(deck):
 
 def _marginal_counts(counts):
     """Collapse the context axis, keeping the array shape so `probabilities`
-    can be reused unchanged -- one code path for both models."""
+    serves both models.
+    """
     m = counts.sum(axis=1, keepdims=True)
     return np.repeat(m, counts.shape[1], axis=1)
 

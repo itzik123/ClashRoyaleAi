@@ -1,24 +1,11 @@
-"""Placement dynamism under the SHIPPING configuration (search ON).
+"""Placement dynamism under the shipping configuration (search on).
 
-`prove_placement.py` scores the placement head's PROPOSED cell at every state,
-which is the right question for the head itself. This asks a different one: with
-decision-time search enabled, search overrides ~12.8% of decisions, so the cells
-that actually reach the board are not the head's argmax. The success criterion
-is about the agent we ship, so measure what it ACTUALLY plays.
-
-Reports, per card, over cells actually placed:
-  * modal cell and modal share -- the dynamism metric. CLAUDE.md's rule: a good
-    head is sharp but MOVES ITS MODE with the board; a broken one returns one
-    cell regardless of it.
-  * distinct cells used.
-  * the x mod 4 histogram against the 27.8/27.8/22.2/22.2 null that 18 columns
-    imply -- the cheap detector for the 2026-08-09 checkerboard artifact, which
-    `Entropy/Placement_Measured` provably cannot see.
-
-Modal share is read next to distinct-cell count deliberately: modal share
-degenerates on a near-uniform distribution (the argmax of a flat map is
-arbitrary but deterministic), so a high cell count alongside a low modal share
-is what distinguishes "healthy and state-dependent" from "dissolved".
+`prove_placement.py` scores the head's proposed cell. With search enabled,
+search overrides some decisions, so this measures the cells that actually reach
+the board, per card:
+  * modal cell and modal share: a good head is sharp but moves its mode with the board
+  * distinct cells used: read with modal share, since modal share degenerates on a near-uniform map
+  * the x mod 4 histogram against the 27.8/27.8/22.2/22.2 null of 18 columns: the cheap detector for the old checkerboard artifact
 """
 import argparse
 import os
@@ -28,9 +15,7 @@ from collections import Counter
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 

@@ -1,8 +1,5 @@
-// Prints the arena as an ASCII map, read from the LIVE engine rather than from
-// any hardcoded copy of its geometry: it builds a real ClashEnv, steps one
-// tick, and asks Board for the entities and the river/bridge columns it
-// actually has. If a coordinate in GameManager or Board changes, this map
-// changes with it -- that is the whole point of the instrument.
+// Prints the arena as an ASCII map read from the live engine (entities, river
+// and bridge columns), so it changes whenever the engine's geometry does.
 //
 // Build:  powershell -File tools/audit/build.ps1 board_map
 #include <cstdio>
@@ -21,12 +18,11 @@ int main() {
     const int W = board.getWidth(), H = board.getHeight();
     const float rs = board.getRiverStart(), re = board.getRiverEnd();
 
-    // grid[y][x], row 0 printed last so y increases UP the page (team 0 at the
-    // bottom, matching how the board is described everywhere else).
+    // grid[y][x], row 0 printed last, so team 0 is at the bottom.
     std::vector<std::string> grid(H, std::string(W, '.'));
 
-    // River band and the bridge corridors, straight from clampToBoard's own
-    // rule: a river cell is walkable only if clampToBoard leaves it alone.
+    // River band and bridge corridors from clampToBoard's own rule: a river
+    // cell is walkable only if clampToBoard leaves it alone.
     for (int y = 0; y < H; ++y) {
         float fy = static_cast<float>(y) + 0.5f;
         if (!(fy > rs && fy < re)) continue;
@@ -49,7 +45,7 @@ int main() {
         bool king = (e->symbol == 'R');
         float r = king ? 2.0f : 1.5f;
         char body = king ? (e->team == 0 ? 'K' : 'k') : (e->team == 0 ? 'P' : 'p');
-        // Footprint, from the tower's OWN collision radius.
+        // Footprint from the tower's own collision radius.
         for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) {
             if (std::fabs(x - e->position.x) < r && std::fabs(y - e->position.y) < r)
                 grid[y][x] = body;

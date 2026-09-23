@@ -39,10 +39,9 @@ TEST_CASE("MatchStatistics splits damage dealt into troop vs building, per attac
     board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 1, 100, 1 });
     // team0/card5 hits team1's Cannon (targetCardId 25 -- a building)
     board.statsEvents.notifyDamageDealt({ 1, 0, 5, 11, 25, 1, 60, 2 });
-    // team1/card6 hits team0's King Tower (targetCardId -2, GameManager::TOWER_KING_ID).
-    // The tower is identified by the event's targetIsTower -- the target's own
-    // isTower() -- not by the id being absent from CardRegistry, which spawned
-    // bodies share. A tower is still a building.
+    // team1/card6 hits team0's King Tower (targetCardId -2). A tower is
+    // identified by the event's targetIsTower, not by registry absence, which
+    // spawned bodies share. A tower is still a building.
     board.statsEvents.notifyDamageDealt({ 2, 1, 6, 12, -2, 0, 40, 3, true });
 
     REQUIRE(stats.troopDamageDealt(0) == 100);
@@ -56,7 +55,7 @@ TEST_CASE("MatchStatistics ignores same-team damage when splitting troop vs buil
     MatchStatistics stats;
     stats.attach(board);
 
-    // attackerTeam == targetTeam: e.g. some future splash hitting your own troop.
+    // attackerTeam == targetTeam, e.g. splash on your own troop.
     board.statsEvents.notifyDamageDealt({ 1, 0, 5, 10, 0, 0, 999, 1 });
 
     REQUIRE(stats.troopDamageDealt(0) == 0);
@@ -226,9 +225,8 @@ TEST_CASE("MatchStatistics::attach re-subscribes fresh collectors, discarding th
 
 TEST_CASE("an UNREGISTERED target is a troop unless the event says it is a tower",
           "[match_statistics][damage_by_target_type][spawned]") {
-    // Spawned helper bodies carry unregistered negative ids (-1, -10 .. -48),
-    // exactly like the tower sentinels, so registry absence cannot identify a
-    // tower. The event carries the target's own isTower() instead.
+    // Spawned bodies carry unregistered negative ids like the tower sentinels,
+    // so only the event's targetIsTower can identify a tower.
     Board board;
     MatchStatistics stats;
     stats.attach(board);

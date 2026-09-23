@@ -1,9 +1,6 @@
-"""Pins the time and elixir constants against the live engine.
-
-The whole pipeline's tick arithmetic rests on two numbers. If either changes
-on the C++ side, this file fails immediately and loudly -- which is the only
-protection against the failure mode where every timestamp is quietly wrong by
-a few percent and nothing looks broken.
+"""Pins the time and elixir constants against the live engine. The pipeline's tick
+arithmetic rests on two numbers; a change on the C++ side must fail here rather
+than make every timestamp quietly wrong by a few percent.
 """
 
 from __future__ import annotations
@@ -21,8 +18,8 @@ def test_seconds_ticks_roundtrip():
 
 
 def test_seconds_to_ticks_rounds_not_truncates():
-    # 0.19s is 1.9 ticks. Truncation would give 1 and bias every conversion
-    # downward -- see the function's own comment.
+    # 0.19 s is 1.9 ticks; truncation would give 1 and bias every conversion
+    # downward.
     assert timebase.seconds_to_ticks(0.19) == 2
     assert timebase.seconds_to_ticks(0.14) == 1
 
@@ -35,7 +32,7 @@ def test_frame_index_conversion():
 
 
 def test_elixir_regen_matches_engine(engine):
-    """ELIXIR_REGEN_RATE is really 0.035/tick, measured not assumed."""
+    """ELIXIR_REGEN_RATE is 0.035/tick, measured."""
     deck = [15, 25, 6, 1, 0, 41, 7, 10]
     env = engine.ClashRoyaleEnv(deck, deck, 3600)
     env.reset()
@@ -59,12 +56,9 @@ def test_starting_elixir_matches_engine(engine):
 
 
 def test_simulator_elixir_runs_slow_relative_to_real_game():
-    """Documents the 2% gap as an asserted fact, not a comment.
-
-    If someone "fixes" ELIXIR_REGEN_RATE to 0.0357 to match the real game,
-    this fails and forces the opponent-elixir model to be revisited at the
-    same time -- rather than the two silently disagreeing in the other
-    direction.
+    """The 2% gap as an asserted fact: "fixing" ELIXIR_REGEN_RATE to match the
+    real game fails here and forces the opponent-elixir model to be revisited
+    too.
     """
     sim_seconds_per_elixir = 1.0 / (
         timebase.SIM_ELIXIR_REGEN_PER_TICK * timebase.TICKS_PER_SECOND
@@ -85,14 +79,9 @@ def test_phase_multipliers_only_scale_real_rate():
 
 def test_attack_cooldown_evidence_for_tick_rate(engine):
     """The evidence TICKS_PER_SECOND was derived from, kept executable.
-
-    CardStats::attackCooldown is in ticks; the real game publishes the same
-    figure as "hit speed" in seconds. Their ratio is the tick rate. This is
-    the strongest available source because it is asserted independently by
-    every card in the registry rather than by one constant.
-
-    Only the cards whose real hit speed is stable and well known are listed;
-    the point is the ratio, not roster coverage.
+    CardStats::attackCooldown is in ticks and the real game publishes it as
+    "hit speed" in seconds; their ratio is the tick rate. Only cards with
+    stable, well-known hit speeds are listed.
     """
     # (card id, real-game hit speed in seconds)
     known = [(1, 0.9), (6, 1.0), (0, 1.2), (10, 1.5), (15, 1.6)]
@@ -100,8 +89,7 @@ def test_attack_cooldown_evidence_for_tick_rate(engine):
         info = engine.get_card_info(card_id)
         assert info is not None, f"card {card_id} vanished from the registry"
 
-    # The registry does not expose attackCooldown through get_card_info, so
-    # the ratio itself is pinned as a constant here and the derivation lives
-    # in timebase.py's docstring. What this test guards is that the cards the
-    # derivation was based on still exist and still mean what they did.
+    # get_card_info does not expose attackCooldown, so the ratio is pinned as a
+    # constant and the derivation lives in timebase.py; this guards that the
+    # cards it rests on still exist and mean what they did.
     assert timebase.TICKS_PER_SECOND == 10

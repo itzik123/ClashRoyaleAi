@@ -1,7 +1,6 @@
-// Does a match that reaches the tick limit actually resolve? Runs matches to
-// maxTicks and prints the surviving-tower state alongside the verdict the
-// engine hands back, so "the rule is wrong" and "the rule is right but nothing
-// reads it" can be told apart.
+// Does a match that reaches the tick limit resolve? Runs matches to maxTicks
+// and prints the surviving-tower state beside the engine's verdict, separating
+// "the rule is wrong" from "nothing reads it".
 //
 // Build:  powershell -File tools/audit/build.ps1 timeout_audit
 #include <cstdio>
@@ -36,10 +35,9 @@ int main(int argc, char** argv) {
         bool done = false;
         int ticks = 0;
         while (!done) {
-            // slot 4 == no-op. In `passive` mode BOTH sides no-op (stepSelfPlay
-            // never runs the heuristic), which is the only reliable way to
-            // force the tick limit; otherwise team 1's heuristic plays and the
-            // match usually ends on a King.
+            // slot 4 is the no-op. In `passive` mode both sides no-op
+            // (stepSelfPlay never runs the heuristic), the only reliable way to
+            // reach the tick limit.
             if (passive) {
                 auto r = env.stepSelfPlay(4, 0.0f, 0.0f, 4, 0.0f, 0.0f, 10);
                 lastReward = r.reward0; done = r.done;

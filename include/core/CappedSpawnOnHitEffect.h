@@ -4,14 +4,10 @@
 #include "CardFactories.h"
 #include "Board.h"
 
-// Spawns a copy of childStats at wherever the effect fires, unless
-// maxAlive entities carrying childStats' own id are already alive on that
-// team -- Evolved Skeletons' "Never-ending Horde" (spawns another Evolved
-// Skeleton on every landed attack, capped at 8 total on the field).
-// Reuses IPeriodicEffect's exact shape (Board&, position, team) since
-// CombatEntity::onHitSpawnEffect fires it from the same "spawn something
-// here" call site as periodicEffect, just on a landed hit instead of a
-// tick interval -- see CombatEntity::onHitSpawnEffect's own comment.
+// Evolved Skeletons' "Never-ending Horde": spawns another copy on each landed
+// attack, unless maxAlive with that id are already alive on the team. Has
+// IPeriodicEffect's shape because CombatEntity::onHitSpawnEffect fires it from
+// the same call site.
 class CappedSpawnOnHitEffect : public IPeriodicEffect {
     CardStats childStats;
     int maxAlive;

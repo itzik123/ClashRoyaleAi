@@ -1,10 +1,5 @@
-"""Builders shared by more than one test file.
-
-Both of these were defined in one section of the old `test_python_ai.py` and
-used from another -- which is exactly why splitting the monolith surfaced them:
-in one file a cross-section reference is invisible, across files it is an
-ImportError. They are here rather than in `conftest.py` because they are plain
-functions, not fixtures, and the tests call them with arguments.
+"""Plain builder functions shared by more than one test file (fixtures live in
+conftest.py).
 """
 import numpy as np
 import torch
@@ -16,9 +11,8 @@ from python_ai.models.policy_io import LSTM_HIDDEN
 
 CE = clash_royale_env.ClashRoyaleEnv
 
-#: A deliberately tiny truncated-BPTT chunk: 3 timesteps x 2 envs. Small enough
-#: that an exact-zero gradient assertion is cheap, large enough that the (L, B)
-#: reshaping in the update is actually exercised.
+#: A tiny truncated-BPTT chunk, 3 timesteps x 2 envs: cheap for exact-zero
+#: gradient assertions, large enough to exercise the update's (L, B) reshaping.
 L, B = 3, 2
 
 
@@ -38,7 +32,7 @@ def chunk_fixture():
     embeds_seq = embeds.view(L, B, *embeds.shape[1:])
     spatial_seq = spatial.view(L, B, *spatial.shape[1:])
     # Everything affordable, so "unchosen" is a real choice and not a mask
-    # artifact -- otherwise the test could pass for the wrong reason.
+    # artifact.
     card_mask = torch.ones(L, B, net.hand_size + 1, dtype=torch.bool)
     resets = torch.ones(L, B)
     hidden = (torch.zeros(B, LSTM_HIDDEN), torch.zeros(B, LSTM_HIDDEN))
@@ -50,12 +44,10 @@ def chunk_fixture():
 def shaping_stats(fireball_killed):
     """Minimal stats/prev pair where a Fireball has just killed some value.
 
-    The spell is the 2.6 deck's Fireball, supplied through `spell_damage` /
-    `spell_cost` the way the envs publish it (689 / 4 -- the values
-    `card_probes.damage_spell` measures for it, which
-    `test_damage_spell_is_deck_derived` pins). A fixture, deliberately: these
-    tests pin the FORMULA, and one reading the live deck would move its own
-    expected answers with CLASH_DECK.
+    The spell is supplied through `spell_damage` / `spell_cost` as the envs
+    publish it (689 / 4, pinned by test_damage_spell_is_deck_derived). A
+    fixture, since these tests pin the formula and must not move with
+    CLASH_DECK.
     """
     z = np.zeros(1, dtype=np.float32)
     base = {

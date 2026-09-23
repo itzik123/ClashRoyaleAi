@@ -1,48 +1,25 @@
 """Run perception continuously on its own thread; decide at a fixed rate.
 
-WHY THE LOOP CANNOT STAY SERIAL
--------------------------------
-Measured live on a quiet machine: 29 iterations in 60 s, 0.48 Hz, with the
-detector clustering at 2.2-2.5 s. Serially that is fatal in a way no amount of
-detector tuning fixes, because the coupling itself is the problem:
+Serially, the decision rate is pinned to the detector's latency, every decision
+acts on a board at least that old (2.4 s is a Hog Rider crossing the bridge),
+and one slow frame delays every later decision. Splitting them turns an
+unbounded stall into a bounded, visible staleness.
 
-  * the decision RATE is pinned to the detector's LATENCY, so a 2.4 s detector
-    means at most 0.4 decisions a second;
-  * every decision is then acting on a board at least 2.4 s old, and in Clash
-    Royale 2.4 s is a Hog Rider crossing the bridge;
-  * worst case is unbounded -- one slow frame delays every later decision.
-
-Splitting them converts an unbounded stall into a bounded STALENESS. The
-decision loop runs at its own rate on the most recent observation, and how old
-that observation is becomes a number we can watch instead of a hang we cannot.
-
-WHAT RUNS WHERE
----------------
     producer thread   capture -> resize -> detect -> GameState, plus the
-                      elixir ledger, which wants every observation it can get
-    decision loop     encode -> policy -> act, measured at 12 ms total
+                      elixir ledger, which wants every observation
+    decision loop     encode -> policy -> act (~12 ms)
 
-The adapter sits on the PRODUCER side deliberately. It costs ~137 ms, and
-leaving it on the decision side would put the slowest remaining piece back in
-the path the whole design exists to keep short.
+The adapter (~137 ms) sits on the producer side, keeping the decision path
+short.
 
-STALENESS IS REPORTED, NEVER HIDDEN
------------------------------------
-`Snapshot.age_ms` is the age of the board the decision was made on. A consumer
-that ignores it is back to the original problem with extra steps, so the loop
-prints it every iteration and counts how often it exceeds a threshold. If age
-grows without bound the producer is not keeping up and that is visible
-immediately, rather than showing up as a policy that plays strangely.
+`Snapshot.age_ms` is the age of the board a decision was made on; the loop
+prints it every iteration and counts threshold breaches, so a producer falling
+behind shows up at once rather than as strange play.
 
-WAITING IS SEPARATED FROM WORKING
----------------------------------
-The producer's period is `wait + work`, and the two have opposite fixes. Offline
-the whole chain measures 190 ms a frame (115 ms of it the ONNX forward pass);
-the first live run showed a ~2700 ms period. A 14x gap that size is not the
-model, so `work` is split by stage and `wait` -- time blocked in `read_new`
-waiting for the window to paint -- is counted separately. Without that split a
-capture starved of frames and a detector that is genuinely slow look identical
-from outside, and they lead to completely different work.
+The producer's period is `wait + work`, and the two have opposite fixes: `wait`
+is time blocked in `read_new` for the window to paint, `work` is split by
+stage. Without the split a frame-starved capture and a slow detector look
+identical.
 """
 from __future__ import annotations
 
@@ -54,32 +31,24 @@ from typing import Any
 
 import numpy as np
 
-# How many recent publications the period estimate is taken over. Long enough
-# to be robust to one slow frame, short enough to track a real change in load.
+# Recent publications the period estimate uses: robust to one slow frame, still
+# tracking a real change in load.
 PERIOD_WINDOW = 12
 
-# How many recent samples each STAGE timing is kept over. Same reasoning as
-# PERIOD_WINDOW one line up, and the same reasoning Stages.report already gives
-# for preferring the median: a figure averaged over a whole run describes
-# neither now nor then, because machine load drifts. Larger than PERIOD_WINDOW
-# because a stage median is read once at the end rather than continuously.
+# Recent samples kept per stage timing. Larger than PERIOD_WINDOW, since a
+# stage median is read once at the end; a whole-run figure would describe
+# neither now nor then, since load drifts.
 STAGE_WINDOW = 256
 
 
 class Stages:
-    """Accumulates per-stage timings across frames, safely across threads.
+    """Accumulates per-stage timings across frames, thread-safely.
 
-    Reports the MEDIAN. A per-frame mean is dominated by whichever frame the
-    scheduler happened to descheduled -- the live run's own totals ranged
-    1.9-9.3 s while the typical frame was nothing like either end.
-
-    Timings are kept in a bounded deque (STAGE_WINDOW), matching
-    PerceptionWorker._publishes below rather than growing without limit for the
-    lifetime of the process. The TOTAL count is tracked separately and is what
-    `n=` reports, because that number is diagnostic in its own right: stages
-    recorded before an early exit (e.g. detector.run) and after it
-    (build_game_state) legitimately differ, and a saturating window would erase
-    exactly that signal.
+    Reports the median: a per-frame mean is dominated by whichever frame was
+    descheduled. Timings live in a bounded deque (STAGE_WINDOW); the total
+    count is kept separately and reported as `n=`, because stages before an
+    early exit (detector.run) and after it (build_game_state) legitimately
+    differ in count.
     """
 
     def __init__(self):
@@ -121,8 +90,8 @@ class Stages:
             med = float(np.median(v))
             share = 100.0 * med / total if total > 0 else 0.0
             n = counts.get(name, len(v))
-            # "n=1234" is every sample ever seen; "(last 256)" flags that the
-            # median above is over the window, not over all of them.
+            # "n=1234" is every sample ever seen; "(last 256)" marks the median
+            # as over the window.
             windowed = "" if n <= len(v) else f" (last {len(v)})"
             lines.append(f"    {name:<26} {med:8.1f} ms  ({share:5.1f}%)  "
                          f"n={n}{windowed}")
@@ -177,12 +146,9 @@ class Snapshot:
 
 
 class PerceptionWorker:
-    """Perceives as fast as it can; publishes only the newest result.
-
-    Deliberately keeps NO queue. A backlog would mean the decision loop reads
-    boards that are already superseded -- the freshest observation is the only
-    one worth having, and an old one is not merely less useful but actively
-    wrong. Dropping is the correct behaviour, not a compromise.
+    """Perceives as fast as it can; publishes only the newest result. No queue: a
+    superseded board is not merely less useful but wrong, so dropping is
+    correct.
     """
 
     def __init__(self, source, detector, adapt, on_observation=None,
@@ -198,13 +164,12 @@ class PerceptionWorker:
         self.frames = 0
         self.errors = 0
         self.last_error: BaseException | None = None
-        # `wait` is time blocked on the window painting; `work` is time in
-        # perceive. Their sum is the producer's period, and which of the two
-        # dominates decides whether the next move is capture or compute.
+        # `wait` is time blocked on the window painting, `work` time in
+        # perceive; their sum is the period, and which dominates decides
+        # whether to fix capture or compute.
         self.stages = Stages()
-        # Recent publication times, for the decision loop to predict when the
-        # next board lands. Bounded: the rate drifts with machine load, and an
-        # average over the whole run would describe neither now nor then.
+        # Recent publication times, so the decision loop can predict the next
+        # board. Bounded, since the rate drifts with load.
         self._publishes: deque[float] = deque(maxlen=PERIOD_WINDOW)
 
     def start(self) -> None:
@@ -224,15 +189,10 @@ class PerceptionWorker:
 
     @property
     def period(self) -> float | None:
-        """Seconds between boards, or None until it can be measured.
-
-        The MEDIAN of recent intervals, not the mean: perception occasionally
-        takes several times its usual duration when the machine is busy, and a
-        mean dragged upward by one of those would tell the decision loop to
-        wait for a board that is not coming.
-
-        None rather than a guess when there is not enough history -- a caller
-        that waits on a made-up period waits for nothing.
+        """Seconds between boards, or None until measurable. The median of recent
+        intervals: one busy-machine outlier would drag a mean up and have the
+        loop wait for a board that is not coming. None rather than a guess:
+        waiting on a made-up period waits for nothing.
         """
         with self._lock:
             stamps = list(self._publishes)
@@ -247,9 +207,9 @@ class PerceptionWorker:
                 waited = time.perf_counter()
                 frame = self._source.read_new(timeout_s=1.0)
                 if frame is None:
-                    # A timeout is not a wait worth averaging in: it means no
-                    # frame arrived at all, which is a different fault from a
-                    # slow one and would drag the median toward the timeout.
+                    # A timeout is not a wait to average in: no frame arrived
+                    # at all, a different fault, and it would drag the median
+                    # toward the timeout.
                     continue
                 captured_at = self.stages.time("0 wait for frame", waited)
                 started = captured_at
@@ -271,9 +231,9 @@ class PerceptionWorker:
                     self._latest = snapshot
                 self.frames += 1
             except Exception as exc:                    # noqa: BLE001
-                # Never let the thread die silently. A dead producer looks
-                # exactly like a very stale board from the decision side, and
-                # the two need completely different responses.
+                # Never let the thread die silently: a dead producer looks like
+                # a very stale board from the decision side, and needs a
+                # different response.
                 self.errors += 1
                 self.last_error = exc
                 time.sleep(0.1)

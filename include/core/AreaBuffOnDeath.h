@@ -2,10 +2,8 @@
 #include "DeathEffect.h"
 #include "CombatEntity.h"
 
-// Lumberjack's death potion: buffs every nearby ally's damage for a
-// duration, the instant this entity dies. Reuses CombatEntity's own
-// applyAreaBuff sweep -- excludeId is -1 since the dying entity is
-// already gone by the time this fires, nothing to exclude.
+// Lumberjack's death potion: buffs nearby allies' damage for a duration.
+// excludeId is -1 because the dying entity is already gone.
 class AreaBuffOnDeath : public IDeathEffect {
     float radius;
     float multiplier;

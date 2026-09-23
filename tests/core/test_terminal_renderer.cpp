@@ -4,30 +4,17 @@
 #include "Board.h"
 #include <string>
 
-// ============================================================================
-// The terminal renderer's arena topography.
-//
-// This file exists because TerminalRenderer.h held yet another hardcoded copy
-// of the bridge columns and nothing compared it to anything -- the eighth this
-// project has found. CLAUDE.md keeps the running list. This one had no test at
-// all, which is why it survived the 2026-08-21 re-centring that moved the
-// bridges under it.
-// ============================================================================
+// The terminal renderer's arena topography, against the physics and the real
+// river row.
 
 namespace {
 
 // Is a column passable at mid-river, according to the movement code?
 //
-// HONEST ABOUT ITS LIMIT: clampToBoard calls isOnBridge internally, and
-// riverRow() is built from isOnBridge too, so this is NOT a fully independent
-// oracle -- both paths share that predicate. CLAUDE.md's "never validate a mask
-// against the predicate that generated it" applies, and the genuinely
-// independent anchor is the literal river row in the case below.
-//
-// It still earns its place: it catches the renderer diverging from the physics
-// in any of the ways that are NOT the predicate -- wrong row index, wrong
-// width, an off-by-one in the paint loop -- which is most of what actually went
-// wrong here.
+// Not a fully independent oracle: clampToBoard and riverRow() share isOnBridge.
+// It catches the renderer diverging from the physics in every other way (row
+// index, width, the paint loop); the literal river row below is the independent
+// anchor.
 bool physicallyCrossableAt(const Board& board, int x) {
     const float midRiver = (board.getRiverStart() + board.getRiverEnd()) * 0.5f;
     const Vector2D probe{ static_cast<float>(x), midRiver };
@@ -53,9 +40,8 @@ TEST_CASE("the rendered river row matches what a troop can actually walk on",
 }
 
 TEST_CASE("the rendered river row is the real arena's row", "[renderer][regression]") {
-    // The third anchor, independent of both the renderer and the physics: the
-    // real arena's river row as documented in ArenaLayout.h and used to verify
-    // the observation-encoder fix. Two tiles of bridge per lane, not three.
+    // The independent anchor: the real arena's river row (ArenaLayout.h). Two
+    // bridge tiles per lane.
     Board board;
     REQUIRE(TerminalRenderer::riverRow(board) == "WWBBWWWWWWWWWWBBWW");
 }

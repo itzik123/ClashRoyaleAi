@@ -5,14 +5,9 @@
 #include "FreezeOnHit.h"
 #include "Board.h"
 
-// Hero Ice Golem's "Snowstorm": 3 staggered blasts in a fixed radius --
-// the first two apply pushback+damage+a partial slow, the third a full
-// freeze -- reusing MightyMinerEscapeEffect's own pattern of constructing
-// AreaSpells directly from within an ability effect (not through
-// CardFactories::spawnSpell, since this fires mid-battle, not from a card
-// play). Damage to Crown Towers is reduced via AreaSpell's own
-// spellTowerDamageMultiplier (a new primitive -- see that field's own
-// comment for why no existing mechanism covers this).
+// Hero Ice Golem's "Snowstorm": three staggered blasts in a fixed radius. The
+// first two push back, damage and slow; the third freezes. Crown Tower damage
+// is cut via spellTowerDamageMultiplier.
 class HeroIceGolemSnowstormEffect : public IAbilityEffect {
     float radius;
     int blastDamage;

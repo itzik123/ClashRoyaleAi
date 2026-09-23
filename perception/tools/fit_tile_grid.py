@@ -1,43 +1,29 @@
-"""Fit TILE_INIT_X/Y and TILE_WIDTH/HEIGHT for one emulator, in DISPLAY space.
+"""Fit TILE_INIT_X/Y and TILE_WIDTH/HEIGHT for one emulator, in display space,
+from landmarks.
 
     perception/.venv-dml/Scripts/python.exe perception/tools/fit_tile_grid.py \
         frame.png --annotate out.png
 
-Give it one 720x1280 `adb exec-out screencap` of an in-progress match. An
-opening frame is best: the towers are undamaged and no unit is standing on a
-landmark.
+Superseded by `tools/deploy_zone.py --fit-grid`, which reads the arena edges
+directly off the game's deploy tint; this landmark fit is kept for comparison.
 
-WHY THESE CONSTANTS NEEDED FITTING AT ALL
------------------------------------------
-Upstream CRBAB ships one set for every device. On this emulator they are ~10%
-small in x and ~4% in y, which is a SCALE error, and a scale error does not
-look like a bug -- it looks like flakiness. Taps landed correctly near the
-river and drifted to over half a tile wrong by our own King, so how wrong a
-placement was depended on where it was. That is also why the obvious suspect,
-a constant offset like adapter.TILE_Y_OFFSET, could never have explained it.
+Give it one 720x1280 `adb exec-out screencap` of a match in progress, ideally
+an opening frame (towers undamaged, no unit on a landmark). Display space, not
+the desktop capture, keeps the emulator window's position and aspect out of the
+arithmetic.
 
-MEASURED IN DISPLAY SPACE, NOT THROUGH THE DESKTOP CAPTURE
------------------------------------------------------------
-`adb screencap` returns the android framebuffer directly, so the emulator
-window's position, size and 0.6% aspect mismatch never enter the arithmetic.
-An earlier attempt routed through the desktop homography and disagreed with
-this one by nearly a tile.
+Upstream CRBAB ships one set of constants for every device; a wrong scale does
+not look like a bug but like flakiness that grows with distance from the
+anchor, which no constant offset (adapter.TILE_Y_OFFSET) explains.
 
-LANDMARKS
----------
-    x   the two bridges, engine x = 4.0 and 14.0 (geometry.LEFT/RIGHT_BRIDGE),
-        found as the interior gaps in the river's water mask.
-    y   SCALE from the two princess HP bars. They are 27.0 - 6.0 = 21.0 tiles
-        apart, and a bar sits at the same unknown offset above its own tower on
-        both sides, so the separation is exact without ever locating a tower
-        centre -- which is the part that needs grey-stone blob labelling in
-        tools/calibrate.py.
-        OFFSET from the river centre, engine y = 16.5.
+Landmarks: x from the two bridges (geometry.LEFT/RIGHT_BRIDGE), found as
+interior gaps in the river's water mask; y scale from the two Princess HP bars,
+which sit the same unknown offset above their towers; y offset from the river
+centre.
 
-Two checks the fit does not get to choose, both reported:
-  * the bridge midpoint must be the display's horizontal centre, because engine
-    x = 9.0 (the Kings) is the board's centre;
-  * both HP bars must come out the same distance above their towers.
+Two checks the fit does not choose: the bridge midpoint must be the display's
+horizontal centre, and both HP bars must come out the same distance above their
+towers.
 """
 from __future__ import annotations
 
@@ -68,8 +54,8 @@ def find_river_and_bridges(img: np.ndarray) -> dict:
     h, w = img.shape[:2]
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     water = cv2.inRange(hsv, WATER_HSV_LO, WATER_HSV_HI)
-    # The card bar and various UI chrome are also blue; the river is the only
-    # blue in the middle third.
+    # The card bar and UI chrome are also blue; the river is the only blue in
+    # the middle third.
     water[:int(h * 0.30)] = 0
     water[int(h * 0.60):] = 0
 
@@ -85,9 +71,8 @@ def find_river_and_bridges(img: np.ndarray) -> dict:
     wet = [x for x in range(w) if cols[x] >= thresh]
     lo, hi = wet[0], wet[-1]
 
-    # Only BETWEEN the outermost water columns. Scanning the whole frame makes
-    # the shore -- where there is simply no arena -- the widest "gap", and it
-    # wins a bridge slot.
+    # Only between the outermost water columns: over the whole frame the shore
+    # becomes the widest "gap" and wins a bridge slot.
     runs, run = [], None
     for x in range(lo, hi + 1):
         if cols[x] < thresh:

@@ -1,38 +1,15 @@
-"""Definitive test: did the coverage term unlock Cannon/Fireball placement?
+"""Did the coverage term make Cannon/Fireball placement dynamic and useful?
 
-DESIGN
-------
-Two claims have to be separated, because a policy can satisfy one without the
-other and only the pair is interesting:
+  DYNAMIC   the head stopped returning one fixed cell regardless of the board. Modal-cell share and distinct cells are reported with top-1 probability, since modal share degenerates on a near-uniform map (the argmax of a flat map is arbitrary but deterministic).
+  USEFUL    the chosen cell is worth more, scored by the engine: snapshot, inject the card at the cell (free, so the rest of the match is untouched), run forward, read the engine's accounting.
+              Cannon   -> tower HP preserved over its 300-tick lifetime vs the same state with no Cannon (value-killed would score its main job, distraction, at zero)
+              Fireball -> get_elixir_value_killed_by(FIREBALL, 0)
 
-  DYNAMIC -- the head stopped returning one fixed cell regardless of the board.
-             Measured as modal-cell share and distinct cells used, alongside
-             top-1 probability (modal share alone degenerates on a near-uniform
-             distribution: the argmax of a flat map is arbitrary but
-             deterministic, which is how the first, botched A/B produced a
-             "99% modal share" for a policy at 0.999 normalized entropy).
-  USEFUL  -- the cell it picks is worth more. Scored by the ENGINE, not by a
-             model of it: snapshot the live match, `inject` the card at the
-             proposed cell (injection costs no elixir, so the rest of the match
-             is untouched), run forward, and read the engine's own accounting.
-               Cannon   -> tower HP preserved over a full 300-tick lifetime,
-                           against the same state run with no Cannon at all.
-                           NOT value-killed-by-Cannon: that credits only its
-                           killfeed and scores its main job, distraction, at
-                           zero.
-               Fireball -> get_elixir_value_killed_by(FIREBALL, 0).
+Every net is scored on the same states, drawn by one fixed reference policy
+(the seed both arms started from), so the comparison is within-state and a few
+hundred states resolve a per-state effect.
 
-PAIRING is what makes this significant at a feasible sample size. Every net is
-evaluated at the SAME states, drawn by a single fixed reference policy, so the
-comparison is within-state and the huge between-state variance cancels. An
-unpaired win-rate comparison would need ~1,568 episodes per arm to resolve 5
-points (CLAUDE.md); this resolves a per-state effect in a few hundred states.
-
-The reference policy that generates the states is the common SEED both arms
-started from -- not either arm's own trajectory, which would give each net a
-state distribution it had itself shaped.
-
-    python_ai/venv/Scripts/python.exe python_ai/prove_placement.py \
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_placement.py \
         --seed model_weights_selfplay.pth --control A.pth --treatment B.pth
 """
 import argparse
@@ -44,9 +21,7 @@ import numpy as np
 import torch
 from torch.distributions import Categorical
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -59,14 +34,6 @@ from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
 
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
-
 CE = E.ClashRoyaleEnv
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
 CANNON_LIFETIME = 300
@@ -74,7 +41,7 @@ FIREBALL_SETTLE = 16
 NOOP_SLOT = 4
 
 
-# ----------------------------------------------------------------- oracles --
+# --- oracles ---
 def cannon_value(env, x, y, baseline):
     """Tower HP preserved by a Cannon at (x,y), vs the same state without one."""
     s = env.snapshot()
@@ -105,18 +72,16 @@ def fireball_value(env, x, y):
     return s.get_elixir_value_killed_by(FIREBALL, 0) - before
 
 
-# ------------------------------------------------------------- net queries --
+# --- net queries ---
 @torch.no_grad()
 def step_net(net, obs_t, hidden, card_ids):
-    """ONE LSTM step, then every query derived from it.
+    """One LSTM step, then every query derived from it.
 
-    Deliberately a single step per net per timestep. An earlier version called
-    the LSTM once per query and again to pick the reference action, which
-    advanced the reference's recurrent state twice per environment step -- so
-    the "shared" state distribution would have been generated by a policy
-    running at double clock, matching neither arm's training conditions.
+    Exactly one step per net per timestep, so the reference's recurrent state
+    advances at the environment's clock.
 
-    Returns (proposed cells per card id, top-1 probs, greedy action, new hidden).
+    Returns (proposed cells per card id, top-1 probs, greedy action, new
+    hidden).
     """
     feats, embeds, sp = net.extract_features(obs_t)
     mask = net.affordability_mask(obs_t)
@@ -142,15 +107,9 @@ def step_net(net, obs_t, hidden, card_ids):
     return cells, probs_out, greedy, (hx, cx)
 
 
-# --------------------------------------------------------------- statistics --
+# --- statistics ---
 def paired_report(name, a, b, label_a, label_b, rng):
-    """Paired bootstrap CI + exact sign test. See `eval/stats.py`.
-
-    Bootstrap rather than a t-test because these scores are heavily
-    zero-inflated (most cells catch nothing), so normality is a bad assumption.
-    The sign test is reported next to it because it makes no distributional
-    assumption at all -- if the two disagree, believe the sign test.
-    """
+    """Paired bootstrap CI + exact sign test; see eval/stats.py."""
     stats.report_paired(name, a, b, label_a, label_b, rng=rng)
 
 
@@ -188,8 +147,7 @@ def main():
         env = CE(deck, deck, 3600)
         env.set_opponent_elixir_multiplier(args.opp_elixir)
         env.reset()
-        # One hidden state per net: each must see the whole trajectory to build
-        # its own recurrent state, but the TRAJECTORY is the reference's.
+        # One hidden state per net, each built over the reference's trajectory.
         hid = {k: (torch.zeros(1, 256), torch.zeros(1, 256)) for k in nets}
         obs = env.get_observation_for_team(0)
 
@@ -200,10 +158,8 @@ def main():
             enemies = tactics.enemy_hp_map(obs).sum()
 
             props, greedy = {}, {}
-            # The deterministic advisor as an extra arm: it is the target the
-            # distillation aims at, so it is the ceiling that distillation can
-            # reach, and scoring it here rather than in a separate harness means
-            # it faces the identical states and the identical oracle.
+            # The advisor is the distillation target, so it is scored as an
+            # extra arm on the same states and oracle.
             props[("advisor", CANNON)] = tuple(
                 int(v) for v in tactics.best_building_cell(obs, legal=legal[CANNON])[:2])
             props[("advisor", FIREBALL)] = tuple(
@@ -220,7 +176,7 @@ def main():
                 greedy[k] = g
                 hid[k] = newh
 
-            # --- Cannon: only where a defence is actually called for --------
+            # Cannon: only where a defence is called for.
             if CANNON in hand and threat > 0:
                 base = cannon_baseline(env)
                 for k in arms:
@@ -230,7 +186,7 @@ def main():
                 cannon["random"].append(
                     cannon_value(env, r % BOARD_W, r // BOARD_W, base))
 
-            # --- Fireball: only where there is something to hit -------------
+            # Fireball: only where there is something to hit.
             if FIREBALL in hand and enemies > 0:
                 for k in arms:
                     c = props[(k, FIREBALL)]
@@ -238,9 +194,8 @@ def main():
                 r = int(rng.choice(legal_idx[FIREBALL]))
                 fire["random"].append(fireball_value(env, r % BOARD_W, r // BOARD_W))
 
-            # Advance with the REFERENCE policy's action, taken from the SAME
-            # forward pass above, so every net sees one shared state
-            # distribution and the reference's recurrent state advances once.
+            # Advance with the reference's action from the same forward pass
+            # above.
             gi, gx, gy = greedy["seed"]
             res = env.step(gi, gx, gy, 10)
             obs = res.observation

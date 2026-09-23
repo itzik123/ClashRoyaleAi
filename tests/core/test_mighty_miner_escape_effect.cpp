@@ -64,10 +64,8 @@ TEST_CASE("The bomb only detonates after its configured delay, not immediately",
     }
     REQUIRE(bomb != nullptr);
 
-    // AreaSpell::update()'s delay branch decrements-then-returns while
-    // delayTicks > 0, so a 10-tick delay needs 10 calls to drain it to 0
-    // and an 11th to actually detonate (same off-by-one already documented
-    // for AreaSpell's own delay tests in test_area_spell.cpp).
+    // The delay branch decrements then returns, so a 10-tick delay takes 10
+    // calls to drain and an 11th to detonate.
     for (int i = 0; i < 10; ++i) bomb->update(board);
     REQUIRE(enemy->hp == 1000); // still hasn't gone off
 

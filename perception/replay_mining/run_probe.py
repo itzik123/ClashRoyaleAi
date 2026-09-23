@@ -95,14 +95,13 @@ def main() -> int:
 
 
 def _paired_live(results, scrambled, t):
-    """Mean total |ours - recorded| for both arms, over episodes where BOTH
-    arms still had a running match at t.
+    """Mean total |ours - recorded| for both arms, over episodes where both arms
+    still had a running match at t.
 
-    Restricting to live samples is load-bearing. A dead arm scores the full
-    recorded population by construction, so once our reconstruction ends early
-    the two arms agree trivially and the C2 ratio is pinned at exactly 1.00 --
-    which reads as "the control fired and found nothing" when in fact nothing
-    was compared.
+    Restricting to live samples is load-bearing: a dead arm scores the full
+    recorded population by construction, so once a reconstruction ends early
+    both arms agree trivially and the C2 ratio pins at 1.00, reading as "the
+    control found nothing" when nothing was compared.
     """
     a, b = [], []
     for r, sc in zip(results, scrambled):

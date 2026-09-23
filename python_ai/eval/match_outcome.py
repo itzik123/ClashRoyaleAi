@@ -1,59 +1,26 @@
-"""How a finished match is scored, in one place, matching the engine exactly.
+"""How a finished match is scored, matching the engine.
 
-WHY THIS EXISTS
----------------
-`include/core/TimeoutRules.h` decides a timed-out match in three ordered steps:
+`include/core/TimeoutRules.h` decides a timed-out match in order:
 
   1. Fewer surviving towers loses.
-  2. On EQUAL counts, the side whose weakest surviving tower has lower HP loses.
-  3. Only an exact tie on both is a genuine draw.
+  2. On equal counts, the side whose weakest surviving tower has lower HP loses.
+  3. Only an exact tie on both is a draw.
 
-Its own header records why: before it existed every timed-out match scored 0.0,
-which taught the agent that running the clock out was free.
+Evaluation scripts use this rather than comparing tower counts, which calls
+every equal-count finish a draw.
 
-Four separate evaluation scripts (`net_ab.py`, `net_h2h.py`, and `net_h2h_search
-.py` twice) each hand-rolled step 1 alone and called everything else a draw:
-
-    a, b = env.get_towers_alive(0), env.get_towers_alive(1)
-    return 1.0 if a > b else (0.5 if a == b else 0.0)
-
-A match ending 3-3 on towers but 1200 HP against 90 HP on the weakest is a clear
-win by the engine's own rules, and all four reported it as a draw -- biasing the
-very head-to-head win rates those scripts exist to produce. Consolidated here so
-there is one implementation to keep correct instead of four.
-
-WHERE THE TIE-BREAK DATA COMES FROM
------------------------------------
-No new binding is needed. `ClashEnv::extractObservationForTeam` already appends
-the six tower HPs among NUM_EXTRA_SCALARS, laid out as:
+The engine's own verdict (`resolve_timeout_outcome`) is used when bound. The
+fallback mirror reads the six tower HPs from the observation's extra scalars
+(`tail = EXTRA_SCALARS_START`):
 
     tail+0        elapsed-time fraction
     tail+1, +2    both sides' cumulative elixir spend
-    tail+3..+5    the OBSERVING team's king, left, right
+    tail+3..+5    the observing team's king, left, right
     tail+6..+8    the opponent's king, left, right
 
-where `tail = ClashRoyaleEnv.EXTRA_SCALARS_START`, a FORWARD offset bound from
-the engine. It used to be computed as `observation_size() - NUM_EXTRA_SCALARS`,
-which was right only while the extra scalars were the last thing in the vector;
-item 24 appended two card-cycle blocks behind them on 2026-08-27 and that form
-began reading card-recency floats as tower HP without raising anything.
-`probe_perfect_defense.own_tower_hp_fraction` is the existing in-repo reader
-for the same slice and takes the offset the same way.
-
-Each value is `hp / MAX_BUILDING_HP`, and a destroyed tower reads exactly 0.0
-because it is no longer a live entity -- so filtering zeros reproduces
-TimeoutRules' "surviving towers only" restriction precisely.
-
-Comparing normalised floats rather than TimeoutRules' raw ints is order- and
-equality-preserving here: the divisor is the same constant for both sides, and
-one HP point is 1/4008 = 2.5e-4 apart, four orders of magnitude above float32's
-resolution (~6e-8) at these magnitudes. Two different integer HPs cannot collide.
-
-This mirrors engine LOGIC rather than an engine CONSTANT, but CLAUDE.md's rule
-is the same either way -- derive it where the bindings allow, and where they do
-not, pin it to its source by name. `perception/UPSTREAM_REQUESTS.md` carries a
-proposal to bind `TimeoutRules::resolve` directly, which would let this module
-collapse to a pass-through.
+Each is hp / MAX_BUILDING_HP and reads exactly 0.0 once destroyed, so filtering
+zeros gives "surviving towers only". Normalised floats preserve order and
+equality: one HP point (2.5e-4) is far above float32 resolution.
 """
 from __future__ import annotations
 
@@ -62,9 +29,7 @@ import sys
 
 import numpy as np
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -72,34 +37,17 @@ import python_ai  # noqa: E402,F401
 
 import clash_royale_env as _E  # noqa: E402
 
-# Prefer the engine's own verdict (UPSTREAM_REQUESTS.md item 16, signed off and
-# applied 2026-08-20): ClashEnv::resolveTimeoutOutcome calls TimeoutRules::
-# resolve directly, so there is one definition of "who won" instead of a Python
-# reimplementation that has to be kept in step by hand.
-#
-# The fallback is NOT dead code and must not be deleted. The binding lives in a
-# COMPILED .pyd, and this repo is worked on from at least one machine that
-# cannot rebuild it (no MSVC -- see CLAUDE.md's Machine A / Machine B box). A
-# checkout whose .pyd predates the binding would otherwise fail with
-# AttributeError at the worst moment: mid-evaluation, after the match is
-# already played. Feature-detect instead, and keep the mirror until every
-# environment is known to carry a fresh binary.
-#
-# When that day comes: drop _USE_BINDING, drop the fallback branch, and delete
-# the guard test tests/test_match_outcome_is_the_only_scorer.py, which exists
-# only because the mirror is hand-written.
+# Prefer the engine's verdict (ClashEnv::resolveTimeoutOutcome). The fallback
+# serves a .pyd built before the binding; once every environment has a fresh
+# build, drop it and tests/test_match_outcome_is_the_only_scorer.py.
 _USE_BINDING = hasattr(_E.ClashRoyaleEnv, "resolve_timeout_outcome")
 
 
 def score_from_towers(env, team=0):
-    """1.0 win / 0.5 draw / 0.0 loss for `team`, by TimeoutRules' rules.
+    """1.0 win / 0.5 draw / 0.0 loss for `team`, by TimeoutRules.
 
-    Safe to call on any finished match, not just a timed-out one: when a King
-    has actually fallen the tower counts already differ, so step 1 decides it
-    and the tie-break is never consulted.
-
-    Uses the ENGINE's own verdict when the binding is available, and falls back
-    to the hand-written mirror below when it is not -- see _use_binding.
+    Safe on any finished match: a fallen King already makes the tower counts
+    differ.
     """
     if _USE_BINDING:
         # loserTeam: -1 draw, 0 team 0 lost, 1 team 1 lost.
@@ -115,12 +63,9 @@ def score_from_towers(env, team=0):
     if mine != theirs:
         return 1.0 if mine > theirs else 0.0
 
-    # 2. Equal counts -> the lower weakest tower loses. Both slices come from
-    #    ONE observation (own = tail+3..5, opponent = tail+6..8), so this is a
-    #    single call, and `team`'s own perspective supplies both halves.
-    #    An empty slice mirrors TimeoutRules' numeric_limits<int>::max() sentinel
-    #    for a side with nothing standing -- unreachable from here, because a
-    #    side with zero towers cannot have tied the count against a side with any.
+    # 2. Equal counts: the lower weakest tower loses. Both halves come from
+    #    `team`'s own observation. An empty slice (nothing standing) cannot
+    #    occur here with equal counts unless both are empty.
     obs = np.asarray(env.get_observation_for_team(team), dtype=np.float32)
     tail = _E.ClashRoyaleEnv.EXTRA_SCALARS_START
     my_alive = obs[tail + 3:tail + 6]
@@ -128,21 +73,16 @@ def score_from_towers(env, team=0):
     my_weakest = my_alive[my_alive > 0.0]
     their_weakest = their_alive[their_alive > 0.0]
 
-    # Both empty means neither side has a tower standing -- an exact tie, and
-    # the count check above already proved the two sides agree.
+    # Both empty: neither side has a tower standing, an exact tie.
     if my_weakest.size and their_weakest.size:
         a, b = float(my_weakest.min()), float(their_weakest.min())
         if a != b:
             return 1.0 if a > b else 0.0
 
-    # 3. Genuine draw -- the only way to get one.
+    # 3. A genuine draw.
     return 0.5
 
 
 def terminal_value(env, team=0):
-    """The same verdict as +1 / 0 / -1, for use as a search leaf value.
-
-    Kept next to score_from_towers rather than derived ad hoc at the call site,
-    so the two scales can never drift apart in what they consider a win.
-    """
+    """The same verdict as +1 / 0 / -1, for use as a search leaf value."""
     return score_from_towers(env, team) * 2.0 - 1.0

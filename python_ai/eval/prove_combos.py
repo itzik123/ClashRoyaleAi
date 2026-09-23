@@ -1,64 +1,22 @@
-"""Does multi-card COMBO planning actually reach the board, and does it pay?
+"""Does multi-card combo planning reach the board, and does it pay?
 
     python_ai/venv/Scripts/python.exe python_ai/eval/prove_combos.py --usage
     python_ai/venv/Scripts/python.exe python_ai/eval/prove_combos.py --reserve-ab --n 40
     python_ai/venv/Scripts/python.exe python_ai/eval/prove_combos.py --vs-net --n 30
 
-THREE QUESTIONS, DELIBERATELY SEPARATE
---------------------------------------
-1. `--usage`    can the teacher EXPRESS a combo, how often does one reach the
-                board, and what does the extra width cost in latency.
-2. `--combo-ab` the SAFETY arm: combos on vs off, same teacher otherwise.
-3. `--reserve-ab` the plan reserve is a behaviour change with no prior
-                measurement, so it is swept against 0.0 before being believed.
-4. `--vs-net`   the strength benchmark, sweeping lookahead.
+  --usage          how often a combo is proposed, chosen and completed, and its latency cost
+  --combo-ab       the safety arm: combos on vs off, same teacher otherwise
+  --reserve-ab     sweep of the plan reserve against 0.0
+  --profile-sweep  one weight swept against both strength and usage
+  --vs-net         the strength benchmark, sweeping lookahead
 
-WHY USAGE IS REPORTED SEPARATELY FROM WIN RATE, AND WHY BOTH ARE NEEDED. A
-generator can propose a play the bot can never afford -- which is exactly what
-the first version of this change did, measured at P(bar >= 6) = 0.3% -- and a
-win-rate arm alone cannot tell "the combo did not help" apart from "the combo
-never happened". CLAUDE.md records the same confusion three times under a
-different name: an aggregate that cannot see the conditional.
+Usage is reported apart from win rate because a win-rate arm cannot tell "the
+combo did not help" from "the combo never happened".
 
-PAIRING, AND THE ONE THING IT DOES NOT BUY
-------------------------------------------
-Every comparison shares one `env.snapshot()` opening, so within a run both arms
-get a bit-exact hand and lane draw. Unpaired, resolving 5 win-rate points needs
-~1,568 episodes per arm; this project has the snapshot, so it pairs.
-
-SEEDING -- CORRECTED 2026-08-24, AND THE OLD WARNING IS PRESERVED BELOW
------------------------------------------------------------------------
-Every opening is now built with `env.seed(args.seed + ENGINE_SEED_OFFSET + i)`
-rather than `env.reset()`. `ClashEnv::seed` seeds both engine generators and
-ends in `reset()`, so this is a drop-in that also fixes the opening hand and the
-cycle order. Two invocations at the same `--seed` should therefore draw the SAME
-match population.
-
-**This has NOT been verified by a run** -- see the acceptance test in
-`perception/UPSTREAM_REQUESTS.md` item 23. Until someone executes it, treat the
-paragraph below as still in force.
-
-**THE OLD WARNING, kept because it is what the change has to be checked
-against.** `--seed` did NOT make a run reproducible, and expecting it to cost
-this harness a control: `ClashEnv::reset()`'s opening-hand shuffle was unseeded
-(`UPSTREAM_REQUESTS.md` item 7, applied 2026-08-21 but never wired in here), and
-`--seed` reached only the teachers' own RNG, which at stage 5 is just the lane
-bias. So two invocations drew entirely different match populations whatever seed
-was passed.
-
-Measured: an ablation run designed to share seed 300 with an earlier run, and to
-be validated by its OFF arm reproducing that run's 0.537, instead reported
-0.475. Nothing was wrong with either run -- the expectation was wrong.
-
-**That run is now the acceptance test.** If two `--seed 300` invocations still
-disagree on the OFF arm LEVEL, this fix did not work and the rule below is still
-the operative one: across runs, compare DELTAS only, never arm levels.
-
-THE CHECKPOINT. The session brief asks for "ep 25202". That checkpoint no
-longer exists -- the 2026-08-19 cleanup kept only `model_weights.pth` (ep 7,063,
-phase 1) and `model_weights_selfplay.pth` (ep 31,312), and CLAUDE.md says so
-plainly. `model_weights_selfplay.pth` is the surviving descendant of that same
-2.6 Hog Cycle run, ~6k episodes further on, and is the default here.
+Every opening is `env.seed(args.seed + ENGINE_SEED_OFFSET + i)` and both arms
+share its snapshot, so comparisons are paired. The same `--seed` should draw
+the same match population across invocations; until that is confirmed by a run
+(UPSTREAM_REQUESTS.md item 23), compare deltas across runs, never arm levels.
 """
 import argparse
 import os
@@ -68,9 +26,7 @@ from collections import Counter
 
 import numpy as np
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -88,22 +44,13 @@ CE = E.ClashRoyaleEnv
 HAND_SIZE = CE.HAND_SIZE
 MAX_STEPS = 400
 
-#: Offset separating the ENGINE's seed stream from the teachers'. The teachers
-#: already draw from `args.seed + i`; reusing that for the engine would move a
-#: teacher's lane bias and the hand it was dealt TOGETHER across openings. This
-#: is the same correlation `ClashEnv::seed` avoids internally with its
-#: `^ 0x9E3779B9` between the two engine generators, for the same reason.
-#: Any fixed value works -- it must only be stable, so a `--seed` reproduces.
+#: Separates the engine's seed stream from the teachers' (`args.seed + i`), so
+#: a teacher's lane bias and its dealt hand do not move together. Any stable
+#: value works.
 ENGINE_SEED_OFFSET = 104729
 
-#: The families `teacher._legal_combos` can emit. Named here so a run that
-#: emits a kind nobody expected shows up as a new column rather than silently
-#: joining "other".
-#: `UtilityTeacher.play_margin`'s shipped value, so a sweep over it can pair
-#: against the current behaviour the same way a weight sweep pairs against
-#: PROFILES. READ FROM THE TEACHER, never restated -- a second copy went stale
-#: the moment the default moved 0.05 -> 3.0, and the sweep then labelled its
-#: rows against a baseline that was no longer the baseline.
+#: The teacher's shipped play_margin, read rather than restated, so a sweep
+#: pairs against current behaviour.
 DEFAULT_PLAY_MARGIN = UtilityTeacher(DEFAULT_DECK, team=0).play_margin
 
 COMBO_KINDS = ("supported_push", "counter_push", "defensive_stack",
@@ -111,8 +58,6 @@ COMBO_KINDS = ("supported_push", "counter_push", "defensive_stack",
 
 
 def _score(env):
-    # Tower count alone calls every equal-count finish a draw and ignores
-    # TimeoutRules' weakest-tower tie-break. See eval/match_outcome.py.
     return score_from_towers(env, 0)
 
 
@@ -133,12 +78,10 @@ def make_teacher(team, stage, seed, reserve=None, horizon=None, combos=None,
 
 
 class Telemetry:
-    """Everything a combo run has to report, accumulated across matches.
+    """Everything a combo run reports, accumulated across matches.
 
-    `completed` is the number that matters and the only one that cannot be
-    faked: a pair is counted only when the SECOND card is the action actually
-    taken on the following decision, i.e. the plan survived re-scoring. A combo
-    that is proposed, chosen, and then abandoned is a combo that did nothing.
+    `completed` counts a pair only when the second card is the action actually
+    taken on the following decision, i.e. the plan survived re-scoring.
     """
 
     def __init__(self):
@@ -155,10 +98,9 @@ class Telemetry:
         n = max(1, self.decisions)
         combos = sum(self.chosen[k] for k in COMBO_KINDS)
         done = sum(self.completed.values())
-        # % of PLAYS, not of decisions. A bot that holds more has fewer
-        # decisions that do anything, so a per-decision rate rises for free
-        # when spending falls -- which would grade an economy change on the
-        # very thing it changes.
+        # Percent of plays, not decisions: a bot that holds more has fewer
+        # active decisions, so a per-decision rate rises for free when spending
+        # falls.
         plays = max(1, self.plays)
         return (f"  {label:<26} dec {self.decisions:>5}  "
                 f"elixir {e.mean():.2f}/p90 {np.percentile(e, 90):.2f}  "
@@ -171,14 +113,12 @@ class Telemetry:
 
 def play_match(env, t0, t1, tele=None, net=None, net_team=None):
     """One match. Team 0 is `t0` unless `net_team == 0`, in which case the net
-    plays that side and `t0` is ignored. Returns team 0's score.
+    plays that side. Returns team 0's score.
 
-    TELEMETRY READS THE TEACHER'S OWN LABEL, `last_kind`, rather than
-    re-deriving anything from the returned `(slot, x, y)`. Two reasons, both
-    learned by getting it wrong first: a combo's first step is indistinguishable
-    from the same card played alone once it is reduced to coordinates, and a
-    plan with a five-second gap stays pending for five decisions, so counting
-    "a plan exists" per decision inflates `chosen` fivefold.
+    Telemetry reads the teacher's own `last_kind` label: reduced to
+    coordinates, a combo's first step looks like a lone play, and a pending
+    plan spans several decisions, so counting "a plan exists" per decision
+    would inflate `chosen`.
     """
     import torch
     hid = None
@@ -221,9 +161,7 @@ def play_match(env, t0, t1, tele=None, net=None, net_team=None):
     return _score(env)
 
 
-# --------------------------------------------------------------------------
-# 1. usage
-# --------------------------------------------------------------------------
+# --- 1. usage ---
 def run_usage(args):
     print("\nCOMBO USAGE -- teacher vs teacher, both sides identical\n")
     stages = ([args.stage] if args.stage is not None
@@ -232,8 +170,8 @@ def run_usage(args):
         tele = Telemetry()
         for i in range(args.n):
             env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-            # seed() == a seeded reset(): it seeds both engine generators
-            # and re-deals. See ENGINE_SEED_OFFSET above.
+            # seed() is a seeded reset(): it seeds both engine generators and
+            # re-deals.
             env.seed(args.seed + ENGINE_SEED_OFFSET + i)
             play_match(env,
                        make_teacher(0, stage, args.seed + i, args.reserve),
@@ -247,16 +185,11 @@ def run_usage(args):
         print(f"       proposed/chosen/completed by kind: {by_kind}")
 
 
-# --------------------------------------------------------------------------
-# 2. the reserve
-# --------------------------------------------------------------------------
+# --- 2. the reserve ---
 def run_reserve_ab(args):
     """Sweep `teacher.COMBO_RESERVE`, the charge protecting a committed plan.
 
-    Vary ONLY team 0's reserve; team 1 is held at 0.0 in both arms, and the
-    sides are swapped. A policy once beat a bit-exact copy of itself 0.598
-    purely by side assignment, so a one-sided duel would fold that straight
-    into the result.
+    Only team 0's reserve varies (team 1 stays at 0.0), and sides are swapped.
     """
     values = [float(v) for v in args.reserve_grid.split(",")]
     print(f"\nCOMBO RESERVE A/B -- stage {args.stage or 5}, "
@@ -266,8 +199,7 @@ def run_reserve_ab(args):
     teles = {v: Telemetry() for v in values}
     for i in range(args.n):
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        # seed() == a seeded reset(): it seeds both engine generators
-        # and re-deals. See ENGINE_SEED_OFFSET above.
+        # seed() is a seeded reset().
         root.seed(args.seed + ENGINE_SEED_OFFSET + i)
         base = root.snapshot()
         for v in values:
@@ -291,18 +223,13 @@ def run_reserve_ab(args):
 
 
 def run_combo_ab(args):
-    """THE SAFETY MEASUREMENT: combos ON vs OFF, same teacher otherwise.
+    """The safety measurement: combos on vs off, same teacher otherwise.
 
-    This is the one that could come back negative and still matter. Combo
-    candidates spend rollouts that would otherwise have gone to single cards,
-    and a plan holds a hand slot and some elixir for up to five decisions --
-    both are real costs, paid on every decision, against a benefit that lands
-    on a fraction of a percent of them. If the pair is a net loss the honest
-    move is to say so, not to keep the feature because it was the assignment.
+    Combo candidates spend rollouts that would have gone to single cards, and a
+    plan holds a slot and elixir for several decisions; those costs are paid
+    every decision. If the pair is a net loss, report it.
 
-    Only team 0's combo width varies; team 1 is held at the stage default in
-    both arms, and the sides are swapped, because a policy once beat a
-    bit-exact copy of itself 0.598 purely by side assignment.
+    Only team 0's combo width varies; sides are swapped.
     """
     stage = args.stage if args.stage is not None else 5
     off, on = [], []
@@ -313,8 +240,7 @@ def run_combo_ab(args):
           f"openings, sides swapped\n")
     for i in range(args.n):
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        # seed() == a seeded reset(): it seeds both engine generators
-        # and re-deals. See ENGINE_SEED_OFFSET above.
+        # seed() is a seeded reset().
         root.seed(args.seed + ENGINE_SEED_OFFSET + i)
         base = root.snapshot()
         for combos, bucket, tele in ((0, off, tele_off), (None, on, tele_on)):
@@ -336,15 +262,13 @@ def run_combo_ab(args):
     print(stats.paired(off, on).format("combos off -> on", "off", "on"))
 
 
-# --------------------------------------------------------------------------
-# 2b. the profile sweep -- what unlocks combos
-# --------------------------------------------------------------------------
+# --- 2b. the profile sweep ---
 def teacher_vs_heuristic(env, teacher, tele=None):
-    """Teacher on team 0 through `env.step()`, so ClashEnv::opponentTurn runs
-    the C++ HeuristicOpponent for team 1. Returns the teacher's score.
+    """Teacher on team 0 through `env.step()`, so the C++ HeuristicOpponent plays
+    team 1. Returns the teacher's score.
 
-    Deliberately the same routing `prove_teacher.teacher_vs_heuristic` uses, so
-    a number here is comparable with the strength bar recorded there.
+    Same routing as `prove_teacher.teacher_vs_heuristic`, so the numbers are
+    comparable.
     """
     for _ in range(MAX_STEPS):
         obs = np.asarray(env.get_observation_for_team(0), np.float32)
@@ -369,28 +293,13 @@ def teacher_vs_heuristic(env, teacher, tele=None):
 
 
 def run_profile_sweep(args):
-    """Sweep one weight against BOTH bars the profile has to clear at once.
+    """Sweep one weight against both bars a profile must clear at once.
 
-    WHY THIS IS VALID WITHOUT A SEEDABLE ENGINE. Every arm plays the SAME
-    openings, because the root envs are built once and each arm gets a
-    `snapshot()` of them -- so the comparison is paired within this one process,
-    which is exactly the guarantee `env.snapshot()` was added for. What is NOT
-    available is comparing these numbers against a different invocation's; see
-    this module's docstring and UPSTREAM_REQUESTS item 7.
+    Every arm plays snapshots of the same root openings, so the comparison is
+    paired within this process.
 
-    TWO BARS, because moving a weight to unlock combos is trivial if the bot is
-    allowed to get worse:
-
-      STRENGTH   two of them, because the heuristic bar SATURATES. Stage 5
-                 scores 1.000 against the C++ HeuristicOpponent, so that arm can
-                 only ever say "still not broken" -- it cannot rank two profiles
-                 that both clear it. The discriminating arm is the swept profile
-                 played HEAD TO HEAD against the shipped one, sides swapped, on
-                 the same openings: 0.500 means no strength was traded away.
-      USAGE      combos as a share of PLAYS -- not of decisions. A bot that
-                 holds more has fewer decisions that do anything, so per-decision
-                 usage rises for free when spending falls, which would make this
-                 sweep grade itself on the very thing it is changing.
+      STRENGTH   against the C++ heuristic, which saturates (it can only say "not broken"), and head to head against the shipped profile with sides swapped, where 0.500 means no strength was traded away
+      USAGE      combos as a share of plays, not decisions
     """
     weight = args.sweep_weight
     values = [float(v) for v in args.sweep_grid.split(",")]
@@ -406,17 +315,14 @@ def run_profile_sweep(args):
     roots = []
     for i in range(args.n):
         env = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-        # seed() == a seeded reset(): it seeds both engine generators
-        # and re-deals. See ENGINE_SEED_OFFSET above.
+        # seed() is a seeded reset().
         env.seed(args.seed + ENGINE_SEED_OFFSET + i)
         roots.append(env.snapshot())
 
     results = {}
     for v in values:
-        # `play_margin` is a teacher attribute rather than a profile weight,
-        # and it is the better-targeted lever of the two -- see the sweep's
-        # own write-up. Handled here rather than by pretending it is a weight,
-        # because putting it in PROFILES would make it look like one.
+        # play_margin is a teacher attribute, not a profile weight, so it is
+        # handled separately rather than added to PROFILES.
         weights = dict(base)
         if weight != "play_margin":
             weights[weight] = v
@@ -436,11 +342,8 @@ def run_profile_sweep(args):
             env = root.snapshot()
             scores.append(teacher_vs_heuristic(
                 env, _make(0, weights, margin), tele))
-            # Head to head against the SHIPPED profile, sides swapped -- the
-            # arm that can actually rank two profiles that both beat the
-            # heuristic. A policy once beat a bit-exact copy of itself 0.598
-            # purely by side assignment, so a one-sided duel would fold that
-            # straight into the result.
+            # Head to head against the shipped profile, sides swapped: the arm
+            # that can rank two profiles that both beat the heuristic.
             side = []
             for me in (0, 1):
                 duel = root.snapshot()
@@ -459,13 +362,9 @@ def run_profile_sweep(args):
                           combos=combos, plays=plays, scores=scores,
                           h2h=h2h, h2h_mean=hm, h2h_lo=hlo, h2h_hi=hhi,
                           elixir=float(e.mean()), p90=float(np.percentile(e, 90)))
-        # Share of decisions spent at or above the overflow line. Raising
-        # `play_margin` buys elixir by not spending it, and past some point
-        # that stops being thrift and starts being wasted income -- the bar
-        # caps at 10.0, so regeneration above ~9 is thrown away. A win-rate arm
-        # at this n would not necessarily show that cost, so it is reported
-        # directly. 9.0 is the same threshold `score`'s overflow relief and
-        # W_ELIXIR_OVERFLOW both use.
+        # Share of decisions at or above the overflow line: past some point,
+        # holding elixir wastes income. 9.0 matches `score`'s overflow relief
+        # and W_ELIXIR_OVERFLOW.
         waste = float((e >= 9.0).mean())
         results[v]["overflow"] = waste
         print(f"  {weight}={v:<6g} vsHeur {m:.3f}  vsBase {hm:.3f} "
@@ -487,9 +386,7 @@ def run_profile_sweep(args):
     return results
 
 
-# --------------------------------------------------------------------------
-# 3. the strength benchmark
-# --------------------------------------------------------------------------
+# --- 3. the strength benchmark ---
 def run_vs_net(args):
     import torch
     from python_ai.models.policy_io import load_net
@@ -509,8 +406,7 @@ def run_vs_net(args):
         scores = []
         for i in range(args.n):
             root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
-            # seed() == a seeded reset(): it seeds both engine generators
-            # and re-deals. See ENGINE_SEED_OFFSET above.
+            # seed() is a seeded reset().
             root.seed(args.seed + ENGINE_SEED_OFFSET + i)
             base = root.snapshot()
             side = []

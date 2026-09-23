@@ -1,11 +1,9 @@
 """Shared pytest setup.
 
-Puts perception/ on sys.path so modules import by their plain names
-(`from contracts import ...`) both in tests and in normal use, without the
-package needing to be installed.
-
-Nothing here reaches outside perception/ except to READ python_ai/ for the
-simulator binding and its replays. Nothing in this package ever writes there.
+Puts perception/ on sys.path so modules import by plain names (`from contracts
+import ...`) in tests and in normal use, without installing the package.
+Reaches outside perception/ only to read python_ai/ for the simulator binding
+and replays; never writes there.
 """
 
 from __future__ import annotations
@@ -24,8 +22,8 @@ ASSETS = PERCEPTION_ROOT / "tests" / "assets"
 
 def _engine_or_none():
     sys.path.insert(0, str(PERCEPTION_ROOT.parent / "python_ai"))
-    # The repo root too: python_ai is a PACKAGE now, and the tests that
-    # compare against its observation encoder import it by that path.
+    # The repo root too: python_ai is a package, and tests comparing against
+    # its observation encoder import it by that path.
     sys.path.insert(0, str(PERCEPTION_ROOT.parent))
     try:
         import clash_royale_env
@@ -36,12 +34,10 @@ def _engine_or_none():
 
 @pytest.fixture(scope="session")
 def engine():
-    """The compiled simulator, or skip.
-
-    Skipped rather than failed when absent: the .pyd is a build artefact of a
-    separate toolchain, and the calibration/reader half of this package is
-    fully testable without it. A hard failure here would make an unrelated
-    build problem look like a perception regression.
+    """The compiled simulator, or skip. The .pyd is a separate toolchain's
+    artifact and the calibration/reader half of this package is testable
+    without it; failing would make a build problem look like a perception
+    regression.
     """
     module = _engine_or_none()
     if module is None:
@@ -51,17 +47,12 @@ def engine():
 
 @pytest.fixture(scope="session")
 def replay_path():
-    """A frozen replay fixture, or skip.
-
-    Frozen copies, not python_ai/replays/ -- that directory is rewritten
-    continuously by the training run and was observed dropping from eight
-    files to one mid-session, which would make these tests pass or fail
-    depending on timing.
+    """A frozen replay fixture, or skip. Frozen copies, since the training run
+    rewrites and prunes python_ai/replays/ continuously.
     """
     # `replay_*.json`, not `*.json`: this directory also holds ground-truth
-    # label sets, and a labels file sorting ahead of the replay silently
-    # became paths[0] and failed three tests inside Replay.__init__ with
-    # "list indices must be integers", which reads like a corrupt replay.
+    # label sets, and a labels file sorting first would be loaded as the
+    # replay.
     paths = sorted(ASSETS.glob("replay_*.json"))
     if not paths:
         pytest.skip(f"no replay fixture in {ASSETS}")

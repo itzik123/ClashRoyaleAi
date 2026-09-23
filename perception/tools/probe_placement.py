@@ -1,31 +1,20 @@
-"""Place one card at a named ENGINE tile and report where it actually landed.
+"""Place one card at a named engine tile and report where it actually landed.
 
     perception/.venv-dml/Scripts/python.exe perception/tools/probe_placement.py \
         --slot 0 --x 4 --y 8
 
-WHY A PROBE RATHER THAN WATCHING THE LOOP
------------------------------------------
-`mvp_loop --act` produces a match's worth of placements chosen by a policy,
-under time pressure, with the board changing underneath. That is the worst
-possible instrument for measuring a coordinate convention. This places ONE
-named card at ONE named tile with the board otherwise quiet, which is what
-makes the answer attributable.
+`mvp_loop --act` places many cards under time pressure with the board changing,
+the worst instrument for a coordinate convention. This places one named card at
+one named tile on a quiet board, through the real `AdbActuator`, since
+`engine_tile_centre` is what is under test.
 
-It drives the real `AdbActuator`, deliberately. The thing under test is
-`engine_tile_centre`, so recomputing the tap here would test nothing.
-
-WHAT IT CAN AND CANNOT SETTLE
------------------------------
-The round trip is self-consistent BY CONSTRUCTION: the actuator subtracts
-TILE_Y_OFFSET and the adapter adds it back, so a matching y does NOT confirm
-the offset convention is right. What it does catch is everything else -- a
-wrong x, a scaling error, a tap landing on a different tile, the card not
-being placed at all, or the WRONG CARD being played, which is how the hand
-slot off-by-one was found.
-
-Judging the offset itself needs a landmark, so both frames are kept as PNGs.
-Place at y=16 (the row just below the river, which sits at [15.5, 17.5)) and
-look at whether the unit stands at the water's edge or one row back.
+The round trip is self-consistent by construction (the actuator subtracts
+TILE_Y_OFFSET and the adapter adds it back), so a matching y does not confirm
+the offset. It catches everything else: a wrong x, a scaling error, a tap on a
+different tile, no placement at all, or the wrong card played. Judging the
+offset needs a landmark, so both frames are kept as PNGs: place at y=16, just
+below the river ([15.5, 17.5)), and see whether the unit stands at the water's
+edge or one row back.
 """
 from __future__ import annotations
 
@@ -58,22 +47,16 @@ from live.adapter import TILE_Y_OFFSET  # noqa: E402
 DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
 
-# How long to wait for the placed unit to exist and be detectable. A card is
-# visible almost immediately but the deploy animation is not what the detector
-# was trained on.
-#
-# THIS IS A CONFOUND FOR TROOPS, and it is not small: a Mini P.E.K.K.A placed at
-# engine y=4 read back at y=5 after 1.2 s, which is exactly the distance it
-# walks in that time. Measuring a coordinate convention with a unit that moves
-# means measuring the settle time as well. Probe with the CANNON -- a building
-# does not move, so its reading is the placement and nothing else.
+# How long to wait for the placed unit to exist and be detectable. A troop
+# walks during the wait (a Mini P.E.K.K.A placed at y=4 read back at y=5 after
+# 1.2 s), so probe with a building such as the Cannon, which does not move.
 SETTLE_S = 1.2
 
 
 def screencap(adb: Path, path: Path) -> Image.Image:
-    # Strip the adb daemon-start banner before writing OR decoding -- see
-    # match_nav.decode_screencap. This function saves the bytes and then reads
-    # the image back off disk, so an unstripped write corrupts both.
+    # Strip the adb banner before writing or decoding
+    # (match_nav.decode_screencap): the bytes are saved and read back, so an
+    # unstripped write corrupts both.
     from match_nav import _PNG_MAGIC, decode_screencap  # noqa: PLC0415
 
     p = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
@@ -84,7 +67,7 @@ def screencap(adb: Path, path: Path) -> Image.Image:
 
 
 def hand_of(state) -> list[str]:
-    """Hand slots 0-3. `cards[0]` is the Next preview -- see adapter._hand_ids."""
+    """Hand slots 0-3. `cards[0]` is the Next preview (adapter._hand_ids)."""
     return [c.name for c in state.cards[1:5]]
 
 
@@ -140,8 +123,8 @@ def main() -> int:
           f"({args.x},{args.y})")
     print(f"  -> detector tile ({args.x},{args.y - TILE_Y_OFFSET})")
     card_tap, tile_tap = actuator.play(args.slot, args.x, args.y)
-    # play() is non-blocking now, so without this the frame below would be
-    # photographed before the card had landed.
+    # play() is non-blocking, so without this the frame below would be taken
+    # before the card lands.
     actuator.flush()
     print(f"  taps: card={card_tap} tile={tile_tap}")
 
@@ -152,9 +135,8 @@ def main() -> int:
     print("\nAFTER")
     describe(after, "state")
 
-    # By NAME COUNT, not by (name, tile): every unit on the board moves between
-    # the two frames, so matching on position reports movers as new. An earlier
-    # version did exactly that and named a Musketeer that had merely walked.
+    # By name count, not (name, tile): every unit moves between the two frames,
+    # so position matching reports movers as new.
     gained = Counter(u.unit.name for u in after.allies)
     gained.subtract(Counter(u.unit.name for u in before.allies))
     appeared = [name for name, n in gained.items() if n > 0]

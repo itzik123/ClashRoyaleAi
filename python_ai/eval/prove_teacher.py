@@ -1,45 +1,23 @@
-"""Is the utility teacher a better Phase-1 opponent than the C++ heuristic?
+"""Is the utility teacher a better phase-1 opponent than the C++ heuristic?
 
-    python_ai/venv/Scripts/python.exe python_ai/prove_teacher.py --n 60
-    python_ai/venv/Scripts/python.exe python_ai/prove_teacher.py --sweep --n 40
-    python_ai/venv/Scripts/python.exe python_ai/prove_teacher.py --vs shipping --n 60
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_teacher.py --n 60
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_teacher.py --sweep --n 40
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_teacher.py --vs shipping --n 60
 
-TWO BARS, AND BOTH MUST BE CLEARED
-----------------------------------
-1. STRONG ENOUGH -- the teacher beats the C++ `HeuristicOpponent` decisively at
-   1.0x. If it does not, it is not an upgrade on what Phase 1 already had, and
-   the whole pivot is a lateral move.
+Two bars, both required:
 
-2. NOT A WALL -- a trained policy can still take games off it. An opponent
-   nothing can beat produces a FLAT reward signal, which is the zero-gradient
-   failure this pivot is supposed to fix, wearing a different costume. At 1.0x
-   the C++ heuristic fails bar 1 (the ep-64k and ep-25202 nets both beat it
-   ~100%); a wall would fail bar 2. The teacher has to sit between.
+1. Strong enough: the teacher beats the C++ HeuristicOpponent decisively at
+   1.0x, or it is no upgrade.
+2. Not a wall: a trained policy can still take games off it. An unbeatable
+   opponent gives a flat reward signal.
 
-WHY BAR 2 IS PROBED WITH THE GREEDY NET BY DEFAULT
----------------------------------------------------
-`search.search.search_action` rolls candidates forward with `sim.step()`,
-which runs the C++ heuristic INSIDE the rollout. Against a teacher opponent
-that is the wrong opponent model, so reusing it here would measure a search
-handicapped by a mismatch rather than the teacher's beatability.
+Bar 2 defaults to the greedy net, the stricter test. `--search` uses a local
+rollout on `step_self_play` with team 1 no-oping, because
+`search.search_action` rolls forward with `sim.step()`, which runs the C++
+heuristic: the wrong opponent model here.
 
-`--search` therefore uses a local rollout built on `step_self_play` with team 1
-no-oping -- the same both-sides-no-op assumption `teacher.rollout_stats` makes,
-so the two sides of the comparison at least share it. The DEFAULT is greedy,
-which is the stricter bar: if a greedy policy can already take games, the
-teacher is certainly not a wall.
-
-PAIRING
--------
-Every comparison is paired through `env.snapshot()`: one `reset()`, then a
-bit-exact opening handed to both arms, so the shuffled hand and the heuristic's
-lane draw are identical. `UPSTREAM_REQUESTS.md` item 7 asks for `ClashEnv::seed()`
-for exactly this and snapshot already supplies it -- unpaired, resolving 5
-win-rate points needs ~1,568 episodes per arm.
-
-Outcome convention matches `net_h2h.py`: surviving tower count, win/draw/loss
-1.0/0.5/0.0. That ignores TimeoutRules' HP tiebreak, deliberately, so every
-number in this file is comparable to every other harness in the project.
+Every comparison is paired through `env.snapshot()`. Outcomes are scored by
+match_outcome (TimeoutRules).
 """
 import argparse
 import os
@@ -47,9 +25,7 @@ import sys
 
 import numpy as np
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -66,8 +42,6 @@ MAX_STEPS = 400
 
 
 def _score(env):
-    # Tower count alone calls every equal-count finish a draw and ignores
-    # TimeoutRules' weakest-tower tie-break. See eval/match_outcome.py.
     return score_from_towers(env, 0)
 
 
@@ -77,12 +51,11 @@ def make_teacher(team, stage, profile=None, seed=None):
     return t
 
 
-# --------------------------------------------------------------------------
-# bar 1: teacher vs the C++ HeuristicOpponent
-# --------------------------------------------------------------------------
+# --- bar 1: teacher vs the C++ HeuristicOpponent ---
 def teacher_vs_heuristic(env, teacher):
-    """Teacher on team 0 through `env.step()`, so ClashEnv::opponentTurn runs
-    the C++ heuristic for team 1. Returns the teacher's score."""
+    """Teacher on team 0 through `env.step()`, so the C++ heuristic plays team 1.
+    Returns the teacher's score.
+    """
     teacher.reset()
     for _ in range(MAX_STEPS):
         obs = np.asarray(env.get_observation_for_team(0), np.float32)
@@ -92,9 +65,7 @@ def teacher_vs_heuristic(env, teacher):
     return _score(env)
 
 
-# --------------------------------------------------------------------------
-# bar 2: a net against the teacher
-# --------------------------------------------------------------------------
+# --- bar 2: a net against the teacher ---
 def _net_greedy(net, env, team, hid):
     import torch
     obs = torch.tensor(np.asarray(env.get_observation_for_team(team),
@@ -113,9 +84,8 @@ def _net_search(net, env, team, hid, horizon, k_cards, k_cells,
     """Greedy plus top-k alternatives, rolled forward with `step_self_play` and
     team 1 no-oping, scored by the net's own critic.
 
-    Local rather than reused from `search_ab_test` because that module's rollout
-    calls `sim.step()`, which runs the C++ heuristic for team 1 -- the wrong
-    opponent when the real opponent is the teacher.
+    Local because search_ab_test's rollout calls `sim.step()`, which runs the
+    C++ heuristic for team 1.
     """
     import torch
     obs = torch.tensor(np.asarray(env.get_observation_for_team(team),
@@ -183,9 +153,9 @@ def _net_search(net, env, team, hid, horizon, k_cards, k_cells,
 
 
 def net_vs_teacher(net, env, net_team, teacher, use_search, cfg):
-    """Returns the NET's score. `net_team` is 0 or 1; the teacher takes the
-    other side. Sides are swapped by the caller because a policy once beat a
-    bit-exact copy of itself 0.598 purely by side assignment."""
+    """The net's score. `net_team` is 0 or 1; the teacher takes the other side.
+    The caller swaps sides.
+    """
     import torch
     teacher.reset()
     hid = (torch.zeros(1, 256), torch.zeros(1, 256))
@@ -210,9 +180,7 @@ def net_vs_teacher(net, env, net_team, teacher, use_search, cfg):
     return s if net_team == 0 else 1.0 - s
 
 
-# --------------------------------------------------------------------------
-# reporting
-# --------------------------------------------------------------------------
+# --- reporting ---
 def report(label, scores, bar=None):
     s = np.asarray(scores, dtype=np.float64)
     rng = np.random.default_rng(0)

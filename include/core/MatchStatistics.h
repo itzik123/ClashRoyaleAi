@@ -5,16 +5,11 @@
 #include <sstream>
 #include <string>
 
-// The "convenient to process" query facade: owns the five built-in
-// collectors, subscribes them to a Board's StatsEventBus once, and exposes
-// a clean read-only API plus a JSON export instead of making every consumer
-// hand-roll tick diffing the way python_ai/train.py currently does.
+// Query facade over the built-in collectors: subscribes them to a Board's
+// StatsEventBus and exposes a read-only API plus a JSON export.
 //
-// damageDealtByCard/killsByCard/elixirSpentByCard are keyed by the
-// ATTACKER's/PLAYER's card, not the victim's -- "how much damage did Knight
-// deal", not "how much damage did Knight take". A victim-keyed view
-// (deathsByCard, damageTakenByCard) is a plausible later addition once
-// there's a concrete need for it; not part of this pass.
+// The by-card maps are keyed by the attacker's or player's card ("damage Knight
+// dealt"), not the victim's.
 class MatchStatistics {
     std::shared_ptr<DamageStatsCollector> damage;
     std::shared_ptr<DamageByTargetTypeCollector> damageByTargetType;
@@ -34,16 +29,12 @@ class MatchStatistics {
     }
 
 public:
-    // Unattached: no collectors, every query safely reports zero/empty.
-    // Safe to hold before the first attach() (e.g. as a GameManager member
-    // constructed before reset() runs) and between attach() calls.
+    // Unattached: every query reports zero or empty.
     MatchStatistics() = default;
 
-    // (Re)constructs fresh collectors and subscribes them to board's event
-    // bus. Called once per match -- GameManager::reset() calls this as the
-    // first line right after `board = Board();`, since that reassignment
-    // destroys the old Board's (and its statsEvents subscriber list's)
-    // lifetime entirely.
+    // Fresh collectors subscribed to `board`, once per match.
+    // GameManager::reset calls this right after `board = Board();`, which drops
+    // the old subscriber list.
     void attach(Board& board) {
         damage = std::make_shared<DamageStatsCollector>();
         damageByTargetType = std::make_shared<DamageByTargetTypeCollector>();
@@ -57,23 +48,14 @@ public:
         subscribeAll(board);
     }
 
-    // Independent copy of every collector, subscribed to `board` -- the stats
+    // An independent copy of every collector, subscribed to `board`: the stats
     // half of GameManager::snapshot(), paired with Board::deepCopy().
     //
-    // Note what this is NOT: calling attach() on the copied board would have
-    // been one line, and WRONG. attach() builds FRESH ZEROED collectors, so a
-    // snapshot would report a match in which nobody had dealt any damage yet.
-    // train.py's tower-damage term is potential-based -- Phi(s) is a function
-    // of CUMULATIVE damage -- so a search scoring candidates by Phi on a
-    // zeroed snapshot would read every rollout as an enormous instant loss of
-    // accumulated progress, identically for every candidate. It would look
-    // like a working search that simply never preferred anything.
-    //
-    // Copying the shared_ptrs instead (the implicit copy) is the opposite
-    // failure and the one Board::deepCopy already documents: the collectors
-    // are stateful, so a rollout's hits would land in the LIVE match's totals.
-    // Only a genuine per-collector deep copy is correct, and each is plain
-    // data (ints and unordered_maps), so the implicit copy constructor does it.
+    // Not attach(): fresh zeroed collectors would make a snapshot report a
+    // match where nobody has dealt damage, and the potential-based reward would
+    // read every rollout as the same huge loss. Not shared pointers either: a
+    // rollout's hits would land in the live totals. The collectors are plain
+    // data, so the implicit copy is a deep copy.
     MatchStatistics snapshotFor(Board& board) const {
         MatchStatistics copy;
         copy.damage = damage ? std::make_shared<DamageStatsCollector>(*damage) : nullptr;
@@ -94,20 +76,18 @@ public:
     int totalDamageDealt(int team) const { return damage ? damage->total(team) : 0; }
     int damageDealtByCard(int cardId, int team) const { return damage ? damage->byCard(cardId, team) : 0; }
 
-    // Cross-team damage dealt BY `team`, split by whether the target was a
-    // troop or a building -- see DamageByTargetTypeCollector. This is the
-    // breakdown python_ai/train.py's reward shaping actually consumes.
+    // Cross-team damage dealt BY `team`, split by target type
+    // (DamageByTargetTypeCollector); the reward shaping reads these.
     int troopDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->troopDamageDealt(team) : 0; }
     int buildingDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->buildingDamageDealt(team) : 0; }
-    // Towers only -- buildingDamageDealt() minus this is damage to DEPLOYED
-    // buildings (Cannon, Tesla, ...). The shaping potential must use this one:
-    // see DamageByTargetTypeCollector's comment for why lumping them together
-    // taught the agent to hide its Cannon behind its own King.
+    // Towers only; buildingDamageDealt() minus this is damage to deployed
+    // buildings. The shaping potential must use this one (see
+    // DamageByTargetTypeCollector).
     int towerDamageDealt(int team) const { return damageByTargetType ? damageByTargetType->towerDamageDealt(team) : 0; }
 
     int kills(int team) const { return kill ? kill->kills(team) : 0; }
-    // Elixir value of everything `cardId` has killed for `team` -- see
-    // ElixirValueKilledCollector for why this is priced in cost, not HP.
+    // Elixir value of everything `cardId` killed for `team`
+    // (ElixirValueKilledCollector).
     float elixirValueKilledBy(int cardId, int team) const {
         return elixirValueKilled ? elixirValueKilled->byCard(cardId, team) : 0.0f;
     }
@@ -127,12 +107,7 @@ public:
     int loserTeam() const { return outcome ? outcome->loserTeam() : -1; }
     int matchDurationTicks() const { return outcome ? outcome->matchDurationTicks() : 0; }
 
-    // Hand-rolled, matching GameLogger::save()'s existing inline
-    // std::ofstream/std::ostringstream style rather than extracting a
-    // shared JSON-writer utility -- the shape here (ints, floats, a nested
-    // card-play array) isn't known precisely enough yet to generalize well;
-    // revisit extraction once GameLogger and this end up needing genuinely
-    // the same shapes.
+    // Hand-rolled JSON, in GameLogger::save's style.
     std::string toJson() const {
         std::ostringstream out;
         out << "{";
@@ -173,16 +148,9 @@ public:
     }
 
 private:
-    // The subscribe list in ONE place, shared by attach() and snapshotFor().
-    // Written as a helper rather than repeated, because two copies of "every
-    // collector" is a list that drifts: a ninth collector added to attach()
-    // and forgotten here would go on recording the live match while silently
-    // recording nothing across a snapshot -- and the query API would still
-    // answer, with stale numbers, rather than fail.
-    //
-    // The null guards only matter for snapshotFor() on a never-attached
-    // MatchStatistics (a GameManager copied before its first reset()), which
-    // stays legitimately empty rather than becoming half-subscribed.
+    // The subscribe list in one place, shared by attach() and snapshotFor(), so
+    // a new collector cannot record live matches while silently missing
+    // snapshots. The null guards cover snapshotting a never-attached instance.
     void subscribeAll(Board& board) {
         if (damage) board.statsEvents.subscribe(damage);
         if (damageByTargetType) board.statsEvents.subscribe(damageByTargetType);

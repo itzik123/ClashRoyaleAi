@@ -1,11 +1,5 @@
-"""The Log's damage is measured, not restated (a second copy had gone stale).
-
-`eval/measure_deck_matchups.py` held `LOG_DAMAGE = 240.0`, labelled
-"CardRegistry.h -- The Log's damage", while the registry says 269. Every
-Log-opportunity figure measured with it capped each body 11% low. It is now
-`card_probes.roller_damage`, and the harness's fast separable Log map is pinned
-against the literal double loop its own docstring calls the test oracle -- which
-no test had actually run.
+"""The Log's damage is measured, not restated, and the fast separable Log map
+matches its reference loop.
 """
 import numpy as np
 

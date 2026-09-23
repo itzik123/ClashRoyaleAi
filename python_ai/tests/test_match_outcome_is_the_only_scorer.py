@@ -1,70 +1,34 @@
 """Nothing outside match_outcome.py may score a match from tower counts.
 
-WHY THIS TEST EXISTS
---------------------
-This is the only test in the suite that greps source instead of running code,
-and it earns that because the defect it guards has now appeared SEVEN times in
-three waves.
-
-`include/core/TimeoutRules.h` decides a finished match in three ordered steps:
-fewer surviving towers loses; on equal counts the side whose weakest surviving
-tower has lower HP loses; only an exact tie is a draw. It has exactly one call
-site in C++ (`ClashEnv::calculateReward`) and is not reachable from Python at
-all.
-
-So every script wanting an outcome without going through `reward` re-derives
-one, and every single time it re-derives only the FIRST rule:
+`include/core/TimeoutRules.h` decides a finished match in three ordered steps
+(fewer towers loses; on equal counts the lower weakest tower loses; only an
+exact tie is a draw), but scripts keep re-deriving only the first:
 
     a, b = env.get_towers_alive(0), env.get_towers_alive(1)
     return 1.0 if a > b else (0.5 if a == b else 0.0)
 
-A match ending 3-3 on towers but 1200 HP against 90 HP on the weakest is a
-clear win by the engine's own rules, and that expression calls it a draw -- in
-the scripts whose entire output is a win rate.
+which calls a 3-3 finish at 1200 HP vs 90 HP a draw. The expression is short
+and easy to retype, so this test fails on the pattern.
 
-Wave 1 (2026-08-19) fixed four: net_ab, net_h2h, net_h2h_search x2.
-Wave 2, same day, found a fifth in tools/validate_pipeline.py, where the
-  count-only version was ABSORBING the very signal that test exists to detect
-  (equal-count finishes fell into `draws`, worth 0.5 either way).
-Wave 3 (2026-08-20) found three MORE in files written after the fix landed:
-  eval/prove_combos.py, eval/prove_teacher.py, eval/prove_environment.py.
-
-Fixing instances plainly does not hold, because the expression is short,
-obvious, and easy to retype from scratch. So this test fails on the PATTERN.
-
-THE REAL FIX, AND WHY THIS IS A STOPGAP
----------------------------------------
-`perception/UPSTREAM_REQUESTS.md` item 16 proposes binding
-`TimeoutRules::resolve` directly, which would delete the hand-written Python
-mirror entirely and make this test unnecessary. Until that lands, this is what
-keeps the mirror singular.
-
-IF THIS TEST FAILS
-------------------
-Do not add your file to the allowlist. Call
-`python_ai.eval.match_outcome.score_from_towers(env, team)` instead -- it
-applies all three rules and needs no new binding, reading the six tower-HP
-scalars the observation already carries.
+If it fails, do not add your file to the allowlist: call
+`python_ai.eval.match_outcome.score_from_towers(env, team)`.
 """
 import os
 import re
 
 import python_ai
 
-# Files allowed to read tower counts next to an outcome-shaped literal.
-#
-#   match_outcome.py  -- IS the implementation.
-#   this file         -- quotes the bad pattern in its own docstring.
+# Files allowed to read tower counts next to an outcome-shaped literal:
+#   match_outcome.py  the implementation
+#   this file         quotes the pattern in its docstring
 ALLOWED = {
     os.path.join("eval", "match_outcome.py"),
     os.path.join("tests", "test_match_outcome_is_the_only_scorer.py"),
 }
 
-# The tell is a 1.0/0.5/0.0 (or 1.0/0.0/-1.0) ladder in the same statement as a
-# tower-count comparison. Deliberately narrow: plenty of legitimate code reads
-# get_towers_alive for crown counts or as a feature (opponents/teacher.py's
-# "crowns" differential, eval/probe_perfect_defense.py's crowns_on_win), and
-# those must not trip it.
+# The tell is a 1.0/0.5/0.0 (or 1.0/0.0/-1.0) ladder beside a tower-count
+# comparison. Narrow on purpose: code that reads get_towers_alive for crown
+# counts or as a feature must not trip it.
 SCORE_LADDER = re.compile(
     r"get_towers_alive.*\n?.*?(?:1\.0\s+if.*else|if\s+a\s*>\s*b)",
     re.MULTILINE,
@@ -104,16 +68,9 @@ def test_only_match_outcome_scores_from_tower_counts():
     )
 
 
-# ---------------------------------------------------------------------------
-# The same pattern, outside Python.
-#
-# The guard above walks .py files ONLY, and that is exactly why it never saw
-# web/viewer.html -- which scored every timed-out match from "are both King
-# Towers alive?" and called the rest a draw, right up until 2026-08-21. A
-# replay ending 3-3 on towers with a Princess at 90 hp displayed as
-# "Draw. Timeout - both King Towers still standing".
-#
-# The defect is language-independent, so the guard has to be too.
+# --- the same pattern, outside Python ---
+# The guard above walks .py files only; the viewer must consume the engine's
+# verdict too.
 
 def test_the_replay_viewer_reads_the_engines_verdict():
     viewer = os.path.join(python_ai.REPO_ROOT, "web", "viewer.html")
@@ -124,8 +81,8 @@ def test_the_replay_viewer_reads_the_engines_verdict():
         "(GameLogger::resultJson) rather than re-deriving a verdict of its own."
     )
 
-    # The specific shortcut that caused the bug: concluding 'draw' straight off
-    # both Kings being alive, with no tower-count or weakest-hp tie-break.
+    # The shortcut to forbid: "draw" straight off both Kings being alive, with
+    # no tie-break.
     king_only_draw = re.compile(
         r"kingAlive\[0\]\s*&&\s*kingAlive\[1\][^\n]*\n?[^\n]*winner:\s*['\"]draw['\"]"
     )
@@ -136,8 +93,7 @@ def test_the_replay_viewer_reads_the_engines_verdict():
         "then the weakest tower's ABSOLUTE hp, before concluding a draw."
     )
 
-    # And the fallback for pre-`result` replays must actually implement the
-    # tie-breaks rather than bailing out to a draw.
+    # The fallback for pre-`result` replays must implement the tie-breaks.
     for needed in ("count[0] !== count[1]", "weakest[0] !== weakest[1]"):
         assert needed in text, (
             f"web/viewer.html's fallback for older replays is missing {needed!r}. "

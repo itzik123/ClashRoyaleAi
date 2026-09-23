@@ -2,10 +2,8 @@
 #include "OnHitEffect.h"
 #include "CombatEntity.h"
 
-// Mother Witch's curse: a temporary damage-taken debuff, applied the same
-// way FreezeOnHit applies its slow. The real card also transforms a
-// cursed enemy into a friendly Goblin if it dies while cursed -- not
-// modeled (no on-cursed-death hook exists).
+// Mother Witch's curse: a temporary damage-taken debuff. The real card also
+// turns a unit that dies cursed into a friendly Goblin; not modelled.
 class CurseOnHit : public IOnHitEffect {
     float damageTakenMultiplier;
     int ticks;

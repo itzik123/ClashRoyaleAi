@@ -1,13 +1,7 @@
-"""Tests for readers/tower_numerals.py.
-
-Every one of these pins something that was measured wrong while building it,
-against a real captured frame where the answer is known by eye.
-
-The tower-specific digit templates now exist -- `config/templates/
-tower_549x976`, cut from the 8 ground-truth recordings -- so end-to-end
-matching IS asserted here, at the bottom. The clock's templates were tried
-first and measurably do not transfer: confidence 0.08-0.18 against a 0.35
-threshold, with "3" read as "1".
+"""Tests for readers/tower_numerals.py, each pinning something measured wrong
+while building it, against a real frame whose answer is known by eye.
+End-to-end matching against the tower templates
+(`config/templates/tower_549x976`) is asserted at the bottom.
 """
 from __future__ import annotations
 
@@ -27,10 +21,9 @@ from readers.tower_numerals import (
     split_digits,
 )
 
-# CRBAB's bar bboxes in its own 368x652 detector space, from a live capture.
-# Derived there from NUMBER_CONFIG, which stores them as plain constants
-# rather than detector output: (LEFT/RIGHT_PRINCESS_HP_X, ENEMY/ALLY_
-# PRINCESS_HP_Y, +HP_WIDTH, +HP_HEIGHT).
+# CRBAB's bar bboxes in its 368x652 detector space, from NUMBER_CONFIG's
+# constants: (LEFT/RIGHT_PRINCESS_HP_X, ENEMY/ALLY_PRINCESS_HP_Y, +HP_WIDTH,
+# +HP_HEIGHT).
 BAR_ENEMY_LEFT = (74, 95, 114, 105)
 BAR_ENEMY_RIGHT = (266, 95, 306, 105)
 DETECTOR = (368, 652)
@@ -42,10 +35,9 @@ _TEMPLATES = (Path(__file__).resolve().parent.parent
 
 
 def test_the_roi_sits_above_the_bar_not_on_it():
-    """The bar is a saturated stripe spanning the ROI's full width. Including
-    even two pixels of it put the bar and the digits on the same side of Otsu,
-    so the column projection saw one unbroken run and "2030" segmented into a
-    SINGLE cell -- with the digits plainly legible in the crop."""
+    """The bar is a saturated stripe across the ROI; including even two pixels of
+    it merged "2030" into a single cell.
+    """
     x1, y1, x2, y2 = numeral_roi(BAR_ENEMY_RIGHT, NATIVE, DETECTOR)
     bar_top_native = int(BAR_ENEMY_RIGHT[1] * NATIVE[1] / DETECTOR[1])
     assert y2 <= bar_top_native, "ROI reaches into the bar"
@@ -53,8 +45,8 @@ def test_the_roi_sits_above_the_bar_not_on_it():
 
 
 def test_the_roi_is_derived_from_the_bar_not_calibrated_separately():
-    """A separate calibration entry would be a second copy of where the tower
-    is, and would drift from CRBAB's the first time its layout moved."""
+    """A separate calibration entry would be a second copy of where the tower is.
+    """
     a = numeral_roi(BAR_ENEMY_RIGHT, NATIVE, DETECTOR)
     shifted = (BAR_ENEMY_RIGHT[0] + 10, BAR_ENEMY_RIGHT[1],
                BAR_ENEMY_RIGHT[2] + 10, BAR_ENEMY_RIGHT[3])
@@ -69,15 +61,12 @@ def test_the_roi_is_clamped_to_the_frame():
     assert x2 <= NATIVE[0] and y2 <= NATIVE[1]
 
 
-# --- the ink channel --------------------------------------------------------
+# --- the ink channel ---
 
 def test_grass_and_glyph_separate_on_the_min_channel_but_not_on_luminance():
-    """The measured failure, reproduced as a test.
-
-    Arena grass and a near-white glyph are BOTH bright in luminance (~169 vs
-    ~230), so Otsu keeps them together. Grass is a saturated green, so its
-    blue channel is low while the glyph is high in every channel -- which is
-    what makes them separable at all.
+    """Grass and a near-white glyph are both bright in luminance (~169 vs ~230),
+    so Otsu keeps them together; grass's blue channel is low while the glyph is
+    high in every channel.
     """
     grass = np.array([[[140, 200, 90]]], np.uint8)
     glyph = np.array([[[250, 220, 230]]], np.uint8)
@@ -93,7 +82,7 @@ def test_ink_channel_passes_greyscale_through():
     assert np.array_equal(ink_channel(grey), grey)
 
 
-# --- segmentation -----------------------------------------------------------
+# --- segmentation ---
 
 def _numeral(digits, on_grass=True):
     """A synthetic numeral: bright bars on a saturated background."""
@@ -114,18 +103,17 @@ def test_segments_each_digit_separately():
 
 
 def test_the_digit_count_is_not_fixed():
-    """A tower reads 2446 at full health and 887 after damage, and the count
-    changes mid-match as it drops through 1000. Asserting three -- as the
-    clock reader can, since M:SS is fixed -- would fail on exactly the frames
-    where damage is the thing being measured."""
+    """The digit count changes as a tower drops through 1000; asserting three
+    would fail on exactly the damaged frames.
+    """
     assert len(split_digits(_numeral([True] * 3))) == 3
     assert len(split_digits(_numeral([True] * 4))) == 4
 
 
 def test_a_narrow_glyph_is_not_filtered_out_with_the_noise():
-    """A "1" is about a third the width of a "0". Any width-based filter that
-    removes background speckle also removes the 1 -- which is why runs are
-    rejected by HEIGHT instead."""
+    """A "1" is about a third the width of a "0", so any width filter that removes
+    speckle removes the 1 too; runs are rejected by height instead.
+    """
     cells = split_digits(_numeral([True, False, True]))
     assert len(cells) == 3
     widths = [c.shape[1] for c in cells]
@@ -133,8 +121,9 @@ def test_a_narrow_glyph_is_not_filtered_out_with_the_noise():
 
 
 def test_short_runs_are_rejected():
-    """The bar's edge and stray highlights are short; a digit spans most of
-    the ROI height."""
+    """The bar's edge and stray highlights are short; a digit spans most of the
+    ROI height.
+    """
     img = _numeral([True, True])
     img[9:11, :] = (250, 245, 250)         # a thin full-width streak
     assert len(split_digits(img)) == 2
@@ -145,18 +134,19 @@ def test_an_empty_patch_yields_no_digits():
 
 
 def test_a_blank_patch_yields_no_digits():
-    """Uniform colour has no ink. It must return nothing rather than one cell
-    spanning the whole ROI, which is what a caller would read as a digit."""
+    """Uniform colour has no ink: return nothing, not one ROI-wide cell a caller
+    would read as a digit.
+    """
     flat = np.full((20, 60, 3), 140, np.uint8)
     assert len(split_digits(flat)) <= 1
 
 
-# --- the reading contract ---------------------------------------------------
+# --- the reading contract ---
 
 def test_hp_range_excludes_implausible_readings():
     """A number outside any real tower's range is a segmentation failure that
-    happened to produce digits. Reporting it would be worse than reporting
-    nothing, because it looks measured."""
+    happened to produce digits; reporting it would look measured.
+    """
     assert HP_RANGE[0] >= 1
     assert HP_RANGE[1] < 100000
 
@@ -165,7 +155,7 @@ def test_the_numeral_offset_reaches_above_the_bar():
     assert NUMERAL_OFFSET[1] < NUMERAL_OFFSET[3] <= 0
 
 
-# --- end to end, against the frame the templates were accepted on ----------
+# --- end to end, against the frame the templates were accepted on ---
 
 @pytest.fixture(scope="module")
 def reader():
@@ -184,12 +174,9 @@ def frame_2030():
 
 @pytest.mark.parametrize("bar", [BAR_ENEMY_LEFT, BAR_ENEMY_RIGHT])
 def test_reads_the_known_frame(reader, frame_2030, bar):
-    """Both enemy Princess towers read 2030 on this frame, by eye.
-
-    The acceptance test the templates were cut for. It exercises the whole
-    reader -- ROI derivation, ink channel, segmentation, matching, the
-    plausibility range -- not just template matching, which is the point of
-    asserting it here rather than on a saved crop.
+    """Both enemy Princess towers read 2030 on this frame, by eye. Exercises the
+    whole reader (ROI derivation, ink channel, segmentation, matching,
+    plausibility range), not just template matching.
     """
     reading = reader.read(frame_2030, bar, DETECTOR)
     assert reading.digits == "2030"
@@ -198,9 +185,9 @@ def test_reads_the_known_frame(reader, frame_2030, bar):
 
 
 def test_a_blank_frame_is_reported_unmeasured_not_zero(reader):
-    """A tower whose HP is unknown must stay distinguishable from one that is
-    nearly dead: extra scalars 3-8 are tower HP, and a live tower reported as
-    empty tells the policy a lane is already lost."""
+    """A tower of unknown HP must stay distinguishable from a nearly dead one: a
+    live tower reported empty tells the policy a lane is lost.
+    """
     blank = np.full((976, 549, 3), 90, np.uint8)
     reading = reader.read(blank, BAR_ENEMY_RIGHT, DETECTOR)
     assert reading.value is None
@@ -208,10 +195,10 @@ def test_a_blank_frame_is_reported_unmeasured_not_zero(reader):
 
 
 def test_every_digit_has_a_template():
-    """A partial set silently misreads the digits it lacks as whichever glyph
-    it does have -- DigitTemplates raises on construction for exactly this,
-    and this pins that the shipped set is complete rather than merely
-    loadable."""
+    """A partial template set would misread missing digits as whichever glyph it
+    has; DigitTemplates raises on construction for that, and this pins that the
+    shipped set is complete.
+    """
     if not (_TEMPLATES / "digits.json").exists():
         pytest.skip("no tower digit templates")
     templates = DigitTemplates.load(_TEMPLATES)

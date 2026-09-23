@@ -1,38 +1,18 @@
 """Screen pixels <-> board tiles, via a planar homography.
 
-WHY A HOMOGRAPHY IS THE RIGHT MODEL
------------------------------------
-Clash Royale renders the arena with a tilted perspective camera, so the board
-is not axis-aligned on screen and tiles are not uniform in size -- rows near
-the far tower are visibly shorter than rows near the near tower. A plain
-affine scale/offset cannot express that and will be wrong by several tiles at
-the far end.
+The arena is rendered with a tilted perspective camera, so tiles are not
+uniform on screen (far rows are shorter); an affine map is wrong by several
+tiles at the far end. The playing surface is a plane, and the perspective image
+of a plane is exactly a homography: eight degrees of freedom, four point
+correspondences, no iteration.
 
-But the playing surface IS a plane, and the perspective image of a plane is
-related to that plane by exactly a homography. So this is not an
-approximation chosen for convenience; it is the exact model, up to lens
-distortion (negligible on a rendered game, which has no physical lens).
+Anchor on a tower's base, not its centre. Only where a tower meets the ground
+lies on the modelled plane; its visual centre floats above it, with an error
+that grows away from the camera axis and looks fine mid-board.
 
-Eight degrees of freedom, four point correspondences, no iteration.
-
-THE ANCHOR YOU MUST PICK IS THE TOWER'S BASE, NOT ITS CENTRE
-------------------------------------------------------------
-The single most likely way to get a plausible-but-wrong calibration here.
-Towers are tall 3D models. Only the point where a tower meets the ground
-lies on the plane the homography models; its visual centre floats above that
-plane and projects to a screen position that depends on the camera, so
-anchoring on it introduces an error that grows with distance from the camera
-axis -- and looks fine near the middle of the board, which is what makes it
-hard to notice.
-
-Pick the centre of the tower's footprint where it touches the arena floor.
-
-CALIBRATION ERROR IS MEASURED OUT-OF-SAMPLE
--------------------------------------------
-solve() fits the four Princess towers. measure_error() scores the bridges and
-Kings, which were held out. Reporting the fit residual of an exactly
-determined 4-point solve would be meaningless -- it is zero by construction,
-always, even for a completely wrong set of clicks. See
+Calibration error is measured out-of-sample: solve() fits the four Princess
+towers and measure_error() scores the held-out bridges and Kings. An exactly
+determined 4-point solve has zero residual by construction. See
 geometry.calibration_anchors.
 """
 
@@ -67,7 +47,7 @@ class Homography:
         self.matrix = matrix
         self.inverse = np.linalg.inv(matrix)
 
-    # -- construction ----------------------------------------------------
+    # --- construction ---
 
     @classmethod
     def solve(
@@ -75,13 +55,10 @@ class Homography:
         screen_points: dict[str, tuple[float, float]],
         tile_points: dict[str, tuple[float, float]],
     ) -> Homography:
-        """Solve screen -> tile from named correspondences.
-
-        Exactly four shared names uses the closed-form solve; more than four
-        uses a least-squares fit. RANSAC is deliberately not used: with a
-        handful of hand-picked landmarks there are no outliers to reject, and
-        RANSAC would happily discard a correctly clicked point to fit three
-        mis-clicked ones.
+        """Solve screen -> tile from named correspondences. Exactly four shared
+        names uses the closed-form solve, more uses least squares. No RANSAC:
+        with a handful of hand-picked landmarks it would discard a correct
+        point to fit three mis-clicked ones.
         """
         names = sorted(set(screen_points) & set(tile_points))
         if len(names) < 4:
@@ -100,7 +77,7 @@ class Homography:
                 raise CalibrationError("findHomography failed to converge")
         return cls(matrix)
 
-    # -- mapping ---------------------------------------------------------
+    # --- mapping ---
 
     def screen_to_tile(self, points: np.ndarray) -> np.ndarray:
         """(N,2) screen pixels -> (N,2) continuous tile coordinates."""
@@ -115,32 +92,26 @@ class Homography:
     ) -> np.ndarray:
         """(N,2) screen pixels -> (N,2) integer tile indices, clamped.
 
-        Rounds rather than floors. The engine's own convention is that an
-        entity at position (x, y) occupies tile (int(x), int(y)) -- see
-        ClashEnv::extractObservationForTeam's static_cast -- but a DETECTED
-        unit's estimated centre is a continuous measurement with error either
-        side of the truth, so nearest-tile is the right quantiser for it,
-        while flooring would bias every detection down and left by half a
-        tile.
+        Rounds rather than floors. The engine places an entity at (x, y) in
+        tile (int(x), int(y)), but a detected centre is a measurement with
+        error on both sides, so nearest-tile is the right quantiser; flooring
+        would bias every detection down and left by half a tile.
         """
         tiles = np.rint(self.screen_to_tile(points)).astype(int)
         tiles[:, 0] = np.clip(tiles[:, 0], 0, geom.width - 1)
         tiles[:, 1] = np.clip(tiles[:, 1], 0, geom.height - 1)
         return tiles
 
-    # -- quality ---------------------------------------------------------
+    # --- quality ---
 
     def measure_error(
         self,
         screen_points: dict[str, tuple[float, float]],
         tile_points: dict[str, tuple[float, float]],
     ) -> dict[str, float]:
-        """Per-landmark reprojection error in TILES, plus 'max' and 'rms'.
-
-        Reported in tiles, not pixels, because tiles are the unit the error
-        actually matters in: 4 pixels is meaningless on its own, "0.3 of a
-        tile" is directly comparable against the 1.5-tile placement tolerance
-        the detector has to hit.
+        """Per-landmark reprojection error in tiles, plus 'max' and 'rms': tiles
+        are the unit that compares against the detector's 1.5-tile placement
+        tolerance.
         """
         names = sorted(set(screen_points) & set(tile_points))
         if not names:
@@ -163,10 +134,9 @@ def _apply(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     homogeneous = np.hstack([pts, np.ones((len(pts), 1))])
     projected = homogeneous @ matrix.T
     w = projected[:, 2:3]
-    # A point on the camera's horizon maps to infinity. That cannot happen
-    # for anything inside the arena with a sane calibration, so it means the
-    # calibration is wrong -- and silently producing 1e17 would push a bogus
-    # tile index downstream where it looks like a detection at the board edge.
+    # A point on the camera's horizon maps to infinity, which inside the arena
+    # means a wrong calibration; producing 1e17 would push a bogus tile index
+    # downstream.
     if np.any(np.abs(w) < 1e-9):
         raise CalibrationError(
             "point maps to the horizon (w ~ 0) -- calibration is invalid"
@@ -174,7 +144,7 @@ def _apply(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     return projected[:, :2] / w
 
 
-# -- profile persistence -------------------------------------------------
+# --- profile persistence ---
 
 
 def save_profile(profile: CalibrationProfile, path: Path) -> None:
@@ -202,13 +172,9 @@ def load_profile(path: Path) -> CalibrationProfile:
 def homography_from_profile(
     profile: CalibrationProfile, frame_shape: tuple[int, ...]
 ) -> Homography:
-    """Rebuild the mapping, refusing frames the profile was not made for.
-
-    The size check is the whole reason this function exists rather than
-    callers reading profile.homography directly. A profile applied to a
-    differently sized frame produces tile coordinates that are wrong by a
-    smooth, plausible-looking scale factor -- no exception, no visual
-    artefact, just an estimator that is quietly mislocalising everything.
+    """Rebuild the mapping, refusing frames the profile was not made for. The size
+    check is why this exists: a profile applied to a differently sized frame is
+    wrong by a smooth, plausible scale factor with no error anywhere.
     """
     height, width = frame_shape[0], frame_shape[1]
     if (width, height) != (profile.frame_width, profile.frame_height):

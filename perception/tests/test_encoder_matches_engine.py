@@ -1,23 +1,14 @@
-"""The live encoder must produce the SAME observation the engine does.
+"""The live encoder must produce the same observation the engine does.
 
-WHY THIS IS WORTH A TEST
-------------------------
 `perception_encoder.encode(GameState)` and `ClashEnv::getObservationForTeam(0)`
-are two independent implementations of one 13,606-float layout, on opposite
-sides of the perception/training boundary. The policy is trained on the second
-and deployed on the first. If they disagree, the live agent is running
-off-distribution and every symptom is downstream and confusing -- which is
-exactly the hypothesis this test was written to settle when a live match placed
-60% of its cards on the back two rows against 19-21% in simulation.
+are two implementations of one layout on opposite sides of the
+perception/training boundary; the policy trains on the second and is deployed
+on the first. A disagreement puts the live agent off-distribution with only
+confusing downstream symptoms.
 
-Measured: they agree EXACTLY on the towers-only baseline (0 differing cells of
-12,852 spatial and 0 of 754 scalar), which localised that discrepancy to unit
-detection rather than to the encoding.
-
-Towers-only is the strongest state to pin. It is the one configuration whose
-ground truth both sides know without any detector involvement, so a failure
-here is unambiguously a layout drift -- the class of bug CLAUDE.md records
-twice already (the 6253 -> 13606 change, and the team-1 row displacement).
+Towers-only is the strongest state to pin: the one configuration whose ground
+truth both sides know with no detector involved, so a failure here is a layout
+drift.
 """
 import sys
 from pathlib import Path
@@ -37,20 +28,15 @@ import clash_royale_env as cre  # noqa: E402
 from python_ai.models import perception_encoder as pe  # noqa: E402
 from contracts import GameState, Phase, TowerObservation  # noqa: E402
 
-# Deliberately NOT gym_wrapper.DEFAULT_DECK: that module imports gymnasium,
-# which the perception venv has no reason to carry, and this test is about the
-# observation LAYOUT rather than about any particular deck. Both sides are
-# handed the same sampled deck, so the assertion holds for any of them -- and
-# resampling each run is slightly better coverage than pinning one.
+# Not gym_wrapper.DEFAULT_DECK, which imports gymnasium. The test is about
+# layout, not a deck: both sides get the same sampled deck.
 DECK = cre.sample_random_deck()
 
 
 def _towers_only_state(env):
-    """A GameState matching the engine immediately after reset().
-
-    Elixir and hand are read FROM the engine rather than hardcoded, so the two
-    observations differ only where the encoders differ -- otherwise a mismatched
-    hand would light up 4 x NUM_CARD_IDS one-hot slots and drown the signal.
+    """A GameState matching the engine immediately after reset(). Elixir and hand
+    are read from the engine, so the observations differ only where the
+    encoders differ.
     """
     full = TowerObservation(hp_fraction=1.0, hp_measured=True, destroyed=False)
     return GameState(
@@ -86,12 +72,7 @@ def test_encoder_reproduces_the_engine_observation_exactly():
 
 
 def test_tower_channels_are_actually_populated():
-    """Guards the test above from passing on two identically-empty vectors.
-
-    An encoder that returned zeros and an engine that returned zeros would agree
-    perfectly and prove nothing, which is the failure mode a pure equality
-    assertion invites.
-    """
+    """Guards the test above from passing on two identically empty vectors."""
     env = cre.ClashRoyaleEnv(list(DECK), list(DECK))
     env.reset()
     live = np.asarray(pe.encode(_towers_only_state(env)), dtype=np.float32)

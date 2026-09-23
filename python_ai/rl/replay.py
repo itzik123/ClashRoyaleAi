@@ -1,9 +1,4 @@
-"""Recording a demo replay and stamping the agent's internals onto it.
-
-Both pipelines produce one of these every 1,000 episodes. The recording loop
-was duplicated between them down to the variable names; the only differences
-were which env to build and what to call the file, which are now arguments.
-"""
+"""Recording a demo replay and stamping the agent's internals onto it."""
 import json
 
 import numpy as np
@@ -12,16 +7,15 @@ from torch.distributions import Categorical
 
 from python_ai.models.policy_io import LSTM_HIDDEN
 
-#: Engine ticks per bot decision in a recorded replay -- the same
-#: `skip_frames` the training rollout uses, so a replay shows the policy at the
-#: clock rate it was trained at.
+#: Ticks per decision in a recorded replay: the training rollout's
+#: `skip_frames`.
 REPLAY_SKIP_FRAMES = 10
 
 def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
-    """Merge per-decision agent internals (critic's state value, chosen action) into
-    an already-saved replay JSON, one skip_frames-wide tick window per decision, so
-    the viewer can show what the network was "thinking" at any scrubbed tick without
-    needing its own copy of the model."""
+    """Merge per-decision agent internals (state value, chosen action) into a
+    saved replay JSON, one skip_frames-wide window per decision, so the viewer
+    can show them without the model.
+    """
     with open(filepath, "r") as f:
         data = json.load(f)
 
@@ -39,11 +33,9 @@ def annotate_replay_with_agent_info(filepath, decisions, skip_frames):
 
 
 def record_greedy_replay(net, env, device, path, skip_frames=REPLAY_SKIP_FRAMES):
-    """Play one full episode with `env`, save its log to `path`, annotate it.
+    """Play one episode with `env`, save its log to `path`, and annotate it.
 
-    Sampled (not argmax) on purpose: a replay is a demonstration of the policy
-    that is actually training, and forcing it greedy would show a behaviour no
-    rollout ever produced.
+    Sampled, not argmax: it shows the policy that is actually training.
     """
     obs, _ = env.reset()
     hx = torch.zeros(1, LSTM_HIDDEN).to(device)

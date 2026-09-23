@@ -1,32 +1,22 @@
-"""Score the calibration against the arena's OWN rendered tile seams.
+"""Score the calibration against the arena's own rendered tile seams.
 
     perception/.venv/Scripts/python.exe perception/tools/validate_grid.py
 
-WHY THIS EXISTS RATHER THAN JUST THE LANDMARK RESIDUAL
-------------------------------------------------------
 Every landmark-based number is self-referential: the homography is fitted to
-the landmarks, so scoring it on them measures how well the fit reproduces its
-own input. Leaving landmarks out does not fix it either -- removing one
-mechanically flatters the residual over the ones that remain, which is exactly
-how a wrong conclusion got reached during this investigation. Dropping the two
-hardcoded `own_princess` constants improved every landmark metric
-(in-sample max 0.312 -> 0.173, leave-one-out max 0.783 -> 0.537) while making
-the mapping measurably WORSE where it matters: mean |dy| in our own half went
-0.105 -> 0.357 tiles. They are the only near-side y constraint in the fit.
+the landmarks, and leaving one out mechanically flatters the residual over the
+rest. Dropping the two hardcoded `own_princess` constants improved every
+landmark metric (in-sample max 0.312 -> 0.173, leave-one-out 0.783 -> 0.537)
+while mean |dy| in our own half went 0.105 -> 0.357 tiles; they are the fit's
+only near-side y constraint.
 
-The arena floor is rendered with visible tile seams, and the homography was
-never fitted to them. So warping a frame into tile space -- where a correct
-mapping puts every seam exactly on an integer -- gives an error that is
-independent of the landmark set, and is already in the unit that matters.
+The floor is rendered with visible tile seams the fit never saw, so warping a
+frame into tile space, where a correct mapping puts every seam on an integer,
+gives an error independent of the landmarks, in tiles. This is the number
+stage-0 acceptance is read off.
 
-This is the number stage-0 acceptance should be read off.
-
-WHAT IT REPORTS
----------------
-Sub-tile phase of the seam comb, per half of the board, per recording. Reported
-per half because the two halves are at very different depths in a perspective
-projection, so a residual camera-model error shows up as a difference between
-them and not as a single global offset.
+Reported as the sub-tile phase of the seam comb per half of the board per
+recording: the halves sit at different depths, so a camera-model error shows as
+a difference between them.
 """
 from __future__ import annotations
 
@@ -45,33 +35,29 @@ from calib.homography import Homography, homography_from_profile, load_profile  
 from capture.video import VideoSource  # noqa: E402
 from geometry import load_geometry  # noqa: E402
 
-# Rectified pixels per tile. Only needs to be fine enough to localise a seam;
-# 24 puts the quantisation at 1/24 tile, well below the residual being measured.
+# Rectified pixels per tile: 24 puts quantisation at 1/24 tile, well below the
+# residual measured.
 PIXELS_PER_TILE = 24
 
-# Clean floor bands, in tiles, one per half. Chosen to exclude the towers, the
-# river, and the arena walls -- all of which have strong edges that are not tile
-# seams and would dominate the profile.
+# Clean floor bands in tiles, one per half, excluding towers, river and walls,
+# whose strong edges are not seams.
 BANDS = {"own": (8.0, 14.0), "opp": (19.0, 25.0)}
 X_BAND = (1.0, 17.0)
 
-# Seconds into the battle to sample. The board is nearly empty here, so units
-# do not cover the floor. Deliberately the same window calibration itself uses.
+# Seconds into the battle to sample: the board is nearly empty, as in
+# calibration itself.
 SAMPLE_AT_S = 20.0
 
-# Stage-0 acceptance, in tiles. The detector's placement budget is 1.5 tiles;
-# 0.5 leaves two thirds of it for detection error rather than spending it on
-# the coordinate frame.
+# Stage-0 acceptance in tiles: 0.5 leaves two thirds of the detector's 1.5-tile
+# placement budget for detection error.
 ACCEPTANCE_TILES = 0.5
 
 
 def seam_phase(profile: np.ndarray, period: int = PIXELS_PER_TILE) -> float:
-    """Sub-tile offset of a comb of period `period` best matching `profile`.
-
-    Returned wrapped to [-0.5, 0.5], so the sign says which way the rendered
-    seam sits relative to the projected line. A brute-force scan rather than an
-    FFT phase: the profile has only ~16 periods, where the FFT's frequency
-    resolution is comparable to the quantity being measured.
+    """Sub-tile offset of a comb of period `period` best matching `profile`,
+    wrapped to [-0.5, 0.5] (the sign says which way the seam sits). A
+    brute-force scan: with ~16 periods the FFT's frequency resolution is
+    comparable to the quantity measured.
     """
     prof = np.asarray(profile, dtype=np.float64)
     prof = prof - prof.mean()
@@ -105,8 +91,8 @@ def measure(image: np.ndarray, homography: Homography, geom) -> dict[str, tuple[
             int(y_lo * PIXELS_PER_TILE):int(y_hi * PIXELS_PER_TILE),
             int(X_BAND[0] * PIXELS_PER_TILE):int(X_BAND[1] * PIXELS_PER_TILE),
         ]
-        # Absolute first derivative: seams are darker than the tile faces, so
-        # the gradient magnitude peaks on them regardless of which side is lit.
+        # Absolute first derivative: seams are darker than tile faces, so the
+        # gradient peaks on them whichever side is lit.
         gx = np.abs(cv2.Sobel(sub, cv2.CV_32F, 1, 0, ksize=3)).mean(axis=0)
         gy = np.abs(cv2.Sobel(sub, cv2.CV_32F, 0, 1, ksize=3)).mean(axis=1)
         out[half] = (seam_phase(gx), seam_phase(gy))

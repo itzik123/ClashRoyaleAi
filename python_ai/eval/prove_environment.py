@@ -1,77 +1,32 @@
-"""Does THIS environment price the win condition positively? Zero training.
+"""Does the environment price the win condition positively? No network involved.
 
-    python_ai/venv/Scripts/python.exe python_ai/prove_environment.py --n 120
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_environment.py --n 120
 
-THE FALSIFIER CLAUDE.md ASKS FOR, WITHOUT A NETWORK
-----------------------------------------------------
-The 1.5x hypothesis says a permanent opponent-elixir multiplier suppresses
-punish cards, because a punish window lasts about `answer_cost / (m * r)` while
-the counter-cost of our spend scales with `m`. Every previous test of it ran a
-POLICY through the environment, which confounds "the environment prices this
-badly" with "this particular net cannot execute it".
+Tests whether an opponent-elixir multiplier suppresses punish cards, without
+confounding "the environment prices this badly" with "this net cannot execute
+it": both sides are the deterministic UtilityTeacher, and the arms differ only
+in what team 0 does with its win condition.
 
-This harness removes the policy entirely. Both sides are the deterministic
-`UtilityTeacher`, and the ONLY thing that differs between arms is what the
-team-0 teacher does with its win condition.
+    attack   the win condition goes to a bridge
+    cycle    it is still drawn, played, paid for and rotated, but placed in our own back half, where it deals almost no damage
 
-THE ARM DESIGN, AND WHY THE OBVIOUS CONTROL IS WRONG
------------------------------------------------------
-The obvious arm B is "never play the win condition". It is CONFOUNDED. A card
-that is never played never leaves the hand, so banning it also permanently
-clogs one of four hand slots -- arm B would then lose at every multiplier, for
-a reason that has nothing to do with the economy under test, and that would read
-as support for the hypothesis while measuring hand mechanics.
+Identical spend, cycle and hand occupancy; only where the card lands differs.
+The obvious control, never playing it, is confounded: an unplayed card clogs a
+hand slot. `--include-ban` runs it anyway, labelled.
 
-So the arms are:
+Reading the result:
+    attack beats cycle at 1.0x and the gap shrinks as m rises -> hypothesis supported
+    no gap at any multiplier -> the win condition is unviable in this engine regardless of economy
+    attack beats cycle equally at every m -> the multiplier is not what suppresses it
 
-    attack   the win condition goes to a bridge (the real rule)
-    cycle    it is still drawn, still played, still costs 4 elixir and still
-             rotates the hand -- but it is placed in our own back half, where
-             CLAUDE.md measures it at ~3 enemy tower damage against 535.6 at the
-             bridge.
+`--opponent teacher` (default) is the symmetric test at a fair 1.0x; above 1.0x
+a mirror-strength opponent wins everything and both arms floor. `--opponent
+heuristic` is the dose-response test against the C++ HeuristicOpponent at
+multiplier m.
 
-Identical spend, identical cycle, identical hand occupancy. The only variable is
-WHERE the card lands, which is exactly and only what the hypothesis is about.
-`--include-ban` runs the confounded arm too, reported separately and labelled.
-
-WHAT THE RESULT MEANS
----------------------
-    attack beats cycle at 1.0x, and the gap SHRINKS as m rises
-        -> hypothesis supported; the new environment prices the win condition
-           correctly and the pivot is justified.
-    no gap at any multiplier
-        -> the win condition is unviable in this engine's physics regardless of
-           economy. The honest response is to stop rehabilitating it.
-    attack beats cycle equally at every multiplier
-        -> the multiplier is not what suppressed it; look elsewhere before
-           rebuilding the curriculum around this.
-
-TWO INSTRUMENTS, BECAUSE ONE CANNOT ANSWER BOTH QUESTIONS
-----------------------------------------------------------
-`--opponent teacher` (the default) is the SYMMETRIC test: both sides are equally
-strong bots at whatever multiplier is set. It answers "in a fair environment,
-does attacking beat cycling?" -- which is the question the pivot rests on. It is
-useless above 1.0x: measured at n=12, a mirror-strength opponent given 1.25x or
-1.5x wins EVERY game and both arms score 0.000, so the delta is pinned at the
-FLOOR by the opponent rather than by the treatment.
-
-`--opponent heuristic` is the DOSE-RESPONSE test: team 0 is the teacher, team 1
-is the C++ HeuristicOpponent at multiplier m, through `env.step()`. That is the
-same setup every historical number in CLAUDE.md used, so the sweep is comparable
-to the SMART-forced A/B it replaces -- with the policy confound removed, since
-both arms are now the same deterministic bot.
-
-CEILING AND FLOOR CAVEATS
---------------------------
-A delta is only interpretable if the arms are off the rails at BOTH ends. If
-`attack` wins >= 0.95 the row is pinned by a ceiling (this is what voided the
-original test's 1.00x row); if BOTH arms sit <= 0.05 it is pinned by a floor.
-Either way the row is printed as VOID rather than dropped -- deleting a void row
-after seeing it is how a saturated arm gets mistaken for a result.
-
-Both teachers are seeded per pairing and every arm starts from the SAME
-`snapshot()` of one `reset()`, so the shuffled hands are bit-identical across
-arms and the comparison is paired.
+A row with the attack arm >= 0.95, or both arms <= 0.05, is printed as VOID
+rather than dropped. Every arm starts from the same snapshot with seeded
+teachers, so the comparison is paired.
 """
 import argparse
 import os
@@ -79,9 +34,7 @@ import sys
 
 import numpy as np
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -114,15 +67,10 @@ def duel(env, t0, t1):
 def _outcome(env):
     """(score, enemy tower damage we dealt, tower damage we took).
 
-    Tower damage is reported alongside the win/draw/loss because in a MIRROR
-    matchup between two strong defensive bots most matches reach the tick limit
-    and are then decided by a tower-HP tiebreak -- so win rate is a coarse,
-    heavily-quantised readout of a continuous difference. If the attack arm
-    deals more tower damage without converting it into wins, that is a real and
-    interpretable result, and win rate alone would hide it.
+    Tower damage is reported beside the outcome because mirror matches between
+    defensive bots mostly reach the tick limit, making win rate a coarse
+    readout of a continuous difference.
     """
-    # Tower count alone calls every equal-count finish a draw and ignores
-    # TimeoutRules' weakest-tower tie-break. See eval/match_outcome.py.
     score = score_from_towers(env, 0)
     return (score, float(env.get_tower_damage_dealt(0)),
             float(env.get_tower_damage_dealt(1)))
@@ -130,7 +78,8 @@ def _outcome(env):
 
 def duel_heuristic(env, t0):
     """Teacher t0 (team 0) against the C++ HeuristicOpponent, which runs inside
-    `env.step()`. Returns t0's score."""
+    `env.step()`. Returns t0's score.
+    """
     t0.reset()
     for _ in range(MAX_STEPS):
         o0 = np.asarray(env.get_observation_for_team(0), np.float32)
@@ -154,13 +103,7 @@ def arm(mode, stage, seed, base, multiplier, opponent):
 
 
 def paired(diffs):
-    """(mean, lo, hi, better, worse, p) -- see `eval/stats.py`.
-
-    The arithmetic moved: this project had FOUR copies of paired-bootstrap +
-    exact sign test, which for measurement code is worse than ordinary
-    duplication. The tuple shape survives because six call sites below unpack it
-    positionally, and rewriting those would be churn with no reader benefit.
-    """
+    """(mean, lo, hi, better, worse, p); see eval/stats.py."""
     r = stats.paired_from_diffs(diffs)
     return r.delta, r.lo, r.hi, r.better, r.worse, r.p
 
@@ -173,12 +116,9 @@ def _tower_diff(env, team=0):
 def _play_out(env, t0, t1, steps):
     """Both teachers keep playing normally for `steps` decisions.
 
-    BOTH SIDES MUST KEEP PLAYING. `teacher.rollout_stats` and
-    `search_ab_test` both roll forward with the opponent no-oping, which is fine
-    for ranking candidates a second or two ahead -- and completely wrong here.
-    The entire cost of committing a win condition is the COUNTER-PUSH that
-    arrives while our half is empty, and an opponent frozen on no-op never
-    counter-pushes. A no-op rollout can only ever make attacking look good.
+    The opponent must keep playing: the cost of committing a win condition is
+    the counter-push that arrives while our half is empty, which a no-op
+    rollout never produces.
     """
     for _ in range(steps):
         if env.is_game_over():
@@ -192,13 +132,12 @@ def _play_out(env, t0, t1, steps):
 
 
 def _escort_slot(env, hand, teacher):
-    """(slot, x, y) for the cheapest affordable TANK to send ahead of the win
+    """(slot, x, y) for the cheapest affordable tank to send ahead of the win
     condition, or None.
 
-    A tank here means a unit whose role is not spell/building and which is not
-    the win condition itself -- resolved from teacher.roles, which derives roles
-    from the engine, so this survives a deck change. Cheapest because the escort
-    is meant to absorb, not to cost more than the push it protects.
+    A tank is any unit whose role is not spell, building or win condition
+    (roles come from the engine via teacher.roles). Cheapest, since the escort
+    should not cost more than the push it protects.
     """
     import clash_royale_env as _E
     elixir = env.get_elixir_for_team(0)
@@ -219,30 +158,21 @@ def _escort_slot(env, hand, teacher):
 
 
 def marginal_value(args):
-    """At states where the advisor's gate says COMMIT, is committing worth it?
+    """At states where the advisor's gate says commit, is committing worth it?
 
-    THE INSTRUMENT THE WIN-RATE A/B COULD NOT BE. The arm comparison answers
-    "is this whole STRATEGY better", and it is confounded twice over: a
-    back-placed win condition is not a dud but an accidental defensive body, and
-    an over-eager attack rule would make attacking look bad even if attacking is
-    good. This measures ONE decision instead.
-
-    Paired on identical snapshots at states the gate selected:
+    The strategy-level A/B is confounded (a back-placed win condition is an
+    accidental defensive body, and an over-eager rule makes attacking look
+    bad); this measures one decision. Paired on identical snapshots at
+    gate-selected states:
         arm PLAY   commit the win condition at the advisor's bridge cell
-        arm HOLD   no-op this step, keep the elixir
-    then let BOTH teachers play on normally for `--horizon` decisions and score
-    by tower-HP differential. Everything after the first step is identical in
-    distribution, so the difference IS the marginal value of that one
-    commitment -- counter-push included, which is the half `prove_hog.py`
-    (offensive damage only) structurally cannot see.
+        arm HOLD   no-op this step
+    then both teachers play on for `--horizon` decisions, scored by tower-HP
+    differential. The difference is the marginal value of that commitment,
+    counter-push included.
     """
     from python_ai.advisors import tactics
-    # THE GATE THRESHOLD IS THE VARIABLE UNDER TEST. tactics.HOG_MAX_OPP_ELIXIR
-    # ships at 7.0, i.e. "commit unless they are nearly full" -- and the trade
-    # probe measured a lone Hog at 158.5 hp/elixir against a defender at match
-    # elixir versus 256.2 against one forced to 1.0. If the punish window is
-    # what pays, a tighter gate should move this test's verdict, and a gate that
-    # opens at 7 is not selecting punish windows at all.
+    # The gate threshold is the variable under test: if the punish window is
+    # what pays, a tighter gate should move the verdict.
     if args.max_opp_elixir is not None:
         tactics.HOG_MAX_OPP_ELIXIR = float(args.max_opp_elixir)
     print(f"  gate: commit while estimated opponent elixir <= "
@@ -266,9 +196,8 @@ def marginal_value(args):
             o0 = np.asarray(env.get_observation_for_team(0), np.float32)
             hand = list(env.get_hand_for_team(0))
             wincon = t0.wincon_id
-            # Only states where committing is even POSSIBLE and the advisor's
-            # own timing gate approves -- scoring random moments would measure
-            # the gate, not the card.
+            # Only states where committing is possible and the advisor's timing
+            # gate approves.
             if (wincon in hand
                     and env.get_elixir_for_team(0) >= E.get_card_info(wincon)["cost"]
                     and tactics.hog_should_commit(o0)):
@@ -290,20 +219,14 @@ def marginal_value(args):
                 opp = t1.act(env, o1)
 
                 if args.supported:
-                    # A REAL 2.6 PUSH, not a naked win condition. The tank goes
-                    # first so it eats the building's targeting and the tower
-                    # shots while the Hog connects. This matters far more since
-                    # deploy time landed: measured on the trade probe, a lone
-                    # Hog in a punish window fell 1025 -> 343 tower damage
-                    # (it now stands inert under tower fire for a second) while
-                    # the escorted push holds at 993.8. Scoring only the lone
-                    # commitment would condemn the card on a play the new
-                    # physics correctly punishes.
+                    # A real 2.6 push: the tank goes first to absorb the
+                    # building's targeting and the tower shots while the Hog
+                    # connects. With deploy time a lone Hog stands inert under
+                    # fire for a second.
                     tank = _escort_slot(env, hand, t0)
                     if tank is None:
-                        # No affordable escort in hand -- this is not a
-                        # supported-push state, so skip it rather than silently
-                        # scoring a lone Hog into the supported arm.
+                        # No affordable escort: not a supported-push state, so
+                        # skip it rather than score a lone Hog.
                         o1b = np.asarray(env.get_observation_for_team(1), np.float32)
                         a0 = t0.act(env, o0)
                         a1 = t1.act(env, o1b)
@@ -312,12 +235,12 @@ def marginal_value(args):
                             break
                         continue
                     tslot, _, _ = tank
-                    # Same lane and row as the win condition, so the tank is
-                    # actually in front of it rather than in the other lane.
+                    # Same lane and row, so the tank is in front of the win
+                    # condition.
                     tx, ty = x, y
                     a.step_self_play(tslot, tx, ty, opp[0], opp[1], opp[2], 10)
                     b.step_self_play(-1, 0.0, 0.0, opp[0], opp[1], opp[2], 10)
-                    # The win condition follows one decision later, behind it.
+                    # The win condition follows one decision later.
                     hand_a = list(a.get_hand_for_team(0))
                     if wincon in hand_a:
                         a.step_self_play(hand_a.index(wincon), x, y, -1, 0.0, 0.0, 10)
@@ -432,8 +355,7 @@ def main():
               f"  [{lo:>+7.4f}, {hi:>+7.4f}] {better:>6}/{worse:<6} {p:>10.2}"
               f"{flag}")
         rows.append((m, a.mean(), c.mean(), mean, lo, hi, p, void))
-        # The continuous readout, which survives a tower-HP tiebreak that win
-        # rate quantises away.
+        # The continuous readout, which win rate quantises away.
         da, dc = np.asarray(dealt["attack"]), np.asarray(dealt["cycle"])
         ta, tc = np.asarray(taken["attack"]), np.asarray(taken["cycle"])
         dmean, dlo, dhi, dbet, dwor, dp = paired(da - dc)

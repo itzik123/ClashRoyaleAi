@@ -1,72 +1,25 @@
-"""Offensive scenario injection: practice at the PUNISH, not at the defence.
+"""Offensive scenario injection: practice at the punish, not the defence.
 
     from python_ai.envs.scenario_offense import apply_offensive_scenario
 
-WHAT THIS IS, AND WHY IT IS DEFAULT-OFF
----------------------------------------
-This is "Proposal A" from the 2026-08-19 curriculum pivot, kept because it is
-genuinely useful and demoted because it cannot do the job it was proposed for.
+Off by default (`OFFENSIVE_SCENARIO_PROB = 0.0`). Injection changes the state
+distribution, not the payoff, so it only helps once playing the win condition
+actually pays; then it helps credit assignment for rare punish windows. Turn it
+on only after `prove_environment.py` shows the win condition paying. It never
+touches the reward.
 
-Scenario injection changes the STATE DISTRIBUTION, not the PAYOFF. CLAUDE.md
-records four interventions built to make the agent play its win condition -- a
-reward multiplier, an advisor target, random forcing at eps=0.15, and
-gate-timed SMART forcing -- and all four returned null or negative, because
-every one of them moves a POLICY while the environment kept pricing the card at
-negative value. Injecting a state where the punish "should" be good does not
-help if, in that state, playing it still loses; it just pays the negative price
-more often, which is exactly the observed dose-response.
+  punish_window  They just committed (bar near 1, units crossing one lane); we
+                 hold 8 elixir and the win condition. The play: the other lane.
+  counter_push   Our defence survived with units near the river and ~6 elixir
+                 banked. The play: push behind them.
 
-So the ORDER matters. The payoff is fixed first (teacher.py: a symmetric 1.0x
-economy against a competent opponent), and only then is injection worth adding,
-for the thing it is actually good at: CREDIT ASSIGNMENT. A punish window is rare
-and its causal link to the outcome is buried in a long GAE trace -- the same
-argument that justified the existing defensive `SCENARIO_INJECTION_PROB = 0.30`
-in `train_selfplay.py`.
-
-`OFFENSIVE_SCENARIO_PROB` therefore defaults to **0.0**. Turn it on only after
-`prove_environment.py` shows the win condition paying in the new environment.
-
-THE TWO SCENARIOS
------------------
-`punish_window`  The opponent has just committed: their bar is near 1 and their
-                 units are crossing in ONE lane. We hold 8 elixir with the win
-                 condition in hand. The correct play is to send it down the
-                 OTHER lane while answering cheaply -- which is the entire
-                 argument for a 2.6 deck and the one situation the agent has
-                 essentially never been in, because it sits under 3 elixir on
-                 65.3% of decisions.
-
-`counter_push`   Our defence has just survived with units alive near the river
-                 and ~6 elixir banked. The correct play is to push behind them.
-                 This is the other half of the punish that a purely defensive
-                 policy never discovers: surviving units are a free tank.
-
-WHAT IT DOES NOT DO
--------------------
-It does not touch the reward, and it must not. A scenario that also paid a bonus
-would be a reward change wearing a curriculum's clothes, and the smoke run could
-not attribute anything.
-
-CONTRACTS THAT BITE
--------------------
-* `set_hand_for_team` RETURNS FALSE and changes nothing on a hand that is not a
-  valid permutation of that team's remaining pool. It is checked here, because a
-  silently rejected setup is worse than no setup at all: the episode still counts
-  as injected and the diagnostic would report practice that never happened.
-* `inject` bypasses hand, elixir and placement legality entirely -- correct for
-  building a hypothetical position, and the reason the spawn coordinates below
-  are ABSOLUTE board coordinates rather than either team's own frame.
-* `inject` QUEUES the spawn; the unit does not appear on the board (or in any
-  observation) until one tick has been stepped. Measured: enemy mass reads 0.0
-  immediately after inject and 0.399 after a single tick. A scenario that
-  skipped that tick would hand the agent an observation showing an EMPTY board
-  while the engine was about to spawn a push -- invisible, and exactly the kind
-  of silent state/observation mismatch this project has paid for. The tick is
-  stepped with `step_self_play` rather than `step` so the C++ heuristic does not
-  get a free move inside the setup, and elixir is written AFTER it so the bars
-  are exactly what the scenario says they are (a tick regenerates 0.035).
-* Elixir is clamped to [0, 10] by the engine, so a caller cannot construct a bar
-  the engine itself could never reach.
+Contracts:
+* `set_hand_for_team` returns False and changes nothing on an invalid hand;
+  checked here, so a rejected setup is not counted as a scenario.
+* `inject` bypasses hand, elixir and placement rules, hence absolute board
+  coordinates, and only queues the spawn: one tick must be stepped (with
+  `step_self_play`, so the heuristic gets no move) before it appears. Elixir is
+  written after that tick.
 """
 import os
 
@@ -76,42 +29,28 @@ from python_ai import engine_constants as EC
 
 CE = E.ClashRoyaleEnv
 
-# Off by default -- see the module docstring. The payoff is fixed first.
+# Off by default; see the module docstring.
 OFFENSIVE_SCENARIO_PROB = float(os.environ.get("CLASH_OFFENSIVE_SCENARIO_PROB", 0.0))
 
-# These two bindings were added by commit 26de409 (2026-08-17) and the
-# post-build copy into python_ai/ FAILED silently -- exactly the MSB3073
-# file-lock failure CLAUDE.md documents, which "looks exactly like the compile
-# is broken and almost never is". A .pyd that predates them raises
-# AttributeError deep inside a scenario constructor, mid-episode, which is a
-# terrible place to discover a stale build. Detect it once, here, instead.
+# A .pyd built before these bindings raises AttributeError mid-episode; detect
+# it once here.
 HAS_STATE_SETTERS = all(hasattr(CE, m)
                         for m in ("set_elixir_for_team", "set_hand_for_team"))
 
-# ABSOLUTE board coordinates (inject bypasses every frame conversion).
-# Team 0 attacks toward HIGH y, team 1 toward LOW y.
-#
-# DERIVED, NOT RESTATED. These were literals -- `BRIDGE_XS = (4.0, 14.0)` and
-# `RIVER_Y = 16.5` -- and the x pair was ALREADY STALE: the 2026-08-21
-# re-centring moved the bridges to 2.5 / 14.5, and x = 4 is water. Nothing
-# caught it because this module is default-OFF, so the error was waiting for
-# whoever first switched Proposal A on to measure it wrong.
-#
-# `ArenaLayout` is bound as `clash_royale_env.ARENA_*` and surfaced through
-# `engine_constants` precisely so this file does not have to know.
+# Absolute board coordinates (inject bypasses frame conversion); team 0 attacks
+# toward high y. Derived from ArenaLayout.
 BRIDGE_XS = (EC.LEFT_BRIDGE_X, EC.RIGHT_BRIDGE_X)
 RIVER_Y = EC.BRIDGE_Y
-OWN_SIDE_Y = 13.0        # our half, short of our Princess towers
+OWN_SIDE_Y = 13.0        # our half, short of our Princess Towers
 ENEMY_SIDE_Y = 20.0      # their half, just past the river
 
 
 def _wincon_and_filler(deck):
-    """(wincon id, three other deck cards) -- the hand a punish scenario needs.
+    """(win condition id, three other deck cards): the hand a punish scenario
+    needs.
 
-    The win condition is the deck's building-targeter, derived from the engine
-    by `teacher.card_roles` rather than hardcoded, so this survives a deck
-    change. Returns (None, None) for a deck with no win condition, which is a
-    legitimate deck -- the scenario is then skipped rather than crashing.
+    (None, None) for a deck without a win condition; the scenario is then
+    skipped.
     """
     from python_ai.opponents.teacher import card_roles
     roles = card_roles(deck)
@@ -125,10 +64,8 @@ def _wincon_and_filler(deck):
 
 
 def _settle(env):
-    """One tick, so queued `inject` spawns actually reach the board.
-
-    step_self_play, not step: `step` would run the C++ HeuristicOpponent, giving
-    team 1 a free move inside what is supposed to be a state SETUP.
+    """One tick so queued `inject` spawns reach the board, via step_self_play so
+    the C++ heuristic gets no free move.
     """
     env.step_self_play(-1, 0.0, 0.0, -1, 0.0, 0.0, 1)
 
@@ -139,13 +76,12 @@ def punish_window(env, rng, deck):
     if wincon is None:
         return None
     if not env.set_hand_for_team(0, [wincon] + others):
-        # Loud rather than silent: an unusable hand means this episode is NOT a
-        # punish scenario and must not be counted as one.
+        # An unusable hand means this is not a punish scenario; do not count
+        # it.
         return None
 
-    # Their commitment, in one lane, already crossing. Two bodies so a single
-    # cheap answer does not trivially erase it -- otherwise the "punish" is free
-    # and teaches nothing about the trade.
+    # Their commitment in one lane, already crossing: two bodies, so one cheap
+    # answer does not erase it.
     lane = int(rng.integers(2))
     x = BRIDGE_XS[lane]
     for cid, dy in ((wincon, 0.0), (others[0], 2.0)):
@@ -166,7 +102,7 @@ def counter_push(env, rng, deck):
 
     lane = int(rng.integers(2))
     x = BRIDGE_XS[lane]
-    # Survivors on OUR side of the river, healthy enough to escort a push.
+    # Survivors on our side of the river, able to escort a push.
     for cid, dy in ((others[0], 0.0), (others[1], 2.0)):
         env.inject(int(cid), float(x), float(OWN_SIDE_Y - dy), 0)
     _settle(env)
@@ -179,11 +115,10 @@ SCENARIOS = (punish_window, counter_push)
 
 
 def apply_offensive_scenario(env, rng, deck, prob=None):
-    """With probability `prob`, rewrite the freshly-reset state into a punish.
+    """With probability `prob`, rewrite the freshly reset state into a punish.
 
-    Returns the scenario's name, or None if nothing was applied -- including
-    when the engine REFUSED the setup, so a caller counting injections counts
-    only the ones that really happened.
+    Returns the scenario's name, or None if nothing was applied, including when
+    the engine refused the setup.
     """
     p = OFFENSIVE_SCENARIO_PROB if prob is None else float(prob)
     if p <= 0.0 or float(rng.random()) >= p:

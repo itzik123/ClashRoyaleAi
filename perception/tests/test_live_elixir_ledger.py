@@ -1,12 +1,8 @@
 """Tests for live/elixir_ledger.py.
 
-Synthetic traces rather than a recording fixture, because each test pins one
-failure mode that was actually observed and a recording mixes them all
-together. The end-to-end number the module was fitted against (29 cards,
-residual +12%, over 935 frames of a real match) lives in the module docstring
-and BOT_REQUESTS.md item 8.
-
-No engine import: costs are injected, so this runs without the .pyd.
+Synthetic traces, since each test pins one observed failure mode and a
+recording mixes them. No engine import: costs are injected, so this runs
+without the .pyd.
 """
 from __future__ import annotations
 
@@ -16,9 +12,10 @@ from live.elixir_ledger import DEFAULT_COSTS, ElixirLedger, decompositions
 
 
 def feed(values, costs=DEFAULT_COSTS, dt=0.1):
-    """Readings `dt` apart. Explicit, because the ledger models regeneration
-    between samples and letting it default to the wall clock would make every
-    test depend on how fast the loop happened to run."""
+    """Readings `dt` apart, explicitly: the ledger models regeneration between
+    samples, and a wall-clock default would make every test depend on loop
+    speed.
+    """
     ledger = ElixirLedger(costs=costs)
     for i, v in enumerate(values):
         ledger.update(v, now=i * dt)
@@ -40,12 +37,10 @@ def test_regen_is_not_counted_as_spend():
 
 
 def test_an_isolated_zero_is_despiked_not_read_as_a_10_elixir_spend():
-    """The observed reader failure: a lone 0 inside a stable run.
-
-    CRBAB's `_calculate_elixir` takes the first window whose rolling std falls
-    under a threshold, so a low-variance patch at the ROI's left edge reads ~0
-    whatever the true level. Untreated this looks like a huge spend followed by
-    an impossible instant refill.
+    """The observed reader failure: a lone 0 inside a stable run (CRBAB's
+    `_calculate_elixir` latching onto a low-variance patch at the ROI's left
+    edge). Untreated it looks like a huge spend followed by an impossible
+    refill.
     """
     ledger = feed([7, 7, 7, 7, 0, 7, 7, 7])
     assert ledger.glitches >= 1
@@ -54,10 +49,7 @@ def test_an_isolated_zero_is_despiked_not_read_as_a_10_elixir_spend():
 
 
 def test_two_cards_in_one_sample_are_decomposed():
-    """A drop of 7 is 3+4, not a glitch.
-
-    Rejecting anything above the single-card maximum was the first version's
-    bug and left 39% of a real match's elixir unaccounted for.
+    """A drop of 7 is 3+4, not a glitch: two plays can land inside one sample.
     """
     ledger = feed([10, 10, 10, 3, 3, 3])
     assert ledger.cards == 2
@@ -65,15 +57,10 @@ def test_two_cards_in_one_sample_are_decomposed():
 
 
 def test_a_drop_below_the_cheapest_card_is_not_a_placement():
-    """1-2 elixir steps are integer quantisation noise. Counting them would
-    invent placements that never happened, and the total is cumulative so the
-    error would never wash out.
-
-    It is not counted as `unexplained` either: a sub-threshold difference is
-    the NORMAL case between two samples of an integer bar, so counting it would
-    fire on almost every frame and tell nobody anything. `unexplained` is
-    reserved for a drop large enough to be a play that still matches no legal
-    combination of costs.
+    """1-2 elixir steps are integer quantisation noise; counting them would invent
+    placements in a cumulative total. Not `unexplained` either: that is the
+    normal case between two samples, and `unexplained` is reserved for a
+    play-sized drop matching no legal combination.
     """
     ledger = feed([8, 8, 8, 7, 7, 7])
     assert ledger.cards == 0
@@ -82,16 +69,17 @@ def test_a_drop_below_the_cheapest_card_is_not_a_placement():
 
 
 def test_residual_is_positive_when_regen_overflows_the_cap():
-    """Conservation is one-sided: elixir regenerated while the bar sits at 10
-    is invisible, so `gained` under-counts and the residual runs positive. A
-    NEGATIVE residual would mean spend was invented, which is the real alarm."""
+    """Time sitting at the cap credits nothing, so the residual must not go
+    negative, which would mean spend was invented.
+    """
     ledger = feed([10, 10, 10, 10, 10, 10, 6, 6, 6])
     assert ledger.residual >= 0
 
 
 def test_unreadable_frames_are_skipped_not_treated_as_zero():
-    """None means the bar could not be read. Treating it as 0 would fabricate
-    a 10-elixir spend out of a failed reading."""
+    """None means the bar could not be read; treating it as 0 would fabricate a
+    10-elixir spend.
+    """
     ledger = feed([6, 6, 6, None, None, 6, 6, 6])
     assert ledger.cards == 0
     assert ledger.spent == 0.0
@@ -107,8 +95,7 @@ def test_decompositions_cover_one_to_three_cards():
 
 
 def test_costs_are_injected_so_a_different_deck_works():
-    """Costs come from the caller, not a copy of the deck baked in here --
-    the duplicated-constant drift CLAUDE.md names twice."""
+    """Costs come from the caller, not a copy of the deck baked in here."""
     ledger = feed([9, 9, 9, 7, 7, 7], costs=(2.0, 6.0))
     assert ledger.cards == 1
     assert ledger.spent == pytest.approx(2.0)
@@ -121,14 +108,13 @@ def test_a_ledger_with_no_input_is_inert():
     assert ledger.residual == 0.0
 
 
-# --- rate independence -------------------------------------------------------
+# --- rate independence ---
 
 def _trace(rate_hz, plays=((6.0, 4.0), (20.0, 3.0), (40.0, 5.0)),
            duration=60.0, regen_per_s=1.0 / 2.8, cap=10.0, start=5.0):
     """An integer-quantised elixir bar sampled at `rate_hz`, with known plays.
-
-    Quantisation is the point: the reader returns whole elixir, so each end of
-    a measured drop carries up to +/-0.5.
+    Quantisation is the point: each end of a measured drop carries up to
+    +/-0.5.
     """
     fine, t, elixir = 0.01, 0.0, start
     pending = list(plays)
@@ -151,11 +137,8 @@ def _run(rate_hz):
 
 
 def test_spend_does_not_depend_on_the_sample_rate():
-    """The regression this fix exists for. The ledger was built and scored at
-    ~10 fps and is fed at ~1.5 Hz live, because the producer's rate became the
-    detector's rate. Rate-blind, it recovered -48% of spend at 1.5 Hz and -82%
-    at 1 Hz: `drop = last - value` silently assumed no regeneration between
-    samples, which is 0.036 elixir at 10 fps and 0.24 at 1.5 Hz.
+    """The ledger is fed at ~1.5 Hz live. `drop = last - value` would assume no
+    regeneration between samples: 0.036 elixir at 10 fps, 0.24 at 1.5 Hz.
     """
     true_spent = 12.0
     for rate in (10.0, 5.0, 2.0, 1.5):
@@ -166,10 +149,9 @@ def test_spend_does_not_depend_on_the_sample_rate():
 
 
 def test_regeneration_is_credited_even_while_a_card_is_played():
-    """`gained` is modelled inflow, not observed rises, so a sample containing
-    a placement still accrues its regen. Reading it off the bar made `gained`
-    one-sided -- time spent at the 10 cap was invisible -- and the residual
-    biased positive by design."""
+    """`gained` is modelled inflow, not observed rises, so a sample containing a
+    placement still accrues its regen.
+    """
     ledger = _run(2.0)
     assert ledger.gained > 15.0
     # gained == spent + (final - initial), within quantisation.
@@ -177,9 +159,9 @@ def test_regeneration_is_credited_even_while_a_card_is_played():
 
 
 def test_time_at_the_cap_is_not_credited_as_regeneration():
-    """Elixir cannot accumulate past 10, so a bar sitting there gains nothing.
-    Crediting it would invent inflow and make the residual demand a placement
-    that never happened."""
+    """Elixir cannot accumulate past 10; crediting inflow there would make the
+    residual demand a placement that never happened.
+    """
     ledger = ElixirLedger()
     for i in range(20):
         ledger.update(10.0, now=i * 1.0)
@@ -188,8 +170,9 @@ def test_time_at_the_cap_is_not_credited_as_regeneration():
 
 
 def test_the_nearest_decomposition_wins_not_the_cheapest():
-    """With an integer bar most drops are ambiguous between adjacent costs.
-    Taking the smallest qualifying total biased every one of them downward."""
+    """With an integer bar most drops are ambiguous between adjacent costs; the
+    smallest qualifying total would bias every one downward.
+    """
     ledger = ElixirLedger(tolerance=1.0)
     for i, v in enumerate([9, 9, 9, 5, 5, 5]):
         ledger.update(v, now=i * 0.1)
@@ -198,8 +181,9 @@ def test_the_nearest_decomposition_wins_not_the_cheapest():
 
 
 def test_a_double_elixir_multiplier_changes_the_expected_regen():
-    """Regen is doubled after the 2x mark; modelling it at 1x under-counts the
-    inflow and shrinks every measured drop."""
+    """Regen doubles after the 2x mark; modelling it at 1x shrinks every measured
+    drop.
+    """
     single = ElixirLedger()
     double = ElixirLedger()
     for i in range(6):
@@ -208,12 +192,12 @@ def test_a_double_elixir_multiplier_changes_the_expected_regen():
     assert double.gained == pytest.approx(2 * single.gained, rel=1e-6)
 
 
-# --- ground truth from our own plays ----------------------------------------
+# --- ground truth from our own plays ---
 
 def test_a_confirmed_play_uses_the_cost_we_know_not_a_guess():
-    """The bar cannot separate 3 from 4 -- each endpoint of a drop is quantised
-    to whole elixir. Knowing what we issued turns that ambiguity into
-    arithmetic."""
+    """The bar cannot separate 3 from 4; knowing what we issued turns that into
+    arithmetic.
+    """
     ledger = ElixirLedger()
     ledger.record_play(3.0, now=0.0)
     for i, v in enumerate([9, 9, 9, 6, 6, 6]):
@@ -223,8 +207,9 @@ def test_a_confirmed_play_uses_the_cost_we_know_not_a_guess():
 
 
 def test_an_issued_play_is_not_spend_until_the_bar_confirms_it():
-    """A tap can be rejected: by the time it reaches the game the elixir it
-    needed may already be gone. Counting it at issue would invent spend."""
+    """A tap can be rejected (the elixir may be gone by the time it lands), so
+    counting it at issue would invent spend.
+    """
     ledger = ElixirLedger()
     ledger.record_play(4.0, now=0.0)
     assert ledger.spent == 0.0
@@ -233,8 +218,9 @@ def test_an_issued_play_is_not_spend_until_the_bar_confirms_it():
 
 
 def test_an_unconfirmed_play_is_written_off_not_carried_forever():
-    """Otherwise a single rejected tap would debit the agent's elixir for the
-    rest of the match."""
+    """Otherwise one rejected tap would debit the agent's elixir for the rest of
+    the match.
+    """
     ledger = ElixirLedger()
     ledger.record_play(4.0, now=0.0)
     for i, v in enumerate([7] * 6):
@@ -245,8 +231,9 @@ def test_an_unconfirmed_play_is_written_off_not_carried_forever():
 
 
 def test_unconfirmed_cost_is_what_stops_the_double_spend():
-    """The burst: the agent commits, the bar has not moved yet, and it commits
-    again against the same visually stale elixir."""
+    """The burst: the agent commits, the bar has not moved, and it commits again
+    against the same stale elixir.
+    """
     ledger = ElixirLedger()
     ledger.record_play(5.0, now=0.0)
     ledger.record_play(4.0, now=0.5)
@@ -266,8 +253,9 @@ def test_two_issued_plays_confirmed_by_one_drop():
 
 
 def test_inference_still_works_with_nothing_pending():
-    """The observer case -- a recording of someone else playing -- has no issue
-    stream at all, and is what the BC extraction will run on."""
+    """The observer case (a recording of someone else playing) has no issue
+    stream; BC extraction runs on it.
+    """
     ledger = ElixirLedger()
     for i, v in enumerate([9, 9, 9, 5, 5, 5]):
         ledger.update(v, now=i * 0.1)
@@ -276,8 +264,9 @@ def test_inference_still_works_with_nothing_pending():
 
 
 def test_a_drop_matching_no_pending_play_falls_back_to_inference():
-    """Something spent elixir that we did not issue. Dropping it silently would
-    leave the residual demanding a placement nobody can find."""
+    """Something spent elixir we did not issue. Dropping it silently would leave
+    the residual demanding a placement nobody can find.
+    """
     ledger = ElixirLedger()
     ledger.record_play(3.0, now=0.0)
     for i, v in enumerate([10, 10, 10, 5, 5, 5]):   # a drop of 5, not 3
@@ -287,11 +276,11 @@ def test_a_drop_matching_no_pending_play_falls_back_to_inference():
 
 
 def test_record_play_defaults_to_the_ledgers_own_clock():
-    """Time bases must not mix. The live loop stamps readings with the frame's
-    capture time, which starts near zero; `time.monotonic()` is in the hundreds
-    of thousands. Mixed, every expiry comparison passes, nothing is ever
-    written off, and `unconfirmed_cost` grows without bound until the
-    optimistic debit reports zero elixir for the rest of the match."""
+    """Time bases must not mix: readings carry frame capture time (near zero),
+    `time.monotonic()` is in the hundreds of thousands. Mixed, nothing ever
+    expires and the optimistic debit reads zero elixir for the rest of the
+    match.
+    """
     ledger = ElixirLedger()
     for i, v in enumerate([7, 7, 7]):
         ledger.update(v, now=i * 0.5)          # frame clock, near zero

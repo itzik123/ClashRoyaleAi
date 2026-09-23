@@ -2,11 +2,7 @@
 #include "PeriodicEffect.h"
 #include "CombatEntity.h"
 
-// Electro Giant's periodic shock: stuns every enemy CombatEntity within
-// radius of this entity's own position, on a repeating timer (see
-// CombatEntity::periodicEffect). Deals no damage -- the real shock is a
-// pure stun, same "freeze with slowFactor 0" pattern as Electro Wizard's
-// zap.
+// Electro Giant's periodic shock: stuns every enemy within radius. No damage.
 class AreaStunEffect : public IPeriodicEffect {
     float radius;
     int stunTicks;

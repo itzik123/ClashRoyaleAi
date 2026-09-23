@@ -1,42 +1,21 @@
-"""Generate PAIRED replay logs for the viewer: original vs distilled, same opening.
+"""Generate paired replays for the viewer: two nets (or net vs net + search) from
+the same opening.
 
-Writes replays in the format `web/viewer.html` already reads (drop the JSON on
-the page), annotated per tick with what the network chose and what its critic
-thought the position was worth -- the same `annotate_replay_with_agent_info`
-train.py uses, so the viewer shows the same overlays it always has.
+Writes the format `web/viewer.html` reads, annotated per tick with the net's
+choice and its critic's value (`annotate_replay_with_agent_info`, as train.py
+uses). env.snapshot() gives both arms a bit-identical start, so any divergence
+on screen is the policy, not the deal:
 
-WHY PAIRED
-----------
-Watching one agent play tells you very little: a single episode is one draw from
-a distribution whose control arm alone measured 0.625 / 0.570 / 0.700 / 0.634
-across four runs. Two agents playing the SAME opening is what makes a visual
-comparison mean anything -- env.snapshot() hands both arms a bit-identical
-start (same shuffled hand, same heuristic-opponent lane), so any divergence you
-see on screen is the policy and not the deal.
+    replay_<i>_A_original.json    --original
+    replay_<i>_B_distilled.json   --distilled (or _B_search with --search)
 
-Each opening produces two files with the same index:
+The first tick where the two boards differ is the first decision that changed.
+Most pairs play out identically; use `--n 10` and the printed divergence
+summary to find the ones worth watching.
 
-    replay_<i>_A_original.json    model_weights_selfplay.pth
-    replay_<i>_B_distilled.json   whatever --distilled points at
+These are the simulator against the C++ HeuristicOpponent, not the live game.
 
-Scrub them side by side and the first tick where the two boards differ is the
-first decision the distillation changed.
-
-WHAT THESE REPLAYS ARE, AND ARE NOT
------------------------------------
-They are the C++ simulator playing against the built-in HeuristicOpponent at
-1.5x elixir -- exactly the setting every measured number in CLAUDE.md came from.
-They are NOT the live game, and nothing here is evidence about sim-to-real
-transfer.
-
-Also: the measured effect is +0.045 win rate. That is ~1 game in 22, so most
-paired replays will look IDENTICAL or differ only in small ways. If you watch
-three pairs and see no obvious difference, that is the expected outcome, not a
-bug -- the effect is real but small, and a handful of episodes cannot show it.
-Use `--n 10` and the printed divergence summary to find the pairs worth watching.
-
-Run:
-    python_ai/venv/Scripts/python.exe python_ai/make_replays.py --n 5
+    python_ai/venv/Scripts/python.exe python_ai/tools/make_replays.py --n 5
 """
 import argparse
 import time
@@ -48,9 +27,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -61,11 +38,6 @@ from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.search.config import SearchCfg  # noqa: E402
 from python_ai.models.policy_io import load_net, LSTM_HIDDEN  # noqa: E402
 from python_ai.rl.replay import annotate_replay_with_agent_info  # noqa: E402
-# These four were USED by play_and_log but never imported, so this script died
-# with `NameError: LSTM_HIDDEN` on its first episode and could not be run at
-# all. Lost in the 2026-08-20 package restructuring, the same way
-# trainers/bc_pretrain.py lost its script bootstrap; found 2026-08-21 while
-# adding --teacher-debug.
 from python_ai.search.search import (  # noqa: E402
     policy_head, greedy_from_logits, search_action, outcome_score,
 )
@@ -98,8 +70,8 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
             action, _, _ = search_action(net, env, obs_t, card_logits, card_embeds,
                                           spatial_map, hidden_next, action, cfg, device)
 
-        # The hand is read BEFORE stepping: playCard consumes the slot and cycles
-        # a new card in, so reading it after would name the replacement.
+        # Read the hand before stepping: playCard cycles a new card into the
+        # slot.
         hand = list(env.get_hand())
         idx = action[0]
         card_id = hand[idx] if idx < len(hand) else -1
@@ -124,24 +96,15 @@ def play_and_log(net, env, device, path, cfg=None, use_search=False, max_steps=4
 def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
                             seed=None, max_steps=400, opp_deck=None):
     """One episode of `net` against the UtilityTeacher, with the teacher's
-    candidate rollouts recorded into the replay for the viewer.
+    candidate rollouts recorded into the replay.
 
-    `stage` defaults to the TOP rung, derived rather than written as a literal:
-    it was `stage=5`, which meant the final rung against the six-rung teacher
-    table and means the middle of the eleven-rung one -- so the default would
-    have silently started recording replays against a 4-second teacher instead
-    of a 10-second one.
+    `stage` defaults to the top rung. A separate function from play_and_log
+    because env.step() runs the C++ heuristic internally; here team 1's move
+    comes from the teacher and both sides go through step_self_play.
 
-    A SEPARATE FUNCTION FROM play_and_log, because the opponent is genuinely
-    different plumbing rather than a parameter: play_and_log calls env.step(),
-    which runs the C++ HeuristicOpponent internally, and there is no teacher in
-    that path to record. Here team 1's move comes from the teacher and both
-    sides go through step_self_play.
-
-    The teacher's (x, y) is passed through UNCONVERTED. It returns coordinates
-    in its own mirrored frame and stepSelfPlay mirrors y back itself
-    (realY1 = BOARD_HEIGHT - 1 - y1); converting here would double-mirror and
-    put every opponent placement in its own back corner.
+    The teacher's (x, y) is passed through unconverted: it is in the teacher's
+    mirrored frame and stepSelfPlay mirrors y back itself. Converting here
+    would double-mirror.
     """
     teacher = CapturingTeacher(list(opp_deck or DEFAULT_DECK), team=1, seed=seed,
                                top_k=top_k)
@@ -190,16 +153,8 @@ def play_and_log_vs_teacher(net, env, device, path, stage=None, top_k=4,
 def resolve_opp_decks(spec, n):
     """`n` opponent decks: DEFAULT_DECK, one named pool deck, or the pool.
 
-    THIS TOOL RECORDED THE 2.6 MIRROR UNCONDITIONALLY until 2026-09-04 -- both
-    `CE(...)` calls passed DEFAULT_DECK twice and the teacher was built from it
-    too. So every replay ever produced for the viewer showed the one matchup
-    that `measure_deck_matchups.py` ranks 16th of 16 on opportunity for Cannon /
-    The Log / Fireball, while the trainer had been playing a 16-deck pool since
-    2026-09-03. The visual evidence and the training distribution had silently
-    diverged.
-
-    Returns a list of (name, card_ids) of length `n`, cycling if the pool is
-    shorter, so replay i and replay i of another run face the same opponent.
+    Returns (name, card_ids) pairs of length `n`, cycling the pool, so replay i
+    faces the same opponent across runs.
     """
     if not spec:
         return [("2.6 mirror (DEFAULT_DECK)", list(DEFAULT_DECK))] * n
@@ -218,12 +173,8 @@ def resolve_opp_decks(spec, n):
 
 
 def _run_teacher_debug(args, net, device, outdir):
-    """--teacher-debug: one replay per opening, teacher reasoning recorded.
-
-    Deliberately NOT paired. The paired A/B above exists to compare two nets
-    against a fixed opponent; this mode exists to watch ONE net against an
-    opponent whose reasoning is visible, which is a different question and a
-    different artifact.
+    """--teacher-debug: one replay per opening, with the teacher's reasoning
+    recorded. Not paired: this watches one net against a visible opponent.
     """
     print(f"\nopponent : UtilityTeacher @ stage {args.teacher_stage}")
     print(f"opp deck : {args.opp_deck or '2.6 mirror (DEFAULT_DECK)'}")
@@ -263,12 +214,9 @@ def main():
     ap.add_argument("--outdir", default="replays_e3")
     ap.add_argument("--opp-elixir", type=float, default=1.5)
     ap.add_argument("--opp-deck", default=None,
-                    help="opponent deck: a meta_decks.json NAME, or 'pool' to "
-                         "round-robin the whole 16-deck pool. Omitted, both "
-                         "sides play DEFAULT_DECK -- the 2.6 MIRROR, which is "
-                         "what this tool did unconditionally until 2026-09-04 "
-                         "and which ranks 16th of 16 on opportunity for "
-                         "Cannon / The Log / Fireball.")
+                    help="opponent deck: a meta_decks.json name, or 'pool' to "
+                         "round-robin the whole pool. Omitted, both sides play "
+                         "DEFAULT_DECK (the mirror).")
     ap.add_argument("--max-ticks", type=int, default=3600)
     ap.add_argument("--search", action="store_true",
                     help="arm B uses 1-ply search instead of the distilled net")
@@ -279,7 +227,7 @@ def main():
                          "View. Not paired: one replay per opening.")
     ap.add_argument("--teacher-stage", type=int,
                     default=len(TEACHER_STAGES) - 1,
-                    help="teacher competence rung for --teacher-debug (0-5)")
+                    help="teacher rung for --teacher-debug (default: the top one)")
     ap.add_argument("--teacher-top-k", type=int, default=4,
                     help="candidates per decision that get a predicted board. "
                          "Each costs ~32 ms; the rest are recorded score-only.")
@@ -321,8 +269,8 @@ def main():
         rb, sb, plays_b = play_and_log(net_b, base.snapshot(), device, pb,
                                        cfg=cfg, use_search=args.search)
 
-        # First decision index where the two arms chose differently -- the tick
-        # to scrub to if you want to see what actually changed.
+        # First decision where the arms chose differently: the tick to scrub
+        # to.
         first_div = None
         for k in range(min(len(plays_a), len(plays_b))):
             if plays_a[k] != plays_b[k]:

@@ -1,59 +1,34 @@
-"""Read the REAL game's deployable region straight off the screen.
+"""Read the real game's deployable region straight off the screen.
 
     perception/.venv/Scripts/python.exe perception/tools/deploy_zone.py --slots 0,1,2,3
 
-WHY THIS IS THE ORACLE THE PROJECT HAS BEEN MISSING
----------------------------------------------------
-Every previous attempt to decide whether a placement was legal asked the
-SIMULATOR (`ClashRoyaleEnv.is_valid_placement`). The mask the bot plays with is
-built from that same predicate, so the check was circular and could only ever
-return "all legal" -- see handoff.md section 0. The game kept refusing taps
-anyway.
-
-Clash Royale answers the question itself, for free, every time a card is
-selected: it tints the region you may NOT deploy into red. So
+Checking placements against the simulator's `is_valid_placement` is circular:
+the bot's mask is built from that predicate. The game answers the question
+itself whenever a card is selected, by tinting the region you may not deploy
+into red. So
 
     screenshot with no card selected
     tap a hand slot
     screenshot with the card selected
     subtract
 
-is a direct, dense, per-pixel readout of the real rule -- 288 cells at once,
-costing zero elixir, with no policy, no detector and no inference in the loop.
+reads the real rule for 288 cells at once, at zero elixir, with no policy or
+detector in the loop. The tint raises redness (R - (G+B)/2) by 55-107 inside
+the forbidden region and by 0.0-0.2 outside, so the threshold is not a tuning
+parameter.
 
-Measured on a Training Camp match: the tint raises "redness" (R - (G+B)/2) by
-55-107 inside the forbidden region and by 0.0-0.2 outside it. Two orders of
-magnitude of separation, so the threshold is not a tuning parameter.
+The tint is sampled at `engine_tile_centre(x, y)`, the pixel the actuator would
+tap, so a cell reads illegal if the game forbids it or our tile grid maps it
+outside the allowed area: the composition that decides whether a card deploys.
 
-WHAT IT TESTS THAT A PURE RULE COMPARISON CANNOT
-------------------------------------------------
-It samples the tint at `engine_tile_centre(x, y)` -- the exact pixel the
-actuator would tap for that cell. So a cell is reported illegal if EITHER the
-game forbids that area OR our tile grid maps the cell to a pixel outside it.
-Legality and calibration are the same question from the actuator's point of
-view, and this measures the composition of the two, which is what actually
-decides whether a card deploys.
+One baseline, then switch selection; never deselect. A second tap on a selected
+slot does not cancel the selection, so a later baseline would already contain
+the tint. Tapping a different slot switches the selection.
 
-ONE BASELINE, THEN SWITCH SELECTION -- NEVER DESELECT
------------------------------------------------------
-The obvious loop is select / measure / deselect / repeat, and it does not work.
-A second tap on an already-selected slot does NOT cancel the selection, so
-every baseline after the first was captured with the previous card's tint still
-on screen and the difference came out at ~0 everywhere -- which reads as "the
-whole board is legal".
-
-Tapping a DIFFERENT slot switches the selection (the card tray is not the
-arena, so it cannot place a card), so one clean baseline taken before any card
-is touched serves every slot.
-
-BOTH FAILURE MODES OF THIS MEASUREMENT ARE "EVERYTHING IS LEGAL"
-----------------------------------------------------------------
-An unaffordable card selects nothing; a stale baseline already contains the
-tint; a tap pixel outside the arena is untinted because there is no board
-there. All three produce a confident, maximally permissive, entirely wrong
-answer -- the same shape of error as validating a mask against the predicate
-that generated it. Hence CONTROL_ROWS and `in_arena`, which are not belt and
-braces but the only things standing between this tool and that answer.
+Every failure mode of this measurement answers "everything is legal": an
+unaffordable card selects nothing, a stale baseline already holds the tint, a
+tap pixel outside the arena is untinted. CONTROL_ROWS and `in_arena` guard
+against that.
 """
 from __future__ import annotations
 
@@ -82,42 +57,32 @@ from clashroyalebuildabot.constants import (  # noqa: E402
 from live.actuator import ADB, card_centre, engine_tile_centre  # noqa: E402
 from live.adapter import TILE_Y_OFFSET  # noqa: E402
 
-# Redness delta above which a pixel counts as tinted. The two populations sit at
-# ~0.1 and ~60, so anything in 10..40 gives the same answer; 15 is the midpoint
-# of the gap on a log scale and is quoted in the module docstring.
+# Redness delta above which a pixel counts as tinted. The populations sit at
+# ~0.1 and ~60, so anything in 10..40 gives the same answer.
 TINT_THRESHOLD = 15.0
 
-# Half-width of the patch sampled around a tile centre, in DISPLAY pixels. A
-# tile is 37.4 x 28.8, so +/-6 stays well inside one tile while giving 169
-# samples to take a median over -- enough that a unit standing on the tile, a
-# tower edge or the HP-bar overlay cannot flip the verdict.
+# Half-width of the patch sampled around a tile centre, in display pixels. A
+# tile is 37.4 x 28.8, so +/-6 stays inside it and gives 169 samples, enough
+# that a unit, a tower edge or an HP bar cannot flip the median.
 PATCH = 6
 
-# The engine's own half for team 0 is rows 0..15 (18 x 16 = 288 cells), which is
-# what model.py's placement_mask offers a troop. Derived below from the binding
-# when it is importable; this is the fallback for a machine without the .pyd.
+# The engine's own half for team 0 is rows 0..15 (18 x 16 = 288 cells), what
+# the net's placement_mask offers a troop. Derived from the binding when
+# importable; this is the fallback.
 FALLBACK_OWN_HALF_ROWS = 16
 
-# THE INTERNAL CONTROL, and the reason the first run of this tool produced a
-# confident, entirely wrong "288/288 cells legal".
-#
-# Tapping a card the player cannot afford selects nothing, so no tint appears,
-# so every cell reads as untinted, so every cell reads as LEGAL. The failure
-# mode of this measurement is silently maximal permissiveness -- exactly the
-# shape of error handoff.md section 0 is about, arrived at from the other side.
-#
-# So the tint is verified against a region that MUST be forbidden whenever a
-# card really is selected: deep in the enemy half. If that band is not tinted,
-# the selection did not happen and the frame is discarded rather than believed.
+# The internal control. An unaffordable card selects nothing, so no tint
+# appears and every cell reads legal. A band deep in the enemy half must be
+# tinted whenever a card really is selected; if it is not, the frame is
+# discarded.
 CONTROL_ROWS = (20, 28)          # DETECTOR rows, well past the river
 CONTROL_MIN_DELTA = 20.0
 
 
 def screencap(adb: Path, path: Path | None = None) -> Image.Image:
-    # The adb daemon-start banner lands on STDOUT ahead of the PNG on the first
-    # call of a session -- see match_nav.decode_screencap, which owns the one
-    # copy of that knowledge. Saving `raw` unstripped would also write a
-    # corrupt .png to `path`, so the offset is resolved BEFORE the write.
+    # The adb daemon-start banner can precede the PNG on stdout;
+    # match_nav.decode_screencap owns that knowledge. The offset is resolved
+    # before the write, so `path` never receives a corrupt .png.
     from match_nav import _PNG_MAGIC, decode_screencap  # noqa: PLC0415
 
     p = subprocess.run([str(adb), "exec-out", "screencap", "-p"],
@@ -129,19 +94,17 @@ def screencap(adb: Path, path: Path | None = None) -> Image.Image:
 
 
 def redness(img: Image.Image) -> np.ndarray:
-    """R - (G+B)/2. The tint is a red multiply, so it moves this and little else.
-
-    Chosen over a plain per-channel difference because the arena's own grass
-    varies frame to frame (the checkerboard breathes, units cast shadows) while
-    its redness does not.
+    """R - (G+B)/2. The tint is a red multiply, so it moves this and little else,
+    while the grass itself varies frame to frame.
     """
     a = np.asarray(img, dtype=np.float32)
     return a[:, :, 0] - 0.5 * (a[:, :, 1] + a[:, :, 2])
 
 
 def control_tint(delta: np.ndarray) -> float:
-    """Mean redness delta deep in the enemy half -- the "did the card actually
-    get selected" check. See CONTROL_ROWS."""
+    """Mean redness delta deep in the enemy half: did the card actually get
+    selected? See CONTROL_ROWS.
+    """
     from clashroyalebuildabot.constants import (  # noqa: PLC0415
         DISPLAY_HEIGHT,
         TILE_HEIGHT,
@@ -158,12 +121,7 @@ def control_tint(delta: np.ndarray) -> float:
 
 def wait_for_elixir(detector, adb: Path, want: float = 10.0,
                     timeout_s: float = 40.0, serial: str | None = None):
-    """Block until the bar reads `want`, so every slot is affordable.
-
-    Probing at whatever elixir happens to be there is what made the first run
-    useless: the two 4-cost slots were unaffordable, selected nothing, and
-    reported every cell legal.
-    """
+    """Block until the bar reads `want`, so every slot is affordable."""
     deadline = time.monotonic() + timeout_s
     last = None
     while time.monotonic() < deadline:
@@ -191,14 +149,10 @@ def tap(adb: Path, x: int, y: int, serial: str | None = None) -> None:
 
 
 def in_arena(px: int, py: int) -> bool:
-    """Does this pixel lie inside the arena rectangle at all?
-
-    NOT redundant with the tint test, and leaving it out cost the first clean
-    run a wrong answer. The tint only exists inside the arena, so a tap pixel
-    that lands BELOW the board -- in the dead strip above the card tray, which
-    is exactly where engine row 0 lands -- is untinted, and "untinted" was being
-    read as "the game allows it". Off the board is not permission; it is a tap
-    that reaches nothing.
+    """Does this pixel lie inside the arena rectangle? Not redundant with the tint
+    test: the tint exists only inside the arena, so a tap below the board
+    (where engine row 0 lands) is untinted, and off the board is not
+    permission.
     """
     from clashroyalebuildabot.constants import (  # noqa: PLC0415
         DISPLAY_HEIGHT,
@@ -214,12 +168,9 @@ def in_arena(px: int, py: int) -> bool:
 
 
 def tile_is_clear(delta: np.ndarray, px: int, py: int) -> tuple[bool, float]:
-    """Is the tap pixel for this cell inside the arena AND outside the tint?
-
-    Median over a small patch, not the single centre pixel: one pixel can sit on
-    a unit, a tower edge or an HP bar, and those move. The median of 169 makes
-    the verdict a property of the tile rather than of whatever happened to be
-    standing on it.
+    """Is the tap pixel for this cell inside the arena and outside the tint? A
+    median over a small patch, so the verdict belongs to the tile rather than
+    whatever stands on it.
     """
     h, w = delta.shape
     if not (0 <= py < h and 0 <= px < w) or not in_arena(px, py):
@@ -233,8 +184,8 @@ def tile_is_clear(delta: np.ndarray, px: int, py: int) -> tuple[bool, float]:
 def fit_arena_rect(delta: np.ndarray) -> dict:
     """Fit the tile grid to the arena rectangle the game draws for itself.
 
-    The forbidden tint is a solid rectangle covering the enemy half, so its
-    edges ARE board edges and can be read to the pixel:
+    The forbidden tint is a solid rectangle over the enemy half, so its edges
+    are board edges, readable to the pixel:
 
         top    the arena's far edge          -- detector row boundary 32
         bottom the river / own-half edge     -- detector row boundary 15
@@ -242,27 +193,16 @@ def fit_arena_rect(delta: np.ndarray) -> dict:
         right  the arena's right edge        -- column boundary 18
 
     Two y edges 17 row-boundaries apart give TILE_HEIGHT directly, with no
-    landmark whose tile index has to be assumed. That assumption is exactly
-    what the 2026-08-05 refit got wrong: it scaled y off "the two princess HP
-    bars are 21.0 tiles apart" and x off "the two river gaps are 10.0 tiles
-    apart", and both counts were short by one, inflating TILE_HEIGHT by 4% and
-    TILE_WIDTH by 10%.
-
-    The arena's BOTTOM edge is not in the tint (our own half is untinted), so it
-    is extrapolated 15 rows down from the river edge rather than measured. A tap
+    landmark whose tile index must be assumed. The arena's bottom edge is
+    untinted, so it is extrapolated 15 rows down from the river edge; a tap
     scan puts the last deployable pixel at y=981 +/- 1 against 984 predicted
-    here; the last ~3 px sit under the King's HP bar and are swallowed by the
-    UI, which does not move any tile centre.
+    (the last ~3 px sit under the King's HP bar).
     """
     ys = delta[:, 200:520].mean(1)          # mid-board columns only: the side
     xs = delta[200:500, :].mean(0)          # borders and towers are not edges
 
-    # LONGEST CONTIGUOUS RUN, not min/max. Selecting a card also highlights the
-    # card in the tray, which is red and sits at y>1050 -- far below the arena.
-    # Taking the extreme tinted row therefore put the "river" edge at y=1265
-    # and produced a TILE_HEIGHT of 68. The arena block is ~470 rows tall and
-    # the tray highlight is a much shorter separate run, so the longest run is
-    # the board and the rule needs no hardcoded search window.
+    # Longest contiguous run, not min/max: selecting a card also highlights it
+    # in the tray, a shorter separate red run far below the arena.
     def longest_run(profile) -> tuple[int, int]:
         best = cur = None
         for i, v in enumerate(profile):
@@ -294,10 +234,8 @@ def fit_arena_rect(delta: np.ndarray) -> dict:
 
 
 def engine_legality(card_id: int, cells_wide: int, rows: int) -> np.ndarray | None:
-    """The SIMULATOR's verdict for the same cells, or None without the binding.
-
-    Present only so the two can be differenced. It is explicitly NOT the
-    reference: where they disagree the game is right by construction.
+    """The simulator's verdict for the same cells, or None without the binding.
+    For differencing only: where they disagree, the game is right.
     """
     try:
         import clash_royale_env as engine  # noqa: PLC0415
@@ -317,7 +255,7 @@ def engine_legality(card_id: int, cells_wide: int, rows: int) -> np.ndarray | No
 
 
 def render(mask: np.ndarray, rows: int, width: int, mark=None) -> str:
-    """ASCII map, our own back line at the BOTTOM, the way the screen shows it."""
+    """ASCII map, our own back line at the bottom, as the screen shows it."""
     lines = ["      " + "".join(f"{x % 10}" for x in range(width))]
     for y in range(rows - 1, -1, -1):
         row = "".join(
@@ -358,8 +296,8 @@ def main() -> int:
         width, own_rows = 18, FALLBACK_OWN_HALF_ROWS
     rows = args.rows or own_rows
 
-    # The detector is only needed to name the cards and to refuse to run outside
-    # a match. The measurement itself is pure pixels.
+    # The detector only names the cards and refuses to run outside a match; the
+    # measurement is pure pixels.
     from clashroyalebuildabot.detectors.detector import Detector  # noqa: PLC0415
     from clashroyalebuildabot.namespaces.cards import Cards  # noqa: PLC0415
     from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
@@ -387,21 +325,10 @@ def main() -> int:
     if args.save_frames:
         args.save_frames.mkdir(parents=True, exist_ok=True)
 
-    # ONE clean baseline, then SWITCH selection from slot to slot without ever
-    # deselecting.
-    #
-    # The obvious design -- select, measure, deselect, repeat -- does not work,
-    # and failed in a way worth recording: a second tap on an already-selected
-    # slot does NOT cancel the selection, so every baseline after the first was
-    # captured with the previous card's tint still on screen. The delta then
-    # came out at ~0 everywhere, which reads as "the whole board is legal".
-    # Same silently-maximal-permissiveness failure as an unaffordable card.
-    #
-    # Tapping a DIFFERENT slot switches the selection (the card tray is not the
-    # arena, so it cannot place), so one baseline serves every slot and the
-    # whole sweep costs four taps and no elixir. Waiting for full elixir first
-    # makes all four slots affordable at once, which keeps the baseline and the
-    # measurements seconds apart instead of a minute.
+    # One clean baseline, then switch selection slot to slot without
+    # deselecting (module docstring): four taps, no elixir. Waiting for full
+    # elixir first makes all four slots affordable at once, keeping baseline
+    # and measurements seconds apart.
     st = wait_for_elixir(detector, args.adb, 10.0, serial=args.serial)
     if st is None or st.screen.name != "in_game":
         print("left the match while waiting for elixir -- aborting")

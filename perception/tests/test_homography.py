@@ -1,14 +1,9 @@
 """Calibration maths, verified against a known synthetic camera.
 
-No recording is needed to prove the solver correct: a homography is exactly
-invertible, so a known transform can be applied to the tile landmarks to
-produce synthetic "screen" points, and the solver must recover the transform
-that generated them. Anything it gets wrong here it would also get wrong on a
-real frame.
-
-What this cannot check is whether a HUMAN picks the right pixels on a real
-frame -- that is what the held-out landmark error in stage 0's acceptance
-criterion measures, and it needs a recording.
+A homography is exactly invertible, so applying a known transform to the tile
+landmarks yields synthetic screen points from which the solver must recover it.
+What this cannot check is whether a human picks the right pixels on a real
+frame; stage 0's held-out landmark error measures that.
 """
 
 from __future__ import annotations
@@ -21,11 +16,9 @@ from geometry import calibration_anchors, load_geometry, validation_landmarks
 
 
 def _synthetic_camera() -> np.ndarray:
-    """A tile -> screen transform resembling the game's actual camera.
-
-    Scales tiles to pixels, then applies a mild perspective foreshortening in
-    y so far rows are compressed -- the property that makes a plain affine fit
-    wrong by several tiles at the far end of the board.
+    """A tile -> screen transform resembling the game's camera: tiles scaled to
+    pixels, then mild perspective foreshortening in y so far rows are
+    compressed.
     """
     scale = np.array([
         [42.0, 0.0, 120.0],
@@ -55,7 +48,7 @@ def test_solver_recovers_a_known_camera():
 
     homography = Homography.solve(anchors_screen, anchors_tile)
 
-    # Held-out landmarks: bridges and Kings were never fitted.
+    # Held out: bridges and Kings were never fitted.
     validation_tile = validation_landmarks(geom)
     validation_screen = _project(validation_tile, camera)
     errors = homography.measure_error(validation_screen, validation_tile)
@@ -66,11 +59,8 @@ def test_solver_recovers_a_known_camera():
 
 
 def test_stage0_acceptance_criterion_on_synthetic_camera():
-    """The stage-0 bar: held-out landmarks within 0.5 tiles.
-
-    Run here against a perfect camera to prove the criterion is measurable
-    and the measurement is out-of-sample. On a real frame the same call
-    produces the real number, and the same threshold applies.
+    """The stage-0 bar: held-out landmarks within 0.5 tiles. Run here against a
+    perfect camera to show the criterion is measurable and out-of-sample.
     """
     geom = load_geometry()
     camera = _synthetic_camera()
@@ -83,11 +73,9 @@ def test_stage0_acceptance_criterion_on_synthetic_camera():
 
 
 def test_mis_clicked_anchor_shows_up_in_held_out_error():
-    """A calibration mistake must be visible, not absorbed by the fit.
-
-    With exactly four correspondences the fit residual is zero by
-    construction no matter how badly the points were picked, which is the
-    whole reason the error is measured on held-out landmarks instead.
+    """A calibration mistake must be visible, not absorbed: with exactly four
+    correspondences the fit residual is zero however badly the points were
+    picked.
     """
     geom = load_geometry()
     camera = _synthetic_camera()
@@ -101,8 +89,8 @@ def test_mis_clicked_anchor_shows_up_in_held_out_error():
 
     homography = Homography.solve(bad, anchors_tile)
 
-    # Zero up to float round-off, which is ~5 orders of magnitude below the
-    # 0.5-tile acceptance threshold -- i.e. the fit tells you nothing.
+    # Zero up to float round-off, orders of magnitude below the 0.5-tile
+    # threshold: the fit tells you nothing.
     fit_error = homography.measure_error(bad, anchors_tile)
     assert fit_error["max"] < 1e-4, "4-point fit residual should be ~zero even when wrong"
 

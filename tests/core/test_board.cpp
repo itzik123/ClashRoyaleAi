@@ -4,9 +4,8 @@
 #include "Building.h"
 #include "MeleeTroop.h"
 
-// ---------------- clampToBoard ----------------
-// Single source of truth used by both Troop::clampPosition() (right after a
-// move) and GameManager::step()'s post-collision re-clamp.
+// --- clampToBoard ---
+// Used after a troop moves and again after collision resolution.
 
 TEST_CASE("clampToBoard clamps out-of-bounds positions to the board edges", "[board][clamp]") {
     Board board;
@@ -24,9 +23,8 @@ TEST_CASE("clampToBoard pushes non-bridge river-band positions to the nearest ba
 
 TEST_CASE("clampToBoard does not snap positions sitting on a bridge column", "[board][clamp]") {
     Board board;
-    // Read off the board, never written down again: a literal silently turns
-    // this into an assertion about open water the moment a bridge moves, which
-    // is exactly what happened when the arena was corrected on 2026-08-21.
+    // Read off the board: a literal becomes an assertion about open water when
+    // a bridge moves.
     REQUIRE(board.clampToBoard(Vector2D{ board.getLeftBridge().x, 17.0f }, false).y == Catch::Approx(17.0f));
     REQUIRE(board.clampToBoard(Vector2D{ board.getRightBridge().x, 17.0f }, false).y == Catch::Approx(17.0f));
 }
@@ -119,8 +117,8 @@ TEST_CASE("resolvePositionAgainstBuildings leaves a position untouched when far 
 
 TEST_CASE("resolvePositionAgainstBuildings pushes a position out of a building's radius", "[board][collision]") {
     Board board;
-    // radius 1.0, minDist = 1.0 + 0.4 = 1.4. Input at dist 0.5 straight above the
-    // building's center: push = 1.4 - 0.5 = 0.9, plus the 0.05 perpendicular slide term.
+    // radius 1.0, minDist 1.4. Input 0.5 above the centre: push 1.4 - 0.5 =
+    // 0.9, plus the 0.05 perpendicular slide.
     auto building = std::make_shared<Building>(1, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10);
     spawn(board, building);
 
@@ -145,7 +143,7 @@ TEST_CASE("resolvePositionAgainstBuildings excludes the entity's own id", "[boar
     auto building = std::make_shared<Building>(42, 10.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10);
     spawn(board, building);
 
-    // Ask it to resolve a position against itself: must not push against its own radius.
+    // Resolving against itself must not push against its own radius.
     Vector2D resolved = board.resolvePositionAgainstBuildings(Vector2D{ 10.0f, 10.5f }, 42);
     REQUIRE(resolved.x == Catch::Approx(10.0f));
     REQUIRE(resolved.y == Catch::Approx(10.5f));
@@ -161,9 +159,7 @@ TEST_CASE("resolvePositionAgainstBuildings ignores non-building entities (radius
     REQUIRE(resolved.y == Catch::Approx(10.1f));
 }
 
-// ---------------- resolveCollisions ----------------
-// Moved here from GameManager::step() -- this is how entities on the board
-// physically interact, which is a Board concern, not a match-rules one.
+// --- resolveCollisions ---
 
 TEST_CASE("resolveCollisions pushes two overlapping troops apart symmetrically", "[board][collision]") {
     Board board;
@@ -223,8 +219,8 @@ TEST_CASE("resolveCollisions ignores dead entities without crashing", "[board][c
 
 TEST_CASE("resolveCollisions re-clamps entities to the board bounds afterward", "[board][collision]") {
     Board board;
-    // DummyEntity doesn't override clampPosition (only Troop does), so this
-    // specifically needs a real Troop to prove resolveCollisions re-clamps.
+    // DummyEntity has no clampPosition; only a real Troop shows that
+    // resolveCollisions re-clamps.
     auto troop = std::make_shared<MeleeTroop>(1, 25.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
     spawn(board, troop);
 
@@ -233,9 +229,8 @@ TEST_CASE("resolveCollisions re-clamps entities to the board bounds afterward", 
     REQUIRE(troop->position.x == Catch::Approx(17.0f));
 }
 
-// ---------------- flying ----------------
-// Flying units pass through everything physically -- ground and other
-// fliers alike -- so collision only applies between entities sharing a plane.
+// --- flying ---
+// Fliers pass through everything; only entities sharing a plane collide.
 
 TEST_CASE("resolveCollisions does not push a flying troop out of an overlapping building", "[board][collision][flying]") {
     Board board;
@@ -300,7 +295,7 @@ TEST_CASE("getNextWaypoint returns the target directly when both points are abov
 
 TEST_CASE("getNextWaypoint returns the target directly when both points are inside the river band", "[board][waypoint]") {
     Board board;
-    // River band is (15.5, 17.5) -- strictly inside on both ends, not at an edge.
+    // River band (15.5, 17.5): strictly inside, not at an edge.
     Vector2D wp = board.getNextWaypoint(Vector2D{ 4.0f, 16.0f }, Vector2D{ 14.0f, 17.0f });
     REQUIRE(wp.x == Catch::Approx(14.0f));
     REQUIRE(wp.y == Catch::Approx(17.0f));
@@ -327,39 +322,28 @@ TEST_CASE("getNextWaypoint picks the left bridge when it is nearer", "[board][wa
     REQUIRE(wp.x == Catch::Approx(board.getLeftBridge().x));
 }
 
-// ---------------- the bridge-mouth absorbing state ----------------
-//
-// Measured 2026-08-09 off replay_ep1007 and replay_ep4029: a ground troop
-// stopped dead at (4.00, 15.50) and (14.01, 15.49) -- on a bridge, at the
-// river's near edge, with the nearest enemy 9-11 tiles away -- for 100 and 104
-// ticks. Zero occurrences across three pre-speed-fix replays.
-//
-// Cause is these two lines disagreeing about what "arrived" means:
-//   Board::getNextWaypoint  classifies with `currentPos.y <= riverY_start`,
-//                           INCLUSIVE, so a unit standing exactly on the near
-//                           bank is still "below" and is handed {bridgeX,
-//                           riverY_start} -- the point it already occupies.
-//   Troop::moveTowards      refuses to move when distToWaypoint <= 0.01.
-// Position unchanged -> identical waypoint next tick -> the state is absorbing
-// and the unit never crosses. It is a 0.01-radius trap disc at each bridge
-// mouth, which the movement-speed fix made ~5x more likely to land in
-// (chance of a step ending inside it is ~ 0.01 / step size; 0.3 -> 0.06).
+// --- the bridge-mouth absorbing state ---
+// getNextWaypoint's bank tests are inclusive (`y <= riverY_start`), so a unit
+// standing exactly on the near bank is still "below" and would be handed the
+// point it occupies, while Troop::moveTowards does not move within 0.01 of a
+// waypoint: the unit never crosses. A 0.01-radius trap disc at each bridge
+// mouth.
 
 TEST_CASE("getNextWaypoint does not strand a unit standing on the near bank", "[board][waypoint][regression]") {
     Board board;
-    // Exactly the measured ep1007 position: on the left bridge, at riverY_start.
+    // The measured position: on the left bridge, at riverY_start.
     Vector2D here{ board.getLeftBridge().x, 15.5f };
     Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getLeftBridge().x, 27.0f });
     // The unit still has to cross, so the waypoint must be somewhere it is not
-    // already standing -- otherwise Troop::moveTowards has nothing to move to.
+    // standing.
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
-    // Specifically: it should be sent to the FAR bank.
+    // The far bank.
     REQUIRE(wp.y == Catch::Approx(17.5f));
 }
 
 TEST_CASE("getNextWaypoint does not strand a unit standing on the far bank", "[board][waypoint][regression]") {
     Board board;
-    // The same trap mirrored, for a unit heading back south.
+    // The same trap mirrored, heading south.
     Vector2D here{ board.getRightBridge().x, 17.5f };
     Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getRightBridge().x, 6.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
@@ -369,13 +353,10 @@ TEST_CASE("getNextWaypoint does not strand a unit standing on the far bank", "[b
 TEST_CASE("getNextWaypoint never returns the caller's own position while it still has to cross",
           "[board][waypoint][regression]") {
     Board board;
-    // Sweep the whole trap disc around both bridge mouths, at a resolution
-    // finer than the arrival epsilon, in both crossing directions. Any point
-    // that returns itself is an absorbing state.
-    // Read off the board, not restated. These sweeps exist to prove no bridge
-    // mouth is an absorbing state; a literal turned them into a sweep of open
-    // water the moment the arena was corrected, silently retiring the
-    // regression tests for TWO shipped deadlocks.
+    // Sweep the trap disc around both bridge mouths finer than the arrival
+    // epsilon, both directions; any point returning itself is absorbing. Bridge
+    // positions are read off the board, so the sweep follows the bridges if
+    // they move.
     const float bridges[] = { board.getLeftBridge().x, board.getRightBridge().x };
     const float banks[] = { 15.5f, 17.5f };
     for (float bx : bridges) {
@@ -383,7 +364,7 @@ TEST_CASE("getNextWaypoint never returns the caller's own position while it stil
             for (int dx = -2; dx <= 2; ++dx) {
                 for (int dy = -2; dy <= 2; ++dy) {
                     Vector2D here{ bx + dx * 0.005f, by + dy * 0.005f };
-                    // Target on the opposite side of the river from this bank.
+                    // Target across the river from this bank.
                     Vector2D target = (by < 16.5f) ? Vector2D{ bx, 27.0f }
                                                    : Vector2D{ bx, 6.0f };
                     Vector2D wp = board.getNextWaypoint(here, target);
@@ -395,35 +376,17 @@ TEST_CASE("getNextWaypoint never returns the caller's own position while it stil
     }
 }
 
-// ---------------- the bridge-EXIT absorbing state ----------------
-//
-// Measured 2026-08-20 by tools/audit/bridge_audit.cpp, a per-tick trajectory
-// sweep: 6-8 of every 34 lone ground units failed to cross at all, every one
-// of them frozen for 750-850 ticks a few thousandths of a tile short of the
-// river's FAR edge -- Giant 27/34, Ice Golem 28/34, Musketeer 26/34,
-// Valkyrie 26/34. Hog Rider and Ice Spirit (both fast) crossed 34/34, and
-// Minions fly, which is what made it look card-specific rather than
-// geometric.
-//
-// SAME defect as the bridge-mouth trap above, one branch over. The 2026-08-09
-// fix guarded the two branches where the unit is standing on the bank it is
-// LEAVING (isCurrentBelow / isCurrentAbove). It did not guard the branch where
-// the unit is INSIDE the river band and within epsilon of the bank it is
-// ARRIVING at -- that branch returns {bridgeX, riverY_end} (or riverY_start)
-// with no arrival check at all, so a step landing at y=17.4995 is handed
-// (bridgeX, 17.5), refuses to move because 0.0005 <= 0.01, and never moves
-// again. Four exit traps, the mirror image of the four entry traps.
-//
-// AND THE OLD SWEEP TEST BELOW COULD NOT SEE IT. It pairs each bank with the
-// one direction in which that bank is the ENTRY -- near bank against a target
-// to the north, far bank against a target to the south. The trap lives in the
-// other two combinations. The sweep here is the full cross product for that
-// reason: every bank, both directions.
+// --- the bridge-exit absorbing state ---
+// The same defect one branch over: inside the river band, within epsilon of the
+// bank it is arriving at, the unit was handed that bank's edge and froze just
+// short of dry land. Four exit traps mirroring the four entry traps. The entry
+// sweep above pairs each bank only with the direction in which it is the entry,
+// so this sweep is the full cross product: every bank, both directions.
 
 TEST_CASE("getNextWaypoint does not strand a unit arriving at the far bank", "[board][waypoint][regression]") {
     Board board;
-    // A hair short of the north bank, still crossing northward -- the exact
-    // shape of the measured Giant/Ice Golem freeze.
+    // A hair short of the north bank, still crossing north: the measured
+    // freeze.
     Vector2D here{ board.getLeftBridge().x, 17.4995f };
     Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getLeftBridge().x, 27.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
@@ -431,7 +394,7 @@ TEST_CASE("getNextWaypoint does not strand a unit arriving at the far bank", "[b
 
 TEST_CASE("getNextWaypoint does not strand a unit arriving at the near bank", "[board][waypoint][regression]") {
     Board board;
-    // The same trap mirrored: a hair past the south bank, still heading south.
+    // Mirrored: a hair past the south bank, still heading south.
     Vector2D here{ board.getRightBridge().x, 15.5005f };
     Vector2D wp = board.getNextWaypoint(here, Vector2D{ board.getRightBridge().x, 6.0f });
     REQUIRE(here.distanceTo(wp) > Board::WAYPOINT_ARRIVAL_EPS);
@@ -440,14 +403,11 @@ TEST_CASE("getNextWaypoint does not strand a unit arriving at the near bank", "[
 TEST_CASE("getNextWaypoint never returns the caller's own position, in EITHER crossing direction",
           "[board][waypoint][regression]") {
     Board board;
-    // Read off the board, not restated. These sweeps exist to prove no bridge
-    // mouth is an absorbing state; a literal turned them into a sweep of open
-    // water the moment the arena was corrected, silently retiring the
-    // regression tests for TWO shipped deadlocks.
+    // Bridge positions are read off the board, so the sweep follows the bridges
+    // if they move.
     const float bridges[] = { board.getLeftBridge().x, board.getRightBridge().x };
     const float banks[] = { 15.5f, 17.5f };
-    // Both destinations at both banks -- the cross product the older sweep
-    // above only covers half of.
+    // Both destinations at both banks.
     const float targets[] = { 27.0f, 6.0f };
 
     for (float bx : bridges) {
@@ -480,9 +440,9 @@ TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge tow
     }
 }
 
-// ---------------- isBackRowDeadZone ----------------
-// Real-map sync: one extra row behind each King Tower, mostly dead space
-// except a narrow center gap. See Board.h's BACK_ROW_OPENING_HALF_WIDTH.
+// --- isBackRowDeadZone ---
+// One row behind each King, dead except a centred opening (Board.h,
+// BACK_ROW_OPENING_HALF_WIDTH).
 
 TEST_CASE("isBackRowDeadZone is false everywhere outside the two new back rows", "[board][deadzone]") {
     Board board;
@@ -510,15 +470,14 @@ TEST_CASE("isBackRowDeadZone mirrors the same opening on the top back row", "[bo
 }
 
 
-// ---------------- collision: what does NOT participate ----------------
+// --- collision: what does not participate ---
 
 TEST_CASE("resolveCollisions ignores untargetable entities (spells, projectiles)",
           "[board][collision]") {
-    // resolveCollisions classifies a troop as "radius 0 AND isTargetable()".
-    // AreaSpell and Projectile both override isTargetable() to false, which is
-    // the ONLY thing keeping a Fireball's own marker entity from shoving the
-    // troops it is about to land on. Nothing pinned it, so a refactor of that
-    // predicate could have removed it silently.
+    // resolveCollisions treats "radius 0 and isTargetable()" as a troop.
+    // AreaSpell and Projectile return false from isTargetable(), which is the
+    // only thing stopping a Fireball's marker from shoving the troops it lands
+    // on.
     Board board;
     auto troop = std::make_shared<DummyEntity>(1, 5.0f, 5.0f, 100, 0);
     auto ghost = std::make_shared<DummyEntity>(2, 5.0f, 5.0f, 100, 1);
@@ -536,9 +495,9 @@ TEST_CASE("resolveCollisions ignores untargetable entities (spells, projectiles)
 
 TEST_CASE("resolvePositionAgainstBuildings tracks buildings appearing and disappearing",
           "[board][collision][lifecycle]") {
-    // The set of colliders changes only through commitPendingEntities and
-    // cleanDeadEntities. This walks a position through both transitions in one
-    // case, so any caching of that set has to be invalidated by both.
+    // The collider set changes only through commitPendingEntities and
+    // cleanDeadEntities; this walks a position through both, so any cache must
+    // be invalidated by both.
     Board board;
     const Vector2D probe{ 5.0f, 5.0f };
 
@@ -569,9 +528,8 @@ TEST_CASE("resolvePositionAgainstBuildings tracks buildings appearing and disapp
 
 TEST_CASE("pushAwayFrom clears the full radius even from dead centre",
           "[board][collision][regression]") {
-    // The degenerate "already exactly on the obstacle" branch reused its
-    // synthetic unit distance as if it were the real one, so the push came out
-    // short by exactly that 1.0 -- see Board::pushAwayFrom.
+    // A point exactly on the obstacle's centre is pushed the full minDist (see
+    // Board::pushAwayFrom).
     const Vector2D centre{ 5.0f, 5.0f };
 
     SECTION("dead centre") {
@@ -586,7 +544,7 @@ TEST_CASE("pushAwayFrom clears the full radius even from dead centre",
 
     SECTION("the ordinary off-centre case is unchanged") {
         // 0.5 away, needs 1.4: lands on the boundary plus the perpendicular
-        // slide, exactly as before.
+        // slide.
         const Vector2D near{ 5.5f, 5.0f };
         const Vector2D out = Board::pushAwayFrom(near, centre, 1.4f);
         REQUIRE(out.x == Catch::Approx(6.4f));

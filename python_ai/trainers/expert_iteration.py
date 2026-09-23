@@ -1,60 +1,23 @@
 """Expert iteration: distil 1-ply decision-time search back into the policy.
 
-THE MEASUREMENT THIS FOLLOWS FROM
----------------------------------
-`search_ab_test.py` measured, over 160 paired trials at 1.5x opponent elixir:
+Search is scored by the network's own critic, with greedy as candidate 0, so
+its large gain over greedy (0.625 -> 0.944 against the heuristic) says the
+value head is better than the policy head at exploiting it; search's choices
+are free expert labels for the policy head.
 
-    greedy policy 0.625  ->  policy + 1-ply search 0.944
-    paired delta +0.319, 95% CI [+0.237, +0.401], exact McNemar p = 5.6e-12
-    deviation rate 13.8%, cost 2.2x wall clock
+Success is distilled greedy vs original greedy, paired, both without search:
+avoiding search's cost is the point.
 
-Search is scored by *this same network's critic*, and the greedy action is
-always candidate 0, so search only deviates when the critic disagrees with the
-action head. Beating the network's own action selection by 32 points therefore
-says the VALUE head is much better than the POLICY head is at exploiting it --
-the underfit is in the policy head. That is exactly the gap expert iteration
-closes: search is a policy-improvement operator, and its output is a free
-supply of expert labels for the head that is behind.
+Most expert labels equal what the policy already does, so match rates must be
+read against the original net's own score on the same rows, never against zero;
+`--train` prints both.
 
-WHAT SUCCESS LOOKS LIKE, AND WHAT IT DOES NOT
----------------------------------------------
-The point of distillation is to stop paying the 2.2x search cost, so the
-metric is DISTILLED GREEDY vs ORIGINAL GREEDY, paired, both without search.
-"Distilled + search beats original" would be a different and much weaker claim.
+The trunk is frozen by default, preserving the critic that generated the
+labels; `--full-finetune` runs the other arm, and both report critic drift.
 
-The band to read the result against is fixed by the numbers above: the original
-greedy policy sits at 0.625 and the expert it is imitating sits at 0.944, so a
-perfect distillation lands at 0.944 and no distillation lands at 0.625.
-
-THE TRAP THIS FILE IS BUILT AROUND
-----------------------------------
-86.2% of expert labels are IDENTICAL to what the policy already does (that is
-what a 13.8% deviation rate means). So a network that learned nothing at all
-already scores ~0.862 card-match on this dataset. Reporting "card match 0.88"
-would look like success and mean nothing.
-
-    THE NULL FOR action_match_rate IS THE ORIGINAL NET'S OWN SCORE ON THE
-    SAME DATA, NOT ZERO.
-
-`--train` therefore always evaluates BOTH nets on the same rows and prints them
-side by side. This is the same correction CLAUDE.md already records for
-placement (always-guess-the-modal-cell scores 0.273, so cell-match must be read
-against 0.273 and not against 1/612).
-
-WHY THE TRUNK IS FROZEN BY DEFAULT
-----------------------------------
-The measured finding is specifically that the POLICY HEAD is underfit relative
-to the critic. Freezing the trunk/LSTM/value/aux and training only the action
-heads tests that hypothesis directly, and preserves bit-exactly the critic that
-makes the expert work in the first place -- a full fine-tune moves the shared
-features the critic reads, so it can silently degrade the very thing that
-generated the labels. `--full-finetune` runs the other arm; both report critic
-drift, which must be exactly 0.0 under the default.
-
-Run:
-    python_ai/venv/Scripts/python.exe python_ai/expert_iteration.py --collect 120
-    python_ai/venv/Scripts/python.exe python_ai/expert_iteration.py --train
-    python_ai/venv/Scripts/python.exe python_ai/expert_iteration.py --eval --trials 120
+    python_ai/venv/Scripts/python.exe python_ai/trainers/expert_iteration.py --collect 120
+    python_ai/venv/Scripts/python.exe python_ai/trainers/expert_iteration.py --train
+    python_ai/venv/Scripts/python.exe python_ai/trainers/expert_iteration.py --eval --trials 120
 """
 import argparse
 import math
@@ -69,9 +32,8 @@ import torch
 
 from python_ai.rl.checkpointing import atomic_save
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path; importing the package also
+# makes `clash_royale_env` importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -100,17 +62,12 @@ from python_ai.trainers.expert_metrics import (  # noqa: E402
 
 CE = clash_royale_env.ClashRoyaleEnv
 
-# --------------------------------------------------------------------------
-# stage 3: paired greedy-vs-greedy evaluation
-# --------------------------------------------------------------------------
+# --- stage 3: paired greedy-vs-greedy evaluation ---
 
 def paired_greedy_ab(net_a, net_b, trials, cfg, device, opp_elixir, max_ticks,
                      label_a="original", label_b="distilled", time_budget=0.0):
-    """Both nets play GREEDILY from a bit-identical opening. No search anywhere.
-
-    This is the measurement that decides whether expert iteration worked: if
-    distillation only helps when search is also running, it has not bought the
-    thing it exists to buy.
+    """Both nets play greedily from a bit-identical opening, with no search
+    anywhere: the test of whether distillation bought anything.
     """
     diffs, a_scores, b_scores = [], [], []
     started = time.perf_counter()
@@ -138,30 +95,20 @@ def paired_greedy_ab(net_a, net_b, trials, cfg, device, opp_elixir, max_ticks,
 
     return np.asarray(diffs), np.asarray(a_scores), np.asarray(b_scores)
 
-# --------------------------------------------------------------------------
-
 def run_ablation(args, cfg, device, resolve):
-    """Which lever, if any, forces the policy to learn the CONDITIONAL rule.
+    """Which lever, if any, makes the policy learn the conditional rule.
 
-    Four configurations over one shared dataset and one shared train/held-out
-    split, so nothing between them is confounded:
+    One dataset and one train/held-out split for all four configurations:
 
-        A  frozen trunk,   w=1     the configuration that already measured
-                                   +0.016 [-0.030, +0.061] on win rate
-        B  frozen trunk,   w=F     lever 1 -- upweight disagreement rows
-        C  full finetune,  w=1     lever 2 -- capacity
+        A  frozen trunk,   w=1     the configuration measured on win rate
+        B  frozen trunk,   w=F     lever 1: upweight disagreement rows
+        C  full finetune,  w=1     lever 2: capacity
         D  full finetune,  w=F     both
 
-    Deliberately NO win-rate evaluation here. The 800-trial run established that
-    this comparison needs ~6,700 paired trials to resolve effects of the size on
-    offer, so a per-config win rate at any affordable n would be noise wearing a
-    number. These are learning-dynamics metrics only, used to decide where the
-    big compute goes.
-
-    The held-out split is what makes the numbers mean anything: unfreezing the
-    trunk adds ~118x the trainable parameters, so it will fit the training rows
-    better whether or not it generalises. Train and held-out are reported side
-    by side and the gap IS the result for lever 2.
+    No win-rate evaluation: resolving effects this size needs thousands of
+    paired trials, so these are learning-dynamics metrics only. The held-out
+    split matters because unfreezing the trunk adds ~118x the trainable
+    parameters and will fit the training rows regardless.
     """
     data = bc_pretrain.load_dataset(resolve(args.data))
     extras = np.load(resolve(args.data))
@@ -245,11 +192,8 @@ def run_ablation(args, cfg, device, resolve):
     print("without HO disagree moving learned the MARGINAL, not the conditional.")
 
 def resolve_temperature(spec, data):
-    """`--temperature` -> a float, solving it from the data when asked.
-
-    Recalibrating per invocation IS the DAgger-round recalibration: each round
-    collects with a fresh critic and distills its own dataset, so solving here
-    tracks the critic without any extra plumbing.
+    """`--temperature` -> a float, solved from the data for "auto". Solving per
+    invocation recalibrates each DAgger round against its own critic.
     """
     if not (isinstance(spec, str) and spec.lower() == "auto"):
         return float(spec)
@@ -279,11 +223,7 @@ def main():
                     help="AlphaZero-style distillation of the candidate value distribution")
     ap.add_argument("--target-entropy", action="store_true",
                     help="report target entropy vs temperature; pick T before measuring outcomes")
-    # 0.05, not the 0.25 first guessed. Chosen from --target-entropy on the
-    # collected labels BEFORE any outcome was measured: candidate value spread
-    # is mean 0.221 / median 0.187, at which 0.25 puts the target at 94% of
-    # maximum entropy (near-uniform, no signal) while 0.05 puts it at ~50% --
-    # the midpoint between a hard label and no information.
+    # Default "auto": T is solved from the dataset's value spread.
     ap.add_argument("--temperature", default="auto",
                     help="softmax temperature on candidate values, or 'auto' to "
                          "SOLVE it from this dataset's own value spread (see "
@@ -319,10 +259,8 @@ def main():
                         "default: seeding by default would change what "
                         "every existing invocation does.")
     args = ap.parse_args()
-    # Applied BEFORE any data is loaded or any net is built: the
-    # per-epoch shuffle below runs on the GLOBAL RNG, and the net's
-    # initialisation is itself a draw. Seeding after either would leave
-    # the run half-reproducible, which is worse than not at all.
+    # Before any data is loaded or net built: the shuffle and the
+    # initialisation both draw from the global RNG.
     seed_everything(args.seed)
 
     device = torch.device("cpu")
@@ -379,7 +317,7 @@ def main():
             print(f"  mode: FROZEN TRUNK -- action heads only")
         print(f"  parameters: {trainable:,} trainable / {frozen:,} frozen")
 
-        # The null, computed BEFORE training and printed next to the result.
+        # The null, computed before training and printed next to the result.
         base_match = action_match_rate(original, data, device, limit_episodes=10)
         modal, n_played = modal_cell_baseline(data)
         agree = float((data["card"] == greedy_card).mean()) if greedy_card is not None else float("nan")
@@ -415,18 +353,9 @@ def main():
               f"(null {base_match['cell_match']:.4f}, modal {modal:.3f}, "
               f"delta {new_match['cell_match'] - base_match['cell_match']:+.4f})")
         print(f"    critic drift |dV|    {v_drift:.6f}   aux |d| {aux_drift:.6f}")
-        # TOLERANCE, not `!= 0.0`. The exact comparison fired on every frozen
-        # run: `critic_drift` re-runs V(s) through the net, and CPU conv/matmul
-        # reduction order is not deterministic across calls, so an untouched
-        # trunk still yields ~1e-8. The message printed "NONZERO" directly under
-        # a value rendered "0.000000", which is how a guard teaches people to
-        # ignore it.
-        #
-        # The AUTHORITATIVE check is tensor identity, not a forward pass:
-        # verified on this exact path, 44 tensors bit-identical, 0 trunk tensors
-        # moved, and only card_head + place_ctx/place_up changed. 1e-5 sits far
-        # above the noise and far below any real drift -- the --full-finetune
-        # arm, which genuinely moves the trunk, measured 0.048086.
+        # A tolerance, not `!= 0.0`: re-running V(s) on CPU is not
+        # bit-deterministic across calls, so an untouched trunk reads ~1e-8.
+        # 1e-5 sits far above that noise and far below real drift.
         FREEZE_DRIFT_TOL = 1e-5
         if not args.full_finetune and (v_drift > FREEZE_DRIFT_TOL
                                        or aux_drift > FREEZE_DRIFT_TOL):
@@ -484,8 +413,7 @@ def main():
         paths = [resolve(p.strip()) for p in args.data.split(",") if p.strip()]
         print("  datasets:")
         data = merge_datasets(paths)
-        # Same guard load_dataset applies: a dataset recorded against a different
-        # observation layout must not be silently reinterpreted.
+        # Refuse a dataset recorded against a different observation layout.
         expected = make_env(1.0, 100).observation_size()
         if data["obs"].shape[1] != expected:
             raise SystemExit(f"observation size {data['obs'].shape[1]} != engine's {expected}")
@@ -515,8 +443,7 @@ def main():
             episode_filter=train_eps)
         student.eval()
 
-        # Both from ONE replay -- these were two calls with identical
-        # arguments, i.e. the same rows unrolled through the LSTM twice.
+        # Both metrics from one replay.
         cond, lift = conditional_metrics(student, data, greedy_card, device, held)
         vd, ad = critic_drift(original, student, data["obs"], device)
         ci = 1.96 * lift["se"]

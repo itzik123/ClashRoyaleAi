@@ -1,19 +1,14 @@
-"""The adb daemon-start banner lands on STDOUT, ahead of the PNG.
+"""The adb daemon-start banner lands on stdout, ahead of the PNG.
 
-Regression for a live failure on 2026-08-16: `mvp_loop --ensure-match` died
-with `PIL.UnidentifiedImageError: cannot identify image file`, which reads like
-a corrupt capture or a broken emulator and was neither. HD-Adb.exe prepends
+On the first call after the daemon is down, HD-Adb.exe prepends
 
     * daemon not running. starting it now on port 5037 *
     * daemon started successfully *
 
-to STDOUT on the first call after the daemon is down -- exit code 0, stderr
-EMPTY, 85 bytes ahead of the PNG signature.
-
-It bites only the FIRST adb call of a session, which is exactly why it survived
-so long: anyone debugging interactively runs `adb devices` first and warms the
-daemon, so the failure never reproduces under investigation. These tests pin
-the decode rather than the emulator, so they need no device.
+to stdout (exit code 0, stderr empty, 85 bytes ahead of the PNG signature), and
+PIL raises `UnidentifiedImageError`, which reads like a corrupt capture. It
+bites only a session's first adb call, so interactive debugging never
+reproduces it. These tests pin the decode, so they need no device.
 """
 import io
 import sys
@@ -48,7 +43,7 @@ def test_banner_prefixed_capture_still_decodes():
 
 
 def test_banner_offset_matches_what_was_measured():
-    """85 bytes is the number recorded in decode_screencap's docstring."""
+    """85 bytes, the offset measured live."""
     assert len(BANNER) == 85
 
 
@@ -59,15 +54,14 @@ def test_clean_capture_is_unaffected():
 
 
 def test_pixels_survive_the_strip():
-    """Stripping must not shift the image -- decode the colour back out."""
+    """Stripping must not shift the image: decode the colour back out."""
     png = _png_bytes(colour=(7, 199, 33))
     assert decode_screencap(BANNER + png).getpixel((0, 0)) == (7, 199, 33)
 
 
 def test_no_png_at_all_raises_something_actionable():
-    """The old code raised UnidentifiedImageError, which named the wrong cause.
-
-    'Is the emulator running' is the question the operator actually needs.
+    """Name the real question, "Is the emulator running", rather than
+    UnidentifiedImageError.
     """
     with pytest.raises(RuntimeError, match="no PNG signature"):
         decode_screencap(b"error: no devices/emulators found\n")

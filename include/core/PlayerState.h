@@ -9,98 +9,61 @@
 
 class PlayerState {
 public:
-    // Per-Evolution-slot progress: how many more (un-evolved) plays until
-    // this slot unlocks, and how many evolved plays it has left once
-    // unlocked. NOT a one-time-per-match thing -- confirmed via research
-    // (Wall Breakers Evolution: "2 Cycles" to unlock, "1 in every 3
-    // deploys will be evolved", repeating for the whole match, not a fixed
-    // number of total charges) -- once evolvedUsesRemaining hits 0, the
-    // slot resets cyclesUntilEvolved back to the CardDefinition's own
-    // evolutionCycleThreshold and starts counting down again, indefinitely.
-    // Keyed by the evolution's own CardDefinition id (see
-    // CardRegistry::addEvolution) -- a plain deck id with no evolution
-    // equipped never gets an entry here at all.
+    // Per-Evolution progress: un-evolved plays left until the slot unlocks, and
+    // evolved plays left once it has. Repeats for the whole match: when
+    // evolvedUsesRemaining reaches 0 the countdown restarts from
+    // evolutionCycleThreshold. Keyed by the evolution's own card id; a deck
+    // without evolutions has no entries.
     struct EvolutionSlotState {
         int cyclesUntilEvolved = 0;
         int evolvedUsesRemaining = 0;
     };
 
-    // What playCard actually did -- cardId (-1 on failure, matching the old
-    // plain-int return) plus whether this particular play should use the
-    // evolved form (Evolutions) instead of the base one. GameManager reads
-    // useEvolvedForm to decide which of CardDefinition's two spawn closures
-    // to call; it's always false for a non-evolution card.
+    // cardId is -1 on failure; useEvolvedForm selects the evolved spawn.
     struct PlayCardResult {
         int cardId = -1;
         bool useEvolvedForm = false;
     };
 
-    // Per-Champion-slot ability tracking (deck slot 1 "Heroic" and/or slot
-    // 2 "Wild Card" -- see CardRegistry::validateDeckSlots). trackedEntityId
-    // is unconditionally overwritten every time GameManager::playCard
-    // deploys a fresh instance of that slot's Champion, regardless of
-    // whether an older instance is somehow still alive -- this is what
-    // gives "the ability belongs to whoever was created last" for free.
-    // Mirror DOES go through playCard (see GameManager::playCard's own
-    // tracking hook, resolved off the spawned entity's own cardId), so a
-    // Mirror-duplicated Champion/Hero becomes trackable exactly the same
-    // way -- real-game fidelity, the ability always belongs to whichever
-    // copy (original or mirrored) was deployed most recently. A
-    // Clone-spell duplicate, by contrast, is never created via playCard at
-    // all, which is what makes THAT kind of clone permanently unable to
-    // activate the ability.
-    // persistedCooldownRemaining is synced from the tracked entity's own
-    // abilityCooldownRemaining every tick it's alive (see
-    // GameManager::syncChampionCooldowns) and left untouched once that
-    // entity is gone -- so a later redeploy of the same slot's Champion
-    // resumes the cooldown instead of starting fresh at 0.
+    // Per-Champion-slot ability tracking, for deck slots 1 and 2
+    // (CardRegistry::validateDeckSlots). trackedEntityId is overwritten by
+    // every fresh deploy of the slot's Champion, so the ability belongs to the
+    // newest instance; a Mirror copy goes through playCard and qualifies, a
+    // Clone-spell copy never does.
+    //
+    // persistedCooldownRemaining follows the tracked entity's cooldown while it
+    // lives (GameManager::syncChampionCooldowns) and persists after it dies, so
+    // a redeploy resumes the cooldown.
     struct ChampionSlotState {
         int trackedEntityId = -1;
         int persistedCooldownRemaining = 0;
-        // Post-death squad reactivation (Hero Goblins' "Banner Brigade"):
-        // the tick this slot's squad (all live entities sharing this
-        // slot's own cardId+team) was last observed to fully die out, or
-        // -1 if that hasn't happened (yet, or already consumed) -- see
-        // GameManager::syncChampionCooldowns for how this gets set, and
-        // CardDefinition::abilityUsableAfterDeathTicks/postDeathAbilityEffect
-        // for how it's consumed. Every card without a post-death ability
-        // never touches these two fields at all.
+        // Post-death squad reactivation (Hero Goblins' "Banner Brigade"): the
+        // tick and position at which this slot's squad last died out, or -1.
+        // Set in GameManager::syncChampionCooldowns, consumed via
+        // CardDefinition::abilityUsableAfterDeathTicks /
+        // postDeathAbilityEffect.
         int lastSquadWipeTick = -1;
         Vector2D lastSquadWipePosition{ 0.0f, 0.0f };
     };
 
     float elixir;
     std::vector<int> hand;
-    // Parallel to hand (same index = same hand slot). >0 means this slot's
-    // card just cycled in from deckQueue and isn't playable yet -- see
-    // playCard's own check and tick()'s decrement. Always 0 for the original
-    // opening hand (both initializeDeck overloads below), only ever set to
-    // 20 the moment a fresh card cycles into a slot.
+    // Parallel to hand. > 0 means the card just cycled in and is not yet
+    // playable (20 ticks); 0 for the opening hand.
     std::vector<int> handCooldownTicks;
     std::deque<int> deckQueue;
     std::unordered_map<int, EvolutionSlotState> evolutionState;
-    // Keyed by deck slot index (only ever 1 or 2, see ChampionSlotState's
-    // own comment) -- absent entirely if that slot isn't a Champion at all,
-    // same "no entry unless relevant" idiom as evolutionState above.
+    // Keyed by deck slot index (1 or 2); absent if that slot holds no Champion.
     std::unordered_map<int, ChampionSlotState> championSlots;
-    // Last cardId this team successfully played via GameManager::playCard,
-    // excluding Mirror itself (a second Mirror replays whatever was played
-    // before the first Mirror, not the first Mirror) -- see Mirror's
-    // handling in GameManager::playCard. -1 means "nothing played yet".
+    // The last card this team played, excluding Mirror (a second Mirror replays
+    // what preceded the first). -1 before any play.
     int lastPlayedCardId = -1;
 
     PlayerState() : elixir(0.0f) {}
 
-    // Internal helper shared by both initializeDeck overloads below --
-    // Evolution/Champion-slot bookkeeping always keys off the ORIGINAL deck
-    // index/id (i, deckList[i]), never wherever a card currently sits in
-    // hand vs. the cycling queue. evolutionState is keyed by card id (stable
-    // regardless of hand position); championSlots is keyed by deck index 1
-    // or 2 (a Champion's "Heroic vs Wild Card" identity is fixed by deck
-    // position -- see ChampionSlotState's own comment), which is a
-    // completely different axis from "which hand slot the shuffle put it
-    // in". This is what keeps hand randomization and Part 2's per-slot
-    // Champion tracking fully orthogonal.
+    // Evolution and Champion bookkeeping keys off the original deck (evolution
+    // by card id, Champion by deck index 1 or 2), never off hand position, so
+    // the hand shuffle cannot affect it.
     void seedSlotState(const std::vector<int>& deckList) {
         for (size_t i = 0; i < deckList.size(); ++i) {
             const CardDefinition* def = CardRegistry::getInstance().getCard(deckList[i]);
@@ -108,10 +71,7 @@ public:
                 evolutionState[deckList[i]] = EvolutionSlotState{
                     def->evolutionCycleThreshold, def->evolvedUsesGranted };
             }
-            // Hero (see CardDefinition::isHero) shares the exact same
-            // per-slot tracking as Champion -- both special-unit
-            // categories occupy the same two deck slots and resolve
-            // through the same championSlots/ChampionSlotState machinery.
+            // A Hero uses the same per-slot tracking as a Champion.
             if (def && (def->isChampion || def->isHero) && (i == 1 || i == 2)) {
                 championSlots[static_cast<int>(i)] = ChampionSlotState{};
             }
@@ -134,19 +94,13 @@ public:
         seedSlotState(deckList);
     }
 
-    // Random-initial-hand overload: shuffles a permutation of the 8 original
-    // deck indices, uses the first 4 (post fix-up) as the opening hand and
-    // the rest as the starting deckQueue order. NOT the default
-    // initializeDeck overload -- many existing tests hard-assert a
-    // deterministic opening hand via the old signature and must keep
-    // compiling/behaving unchanged; only callers that explicitly want a
-    // random hand (GameManager::reset()) use this one.
+    // Random opening hand: shuffles the eight deck indices, the first four
+    // forming the hand. The deterministic overload above stays the default
+    // because many tests assert its hand; GameManager::reset uses this one.
     //
-    // Elixir Collector (id 99) / Mirror (id 164) can never legally start in
-    // the opening hand (sourced rule) -- if the shuffle put one there, swap
-    // it with whatever eligible card the shuffle put in the last 4 instead.
-    // Always possible: a legal 8-card deck can't contain the same card
-    // twice, so at most one of these two ids is ever present at all.
+    // Elixir Collector (99) and Mirror (164) may not start in hand; one dealt
+    // there is swapped with an eligible card from the queue. A legal deck holds
+    // each at most once, so a swap always exists.
     void initializeDeck(const std::vector<int>& deckList, std::mt19937& rng) {
         elixir = 5.0f;
         hand.clear();
@@ -179,24 +133,18 @@ public:
         seedSlotState(deckList);
     }
 
-    // Called once per tick (see GameManager::step()): counts down every hand
-    // slot's post-cycle delay. Cheap no-op for the (common) case where
-    // nothing in hand is currently cooling down.
+    // Once per tick, from GameManager::step: counts down post-cycle delays.
     void tick() {
         for (int& cooldown : handCooldownTicks) {
             if (cooldown > 0) --cooldown;
         }
     }
 
-    // costOverride >= 0 charges that amount instead of the card's own
-    // registered cost -- Mirror (mirrored card's cost + 1) and Spirit
-    // Empress (dynamic 3 or 6 depending on current elixir) both need this;
-    // every other card passes nothing and gets its own CardDefinition::cost
-    // as before.
+    // costOverride >= 0 replaces the registered cost (Mirror: the mirrored
+    // card's cost + 1; Spirit Empress: 3 or 6).
     PlayCardResult playCard(int handIndex, float costOverride = -1.0f) {
         if (handIndex < 0 || handIndex >= static_cast<int>(hand.size())) return {};
-        // Still on its post-cycle delay (see handCooldownTicks) -- fails the
-        // same shape as insufficient elixir, not a separate error path.
+        // Still on its post-cycle delay: fails like insufficient elixir.
         if (handCooldownTicks[handIndex] > 0) return {};
 
         int cardId = hand[handIndex];
@@ -217,17 +165,16 @@ public:
         bool useEvolvedForm = false;
         if (cardDef->isEvolution) {
             auto it = evolutionState.find(cardId);
-            // Always present (seeded by initializeDeck), but guard anyway
-            // rather than assume -- a missing entry just behaves as
-            // permanently un-evolved instead of crashing.
+            // Always seeded by initializeDeck; a missing entry behaves as never
+            // evolved.
             if (it != evolutionState.end()) {
                 EvolutionSlotState& slot = it->second;
                 if (slot.cyclesUntilEvolved <= 0) {
                     useEvolvedForm = true;
                     slot.evolvedUsesRemaining--;
                     if (slot.evolvedUsesRemaining <= 0) {
-                        // Repeats for the rest of the match, not a one-time
-                        // charge -- start the cycle countdown over.
+                        // Restart the countdown: evolution repeats for the
+                        // whole match.
                         slot.cyclesUntilEvolved = cardDef->evolutionCycleThreshold;
                         slot.evolvedUsesRemaining = cardDef->evolvedUsesGranted;
                     }

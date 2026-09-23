@@ -6,27 +6,18 @@
 #include "MeleeTroop.h"
 #include <vector>
 
-// ---------------- King Tower activation ----------------
-//
-// Real Clash Royale's King Tower starts DORMANT. It cannot acquire a target or
-// fire until it is activated, permanently, by either taking any damage or by
-// losing a Princess Tower on its own team. This engine's King fired from tick 0
-// -- a long-standing divergence (perception/UPSTREAM_REQUESTS.md item 3), and
-// one the 2026-08-20 sight-range fix made bite harder by widening the King's
-// effective reach from 7.0 to 9.4 tiles: its share of the damage dealt to a lone
-// Hog Rider went from 5.3% to 36.8%, all of it from a tower that in the real
-// game would have been asleep.
+// --- King Tower activation ---
+// The King starts dormant: it cannot acquire or fire until activated,
+// permanently, by any damage or by losing a friendly Princess Tower.
 
 namespace {
 
 constexpr int KING_HP = 4008;
 
-// Where an enemy dummy stands relative to the King. Has to satisfy BOTH bounds:
-//   inside  the King's effective reach  7.0 + 2.0 (King r) + 0.4 (troop r) = 9.4
-//   outside the dummy's own reach       1.0 + 0.4       + 2.0             = 3.4
-// The second bound is the one that bites. At 2.5 tiles the dummy hits the King
-// back, which wakes it through trigger 1 -- so the "stays dormant" cases would
-// pass or fail for a reason that has nothing to do with what they test.
+// Where an enemy dummy stands relative to the King, satisfying both bounds:
+//   inside  the King's reach    7.0 + 2.0 (King r) + 0.4 (troop r) = 9.4
+//   outside the dummy's reach   1.0 + 0.4          + 2.0           = 3.4
+// Inside the dummy's reach it would hit the King and wake it through trigger 1.
 constexpr float DUMMY_STANDOFF = 5.0f;
 
 std::shared_ptr<Tower> makeKing(Board& board, int team) {
@@ -41,14 +32,9 @@ std::shared_ptr<Tower> makeKing(Board& board, int team) {
 }
 
 std::shared_ptr<MeleeTroop> makeEnemyDummy(Board& board, int team, float x, float y) {
-    // Speed 0 so it stands still and the test is about the TOWER, not a chase;
-    // huge hp so it survives the window and only the damage RATE differs.
-    //
-    // Argument order is (id, x, y, hp, team, speed, attackRange, damage,
-    // attackCooldown, SYMBOL) -- symbol LAST. Getting it wrong is silent: char,
-    // float and int all convert implicitly, so passing 'T' in the speed slot
-    // compiles cleanly and gives the dummy speed 84, teleporting it off the
-    // board every tick and out of every tower's range.
+    // Speed 0, so the test is about the tower; huge hp, so only the damage rate
+    // differs. The symbol is the LAST argument: char, float and int all convert
+    // implicitly, so a misplaced symbol compiles and silently becomes a speed.
     auto t = std::make_shared<MeleeTroop>(board.allocateId(), x, y, 100000, team,
                                           0.0f, 1.0f, 1, 10, 'T');
     board.addEntity(t);
@@ -56,12 +42,8 @@ std::shared_ptr<MeleeTroop> makeEnemyDummy(Board& board, int team, float x, floa
     return t;
 }
 
-// Advances the whole board, not just the tower under test.
-//
-// A Tower attacks by spawning a Projectile (see Tower::performAttack), so the
-// damage only lands once THAT entity is updated too. Ticking the tower alone
-// looks exactly like a tower that never fired, which is the failure mode this
-// helper exists to remove.
+// Advances the whole board: a Tower's damage lands when its Projectile is
+// updated, so ticking the tower alone looks like a tower that never fired.
 void tickAll(Board& board, int ticks) {
     for (int i = 0; i < ticks; ++i) {
         board.currentTick = i;
@@ -125,7 +107,7 @@ TEST_CASE("the King wakes on any damage and then fights back", "[king][activatio
     king->update(board);
     REQUIRE_FALSE(king->isAwake());
 
-    // One point of damage is enough -- the trigger is "any", not a threshold.
+    // One point of damage is enough: the trigger is any damage.
     king->takeDamage(1);
     king->update(board);
     REQUIRE(king->isAwake());
@@ -197,9 +179,8 @@ TEST_CASE("a dormant King is still targetable and damageable", "[king][activatio
     REQUIRE(king->hp == KING_HP - 500);
 }
 
-// A King built on a BARE board has zero friendly Princesses. A rule phrased as
-// "wake when fewer than 2 are alive" would wake it on its first tick; recording
-// the initial count on first update is what makes this hold.
+// A King on a bare board has zero friendly Princesses; recording the initial
+// count on first update keeps it asleep.
 TEST_CASE("a King with no Princesses at all never wakes by itself",
           "[king][activation]") {
     Board board;
@@ -223,20 +204,10 @@ TEST_CASE("snapshot carries the King's dormancy in both directions",
     REQUIRE(copyAwake->isAwake());
 }
 
-// The behavioural consequence, measured rather than asserted from the mechanism.
-//
-// ANCHORING. The first version of this put a Hog on the far bridge and compared
-// its hp after 60 ticks: both arms read 1247, because the King's effective reach
-// is 9.4 tiles and the bridge is ~15 away, so the King could not have fired in
-// either arm. That is a test anchored where the effect is zero -- it would have
-// passed against a King with no dormancy at all. The enemy has to stand
-// somewhere the King can actually shoot it.
-//
-// The King and a Princess Tower happen to have IDENTICAL effective reach here
-// (King 7.0 + 2.0 + 0.4, Princess 7.5 + 1.5 + 0.4, both 9.4), so there is no
-// square the King covers alone. The comparison is therefore made with all three
-// towers present and only the King's dormancy varying -- any difference in the
-// dummy's remaining hp is the King's contribution and nothing else.
+// The behavioural consequence, measured. The enemy must stand where the King
+// can actually shoot it, or both arms trivially agree. King and Princess reach
+// are identical here (9.4), so all three towers are present and only the King's
+// dormancy varies: any difference in the dummy's hp is the King's.
 TEST_CASE("a dormant King is one fewer tower shooting", "[king][activation][behaviour]") {
     auto dummyHpAfter = [](bool wakeTheKing) {
         Board board;
@@ -249,9 +220,8 @@ TEST_CASE("a dormant King is one fewer tower shooting", "[king][activation][beha
         board.commitPendingEntities();
         if (wakeTheKing) king->wake();
 
-        // Inside all three towers' reach: DUMMY_STANDOFF from the King, ~5.7
-        // from each Princess, and outside its OWN reach of everything so it
-        // cannot wake the dormant arm's King by hitting it.
+        // Inside all three towers' reach, and outside its own reach of
+        // everything, so it cannot wake the dormant King.
         auto dummy = makeEnemyDummy(board, 1, ArenaLayout::CENTER_X, ArenaLayout::kingY(0) + DUMMY_STANDOFF);
         tickAll(board, 100);
         REQUIRE(dummy->isAlive());

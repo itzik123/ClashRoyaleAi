@@ -9,20 +9,9 @@ namespace py = pybind11;
 PYBIND11_MODULE(clash_royale_env, m) {
     m.doc() = "Clash Royale RL Environment with Pybind11";
 
-    // ---- arena geometry, so nothing has to keep its own copy ----
-    //
-    // Until 2026-08-21 no binding exposed a board entity's position, so every
-    // Python consumer that needed a tower or bridge column hardcoded one with a
-    // comment naming the header. THREE of them went stale the moment the arena
-    // was corrected -- advisors/tactics.py (OWN_KING 9.0, OWN_PRINCESS 4.0,
-    // BRIDGE_XS (4,14)), perception/geometry.py, and on the C++ side
-    // HeuristicOpponent's own LEFT_BRIDGE_X/RIGHT_BRIDGE_X, which had already
-    // been wrong before that. Same failure CLAUDE.md records for the river in
-    // 2026-07-29 and the towers in 2026-07-30.
-    //
-    // These are the ArenaLayout.h constants, exposed read-only so Python can
-    // DERIVE instead. Module-level rather than class-static because the arena
-    // is a property of the game, not of an env instance.
+    // --- arena geometry (ArenaLayout.h), so Python derives rather than copies
+    // ---
+    // Module-level: the arena belongs to the game, not to an env instance.
     m.attr("ARENA_WIDTH") = ArenaLayout::WIDTH;
     m.attr("ARENA_HEIGHT") = ArenaLayout::HEIGHT;
     m.attr("ARENA_CENTER_X") = ArenaLayout::CENTER_X;
@@ -36,13 +25,10 @@ PYBIND11_MODULE(clash_royale_env, m) {
     m.def("arena_princess_y", &ArenaLayout::princessY, py::arg("team"),
           "Row of `team`'s two Princess Towers.");
 
-    // --- ELIXIR PHASE SCHEDULE (2026-09-02) --------------------------------
-    // Module level, not on the env class, because the consumers that most need
-    // it have no env: perception/'s hand-built observation encoder (which must
-    // write the identical scalar the training encoder writes, or the deployed
-    // agent reads a phase it was never trained on) and the replay viewer.
-    // Exposing the FUNCTION as well as the boundaries means neither has to
-    // restate the "two thresholds, three values" shape either.
+    // --- elixir phase schedule ---
+    // Module-level because its main consumers have no env: perception's
+    // observation encoder, which must write the same scalar the training
+    // encoder does, and the replay viewer.
     m.attr("MAX_ELIXIR_MULTIPLIER") = GameManager::MAX_ELIXIR_MULTIPLIER;
     m.def("elixir_multiplier_at_tick", &GameManager::elixirMultiplierAtTick,
           py::arg("tick"),
@@ -60,11 +46,8 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly("reward0", &SelfPlayStepResult::reward0)
         .def_readonly("done", &SelfPlayStepResult::done);
 
-    // No observation fields, deliberately: this is what a rollout gets back, and
-    // the whole point is that neither vector was built. `def_readonly` on the
-    // pair above converts to a Python list ON ATTRIBUTE ACCESS, so a caller
-    // ignoring them already skipped the marshalling -- what it could not skip,
-    // until this type existed, was the C++ construction.
+    // No observation fields: a rollout gets this back, and neither vector is
+    // built.
     py::class_<SelfPlayFastResult>(m, "SelfPlayFastResult")
         .def_readonly("reward0", &SelfPlayFastResult::reward0)
         .def_readonly("done", &SelfPlayFastResult::done);
@@ -90,17 +73,15 @@ PYBIND11_MODULE(clash_royale_env, m) {
             py::arg("skip_frames") = 10,
             py::arg("activate_ability0_slot1") = false, py::arg("activate_ability0_slot2") = false,
             py::arg("activate_ability1_slot1") = false, py::arg("activate_ability1_slot2") = false)
-        // Same advance, no observations built. For rollouts that step a
-        // snapshot and throw the result away -- see SelfPlayFastResult in
-        // ClashEnv.h and perception/UPSTREAM_REQUESTS.md item 21.
+        // The same advance with no observations built, for rollouts (see
+        // SelfPlayFastResult in ClashEnv.h).
         .def("step_self_play_fast", &ClashEnv::stepSelfPlayFast,
             py::arg("card_index0"), py::arg("target_x0"), py::arg("target_y0"),
             py::arg("card_index1"), py::arg("target_x1"), py::arg("target_y1"),
             py::arg("skip_frames") = 10,
             py::arg("activate_ability0_slot1") = false, py::arg("activate_ability0_slot2") = false,
             py::arg("activate_ability1_slot1") = false, py::arg("activate_ability1_slot2") = false)
-        // slot: 1 = Heroic, 2 = Wild Card (see CardRegistry::validateDeckSlots) --
-        // up to 2 independently-tracked Champions per deck.
+        // slot: 1 = Heroic, 2 = Wild Card (CardRegistry::validateDeckSlots).
         .def("is_champion_ability_ready", &ClashEnv::isChampionAbilityReady, py::arg("team"), py::arg("slot") = 1)
         .def("activate_champion_ability", &ClashEnv::activateChampionAbility, py::arg("team"), py::arg("slot") = 1)
         .def("get_hand", &ClashEnv::getHand)
@@ -111,11 +92,9 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def("is_game_over", &ClashEnv::isGameOver)
         .def("observation_size", &ClashEnv::observationSize)
         .def("inject_enemy", &ClashEnv::injectEnemy, py::arg("card_id"), py::arg("x"), py::arg("y"))
-        // hp and deploy_ticks default to the pre-item-22 behaviour (full
-        // health, a full DEPLOY_TIME_TICKS delay), so every existing caller is
-        // unchanged. Pass deploy_ticks=0 for a unit perception can already SEE
-        // on the board -- otherwise the mirror re-charges it a deploy second
-        // and every rollout believes it has an extra second to react.
+        // Defaults keep full health and a full deploy delay. Pass
+        // deploy_ticks=0 for a unit perception can already see, or every
+        // rollout grants it an extra second.
         .def("inject", &ClashEnv::inject, py::arg("card_id"), py::arg("x"), py::arg("y"),
              py::arg("team"), py::arg("hp") = -1.0f, py::arg("deploy_ticks") = -1)
         .def("set_opponent_deck", &ClashEnv::setOpponentDeck, py::arg("deck"))
@@ -128,38 +107,28 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("card_id"), py::arg("team"))
         .def("get_elixir_spent_on_card", &ClashEnv::getElixirSpentOnCard,
              py::arg("card_id"), py::arg("team"))
-        // Cumulative damage dealt BY one card -- read by train.py's
-        // win-condition damage term. Pure accessor over a counter the engine
-        // already maintains; see ClashEnv::getDamageDealtByCard for what it
-        // does and does not measure.
+        // Cumulative damage dealt by one card, for the win-condition damage
+        // term; see ClashEnv::getDamageDealtByCard.
         .def("get_damage_dealt_by_card", &ClashEnv::getDamageDealtByCard,
              py::arg("card_id"), py::arg("team"))
-        // State-estimator WRITE interface -- lets perception/ push a
-        // reconstructed live state in, so decision-time search evaluates the
-        // real position instead of reset()'s 5.0 elixir and unseeded hand
-        // shuffle. set_hand returns False (and changes nothing) on a hand that
-        // is not a valid permutation of that team's deck; check it, because a
-        // silently accepted misread is worse than no update at all.
+        // State-estimator write interface, so search evaluates the real
+        // position rather than reset()'s. set_hand_for_team returns False and
+        // changes nothing on an invalid hand: check it.
         .def("set_elixir_for_team", &ClashEnv::setElixirForTeam,
              py::arg("team"), py::arg("value"))
         .def("set_hand_for_team", &ClashEnv::setHandForTeam,
              py::arg("team"), py::arg("cards"))
-        // Tower HP, the match clock, and destruction -- item 22 (2026-08-24),
-        // the rest of the same interface.
+        // Tower HP, the match clock and destruction
+        // (perception/UPSTREAM_REQUESTS.md item 22).
         //
-        // slot is 0 = King, 1 = LEFT Princess, 2 = RIGHT Princess, in BOARD
-        // coordinates for both teams (never team-relative -- the caller is a
-        // sensor reading a screen, and asking it to mirror its own coordinates
-        // is the convention error that put the arena half a tile off-centre).
+        // slot is 0 = King, 1 = left Princess, 2 = right Princess, in board
+        // coordinates for both teams.
         //
-        // set_tower_hp takes ENGINE-ABSOLUTE hp and returns False, changing
-        // nothing, on hp <= 0. Tower levels do not match between this engine
-        // (level 9: 2534/4008) and a real account (often level 4-5:
-        // 1750/1890), i.e. wrong by a DIFFERENT factor per player -- so
-        // perception reports a FRACTION and multiplies by get_tower_max_hp.
-        // Destroying a tower is destroy_tower's job, because it has side
-        // effects a clamp cannot express: the crown, the King's
-        // princess-count wake trigger, and LanePath's retargeting.
+        // set_tower_hp takes engine-absolute hp and refuses hp <= 0. Tower
+        // levels differ between the engine and a real account, by a different
+        // factor per player, so perception reports a fraction and multiplies by
+        // get_tower_max_hp. Destroying a tower is destroy_tower's job (crown,
+        // King wake-up, lane retargeting).
         .def("set_tower_hp", &ClashEnv::setTowerHp,
              py::arg("team"), py::arg("slot"), py::arg("hp"))
         .def("destroy_tower", &ClashEnv::destroyTower,
@@ -168,77 +137,47 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("team"), py::arg("slot"))
         .def("get_tower_max_hp", &ClashEnv::getTowerMaxHp,
              py::arg("team"), py::arg("slot"))
-        // Clamped to [0, max_ticks]. Sets BOTH engine clocks so they cannot
-        // drift; see ClashEnv::setCurrentTick.
+        // Clamped to [0, max_ticks]; sets both engine clocks.
         .def("set_current_tick", &ClashEnv::setCurrentTick, py::arg("tick"))
         .def("get_current_tick", &ClashEnv::getCurrentTick)
-        // Elixir phase (1.0 / 2.0 / 3.0) at the current tick. Bound so that
-        // probes, perception/ and the tests read the schedule from the engine
-        // instead of restating DOUBLE_ELIXIR_TICK/TRIPLE_ELIXIR_TICK.
+        // The elixir phase (1.0 / 2.0 / 3.0) now.
         .def("get_elixir_multiplier", &ClashEnv::getElixirMultiplier)
-        // Card-cycle tracking (item 24). `note_played_card` is for the live
-        // mirror in perception/: `inject` places a BODY and deliberately
-        // bypasses GameManager::playCard, which is where the cycle is hooked,
-        // so an estimator has to report the PLAY separately or the cycle
-        // blocks stay empty in deployment while working fine in training.
+        // Card-cycle tracking (item 24). `inject` bypasses playCard, where the
+        // cycle is recorded, so the live mirror reports plays through
+        // note_played_card.
         .def("note_played_card", &ClashEnv::notePlayedCard,
              py::arg("team"), py::arg("card_id"))
         .def("get_last_played_tick", &ClashEnv::getLastPlayedTick,
              py::arg("team"), py::arg("card_id"))
-        // Reproducible episodes. Seeds BOTH engine generators and re-deals,
-        // so two envs given the same seed agree on the opening hand, the
-        // cycle order and the heuristic's rolls. See ClashEnv::seed, and
-        // perception/UPSTREAM_REQUESTS.md item 7 for what it is worth.
+        // Reproducible episodes: seeds both engine generators and re-deals
+        // (ClashEnv::seed).
         .def("seed", &ClashEnv::seed, py::arg("seed"))
         .def("get_elixir_spent", &ClashEnv::getElixirSpent, py::arg("team"))
-        // Surviving TOWER count (King + Princesses) for one team -- see
-        // ClashEnv::getTowersAlive for why the Python reward needs this.
+        // Surviving towers (King and Princesses) for one team; see
+        // ClashEnv::getTowersAlive.
         .def("get_towers_alive", &ClashEnv::getTowersAlive, py::arg("team"))
-        // The FULL outcome verdict -- tower count, then weakest surviving
-        // tower, then draw. get_towers_alive above gives only the first of
-        // those three rules, and eight separate scripts re-derived the rest
-        // wrongly from it before this existed. Returns loserTeam: -1 draw,
-        // 0 team 0 lost, 1 team 1 lost. See ClashEnv::resolveTimeoutOutcome.
+        // The full timeout verdict: tower count, then weakest surviving tower,
+        // then draw. Returns loserTeam: -1 draw, else the losing team. See
+        // ClashEnv::resolveTimeoutOutcome.
         .def("resolve_timeout_outcome", &ClashEnv::resolveTimeoutOutcome)
-        // Real enforced placement bounds -- see GameManager::getMaxPlacementX/
-        // getOwnHalfMaxY's own comments. Lets the Python side scale its action
-        // space from the engine's actual numbers instead of a hardcoded copy.
+        // The engine's enforced placement bounds, for scaling the action space.
         .def("get_max_placement_x", &ClashEnv::getMaxPlacementX)
         .def("get_own_half_max_y", &ClashEnv::getOwnHalfMaxY)
         .def("is_valid_placement", &ClashEnv::isValidPlacementForCard,
              py::arg("card_id"), py::arg("x"), py::arg("y"), py::arg("team") = 0,
              "Would playCard accept this card at this point? The exact "
-             "predicate playCard uses, exposed so the Python placement mask is "
-             "derived from the engine's legality rule instead of a second copy "
-             "of the board geometry. Read-only. See "
-             "perception/UPSTREAM_REQUESTS.md item 12 -- 58.7% of the policy's "
-             "card choices were being refused here, silently.")
-        // Decision-time search. Returns a genuinely independent environment --
-        // entities deep-copied, stats collectors deep-copied, projectile
-        // targets remapped -- so a caller can try a candidate action, roll it
-        // forward and throw it away without touching the live match.
-        //
-        // return_value_policy::move so the freshly built ClashEnv is moved
-        // into the Python object rather than copied again; copying it would be
-        // correct but would redo the whole deep copy a second time.
+             "predicate playCard uses, so the Python placement mask derives "
+             "from the engine's legality rule. Read-only.")
+        // A deep copy for decision-time search. Moved into the Python object
+        // rather than copied a second time.
         .def("snapshot", &ClashEnv::snapshot, py::return_value_policy::move,
              "Independent deep copy of this environment, for decision-time "
-             "search or what-if analysis. Stepping the copy cannot affect the "
-             "original: entities, and the stats collectors behind "
-             "get_tower_damage_dealt()/get_elixir_spent(), are all duplicated, "
-             "and a projectile in flight is re-pointed at the copy's own "
-             "target rather than the original's. Cumulative statistics carry "
-             "over, so a rollout continues the match's totals instead of "
-             "restarting them. The replay log does NOT carry over (a rollout "
-             "is a hypothetical, not part of the match). Roughly 150x cheaper "
-             "than one network forward -- see perception/UPSTREAM_REQUESTS.md "
-             "item 13.")
-        // Structural constants the observation/action encoding is built from --
-        // read-only class attributes (ClashRoyaleEnv.NUM_CARD_IDS etc, no
-        // instance needed) so model.py/train.py/train_selfplay.py/
-        // gym_wrapper.py can derive their own dimensions from these instead of
-        // hardcoding a matching copy that has to be remembered and updated by
-        // hand every time one of these changes on the C++ side.
+             "search. Stepping the copy cannot affect the original: entities "
+             "and stats collectors are duplicated, and projectiles in flight "
+             "are re-pointed at the copy's own targets. Cumulative statistics "
+             "carry over; the replay log does not.")
+        // Structural constants, as read-only class attributes, so Python
+        // derives its dimensions from them.
         .def_readonly_static("BOARD_WIDTH", &ClashEnv::BOARD_WIDTH)
         .def_readonly_static("BOARD_HEIGHT", &ClashEnv::BOARD_HEIGHT)
         .def_readonly_static("NUM_CHANNELS", &ClashEnv::NUM_CHANNELS)
@@ -246,59 +185,34 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .def_readonly_static("NUM_CARD_IDS", &ClashEnv::NUM_CARD_IDS)
         .def_readonly_static("MAX_TROOP_HP", &ClashEnv::MAX_TROOP_HP)
         .def_readonly_static("MAX_BUILDING_HP", &ClashEnv::MAX_BUILDING_HP)
-        // Attribute-channel indices and the appended-scalar count, bound for
-        // the same reason every other structural constant here is: the Python
-        // side derives its layout math from the engine instead of keeping a
-        // hand-synced copy. model.py and train_selfplay.py's scripted
-        // opponents both index the raw observation directly.
+        // Attribute-channel indices; the Python side indexes the raw
+        // observation with them.
         .def_readonly_static("CH_COUNT", &ClashEnv::CH_COUNT)
         .def_readonly_static("CH_FLYING", &ClashEnv::CH_FLYING)
         .def_readonly_static("CH_ANTIAIR", &ClashEnv::CH_ANTIAIR)
         .def_readonly_static("CH_DPS", &ClashEnv::CH_DPS)
         .def_readonly_static("CH_RANGE", &ClashEnv::CH_RANGE)
         .def_readonly_static("CH_SPEED", &ClashEnv::CH_SPEED)
-        // Opponent card-cycle blocks (item 24, 2026-08-27). Bound for exactly
-        // the reason the block above is: `MicroRoyaleNet` sizes its scalar
-        // input from these, and a hand-synced copy of 2*185 in Python is the
-        // defect this project has now hit six times.
+        // Opponent card-cycle block sizes (item 24); MicroRoyaleNet sizes its
+        // scalar input from them.
         .def_readonly_static("NUM_CYCLE_BLOCKS", &ClashEnv::NUM_CYCLE_BLOCKS)
         .def_readonly_static("CYCLE_BLOCK_SIZE", &ClashEnv::CYCLE_BLOCK_SIZE)
         .def_readonly_static("CYCLE_RECENCY_TAU_TICKS", &ClashEnv::CYCLE_RECENCY_TAU_TICKS)
-        // FORWARD offsets into the observation. Bound because locating a
-        // section by subtracting from the end silently re-points the moment
-        // anything is appended behind it -- which is exactly what the cycle
-        // blocks did to five call sites that used to read the tower HPs.
+        // Forward offsets into the observation: an append cannot move them.
         .def_readonly_static("EXTRA_SCALARS_START", &ClashEnv::EXTRA_SCALARS_START)
         .def_readonly_static("CYCLE_START", &ClashEnv::CYCLE_START)
         .def_readonly_static("NUM_EXTRA_SCALARS", &ClashEnv::NUM_EXTRA_SCALARS)
         .def_readonly_static("MAX_MATCH_ELIXIR", &ClashEnv::MAX_MATCH_ELIXIR)
-        // Elixir phase boundaries, in TICKS (10 ticks = 1 s). Bound from
-        // GameManager, which is where the schedule lives -- the viewer and
-        // perception/ both need the boundaries themselves and not just the
-        // current value, and neither may restate them.
+        // Elixir phase boundaries in ticks, from GameManager.
         .def_readonly_static("DOUBLE_ELIXIR_TICK", &GameManager::DOUBLE_ELIXIR_TICK)
         .def_readonly_static("TRIPLE_ELIXIR_TICK", &GameManager::TRIPLE_ELIXIR_TICK);
 
     m.def("get_all_card_ids", &getAllCardIds,
         "All ids CardRegistry currently has registered (real, playable cards only).");
 
-    // Per-card registry facts the Python side cannot otherwise see. Added
-    // because three separate Python-side problems all reduced to "the trainer
-    // has no way to ask what a card IS":
-    //
-    //  * is_spell: the action space caps target_y at getOwnHalfMaxY() for every
-    //    card, but isValidPlacement deliberately exempts spells from the
-    //    own-half restriction. Without this flag the agent could never aim a
-    //    Fireball past the river -- an entire card in the deck was unusable for
-    //    its actual purpose, and no amount of training could fix it.
-    //  * cost: lets the affordability action mask use the registry's own number
-    //    instead of re-deriving it from the observation's scaled copy.
-    //  * is_champion: python_ai/gym_wrapper.py had to hand-maintain a
-    //    DEFAULT_DECK_ABILITY_SLOTS constant next to the deck literal purely
-    //    because this was not queryable; it can now be derived.
-    //
-    // Read-only accessor over data CardRegistry already holds -- no engine
-    // behavior changes.
+    // Per-card registry facts: whether a card is a spell (spells are exempt
+    // from the own-half rule), its cost (for the affordability mask), and
+    // Champion / Hero flags. Read-only.
     m.def("get_card_info", [](int cardId) {
         const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
         if (!def) {
@@ -319,40 +233,17 @@ PYBIND11_MODULE(clash_royale_env, m) {
         "Registry facts for one card id: name, cost, is_spell, is_building, "
         "placement_radius, deploy_anywhere, is_champion, is_hero.");
 
-    // Exposes the exact same slot-legality check GameManager::reset()/
-    // setOpponentDeck() already enforce (throwing on a non-empty result) --
-    // lets a caller pre-validate (or rejection-sample) a random 8-card deck
-    // from Python without duplicating the Evolution/Champion slot rules on
-    // that side. Returns "" for a legal deck, otherwise a human-readable
-    // reason naming the offending slot/card.
+    // The slot-legality check GameManager::reset and setOpponentDeck enforce,
+    // so Python validates decks without restating the rules. "" for a legal
+    // deck, else the reason.
     m.def("validate_deck_slots", &validateDeckSlots,
         "Returns \"\" if `deck` (8 card ids) satisfies Evolution/Champion slot-position rules, else an error string.");
 
-    // Correct-by-construction replacement for the various Python-side
-    // "random.sample(get_all_card_ids(), 8), retry until validate_deck_slots
-    // passes" patterns (gym_wrapper.py, train.py, train_selfplay.py) --
-    // sampleRandomDeck itself takes an std::mt19937& (reusable from other
-    // C++ callers), which pybind11 can't expose directly; this lambda wraps
-    // it with its own internally-seeded generator (seeded once, like
-    // ClashEnv::rng/GameManager::rng) so the Python-facing call takes no
-    // arguments.
-    // The THIRD generator in this project, and the one ClashEnv::seed cannot
-    // reach: it is not a member of anything. Item 7 seeded ClashEnv::rng (the
-    // HeuristicOpponent) and GameManager::rng (the opening hand and cycle
-    // order), which left a run with randomize_opp_deck=True reproducible in
-    // every respect EXCEPT the opponent's deck -- the largest single remaining
-    // source of episode-to-episode variance.
-    //
-    // WHY A SEEDED CALL GETS ITS OWN GENERATOR rather than seeding the static.
-    // The static is process-global, so at num_envs=8 every env interleaves
-    // draws from one stream: seeding it would make a result reproducible only
-    // for a fixed construction and call ORDER, which is not a property a
-    // vectorised trainer can offer. A local generator is order-independent by
-    // construction.
-    //
-    // Passing no seed keeps the previous behaviour bit-for-bit -- same static,
-    // same stream -- so every existing zero-argument call site is unaffected.
-    // See perception/UPSTREAM_REQUESTS.md item 23C.
+    // A random deck that is legal by construction. With a seed, drawn from a
+    // generator private to the call: the process-global stream is shared by
+    // every env in the process, so seeding it would only be reproducible for a
+    // fixed call order. Without one, the global stream as before. This
+    // generator is the one ClashEnv::seed cannot reach (item 23C).
     m.def("sample_random_deck", [](std::optional<unsigned int> seed) {
         if (seed.has_value()) {
             std::mt19937 local(seed.value());
@@ -363,5 +254,5 @@ PYBIND11_MODULE(clash_royale_env, m) {
     }, py::arg("seed") = py::none(),
        "Builds a random 8-card deck that always satisfies Evolution/Champion slot-position rules by construction. "
        "Pass seed= for a reproducible deck drawn from a generator private to this call; omit it for the shared "
-       "process-global stream, which is what every pre-2026-08-24 call site used.");
+       "process-global stream.");
 }

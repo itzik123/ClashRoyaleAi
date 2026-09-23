@@ -1,35 +1,14 @@
-"""THE SIDE NULL: is team 0 favoured by the board itself?
+"""The side null: is team 0 favoured by the board itself?
 
-Run two IDENTICAL policies against each other and confirm team 0 scores ~0.50.
+Runs two identical teachers against each other; team 0 should score ~0.50. It
+catches faults every training metric misses, such as the team-1 observation
+once being displaced by a row. Re-run after any change to the observation, the
+board geometry or `stepSelfPlay`.
 
-WHY THIS HARNESS EXISTS. CLAUDE.md names this the one diagnostic that catches a
-fault the ordinary metrics cannot see at all: the 2026-07-31 observation bug --
-`extractObservationForTeam` mirroring the truncated row, `33 - int(y)` instead
-of `int(33 - y)` -- displaced team 1's whole observation by one row, every tick,
-while every training metric read healthy. It measured 0.598 here before the fix
-and 0.520 after (n=400).
-
-It is worth re-running after ANY change to the observation, the board geometry,
-or `stepSelfPlay`.
-
-WHAT MAKES IT A VALID NULL, and each of these was got wrong on the way here:
-
-  * BOTH sides must be the same policy at the same strength. A first attempt
-    used the env's own teacher against a separately-constructed one and read
-    0.300, which was not an asymmetry at all.
-  * The PROFILE must be pinned on both sides. `UtilityTeacher.reset()` redraws
-    a random profile per match unless one was fixed at construction, so two
-    unpinned teachers are not a mirror -- they are two different opponents, and
-    that alone produced the 0.300.
-  * Read the share of DECIDED games, not of all games. Draws are symmetric and
-    dilute the estimate toward 0.5, which HIDES the very asymmetry being
-    measured.
-  * n matters. At n=30 the 95% band is about +/-0.18, which cannot resolve the
-    0.598 this exists to catch. Use several hundred for a real verdict.
-
-MEASURED 2026-08-26, stage 0, pinned "balanced", n=100: team-0 share of decided
-games 0.510, 95% CI [0.412, 0.608], 0 draws. The null is inside the interval --
-the board is symmetric.
+For a valid null: both sides must be the same policy with the profile pinned
+(an unpinned reset() redraws it, making two different opponents); read the
+share of decided games (draws dilute toward 0.5); and use several hundred games
+(at n=30 the 95% band is about +/-0.18).
 
     python_ai/venv/Scripts/python.exe -m python_ai.eval.side_null_ab --n 400
 """
@@ -49,8 +28,7 @@ def run(n, stage, profile, max_steps=400):
         env = gym_wrapper.MicroRoyaleEnv(
             {"opponent": "teacher", "teacher_stage": stage,
              "scenario_seed": 90210 + ep})
-        # Pin the env-side teacher too: an unpinned reset() redraws the profile
-        # and the two sides stop being a mirror.
+        # Pin the env-side teacher too, or the two sides stop being a mirror.
         env.teacher._fixed_profile = profile
         obs, _ = env.reset()
         ref = UtilityTeacher(list(gym_wrapper.DEFAULT_DECK), team=0,

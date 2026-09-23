@@ -1,34 +1,11 @@
-"""Checkpoint and log destinations must not depend on the working directory.
-
-WHY THIS FILE EXISTS. `Phase1Trainer.__init__` read
-`os.environ.get("CLASH_WEIGHTS", "model_weights.pth")` -- a BARE RELATIVE PATH --
-and the checkpoints live in `python_ai/`, not at the repo root. So:
-
-    launched from the repo root  -> os.path.exists() is False -> starts FRESH
-    launched from python_ai/     -> os.path.exists() is True  -> RESUMES
-
-Both are silent. A multi-day run either inherits a stale curriculum stage,
-phase, entropy schedule and Adam state, or discards a good checkpoint, and
-which one happens is decided by the directory somebody happened to `cd` into.
-Measured 2026-08-25: `model_weights.pth` carried episode 7,063, phase
-`random_opponent`, curriculum stage 4 and an already-decayed entropy
-coefficient, from an engine two gameplay-affecting changes old.
-
-`shipping.py` was already fixed for exactly this ("loaded from the package
-directory the .pth files live in -- never from the caller's cwd, which is what
-made a harness and a deployment able to load two different checkpoints under one
-name"). The trainers were not, and `base_trainer` compounds it: `log_dir` is
-also cwd-relative and line 217 `shutil.rmtree`s it on a non-resume start.
-
-THE RULE PINNED HERE. Every destination resolves against an anchor that is
-derived from `__file__`, never from `os.getcwd()`:
+"""Checkpoint and log destinations do not depend on the working directory.
 
     *.pth                                  -> python_ai.PACKAGE_DIR
     runs/, historical_checkpoints/, ...    -> python_ai.REPO_ROOT
 
-which is where each of those already physically lives, so nothing moves and no
-existing layout changes -- the only thing that changes is that the working
-directory stops being able to redirect them.
+Both anchors derive from `__file__`, never `os.getcwd()`, and are where each
+already lived. A cwd-relative weights path silently decided whether a run
+resumed or started fresh depending on where it was launched.
 """
 import os
 
@@ -39,20 +16,17 @@ from python_ai.rl import base_trainer, checkpointing
 from python_ai.trainers import train, train_selfplay
 
 
-# --------------------------------------------------------------------------
-# the resolver itself, including the control that must fire
-# --------------------------------------------------------------------------
+# --- the resolver, including the control that must fire ---
 def test_a_relative_name_is_anchored_and_an_absolute_one_is_left_alone():
-    """The positive control. A resolver that returned its input unchanged would
-    pass every 'is absolute' assertion below purely because the constants it is
-    handed are already absolute -- so the relative case has to be exercised
-    explicitly, and the absolute case has to be shown to survive untouched.
+    """Positive control: a resolver returning its input unchanged would pass every
+    "is absolute" check below, so the relative case is exercised explicitly and
+    the absolute case shown untouched.
     """
     anchored = checkpointing.weights_path("model_weights.pth")
     assert os.path.isabs(anchored)
     assert anchored == os.path.join(python_ai.PACKAGE_DIR, "model_weights.pth")
 
-    # an absolute override is a deliberate act and must be honoured verbatim
+    # An absolute override is deliberate and honoured verbatim.
     explicit = os.path.join(os.sep, "tmp", "arm_b", "weights.pth")
     assert checkpointing.weights_path(explicit) == explicit
 
@@ -62,8 +36,8 @@ def test_a_relative_name_is_anchored_and_an_absolute_one_is_left_alone():
 
 
 def test_the_two_anchors_are_different_directories():
-    """Guards against 'fixing' this by collapsing both onto one base, which
-    would silently relocate either the checkpoints or the TensorBoard runs.
+    """Collapsing both anchors onto one base would silently relocate the
+    checkpoints or the runs.
     """
     assert python_ai.PACKAGE_DIR != python_ai.REPO_ROOT
     assert os.path.dirname(python_ai.PACKAGE_DIR) == python_ai.REPO_ROOT
@@ -73,10 +47,8 @@ def test_the_two_anchors_are_different_directories():
                                       checkpointing.run_path])
 def test_resolution_is_identical_from_two_different_working_directories(
         resolver, tmp_path, monkeypatch):
-    """The actual failure, reproduced: same call, two `cd`s, one answer.
-
-    Against the old bare-string behaviour the two results differed by the whole
-    prefix, which is precisely how one launch resumed and another did not.
+    """The actual failure: the same call from two working directories gives one
+    answer.
     """
     monkeypatch.chdir(python_ai.REPO_ROOT)
     from_root = resolver("model_weights.pth")
@@ -86,13 +58,11 @@ def test_resolution_is_identical_from_two_different_working_directories(
 
     assert from_root == from_elsewhere
     assert os.path.isabs(from_root)
-    # and it is not merely "absolute": it must not have picked up either cwd
+    # ...and it must not have picked up either cwd.
     assert not from_root.startswith(str(tmp_path))
 
 
-# --------------------------------------------------------------------------
-# every destination a long run actually writes to
-# --------------------------------------------------------------------------
+# --- every destination a long run writes to ---
 def test_every_checkpoint_directory_is_absolute():
     for name in ("HISTORICAL_CHECKPOINT_DIR", "STAGE_CHECKPOINT_DIR"):
         value = getattr(checkpointing, name)
@@ -101,10 +71,9 @@ def test_every_checkpoint_directory_is_absolute():
 
 
 def test_both_pipelines_name_absolute_weight_and_log_destinations():
-    """`train.py` computes its two in `__init__` from the environment, so those
-    are covered by the resolver tests above; these are the module- and
-    class-level constants, which are frozen at import and cannot be fixed by a
-    later `cd`.
+    """Module- and class-level constants are frozen at import and cannot be fixed
+    by a later `cd`; the ones computed in `__init__` are covered by the
+    resolver tests.
     """
     for value in (train_selfplay.WEIGHT_PATH,
                   train_selfplay.BOOTSTRAP_FROM_PATH,
@@ -119,11 +88,9 @@ def test_both_pipelines_name_absolute_weight_and_log_destinations():
 
 
 def test_the_phase1_defaults_resolve_the_same_way(monkeypatch, tmp_path):
-    """Phase 1 reads CLASH_WEIGHTS / CLASH_LOGDIR at construction time.
-
-    Constructing a `Phase1Trainer` would build eight environments, so the two
-    expressions are exercised directly instead -- they are one line each and
-    the point is the anchoring, not the trainer.
+    """Phase 1 reads CLASH_WEIGHTS / CLASH_LOGDIR at construction; building a
+    trainer would build eight envs, so the two expressions are exercised
+    directly.
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CLASH_WEIGHTS", raising=False)
@@ -140,29 +107,22 @@ def test_the_phase1_defaults_resolve_the_same_way(monkeypatch, tmp_path):
 
 
 def test_an_experiment_arm_can_still_redirect_both(monkeypatch, tmp_path):
-    """The override exists so a smoke run cannot clobber the live checkpoint.
-    Making the default absolute must not take that away.
-    """
+    """The override lets an experiment avoid clobbering the live checkpoint."""
     arm = tmp_path / "arm_b.pth"
     monkeypatch.setenv("CLASH_WEIGHTS", str(arm))
     assert checkpointing.weights_path(os.environ["CLASH_WEIGHTS"]) == str(arm)
 
 
-# --------------------------------------------------------------------------
-# the PFSP pool, which reads the same constant from a third module
-# --------------------------------------------------------------------------
+# --- the PFSP pool ---
 def test_the_pfsp_pool_is_discoverable_from_any_working_directory(
         monkeypatch, tmp_path):
-    """`league.discover_historical_checkpoints` globs HISTORICAL_CHECKPOINT_DIR.
-    While that was relative, a run launched from the wrong directory saw an
-    EMPTY pool -- and an empty pool is not an error, it is a league with only
-    the four scripted bots in it. Silent, and it degrades the opponent
-    distribution rather than crashing.
+    """A cwd-relative pool directory would yield an empty pool: not an error, but
+    a league of only the scripted bots.
     """
     from python_ai.trainers import league
 
     monkeypatch.chdir(tmp_path)
-    # a decoy that a cwd-relative glob would find instead of the real directory
+    # A decoy a cwd-relative glob would find instead of the real directory.
     (tmp_path / "historical_checkpoints").mkdir()
     (tmp_path / "historical_checkpoints" / "999_pipeline1_ep00000042.pth").touch()
 
@@ -172,9 +132,7 @@ def test_the_pfsp_pool_is_discoverable_from_any_working_directory(
 
 
 def test_train_module_no_longer_holds_a_bare_relative_default():
-    """Reading the source, because the value itself is computed inside
-    `__init__` and only exists on a constructed trainer. This is the assertion
-    that would have failed before the fix.
+    """Read from source, since the value exists only on a constructed trainer.
     """
     src = open(train.__file__, encoding="utf-8").read()
     assert 'os.environ.get("CLASH_WEIGHTS", "model_weights.pth")' not in src \
@@ -182,25 +140,11 @@ def test_train_module_no_longer_holds_a_bare_relative_default():
         "CLASH_WEIGHTS default is still used unanchored"
 
 
-# --- torn writes -----------------------------------------------------------
-#
-# The live checkpoint IS the run. `save_checkpoint` overwrote it in place with
-# a bare `torch.save(payload, self.weight_path)`, so an interruption during the
-# write -- Ctrl-C, an OOM kill, a full disk, a power cut -- leaves
-# `model_weights.pth` TRUNCATED, and it is the only copy. A multi-day run is
-# destroyed at the exact moment it tries to preserve itself.
-#
-# The window is not negligible: the payload carries the model AND Adam's two
-# moment buffers, so it is roughly three times the parameter count, written on
-# every save (default every 500 episodes) for the whole life of a run.
-#
-# `eval/probe_card_usage.py` even documents the trainer as writing
-# "atomically-enough (torch.save to a fresh path)" -- true of the snapshot
-# helpers, which mint a unique filename, and false of this one.
-#
-# The pool snapshots matter for a different reason: `league.py` torch.loads
-# EVERY entry it discovers, so one truncated file there crashes phase 2 on
-# whichever reset happens to sample it.
+# --- torn writes ---
+# The live checkpoint is the run: a bare `torch.save` interrupted mid-write
+# (Ctrl-C, OOM kill, full disk) leaves it truncated, the only copy. Pool
+# snapshots matter too: `league.py` loads every entry, so one truncated file
+# crashes phase 2 when sampled.
 
 def test_an_interrupted_save_leaves_the_previous_checkpoint_intact(tmp_path,
                                                                    monkeypatch):
@@ -215,10 +159,8 @@ def test_an_interrupted_save_leaves_the_previous_checkpoint_intact(tmp_path,
     calls = {"n": 0}
 
     def exploding_save(obj, f, *a, **kw):
-        """Write a few bytes, then die -- exactly a torn write.
-
-        `f` is a file HANDLE, not a path: an atomic implementation opens its
-        own temp file and hands torch.save the handle.
+        """Write a few bytes, then die: a torn write. `f` is a handle, since an
+        atomic implementation opens its own temp file.
         """
         calls["n"] += 1
         f.write(b"\x80\x02}")               # a plausible pickle prefix
@@ -246,7 +188,8 @@ def test_a_successful_atomic_save_round_trips(tmp_path):
 
 def test_an_atomic_save_leaves_no_temporary_files_behind(tmp_path):
     """A pool directory is enumerated by glob, so a leftover temp file would be
-    discovered as an opponent and torch.load()ed."""
+    loaded as an opponent.
+    """
     import torch
     from python_ai.rl import checkpointing
 
@@ -257,8 +200,7 @@ def test_an_atomic_save_leaves_no_temporary_files_behind(tmp_path):
 
 def test_an_interrupted_save_leaves_no_partial_file_in_a_pool(tmp_path,
                                                               monkeypatch):
-    """Nothing may appear in the directory until the payload is complete --
-    `league.py` torch.loads every entry it finds."""
+    """Nothing may appear in the directory until the payload is complete."""
     import torch
     from python_ai.rl import checkpointing
 
@@ -274,14 +216,8 @@ def test_an_interrupted_save_leaves_no_partial_file_in_a_pool(tmp_path,
 
 
 def test_no_module_in_the_package_writes_a_checkpoint_unatomically():
-    """Package-wide, not just the two modules this started with.
-
-    The scan is what found the rest: SEVEN more bare `torch.save` calls lived
-    in trainers/, and one of them -- `exploiter.py`'s burst snapshot -- writes
-    straight into the SHARED PFSP POOL. A torn write there deposits a corrupt
-    opponent that the MAIN run later tries to load, which is the same failure
-    the pool reader was hardened against; hardening the reader does not stop
-    the writer creating the file.
+    """Package-wide: any bare `torch.save` (e.g. a burst snapshot into the shared
+    PFSP pool) can deposit a corrupt file another run later loads.
     """
     import pathlib
     import re
@@ -290,8 +226,7 @@ def test_no_module_in_the_package_writes_a_checkpoint_unatomically():
     from python_ai.rl import checkpointing
 
     import inspect
-    # `atomic_save`'s own body holds the ONE legitimate torch.save --
-    # it is what every other writer is routed through.
+    # `atomic_save`'s own body holds the one legitimate torch.save.
     exempt_body = inspect.getsource(checkpointing.atomic_save).splitlines()
     root = pathlib.Path(python_ai.PACKAGE_DIR)
     offenders = []
@@ -309,18 +244,10 @@ def test_no_module_in_the_package_writes_a_checkpoint_unatomically():
 
 def test_the_temp_file_can_never_be_discovered_as_a_pool_opponent(tmp_path,
                                                                   monkeypatch):
-    """The in-flight temp file must NOT match the pool's `*.pth` glob.
-
-    `discover_historical_checkpoints` globs `*.pth` and `torch.load`s every
-    hit, so a temp file that matches is a live opponent while the save is in
-    flight -- and a SIGKILL leaves one behind PERMANENTLY, because the cleanup
-    handler cannot run, breaking every phase-2 run afterwards.
-
-    Two independent things keep it out, and this pins BOTH: the leading dot
-    (Python's `glob` does not match dotfiles with `*`) and the `.partial`
-    suffix. The dot alone already sufficed, which is exactly why this test
-    matters -- protection that is incidental to a filename prefix is one
-    rename away from gone, and nothing would have reported it.
+    """The in-flight temp file must not match the pool's `*.pth` glob, or a
+    SIGKILL leaves a permanent broken opponent. Two things keep it out, both
+    pinned: the leading dot (glob's `*` skips dotfiles) and the `.partial`
+    suffix.
     """
     import torch
     from python_ai.rl import checkpointing
@@ -329,7 +256,7 @@ def test_the_temp_file_can_never_be_discovered_as_a_pool_opponent(tmp_path,
     seen = {}
 
     def peeking_save(obj, f, *a, **kw):
-        # Look at the directory WHILE the temp file exists.
+        # Look at the directory while the temp file exists.
         seen["during"] = discover_historical_checkpoints(directory=str(tmp_path))
         f.write(b"\x80\x02}q\x00.")
 

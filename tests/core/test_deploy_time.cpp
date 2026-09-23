@@ -7,17 +7,11 @@
 #include "MeleeTroop.h"
 #include "Tower.h"
 
-// Deploy time (2026-08-19). A freshly placed troop or building is inert for
-// DEPLOY_TIME_TICKS: on the board, targetable and damageable, but unable to
-// move, target or attack.
-//
-// WHY THESE TESTS EXIST. The change is GAMEPLAY-AFFECTING and its whole point
-// is asymmetric: a defender places INTO an existing threat and needs its answer
-// to act now, while an attacker places before contact and would have spent that
-// second walking anyway. So the tests pin both halves -- that the delay really
-// happens, and that it applies to exactly the right set of entities. Getting
-// the SET wrong is the silent failure: a tower that deploys, or a spell delayed
-// twice, would change the game in ways no aggregate metric would localise.
+// Deploy time: a freshly placed troop or building is inert for
+// DEPLOY_TIME_TICKS (on the board, targetable and damageable, but not moving,
+// targeting or attacking). These pin that the delay happens and that it applies
+// to exactly the right entities; a tower that deploys, or a spell delayed
+// twice, would change the game silently.
 
 namespace {
 
@@ -50,9 +44,8 @@ TEST_CASE("a freshly spawned troop starts with deploy time pending", "[deploy]")
 
 TEST_CASE("a deploying troop does not move", "[deploy]") {
     Board board;
-    // A destination is required or the Hog has nothing to walk toward and the
-    // test would pass for the wrong reason -- findTarget falls back to the
-    // nearest enemy TOWER, and a bare Board has none.
+    // The Hog needs a destination: a bare Board has no towers for findTarget to
+    // fall back on.
     auto tower = std::make_shared<Tower>(board.allocateId(), 9.0f, 30.5f, 4000, 1,
                                          7.0f, 50, 10, 'K');
     board.addEntity(tower);
@@ -77,9 +70,8 @@ TEST_CASE("a deploying troop does not move", "[deploy]") {
 }
 
 TEST_CASE("a deploying troop deals no damage", "[deploy]") {
-    // The defensive half of the change: an answer placed on top of a threat
-    // cannot act for a second, which is the tempo the real game charges and
-    // this engine was giving away for free.
+    // The defensive half: an answer placed on top of a threat cannot act for a
+    // second.
     Board board;
     auto victim = std::make_shared<MeleeTroop>(
         board.allocateId(), 9.0f, 10.0f, 5000, 1, 0.0f, 1.0f, 10, 10, 'V');
@@ -97,8 +89,7 @@ TEST_CASE("a deploying troop deals no damage", "[deploy]") {
 }
 
 TEST_CASE("a deploying troop is still targetable and takes damage", "[deploy]") {
-    // Inert, NOT invulnerable. If this ever flipped, a mistimed placement would
-    // become free rather than punishable, which is the opposite of the intent.
+    // Inert, not invulnerable, so a mistimed placement is punishable.
     Board board;
     CardRegistry::getInstance().getCard(HOG_RIDER)->spawnEntity(9.0f, 10.0f, 0, board);
     board.commitPendingEntities();
@@ -125,9 +116,7 @@ TEST_CASE("a defensive building also deploys", "[deploy]") {
 }
 
 TEST_CASE("towers never deploy", "[deploy]") {
-    // Towers are built directly by GameManager and never go through
-    // CardFactories, so they must be unaffected. A tower that spent its first
-    // second inert would hand every opening push a free hit.
+    // Towers are built by GameManager, not CardFactories, so they never deploy.
     Board board;
     auto tower = std::make_shared<Tower>(board.allocateId(), 9.0f, 2.5f, 4000, 0, 7.0f, 50, 10, 'K');
     board.addEntity(tower);
@@ -136,9 +125,8 @@ TEST_CASE("towers never deploy", "[deploy]") {
 }
 
 TEST_CASE("spells are not delayed twice", "[deploy]") {
-    // A spell already has spellDelayTicks. spawnSpell deliberately bypasses
-    // applyCardMetadata, so it must NOT also pick up a deploy time -- that
-    // would silently add a second to every Fireball in the game.
+    // A spell already has spellDelayTicks; spawnSpell bypasses
+    // applyCardMetadata and must not also get a deploy time.
     Board board;
     CardRegistry::getInstance().getCard(FIREBALL)->spawnEntity(9.0f, 20.0f, 0, board);
     board.commitPendingEntities();
@@ -153,10 +141,8 @@ TEST_CASE("spells are not delayed twice", "[deploy]") {
 }
 
 TEST_CASE("deploy time survives a deep copy", "[deploy][snapshot]") {
-    // Board::deepCopy backs decision-time search. A snapshot that reset deploy
-    // time to 0 would let search evaluate a board where every unit acts a full
-    // second early -- wrong in exactly the direction that makes attacking look
-    // better than it is.
+    // A snapshot must keep the remaining deploy time, or search sees every unit
+    // act a second early.
     Board board;
     CardRegistry::getInstance().getCard(HOG_RIDER)->spawnEntity(9.0f, 10.0f, 0, board);
     board.commitPendingEntities();

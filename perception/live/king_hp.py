@@ -1,43 +1,25 @@
-"""King Tower HP, which ClashRoyaleBuildABot does not read at all.
+"""King Tower HP, which ClashRoyaleBuildABot does not read.
 
-WHY THIS EXISTS
----------------
-CRBAB's `Numbers` carries four fields -- both Princess towers per side -- and
-nothing for the Kings. The engine's observation needs six: extra scalars 3-5
-are our king/left/right and 6-8 are the enemy's (see ClashEnv.h,
-"TOWER HP as explicit scalars"). Measured on a real ladder frame, our King sat
-at 241 HP while the match was being lost; a policy blind to that cannot know it
-is about to lose.
+CRBAB's `Numbers` holds the four Princess towers and nothing for the Kings,
+while the observation's extra scalars 3-8 need all six.
 
-TWO THINGS DIFFER FROM THE PRINCESS BARS, AND BOTH BITE
-------------------------------------------------------
-1. AN ABSENT BAR MEANS FULL, NOT DESTROYED. Clash Royale draws no HP bar over
-   an undamaged King -- only its level crown. CRBAB's `_calculate_hp` returns
-   0.0 when it cannot find a bar, which is correct for a Princess (gone means
-   destroyed) and exactly inverted for a King. A King at 0 ends the match, so
-   0.0 is not even a reachable steady state; "no bar" is always full.
+Two differences from the Princess bars:
 
-2. THE EMPTY SEGMENT IS A DIFFERENT COLOUR. Sampled off real frames, the
-   King bar's unfilled portion is dark brown (~111,94,83) for BOTH sides,
-   where `ALLY_HP_RHS_COLOUR` is a dark blue-grey (63,79,112). Reusing the
-   Princess constants finds nothing on the ally King.
+1. An absent bar means full, not destroyed. No HP bar is drawn over an
+   undamaged King, only its crown; a King at 0 ends the match, so 0.0 is never
+   a steady state. CRBAB's `_calculate_hp` returns 0.0 for no bar, right for a
+   Princess and inverted for a King.
 
-So rather than match exact RGB triples, each column is classified by hue
-family -- clearly blue, clearly magenta, or neither. That also disposes of the
-HP NUMERAL, which the game draws in white ON TOP of the bar and which would
-otherwise punch a hole through the middle of any exact-colour match. This is
-the same failure already documented for the elixir bar in readers/elixir.py.
+2. The empty segment is a different colour: dark brown (~111,94,83) for both
+   sides, where `ALLY_HP_RHS_COLOUR` is blue-grey (63,79,112). So each column
+   is classified by hue family (clearly blue, clearly magenta, or neither),
+   which also ignores the white HP numeral drawn on top of the bar (the same
+   problem as readers/elixir.py).
 
-COORDINATES
------------
-Screenshot space (368x652), the frame every CRBAB detector works in, so these
-survive a device-resolution change -- which matters, because the emulator was
-900x1600 when this was written and 720x1280 an hour later.
-
-Bar bounds were measured, not guessed: a column profile over a frame with both
-Kings damaged put the bar at x 164..218. Validated by cross-check -- the enemy
-King read a 0.400 fill while displaying 1208 HP, and 1208/0.400 = 3020 against
-a level-4 King's ~2928-3096, i.e. agreement to about one pixel of boundary.
+Coordinates are CRBAB's 368x652 screenshot space, which survives a
+device-resolution change. Bar bounds were measured from a column profile with
+both Kings damaged (x 164..218) and cross-checked: an enemy King read 0.400
+while showing 1208 HP, i.e. 3020 max against a level-4 King's ~2928-3096.
 """
 from __future__ import annotations
 
@@ -45,10 +27,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Bar interior, screenshot space. Both Kings sit on the board's centre line so
-# they share x; only the row differs. Rows are the interior only -- the gold
-# border above and below is excluded, since it is the one thing on screen that
-# is present whether or not the bar is drawn.
+# Bar interior, screenshot space. Both Kings sit on the centre line and share
+# x; only the row differs. The gold border is excluded: it is present whether
+# or not a bar is drawn.
 KING_BAR_X0 = 164
 KING_BAR_X1 = 218
 ALLY_KING_BAR_Y = 491
@@ -58,16 +39,11 @@ KING_BAR_HEIGHT = 6
 # A column counts as filled/track if this fraction of its rows match.
 COLUMN_FILL_RATIO = 0.34
 
-# PRESENCE IS DECIDED ON THE EMPTY TRACK, NOT ON THE FILL. Measured on a real
-# frame: at 241 HP the ally King's bar showed NO blue fill whatever -- the
-# remaining sliver is under a pixel and the white "241" numeral is drawn
-# starting at x=164, right where the fill would be. Deciding presence on fill
-# therefore reported a King at 8% as "no bar", i.e. FULL, which is the most
-# dangerous direction this function can be wrong in.
-#
-# The unfilled track is dark brown on BOTH sides (~111,94,83 fading to
-# ~68,43,36) and covers most of the bar exactly when HP is low, so it is the
-# reliable presence signal precisely when the fill is not.
+# Presence is decided on the empty track, not the fill. At very low HP the
+# remaining fill can be under a pixel and covered by the white numeral, so a
+# fill test reports "no bar", i.e. full, the most dangerous direction to be
+# wrong. The dark-brown track (~111,94,83 fading to ~68,43,36) covers most of
+# the bar exactly when HP is low.
 MIN_TRACK_COLUMNS = 12
 
 
@@ -101,21 +77,17 @@ def _is_enemy(rgb: np.ndarray) -> np.ndarray:
 
 
 def _is_track(rgb: np.ndarray) -> np.ndarray:
-    """The bar's UNFILLED channel: a dark, desaturated brown, r > g > b.
-
-    Excludes the gold border (too bright, r ~ 246) and the arena floor (green,
-    so g > r). Same colour family on both sides -- measured identical browns
-    under the ally and the enemy King.
+    """The bar's unfilled channel: a dark, desaturated brown, r > g > b. Excludes
+    the gold border (r ~ 246) and the green floor (g > r). The same browns on
+    both sides.
     """
     r, g, b = rgb[..., 0].astype(np.int16), rgb[..., 1].astype(np.int16), rgb[..., 2].astype(np.int16)
     return (r > 40) & (r < 145) & (g < r) & (b < g) & (r - b > 15) & (r - b < 75)
 
 
 def read_king_hp(image, ally: bool) -> KingHp:
-    """King HP fraction from a screenshot-space RGB frame.
-
-    `image` is anything array-convertible in the 368x652 frame CRBAB uses --
-    a PIL Image or an ndarray.
+    """King HP fraction from a screenshot-space RGB frame: anything
+    array-convertible in CRBAB's 368x652 frame.
     """
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[2] < 3:
@@ -135,20 +107,18 @@ def read_king_hp(image, ally: bool) -> KingHp:
     columns = int(filled.sum())
     width = KING_BAR_X1 - KING_BAR_X0
 
-    # Presence first, and on the TRACK -- see MIN_TRACK_COLUMNS. A bar is drawn
-    # iff the King is damaged, so track+fill together should span most of it.
+    # Presence first, on the track (see MIN_TRACK_COLUMNS): a bar is drawn iff
+    # the King is damaged, and track plus fill should span most of it.
     if int(track.sum()) + columns < MIN_TRACK_COLUMNS:
         return KingHp(fraction=1.0, bar_present=False, columns=columns)
 
     if columns == 0:
-        # Bar drawn but no fill resolvable: the King is at a few percent and
-        # the numeral covers what little remains. Report the smallest value the
-        # bar can express rather than 0.0 -- a King at 0 has ended the match,
-        # so 0.0 would assert something that cannot be observed.
+        # Bar drawn but no fill resolvable: the King is at a few percent under
+        # the numeral. Report the smallest value the bar can express; 0.0 would
+        # assert a match-ending state.
         return KingHp(fraction=1.0 / width, bar_present=True, columns=0)
 
-    # Fill runs from the left edge, so the rightmost filled column is the
-    # boundary. Using the count instead would under-read whenever the numeral
-    # blanks a column in the middle of the filled run.
+    # Fill runs from the left, so the rightmost filled column is the boundary;
+    # a count would under-read where the numeral blanks a column.
     boundary = int(np.nonzero(filled)[0].max()) + 1
     return KingHp(fraction=min(1.0, boundary / width), bar_present=True, columns=columns)

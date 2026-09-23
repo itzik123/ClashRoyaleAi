@@ -1,20 +1,11 @@
 """The top rung's reactive counter must not assume an opponent who never answers.
 
-Measured 2026-09-15 (audit 05, BUG 2). At rung 10 `counter_schedule` answers EVERY
-attacking placement 10 ticks later with the opponent's cheapest affordable body.
-Against a PASSIVE opponent sitting on 10 elixir that imagined answer is always
-affordable, so every offensive candidate scored negative and the teacher held
-forever: 30 of 116 top-rung matches against a do-nothing opponent froze, bar full
-on 65-96% of decisions, six at zero tower damage. `classic_log_bait_inferno` went
-1/3/0/3 crowns over seeds 1-4, 3/3/3/3 with the counter off.
-
-Rung 10 is where the curriculum ENDS, and the states it froze in -- an agent
-banking elixir and holding -- are exactly where defending a push is learned.
-
-The counter itself is right and stays: it was adopted on +0.158 paired win rate
-against an ACTIVE opponent. What was wrong is that it was unconditional. It now
-switches off while the real opponent has not spent elixir for
-COUNTER_PASSIVE_DECISIONS decisions, and back on the moment they play.
+At rung 10 `counter_schedule` answers every attacking placement with the
+opponent's cheapest affordable body. Against a passive opponent on 10 elixir
+that answer is always affordable, so every offensive candidate scored negative
+and the teacher held forever. The counter now switches off after
+COUNTER_PASSIVE_DECISIONS decisions without the opponent spending, and back on
+when they play.
 """
 import numpy as np
 import pytest
@@ -35,13 +26,13 @@ def _teacher(deck, seed=3):
 
 
 def _attack():
-    """One card placed at the bridge row -- an attacking placement."""
+    """One card placed at the bridge row: an attacking placement."""
     step = T.PlacementStep(0, 15, 3.0, float(T.tactics.BRIDGE_ROW), 0)
     return T.Candidate((step,), "wincon", "single")
 
 
 def test_the_counter_is_on_against_an_opponent_who_plays():
-    """CONTROL: an opponent spending elixir still draws the modelled answer."""
+    """Control: an opponent spending elixir still draws the modelled answer."""
     deck = [15, 6, 25, 40, 24, 72, 33, 7]
     env = CE(deck, deck, 3600)
     env.seed(3)

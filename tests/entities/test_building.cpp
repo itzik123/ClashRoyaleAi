@@ -137,7 +137,7 @@ TEST_CASE("Tower defaults to targetsAir true, since every tower defends against 
 TEST_CASE("BuildingTargeter ignores enemy troops and walks past them toward a building", "[building_targeter][targeting]") {
     Board board;
     auto decoyTroop = std::make_shared<DummyEntity>(1, 5.0f, 5.3f, 100, 1); // right next to it
-    auto enemyBuilding = std::make_shared<Building>(2, 5.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10); // dist 5.0: farther than the decoy, still within default sightRange
+    auto enemyBuilding = std::make_shared<Building>(2, 5.0f, 10.0f, 1000, 1, 'C', 5.0f, 10, 10); // dist 5.0: farther than the decoy, within default sight
     spawn(board, decoyTroop);
     spawn(board, enemyBuilding);
 
@@ -187,7 +187,7 @@ TEST_CASE("RangedBuildingTargeter ignores enemy troops just like BuildingTargete
     spawn(board, enemyBuilding);
 
     RangedBuildingTargeter targeter(3, 5.0f, 5.0f, 2544, 0, 0.3f, 6.5f, 159, 17, 'Y');
-    targeter.sightRange = 10.0f; // real cards set this explicitly (own attackRange + ~0.5); the default alone wouldn't reach this far
+    targeter.sightRange = 10.0f; // real cards set this explicitly; the default would not reach this far
     targeter.update(board);
 
     REQUIRE(decoyTroop->hp == 100);

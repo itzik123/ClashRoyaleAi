@@ -1,70 +1,16 @@
-"""Placement-head ROW COMPACTION: the premise, and the bit-exactness bar.
+"""Placement-head row compaction: the premise, and the equivalence bar.
 
-WHAT THIS OPTIMIZATION IS
--------------------------
-`PPOUpdater.update` runs the placement head TWICE per BPTT chunk -- once for the
-card that was actually chosen, once for the sampled COVERAGE slot -- and the
-placement head is ~41% of update time. Both outputs are consumed ONLY on rows
-where `decision > 0`:
+The update runs the placement head twice per chunk (chosen card, coverage
+slot), and both outputs are consumed only on rows where `decision > 0`;
+`decision` is a subset of `valid`. So the head may skip the other rows.
 
-    actor_loss        (min(surr1,surr2) * mb_decision).sum() / n_decision
-    placement entropy (new_ent_place    * mb_placed  ).sum() / n_placed
-                      ...and mb_placed = mb_decision * (action != no-op)
-    clip_frac         (clipped          * mb_decision).sum() / n_decision
-    coverage KL       has  = has_target * decision
-    coverage entropy  no_t = (1 - has_target) * decision
+The coverage forward is NOT sliceable to the advisor rows: every other decision
+row still gets the entropy bonus.
 
-`decision` is itself `(card_mask.sum(1) > 1) * valid` (base_trainer), so it is a
-subset of `valid` and no other term can reach those rows either.
-
-Measured on model_weights_selfplay.pth (ep 31,312, 2.6 Hog Cycle) over 1500
-steps: decision fires on 0.368 of rows, so **63.2% of both placement forwards
-AND their backwards is multiplied by exactly zero**.
-
-A NOTE ON WHAT IS *NOT* SLICEABLE, because the obvious reading is wrong
-----------------------------------------------------------------------
-`Advisor/Rows` sits at 23-25 per 500-row minibatch, which invites slicing the
-COVERAGE forward down to those rows. That would be a silent regression, not an
-optimization: `coverage_terms` gives the advisor rows KL and gives EVERY OTHER
-DECISION ROW the entropy bonus, at a live `PLACEMENT_COVERAGE_COEF = 0.02`.
-Deleting that half re-opens the 2026-08-14 placement collapse (Cannon 91.0%
-modal share on (11,0), preserving 121 tower HP against 396 for a RANDOM legal
-cell -- worse than chance). The advisor row count bounds the KL half only.
-
-THE BAR, and why it is not "bit-exact everywhere"
--------------------------------------------------
-Bit-exact was the goal and is NOT achievable, for a reason that belongs to the
-backend rather than to this code. Measured, batch 500 -> 184, with the dropped
-rows carrying exactly-zero upstream gradient:
-
-    nn.Linear(280->32)                  fwd 4.768e-07   grad_W 2.289e-05
-    Conv2d(32,16) 18x10  place_up.1     bit-identical, fwd and grad_W
-    Conv2d(16,8)  36x20  place_up.4     grad_W differs by 5.814e-03
-    Conv2d(8,1)   36x20  place_up.6     grad_W differs by 2.808e-03
-    Conv2d(24,8)  34x18  place_hires.0  grad_W differs by 4.883e-03
-
-The Linear half is FIXED here -- `forward_sequence` computes both `place_ctx`
-layers on the full batch and slices, at ~0.5% of the head's cost. The Conv2d
-half cannot be: a convolution's weight gradient is a reduction over the batch
-dimension, and MKL-DNN re-blocks that reduction when the batch size changes.
-Note that it does so only for SOME shapes -- the first probe run here tested
-18x10, got "invariant", and was believed until the sweep over the other three
-shapes refuted it. An invariance that holds for one layer is not a property of
-Conv2d.
-
-So the bar these tests actually enforce, each measured rather than assumed:
-
-  * placement logits on the rows that are KEPT      -- torch.equal
-  * the loss and every UpdateStats field, 1 update  -- exact
-  * actor_loss / total_loss / clip_frac /
-    coverage_entropy, 20 updates                    -- still exact
-  * weights                                         -- float32 round-off,
-                                                       bounded and measured
-
-This is the same bar `forward_sequence` itself already ships at (CLAUDE.md
-records "max logit delta 1.1e-08 vs a float32 eps of 1.19e-07" for the batching
-that created it), and strictly stronger, because there the LOSS was not shown
-to be exact and here it is.
+Bit-exact weights are not achievable: a Conv2d weight gradient reduces over the
+batch, and MKL-DNN re-blocks that reduction when the batch size changes, for
+some shapes only. The bar enforced here: kept-row logits torch.equal, the loss
+and every UpdateStats field exact, weights within float32 round-off.
 """
 import copy
 
@@ -86,10 +32,8 @@ TINY = PPOConfig(num_envs=2, update_timestep=8, bptt_chunk=2,
 
 @pytest.fixture(scope="module")
 def rollout():
-    """A real rollout from the engine, long enough to contain BOTH kinds of row.
-
-    Random tensors would not do: the whole point is the structure of the
-    affordability mask, which is what makes a row a decision row or not.
+    """A real engine rollout containing both kinds of row; the affordability
+    mask's structure is the point, so random tensors will not do.
     """
     import clash_royale_env
     from python_ai.envs.gym_wrapper import DEFAULT_DECK
@@ -108,11 +52,9 @@ def rollout():
     hx = torch.zeros(TINY.num_envs, LSTM_HIDDEN)
     cx = torch.zeros(TINY.num_envs, LSTM_HIDDEN)
     for t in range(TINY.update_timestep):
-        # 2.6 Hog Cycle holds two 1-cost cards, so a rollout left to itself is
-        # a decision row on essentially EVERY step and the dead-row tests below
-        # would be vacuous. Starve the bar on alternate steps instead of hoping
-        # for the state to arise -- the same reasoning as CLAUDE.md's "Deal the
-        # Cannon instead of hoping for it".
+        # The 2.6 deck holds two 1-cost cards, so almost every step is a
+        # decision row and the dead-row tests would be vacuous. Starve the bar
+        # on alternate steps.
         if t % 2 == 1:
             for e in envs:
                 e.set_elixir_for_team(0, 0.0)
@@ -145,11 +87,8 @@ def rollout():
 
 
 def _run(net, batch, n_updates=1):
-    """One (or several) full updates from a FIXED start, deterministically.
-
-    Seeds both RNGs the update touches: torch for the advantage draw, numpy for
-    `_segments`' minibatch permutation. Without both, two arms shuffle their
-    minibatches differently and nothing downstream is comparable.
+    """Full updates from a fixed start. Seeds torch (advantage draw) and numpy
+    (minibatch permutation), or the arms shuffle differently.
     """
     torch.manual_seed(1234)
     np.random.seed(1234)
@@ -178,15 +117,13 @@ def _assert_bit_identical(net_a, net_b, label):
             f"changed shape or order.")
 
 
-# --- G1: the falsifier for the whole optimization ---------------------------
+# --- G1: the falsifier for the whole optimization ---
 
 def _full_path(corrupt=None):
-    """A forward_sequence that IGNORES active_rows, optionally corrupting rows.
-
-    Dropping `active_rows` is what makes G1 a test of the CLAIM rather than of
-    the optimization: it asks whether the FULL computation's dead rows are read.
-    Both arms take this path, so compaction's own round-off cannot leak into the
-    comparison and be mistaken for a leak.
+    """A forward_sequence that ignores active_rows, optionally corrupting rows.
+    Both arms take this path, so the test asks whether the full computation's
+    dead rows are read, and compaction's own round-off cannot be mistaken for a
+    leak.
     """
     real = _REAL_FORWARD_SEQUENCE
 
@@ -197,7 +134,7 @@ def _full_path(corrupt=None):
             hidden, extra_card_idx_seq=extra_card_idx_seq, hires_seq=hires_seq)
         if corrupt is not None:
             # `decision` is (card_mask.sum(1) > 1) * valid and the fixture is
-            # all-valid, so this selects exactly the intended set of rows.
+            # all-valid.
             sel = corrupt(card_mask).unsqueeze(-1)
             g = torch.Generator().manual_seed(4242)
             pl = torch.where(sel, torch.randn(pl.shape, generator=g), pl)
@@ -218,18 +155,11 @@ def _run_under(forward_impl, net, batch, n_updates=1):
 
 
 def test_placement_logits_on_NON_DECISION_rows_are_never_read(rollout):
-    """Corrupt both placement maps wherever decision == 0. Nothing may move.
+    """Corrupt both placement maps wherever decision == 0; nothing may move.
 
-    This tests the CLAIM, not an implementation -- it runs against unmodified
-    `PPOUpdater` and `forward_sequence`. If it fails, row compaction is invalid
-    and no amount of careful coding rescues it, because some term really does
-    read a row the mask was supposed to have killed.
-
-    Corrupting with a DETACHED constant is deliberate and tests both halves at
-    once: the forward value changes (so any value that leaks moves the loss),
-    and the backward path through those rows is severed (so any gradient that
-    leaks moves the weights). In the honest case both contributions are exactly
-    zero and the weights are bit-identical.
+    Runs against the unmodified updater, so it tests the claim, not an
+    implementation. A detached constant changes the forward value and severs
+    the backward path, so a leak of either kind moves the weights.
     """
     net, batch = rollout
     assert float(batch["valid"].min()) == 1.0, (
@@ -252,12 +182,8 @@ def test_placement_logits_on_NON_DECISION_rows_are_never_read(rollout):
 
 
 def test_the_corruption_harness_can_actually_detect_a_leak(rollout):
-    """The control for G1: corrupt DECISION rows instead, and demand it moves.
-
-    Without this, a G1 that passes proves nothing -- a harness that silently
-    failed to corrupt anything would also pass. This is the same trap CLAUDE.md
-    records for the deploy-zone probe: when a measurement's failure mode is
-    maximal permissiveness, it needs an internal control that MUST fire.
+    """The control for G1: corrupting decision rows must move the weights, or G1's
+    pass is vacuous.
     """
     net, batch = rollout
     live_rows = lambda cm: cm.sum(-1) > 1
@@ -270,15 +196,11 @@ def test_the_corruption_harness_can_actually_detect_a_leak(rollout):
         "actually reaching the placement logits, so G1's pass is vacuous")
 
 
-# --- G2: the precondition that makes `finite * 0.0 == 0.0` true -------------
+# --- G2: the precondition that makes `finite * 0.0 == 0.0` true ---
 
 def test_dead_rows_carry_FINITE_placement_terms_in_the_unmodified_path(rollout):
-    """Nothing on a dead row may be nan/inf, or `0 * x` was never `0`.
-
-    Row compaction leaves a finite filler where it skips the convolution. That
-    is only bit-identical to the old path if the old path's own value there was
-    finite too: `nan * 0.0` is `nan`, and a single one would have poisoned every
-    masked sum in the update all along.
+    """Nothing on a dead row may be nan/inf: `nan * 0.0` is nan, so a finite
+    filler is only equivalent if the old values were finite too.
     """
     net, batch = rollout
     from torch.distributions import Categorical
@@ -306,10 +228,10 @@ def test_dead_rows_carry_FINITE_placement_terms_in_the_unmodified_path(rollout):
         "a dead row is entirely -inf, so Categorical would produce nan")
 
 
-# --- the optimization itself -------------------------------------------------
+# --- the optimization itself ---
 
 def _seq_inputs(net, batch):
-    """Rebuild exactly the tensors `PPOUpdater` hands to `forward_sequence`."""
+    """Rebuild the tensors PPOUpdater hands to forward_sequence."""
     from python_ai.models.policy_io import LSTM_HIDDEN
     L, B = batch["obs"].shape[0], batch["obs"].shape[1]
     obs_flat = batch["obs"].reshape(L * B, -1)
@@ -330,12 +252,7 @@ def _seq_inputs(net, batch):
 
 
 def test_active_rows_reproduces_the_full_map_on_the_rows_it_keeps(rollout):
-    """The rows we still compute must be BIT-IDENTICAL to computing them all.
-
-    This is the whole correctness claim of the optimization at the level it
-    actually happens. Anything weaker than torch.equal here means the compacted
-    convolution is not the same convolution.
-    """
+    """The rows still computed must be bit-identical to computing them all."""
     net, batch = rollout
     kw = _seq_inputs(net, batch)
     live = (batch["decision"].reshape(-1) > 0).nonzero(as_tuple=True)[0]
@@ -360,17 +277,9 @@ def test_active_rows_reproduces_the_full_map_on_the_rows_it_keeps(rollout):
 
 
 def test_the_LOSS_and_every_diagnostic_are_bit_identical(rollout):
-    """From identical weights, the objective itself does not move at all.
-
-    THIS is the equivalence claim, and it is exact. `TINY` is one minibatch of
-    one epoch, so this compares a single forward/backward from a single starting
-    point -- which is the only place an exact comparison is meaningful, because
-    `update()` steps the optimizer between minibatches and everything after the
-    first step is measuring divergence rather than equivalence.
-
-    What it proves: the compacted path optimizes the SAME objective. Nothing
-    about the loss surface, the masks, the normalizers or the coverage split
-    changed -- only which rows the convolution bothered to evaluate.
+    """From identical weights, the loss and every diagnostic are exact. TINY is
+    one minibatch of one epoch, the only place an exact comparison is
+    meaningful: the optimizer steps between minibatches.
     """
     net, batch = rollout
     seen = []
@@ -382,9 +291,8 @@ def test_the_LOSS_and_every_diagnostic_are_bit_identical(rollout):
     base_net, base_stats = _run_under(counting, net, batch)
     fast_net, fast_stats = _run(net, batch)
 
-    # The control that MUST fire. Without it this passes trivially while
-    # PPOUpdater has not been wired up at all -- the same trap G1's control
-    # exists for.
+    # The control that must fire: otherwise this passes with PPOUpdater not
+    # wired up at all.
     assert seen and all(r is not None for r in seen), (
         "PPOUpdater never passed active_rows, so both arms ran the SAME code "
         "and this comparison is vacuous")
@@ -404,20 +312,9 @@ def test_the_LOSS_and_every_diagnostic_are_bit_identical(rollout):
 
 
 def test_the_weights_after_one_step_agree_to_float32_ROUNDOFF(rollout):
-    """...but the WEIGHTS do not agree exactly, and cannot. Bound it instead.
-
-    Conv2d's weight gradient is a reduction over the batch dimension, and
-    MKL-DNN re-blocks that reduction when the batch size changes -- for SOME
-    shapes. Measured at 500 -> 184 with exactly-zero upstream gradient on the
-    dropped rows: place_up.1 (18x10) is bit-identical, while place_up.4 and
-    place_up.6 (36x20) and place_hires.0 (34x18) differ by 5.8e-03 / 2.8e-03 /
-    4.9e-03. So no row-compaction scheme can be bit-exact at the weight level,
-    and asserting that it is would be asserting something false.
-
-    The bound here is deliberately generous relative to the measured 1.2e-10:
-    the point is to catch a REAL error (a wrong mask, a mis-scattered row),
-    which would show up orders of magnitude above round-off, not to police the
-    last ULP of a reduction this code does not control.
+    """The weights agree to float32 round-off, not exactly (see the module
+    docstring). The bound is far above round-off and far below a real error
+    such as a wrong mask or a mis-scattered row.
     """
     net, batch = rollout
 
@@ -442,19 +339,9 @@ def test_the_weights_after_one_step_agree_to_float32_ROUNDOFF(rollout):
 
 
 def test_the_compacted_path_is_REPRODUCIBLE_run_to_run(rollout):
-    """Same inputs, same weights, twice. Bit-identical.
-
-    This is the guarantee that actually matters day to day, and it is a
-    different claim from "identical to the uncompacted path". Compaction makes
-    the conv's batch size depend on the DECISION COUNT, which is data-derived --
-    so the fair worry is that the update became nondeterministic and no
-    experiment in this repo could be re-run. It did not: `active_rows` comes
-    from the stored `decision` column, so for a given batch and minibatch
-    permutation the batch sizes are fixed and every kernel takes the same path.
-
-    Landing this change is therefore a ONE-TIME discontinuity in trajectories,
-    not an ongoing source of noise. `prove_*.py`-style paired harnesses keep
-    working across it; only comparisons that straddle the commit are affected.
+    """Same inputs, same weights, twice: bit-identical. `active_rows` comes from
+    the stored `decision` column, so the conv batch sizes are fixed for a given
+    batch and permutation and the update stays deterministic.
     """
     net, batch = rollout
     a, sa = _run(net, batch, n_updates=3)
@@ -466,12 +353,8 @@ def test_the_compacted_path_is_REPRODUCIBLE_run_to_run(rollout):
 
 @pytest.mark.parametrize("mode", ["all", "none"])
 def test_the_degenerate_active_sets_are_handled(rollout, mode):
-    """Every row live, and NO row live.
-
-    The empty case is the one that breaks in practice: an empty batch reaches
-    Conv2d, and a naive `nonzero` path can produce a shape the head refuses.
-    It is not hypothetical -- an all-forced chunk is exactly what a bankrupt
-    agent produces, and this project measured P(nothing affordable) at 73.9%.
+    """Every row live, and none. The empty case breaks in practice: a bankrupt
+    agent produces an all-forced chunk.
     """
     net, batch = rollout
     kw = _seq_inputs(net, batch)
@@ -494,7 +377,7 @@ def test_the_degenerate_active_sets_are_handled(rollout, mode):
 
 
 def test_coverage_forward_is_skipped_when_no_coverage_slot_is_requested(rollout):
-    """`extra_card_idx_seq=None` must still return None, compacted or not."""
+    """`extra_card_idx_seq=None` still returns None, compacted or not."""
     net, batch = rollout
     kw = _seq_inputs(net, batch)
     kw["extra_card_idx_seq"] = None

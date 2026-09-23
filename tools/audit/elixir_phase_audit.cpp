@@ -1,19 +1,11 @@
-// Measures the real-game elixir phase schedule added 2026-09-02.
+// Measures the elixir phase schedule. Standalone like every instrument here,
+// compiling straight against the header-only engine with cl.exe. Four questions
+// the source cannot answer:
 //
-// Standalone for the reason every instrument in this directory is: it compiles
-// straight against the header-only engine with cl.exe and cannot force a
-// reconfigure of the solution the .pyd and the Catch2 suite build from. That
-// matters more than usual here -- this change was authored while a training run
-// held clash_royale_env.pyd mapped, so the ordinary build was unavailable and
-// this file was the only way to compile the edited headers at all.
-//
-// It answers four questions the source cannot:
-//
-//   1. does income actually run 1x / 2x / 3x across the two boundaries
-//   2. does the phase COMPOSE with oppElixirMultiplier rather than replace it
-//   3. does the observation carry the phase, at the index NUM_EXTRA_SCALARS
-//      says it does, normalised to 3.0
-//   4. did CYCLE_START move by exactly one, and observationSize() with it
+//   1. does income run 1x / 2x / 3x across the two boundaries
+//   2. does the phase compose with oppElixirMultiplier rather than replace it
+//   3. does the observation carry the phase at the right index, normalised to 3.0
+//   4. did CYCLE_START and observationSize() move by exactly one
 //
 // Build:  powershell -File tools/audit/build.ps1 elixir_phase_audit
 #include <cstdio>
@@ -44,18 +36,11 @@ void checkNear(float got, float want, float tol, const char* what) {
 // as "play nothing", so this advances the clock and regen and nothing else.
 constexpr int NOOP = ClashEnv::HAND_SIZE;
 
-// Elixir gained by `team` over `ticks` ticks starting from `startTick`,
-// measured by setting the clock and stepping. Reads the BAR, not the schedule,
-// so it cannot pass by agreeing with the thing it is testing.
-//
-// Windows are short (20 ticks = 2 s, at most 2.1 elixir at 3x) for a reason
-// that is easy to get wrong: PlayerState clamps the bar at 10.0, so a longer
-// window saturates and every phase reports the same number. A measurement whose
-// failure mode is "all arms agree" would look like the phases doing nothing.
-//
-// stepSelfPlayFast, never step: step() runs the HeuristicOpponent, which would
-// SPEND team 1's elixir and make the income read low for reasons unrelated to
-// regen. Same trap verify_pyd.py documents for navigation.
+// Elixir gained by `team` over `ticks` from `startTick`, measured by setting
+// the clock and stepping, so it reads the bar rather than the schedule. Short
+// windows, since the bar clamps at 10.0 and a long one saturates.
+// stepSelfPlayFast, never step(): the HeuristicOpponent would spend team 1's
+// elixir.
 float incomeOver(int startTick, int ticks, int team, float oppMultiplier) {
     std::vector<int> deck = { 15, 6, 25, 40, 24, 72, 33, 7 };   // DEFAULT_DECK
     ClashEnv env(deck, deck);
@@ -85,22 +70,16 @@ int main() {
     checkNear(GameManager::elixirMultiplierAtTick(1800), 3.0f, 1e-6f, "tick 1800 (3:00) -> 3x");
     checkNear(GameManager::elixirMultiplierAtTick(3600), 3.0f, 1e-6f, "tick 3600 (6:00) -> 3x");
 
-    // ---- 2. MEASURED income, which is the half that can actually fail -----
-    // 20 ticks = 2 s. At the base 0.035/tick that is 0.7 elixir at 1x.
+    // --- 2. measured income, the half that can fail ---
+    // 20 ticks = 2 s; at 0.035/tick that is 0.7 elixir at 1x.
     std::printf("\nmeasured income over 20 ticks (2 s), read off team 0's bar\n");
     checkNear(incomeOver(0,    20, 0, 1.0f), 0.7f, 0.01f, "single elixir  (from 0:00)");
     checkNear(incomeOver(1200, 20, 0, 1.0f), 1.4f, 0.01f, "double elixir  (from 2:00)");
     checkNear(incomeOver(1800, 20, 0, 1.0f), 2.1f, 0.01f, "triple elixir  (from 3:00)");
 
-    // The boundary crossed MID-WINDOW. A schedule sampled once per step()
-    // rather than once per tick would report a flat 0.7 or 1.4 here and pass
-    // every test above, so this is the case that pins per-tick evaluation.
-    //
-    // The expected value is 1.085, NOT the 1.05 an even 10/10 split suggests,
-    // and the difference is worth stating because it is the kind of off-by-one
-    // this codebase has been bitten by twice (the freeze decrement, the bridge
-    // waypoint epsilon). GameManager::step does `currentTick++` BEFORE reading
-    // the phase, so stepping N ticks from T processes ticks T+1 .. T+N:
+    // The boundary crossed mid-window, which pins per-tick evaluation.
+    // GameManager::step increments the tick before reading the phase, so
+    // stepping N from T covers T+1..T+N:
     //
     //     from 1190, 20 ticks -> 1191..1210
     //       1191..1199 =  9 ticks @ 1x = 0.315
@@ -108,18 +87,17 @@ int main() {
     //                                    -----
     //                                    1.085
     //
-    // Tick 1200 IS 2:00 and correctly pays double, which is what makes the
-    // split 9/11 rather than 10/10. Asserting the naive 1.05 here would be
-    // asserting that the first tick of double elixir pays single.
+    // Tick 1200 is 2:00 and pays double; the naive 1.05 would assert it pays
+    // single.
     checkNear(incomeOver(1190, 20, 0, 1.0f), 1.085f, 0.01f, "crossing 2:00 mid-window (9 @ 1x + 11 @ 2x)");
 
-    // ---- 3. composition with the curriculum handicap ----------------------
-    // The phase scales the BASE rate and oppElixirMultiplier scales that, so a
-    // 1.5x opponent in double elixir must get 3x, not 2x and not 1.5x.
+    // --- 3. composition with the curriculum handicap ---
+    // The phase scales the base rate and oppElixirMultiplier scales that: a
+    // 1.5x opponent in double elixir gets 3x.
     std::printf("\ncomposition with the curriculum's oppElixirMultiplier (team 1)\n");
     checkNear(incomeOver(0,    20, 1, 1.5f), 1.05f, 0.01f, "1.5x opponent, single -> 1.5x");
     checkNear(incomeOver(1200, 20, 1, 1.5f), 2.10f, 0.01f, "1.5x opponent, double -> 3.0x");
-    // ...and team 0 must be UNAFFECTED by the opponent handicap in every phase.
+    // ...and team 0 is unaffected by the handicap in every phase.
     checkNear(incomeOver(1200, 20, 0, 1.5f), 1.40f, 0.01f, "1.5x opponent leaves team 0 at 2x");
 
     // ---- 4. the observation ----------------------------------------------
@@ -144,15 +122,13 @@ int main() {
         char label[96];
         std::snprintf(label, sizeof(label), "tick %4d, team 0", tick);
         checkNear(obs0[phaseIdx], want, 1e-5f, label);
-        // Symmetric: the phase is a property of the clock, so team 1 must read
-        // the identical value. The tower block two slots earlier is mirrored;
-        // this one deliberately is not, and a copy-paste of that mirroring
-        // would be silent.
+        // Symmetric: team 1 reads the identical value. The tower block before
+        // it is mirrored; this one must not be.
         std::snprintf(label, sizeof(label), "tick %4d, team 1 (must MATCH team 0)", tick);
         checkNear(obs1[phaseIdx], want, 1e-5f, label);
     }
 
-    // Size must equal what the vector actually is, not what the constant says.
+    // The size equals the vector's actual length.
     check(static_cast<int>(env.getObservationForTeam(0).size()) == env.observationSize(),
           "built vector length == observationSize()");
 

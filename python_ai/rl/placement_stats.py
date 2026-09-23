@@ -1,16 +1,10 @@
-"""Per-card MODAL SHARE of placements over a rolling window of updates.
+"""Per-card modal share of placements over a rolling window of updates.
 
-THE conditional-collapse detector, per CLAUDE.md -- and until 2026-09-15 it was
-not logged anywhere (audit 08). `Entropy/Placement_ByCard_Min` is the wrong
-statistic: measured 2026-08-14 it flagged the healthiest card (most played,
-lowest entropy, modal share 19%) and cleared one sitting at 91% of its mass on a
-single cell. A good head is sharp but MOVES its mode with the board; a collapsed
-one returns the same cell regardless of it. Counting how often each card's
-placements land on its single most common cell sees exactly that.
-
-Computed on the SAMPLED placements of the rollout, so it reads a little below a
-greedy argmax count at the same policy -- but a head that has collapsed samples
-the same cell too, and that is the failure this exists to catch.
+The conditional-collapse detector. Entropy is the wrong statistic: the
+most-played card is legitimately the sharpest. A good head is sharp but moves
+its mode with the board; a collapsed one returns the same cell regardless,
+which is what the share of a card's single most common cell measures. Computed
+on sampled placements, so it reads a little below a greedy count.
 """
 from collections import Counter, deque
 
@@ -18,7 +12,7 @@ from collections import Counter, deque
 class ModalShareWindow:
     def __init__(self, window_updates=10, min_plays=30):
         self.window_updates = int(window_updates)
-        #: Below this many plays a share is noise: three plays read >= 33%.
+        #: Below this many plays a share is noise.
         self.min_plays = int(min_plays)
         self._updates = deque(maxlen=self.window_updates)
 

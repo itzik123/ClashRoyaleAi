@@ -1,44 +1,19 @@
 """Capturing the teacher's candidate rollouts for `web/viewer.html`.
 
-WHAT THIS IS FOR. `UtilityTeacher` ranks candidates by rolling each one forward
-on `env.snapshot()` and scoring the result, and until now every one of those
-rollouts was thrown away the instant it produced a number. This records them:
-each candidate's placement, its score, the margin it had to beat, and -- for the
-top few -- the PREDICTED BOARD at the end of the horizon. The viewer renders
-that as a ranked list of "if I play here, this is what I think happens".
+Records each candidate's placement, score and margin, and for the top few the
+predicted board at the end of the horizon, for the viewer's "if I play here,
+this is what happens" list.
 
-WHY A SUBCLASS AND NOT A FLAG INSIDE UtilityTeacher.act. The action always comes
-from `super().act()`, so a capture bug CANNOT change which card the teacher
-plays. That matters more than it sounds: `UtilityTeacher` is phase 1's opponent,
-and a debug hook that perturbed it would silently invalidate every run taken
-against it. Folding capture into `act()` would have made action-identity depend
-on the capture code being correct, and on a test noticing when it was not.
-Delegating makes it structural. `tests/test_teacher_debug.py` pins it anyway.
+A subclass rather than a flag: the action always comes from `super().act()`, so
+capture cannot change what the teacher plays (`tests/test_teacher_debug.py`).
 
-The cost of that choice is one extra scoring pass per captured decision, which
-is ~3.6 rollouts at 0.31 ms. That is noise beside the ~32 ms each captured board
-costs, and it is only paid when capture is explicitly switched on.
+Costly (a bare rollout is 0.31 ms; reading a predicted board back is ~32 ms, a
+`save_log` file round-trip), so `top_k` bounds it: ~40 s for a 360-decision
+replay. Never used by the trainers.
 
-COST, MEASURED. A bare candidate rollout is 0.31 ms. Reading the predicted board
-back out costs ~32 ms, because `save_log` is a file round-trip and the cost is
-the disk sync, not the parsing -- a tail-read optimisation was tried and did not
-help. So capturing every candidate of every decision is ~100x a normal rollout,
-and `top_k` exists to bound it. Over 1,080 decisions of contested
-teacher-vs-teacher play there are 3.60 candidates per decision on average
-(median 3, p90 9, max 13), 22% of decisions have none at all, and 33% have more
-than four -- so the cap binds about a third of the time and total capture runs
-~40 s for a 360-decision replay.
-
-NEVER ENABLE THIS IN THE TRAINING LOOP. Nothing here runs unless a
-`CapturingTeacher` is explicitly constructed, and the trainers do not construct
-one.
-
-HOW THE PREDICTED BOARD IS OBTAINED, since it is not obvious there is a way at
-all: `ClashEnv::snapshot()` copies everything EXCEPT the replay logger, which
-starts empty and stays live. So a rollout on a snapshot accumulates ONLY its own
-ticks, and `save_log` on it writes a self-contained mini-replay in exactly the
-schema the viewer already renders -- with the parent match untouched. No C++
-change was needed and none was made.
+The predicted board comes from `ClashEnv::snapshot()`, which copies everything
+except the replay logger; a snapshot's log therefore holds only its own rollout
+ticks, in the schema the viewer already renders.
 """
 import json
 import os
@@ -47,8 +22,7 @@ import tempfile
 from python_ai.advisors import tactics
 from python_ai.opponents.teacher import HAND_SIZE, NOOP, UtilityTeacher
 
-#: Candidates that get a predicted board. The rest are recorded with their score
-#: only. Four keeps the viewer's comparison readable and bounds the cost.
+#: Candidates that get a predicted board; the rest record only their score.
 DEFAULT_TOP_K = 4
 
 
@@ -82,9 +56,9 @@ class CapturingTeacher(UtilityTeacher):
         return _final_entities(s, self._tmp)
 
     def act(self, env, obs_own):
-        # The ACTION first, and from the parent, so it cannot diverge. `pending`
-        # is saved beforehand because act() mutates it and the candidate set has
-        # to be re-derived against the state the parent actually saw.
+        # Take the action from the parent first. `pending` is saved beforehand
+        # because act() mutates it, and the candidates must be re-derived
+        # against the state the parent saw.
         pre_pending = self.pending
         pre_ticks = self.pending_ticks
         action = super().act(env, obs_own)
@@ -95,8 +69,7 @@ class CapturingTeacher(UtilityTeacher):
                "baseline": None, "candidates": []}
 
         if self.horizon_ticks <= 0:
-            # Rung 0 (horizon 0) takes `_rules_only`, which never rolls out and has no
-            # scores at all. Recording one here would be inventing it.
+            # Rung 0 is rules-only: no rollouts, so no scores to record.
             rec["kind"] = "rules_only"
             self.debug_records.append(rec)
             return action
@@ -118,8 +91,8 @@ class CapturingTeacher(UtilityTeacher):
                 scored.append((c, float(sc), float(self.margin_for(c, elixir_now))))
             scored.sort(key=lambda t: -t[1])
 
-            # The no-op board is the comparator the scores are DEFINED against
-            # (`score` returns exactly 0.0 for it), so the viewer shows it too.
+            # The no-op board is what scores are defined against (it scores
+            # exactly 0.0).
             rec["baseline"] = {"entities": self._capture_board(env, NOOP)}
             for i, (c, sc, mg) in enumerate(scored):
                 row = {
@@ -142,12 +115,9 @@ class CapturingTeacher(UtilityTeacher):
                       and abs(c.y - action[2]) < 1e-6]
             rec["chosenIndex"] = chosen[0] if chosen else -1
 
-            # A decision that played nothing is a legitimate outcome of the
-            # rollout branch -- every candidate fell below its margin -- and is
-            # NOT the same as the exploration branch firing. The distinction
-            # matters to a reader: the candidate list is meaningful in the first
-            # case and misleading in the second, where the parent ignored the
-            # ranking entirely and picked uniformly.
+            # Holding (every candidate below its margin) is a real outcome of
+            # the ranking; the epsilon branch ignored it, which makes the
+            # candidate list misleading.
             rec["held"] = bool(action[0] == HAND_SIZE)
             if rec["chosenIndex"] == -1 and not rec["held"] and self.epsilon > 0.0:
                 rec["kind"] = "epsilon"
@@ -161,10 +131,9 @@ class CapturingTeacher(UtilityTeacher):
 def capturing_like(teacher, top_k=DEFAULT_TOP_K):
     """A `CapturingTeacher` configured identically to an existing teacher.
 
-    Copies the constructor-relevant configuration AND the live mutable state
-    (`rng`, `profile`, `lane_bias`, `cycle`), because `reset()` REDRAWS profile
-    and lane bias from the RNG on purpose -- so a naively reconstructed teacher
-    is a DIFFERENT opponent, not the same one instrumented.
+    Also copies the live state (`rng`, `profile`, `lane_bias`, `cycle`):
+    `reset()` redraws profile and lane bias, so a freshly built teacher would
+    be a different opponent.
     """
     out = CapturingTeacher(
         list(teacher.deck), teacher.team,
@@ -189,9 +158,7 @@ def capturing_like(teacher, top_k=DEFAULT_TOP_K):
 def attach_debug_capture(env, top_k=DEFAULT_TOP_K):
     """Swap a `MicroRoyaleEnv`'s teacher for a capturing one, in place.
 
-    Returns the `CapturingTeacher`, or None if the env has no teacher (its
-    opponent is the C++ heuristic or a neural league member, neither of which
-    has candidate rollouts to record).
+    Returns the `CapturingTeacher`, or None if the opponent is not a teacher.
     """
     teacher = getattr(env, "teacher", None)
     if teacher is None:
@@ -201,17 +168,11 @@ def attach_debug_capture(env, top_k=DEFAULT_TOP_K):
 
 
 def attach_teacher_debug(replay_path, records, skip_frames=10):
-    """Merge decision records into an already-saved replay.
+    """Merge decision records into a saved replay, stored once at top level.
 
-    STORED ONCE AT TOP LEVEL AND INDEXED, not stamped onto every tick of a
-    window the way `annotate_replay_with_agent_info` stamps its three scalars.
-    That difference is not stylistic: a record here carries up to `top_k + 1`
-    predicted boards, and stamping it across a 10-tick window serialised ten
-    identical copies and made a test fixture 11 MB against 2.97 MB.
-
-    The viewer recovers a tick's record as
-    `decisions[floor(tickIndex / skipFrames)]`, which is the same mapping the
-    stamping produced, without the duplication.
+    Each record carries up to `top_k + 1` boards, so stamping it onto every
+    tick (as `annotate_replay_with_agent_info` does) multiplied the file size.
+    The viewer reads `decisions[floor(tickIndex / skipFrames)]`.
     """
     with open(replay_path) as f:
         data = json.load(f)

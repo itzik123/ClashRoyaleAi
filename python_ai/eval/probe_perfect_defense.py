@@ -1,40 +1,19 @@
-"""Is the agent learning PERFECT DEFENSE, or just winning?
+"""Is the agent learning perfect defense, or just winning?
 
 W_FLAWLESS_DEFENSE pays only on a win, scaled by the fraction of our own tower
-HP still standing (see train.flawless_defense_bonus). This measures whether the
-policy is actually responding to that, and whether it is doing it the way 2.6
-Hog Cycle requires -- pulling units toward the centre with the Cannon rather
-than trading towers.
+HP still standing. Metrics:
 
-METRICS, and why each one:
-
-  win rate                 the baseline; a flawless-defense number means
-                           nothing without it
-  tower HP left | WIN      the exact quantity the bonus pays for. This is the
-                           headline: it should rise even if win rate is flat.
-  flawless win rate        won with EVERY tower untouched. The stated standard.
-  crowns conceded | WIN    towers lost in games we still won -- the thing
-                           "squeaking by" looks like
+  win rate                 the baseline the others need
+  tower HP left | WIN      the quantity the bonus pays for; the headline
+  flawless win rate        won with every tower untouched
+  crowns conceded | WIN    towers lost in games still won
 
   Cannon centroid / modal / distinct cells
-                           2.6 defends by PULLING: a Cannon placed centrally
-                           drags a Hog or a Giant off the tower lane and into
-                           the crossfire of both Princess towers. A Cannon in a
-                           back corner cannot pull anything, and this project
-                           has a long history of exactly that failure (the
-                           2026-08-06 "Cannon pathology", 27.9% at (11,2)/(11,3)
-                           behind its own King). Distinct-cell count is here
-                           because a SHARP head that MOVES its mode is healthy
-                           while a sharp head that returns one cell is the
-                           pathology -- read the two together, never modal
-                           share alone.
+                           2.6 defends by pulling: a central Cannon drags a Hog off the tower lane into both Princess towers' crossfire, a back-corner one pulls nothing. Read modal share with distinct cells: a sharp head that moves its mode is healthy, one that returns one cell is not.
 
-  per-card play share      the Giant deck's tell was a win condition that was
-                           never played. The equivalent here is Hog usage
-                           collapsing.
+  per-card play share      watch for the win condition going unplayed
 
-Greedy (argmax) throughout, so the numbers describe the deployed policy rather
-than a sample from it.
+Greedy throughout, so the numbers describe the deployed policy.
 """
 import argparse
 import os
@@ -44,9 +23,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -60,10 +37,7 @@ from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 from python_ai.engine_constants import BOARD_CENTER_X  # noqa: E402
 
-# Half-width of the "central pull pocket" this probe reports. Named rather than
-# left as a bare 3.0 next to a second bare number, so the pocket is stated once
-# and the centre it is measured from is DERIVED (see BOARD_CENTER_X above)
-# instead of restated -- which is how it came to be 9.0.
+# Half-width of the reported central pull pocket around BOARD_CENTER_X.
 PULL_POCKET_HALF_WIDTH = 3.0
 
 E = CE.ClashRoyaleEnv
@@ -75,9 +49,8 @@ HOG = 15
 def own_tower_hp_fraction(env):
     """Fraction of our three towers' starting HP still standing.
 
-    Read from the observation's appended tower scalars (indices 3-5 of the
-    tail), which are hp / MAX_BUILDING_HP -- the same quantity
-    train._own_tower_hp_total() sums at reset, so the ratio is exact.
+    Reads the observation's tower scalars (tail + 3..5), hp / MAX_BUILDING_HP,
+    the same quantity train._own_tower_hp_total() sums at reset.
     """
     obs = np.asarray(env.get_observation_for_team(0), np.float32)
     tail = E.EXTRA_SCALARS_START
@@ -141,8 +114,8 @@ def main():
                 hx, cx = hx2, cx2
                 if res.done:
                     reward = float(res.reward)
-                    # After done the engine may already be terminal; use the
-                    # last live reading rather than a post-mortem board.
+                    # The engine may already be terminal after done; use the
+                    # last live reading.
                     final_hp = hp_before
                     break
 
@@ -188,17 +161,8 @@ def main():
         print(f"\n  {label}: n={len(cells)}  centroid=({xs.mean():.1f}, {ys.mean():.1f})  "
               f"modal={modal} {cnt/len(cells):.1%}  distinct={len(set(cells))}")
         if cid == CANNON:
-            # A pull wants to be near the board centre and ahead of the Princess
-            # towers (y around 6-11), not in a back corner.
-            #
-            # The centre is BOARD_CENTER_X, read from the engine -- it was
-            # hardcoded as 9.0, with a comment asserting "x=9 is the board
-            # centre". It is 8.5: x is a cell index in [0, 17], so the centre
-            # and the fixed point of the mirror 17-x is (18-1)/2. 9.0 is the
-            # exact half-tile error that put the whole arena off-centre until
-            # the 2026-08-21 re-centring, and it shifted this pocket half a
-            # tile toward the right lane -- counting x=12 as central while
-            # excluding x=5.5.
+            # A pull wants the board centre, ahead of the Princess towers (y ~
+            # 6-11), not a back corner.
             half = PULL_POCKET_HALF_WIDTH
             central = np.mean((np.abs(xs - BOARD_CENTER_X) <= half)
                               & (ys >= 5) & (ys <= 12))

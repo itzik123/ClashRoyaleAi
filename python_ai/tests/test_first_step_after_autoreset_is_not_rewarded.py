@@ -1,26 +1,10 @@
-"""The first REAL step of an episode must not be shaped against a fabricated state.
+"""The first real step of an episode is not shaped against a fabricated state.
 
-Under gymnasium's NEXT_STEP autoreset the step after `done` is a PHANTOM: the
-worker resets and returns `{}` for info, so `extract_engine_stats` fills every
-key with its default. That step's own shaping is correctly zeroed by
-`* (1 - prev_dones)`. The bug was one step later: `base_trainer` stored the
-phantom's fabricated stats as `_prev_stats`, and the first real step was then
-shaped AGAINST them.
-
-For every counter that is harmless -- `auto_reset_mask` and the delta clamps
-take care of it. It is not harmless for a POTENTIAL whose value at the default is
-non-zero. Measured 2026-09-15 (audit 03, R1), `probe_reset_hygiene.py`:
-
-    t=141 PHANTOM            elixir=0.000 (default)   shaping masked -> 0
-    t=142 FIRST REAL STEP    elixir=3.350
-          Phi_solv(prev) = -0.10000   <- the potential at the FABRICATED elixir
-          Phi_solv(cur)  = -0.01625
-          solvency F = +0.08377, auto_reset_mask=False, NOT masked
-
-+0.084 on the first step of every episode, against a solvency term whose whole
-legitimate per-episode magnitude is 0.039, and varying with a scenario's banked
-starting elixir -- i.e. scenario-correlated reward noise in ~30% of episodes. It
-was also the entire cause of the solvency term failing to telescope.
+Under gymnasium's NEXT_STEP autoreset the step after `done` is a phantom whose
+info is `{}`, so `extract_engine_stats` fills every key with its default. Its
+own shaping is masked, but the next (first real) step must not be shaped
+against those defaults: harmless for counters, not for a potential whose value
+at the default is non-zero, like solvency at elixir 0.
 """
 import gymnasium as gym
 import numpy as np
@@ -41,9 +25,10 @@ def _stats(elixir, n=2):
 
 
 def test_the_bug_exists_without_reseating():
-    """CONTROL that must fire: shaped against the phantom's default elixir, the
-    first real step carries the measured spurious solvency reward. If this ever
-    reads ~0, the test below is vacuous."""
+    """Control that must fire: shaped against the phantom's default elixir, the
+    first real step carries the spurious solvency reward. If this ever reads ~0
+    the test below is vacuous.
+    """
     phantom, first_real = _stats(None), _stats(3.35)
     f = solvency_shaping(first_real, phantom, GAMMA)
     assert f[0] == pytest.approx(0.0838, abs=2e-3)
@@ -58,8 +43,9 @@ def test_reseating_removes_the_spurious_first_step_reward():
 
 
 def test_reseating_only_touches_the_envs_that_just_reset():
-    """An env mid-episode must keep its real previous state, or its legitimate
-    shaping for this step is silently deleted."""
+    """An env mid-episode keeps its real previous state, or its legitimate shaping
+    is deleted.
+    """
     prev = _stats(1.0)
     cur = _stats(3.35)
     out = engine_stats.reseat_prev_stats(cur, prev, np.array([True, False]))
@@ -77,13 +63,14 @@ def test_reseating_is_a_no_op_when_nothing_just_reset():
         assert np.array_equal(np.asarray(out[k]), np.asarray(prev[k])), k
 
 
-# --- the wiring: does the real rollout use it? -----------------------------
+# --- the wiring: does the real rollout use it? ---
 
 @pytest.mark.slow
 def test_the_rollout_never_shapes_a_first_real_step_against_the_phantom(tmp_path, monkeypatch):
-    """Drive the REAL collect_rollout across episode boundaries (short matches)
-    and record the prev_stats compute_shaping is handed on each env's first real
-    step. Its elixir must be that step's own reading, never the phantom's 0."""
+    """Drive the real collect_rollout across episode boundaries and record the
+    prev_stats compute_shaping gets on each env's first real step: its elixir
+    must be that step's own reading, never the phantom's 0.
+    """
     from python_ai.envs import gym_wrapper
     from python_ai.rl import base_trainer
     from python_ai.trainers.train import PHASE1_OPPONENT, Phase1Trainer

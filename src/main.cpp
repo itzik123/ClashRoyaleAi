@@ -18,7 +18,7 @@ void printHand(const std::string& label, const std::vector<int>& hand) {
 }
 
 int main() {
-    // Configure decks with proper ordering to match our manual script plays
+    // Decks ordered to match the scripted plays below.
     GameManager game(
         { 15, 6, 0, 25, 7, 24, 34, 29 },  // AI: Hog, Musketeer, Knight, Cannon, Fireball, Skeletons, IceWiz, Zap
         { 8, 2, 71, 13, 44, 32, 29, 12 }   // Opp: Barbarians, Giant, Witch, PEKKA, BabyDragon, Poison, Zap, SkelArmy
@@ -101,12 +101,8 @@ int main() {
         for (const auto& entity : game.getBoard().getEntities()) {
             if (!entity->isAlive()) continue;
 
-            // isTower() first. 'P' and 'R' are RENDERER symbols, not
-            // identities: card id 92 (X-Bow) is registered with 'P' and card
-            // id 93 (Mortar) with 'R', so a deployed X-Bow was being added to
-            // the Princess Tower total and a Mortar to the King's. Same alias
-            // that let a Mortar answer for a King in MatchRules::evaluate;
-            // here it is only a display figure, but it is the same mistake.
+            // isTower() first: 'P' and 'R' are renderer symbols shared with
+            // X-Bow (92) and Mortar (93).
             if (entity->isTower()) {
                 if (entity->symbol == 'R') {
                     if (entity->team == 0) aiKingHP += entity->hp;

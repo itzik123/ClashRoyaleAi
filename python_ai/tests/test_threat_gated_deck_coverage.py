@@ -1,28 +1,9 @@
-"""The deck floor must fire only where the card is actually worth playing.
+"""The deck floor fires only where the card is worth playing.
 
-THE MEASUREMENT THAT FORCED THIS
---------------------------------
-An UNCONDITIONAL floor cost 0.42 win-rate points. Paired arms on the ep-32,484
-checkpoint, scenario injection on in all of them:
-
-    coef 0.00   win 0.600 -> 0.520      coef 0.05   0.600 -> 0.340
-    coef 0.20   win 0.620 -> 0.120  (a full launch reproduced this exactly)
-
-The cards themselves are fine. Measured over 20 defensive scenario states, tower
-HP conceded across the window:
-
-    no Cannon                    4938
-    Cannon at the POLICY's cell  4097   -- +841, and it helps in 14/20 states
-    Cannon at the BEST cell      2848   -- +2090 available
-
-So a Cannon is worth +841 HP when something is attacking, and roughly nothing on
-a quiet board. `Training/Win_Rate_100` EXCLUDES scenario episodes, so the crash
-was measured precisely on the ordinary boards where every forced Cannon was 3
-wasted elixir. The floor could not tell the two situations apart because it had
-no state input at all.
-
-Gating it on `tactics.threat_level` fixes exactly that and nothing else: the
-push survives where the value is and disappears where it is not.
+A Cannon is worth a lot when something is attacking and roughly nothing on a
+quiet board; an unconditional floor forced wasted plays on ordinary boards and
+cost win rate. Gating on `tactics.threat_level` keeps the push only where the
+value is.
 """
 import numpy as np
 import torch
@@ -35,14 +16,10 @@ def _logits_with(rows):
     return torch.log(torch.tensor(rows, dtype=torch.float32))
 
 
-# --- the batched threat signal must agree with the scalar one --------------
+# --- the batched threat signal must agree with the scalar one ---
 def test_batched_threat_agrees_with_the_scalar_definition(fresh_obs):
-    """One definition of 'threat', not two.
-
-    `threat_level` is the established scalar used by the solvency gate. The
-    batched form exists only because the PPO update needs it per row, so it
-    must reproduce it exactly rather than become a second copy that drifts --
-    the defect class CLAUDE.md tracks across eight stale constants.
+    """One definition of threat: the batched form, needed per row by the PPO
+    update, must reproduce `threat_level` exactly.
     """
     _, obs = fresh_obs
     obs = np.asarray(obs, dtype=np.float32)
@@ -62,9 +39,9 @@ def test_an_empty_board_reads_as_no_threat(fresh_obs):
     assert float(tactics.threat_level_batch(batch)[0]) == 0.0
 
 
-# --- the gate ---------------------------------------------------------------
+# --- the gate ---
 def test_the_floor_is_silent_on_an_unthreatened_row():
-    """The whole point: no push where the card is not worth playing."""
+    """No push where the card is not worth playing."""
     logits = _logits_with([[0.001, 0.30, 0.30, 0.30, 0.099]])
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -87,7 +64,7 @@ def test_the_floor_still_fires_on_a_threatened_row():
 
 
 def test_only_the_threatened_rows_contribute():
-    """A mixed batch must behave as if the quiet rows were not there."""
+    """A mixed batch behaves as if the quiet rows were not there."""
     rows = [[0.001, 0.30, 0.30, 0.30, 0.099],
             [0.001, 0.30, 0.30, 0.30, 0.099]]
     logits = _logits_with(rows)
@@ -102,7 +79,7 @@ def test_only_the_threatened_rows_contribute():
 
 
 def test_omitting_the_gate_keeps_the_old_behaviour():
-    """threat=None must mean 'every row', so existing callers are unchanged."""
+    """threat=None means every row, so existing callers are unchanged."""
     logits = _logits_with([[0.001, 0.30, 0.30, 0.30, 0.099]])
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -127,12 +104,9 @@ def test_a_fully_quiet_batch_is_a_finite_zero():
 
 
 def test_the_gate_is_actually_WIRED_into_the_ppo_update():
-    """End-to-end: a QUIET rollout must leave the term inactive.
-
-    The unit tests above prove the gate works when handed a mask. This one
-    proves `rl/ppo.py` actually computes and passes that mask -- without it the
-    term would silently run ungated in training while every unit test passed,
-    which is exactly how the 0.42-point regression reached a live launch.
+    """End to end: a quiet rollout leaves the term inactive, proving `rl/ppo.py`
+    actually computes and passes the mask; otherwise the term would run ungated
+    while every unit test passed.
     """
     import clash_royale_env
     import torch.optim as optim
@@ -151,7 +125,7 @@ def test_the_gate_is_actually_WIRED_into_the_ppo_update():
     envs = [clash_royale_env.ClashRoyaleEnv(deck, deck, 3600)
             for _ in range(cfg.num_envs)]
     for e in envs:
-        e.reset()                       # QUIET: nothing injected
+        e.reset()                       # quiet: nothing injected
 
     buf = RolloutBuffer(CORE_FIELDS)
     hx = torch.zeros(cfg.num_envs, LSTM_HIDDEN)
@@ -187,7 +161,7 @@ def test_the_gate_is_actually_WIRED_into_the_ppo_update():
         ent_coef_card=0.05, ent_coef_placement=0.06, coverage_coef=0.02,
         deck_coverage_coef=50.0)
 
-    # No threatened rows -> nothing measured. NaN is `_mean([])`'s deliberate
-    # report for "this update had no samples", not a fault.
+    # No threatened rows, nothing measured: NaN is `_mean([])`'s report for "no
+    # samples".
     assert np.isnan(stats.deck_coverage), (
         "the term ran on a quiet board -- the gate is not wired into ppo.py")

@@ -1,12 +1,8 @@
-"""Fixtures shared by the whole python_ai suite.
+"""Fixtures shared by the python_ai suite.
 
-These two moved here VERBATIM from the old single `test_python_ai.py` when it was
-split on 2026-08-20. Note `fresh_obs` returns `(env, obs)` and not a tensor:
-several tests step that env afterwards, and "improving" the shape on the way out
-is what broke the first attempt at the split.
-
-`python_ai/conftest.py` (one level up) is what puts the repo root and the
-compiled engine's directory on sys.path; this file only holds fixtures.
+`fresh_obs` returns `(env, obs)`, not a tensor: several tests step that env
+afterwards. `python_ai/conftest.py` puts the repo root and the engine on
+sys.path.
 """
 import pytest
 

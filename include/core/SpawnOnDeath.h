@@ -3,10 +3,8 @@
 #include "CardStats.h"
 #include "CardFactories.h"
 
-// Spawns a data-driven child troop (e.g. Golem's two Golemites) at the
-// position of whatever just died carrying this effect, on the same team.
-// Reuses CardFactories::spawn so "what shape of entity to create" stays
-// defined in exactly one place instead of duplicated here.
+// Spawns a child troop (e.g. Golem's Golemites) where this entity died, on its
+// own team.
 class SpawnOnDeath : public IDeathEffect {
     CardStats childStats;
 

@@ -10,9 +10,8 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    /* Chrome is strictly greyscale. The ONLY colour outside the arena is
-       team identity (blue/red) and the two status accents below, both of
-       which carry meaning rather than decoration. */
+    /* Chrome is greyscale. The only colour outside the arena is team identity
+       (blue/red) and the two status accents below, which carry meaning. */
     --bg-primary: #0B0B0C;
     --bg-secondary: #101012;
     --bg-panel: #141416;
@@ -28,10 +27,9 @@
     --red-team-dim: #992a2a;
     --accent-green: #4ade80;
     --accent-yellow: #facc15;
-    /* Arena palette, matched to the real game: one continuous lawn with a
-       two-tone mown checker, a cyan river, wood bridges and tan lane paths.
-       Deliberately the ONLY saturated colour on the page -- the chrome around
-       it is greyscale, so the board is what the eye goes to. */
+    /* Arena palette, matched to the real game: one lawn with a two-tone mown
+       checker, a cyan river, wood bridges and tan lane paths. The only
+       saturated colour on the page, so the board is what the eye goes to. */
     --grass-light: #93C756;
     --grass-dark: #84BC46;
     --river: #37BEDC;
@@ -221,9 +219,8 @@
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
-  /* Elixir phase badge. Colour carries the phase as well as the text, because
-     the number is what changes and a reader scrubbing the timeline is watching
-     for the CHANGE, not reading the glyph. */
+  /* Elixir phase badge. Colour carries the phase as well as the text: a reader
+     scrubbing the timeline watches for the change, not the glyph. */
   .elixir-phase {
     font-size: 13px;
     font-weight: 700;
@@ -286,7 +283,7 @@
     margin-bottom: 10px;
   }
 
-  /* Panel primitives, on an 8px scale ---------------------------------- */
+  /* Panel primitives, on an 8px scale */
   .stat-row {
     display: grid;
     grid-template-columns: 38px 1fr 40px;
@@ -483,28 +480,21 @@
   #fileInput { display: none; }
 
 
-  /* Simulation View ------------------------------------------------------
-     A slide-over, NOT a modal: the arena shrinks beside it rather than being
-     covered, because the whole point is comparing the prediction against what
-     actually happened next. */
+  /* Simulation View. A slide-over, not a modal: the arena shrinks beside it
+     rather than being covered, so the prediction can be compared with what
+     happened next. */
   .sim-panel {
-    /* Sized by flex-basis, NOT width. A flex item's `width` was measured to be
-       ignored here while `flex: 0 0 <n>` applied immediately, and flex-basis is
-       the property that actually feeds the flex algorithm for a flex item, so
-       this is both the working and the correct spelling. */
+    /* Sized by flex-basis, not width: flex-basis is the property that feeds the
+       flex algorithm, and `width` was ignored here. */
     flex: 0 0 0px;
     overflow: hidden;
     background: var(--bg-secondary);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    /* NO transition on the sizing property, deliberately. A transition is
-       driven by the same clock as requestAnimationFrame, so it does not
-       advance while the page is not being painted -- measured here: with a
-       transition the panel stayed at its 0 start value indefinitely, and with
-       `transition: none` it opened to 400px immediately. That failure mode
-       (the panel never opens) is severe enough that it is not worth an
-       animation which cannot be verified. Snapping open always works. */
+    /* No transition on the sizing property: a transition runs on the animation
+       clock and does not advance while the page is not painted, which left the
+       panel stuck closed. Snapping open always works. */
   }
   .sim-panel.open { flex-basis: 400px; }
   .sim-head {
@@ -750,9 +740,8 @@
 <span id="simChipCount">Simulation View</span>
   </button>
   <div class="tick-display" id="tickDisplay">Tick 0 / 0</div>
-  <!-- Elixir phase. Hidden entirely for a replay written before the engine had
-       phases (no "elixirPhases" block), rather than defaulting to x1 -- an old
-       replay genuinely has no phase, and showing one would be inventing it. -->
+  <!-- Elixir phase. Hidden for a replay with no "elixirPhases" block rather
+       than defaulting to x1: an old replay has no phase to show. -->
   <div class="elixir-phase" id="elixirPhase" style="display:none" title="Elixir generation rate">x1</div>
   <span class="speed-label">Speed:</span>
   <select class="speed-select" id="speedSelect">
@@ -766,9 +755,8 @@
 </div>
 
 <script>
-// Card data below is kept in sync with include/core/CardRegistry.h -- symbol,
-// name and max-HP must match the C++ registry exactly or the HP bars/labels
-// silently drift out of sync with the engine (as they had, before this pass).
+// Legacy card data, kept in sync with include/core/CardRegistry.h (symbol,
+// name, max HP).
 const SYMBOL_NAMES = {
   'R': 'King Tower', 'P': 'Princess Tower',
   'K': 'Knight', 'g': 'Goblins', 'M': 'Mini PEKKA', 'B': 'Barbarians', 'V': 'Valkyrie',
@@ -795,18 +783,10 @@ const SYMBOL_RADIUS = {
   '-': 3, '*': 6, 'O': 7, 'Z': 5, 'r': 6, 'j': 7, 'n': 7, 'o': 6
 };
 
-// LEGACY FALLBACK ONLY -- these 4 tables (SYMBOL_NAMES above, plus the 3
-// below) go stale the moment a new card is added and nobody remembers to
-// update this file (confirmed happening in practice: Inferno Dragon's
-// symbol '4' was missing from all of them, silently making MAX_HP[ent.symbol]
-// fall back to `|| ent.hp` -- i.e. hpRatio = ent.hp/ent.hp = 1.0 forever, an
-// Inferno Dragon that visually never took damage no matter how much it
-// actually had). Replays now embed their own authoritative "cardMeta" block
-// (id-keyed, generated live from CardRegistry -- see GameLogger::save()) plus
-// each entity's own cardId, so this can never drift again; getEntityMeta()
-// below prefers that and only falls through to these hardcoded tables for
-// replay files saved before cardMeta/cardId existed. Left in place for that
-// backward-compatibility case only -- do not "fix" these by hand again.
+// Legacy fallback only. Replays embed their own "cardMeta" block (id-keyed,
+// generated from CardRegistry by GameLogger::save()) and each entity's cardId;
+// getEntityMeta() prefers those and falls through to these tables only for
+// replays saved before cardMeta/cardId existed. Do not maintain them by hand.
 const MAX_HP = {
   'P': 2534, 'R': 4008,
   'K': 1766, 'g': 202, 'M': 1390, 'B': 670, 'V': 1907, 's': 81, 'E': 3760, 'p': 1920,
@@ -819,35 +799,26 @@ const MAX_HP = {
 
 const BUILDING_SYMBOLS = new Set(['P', 'R', 'C', 'T', 'D', 'I']);
 
-// Fallback for replay files saved before the isFlying field was added to the
-// log -- ent.isFlying (from the engine) is always preferred when present.
+// Fallback for replays saved before the isFlying field; ent.isFlying is
+// preferred when present.
 const FLYING_SYMBOLS_FALLBACK = new Set(['m', 'h', 'F', 'y', 'a']);
 
-// Populated per-loaded-replay from gameData.cardMeta (id-keyed) in
-// initViewer() -- see getEntityMeta() below, the one place everything else
-// in this file should go through instead of touching the legacy tables
-// above directly.
+// Populated per replay from gameData.cardMeta (id-keyed) in initViewer(). Go
+// through getEntityMeta() rather than the legacy tables.
 let CARD_META = {};
 
-// Symbol -> meta, derived from the replay's OWN cardMeta block. This is the
-// fallback for entities carrying cardId -1 (Entity.h:45's default -- nothing
-// assigns one for death-spawns, spawner buildings or tower troops), which the
-// id-keyed lookup cannot resolve.
+// Symbol -> meta, from the replay's own cardMeta block: the fallback for
+// entities with cardId -1 (death-spawns, spawner buildings, tower troops),
+// which the id lookup cannot resolve.
 //
-// Symbols genuinely collide: 'M' is both Mini PEKKA (1390 hp) and Monk (2214).
-// For a cardId -1 entity that collision is not resolvable, so the ambiguous
-// set is recorded and such a resolution is flagged `inferred` rather than
-// silently presenting whichever card happened to load last as certain.
+// Symbols collide ('M' is both Mini PEKKA at 1390 hp and Monk at 2214), so the
+// ambiguous set is recorded and such a resolution is flagged `inferred`.
 let SYMBOL_INDEX = { bySymbol: {}, ambiguous: new Set() };
 
-// Entity id -> the position it first appeared at, for rolling spells.
-//
-// The replay records a rolling spell's LEADING EDGE each tick but not where
-// the roll began, and the corridor behind the log is most of what makes the
-// sweep readable. Rather than add a per-tick field for something derivable,
-// this scans the ticks once at load: the first tick an id appears on IS its
-// spawn. Built for every entity, not just spells, because the scan is the same
-// cost either way and the map is a few hundred entries.
+// Entity id -> the position it first appeared at, for rolling spells. The
+// replay records a roller's leading edge each tick but not where the roll
+// began; the first tick an id appears on is its spawn. Built for every entity,
+// since the scan costs the same.
 let ROLL_ORIGINS = {};
 
 function buildRollOrigins() {
@@ -872,22 +843,16 @@ function buildSymbolIndex(cardMeta) {
   return { bySymbol, ambiguous };
 }
 
-// maxHp 0 means a spell (no persistent HP to bar-render) or a card the legacy
-// table never knew. Render an em dash -- NEVER '?', which is what the old
-// `meta.maxHp || '?'` produced for every spell in the deck.
+// maxHp 0 means a spell (no persistent HP) or a card the legacy table never
+// knew: render an em dash, never '?'.
 function formatMaxHp(meta) {
   return (meta && meta.maxHp > 0) ? String(meta.maxHp) : '—';
 }
 
-// Single source of truth for "what is this entity" from here on. Prefers,
-// in order: (1) TOWER_DEFS by entity id (towers aren't cards, so cardMeta
-// never covers them -- this table's own per-corner names/HP are already
-// accurate and unrelated to the drift problem this fixes); (2) CARD_META by
-// ent.cardId (accurate, collision-free -- unlike symbol, which several
-// unrelated cards legitimately share with DIFFERENT maxHp, e.g. 'M' is both
-// Mini PEKKA at 1390 and Monk at 2214: a symbol-only lookup silently picks
-// whichever one happens to load last); (3) the legacy symbol-keyed tables,
-// only reached for a replay saved before cardId/cardMeta existed.
+// Single source of truth for "what is this entity". In order: (1) TOWER_DEFS by
+// entity id (towers are not cards, so cardMeta never covers them); (2)
+// CARD_META by ent.cardId (collision-free, unlike symbol); (3) the legacy
+// symbol-keyed tables, for replays saved before cardId/cardMeta existed.
 function getEntityMeta(ent) {
   const towerDef = TOWER_DEFS.find(td => td.id === ent.id);
   if (towerDef) return { name: towerDef.name, maxHp: towerDef.maxHp, isBuilding: true,
@@ -895,20 +860,14 @@ function getEntityMeta(ent) {
   if (ent.cardId !== undefined && CARD_META[ent.cardId]) {
     return Object.assign({ inferred: false }, CARD_META[ent.cardId]);
   }
-  // No cardMeta entry. Before guessing from the symbol, use the name the
-  // replay carries for this entity: GameLogger writes it straight off the
-  // board, so it is exact even for a death-spawn child, whose cardId is
-  // deliberately NEGATIVE and therefore absent from cardMeta by construction
-  // (CardRegistry assigns Golemite -1, and towers -2/-3).
+  // No cardMeta entry. Before guessing from the symbol, use the name the replay
+  // carries: GameLogger writes it off the board, so it is exact even for a
+  // death-spawn child, whose cardId is negative and never in cardMeta (Golemite
+  // -1, towers -2/-3).
   //
-  // Only the NAME is settled by this. maxHp and the ground/air/building flags
-  // still come from the symbol, which is why hpInferred is reported separately
-  // rather than folded into `inferred` -- claiming the HP maximum is confirmed
-  // when it was matched on a symbol 36 of 90 cards share would be the same
-  // over-claim this fallback already exists to avoid.
-  //
-  // Older replays carry no `name`, so this is skipped and the symbol path below
-  // still runs for them.
+  // The name alone is settled: maxHp and the ground/air/building flags still
+  // come from the symbol, hence hpInferred is reported separately from
+  // `inferred`. Older replays carry no `name` and take the symbol path below.
   if (ent.name) {
     const symMeta = SYMBOL_INDEX.bySymbol[ent.symbol] || {
       maxHp: MAX_HP[ent.symbol] || 0,
@@ -922,9 +881,8 @@ function getEntityMeta(ent) {
       hpInferred: true,
     });
   }
-  // cardId missing or -1: resolve by symbol against the replay's OWN registry
-  // data before falling through to the legacy hardcoded tables, which cover
-  // only ~45 of the 173 registry entries.
+  // cardId missing or -1: resolve by symbol against the replay's own registry
+  // data before the legacy tables, which cover only a fraction of the registry.
   const fromSym = SYMBOL_INDEX.bySymbol[ent.symbol];
   if (fromSym) {
     return Object.assign({}, fromSym, {
@@ -933,13 +891,10 @@ function getEntityMeta(ent) {
     });
   }
   return {
-    // NEVER the bare symbol. CardDefinition's default symbol is '?'
-    // (CardRegistry.h:100) and two registry cards ship it explicitly -- Cannon
-    // Cart (69) and Guards (76) -- so `|| ent.symbol` rendered a literal '?'
-    // as a card NAME. That is the reported bug.
+    // Never the bare symbol: the default symbol is '?' and some cards ship it
+    // explicitly (Cannon Cart, Guards).
     name: SYMBOL_NAMES[ent.symbol] || `Unknown (symbol '${ent.symbol}')`,
-    // 0, not `|| ent.hp`: the old fallback made hpRatio = hp/hp = 1.0 forever,
-    // so an unrecognised card's HP bar never moved however much damage it took.
+    // 0, not `|| ent.hp`, which makes hpRatio 1.0 forever.
     maxHp: MAX_HP[ent.symbol] || 0,
     isBuilding: BUILDING_SYMBOLS.has(ent.symbol),
     isSpell: SPELL_SYMBOLS.has(ent.symbol),
@@ -948,17 +903,15 @@ function getEntityMeta(ent) {
   };
 }
 
-// ent.isFlying (logged live per-entity by the engine) is always preferred
-// over the card-level default when present -- see FLYING_SYMBOLS_FALLBACK's
-// own comment on why (pre-isFlying-field replays only).
+// ent.isFlying (logged per entity by the engine) is preferred over the
+// card-level default when present.
 function isEntityFlying(ent) {
   if (ent.isFlying !== undefined) return ent.isFlying;
   return getEntityMeta(ent).isFlying;
 }
 
-// Icon shapes rather than letters -- a letter badge risked colliding with the
-// entity's own symbol letter (e.g. Giant's symbol is 'G', same letter the
-// "ground" badge would have used), which read as a confusing double-label.
+// Icon shapes rather than letters, so a badge cannot collide with the entity's
+// own symbol letter (Giant's 'G' vs a "ground" G).
 const TYPE_BADGE = {
   ground: { color: '#C9C9CE' },
   air: { color: '#8E8E93' },
@@ -966,10 +919,8 @@ const TYPE_BADGE = {
   spell: { color: '#B9B9C0' }
 };
 
-// Actual tower IDs assigned by Board::allocateId() (idCounter starts at 1000,
-// then GameManager::reset() creates King/Princess towers in this exact
-// order every episode). The tower panel previously looked for IDs
-// 100/101/102/110/111/112, which never existed, so HP never showed.
+// Tower ids as assigned by Board::allocateId() (starting at 1000), in the order
+// GameManager::reset() creates the towers.
 const TOWER_DEFS = [
   { id: 1000, name: 'Blue King', team: 0, maxHp: 4008 },
   { id: 1001, name: 'Red King', team: 1, maxHp: 4008 },
@@ -982,32 +933,22 @@ const TOWER_DEFS = [
 const CELL_SIZE = 22;
 const PADDING = 12;
 
-// Arena geometry. NOT derivable from the replay JSON, so hardcoded here with
-// the header that owns each value NAMED -- the pattern CLAUDE.md requires and
-// perception/geometry.py already follows ("live where derivable, hardcoded
-// with a comment naming the header where not").
+// Arena geometry. Not derivable from the replay JSON, so hardcoded with the
+// header that owns each value named:
 //
 //   include/core/ArenaLayout.h : LEFT_BRIDGE_X = 2.5, RIGHT_BRIDGE_X = 14.5
 //   include/core/Board.h       : BRIDGE_HALF_WIDTH = 1.0
 //
-// A bridge centre sits on the SEAM between two tiles, so 2.5 +/- 1.0 spans
-// exactly cells 2 and 3, reproducing the real river row WWBBWWWWWWWWWWBBWW.
-//
-// This file previously said [[3,4],[13,14]] -- the arena as it stood BEFORE
-// the 2026-08-21 re-centring -- and so painted four of the eighteen columns
-// wrong in both directions: 2 and 15 are real bridge and were drawn as water,
-// 4 and 13 are water and were drawn as bridge. Exactly the same stale-copy
-// failure that hit ClashEnv::extractObservationForTeam's channel 8, which was
-// fixed the same day; this was the copy nobody checked.
+// A bridge centre sits on the seam between two tiles, so 2.5 +/- 1.0 spans
+// exactly cells 2 and 3: the river row WWBBWWWWWWWWWWBBWW.
 const BRIDGE_CELLS = [[2, 3], [14, 15]];
 
-// include/core/Board.h : riverY_start = 15.5, riverY_end = 17.5. A cell i
-// covers [i-0.5, i+0.5], so the band is exactly integer rows 16 and 17.
+// include/core/Board.h : riverY_start = 15.5, riverY_end = 17.5. Cell i covers
+// [i-0.5, i+0.5], so the band is exactly rows 16 and 17.
 const RIVER_ROWS = [16, 17];
 
-// CSS custom properties, read once and cached. The palette is static at
-// runtime, and drawBoard paints 18*34 = 612 lawn tiles per frame -- calling
-// getComputedStyle inside that loop would dominate the frame.
+// CSS custom properties, read once and cached: drawBoard paints 612 lawn tiles
+// per frame, and getComputedStyle in that loop would dominate.
 const _cssCache = {};
 function cssVar(name) {
   let v = _cssCache[name];
@@ -1018,9 +959,8 @@ function cssVar(name) {
   return v;
 }
 
-// A render context bundles everything a board drawing needs, so the main arena
-// and the Simulation View's mini-boards can share one drawing path instead of
-// growing a second renderer that drifts from the first.
+// A render context bundles what a board drawing needs, so the main arena and
+// the Simulation View's mini-boards share one drawing path.
 function makeRenderCtx(ctx2d, boardWidth, boardHeight, cellSize, padding) {
   return {
     ctx: ctx2d,
@@ -1086,9 +1026,8 @@ function loadFile(file) {
 }
 
 function initViewer() {
-  // See getEntityMeta()'s own comment -- empty object (not an error) for a
-  // replay saved before cardMeta existed, which just means every entity
-  // falls through to the legacy symbol-keyed tables instead.
+  // Empty (not an error) for a replay saved before cardMeta existed; every
+  // entity then falls through to the legacy tables.
   CARD_META = gameData.cardMeta || {};
   SYMBOL_INDEX = buildSymbolIndex(CARD_META);
   ROLL_ORIGINS = buildRollOrigins();
@@ -1102,8 +1041,8 @@ function initViewer() {
   scrubber.max = gameData.ticks.length - 1;
   scrubber.value = 0;
 
-  // A newly loaded replay may have no teacher data at all, so the panel
-  // must not stay open across a load.
+  // A newly loaded replay may have no teacher data, so the panel must not stay
+  // open across a load.
   simViewOpen = false;
   document.getElementById('simPanel').classList.remove('open');
   document.getElementById('btnSimView').classList.remove('active');
@@ -1115,22 +1054,12 @@ function initViewer() {
   updateUI();
 }
 
-// Winner detection -- READS the verdict the engine wrote into the replay. It
-// does not re-derive one.
-//
-// The previous version checked only whether both King Towers were still alive
-// and called anything else a draw. Its comment said it "mirrors
-// MatchRules::evaluate exactly", which was TRUE and was precisely the bug:
-// MatchRules answers "has a King died YET?", is called every tick, and correctly
-// reports "not over" right up to the tick limit. Who WON at the limit is
-// TimeoutRules -- fewer surviving towers loses; on equal counts the side whose
-// weakest surviving tower has the lower ABSOLUTE hp loses; only an exact tie on
-// both is a draw. A timed-out match with a Princess Tower at 90 hp was being
-// displayed as "Draw. Timeout — both King Towers still standing".
-//
-// The Python-side guard against this pattern (test_match_outcome_is_the_only_
-// scorer.py) walks .py files only, which is exactly why the defect survived here
-// in JavaScript. It now checks this file too.
+// Winner detection reads the verdict the engine wrote into the replay; it does
+// not re-derive one. MatchRules only answers "has a King died yet?"; the winner
+// at the time limit is TimeoutRules': fewer surviving towers loses; on equal
+// counts the side whose weakest surviving tower has lower absolute HP loses;
+// only an exact tie on both is a draw. test_match_outcome_is_the_only_scorer.py
+// checks this file.
 function computeMatchResult() {
   if (!gameData || !gameData.ticks.length) return null;
 
@@ -1141,9 +1070,8 @@ function computeMatchResult() {
     return { winner: r.loserTeam === 0 ? 'red' : 'blue', reason: r.reason };
   }
 
-  // Replays written before the engine emitted `result`. A PORT of TimeoutRules,
-  // not the old king-alive-only shortcut -- an out-of-date replay should be
-  // scored by the right rule, not by the one this fix exists to remove.
+  // Replays written before the engine emitted `result`: a port of TimeoutRules,
+  // so an old replay is scored by the right rule.
   const finalTick = gameData.ticks[gameData.ticks.length - 1];
   const towers = finalTick.entities.filter(e => e.symbol === 'R' || e.symbol === 'P');
   const kingAlive = [0, 1].map(t => towers.some(e => e.symbol === 'R' && e.team === t));
@@ -1225,20 +1153,14 @@ function gameToCanvas(rc, gx, gy) {
   };
 }
 
-// Screen point -> canvas BACKING-STORE point.
+// Screen point -> canvas backing-store point.
 //
-// This is not `(clientX - rect.left) * (canvas.width / rect.width)`, and the
-// difference is the whole bug it replaces. The canvas carries
-// `max-width/max-height: 100%` plus `object-fit: contain`, and its element box
-// does NOT keep the backing store's aspect ratio: measured at 420x772 backing
-// inside a 420x580 box, so the content renders 315x580 with ~52px letterbox
-// bars either side. The old mapping used a per-axis scale (1.00 across, 1.33
-// down) and ignored the bars entirely, so a click was displaced by up to half
-// the board. Measured 21.2% of dead-centre clicks on an entity selected
-// nothing at all.
-//
-// object-fit: contain scales UNIFORMLY by min(...) and centres the remainder,
-// so both must be undone in that order.
+// The canvas has `max-width/max-height: 100%` and `object-fit: contain`, so its
+// element box need not keep the backing store's aspect ratio: the content is
+// scaled uniformly and letterboxed. A per-axis `(clientX - rect.left) *
+// (canvas.width / rect.width)` ignores the bars and displaces clicks by up to
+// half the board. object-fit: contain scales by min(...) and centres the
+// remainder, so both are undone in that order.
 function eventToCanvas(evt) {
   const rect = canvas.getBoundingClientRect();
   const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
@@ -1249,16 +1171,10 @@ function eventToCanvas(evt) {
 
 // Backing-store radius within which a click counts as hitting `ent`.
 //
-// The floor is the second half of the flaky-click fix. SYMBOL_RADIUS is the
-// DRAWN radius, and for the small cards it is tiny: Skeletons are 5, which is
-// a 9px target inside a 22px cell and only 3.8px ON SCREEN once the board is
-// scaled to fit. Nobody can reliably hit that.
-//
-// 0.75 of a cell = 16.5px, chosen against two measured quantities rather than
-// picked: a tile's half-diagonal is 15.6px (so the whole tile is clickable),
-// and an 8px diagonal slip of the mouse is 15.1px at the measured 0.75 display
-// scale. It does not swallow neighbours, because the caller resolves overlaps
-// by taking the CLOSEST match -- a unit one tile away is 22px off.
+// SYMBOL_RADIUS is the drawn radius, tiny for small cards (Skeletons are 5, a
+// few pixels on screen once scaled). The floor, 0.75 of a cell, covers a tile's
+// half-diagonal and a small mouse slip; it does not swallow neighbours because
+// the caller takes the closest match.
 function hitRadiusFor(ent, rc) {
   if (ent.symbol === 'R') return (4 * rc.cellSize) / 2;   // King, 4x4 tiles
   if (ent.symbol === 'P') return (3 * rc.cellSize) / 2;   // Princess, 3x3
@@ -1338,14 +1254,11 @@ function renderTick() {
 // ---------------------------------------------------------------------------
 // Teacher debug (the Simulation View's data)
 //
-// EVERY accessor here returns null/false rather than throwing when the data is
-// absent, because most replays do not have it: it is written only by a run
-// generated with rollout capture enabled. A viewer that errored on an ordinary
-// replay would be worse than one without the feature.
+// Every accessor returns null/false rather than throwing when the data is
+// absent: it exists only in replays generated with rollout capture enabled.
 //
-// Decisions are stored ONCE at top level and indexed by decision window, not
-// stamped onto every tick -- a record carries up to five predicted boards, and
-// stamping made the fixture 11 MB against 2.97 MB.
+// Decisions are stored once at top level and indexed by decision window, not
+// stamped onto every tick (a record carries up to five predicted boards).
 // ---------------------------------------------------------------------------
 function hasTeacherDebug(data) {
   const td = data && data.teacherDebug;
@@ -1358,26 +1271,20 @@ function teacherDebugForTick(tickIndex) {
   const skip = td.skipFrames > 0 ? td.skipFrames : 10;
   const rec = td.decisions[Math.floor(tickIndex / skip)];
   if (!rec || typeof rec !== 'object') return null;
-  // Damaged or partial records are normal input, not an error: normalise the
-  // shape here so no consumer has to re-check it.
+  // Damaged or partial records are normal input: normalise the shape here so no
+  // consumer re-checks it.
   if (!Array.isArray(rec.candidates)) rec.candidates = [];
   return rec;
 }
 
-// A recorded placement -> ABSOLUTE board coordinates.
+// A recorded placement -> absolute board coordinates.
 //
-// The teacher plays team 1 and returns its cells in its OWN mirrored frame:
-// ClashEnv::stepSelfPlay does `realY1 = (BOARD_HEIGHT - 1) - targetY1` itself,
-// and UtilityTeacher.to_absolute_y is `MIRROR_Y - y_own`. So a record's y is
-// own-frame while everything else the viewer draws -- every entity position
-// from GameLogger -- is absolute. Rendering the raw value put every red
-// candidate on the blue half.
-//
-// ONLY y is mirrored; x is already absolute. Measured against 8 real
-// placements in a captured replay: mean |dx| = 0.01, mean |dy| as-recorded
-// = 8.25, mean |dy| after mirroring = 0.00.
-//
-// One helper so the arena rings and the mini-board markers cannot disagree.
+// The teacher plays team 1 and returns cells in its own mirrored frame
+// (ClashEnv::stepSelfPlay does `realY1 = (BOARD_HEIGHT - 1) - targetY1`;
+// UtilityTeacher.to_absolute_y is `MIRROR_Y - y_own`), while every entity
+// position from GameLogger is absolute. Only y is mirrored; x is already
+// absolute. One helper, so the arena rings and the mini-board markers cannot
+// disagree.
 function stepToBoard(record, step) {
   const mirrored = record && record.team === 1;
   return {
@@ -1386,12 +1293,12 @@ function stepToBoard(record, step) {
   };
 }
 
-// How many candidates carry a predicted board. Also the ring count, so the
-// arena annotation and the panel can never disagree about "the top N".
+// How many candidates carry a predicted board; also the ring count, so the
+// arena and the panel agree on "the top N".
 const SIM_TOP_K = 4;
 
-// Cached static board layer. Keyed on the geometry it depends on, so a replay
-// with a different board size (or a mini-board at another scale) gets its own.
+// Cached static board layer, keyed on the geometry it depends on, so a
+// different board size or mini-board scale gets its own.
 const _bgCache = {};
 function boardBackground(rc) {
   const key = rc.boardWidth + 'x' + rc.boardHeight + '@' + rc.cellSize + '+' + rc.padding;
@@ -1409,10 +1316,8 @@ function boardBackground(rc) {
   ctx2.fillStyle = C('--arena-surround');
   ctx2.fillRect(0, 0, w, h);
 
-  // The lawn, as a mown checker. NO team territory tint: the real arena is one
-  // green field, and tinting each half red/blue was the single biggest reason
-  // this viewer did not read as Clash Royale. Team identity comes from tower
-  // and unit colour instead.
+  // The lawn, as a mown checker. No team territory tint: the real arena is one
+  // green field, and team identity comes from tower and unit colour.
   for (let x = 0; x < rc.boardWidth; x++) {
     for (let y = 0; y < rc.boardHeight; y++) {
       ctx2.fillStyle = ((x + y) % 2 === 0) ? C('--grass-light') : C('--grass-dark');
@@ -1420,15 +1325,15 @@ function boardBackground(rc) {
     }
   }
 
-  // Lane paths, bridge column to board edge. Drawn BEFORE the river so the
+  // Lane paths, bridge column to board edge: drawn before the river so the
   // water covers them, and before the bridges so the decks sit on top.
   ctx2.fillStyle = C('--lane-path');
   for (const [c0, c1] of BRIDGE_CELLS) {
     ctx2.fillRect(pad + c0 * cs, pad, (c1 - c0 + 1) * cs, h - pad * 2);
   }
 
-  // River. RIVER_ROWS are GAME rows; canvas row = boardHeight - 1 - gameRow,
-  // so the band's top edge comes from the HIGHER game row.
+  // River. RIVER_ROWS are game rows and canvas row = boardHeight - 1 - gameRow,
+  // so the band's top edge comes from the higher game row.
   const riverTop = pad + (rc.boardHeight - 1 - RIVER_ROWS[1]) * cs;
   const riverBottom = pad + (rc.boardHeight - RIVER_ROWS[0]) * cs;
   ctx2.fillStyle = C('--river');
@@ -1452,7 +1357,7 @@ function boardBackground(rc) {
     }
   }
 
-  // Faint tile grid, for judging placement. Over the lawn, under the units.
+  // Faint tile grid, for judging placement: over the lawn, under the units.
   ctx2.strokeStyle = 'rgba(0,0,0,0.055)';
   ctx2.lineWidth = 1;
   for (let x = 0; x <= rc.boardWidth; x++) {
@@ -1469,10 +1374,9 @@ function boardBackground(rc) {
   return cv;
 }
 
-// The ONE board renderer. The main arena and the Simulation View's mini-boards
+// The one board renderer: the main arena and the Simulation View's mini-boards
 // both come through here, so a palette or geometry change cannot apply to one
-// and not the other -- the failure mode this file already suffered when its
-// bridge columns drifted from the engine's.
+// only.
 //
 //   rc    -- from makeRenderCtx: canvas context plus board dims and scale
 //   opts  -- { selectedEntityId, showLabels, ghost }
@@ -1482,11 +1386,9 @@ function drawBoard(rc, tickData, opts) {
 
   const cs = rc.cellSize, pad = rc.padding;
 
-  // The lawn, paths, river, bridges and grid are STATIC for a given board size
-  // -- nothing about them changes while scrubbing. Painting them per frame
-  // means 612 fillRects plus 52 strokes every tick, which measured 127 ms/frame
-  // on this box. Rendered once into an offscreen canvas and blitted, the same
-  // background costs one drawImage.
+  // Lawn, paths, river, bridges and grid are static for a given board size, so
+  // they are rendered once into an offscreen canvas and blitted (painting them
+  // per frame cost ~127 ms/frame).
   rc.ctx.clearRect(0, 0, w, h);
   rc.ctx.drawImage(boardBackground(rc), 0, 0);
 
@@ -1514,27 +1416,27 @@ function drawBoard(rc, tickData, opts) {
     }
   }
 
-  // Mini-boards never draw rings: they ARE the candidates.
+  // Mini-boards never draw rings: they are the candidates.
   if (!opts.ghost) {
     drawCandidateRings(rc, teacherDebugForTick(currentTick));
   }
 
-  // The "NOW" mini-board shows WHERE the candidate is about to be dropped.
-  // Without this the left board is just the live position and the placement
-  // exists only as text, so there is nothing to compare the "+Ns" board
-  // against. Drawn as a ghost because the unit is not on the board yet.
+  // The "NOW" mini-board shows where the candidate is about to be dropped, as a
+  // ghost since the unit is not on the board yet; otherwise the placement
+  // exists only as text.
   if (opts.placements && opts.placements.length) {
     drawGhostPlacements(rc, opts.placements);
   }
 }
 
 
-// Deliberately minimal: a hollow numbered ring per candidate cell, the chosen
-// one filled. At most SIM_TOP_K of them. Anything more elaborate ON THE ARENA
-// is the clutter the slide-over Simulation View exists to avoid.
-// A candidate's placement, drawn on a board where it has NOT happened yet:
-// dashed outline, the card's own symbol, and an order number when a combo
-// places more than one card.
+// A hollow numbered ring per candidate cell, the chosen one filled, at most
+// SIM_TOP_K. Anything more elaborate on the arena is the clutter the Simulation
+// View exists to avoid.
+//
+// A candidate's placement on a board where it has not happened yet: dashed
+// outline, the card's own symbol, and an order number when a combo places more
+// than one card.
 function drawGhostPlacements(rc, placements) {
   const cs = rc.cellSize;
   const r = Math.max(3.5, cs * 0.62);
@@ -1543,11 +1445,9 @@ function drawGhostPlacements(rc, placements) {
   rc.ctx.textBaseline = 'middle';
   placements.forEach((p, i) => {
     const at = gameToCanvas(rc, p.x, p.y);
-    // WHITE core with a team-coloured ring, not a team-coloured fill. The
-    // board is already full of red and blue discs, so a team-tinted ghost
-    // vanishes into them; white is the one colour nothing else on the arena
-    // uses, and the dark halo keeps it readable over lawn, path and water
-    // alike.
+    // White core with a team-coloured ring: the board is full of red and blue
+    // discs, so a team-tinted ghost vanishes; white is the one colour nothing
+    // else uses, and the dark halo keeps it readable on lawn, path and water.
     rc.ctx.beginPath();
     rc.ctx.arc(at.x, at.y, r + Math.max(1, cs * 0.1), 0, Math.PI * 2);
     rc.ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -1580,11 +1480,9 @@ function drawCandidateRings(rc, record) {
   if (!record || !record.candidates.length) return;
   const shown = record.candidates.slice(0, SIM_TOP_K);
 
-  // GROUP BY CELL. Several candidates routinely propose the same cell -- a
-  // measured decision had ranks 1, 2 and 4 all on (2,15) -- and drawing one
-  // ring per candidate meant the last one painted hid the rest, including the
-  // chosen one. One ring per cell, labelled with the BEST rank there and a
-  // xN when more than one candidate shares it.
+  // Group by cell: several candidates often propose the same cell, and one ring
+  // each hides all but the last painted, including the chosen one. One ring per
+  // cell, labelled with the best rank there and xN when shared.
   const byCell = new Map();
   shown.forEach(function (cand, i) {
     const step = cand.steps && cand.steps[0];
@@ -1644,7 +1542,8 @@ function drawTypeBadge(rc, ent, pos, radius) {
   rc.ctx.lineWidth = 1;
   rc.ctx.stroke();
 
-  // Shape glyph, not a letter -- ground: dot, air: chevron, building: square, spell: diamond
+  // Shape glyph, not a letter: ground dot, air chevron, building square, spell
+  // diamond.
   rc.ctx.fillStyle = '#0b0d13';
   rc.ctx.strokeStyle = '#0b0d13';
   rc.ctx.lineWidth = 1.4;
@@ -1671,28 +1570,24 @@ function drawTypeBadge(rc, ent, pos, radius) {
   }
 }
 
-// Rolling spells (The Log, Barbarian Barrel) are not circles: they sweep a
-// rectangular corridor forward from where they landed. Drawn as three layers
-// so the PROGRESSION is legible rather than just the current frame --
+// Rolling spells (The Log, Barbarian Barrel) sweep a rectangular corridor
+// forward from where they landed, drawn in three layers so the progression is
+// legible:
 //
 //   1. the full corridor it will cover, faint and dashed;
-//   2. the part it has already swept, filled;
-//   3. the body itself at the leading edge, solid.
+//   2. the part already swept, filled;
+//   3. the body at the leading edge, solid.
 //
-// Shape comes from the replay's own cardMeta (rollWidth/rollRange), never from
-// a table in this file. That is deliberate: the viewer is a file:// page whose
-// only input is the JSON, so anything it is not told it must hardcode -- and
-// CLAUDE.md records four separate arena constants that went stale in exactly
-// this file for exactly that reason. The width and range are now in the
-// format, so they cannot drift from the engine.
+// Shape comes from the replay's own cardMeta (rollWidth/rollRange), never a
+// table here: this file:// page's only input is the JSON, so anything it is not
+// told it must hardcode.
 function drawRollingSpell(rc, ent, meta, isBlue) {
   const width = meta.rollWidth || 0;
   const range = meta.rollRange || 0;
   if (width <= 0 || range <= 0) return false;
 
-  // Team 0 defends the low-y half and rolls toward +y, mirroring the engine's
-  // own rollDirY -- derived from the team, exactly as AreaSpell::configureRoll
-  // does, rather than stored per tick.
+  // Team 0 rolls toward +y, derived from the team as AreaSpell::configureRoll
+  // does.
   const dir = ent.team === 0 ? 1 : -1;
   const origin = ROLL_ORIGINS[ent.id] || { x: ent.x, y: ent.y };
   const half = width / 2;
@@ -1708,7 +1603,7 @@ function drawRollingSpell(rc, ent, meta, isBlue) {
              w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
   };
 
-  // 1. the whole corridor, so you can see where it is GOING to reach
+  // 1. The whole corridor, showing where it will reach.
   const full = rectBetween(origin.y, origin.y + dir * range);
   rc.ctx.save();
   rc.ctx.setLineDash([4, 4]);
@@ -1717,14 +1612,14 @@ function drawRollingSpell(rc, ent, meta, isBlue) {
   rc.ctx.strokeRect(full.x, full.y, full.w, full.h);
   rc.ctx.restore();
 
-  // 2. the part already swept
+  // 2. The part already swept.
   const swept = rectBetween(origin.y, ent.y);
   rc.ctx.fillStyle = sweptFill;
   rc.ctx.fillRect(swept.x, swept.y, swept.w, swept.h);
 
-  // 3. the body at the leading edge. A fixed visual thickness -- the engine's
-  // corridor has no longitudinal extent at all (it tests "has the leading edge
-  // reached you"), so this is presentation, not a claim about the hitbox.
+  // 3. The body at the leading edge, at a fixed visual thickness: the engine's
+  //    corridor has no longitudinal extent (it tests "has the leading edge
+  //    reached you"), so this is presentation, not a hitbox.
   const bodyThickness = 0.8;
   const body = rectBetween(ent.y - dir * bodyThickness, ent.y);
   rc.ctx.fillStyle = bodyFill;
@@ -1739,8 +1634,8 @@ function drawRollingSpell(rc, ent, meta, isBlue) {
   rc.ctx.lineWidth = 1.5;
   rc.ctx.strokeRect(body.x, body.y, body.w, body.h);
 
-  // Two grain lines across the body, so successive frames read as ROLLING
-  // rather than sliding. Phase advances with distance travelled.
+  // Two grain lines across the body, phased by distance travelled, so
+  // successive frames read as rolling rather than sliding.
   const travelled = (ent.y - origin.y) * dir;
   rc.ctx.strokeStyle = isBlue ? 'rgba(10, 30, 60, 0.5)' : 'rgba(60, 10, 10, 0.5)';
   rc.ctx.lineWidth = 1;
@@ -1764,8 +1659,7 @@ function drawEntity(rc, ent, isSelected) {
   const meta = getEntityMeta(ent);
 
   if (meta.isSpell && ent.symbol !== '-') {
-    // A roller draws its corridor and nothing else; everything else keeps the
-    // old circle.
+    // A roller draws only its corridor; everything else keeps the circle.
     if (!drawRollingSpell(rc, ent, meta, isBlue)) {
       const spellRadius = ent.symbol === '*' ? 4.0 : 2.5;
       const pixelRadius = spellRadius * rc.cellSize;
@@ -1797,7 +1691,7 @@ function drawEntity(rc, ent, isSelected) {
     rc.ctx.stroke();
   }
 
-  // Shadow (single, subtle -- previously stacked with an extra glow ring)
+  // Shadow
   rc.ctx.beginPath();
   rc.ctx.arc(pos.x + 1, pos.y + 2, radius, 0, Math.PI * 2);
   rc.ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -1809,8 +1703,7 @@ function drawEntity(rc, ent, isSelected) {
     const x0 = pos.x - sz / 2, y0 = pos.y - sz / 2;
     const r = Math.max(2, rc.cellSize * 0.18);
 
-    // Stone body with a team-tinted face, rounded rather than a hard square --
-    // a flat rect read as a debug overlay against the new arena art.
+    // Stone body with a team-tinted face, rounded.
     rc.ctx.beginPath();
     if (rc.ctx.roundRect) rc.ctx.roundRect(x0, y0, sz, sz, r);
     else rc.ctx.rect(x0, y0, sz, sz);
@@ -1830,9 +1723,8 @@ function drawEntity(rc, ent, isSelected) {
     rc.ctx.textBaseline = 'middle';
     rc.ctx.fillText(ent.symbol, pos.x, pos.y + 1);
   }
-  // Troops: flat-ish circle (dropped the extra outer glow ring -- with many
-  // units on screen the overlapping halos were the main source of visual
-  // clutter)
+  // Troops: flat circle, no outer glow ring (overlapping halos were the main
+  // source of clutter).
   else if (!meta.isSpell) {
     const bodyGrad = rc.ctx.createRadialGradient(pos.x - 2, pos.y - 2, 1, pos.x, pos.y, radius);
     bodyGrad.addColorStop(0, mainColor);
@@ -1865,7 +1757,7 @@ function drawEntity(rc, ent, isSelected) {
 
   if (!meta.isSpell) {
     // maxHp can be 0 for an unrecognised card; a full bar is the honest
-    // rendering there, since the true maximum is genuinely unknown.
+    // rendering when the maximum is unknown.
     const hpRatio = meta.maxHp > 0
       ? Math.max(0, Math.min(1, ent.hp / meta.maxHp))
       : 1;
@@ -1899,16 +1791,9 @@ function updateUI() {
   tickDisplay.textContent = `Tick ${tickData.tick} / ${gameData.ticks[gameData.ticks.length - 1].tick}`;
   scrubber.value = currentTick;
 
-  // Elixir phase (x1 / x2 / x3).
-  //
-  // The boundaries come from the replay's own "elixirPhases" block, written by
-  // GameLogger from GameManager's constants -- NOT from a table here. This
-  // page is a file:// document whose only input is the JSON, so anything it is
-  // not told it is structurally forced to hardcode, and a hardcoded copy of an
-  // engine constant is a scheduled defect rather than a discipline problem.
-  // That is exactly how this viewer ended up painting four of eighteen columns
-  // as the wrong terrain after the 2026-08-21 arena re-centring; the fix for
-  // that class of bug belongs in the FORMAT, and this reads the format.
+  // Elixir phase (x1 / x2 / x3). The boundaries come from the replay's own
+  // "elixirPhases" block, written by GameLogger from GameManager's constants,
+  // not from a table here: this page's only input is the JSON.
   const phases = gameData.elixirPhases;
   if (phases) {
     const mult = tickData.tick >= phases.tripleTick ? 3
@@ -1960,13 +1845,10 @@ function updateTowerPanel(tickData) {
   }
 }
 
-// Shows what the network is "thinking" right now: the critic's state-value
-// estimate (how good it currently believes this position is) as a
-// speedometer-style dial, plus the action it actually sampled at the
-// decision governing this tick. Gauge range is +/-2 -- observed values
-// during real training stay within that band (e.g. a decisive winning
-// position reads ~+1.2, a losing one ~-1.3), so +/-2 gives headroom
-// without wasting most of the dial on extremes that don't really happen.
+// Shows what the network is "thinking": the critic's state-value estimate as a
+// speedometer dial, plus the action it sampled at the decision governing this
+// tick. Gauge range is +/-2: observed values stay within it (a decisive winning
+// position reads ~+1.2, a losing one ~-1.3).
 const GAUGE_RANGE = 2.0;
 const gaugeCanvas = document.getElementById('gaugeCanvas');
 const gaugeCtx = gaugeCanvas.getContext('2d');
@@ -1980,8 +1862,8 @@ function drawGauge(stateValue) {
   const clamped = Math.max(-GAUGE_RANGE, Math.min(GAUGE_RANGE, hasData ? stateValue : 0));
   const t = (clamped + GAUGE_RANGE) / (2 * GAUGE_RANGE); // 0..1 across the dial
 
-  // Background arc: red (negative) left half, green (positive) right half --
-  // canvas angle Math.PI = pointing left, 1.5*Math.PI = up, 2*Math.PI = right.
+  // Background arc: red (negative) left half, green (positive) right half.
+  // Canvas angle Math.PI points left, 1.5*Math.PI up, 2*Math.PI right.
   gaugeCtx.lineWidth = 10;
   gaugeCtx.lineCap = 'round';
   gaugeCtx.strokeStyle = 'rgba(255, 82, 82, 0.35)';
@@ -2073,7 +1955,7 @@ function updateInspector(tickData) {
   const teamStr = ent.team === 0 ? '<span style="color:var(--blue-team)">Blue</span>' : '<span style="color:var(--red-team)">Red</span>';
   const type = getEntityType(ent);
   const typeLabel = { ground: 'Ground', air: 'Air', building: 'Building', spell: 'Spell' }[type];
-  // A spell has no persistent HP at all, so "1 / -" is meaningless for it.
+  // A spell has no persistent HP, so "1 / -" is meaningless for it.
   const hpLine = meta.isSpell
     ? '<div class="inspector-detail"><span>HP:</span> <strong>n/a</strong> <span>(spell)</span></div>'
     : `<div class="inspector-detail"><span>HP:</span> <strong>${ent.hp}</strong> / ${formatMaxHp(meta)}</div>`;
@@ -2112,7 +1994,7 @@ function updateEventLog() {
 }
 
 // cardNames values are formatted "Hog Rider (4)" by GameLogger::save(), so the
-// cost is recoverable from the name and needs no extra field in the replay.
+// cost is recoverable from the name.
 function splitCardLabel(raw) {
   const m = /^(.*)\s\((\d+)\)$/.exec(raw || '');
   return m ? { name: m[1], cost: parseInt(m[2], 10) } : { name: raw, cost: null };
@@ -2151,9 +2033,8 @@ function updateHandPanel(tickData) {
 // ---------------------------------------------------------------------------
 // Simulation View
 // ---------------------------------------------------------------------------
-// px per tile in a mini-board. 7 rather than 5 so the ghost placement is
-// actually legible: two boards plus the arrow come to ~290px inside a
-// 400px panel, which still fits without horizontal scrolling.
+// px per tile in a mini-board: 7 keeps the ghost placement legible, and two
+// boards plus the arrow (~290px) still fit the 400px panel.
 const SIM_MINI_CELL = 7;
 let simViewOpen = false;
 
@@ -2170,8 +2051,7 @@ function candidateLabel(cand) {
 }
 
 // A mini-board reuses drawBoard at a smaller cellSize, so the arena palette and
-// the corrected bridge geometry apply automatically -- there is no second
-// renderer to keep in sync.
+// bridge geometry apply automatically.
 function miniBoard(entities, placements) {
   const cv = document.createElement('canvas');
   const rc = makeRenderCtx(cv.getContext('2d'), gameData.boardWidth,
@@ -2199,8 +2079,8 @@ function renderSimView(record) {
   if (!body) return;
   body.innerHTML = '';
 
-  // Every one of these is a NORMAL state, not an error. Each gets a sentence
-  // rather than an empty framed region.
+  // Each of these is a normal state, not an error, and gets a sentence rather
+  // than an empty framed region.
   if (!record) {
     body.innerHTML = '<div class="sim-note">No teacher decision on this tick.</div>';
     return;
@@ -2264,8 +2144,8 @@ function renderSimView(record) {
     if (hasBoard) {
       const wrap = document.createElement('div');
       wrap.className = 'sim-boards';
-      // LEFT board: the live position plus this candidate's placement drawn
-      // on it, so the "before" is visibly the setup being scored.
+      // Left board: the live position plus this candidate's placement, so the
+      // "before" is the setup being scored.
       wrap.appendChild(miniBoard(nowEntities, ghostsFor(record, cand)));
       const arrow = document.createElement('span');
       arrow.className = 'sim-arrow';
@@ -2298,10 +2178,9 @@ function toggleSimView(force) {
   panel.setAttribute('aria-hidden', String(!simViewOpen));
   document.getElementById('btnSimView').classList.toggle('active', simViewOpen);
   if (simViewOpen) renderSimView(teacherDebugForTick(currentTick));
-  // No canvas resize call is needed: .canvas-wrapper and canvas already carry
-  // max-width:100% / object-fit:contain, so the arena CSS-scales down when the
-  // panel takes width. The backing store is unchanged and the hover handler
-  // converts through getBoundingClientRect, so hit-testing still works.
+  // No canvas resize needed: .canvas-wrapper and canvas carry max-width:100% /
+  // object-fit:contain, so the arena CSS-scales down when the panel takes
+  // width, and hit-testing converts through getBoundingClientRect.
 }
 
 // Reflects the CURRENT tick's data onto the chip and the open panel.
@@ -2384,8 +2263,8 @@ canvas.addEventListener('click', (e) => {
     if (ent.symbol === '-') continue;          // projectiles are not selectable
     const pos = gameToCanvas(rc, ent.x, ent.y);
     const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
-    // Closest wins, so a generous radius on a big tower cannot steal a click
-    // from a troop standing on it.
+    // Closest wins, so a big tower's generous radius cannot steal a click from
+    // a troop standing on it.
     if (dist < hitRadiusFor(ent, rc) && dist < closestDist) {
       closest = ent;
       closestDist = dist;
@@ -2397,15 +2276,10 @@ canvas.addEventListener('click', (e) => {
   updateUI();
 });
 
-// NO hover tooltip on the arena, deliberately. The Entity Inspector in the
-// sidebar shows the same information on CLICK, which is a better debugging
-// flow (it persists while you scrub) and avoids a floating box over the
-// board. The tooltip that used to live here also had two real defects worth
-// not reintroducing: it positioned itself in CSS pixels from canvas
-// backing-store coordinates, which diverge whenever the canvas is
-// CSS-scaled -- and it always is, via max-width/object-fit -- so it drifted
-// away from the cursor; and its hit-test took the first array match using
-// radii that do not match the drawn sizes, so some entities never hit.
+// No hover tooltip on the arena: the Entity Inspector shows the same
+// information on click and persists while scrubbing. A tooltip positioned in
+// CSS pixels from backing-store coordinates drifts whenever the canvas is
+// CSS-scaled, which it always is.
 
 document.getElementById('btnSimView').addEventListener('click', () => toggleSimView());
 document.getElementById('simClose').addEventListener('click', () => toggleSimView(false));
@@ -2422,14 +2296,12 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 // Test surface.
 //
-// Everything above is declared with `let`/`const`/`function` at script top
-// level, which in a classic script creates LEXICAL bindings that are NOT
-// properties of `window` -- so none of it is reachable from the console or
-// from a driving harness. This block is the deliberate, single place that
+// Top-level `let`/`const`/`function` in a classic script create lexical
+// bindings that are not properties of `window`, so nothing above is reachable
+// from the console or a driving harness. This block is the single place that
 // exposes what the checks in docs/design/plans/ need.
 //
-// Read-only by intent: `state()` returns a snapshot, not live references to
-// mutate. Nothing here runs on load, so it cannot affect normal use.
+// Read-only by intent: `state()` returns a snapshot. Nothing here runs on load.
 // ---------------------------------------------------------------------------
 window.__viewerTests = {
   getEntityMeta,
@@ -2449,10 +2321,9 @@ window.__viewerTests = {
   riverRows: () => RIVER_ROWS,
   loadJson: (text, name) => loadFile(new File([text], name || 'test.json',
                                               { type: 'application/json' })),
-  // Synchronous variant. loadFile goes through FileReader, which does not fire
-  // in a throttled/non-painting renderer, so an automated check cannot use it.
-  // This skips only the file decode -- initViewer and everything after it are
-  // the same code path.
+  // Synchronous variant: loadFile goes through FileReader, which does not fire
+  // in a throttled or non-painting renderer. Only the file decode is skipped;
+  // initViewer onward is the same path.
   loadData: (obj, name) => {
     gameData = obj;
     initViewer();

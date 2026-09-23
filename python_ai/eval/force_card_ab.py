@@ -1,40 +1,21 @@
-"""Does playing a card MORE actually win more games, on the training distribution?
+"""Does playing a card more often win more games on the training distribution?
 
-WHY THIS EXISTS. The ep-59,000 gate re-run found that forcing The Log at the
-policy's own placement argmax is worth **+749 tower HP** in high-opportunity
-states, against only +46 HP for improving where it lands. That reads like "play
-it more" -- but the probe SELECTS the 32 states most favourable to playing, so it
-cannot answer whether playing it more is good on average.
+A probe that forces a card on the states most favourable to it cannot answer
+whether playing it more is good on average; this does.
 
-The prior is against it. `force_hog_ab.py` records that forcing Fireball once
-dropped win rate 97% -> 23%, and CLAUDE.md lists four separate attempts to raise
-these cards by pushing the marginal, every one of which cost win rate. So this
-measures before anything is changed.
-
-DESIGN
-------
-Two arms, same seeds, same pool deck per trial:
+Two arms, same seed and pool deck per trial:
 
     A  the policy, greedy
-    B  identical, except that whenever the target card is in hand, affordable,
-       and the board offers it something, it is played with probability
-       `--force-prob` -- at the cell the net's OWN placement head chose
+    B  identical, except that when the target card is in hand and affordable, it is played with probability `--force-prob`, at the cell the net's own placement head chose
 
-So the arms differ in WHEN the card is played and never in WHERE, which keeps the
-question about selection rather than placement. `--force-prob` below 1.0 makes
-this an epsilon-style nudge, the shape any real fix would take, rather than a
-hard override.
+The arms differ in when the card is played, never where. `--gate` restricts
+forcing to states where the card's value map offers something (the
+state-conditional version).
 
-PAIRED BY SEED, NOT BY SNAPSHOT. The opponent here is the UtilityTeacher on the
-16-deck pool -- the distribution the finding came from -- and a raw
-`env.snapshot()` copies the engine but not the Python-side teacher, so a
-snapshot-paired arm would silently face the C++ HeuristicOpponent instead. Both
-arms therefore construct their own env with the same seed and the same deck;
-at rung 10 the teacher's epsilon is 0.00, so it is deterministic given that.
-
-`--gate` restricts forcing to states where the card's own value map says there
-is something to hit, which is the state-conditional version of the intervention.
-Ungated, this is the indiscriminate version that has failed before.
+Paired by seed rather than snapshot: `env.snapshot()` copies the engine but not
+the Python-side UtilityTeacher, so a snapshot-paired arm would face the C++
+heuristic instead. At rung 10 the teacher's epsilon is 0, so it is
+deterministic given the seed.
 """
 import argparse
 import os

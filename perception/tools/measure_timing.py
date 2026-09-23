@@ -1,91 +1,34 @@
-"""Measure the real game's spell delay and troop deploy time.
+"""Measure the real game's spell delay and troop deploy time against the engine's.
 
-Two constants the engine states but has never had checked against reality:
+The engine models spell delay as a flat interval regardless of cast distance,
+so trials cast at two distances: if the real delay scales with distance, a
+constant is the wrong shape of model, not a mistuned one.
 
-    spell delay    `spell(7, "Fireball", ..., 10, ...)` -- a FLAT 10 ticks
-                   (1.0 s) regardless of where it is cast. Measured here at
-                   two distances, because if the real delay scales with cast
-                   distance then a constant is STRUCTURALLY wrong, not merely
-                   mistuned, and no amount of retuning it helps.
-    deploy time    the engine has NONE. `spawnEntity` makes an entity live
-                   immediately, while the real game freezes a troop for about
-                   a second after it lands.
+The elixir bar is the cast clock: it drops the instant the game accepts the
+play, on the far side of ADB, the actuator queue and the emulator's input
+handling.
 
-Both matter more since 2026-08-07 than they did before it. Troops now move at
-real-game speed, so a spell's 1.0 s window covers 5x less ground than it used
-to -- the Fireball shaping was tuned in a world where its targets fled five
-times too fast, and its calibration does not survive that unchanged.
+The explosion sprite is the impact clock. A tower's HP looks like the obvious
+choice, but the spell's own UI (radius circle, "<card> lvl.N" banner, "-N" drag
+cursor) is drawn over the tower being aimed at and occluded its numeral for
+exactly the window a ~1 s flight lands in. The numeral
+(readers/tower_numerals.py) is kept as corroboration and as the validity gate:
+a spell that spends elixir and damages nothing is a miss, and averaging it into
+a delay would be worse than reporting nothing.
 
-WHY THE ELIXIR BAR IS THE CAST CLOCK
-------------------------------------
-It drops the instant the GAME accepts the play, so it is measured on the far
-side of every latency this project has fought: ADB, the actuator queue, the
-emulator's own input handling. A tap timestamp would measure our pipeline; the
-elixir bar measures the game.
+The burst detector has never been checked against a confirmed impact, since no
+capture here contains one. Its three discriminators (compactness, round aspect,
+decay) are the properties an ongoing melee lacks. Run with `--inspect` and look
+at the strip before believing a number.
 
-WHY THE EXPLOSION SPRITE IS THE IMPACT CLOCK, AND A TOWER IS NOT
-----------------------------------------------------------------
-A tower looked like the obvious impact clock -- it cannot move, cannot be
-mistaken for another unit, and its HP is a clean step. It was tried twice and
-failed twice, for two unrelated reasons.
+The hand only cycles when you play, so waiting for a card while playing nothing
+is a deadlock. Hence `CYCLE_TILE`: if the wanted card is not dealt, spend one
+to advance the cycle.
 
-First, CRBAB's bar FRACTION is unusable: over one 77-frame trial it took ten
-distinct values (0.0, 0.46, 0.49, 0.62 ... 1.0) on a tower whose HP never
-changed once, because `_calculate_hp` returns 0.0 both for an empty bar and
-for one it cannot colour-match at all.
-
-That was fixed -- `readers/tower_numerals.py` plus the tower_549x976 templates
-read absolute HP correctly -- and the tower STILL could not be the clock. The
-spell's own UI (the radius circle, the "<card> lvl.N" banner, the "-N" drag
-cursor) is drawn directly over the tower being aimed at, and on a real capture
-it occluded that tower's numeral from 950 ms to 2150 ms after the cast, which
-is precisely the window a ~1 s flight lands in. The reader did the right thing
-and reported "unreadable" for those 35 frames rather than guessing; that is
-correct behaviour and still no measurement.
-
-So impact is scored from the burst sprite, which is large, central, and the
-one thing the cast UI cannot cover -- and the tower numeral is kept as
-CORROBORATION and as the validity gate instead.
-
-STATUS: THE DETECTOR IS UNVALIDATED (2026-08-10)
--------------------------------------------------
-No capture in this repo contains a confirmed spell impact, so the burst
-detector below has never been checked against a real explosion. Its thresholds
-were chosen against measured FAILURES rather than a positive example:
-
-  a naive "count warm-coloured pixels" detector fired on ~12,000 pixels of
-  every frame including pre-cast ones (red tower roofs, tan paths);
-  baseline-differencing removed that but left a diffuse signal that rose
-  monotonically across the whole board -- an ongoing melee.
-
-Hence the three discriminators a melee does not satisfy: compactness, round
-aspect, and decay. Until a real burst is captured, run with `--inspect` and
-LOOK at the strip before believing any number this prints.
-
-Worth knowing about the capture that motivated all this: the Fireball was
-genuinely played -- elixir 10 -> 6 and held, the card left the hand and the
-slot refilled -- the radius indicator sat squarely on the target tower, and
-neither enemy tower lost a single HP. Where it actually landed is unknown.
-That is why damage is now a hard validity gate: a spell that spends elixir and
-damages nothing is a miss, and averaging it into a delay would be worse than
-reporting nothing.
-
-A SECOND FINDING, WORTH MORE THAN THE MEASUREMENT
--------------------------------------------------
-**The hand only cycles when you play.** Waiting for a specific card while
-playing nothing is a deadlock, not a wait. Two entire matches were spent
-watching one frozen hand -- `['minipekka','musketeer','valkyrie','minions']`,
-unchanged for 150 s -- which looked exactly like a broken detector. Hence
-`CYCLE_TILE`: if the wanted card is not dealt, spend one to advance the cycle.
-
-CAPTURE AND ANALYSIS ARE SEPARATE PHASES ON PURPOSE
----------------------------------------------------
-`--capture` records short bursts of raw frames around each play and writes
-them to disk; `--analyse` runs the detector over them afterwards. Running the
-detector live would compete with capture for the CPU and lower the frame rate,
-which is the measurement's resolution. It also makes the live session short
-and scripted rather than exploratory, and lets the same trial be re-analysed
-without being re-played.
+`--capture` records short bursts of raw frames around each play; `--analyse`
+runs the detector afterwards. Running it live would compete with capture for
+CPU and lower the frame rate, which is the measurement's resolution, and a
+trial can be re-analysed without being re-played.
 """
 from __future__ import annotations
 
@@ -103,12 +46,8 @@ _PERCEPTION_ROOT = Path(__file__).resolve().parent.parent
 if str(_PERCEPTION_ROOT) not in sys.path:
     sys.path.insert(0, str(_PERCEPTION_ROOT))
 
-# loguru and PIL are CAPTURE-side dependencies and are imported lazily, inside
-# the functions that need them. Importing them at module scope made the whole
-# module -- including the pure burst-detection helpers below -- unimportable in
-# the perception venv, which is where its tests run. An analysis routine that
-# cannot be exercised without the capture toolchain installed is one that never
-# gets a test.
+# loguru and PIL are capture-side dependencies, imported lazily, so the pure
+# burst-detection helpers import (and are tested) in the perception venv.
 def _pil():
     from PIL import Image  # noqa: PLC0415
     return Image
@@ -120,21 +59,19 @@ def _logger():
     return logger
 
 # Engine tiles. The opponent's left Princess Tower is the deep target; a spell
-# is legal anywhere, so `engine_frame=True` placement reaches it.
+# is legal anywhere.
 DEEP_TARGET = (4, 27)
-# Just past our own bridge -- the shortest cast that still has an enemy-side
-# structure nowhere near it, used only when a near target is available.
+# Just past our own bridge: the shortest cast, used only when a near target is
+# available.
 NEAR_TARGET = (4, 18)
-# Own half, clear of both Princess Towers (x=4, x=14) and the King (x=9, y=2).
+# Own half, clear of both Princess Towers and the King.
 DEPLOY_TILE = (11, 9)
-# Where cards get dumped purely to advance the deck cycle. Back corner of our
-# own half: it is Training Camp, the match outcome is irrelevant, and the only
-# requirement is that it does not sit on top of the tile a trial is measuring.
+# Where cards are dumped purely to advance the cycle: a back corner of our own
+# half, away from any tile a trial measures. Training Camp, so the outcome is
+# irrelevant.
 CYCLE_TILE = (1, 4)
-# The dearest card in DEFAULT_DECK. Cycling is only attempted with at least
-# this much elixir, so a dump never fails silently for being unaffordable --
-# playCard returns false with no exception, which is exactly the failure the
-# affordability mask exists to prevent on the training side.
+# The dearest card in DEFAULT_DECK. Cycling needs at least this much elixir,
+# since an unaffordable playCard fails silently.
 MAX_DECK_COST = 5.0
 
 PRINCESS_KEYS = ("left_enemy_princess_hp", "right_enemy_princess_hp",
@@ -142,11 +79,9 @@ PRINCESS_KEYS = ("left_enemy_princess_hp", "right_enemy_princess_hp",
 
 
 class BurstRecorder:
-    """Captures frames on a thread into memory, for a bounded window.
-
-    Bounded because raw frames are ~1.6 MB each: a whole session in memory is
-    gigabytes, while the four seconds around one play is ~100 MB and is all
-    the measurement ever looks at.
+    """Captures frames on a thread into memory, for a bounded window: raw frames
+    are ~1.6 MB each, and the four seconds around one play (~100 MB) are all
+    the measurement uses.
     """
 
     def __init__(self, source):
@@ -230,16 +165,13 @@ def capture(args):
             print(f"  poll: screen={state.screen.name} elixir={elixir} "
                   f"hand={[getattr(c, 'name', '') for c in state.cards[1:5]]}",
                   flush=True)
-        # state.cards is FIVE entries -- [0] is the "Next" preview box, so the
-        # hand is [1:5]. Reading [:4] cost a whole match once; see adapter.py.
+        # state.cards[0] is the "Next" preview; the hand is [1:5]. See
+        # adapter.py.
         hand = [h.lower() for h in
                 (getattr(c, "name", "") for c in state.cards[1:5])]
         if wanted not in hand:
-            # THE HAND ONLY CYCLES WHEN YOU PLAY. Waiting for a card without
-            # playing anything is a deadlock, not a wait -- the first two
-            # attempts at this sat through entire matches watching one frozen
-            # hand, and looked exactly like a broken detector. If the card we
-            # want is not dealt, spend one to advance the cycle.
+            # The hand only cycles when you play: if the wanted card is not
+            # dealt, spend one to advance it.
             if elixir >= MAX_DECK_COST:
                 actuator.play(0, *CYCLE_TILE)
                 time.sleep(args.cycle_s)
@@ -273,12 +205,9 @@ def capture(args):
 
 
 def _expected_native_xy(target_tile, native_wh):
-    """Where a commanded ENGINE tile should land, in native capture pixels.
-
-    Derived from the actuator's own mapping and then rescaled, rather than
-    calibrated separately: the point of comparing against it is to catch the
-    actuator aiming somewhere other than it claims, and a second independent
-    copy of the mapping could not do that.
+    """Where a commanded engine tile should land, in native capture pixels.
+    Derived from the actuator's own mapping, since the point is to catch the
+    actuator aiming somewhere other than it claims.
     """
     try:
         from live.actuator import engine_tile_centre  # noqa: PLC0415
@@ -286,11 +215,9 @@ def _expected_native_xy(target_tile, native_wh):
             DISPLAY_HEIGHT, DISPLAY_WIDTH,
         )
     except Exception:
-        # Fail soft. This hint only RANKS candidate bursts and never gates
-        # them, so losing it costs a "px from the commanded tile" column --
-        # not the measurement. Worth catching because the import reaches into
-        # the capture toolchain (CRBAB pulls in `keyboard`), and analysis is
-        # meant to run without it.
+        # Fail soft: this hint only ranks candidate bursts, and the import
+        # reaches into the capture toolchain (CRBAB pulls in `keyboard`), which
+        # analysis should not need.
         return None
     tap = engine_tile_centre(*target_tile)
     nw, nh = native_wh
@@ -362,9 +289,8 @@ def analyse(args):
             row = {"t": ms, "elixir": float(state.numbers.elixir.number)}
             for key in PRINCESS_KEYS:
                 row[key] = float(getattr(state.numbers, key).number)
-            # Absolute HP beside the bar fraction. The fraction is kept only
-            # as a control: on the capture that motivated this rewrite it took
-            # ten distinct values on a tower whose HP never changed.
+            # Absolute HP beside the bar fraction; the fraction is kept only as
+            # a control.
             if reader is not None:
                 for name, bar in bars.items():
                     r = reader.read(native, bar, detector_wh)
@@ -400,10 +326,8 @@ def _score_trial(meta, series, frames, stamps, out_dir, inspect=False):
     expect = _expected_native_xy(tuple(target), (nw, nh)) if target else None
     onset, why = detect_explosion(frames, stamps, cast, expect)
 
-    # Damage is the VALIDITY GATE, not the clock. A cast that damages nothing
-    # is a miss, and a miss must be discarded loudly rather than averaged into
-    # a delay -- the capture that motivated this rewrite spent the elixir,
-    # cycled the card out of hand, and never touched the tower it was aimed at.
+    # Damage is the validity gate, not the clock: a cast that damages nothing
+    # is a miss, discarded loudly rather than averaged into a delay.
     after = [r for r in series if r["t"] >= cast]
     damaged = {}
     for name in ("left_enemy_princess", "right_enemy_princess"):
@@ -434,12 +358,9 @@ def _score_trial(meta, series, frames, stamps, out_dir, inspect=False):
 
 
 def _dump_inspect(meta, frames, stamps, cast, onset, expect, out_dir):
-    """An annotated strip around the detected burst.
-
-    Exists because the detector cannot currently be validated against a
-    confirmed explosion -- no capture in this repo contains one. Until a real
-    burst is captured, every delay this tool prints should be eyeballed here
-    before it is believed.
+    """An annotated strip around the detected burst. The detector has not been
+    validated against a confirmed explosion, so every delay should be eyeballed
+    here first.
     """
     i = onset["i"]
     picks = [j for j in range(i - 3, i + 5) if 0 <= j < len(frames)]
@@ -462,10 +383,8 @@ def _dump_inspect(meta, frames, stamps, cast, onset, expect, out_dir):
 
 def _first_drop(series, key, minimum):
     """Timestamp of the first sample where `key` falls by at least `minimum`.
-
-    Uses the first reading as the reference rather than a running previous
-    value, so a single noisy frame cannot start the clock -- the elixir reader
-    misreads occasionally and a one-frame dip would otherwise become the cast.
+    Referenced to the first reading, not a running previous value, so a single
+    noisy frame cannot start the clock.
     """
     if not series:
         return None
@@ -477,12 +396,8 @@ def _first_drop(series, key, minimum):
 
 
 def _stable_drop(series, key, minimum, hold=3):
-    """Like _first_drop, but the drop has to STAY dropped for `hold` samples.
-
-    The elixir reader glitches through zero: a true 10 -> 6 was read as
-    10 -> 0 -> 6 on a real capture, and _first_drop would date the cast from
-    the spurious 0. Requiring the post-drop value to persist rejects that
-    without needing to model the glitch.
+    """Like _first_drop, but the drop must stay dropped for `hold` samples: the
+    elixir reader can read a true 10 -> 6 as 10 -> 0 -> 6.
     """
     if not series:
         return None
@@ -498,22 +413,11 @@ def _stable_drop(series, key, minimum, hold=3):
     return None
 
 
-# --- the impact clock: an explosion is COMPACT, BRIGHT and TRANSIENT --------
-#
-# A tower's HP numeral was the obvious impact clock and it does not work. The
-# spell's own UI -- the radius circle, the "<card> lvl.N" banner and the "-N"
-# drag cursor -- is drawn on top of the target tower, and on a real capture it
-# occluded that tower's numeral from 950 ms to 2150 ms after the cast, which
-# is exactly the window a ~1 s flight lands in. The numeral is kept below, as
-# CORROBORATION and as the validity gate, but it cannot be the clock.
-#
-# Every threshold here was chosen against a measured failure on that capture,
-# where a naive "count warm-coloured pixels" detector reported ~12,000 hits on
-# EVERY frame including the pre-cast ones (arena decoration: red tower roofs,
-# tan paths) and a baseline-differenced version still produced a diffuse
-# signal that rose monotonically across the whole board (an ongoing melee).
-#
-# So the discriminators are the three properties a melee does NOT have:
+# --- the impact clock: an explosion is compact, bright and transient ---
+# The tower numeral cannot be the clock (module docstring). A naive warm-pixel
+# count fires on every frame (red roofs, tan paths) and a baseline-differenced
+# one on an ongoing melee, so the discriminators are the three properties a
+# melee lacks:
 FIRE_MIN_AREA = 260        # px in the largest blob, at 549x976
 FIRE_MIN_FILL = 0.42       # blob area / its bounding box: a burst is a disc
 FIRE_MAX_ASPECT = 2.2      # ... and roughly round, not a smear of skirmishers
@@ -548,16 +452,13 @@ def detect_explosion(frames, stamps, cast_ms, expect_xy=None):
     """Frame index and timestamp of the spell burst, or None with a reason.
 
     `frames` are native BGR arrays. The baseline is the per-pixel median of
-    everything BEFORE the cast, so the static board and any steady-state fire
-    cancel; only a new transient survives.
+    everything before the cast, so the static board and steady-state fire
+    cancel.
 
-    `expect_xy` (native px) is used to RANK candidates, never to gate them --
-    the best global candidate is always reported too. That is deliberate: on
-    the capture that motivated this rewrite the spell was commanded onto a
-    tower, the radius indicator sat on that tower, and nothing there ever took
-    damage. A detector that only looks where the spell was aimed would have
-    reported "nothing happened" instead of "it landed somewhere else", and the
-    difference between those two is the whole diagnosis.
+    `expect_xy` (native px) ranks candidates and never gates them, and the best
+    global candidate is always reported too: a detector looking only where the
+    spell was aimed would report "nothing happened" instead of "it landed
+    somewhere else".
     """
     pre = [f for f, t in zip(frames, stamps) if t < cast_ms]
     if len(pre) < 3:
@@ -582,19 +483,12 @@ def detect_explosion(frames, stamps, cast_ms, expect_xy=None):
     if not cands:
         return None, "no compact transient burst after the cast"
 
-    # Transience: the peak must fall away again. A melee produces a large
-    # compact-ish blob that persists to the end of the capture, and on the
-    # motivating capture that is exactly what a non-transient detector locked
-    # onto.
+    # Transience: the peak must fall away. A melee's compact-ish blob persists
+    # to the end of the capture.
     peak = max(cands, key=lambda c: c["area"])
 
-    # The decay test has to be FALSIFIABLE before it is trusted. If the
-    # capture ends before the burst has had time to fade, "it did not persist"
-    # is unearned -- there were simply no frames in which it could. Caught by
-    # running this against the motivating capture: the melee peaked 650 ms
-    # from the end, no frame existed past peak + FIRE_DECAY_MS, the emptiness
-    # was read as decay, and the detector reported a confident 1799 ms delay
-    # for an explosion that is not there.
+    # The decay test must be falsifiable: if the capture ends before
+    # FIRE_DECAY_MS past the peak, "it did not persist" is unearned.
     if max(stamps) < peak["t"] + FIRE_DECAY_MS:
         return None, (f"capture ends {max(stamps) - peak['t']:.0f} ms after the "
                       f"brightest frame -- too soon to tell a burst from "
@@ -652,9 +546,8 @@ def _report(results):
         lines.append("not a measurement.")
         return "\n".join(lines)
 
-    # Distance scaling is the question that matters. The engine models a FLAT
-    # 10 ticks, so a delay that grows with cast distance is not a mistuned
-    # constant, it is the wrong SHAPE of model and no retuning fixes it.
+    # Distance scaling is the question that matters: the engine's delay is
+    # flat, so a delay growing with distance means the wrong shape of model.
     by_target = {}
     for e in good:
         by_target.setdefault(tuple(e["meta"].get("target") or ()), []).append(
@@ -693,10 +586,8 @@ def main(argv=None):
     parser.add_argument("--min-elixir", type=float, default=5.0)
     parser.add_argument("--pre-s", type=float, default=0.6,
                         help="capture this long before issuing the play")
-    # 3.5 s was too short: on the motivating capture the burst-shaped signal
-    # peaked 350 ms before the recording ended, and detect_explosion cannot
-    # test decay without FIRE_DECAY_MS of tail after the peak. A ~1 s flight
-    # plus 1.4 s of decay plus margin needs 5 s.
+    # A ~1 s flight plus 1.4 s of decay plus margin: detect_explosion cannot
+    # test decay without FIRE_DECAY_MS of tail after the peak.
     parser.add_argument("--post-s", type=float, default=5.0)
     parser.add_argument("--gap-s", type=float, default=6.0)
     parser.add_argument("--timeout", type=float, default=300.0)

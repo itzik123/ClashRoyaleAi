@@ -1,17 +1,10 @@
-"""Two preflight gates that could not tell the truth (2026-09-15).
+"""Two preflight gates that must tell the truth.
 
-1. "the test binary post-dates the engine source" compared MTIMES. Tooling that
-   rewrote six headers byte-for-byte made it FAIL on a build that was verified
-   current behaviourally -- the failure mode CLAUDE.md calls the worst a gate
-   has: it teaches you to ignore it. A source file now counts as changed after
-   the build only if its CONTENT differs from what was committed before it.
-
-2. "side null" needed `model_weights_selfplay.pth`, deleted in the 2026-08-19
-   cleanup, so the one diagnostic that catches an observation-shaped side
-   asymmetry had been permanently unrunnable. It does not need a TRAINED net: a
-   seeded random-init net against a bit-exact copy of itself is a sharper
-   subject, because an untrained policy has no side-specific skill to confound a
-   structural asymmetry.
+1. The staleness gate counts a source as changed after the build only if its
+   content differs from what was committed before it, not merely its mtime.
+2. The side null runs without a checkpoint, on a seeded random-init net against
+   a bit-exact copy of itself (no side-specific skill to confound a structural
+   asymmetry).
 """
 import os
 import subprocess
@@ -47,7 +40,7 @@ def test_a_touched_but_unchanged_source_is_not_stale(repo):
 
 
 def test_an_edited_source_is_stale(repo):
-    """CONTROL that must fire: a real edit after the build."""
+    """Control that must fire: a real edit after the build."""
     root, src = repo
     built = time.time()
     src.write_text("int a = 2;\n")

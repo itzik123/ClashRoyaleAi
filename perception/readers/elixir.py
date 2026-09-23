@@ -1,51 +1,22 @@
 """Our elixir, read by sampling pixels along the bar. No OCR.
 
-The bar is ten fixed segments in a fixed place. Counting how many are filled
-and how far the partial one has advanced is a handful of array lookups --
-deterministic, sub-millisecond, and exact to the pixel. OCR on the numeral
-would be slower, would fail on the fractional part entirely (the number is
-integer-valued while the true value is continuous), and would introduce a
-model where none is needed.
+The value comes from where the fill ends: the ten segments are dividers over
+one continuous bar, so the edge encodes the value to sub-segment precision,
+where counting segments breaks as soon as something punches a hole in the fill.
+Something does: the elixir number and the "Max: 10" caption are drawn on top of
+the bar and blank whole columns. So the edge is read, from a row band the text
+never reaches; the calibration profile's ROI is that band.
 
-THE VALUE COMES FROM THE FILL EDGE, NOT FROM COUNTING SEGMENTS
---------------------------------------------------------------
-The ten segments are dividers drawn over one continuous bar, so the position
-where the fill ends already encodes the value to sub-segment precision.
-Locating that edge is both more accurate than counting full segments and far
-more robust, because counting breaks the moment anything punches a hole in
-the fill.
+Colour, not brightness: elixir pink is saturated in a narrow hue band and the
+trough behind it dark blue. Hue and saturation survive the bar's shimmer, which
+moves value a long way and hue barely at all.
 
-Which is exactly what happens here. The elixir NUMBER and the "Max: 10"
-caption are drawn ON TOP of the bar, and they blank whole columns of it. A
-segment-counting reader treats the first blanked column as the end of the
-fill and reports ~0.5 elixir for the rest of the match. Measured on this
-recording before the fix: 450 of 589 samples flagged low-confidence, with
-values pinned near 0.5 while the real value ranged over 1-10.
+The bar's rectangle comes from a calibration profile; a wrong default would
+produce confident nonsense, so this raises instead (CalibrationProfile.rois).
 
-The fix is twofold: read the edge rather than count, and read it from a row
-band the text does not reach. Only y-rows 16-21 of the bar are clean in every
-frame sampled; the ROI in the calibration profile is set to that band and
-nothing else.
-
-Colour, not brightness: elixir pink is strongly saturated in a narrow hue
-band while the empty trough behind it is dark blue. Thresholding hue and
-saturation in HSV survives the bar's animated shimmer, which moves value a
-long way and hue almost not at all.
-
-CALIBRATION IS REQUIRED, NOT GUESSED
-------------------------------------
-The bar's rectangle is a per-resolution constant that has to come from a
-calibration profile. There is no sensible default and a wrong one produces
-confident nonsense, so this raises instead. See CalibrationProfile.rois.
-
-WHAT THIS IS CROSS-CHECKED AGAINST
-----------------------------------
-readers/hand.py reads which card slots are greyed out for being unaffordable.
-That is an independent observation of the same quantity: if three of four
-slots are dimmed and the cheapest of them costs 4, elixir is below 4. The two
-readings are compared in `cross_check`, giving a free consistency test with
-no ground truth -- exactly the sort of check the pipeline needs more of, since
-nothing here can be labelled by hand at scale.
+`cross_check` compares against readers/hand.py's dimmed slots, an independent
+observation of the same quantity: three of four slots dimmed with the cheapest
+costing 4 means elixir is below 4.
 """
 
 from __future__ import annotations
@@ -57,26 +28,24 @@ import numpy as np
 
 MAX_ELIXIR_SEGMENTS = 10
 
-# Hue window for elixir pink in OpenCV's 0-179 hue scale, plus the minimum
-# saturation and value a filled pixel must reach. Deliberately wide on hue and
-# strict on saturation: the shimmer animation moves value a long way and hue
-# barely at all, while everything behind the bar is desaturated.
+# Hue window for elixir pink on OpenCV's 0-179 scale, plus minimum saturation
+# and value. Wide on hue, strict on saturation: the shimmer moves value, not
+# hue, and everything behind the bar is desaturated.
 DEFAULT_HUE_RANGE = (135, 175)
 DEFAULT_MIN_SATURATION = 90
 DEFAULT_MIN_VALUE = 70
 
-# Fraction of a segment's columns that must read as filled before the segment
-# counts as full. Diagnostic only -- the value comes from the fill edge.
+# Fraction of a segment's columns that must read filled for the segment to
+# count as full. Diagnostic only; the value comes from the fill edge.
 SEGMENT_FULL_THRESHOLD = 0.75
 
-# Fraction of a COLUMN's rows that must be pink for the column to count as
-# filled. The ROI is a narrow band chosen to be free of the overlaid text, so
-# a filled column is filled almost all the way through.
+# Fraction of a column's rows that must be pink for the column to count as
+# filled. The ROI avoids the overlaid text, so a filled column is filled almost
+# all the way through.
 COLUMN_FILL_RATIO = 0.5
 
-# Consecutive filled columns required to accept a fill edge. Rejects the
-# bar's outer glow and antialiased rim, which are a few columns wide and
-# would otherwise inflate every reading.
+# Consecutive filled columns required to accept a fill edge, rejecting the
+# bar's glow and antialiased rim.
 EDGE_RUN_COLUMNS = 3
 
 
@@ -136,11 +105,9 @@ class ElixirBarReader:
         mask = cv2.inRange(hsv, lo, hi) > 0
         column_filled = mask.mean(axis=0) >= COLUMN_FILL_RATIO
 
-        # Fill edge = the last column that is filled, ignoring isolated
-        # specks past it. Scanning from the RIGHT and stopping at the first
-        # run of consecutive filled columns rejects the glow and the
-        # antialiased rim, which would otherwise add a few tenths of an
-        # elixir at every reading.
+        # Fill edge: scanning from the right, the first run of consecutive
+        # filled columns, so glow and rim do not add a few tenths to every
+        # reading.
         edge = 0
         run = 0
         for index in range(w - 1, -1, -1):
@@ -160,11 +127,10 @@ class ElixirBarReader:
             for i in range(MAX_ELIXIR_SEGMENTS)
         ]
 
-        # Consistency, not the measurement: everything left of the edge should
-        # be filled and everything right of it empty. A violation means the
-        # ROI is misaligned, an overlay is covering the bar, or the hue window
-        # is wrong -- all of which still yield a perfectly reasonable-looking
-        # number, which is why this is checked rather than assumed.
+        # Consistency, not the measurement: left of the edge should be filled
+        # and right of it empty. A violation means a misaligned ROI, an
+        # overlay, or a wrong hue window, all of which still produce a
+        # plausible number.
         left = column_filled[:edge]
         right = column_filled[edge:]
         left_ok = float(left.mean()) if left.size else 1.0
@@ -183,10 +149,8 @@ class ElixirBarReader:
 
 def cross_check(reading: ElixirReading, affordable_costs: list[float],
                 unaffordable_costs: list[float]) -> tuple[bool, str]:
-    """Check the bar against which hand slots are greyed out.
-
-    An independent observation of the same quantity, free of charge -- see
-    this module's docstring. Returns (consistent, explanation).
+    """Check the bar against which hand slots are greyed out, an independent
+    observation of the same quantity. Returns (consistent, explanation).
     """
     if affordable_costs and reading.value + 0.15 < max(affordable_costs):
         return False, (

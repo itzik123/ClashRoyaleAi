@@ -1,15 +1,8 @@
-"""Every hyperparameter of the PPO loop, in one place, with its justification.
+"""Every hyperparameter of the PPO loop, in one place.
 
-Both pipelines used to declare these as ~200 lines of locals inside their own
-`train_*_ppo()` function, byte-identical apart from three entropy numbers. That
-had two costs beyond the duplication: nothing could read a hyperparameter
-without running a training loop (so no test could pin one), and the two copies
-were free to drift -- which is exactly how `spell_value_weight` stayed dead code
-for a whole training era.
-
-`PPOConfig` is deliberately frozen. A trainer that mutated its own config
-mid-run would make a checkpoint's `episodes_completed` meaningless as a
-description of what produced it.
+`PPOConfig` is frozen: a trainer that mutated its config mid-run would make a
+checkpoint's `episodes_completed` meaningless as a description of what produced
+it.
 """
 import math
 import os
@@ -19,292 +12,89 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class PPOConfig:
-    """The algorithm's own settings. Identical in both pipelines by design --
-    same architecture, same algorithm, only the opponent differs."""
+    """The algorithm's settings, identical in both pipelines; only the opponent
+    differs.
+    """
 
-    #: 8 workers + 1 CPU-bound main process (no CUDA here, so the update step
-    #: itself needs real cores too) comfortably fits 12 logical processors.
-    #: Doubling from 4 halved the variance of the per-rollout advantage
-    #: normalization and the critic's return targets.
-    #:
-    #: Overridable so several arms of a controlled experiment fit on one machine
-    #: at once. EVERY ARM MUST USE THE SAME VALUE -- it sets the rollout batch
-    #: width B, which changes advantage-normalization variance and the number of
-    #: BPTT segments per minibatch.
+    #: 8 workers plus the CPU-bound main process fit 12 logical processors.
+    #: Every arm of an experiment must use the same value: it sets the rollout
+    #: batch width, and with it advantage-normalization variance and the
+    #: segment count per minibatch.
     num_envs: int = int(os.environ.get("CLASH_NUM_ENVS", 8))
 
-    #: THE DISCOUNT MUST OUTLAST THE MATCH. Raised 0.99 -> 0.999 on 2026-08-27.
-    #:
-    #: `1/(1-gamma)` is the effective horizon in DECISIONS, and a decision here
-    #: is one second (`skip_frames=10` at 10 ticks/s). A full match is
-    #: `max_ticks/skip_frames` = 3600/10 = **360 decisions**. At 0.99 the
-    #: horizon was 100 -- barely a quarter of the game -- so every TERMINAL
-    #: quantity decayed to `0.99^360 = 0.0268` of its face value by the time it
-    #: had to compete with an immediate shaping term:
-    #:
-    #:     win  (+1)              -> 0.0268 at episode start
-    #:     DRAW_PENALTY (1.0)     -> 0.0268   (raised 0.2->1.0 to stop stalling)
-    #:     W_TOWER_DESTROYED      -> 0.6      UNDISCOUNTED, fires mid-episode
-    #:
-    #: i.e. one crown was worth **22.4x** winning the game it was supposed to
-    #: serve. Measured 2026-08-27 over 10 greedy episodes of
-    #: `model_weights_phase1_v5.pth`: the terminal reward contributed **0.0195**
-    #: of the discounted return, so ~98% of the objective was shaping. A
-    #: sacrifice play -- concede tower HP now, win later -- costs 0.5 at once
-    #: and repays 0.027 at the end, so gradient ascent on this objective can
-    #: never find one. That is the strategic ceiling, in one constant.
-    #:
-    #: WHICH TERMS WERE ACTUALLY AT FAULT, because "shaping drowned the win" is
-    #: too coarse and points at the wrong half. The POTENTIAL-BASED terms were
-    #: never the problem: a PBRS term telescopes over an episode to
-    #: `gamma^T*Phi(s_T) - Phi(s_0)`, so it carries the SAME `gamma^T` factor
-    #: the terminal reward does and stays in fixed proportion to it at any
-    #: discount. The tower potential was ~2:1 against a win at gamma 0.99 and
-    #: is ~2:1 against a win at 0.999.
-    #:
-    #: What dwarfed the outcome was the terms that are deliberately NOT
-    #: policy-invariant, because those do not carry the factor:
-    #: `W_TOWER_DESTROYED` (undiscounted, fires mid-episode), the one-sided
-    #: elixir-trade term, and the per-step overflow penalty. So the fix is the
-    #: horizon, and the PBRS terms need no compensating retune -- only the
-    #: explicit biases should be re-examined against the restored win value.
-    #:
-    #: WHY IT DRIFTED, rather than having been wrong when written. `weights.py`
-    #: still says W_TOWER_DESTROYED is "set above the discounted value of a win
-    #: (~0.28 at these episode lengths)", and at the 112-decision episodes of
-    #: that era 0.99^112 = 0.32 made 0.6 a deliberate ~2x bias. The 2026-08-07
-    #: movement-speed fix tripled match length -- CLAUDE.md's own warning is
-    #: "no win rate below survives it" -- and the reward constants were never
-    #: re-derived against it. Same failure class as the four stale arena copies:
-    #: a constant calibrated against a measurement a later change invalidated.
-    #:
-    #: WHY 0.999 IS CHEAP HERE, which is not obvious and was measured rather
-    #: than assumed. The usual objection is variance: a longer horizon means
-    #: noisier returns and a harder critic. It does not apply at this lambda.
-    #: GAE's advantage estimator has its own effective lookahead of
-    #: `1/(1-gamma*lambda)`, and `gae_lambda=0.9` already pins that near 10
-    #: steps -- 9.17 at gamma 0.99, 9.91 at 0.999. Measured over 6 real
-    #: episodes (mean 322 decisions), the critic's target barely moves:
-    #:
-    #:     gamma    mean|return|   std(return)   max|return|
-    #:     0.990       0.385          0.362         1.719
-    #:     0.999       0.416 (+8%)    0.384 (+6%)   1.719 (unchanged)
-    #:
-    #: So this buys a 26x increase in the weight of the actual outcome
-    #: (0.0268 -> 0.6976) for ~6% more return spread.
-    #:
-    #: NO ANNEALING, DELIBERATELY. OpenAI Five ramped gamma upward precisely to
-    #: control early variance; the table above shows there is no early variance
-    #: problem to control here, because lambda already does that job. Adding a
-    #: schedule would be machinery bought against a cost that was measured and
-    #: found absent.
-    #:
-    #: GAMEPLAY-AFFECTING IN THE SENSE THAT MATTERS: this changes the OBJECTIVE,
-    #: so every win rate in CLAUDE.md's "Measured baselines" was earned against
-    #: a different one and is not comparable across this change. Checkpoints
-    #: still LOAD (no architecture moved) but their critic was fitted to the old
-    #: discount and will need to re-converge; expect Loss/Critic and explained
-    #: variance to move early in a resumed run and do not read that as a fault.
-    #: `CLASH_GAMMA` overrides it, so the previous behaviour is one env var
-    #: away for anyone who needs the old objective to reproduce an old number.
-    #:
-    #: Pinned by `tests/test_reward_horizon_invariant.py`, which asserts the
-    #: RELATIONSHIP (horizon >= match length; crown not >3x a win) rather than
-    #: this particular value -- so retuning either side is free, and letting
-    #: them drift apart again is not.
+    #: The horizon 1/(1-gamma), in decisions, must outlast a match: 3600 ticks
+    #: / skip_frames 10 = 360 decisions. At 0.99 a win was worth 0.99^360 =
+    #: 0.027 at episode start, and ~98% of the objective was shaping. Cheap
+    #: here because gae_lambda already keeps the advantage lookahead near 10
+    #: steps. tests/test_reward_horizon_invariant.py pins the relationship, not
+    #: the value.
     gamma: float = float(os.environ.get("CLASH_GAMMA", 0.999))
 
-    #: Lowered from 0.95: every prior fix (num_envs, value clipping, entropy
-    #: decay, reward shaping) left Loss/Critic on the same noisy, non-decreasing
-    #: plateau across ~2650 episodes. High lambda leans GAE on multi-step
-    #: Monte-Carlo-style returns instead of the value bootstrap; with a critic
-    #: that is not converging that keeps the ADVANTAGE TARGET itself noisy no
-    #: matter how the critic's own update is regularized -- which is why
-    #: clipping the critic's movement alone did not help.
+    #: Lower lambda leans GAE on the value bootstrap; at 0.95 the advantage
+    #: target stayed noisy however the critic was regularized.
     gae_lambda: float = 0.9
 
     eps_clip: float = 0.2
     lr: float = 3e-4
 
-    #: Steps collected PER ENVIRONMENT before an update.
+    #: Steps collected per environment before an update.
     update_timestep: int = 500
 
-    #: --- Truncated BPTT ----------------------------------------------------
-    #: The update used to replay each env's WHOLE 500-step rollout through the
-    #: LSTM as one sequence, with num_minibatches=1 and ppo_epochs=2 -- exactly
-    #: 2 optimizer steps per 4,000 collected transitions. Two measured
-    #: consequences:
-    #:   * Loss/Clip_Fraction was 0.0000 across ALL 228 updates of an 18,740-
-    #:     episode run. Structural, not a plateau: epoch 0 evaluates the policy
-    #:     that generated the data, so its ratio is exactly 1 by construction,
-    #:     leaving a single Adam step before epoch 1.
-    #:   * Profiling put ~5.0s of the ~7s epoch in the backward pass alone,
-    #:     i.e. 79%, all of it unrolling one 500-long chain.
-    #:
-    #: Each (chunk, env) pair becomes an independent training segment starting
-    #: from the hidden state actually stored at that timestep during the rollout
-    #: -- the standard stored-state approach for recurrent PPO. 500/25 = 20
-    #: chunks x 8 envs = 160 segments per rollout, so a minibatch is a real
-    #: batch instead of 8 sequences. FASTER as well as more thorough:
-    #: sequential LSTMCell calls per epoch drop from 500 to 8 x 25 = 200.
-    #: --- THE HORIZON MUST OUTLAST A CARD ROTATION (2026-08-27) ------------
-    #: 25 -> 50. `bptt_chunk` is the CREDIT-ASSIGNMENT horizon: gradients stop
-    #: at the chunk boundary, so an action whose payoff arrives later than
-    #: `bptt_chunk` decisions cannot be reinforced at all.
-    #:
-    #: A card rotation -- playing the other four cards to cycle a given one back
-    #: -- is, derived from the engine rather than assumed (DEFAULT_DECK's costs
-    #: via get_card_info, and the elixir rate MEASURED off a live env at 28.571
-    #: ticks/elixir):
-    #:
-    #:     4 cards x 2.625 elixir x 28.571 ticks = 300 ticks = 30 DECISIONS
-    #:
-    #: at skip_frames=10. So the old 25 truncated the gradient BEFORE one
-    #: rotation completed. That is the same shape of defect as the gamma
-    #: correction made the same day: the observation had just been extended
-    #: with the opponent's `seen[]`/`recency[]` (item 24) to make card counting
-    #: possible, and no gradient path reached far enough to learn from it. The
-    #: information arrived; the credit path did not.
-    #:
-    #: WHY IT IS NEARLY FREE. `update_timestep` and `num_minibatches` are
-    #: unchanged, so the segment count halves as the segment length doubles and
-    #: a minibatch still pushes exactly 500 flat rows through the trunk -- 84%
-    #: of the update. Only the LSTM's sequential loop changes shape, 25 calls
-    #: at batch 20 becoming 50 at batch 10, and that loop is 16% of the update.
-    #: Measured end-to-end: 1.090x per PPO update. L=100 costs 1.227x and is
-    #: refused on the batch-width guard below, not on wall clock.
-    #:
-    #: WHAT IT COSTS THAT IS NOT WALL CLOCK. Segments per minibatch fall 20 ->
-    #: 10, and those segments are the batch dimension of every gradient
-    #: estimate, so it gets noisier while the number of optimizer steps per
-    #: rollout (32) stays the same. That is the real trade. It is bounded by
-    #: test_bptt_credit_horizon.py, which refuses fewer than 8 segments per
-    #: minibatch -- the thing that stops the horizon being pushed to 250
-    #: "because gradients are good" and landing back in the one-long-sequence
-    #: regime truncated BPTT was introduced to escape.
-    #:
-    #: Must divide `update_timestep` (validated in __post_init__), so the
-    #: available rungs are 50, 100, 125, 250, 500 -- not arbitrary.
+    #: Truncated BPTT: each (chunk, env) pair is a training segment starting
+    #: from the hidden state stored during the rollout. The chunk is also the
+    #: credit horizon, and must outlast one card rotation (4 cards x 2.625
+    #: elixir x 28.6 ticks = 30 decisions). test_bptt_credit_horizon.py keeps
+    #: at least 8 segments per minibatch. Must divide update_timestep.
     bptt_chunk: int = int(os.environ.get("CLASH_BPTT_CHUNK", 50))
     ppo_epochs: int = 4
 
-    #: 160 segments / 8 = 20 segments per minibatch, 8 optimizer steps per
-    #: epoch, 32 per rollout -- 16x the previous 2.
+    #: 160 segments / 8 minibatches: 8 optimizer steps per epoch, 32 per
+    #: rollout.
     num_minibatches: int = 8
 
     max_grad_norm: float = 0.5
 
-    #: --- Value-clip range, scaled to the RETURN distribution ---------------
-    #: This used to reuse eps_clip (0.2) directly. That number bounds the
-    #: POLICY's probability RATIO -- a dimensionless quantity -- and reusing it
-    #: as an ABSOLUTE bound on how far the critic may move is a unit mismatch.
-    #:
-    #: Measured on a live 500-step rollout at episode 14,666 (stage 3):
-    #:   GAE return std 0.530 | |return - V| median 0.181, p90 0.539
-    #:   46.1% of samples needed the critic to move MORE than 0.2
-    #:
-    #: i.e. on nearly half the batch the critic was forbidden from correcting
-    #: its own error in one update. Expressed as a fraction of the batch's own
-    #: return spread instead, so it stays correctly scaled if the reward shaping
-    #: is ever retuned. Floored at eps_clip so it can never become TIGHTER than
-    #: the old behaviour.
+    #: Value-clip range as a fraction of the batch's return std, floored at
+    #: eps_clip. A fixed 0.2 (the ratio clip, a dimensionless number) stopped
+    #: the critic correcting itself on ~46% of samples.
     vf_clip_std_frac: float = 1.0
 
-    #: --- Auxiliary task: opponent NEXT-CARD prediction ---------------------
-    #: Weight on the loss that trains MicroRoyaleNet.predict_opp_next_card:
-    #: cross-entropy over card ids for the next card the OPPONENT plays.
-    #:
-    #: REPLACED an opponent-elixir regression head on 2026-08-28. That head was
-    #: not shaping anything, and the measurement is unambiguous: opponent
-    #: elixir is `start + rate*t - spent(t)`, an affine function of extra-scalar
-    #: 0 and extra-scalar 2, both already in the observation. Ordinary least
-    #: squares on those two scores MAE 0.0000 over 2,606 samples while the
-    #: trained head sat at 0.77. A task a four-parameter stateless fit solves
-    #: exactly cannot pressure a 1.8M-parameter recurrent net into remembering
-    #: anything.
-    #:
-    #: Next-card CANNOT be solved that way -- it needs the opponent's play
-    #: history. That is the capability item 24 put in the observation
-    #: (seen[]/recency[]) and that eval/probe_card_counting.py then measured the
-    #: policy DISCARDING: trained hx decoded the next card +0.013 over a random
-    #: projection at ep 1522 and -0.025 at ep 2054, i.e. below the
-    #: random-projection floor. Nothing in the objective asked for the cycle, so
-    #: gradient descent correctly spent the hidden state elsewhere. This is the
-    #: ask.
-    #:
-    #: 0.5 keeps it a real but minority contributor, matching what the elixir
-    #: term was worth: cross-entropy over ~8 reachable classes starts near
-    #: ln(8) = 2.08 and a useful head lands around 1.2-1.8, against an actor
-    #: loss of order 0.1.
+    #: Weight on the opponent next-card cross-entropy
+    #: (MicroRoyaleNet.predict_opp_next_card). Unlike opponent elixir, which is
+    #: an affine function of two observed scalars, the next card needs play
+    #: history, so this asks the LSTM to remember the cycle.
     aux_card_coef: float = 0.5
 
-    #: Scales the cross-entropy into the same numeric range as the other loss
-    #: terms. Kept explicit (rather than folded into aux_card_coef) so the
-    #: LOGGED diagnostic stays in interpretable nats.
+    #: Brings the cross-entropy into the other terms' range; kept separate so
+    #: the logged value stays in nats.
     aux_card_scale: float = 0.02
 
-    #: Episodes over which the aux term is ramped linearly from 0 to its full
-    #: weight. 0 = no warm-up, the pre-2026-09-15 behaviour exactly.
-    #:
-    #: MEASURED 2026-09-15, fresh init, from-scratch phase-1 config, 12 real
-    #: updates: on the shared LSTM the aux gradient grew from 0.62x to 1.67x the
-    #: size of every other term combined (CNN trunk 0.63x -> 2.01x), with cosine
-    #: to them falling -0.37 -> -0.84 (trunk down to -0.90). It out-pulled and
-    #: opposed the policy and critic on their shared representation in exactly
-    #: the window where a random-init net has to find its first wins. The weight
-    #: above was sized against a CE of ~ln(8) = 2.08; a fresh 185-way head starts
-    #: at ln(185) = 5.22.
-    #:
-    #: A mechanism measurement, NOT a measured win-rate gain. 2,000 episodes is
-    #: ~160 updates (~2 h at 943 ep/h): long enough for the policy to get a
-    #: foothold at rung 0, short enough that the memory task still shapes the
-    #: LSTM for the whole run. Refuted if a paired from-scratch A/B at 0 vs 2000
-    #: shows the warm-up arm no better on reward at episode 2,000 and worse on
+    #: Episodes over which the aux term ramps from 0 to full weight. A fresh
+    #: 185-way head starts at CE ln(185) = 5.22, and at full weight its
+    #: gradient out-pulled and opposed the policy on the shared LSTM during the
+    #: first updates. 0 disables the ramp. A mechanism measurement, not a
+    #: win-rate gain: refuted if a paired from-scratch A/B at 0 vs 2000 shows the
+    #: warm-up arm no better on reward at episode 2,000 and worse on
     #: Aux/NextCard_CE afterwards.
     aux_warmup_episodes: int = int(os.environ.get("CLASH_AUX_WARMUP_EPISODES", 2000))
 
-    #: --- Cycle-branch identity loss (2026-08-28) --------------------------
-    #: Weight on the cross-entropy that trains MicroRoyaleNet.predict_cycle_card
-    #: -- the SAME next-card label as `aux_card_coef`, read off the 24-dim
-    #: ScalarEncoder cycle branch instead of off hx.
-    #:
-    #: It exists because `aux_card_coef` could not do this job and no value of
-    #: it could. Measured on the ep-7,200 checkpoint, the aux term supplied
-    #: 0.27-0.40% of the gradient landing on the cycle parameters -- 18x
-    #: outgunned by the actor term alone and ~250x by actor+critic+entropy --
-    #: and PPO spent them on a 1-D opponent-tempo readout instead, leaving the
-    #: branch decoding the next card WORSE than at random init (+0.169 against
-    #: +0.195). Matching that gradient needed a coefficient near 2.5, which
-    #: makes a 2.0-nat cross-entropy the dominant term against an actor loss of
-    #: 0.02. So the fix is the detach in ScalarEncoder.forward, not a weight.
-    #:
-    #: 1.0, undivided, and that is safe ONLY because of the detach: this is the
-    #: only gradient the branch receives, so there is nothing for it to
-    #: overpower. It reaches `cycle_id_head` and the branch and stops -- the
-    #: LSTM, the trunk and every policy head are downstream of a detach and see
-    #: none of it. Read the logged value against ln(8) = 2.08 and its accuracy
-    #: against ~0.22 (the marginal); the measured ceiling for a 24-dim branch
-    #: is ~0.55, and that is the number this term is chasing.
+    #: Weight on the cycle-branch next-card loss
+    #: (MicroRoyaleNet.predict_cycle_card). Undivided is safe only because
+    #: ScalarEncoder detaches the branch, so this gradient reaches nothing
+    #: downstream. Read its accuracy against the ~0.22 marginal; a 24-dim
+    #: branch tops out near 0.55.
     cycle_id_coef: float = 1.0
 
-    #: Periodic-checkpoint interval, in episodes. Overridable ONLY so a short
-    #: controlled run produces matched artifacts: a resume sets last_save_ep to
-    #: the resumed episode, so at the 500 default an experiment shorter than 500
-    #: episodes finishes having written nothing at all -- and `timeout` kills the
-    #: process before the end-of-loop save, so the whole run is unmeasurable.
-    #: Leave unset for real runs.
+    #: Periodic-checkpoint interval. Overridable only so a short experiment
+    #: writes matched artifacts; leave unset for real runs.
     save_every_episodes: int = int(os.environ.get("CLASH_SAVE_EVERY", 500))
 
     #: Episodes between demo replays.
     replay_every_episodes: int = 1000
 
-    #: Run-level RNG seed, or None for fresh OS entropy. `CLASH_SEED=<int>`.
-    #:
-    #: DEFAULT None ON PURPOSE. Seeding by default would silently change what
-    #: every existing configuration does, and every win rate recorded in
-    #: CLAUDE.md was earned unseeded. Set it for an A/B arm, a reproduction, or
-    #: any run whose result someone will have to defend -- see rl/seeding.py
-    #: for what one seed does and does not pin.
+    #: Run-level RNG seed, or None for OS entropy. Unseeded by default so
+    #: existing configurations behave as before; see rl/seeding.py for what a
+    #: seed pins.
     seed: Optional[int] = (int(os.environ["CLASH_SEED"])
                            if os.environ.get("CLASH_SEED") else None)
 
@@ -324,101 +114,58 @@ class PPOConfig:
 class EntropyConfig:
     """Targets and gains for the adaptive per-head entropy controller.
 
-    Replaces hand-tuned fixed coefficients. Two runs showed why fixed values do
-    not work here -- the heads are COUPLED, so correcting one breaks the other:
-
-      card scale 2.0 -> card head collapsed to 10% of its max entropy
-      card scale 4.0 -> card recovered to ~35%, but placement fell from H=4.38
-                        to H=2.63 at the same stage (40 -> 20 cells, top-5 share
-                        36% -> 70%, left lane 33% -> 13%)
-
-    So instead of picking coefficients, pick the ENTROPY LEVEL each head should
-    hold and let a controller find the coefficient -- the same idea as SAC's
-    automatic temperature tuning.
-
-    THE TWO PIPELINES DELIBERATELY DIFFER, and the differences are all measured
-    (see `PHASE1` and `PHASE2` below). Nothing here unifies them: doing so would
-    be gameplay-affecting in whichever pipeline moved.
+    The heads are coupled, so fixed coefficients do not work: fixing one head's
+    entropy broke the other's. Instead each head holds a target entropy
+    fraction and the controller finds the coefficient, as in SAC's temperature
+    tuning. The two pipelines deliberately differ; unifying them would change
+    gameplay in whichever moved.
     """
 
-    #: Deliberately FIXED, never annealed. The measured failure mode for this
-    #: head is the opposite one: card entropy 0.10 collapsed the policy to 5 of
-    #: 8 cards. Narrowing card choice is the known danger.
+    #: Fixed, never annealed: narrowing card choice is the known failure (0.10
+    #: collapsed the policy to 5 of 8 cards).
     target_card: float = 0.35
 
-    #: ANNEALED. With the target pinned at 0.65 for a whole run the placement
-    #: coefficient rose monotonically (0.1286 -> 0.1476 across 50,000 self-play
-    #: episodes) -- the policy was trying to sharpen its placement the entire
-    #: time and the controller kept forcing it back open. Wide while the policy
-    #: is still discovering where things go, tight once it is refining.
-    #: 0.25 * log(612) = 1.60 nats ~= 5 effective cells: committed, but not a
-    #: collapsed point mass. Deliberately NOT annealed to 0 -- some placement
-    #: noise is genuinely correct in a game with a live opponent.
+    #: Annealed: wide while the policy discovers where things go, tight once it
+    #: refines. 0.25 of log(612) is ~5 effective cells. Not annealed to 0,
+    #: since some placement noise is correct against a live opponent.
     target_placement_start: float = 0.65
     target_placement_final: float = 0.25
 
-    #: Sized to one long run on this machine (~60k episodes in phase 1, ~50k in
-    #: phase 2). Past the horizon the target simply stays at FINAL.
+    #: Sized to one long run. Past it the target stays at FINAL.
     anneal_episodes: int = 60000
 
     #: Multiplicative control on the normalized entropy fraction:
-    #:     coef *= exp(rate * (target - measured))
-    #: Reverted 0.15 -> 0.5 after a matched-depth measurement contradicted the
-    #: earlier reasoning. The lower gain DID smooth the controller, but the
-    #: resulting policy measured WORSE at stage 3: 81.7% [74-88] against
-    #: 96.7% [92-99] for the high-gain run, CIs not overlapping. The likely
-    #: mechanism, unproven: the large swings act as periodic exploration
-    #: re-boosts. CAVEAT: one run per configuration.
+    #:   coef *= exp(rate * (target - measured))
     adapt_rate_card: float = 0.5
 
-    #: The placement head gets its OWN gain where the pipeline sets one, because
-    #: on 2026-08-11 a rate of 0.5 drove it into windup and dissolved the
-    #: policy. The reversion argument above is VOID for this head: it was
-    #: measured against a placement-entropy signal that was ~85% no-op steps,
-    #: nearly constant at 0.85-0.97, which the controller barely had to act on.
-    #: Correcting the signal made it far more responsive and a gain tuned on the
-    #: numbed version overreacted -- 0.0100 -> 0.433 over ~50 updates, six of
-    #: eight cards at 0.93-1.00 of MAXIMUM placement entropy, ROI 0.96 -> 0.87,
-    #: win rate 0.67 -> 0.51.
-    #:
-    #: The general lesson, worth more than the number: FIXING A SENSOR
-    #: INVALIDATES ANY GAIN TUNED AGAINST THE BROKEN ONE.
+    #: The placement head's gain. Phase 2 sets it lower: at 0.5 on the
+    #: corrected entropy signal the controller wound up and dissolved the
+    #: policy.
     adapt_rate_placement: float = 0.5
 
-    #: Hard cap on how far ONE update may move a coefficient, independent of
-    #: gain or error size. The gain addresses the cause; this addresses the
-    #: failure MODE, so no future retune of a target or a measurement can
-    #: compound into a 40x excursion again. None disables it.
+    #: Hard cap on how far one update may move a coefficient. None disables it.
     coef_step_max: Optional[float] = None
 
-    #: Raised 0.002 -> 0.01. Healthy measured coefficients are 0.05-0.22, so
-    #: 0.002 was not a floor but an off switch: once there the entropy term
-    #: stopped opposing the policy gradient at all and the head was free to
-    #: collapse until the controller noticed.
+    #: Healthy coefficients are 0.05-0.22; a lower floor switched the term off.
     coef_floor: float = 0.01
     coef_ceil_card: float = 0.5
 
-    #: Separate, much lower ceiling for the placement head where a pipeline sets
-    #: one: 0.433 already dissolved the policy, so 0.5 was never a safety net.
-    #: Deliberately NOT applied to the card head -- that controller is doing the
-    #: right thing (card entropy measured 0.084 of max against a 0.35 target,
-    #: a real collapse to ~5 of 8 cards) and a global cut would throttle the one
-    #: controller that is working.
+    #: Placement's own ceiling, lowered where a pipeline sets it (0.433 already
+    #: dissolved the policy). Not applied to the card head, whose controller
+    #: works.
     coef_ceil_placement: float = 0.5
 
-    #: Seeded at the last hand-tuned effective values so the controller starts
-    #: from a known-reasonable point rather than hunting from zero.
+    #: Start from the last hand-tuned values.
     initial_coef_card: float = 0.05
     initial_coef_placement: float = 0.06
 
 
-#: Pipeline 1 (`trainers/train.py`): the historical configuration, unchanged.
-#: One gain, one ceiling, no per-update step cap.
+#: Pipeline 1 (`trainers/train.py`): one gain, one ceiling, no step cap.
 PHASE1_ENTROPY = EntropyConfig()
 
-#: Pipeline 2 (`trainers/train_selfplay.py`): starts the placement anneal lower
-#: (0.50, since a phase-2 policy is already past the discovery stage) and adds
-#: the three guards the 2026-08-11 dissolution forced.
+#: Pipeline 2 (`trainers/train_selfplay.py`): starts the placement anneal
+#: lower, since the policy is past discovery, and adds the three placement
+#: guards.
 PHASE2_ENTROPY = EntropyConfig(
     target_placement_start=0.50,
     adapt_rate_placement=0.10,
@@ -430,17 +177,14 @@ PHASE2_ENTROPY = EntropyConfig(
 def log_reachable(n):
     """log(n) with n floored at 2.
 
-    The floor only guards log(1) = 0: a row with a single legal arm carries zero
-    entropy and is excluded from every average by the decision mask anyway.
+    Only guards log(1) = 0: a row with one legal arm has zero entropy and is
+    masked out anyway.
     """
     return math.log(max(2, n))
 
 
 def aux_warmup_scale(episodes_completed, warmup_episodes):
-    """Multiplier on the aux loss: linear 0 -> 1 over `warmup_episodes`.
-
-    See PPOConfig.aux_warmup_episodes for the measurement.
-    """
+    """Multiplier on the aux loss: linear 0 -> 1 over `warmup_episodes`."""
     if warmup_episodes <= 0:
         return 1.0
     return float(min(1.0, max(0.0, episodes_completed / float(warmup_episodes))))

@@ -1,67 +1,28 @@
-"""Scenario injection: reshaping the START-STATE distribution, not the reward.
+"""Scenario injection: reshaping the start-state distribution, not the reward.
 
-Industry precedent -- robotics resets from curated states, AlphaGo trained on
-curated positions, "Backplay". The problem it targets here: a win condition
-dropped on the bridge is a "defend in the next couple of seconds or lose the
-tower" moment, but in a full 3600-tick game the causal link between that drop
-and the tower loss ~40 ticks later is buried under a long, noisy GAE trace and
-is a rare event -- so the reflex never accumulates gradient.
+A win condition dropped on the bridge is a "defend now or lose the tower"
+moment, but in a full game its link to the tower loss ~40 ticks later is buried
+in a long GAE trace, and the moment is rare. Starting a fraction of episodes in
+such states gives the reflex gradient (as with curated start states in
+robotics, AlphaGo, "Backplay").
 
-DESIGN CHOICES THAT KEEP THIS FROM BECOMING A DIFFERENT GAME. The opponent is
-NOT frozen -- team 1 keeps playing its normal PFSP policy on top of the injected
-threat; it is the real engine, board and towers; and the existing reward already
-scores "defend efficiently and keep something alive to counter-push", so no
-bespoke scenario reward is needed. The one artificial edge -- an optional short
-truncation window (`max_steps`) -- is handled with a proper value BOOTSTRAP (see
-`rl/gae.py`), never a terminal, so the critic does not learn a biased "the world
-ends here" value.
+It stays the same game: the opponent keeps playing normally, the engine and
+board are real, and the ordinary reward scores the defence. The optional
+truncation window (`max_steps`) bootstraps a value (`rl/gae.py`), never a
+terminal.
 
-A scenario dict is: name, spawns [(card_id, x, y)], max_steps (None runs to the
-natural end of the game), defensive, and optionally require_own_card /
-warmup_ticks.
+A scenario dict: name, spawns [(card_id, x, y)], max_steps (None runs to the
+natural end), defensive, and optionally require_own_card / warmup_ticks.
 """
 import numpy as np
 
 from python_ai import engine_constants as EC
 
-# --- Scenario injection (start-state distribution design) ------------------
-# Industry precedent: reshaping the START-STATE distribution is how rare-but-
-# critical situations get learned when normal play visits them too seldom for
-# the credit-assignment horizon to connect cause and effect (robotics resets
-# from curated states; AlphaGo trained on curated positions; "Backplay"). The
-# problem this targets here: a win-condition (Hog/Giant/...) dropped on the
-# bridge is a "defend in the next couple of seconds or lose the tower" moment,
-# but in a full 3600-tick game the causal link between that drop and the tower
-# loss ~40 ticks later is buried under a long, noisy GAE trace and is a rare
-# event -- so the reflex never gets enough gradient. We fix that by STARTING a
-# fraction of episodes already in that state so the net sees it constantly.
-#
-# Design choices that keep it from becoming a different game (the isolation
-# failure mode): the opponent is NOT frozen -- team 1 keeps playing its normal
-# PFSP policy on top of the injected threat; it's the real engine/board/towers;
-# and the existing reward (win/loss + compute_shaping's HP/elixir-trade terms)
-# already scores "defend efficiently + keep something alive to counter-push",
-# so no bespoke scenario reward is needed. The one artificial edge -- an
-# optional short truncation window (max_steps) that focuses each episode on the
-# critical moment -- is handled with a proper value BOOTSTRAP (see the training
-# loop's is_terminal/needs_boot split), never a terminal, so the critic doesn't
-# learn a biased "the world ends here" value.
 SCENARIO_INJECTION_PROB = 0.30
 
-# Building-targeter win-conditions -- every id here confirmed against
-# CardRegistry.h directly (not from memory) as Archetype::MeleeBuildingTargeter/
-# RangedBuildingTargeter/a building with a persistent tower-damage role, i.e.
-# guaranteed to beeline for a tower ignoring troops in its path, matching the
-# scenario's own premise ("defend or lose the tower in the next few seconds").
-# Miner (52) deliberately excluded despite being a real-game win condition --
-# this engine registers him as plain Archetype::MeleeSquad (no building-
-# targeter/dig-anywhere behavior implemented), so injecting him wouldn't
-# actually exercise the "must answer a beelining threat" reflex this scenario
-# is for. Goblin Barrel (109) / Graveyard (110) also excluded for now -- both
-# are spell(...)-registered (PeriodicSpawnEffect), and inject_enemy's
-# card->spawnEntity(...) path is only confirmed exercised (via Hog/Royal
-# Giant) for a troop/building CardDefinition; using it for a spell-shaped one
-# is unverified, not worth risking on a data-fill task.
+# Building-targeting win conditions that beeline for a tower. Excluded: Miner
+# (registered here as a plain melee squad), Goblin Barrel and Graveyard
+# (spells; inject_enemy is unverified for spell-shaped cards).
 _WIN_CONDITION_IDS = [
     15,  # Hog Rider
     18,  # Royal Giant
@@ -78,9 +39,7 @@ _WIN_CONDITION_IDS = [
     91,  # Lava Hound
 ]
 
-# Ranged units commonly played to escort/protect a win-condition push (the
-# "supported" scenario's second spawn) -- confirmed RangedSquad/ranged-role
-# troops, a mix of cheap chip support and real mid-fight damage.
+# Ranged units that escort a push (the supported scenario's second spawn).
 _SUPPORT_IDS = [
     6,   # Musketeer
     1,   # Archers
@@ -91,39 +50,18 @@ _SUPPORT_IDS = [
     20,  # Dart Goblin
 ]
 
-# Real board coords for inject_enemy (team 1, low-y-bound), which bypasses
-# isValidPlacement so an on-the-bridge spawn inside the river band is allowed.
-#
-# These are BOARD coordinates. Do not justify them from
-# ClashEnv::extractObservationForTeam's `riverRow = 17` / x-band 3-4 & 13-14 --
-# that is the OBSERVATION channel-8 marker, a wider visual hint painted for the
-# network, and it is a different frame. perception/geometry.py warns against
-# exactly this conflation. The board's own geometry (ArenaLayout.h, bound as
-# clash_royale_env.ARENA_*) is river [15.5, 17.5) with bridges at x = 2.5 and
-# 14.5 -- each spanning two cells, 2-3 and 14-15.
-#
-# `_RIVER_Y` is nonetheless correct and must not be "corrected": y = 17.0 is
-# inside the band, injectEnemy applies no clamp, and Board::getNextWaypoint
-# classifies 17.0 as neither bank and routes to the bridge exit -- which is
-# precisely the on-the-bridge spawn this wants.
+# Board coordinates for inject_enemy, which skips isValidPlacement, so a spawn
+# inside the river band is allowed. y = 17.0 is inside the band, and
+# Board::getNextWaypoint routes it to the bridge exit: an on-the-bridge spawn.
 _RIVER_Y = 17.0
 
-# DERIVED, never restated -- and it was restated, and it went stale.
-# This read `[3.5, 13.5]` from when the arena put bridges at 4.0 and 14.0. The
-# 2026-08-21 re-centring moved them to 2.5 / 14.5, and since cell i covers
-# [i-0.5, i+0.5], x = 13.5 is the edge of cell 13, which is WATER. Every
-# right-lane bridge push was being injected off the bridge, and nothing caught
-# it because the scenario still "worked" -- the unit swam to the nearest
-# waypoint and the episode looked normal.
-#
-# Eighth instance of the stale-arena-copy defect CLAUDE.md tracks. Unlike
-# web/viewer.html, this module CAN reach the source of truth, so it must.
+# Derived from ArenaLayout.
 _BRIDGE_LANES = [EC.LEFT_BRIDGE_X, EC.RIGHT_BRIDGE_X]
 
 def _scenario_bridge_push(rng):
-    """The exact case: one enemy win-condition on a random bridge, nothing
-    else engineered. Short window -- the defense itself resolves in ~2-4 steps,
-    the rest lets a counter-push start and get shaped-rewarded."""
+    """One enemy win condition on a random bridge. A short window: the defence
+    resolves in ~2-4 steps, the rest lets a counter-push start.
+    """
     lane = rng.choice(_BRIDGE_LANES)
     return {
         "name": "bridge_push",
@@ -133,9 +71,9 @@ def _scenario_bridge_push(rng):
     }
 
 def _scenario_bridge_push_supported(rng):
-    """Win-condition + a ranged support just behind it (same lane) -- a tankier,
-    two-part threat that a single cheap defender can't fully answer. Longer
-    window for the bigger commitment."""
+    """A win condition plus a ranged support behind it in the same lane, which one
+    cheap defender cannot fully answer. A longer window.
+    """
     lane = rng.choice(_BRIDGE_LANES)
     return {
         "name": "bridge_push_supported",
@@ -147,44 +85,25 @@ def _scenario_bridge_push_supported(rng):
         "max_steps": 25,
     }
 
-# --- Fireball target practice ----------------------------------------------
-# Added 2026-08-09 after measuring WHY the agent almost never casts Fireball.
-# Over 120 trials per constructed situation, with Fireball affordable in 100%
-# of them, the policy put only 0.03-0.11 probability on it against a 0.20
-# uniform baseline -- and, critically, when it DID cast, the mean distance from
-# the target centroid was 2.8 tiles in its own half and 7.7-11.5 tiles at an
-# enemy tower, against a blast radius of 2.5.
+# Spell target practice. The policy rarely casts Fireball because its aim is
+# poor (it missed a cluster by ~3 tiles on its own half and 8-11 at an enemy
+# tower, against a 2.5 radius), so declining is an accurate valuation; practice
+# fixes the aim without biasing the reward.
 #
-# So the low usage is not timidity and not an exploration failure: it is an
-# ACCURATE valuation of the agent's own aim. spell_value_shaping charges a full
-# -1.00 * w for a cast that kills nothing, and a policy that cannot aim is
-# correctly declining to pay it. Raising the cast incentive without fixing the
-# aim would make it cast more and miss more -- which is the mechanism behind
-# the recorded 97% -> 23% win-rate collapse when Fireball use was forced.
-#
-# Scenario injection is the right lever because it changes the START-STATE
-# DISTRIBUTION, not the reward: it buys dense practice at the aiming problem
-# without biasing the optimum. Exactly the argument that justified the
-# bridge-push scenarios -- a high-value Fireball moment is rare and its credit
-# is buried in a long GAE trace.
-#
-# Low-HP bodies only. Fireball does 689, so these die to one well-placed cast
-# and a whiff is genuinely punished; Barbarians (691 HP) are deliberately NOT
-# here, since surviving by 2 HP would teach that a perfect cast still failed.
+# Low-HP bodies only, so one good cast kills them and a whiff is punished
+# (Barbarians at 691 HP would survive a perfect 689 cast).
 _FIREBALL_SWARM_IDS = [
-    41,  # Minions        (3 bodies)
-    1,   # Archers        (2 bodies)
-    64,  # Firecracker    (304 hp)
+    41,  # Minions (3 bodies)
+    1,   # Archers (2 bodies)
+    64,  # Firecracker (304 hp)
     6,   # Musketeer
 ]
 
 def _scenario_fireball_swarm(rng):
-    """A cheap swarm already inside our half -- the defensive value cast.
+    """A cheap swarm inside our half: the defensive spell cast.
 
-    Placed past the river and short of the Princess Towers, so it is a live
-    threat the agent must answer THIS second rather than a distant one it can
-    ignore. Several separate cards so the cluster is many bodies, which is what
-    makes one Fireball a large positive elixir trade.
+    Past the river and short of the Princess Towers, so it must be answered
+    now; several cards, so one spell is a large positive trade.
     """
     lane = rng.choice(_BRIDGE_LANES)
     n = int(rng.integers(3, 6))
@@ -194,25 +113,16 @@ def _scenario_fireball_swarm(rng):
         spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
                        float(cx + rng.uniform(-1.1, 1.1)),
                        float(cy + rng.uniform(-1.1, 1.1))))
-    # Defensive: the swarm is inside OUR half, so "did not take a big hit"
-    # is a real question with a real answer.
+    # Defensive: the swarm is in our half.
     return {"name": "fireball_swarm", "spawns": spawns, "max_steps": 12,
             "defensive": True}
 
 def _scenario_fireball_tower_value(rng):
-    """Enemy troops hugging their OWN princess tower -- the two-for-one cast.
-
-    One Fireball centred here hits the troops and the tower together, which is
-    the case spell_value_shaping was written to pay for and the one the agent
-    currently misses by 7.7-11.5 tiles. Spawned just in front of the tower so
-    both fall inside a single 2.5 radius.
+    """Enemy troops hugging their own Princess Tower: the two-for-one cast.
+    Spawned just in front of the tower so troops and tower fit in one 2.5
+    radius.
     """
-    # DERIVED from ArenaLayout. This was `4.0 if ... else 14.0` -- the arena
-    # from BEFORE the 2026-08-21 re-centring, mirrored about 9.0 instead of 8.5,
-    # so the left-lane cluster sat one tile off its tower and the right-lane one
-    # on it: a lane asymmetry in 30% of injected scenarios. The seventh stale
-    # copy of the arena this repo has found; `_BRIDGE_LANES` above already
-    # derived correctly.
+    # Derived from ArenaLayout.
     tower_x = EC.LEFT_LANE_X if rng.random() < 0.5 else EC.RIGHT_LANE_X
     n = int(rng.integers(2, 5))
     cx, cy = tower_x, 25.6
@@ -221,49 +131,14 @@ def _scenario_fireball_tower_value(rng):
         spawns.append((int(rng.choice(_FIREBALL_SWARM_IDS)),
                        float(cx + rng.uniform(-0.9, 0.9)),
                        float(cy + rng.uniform(-0.9, 0.9))))
-    # NOT defensive: the troops are at THEIR tower, nothing threatens us, so
-    # "did not take a big hit" is true whatever the agent does -- including
-    # doing nothing. Scoring it on that axis inflates ScenDef toward 1.0 and
-    # says nothing about whether the cast was made or aimed.
+    # Not defensive: nothing threatens us, so "did not take a big hit" holds
+    # whatever the agent does.
     return {"name": "fireball_tower_value", "spawns": spawns, "max_steps": 15,
             "defensive": False}
 
-# --- Giant: unmasking the win condition -------------------------------------
-#
-# The Giant is not undervalued, it is UNAFFORDABLE. Measured on the ep-17k
-# checkpoint over 1,839 decision steps: the Giant is in hand on 80.6% of them
-# but legal on only 4.7% (5.9% of in-hand), and when it IS legal the policy
-# picks it at P = 0.157 against a uniform 0.200. It was sampled on 0.54% of
-# steps, and 1 of 900 logged placements across the run was a Giant.
-#
-# That is a masked-slot problem, and it is the exact mechanism already on
-# record for this deck: at 0.35 elixir per decision a 5-cost card is legal only
-# after ~14 consecutive non-spending steps, so its slot is masked nearly every
-# time it is checked and never accumulates gradient. No opponent, reward or
-# entropy change reaches an action that is never sampled -- which is why this
-# is a START-STATE change and not any of those.
-#
-# (builder_fn, weight). Extend freely -- offensive/punish/endgame scenarios
-# drop in here with the same machinery. Set a scenario's "max_steps" to None
-# to run it to the natural end of the game instead of a focused window.
-#
-# The two Fireball scenarios take half the injection budget, which is a
-# REALLOCATION rather than an addition: ScenDef has been running at 0.99, so
-# the bridge-push scenarios are saturated and no longer teaching the reflex
-# they were added for. Their share drops from 100% to 50% of injected episodes
-# (SCENARIO_INJECTION_PROB itself is unchanged at 0.30).
-# giant_commit was REMOVED on 2026-08-19 and this is GAMEPLAY-AFFECTING.
-# It required card id 2 (Giant) in our own hand, and DEFAULT_DECK became 2.6
-# Hog Cycle on 2026-08-16 -- a deck that cannot contain it. So every time it was
-# drawn it spent 24 futile `reset()` calls hunting for the card, fell through,
-# and then ran a quiet board with banked elixir and no spawns: the one thing its
-# own docstring said was NOT the point ("the whole point is an unmasked Giant
-# slot"). At weight 1.0 of 6.0 it was diluting 17% of the injection budget into
-# a no-op. Removing it redistributes that share back to the four live
-# scenarios, so injected-episode composition changes and ScenDef/ScenOff are
-# not comparable across this edit.
-#
-# Total is now 5.0: Fireball 60%, bridge 40%.
+# (builder_fn, weight). Set a scenario's "max_steps" to None to run it to the
+# natural end of the game. Spell scenarios take 60% of the weight: the bridge
+# pushes had saturated (ScenDef ~0.99).
 SCENARIOS = [
     (_scenario_bridge_push, 1.0),
     (_scenario_bridge_push_supported, 1.0),
@@ -271,20 +146,17 @@ SCENARIOS = [
     (_scenario_fireball_tower_value, 1.5),
 ]
 
-#: Scenarios whose correct answer is an AREA-DAMAGE SPELL. They draw only when
-#: the trainee's deck holds one (see `_deck_weights`).
+#: Scenarios whose answer is an area-damage spell; drawn only when the deck
+#: holds one.
 _SPELL_SCENARIOS = (_scenario_fireball_swarm, _scenario_fireball_tower_value)
 
 
 def _deck_weights(deck):
-    """SCENARIOS' weights with the spell scenarios zeroed for a deck that cannot
+    """SCENARIOS' weights, with the spell scenarios zeroed for a deck that cannot
     answer them.
 
-    60% of the injection weight -- 18% of ALL phase-1 episodes -- is two boards
-    whose answer is a spell. A deck with no area-damage spell still drew them and
-    was taught a reflex it cannot express; `giant_commit` was removed on
-    2026-08-19 for the same defect at 17% ("a dead entry here is worse than
-    none"). For the shipped deck (Fireball) the weights are unchanged.
+    Otherwise a spell-less deck spends 18% of all injected episodes practising
+    a reflex it cannot express. The shipped deck's weights are unchanged.
     """
     from python_ai.advisors import card_probes
     has_spell = any(card_probes.spell_effect(int(c)) is not None for c in deck)
@@ -293,7 +165,8 @@ def _deck_weights(deck):
 
 
 def spell_scenario_share(deck):
-    """Fraction of injected scenarios that are spell scenarios, for this deck."""
+    """Fraction of injected scenarios that are spell scenarios, for this deck.
+    """
     w = _deck_weights(deck)
     total = sum(w)
     return sum(wi for (b, _), wi in zip(SCENARIOS, w) if b in _SPELL_SCENARIOS) / total

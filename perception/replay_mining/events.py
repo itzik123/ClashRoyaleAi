@@ -1,21 +1,18 @@
-"""Episode -> a single time-ordered stream of placement events for BOTH sides.
+"""Episode -> a single time-ordered stream of placement events for both sides.
 
-The ego side is LABELLED: KataCR reads the player's own hand, so a play is
-(which slot, which cell, when). The opponent side is NOT -- you cannot see an
-opponent's hand -- so their placements are INFERRED from the detected unit
-grid: a body class that appears on their side, having been absent, is treated
-as a card having just been played.
+The ego side is labelled (KataCR reads the player's own hand: slot, cell,
+time). The opponent's hand is invisible, so their placements are inferred from
+the detected unit grid: a body class appearing on their side after being absent
+counts as a card just played.
 
-That inference is the weakest link in this whole probe and it is deliberately
-kept crude, because the scrambled-time control in `divergence.py` is what
-decides whether it carries signal at all. Two known ways it is wrong:
+That inference is the weakest link and is kept crude on purpose; the
+scrambled-time control in `divergence.py` decides whether it carries signal.
+Two known errors:
 
   - A body is not a card. 'skeleton' is Skeletons, Skeleton Army, a Tombstone's
-    output or a Graveyard's; `_UNIT_TO_CARD` picks one and is wrong the rest of
-    the time.
+    output or a Graveyard's; `_UNIT_TO_CARD` picks one.
   - Detection flicker re-emits a unit that never left. `_DEBOUNCE_FRAMES` and
-    `_REAPPEAR_COOLDOWN_S` suppress the fast cases and nothing suppresses the
-    slow ones.
+    `_REAPPEAR_COOLDOWN_S` suppress the fast cases, nothing the slow ones.
 """
 from __future__ import annotations
 
@@ -28,9 +25,8 @@ from .katacr_format import NON_BODY_CLASSES
 _DEBOUNCE_FRAMES = 2        # a class must persist this long to count as arrived
 _REAPPEAR_COOLDOWN_S = 2.0  # ...and must have been absent this long before that
 
-# Their detector names BODIES; our registry names CARDS. Where a body belongs to
-# more than one card this picks the cheapest/most common one and is simply wrong
-# for the others -- see the module docstring.
+# Their detector names bodies, our registry names cards; a body belonging to
+# several cards maps to the cheapest or most common.
 _UNIT_TO_CARD = {
     "skeleton": "skeletons", "barbarian": "barbarians",
     "phoenix-big": "phoenix", "phoenix-small": "phoenix", "phoenix-egg": "phoenix",
@@ -147,8 +143,8 @@ def build_events(episode, transform):
             costs[cid] = float(E.get_card_info(cid)["cost"])
         return costs[cid]
 
-    # Only the INFERRED side is gated. Ego plays are labelled from the player's
-    # own hand and are trusted as recorded.
+    # Only the inferred side is gated; ego plays come from the player's own
+    # hand.
     opp_kept, opp_dropped = gate_by_elixir(opp_r, cost_of)
     for ev, _ in ego_r:
         census["ego"][ev.card] = census["ego"].get(ev.card, 0) + 1
@@ -171,18 +167,14 @@ def _elixir_multiplier(t: float) -> float:
 
 
 def gate_by_elixir(events, cost_of, start_elixir: float = 5.0, cap: float = 10.0):
-    """Drop inferred placements the opponent could not possibly have afforded.
+    """Drop inferred placements the opponent could not have afforded.
 
-    A body appearing is not always a card being played. A Golem splitting into
-    Golemites, a Graveyard ticking out Skeletons, a Phoenix hatching from its
-    egg and every hut's output all look exactly like a placement to a
-    first-appearance detector, and each one injects a whole fresh card -- which
-    hands the opponent several times the material they actually had.
-
-    Nothing in the DETECTION distinguishes those from real plays. The
-    opponent's ECONOMY does: they cannot spend faster than elixir accrues. So
-    the budget is the discriminator, and what it rejects is a direct measure of
-    how much the inference over-fires.
+    A Golem splitting, a Graveyard ticking out Skeletons, a Phoenix hatching
+    and every hut's output look like placements to a first-appearance detector,
+    each injecting a whole fresh card. Detection cannot tell them from real
+    plays; the opponent's economy can, since they cannot spend faster than
+    elixir accrues. What the budget rejects measures how much the inference
+    over-fires.
     """
     from perception.timebase import elixir_regenerated
 

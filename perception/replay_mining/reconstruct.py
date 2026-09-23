@@ -1,14 +1,11 @@
 """Replay an event stream through our engine and sample the resulting board.
 
-Placements are `inject`ed rather than played from hand. That is deliberate: we
-are reproducing WHAT a human did, not re-deriving whether they could afford it.
-The economy is already baked into the timing of the events, and routing through
-the hand would need the shuffled opening hand to match a real player's, which it
-cannot.
+Placements are `inject`ed rather than played from hand: this reproduces what a
+human did, whose economy is already in the event timing, and playing from hand
+would need the shuffled opening hand to match theirs.
 
-One consequence worth knowing: `inject` bypasses `playCard`, so the cycle
-observation blocks stay empty in a reconstruction. That is irrelevant to
-divergence but would matter to anything that later mined observations for BC.
+`inject` bypasses `playCard`, so the cycle observation blocks stay empty in a
+reconstruction: irrelevant to divergence, but it would matter to BC mining.
 """
 from __future__ import annotations
 
@@ -99,11 +96,8 @@ def reconstruct(resolved_events, sample_times, deck, seed=0,
 
 
 def default_deck() -> list[int]:
-    """`DEFAULT_DECK`, read from its source rather than restated here.
-
-    Importing `gym_wrapper` would pull in gymnasium, which perception's venv
-    does not have; copying the eight ids would be the "second copy of an engine
-    constant" this project forbids. Parsing the assignment is neither.
+    """`DEFAULT_DECK`, parsed from its source: importing `gym_wrapper` would pull
+    in gymnasium, and copying the ids would be a second copy.
     """
     import ast
     from pathlib import Path

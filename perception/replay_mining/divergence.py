@@ -1,19 +1,17 @@
 """The metrics, and the two controls that stop them lying.
 
-Every failure mode of this probe -- a parser that emits no opponent events, a
-card map that silently drops half the deck, a timestamp offset that lines the
-empty opening up perfectly -- makes the reconstruction look BETTER, not worse.
-This repo's own rule for that case is that the measurement needs an internal
-control which must fire, so:
+Every failure mode of this probe (a parser emitting no opponent events, a card
+map dropping half the deck, a timestamp offset aligning the empty opening)
+makes the reconstruction look better, not worse. So the measurement carries
+controls that must fire:
 
-  C1  an injection census: what was parsed, what was injected, what was dropped,
-      per side. Both sides non-zero, or the episode is void.
-  C2  a scrambled-time arm: the same events with their timestamps shuffled. The
-      true arm MUST beat it. If it does not, the metric is not measuring
-      reconstruction and none of M1/M2/M3 means anything.
+  C1  an injection census: parsed, injected and dropped, per side. Both sides
+      non-zero, or the episode is void.
+  C2  a scrambled-time arm: the same events with timestamps shuffled. The true
+      arm must beat it, or M1/M2/M3 mean nothing.
 
-M1 and M3 are robust to an imperfect board transform; only M2 is sensitive to
-it, so M2 is read against the fit residual rather than on its own.
+M1 and M3 are robust to an imperfect board transform; M2 is not, so it is read
+against the fit residual.
 """
 from __future__ import annotations
 
@@ -76,18 +74,14 @@ _TERMINAL_REWARD_THRESHOLD = 0.5
 
 
 def recorded_outcome(episode) -> str:
-    """Winner from KataCR's own terminal reward.
+    """Winner from KataCR's own terminal reward. Tower presence does not work on
+    this corpus (the ego's Princess Towers go undetected for the first 20 s,
+    and all six read alive at the end, so every outcome came back "draw");
+    `RewardBuilder` OCRs tower HP and emits a terminal bonus of about +/-1,
+    which separates cleanly.
 
-    Tower PRESENCE was tried first and does not work on this corpus: the ego's
-    two Princess Towers are not detected at all in the opening 20 s of any
-    episode, and all six read as alive at the end of every match, so every
-    outcome came back 'draw'. `RewardBuilder` instead OCRs tower HP and emits a
-    terminal bonus of about +/-1 on the last scored frame, which separates
-    cleanly.
-
-    Note the corpus is a strong player's own uploads, so it is heavily
-    win-biased. That makes the BASE RATE, not 50%, the number M3 has to beat --
-    reported alongside it for exactly that reason.
+    The corpus is a strong player's own uploads and heavily win-biased, so M3
+    must beat the base rate, reported beside it, not 50%.
     """
     nz = np.nonzero(episode.reward)[0]
     if not len(nz):

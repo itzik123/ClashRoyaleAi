@@ -1,42 +1,20 @@
-"""Does the high-resolution branch actually buy placement accuracy?
+"""Does the high-resolution branch buy placement accuracy?
 
-    python_ai/venv/Scripts/python.exe python_ai/prove_hires.py --episodes 12
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_hires.py --episodes 12
 
-THE QUESTION, AND WHY IT NEEDED ITS OWN HARNESS
------------------------------------------------
-`distill_tactics.py` fit the advisor's exact cell into the placement head with
-the trunk frozen and measured cross-entropy falling 180.9 -> 21.4 while
-exact-cell argmax match never left **0.0%**. That was read as the head being
-unable to REPRESENT an exact cell, and it is the premise the whole
-"high-resolution skip connection" plan rests on.
+The coarse head can represent an exact cell in principle (nearest-upsample +
+3x3 conv mixes neighbouring pooled cells); the question is whether it does at
+scale, on correlated rollout states with a target moving in both axes. A
+controlled A/B:
 
-`test_python_ai.py` tested that premise directly and it is too strong: on
-14 boards differing only in which column holds one enemy, the coarse head fits
-14/14. Nearest-upsample + 3x3 conv lets a fine cell mix neighbouring pooled
-cells, so sub-block position is recoverable in principle.
+  * one collection shared by all arms, so states and targets are identical
+  * same checkpoint, seed, epochs, batch size, learning rate, clipping and anchor
+  * the only difference is whether `place_hires`/`place_ctx_hi` are trainable; the control leaves them at their zero init
 
-So the honest question is not "can it?" but "does it, at the scale and on the
-target that actually failed?" -- hundreds of correlated rollout states, a target
-that moves in both axes, two cards, with the alive cards anchored. That is what
-this measures, as a controlled A/B:
-
-  * ONE collection, shared by both arms, so the states and targets are identical
-  * both arms start from the SAME checkpoint and the same seed
-  * identical epochs, batch size, learning rate, clipping and anchor
-  * the ONLY difference is whether `place_hires`/`place_ctx_hi` are trainable.
-    The control leaves them at their zero init, which is bit-exactly the
-    architecture that measured 0.0%.
-
-WHAT IS REPORTED, AND WHY IT IS NOT JUST ACCURACY
--------------------------------------------------
-Held-out exact-cell match is the headline, split from train match because a head
-with a fresh branch has more capacity and could simply memorise.
-
-Modal share and top-1 probability are printed together, never apart: CLAUDE.md
-records that modal share degenerates on a near-uniform map (the argmax of a flat
-map is arbitrary but deterministic, so a dissolved head reports ~99% modal
-share). A real fix moves the mode WITH the board; a dissolved head reports a
-high modal share at a top-1 probability near 1/612 = 0.0016.
+Held-out exact-cell match is the headline, reported beside train match because
+a fresh branch could simply memorise. Modal share and top-1 probability are
+printed together: a dissolved head shows a high modal share at a top-1
+probability near 1/612.
 """
 import argparse
 import os
@@ -51,9 +29,7 @@ from python_ai.rl.checkpointing import atomic_save
 from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -64,26 +40,16 @@ from python_ai.advisors import tactics  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
 
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
-
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
 NAME = {CANNON: "Cannon", FIREBALL: "Fireball"}
 
 
 def soft_target_logits(score_map, T):
-    """Advisor score map -> target LOGITS at temperature T.
+    """Advisor score map -> target logits at temperature T.
 
-    Standardized over the legal cells first, so T means the same thing for the
-    Cannon's coverage sums and the Fireball's caught-damage sums, which live on
-    completely different scales. CLAUDE.md's expert-iteration entry is explicit
-    that temperature must be read off the TARGET's own entropy rather than
-    tuned on the outcome -- `--target-entropy` prints that table.
+    Standardised over the legal cells first, so T means the same for the
+    Cannon's coverage sums and the Fireball's damage sums. Pick T from the
+    target's own entropy (printed by main), not from the outcome.
     """
     finite = torch.isfinite(score_map)
     out = torch.full_like(score_map, float("-inf"))
@@ -92,9 +58,8 @@ def soft_target_logits(score_map, T):
         v = score_map[i][m]
         std = v.std()
         if not torch.isfinite(std) or std < 1e-8:
-            # A flat surface carries no preference. A uniform target over the
-            # legal cells is the honest encoding of that, and it is also what
-            # keeps such rows from dominating the loss with arbitrary noise.
+            # A flat surface carries no preference: a uniform target over the
+            # legal cells.
             out[i][m] = 0.0
         else:
             out[i][m] = (v - v.mean()) / std / T
@@ -108,10 +73,8 @@ def fit(net, frozen, obs, hxs, targets, idx, args, train_hires,
     for name, p in net.named_parameters():
         train_it = name.startswith(("place_ctx", "place_up", "card_id_embed"))
         if name.startswith(("place_hires", "place_ctx_hi")):
-            # place_ctx_hi also matches the "place_ctx" prefix above, so it has
-            # to be decided here rather than left to prefix order -- otherwise
-            # the control arm would silently train half the branch and the A/B
-            # would compare two treatments.
+            # place_ctx_hi also matches the "place_ctx" prefix, so decide it
+            # here, or the control arm would train half the branch.
             train_it = train_hires
         p.requires_grad_(train_it)
         if train_it:
@@ -143,10 +106,9 @@ def fit(net, frozen, obs, hxs, targets, idx, args, train_hires,
                     tgt = torch.tensor(targets[cid][rows][m.numpy()], dtype=torch.long)
                     loss = loss + F.cross_entropy(logits, tgt)
                 else:
-                    # KL to the advisor's whole surface, not to its argmax.
-                    # masked_kl is reused rather than F.kl_div because both
-                    # sides carry -inf on illegal cells and torch evaluates
-                    # 0 * (-inf - -inf) = nan there.
+                    # KL to the advisor's whole surface. masked_kl rather than
+                    # F.kl_div: both sides carry -inf on illegal cells, where
+                    # torch evaluates 0 * (-inf - -inf) = nan.
                     tgt_logits = soft_target_logits(
                         torch.tensor(maps[cid][rows][m.numpy()]), soft_T)
                     loss = loss + D.masked_kl(logits, tgt_logits)
@@ -195,12 +157,9 @@ def score(net, obs, hxs, targets, idx, label):
             tgt = torch.tensor(targets[cid][rows][m.numpy()], dtype=torch.long)
             cells = logits.argmax(-1)
             hits += int((cells == tgt).sum())
-            # Chebyshev tile distance to the advisor's cell. Exact match is a
-            # harsh and partly unfair metric for the Cannon: `best_building_cell`
-            # maximises a coverage score that has many near-ties, so its argmax
-            # hops between cells that are worth the same, and a head landing one
-            # tile away scores zero while having learned the geometry. Distance
-            # says how wrong it is; exact match only says whether it is wrong.
+            # Chebyshev tile distance to the advisor's cell. Exact match is
+            # harsh for the Cannon, whose coverage score has many near-ties, so
+            # a head one tile away can score zero having learned the geometry.
             d = torch.maximum((cells % BOARD_W - tgt % BOARD_W).abs(),
                               (cells // BOARD_W - tgt // BOARD_W).abs())
             near += int((d <= 2).sum())
@@ -268,10 +227,8 @@ def main():
     print(f"collected {n} states in {time.time() - t0:.0f}s "
           f"({len(train_idx)} train / {len(test_idx)} held out)\n", flush=True)
 
-    # Report the target's own entropy before fitting anything to it. A target
-    # at ~95% of maximum entropy is near-uniform: it trains, it looks busy, and
-    # it carries no signal. That mistake cost an expert-iteration run once
-    # already (CLAUDE.md, "Temperature is the knob").
+    # Report the target's entropy before fitting: a near-uniform target trains,
+    # looks busy and carries no signal.
     for cid in D.TARGET_CARDS:
         tl = soft_target_logits(torch.tensor(maps[cid][:256]), args.soft_T)
         p = tl.softmax(-1)

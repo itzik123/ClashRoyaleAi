@@ -4,40 +4,19 @@
 #include "MeleeTroop.h"
 #include <vector>
 
-// INTERNAL TIMING STATE across Board::deepCopy(), tested BEHAVIOURALLY.
+// Internal timing state across Board::deepCopy(), tested behaviourally.
 //
-// WHY THIS FILE EXISTS
-// --------------------
-// test_board_deepcopy.cpp's 120-tick acceptance test compares only externally
-// observable fields -- id, hp, team, cardId, x, y, projectileTargetId. A copy
-// that diverged ONLY in internal timing (a reset attack cooldown, a rewound
-// decay schedule) passes it until the difference happens to surface as an hp or
-// position change, which may be well outside the window.
-//
-// That is the defect class that matters most here: decision-time search exists
-// to predict the next second or two accurately, and a rollout whose buildings
-// decay on the wrong tick or whose troops re-arm at the wrong moment is wrong
-// in exactly the way that is hardest to notice -- the numbers still look
-// plausible.
-//
-// Most of the relevant fields are not publicly readable (currentCooldown is
-// protected; Building::ticksAlive is private), and asking for accessors was
-// filed as perception/UPSTREAM_REQUESTS.md item 17 -- deliberately as
-// ergonomics, NOT as a coverage unblocker, because the seams below already make
-// the state observable through behaviour. The first three tests are that
-// argument, made concrete.
-//
-// Item 17 was then RESOLVED MINIMALLY (2026-08-24): of the eleven accessors it
-// tabled, exactly one was added -- CombatEntity::getTicksOnTarget() -- because
-// ticksOnTarget is the single field whose behavioural proxy is genuinely lossy
-// rather than merely inconvenient. The fourth test is that case. Everything
-// else stays behavioural on purpose; do not add accessors here for fields the
-// seams above already reach.
+// test_board_deepcopy.cpp compares observable fields (id, hp, team, position),
+// so a copy diverging only in timing (a reset cooldown, a rewound decay
+// schedule) could pass it. Search exists to predict the next second or two,
+// which is exactly where such a rollout goes wrong. The fields are not public,
+// but the seams below make them observable; only ticksOnTarget got an accessor,
+// because its behavioural proxy is lossy.
 
 namespace {
 
-// Same board-level step order as test_board_deepcopy.cpp's tickBoard, for the
-// same reason: deepCopy is a Board operation and needs no GameManager.
+// Board-level step order, as in test_board_deepcopy.cpp: deepCopy needs no
+// GameManager.
 void tickBoard(Board& board, int tick) {
     board.currentTick = tick;
     board.commitPendingEntities(tick);
@@ -68,31 +47,26 @@ std::vector<int> hpTrace(Board& board, int fromTick, int ticks) {
 
 TEST_CASE("a copied Building keeps its position in the decay schedule, not just its hp",
           "[deepcopy][timing]") {
-    // Building decays on `ticksAlive % 10 == 0` (Building::update). The phase
-    // of that counter is the thing under test, and it is INVISIBLE if you copy
-    // on a multiple of 10: a copy that reset ticksAlive to 0 would still be
-    // congruent mod 10 and would decay on exactly the same ticks.
-    //
-    // So step 7 -- deliberately NOT a multiple of 10. A reset copy would then
-    // decay 3 ticks later than the original every single time.
+    // Buildings decay when ticksAlive % 10 == 0. Copied on a multiple of 10, a
+    // copy with ticksAlive reset to 0 would decay on the same ticks, so the
+    // copy is taken at step 7.
     Board original;
     auto cannon = std::make_shared<Building>(1, 9.0f, 8.0f, 824, 0, 'C',
-                                             5.5f, 202, 10);   // lifetime 300 (default)
+                                             5.5f, 202, 10);   // lifetime 300, the default
     original.addEntity(cannon);
     original.commitPendingEntities(0);
     for (int t = 0; t < 7; ++t) tickBoard(original, t);
 
     Board copy = original.deepCopy();
 
-    // 40 ticks is four decay events -- enough that a one-off phase error and a
-    // persistent one both show up.
+    // 40 ticks: four decay events, enough to show a one-off or a persistent
+    // phase error.
     std::vector<int> a = hpTrace(original, 7, 40);
     std::vector<int> b = hpTrace(copy, 7, 40);
 
     REQUIRE(a == b);
 
-    // The trace must actually CONTAIN decay events, otherwise the comparison
-    // above is vacuous: two flat lines are trivially equal.
+    // The trace must contain decay events, or two flat lines trivially match.
     REQUIRE(a.front() > a.back());
     int drops = 0;
     for (size_t i = 1; i < a.size(); ++i) if (a[i] < a[i - 1]) ++drops;
@@ -111,26 +85,23 @@ TEST_CASE("a copied Building's decay does not affect the original's",
     for (const auto& e : original.getEntities()) if (e->id == 1) hpBefore = e->hp;
 
     Board copy = original.deepCopy();
-    hpTrace(copy, 7, 60);   // decay the COPY well past several intervals
+    hpTrace(copy, 7, 60);   // decay the copy past several intervals
 
     int hpAfter = -1;
     for (const auto& e : original.getEntities()) if (e->id == 1) hpAfter = e->hp;
 
-    // Shared state here would mean a search rollout decays the live match's
-    // Cannon -- it would simply die early, mid-defence, for no visible reason.
+    // Shared state would decay the live match's Cannon from a rollout.
     REQUIRE(hpAfter == hpBefore);
 }
 
 TEST_CASE("a copied attacker re-arms on the same tick as the original",
           "[deepcopy][timing]") {
-    // CombatEntity::currentCooldown is protected, but seedCooldown() is public
-    // and its own comment calls it "the one seam" for data-driven setup. Seed a
-    // known, deliberately ODD cooldown so a copy that zeroed or rounded it
-    // lands its first hit on a different tick.
+    // currentCooldown is protected; seedCooldown() is the public seam. A
+    // deliberately odd cooldown makes a zeroed or rounded copy land its first
+    // hit on a different tick.
     Board original;
-    // (id, x, y, hp, team, speed, attackRange, damage, attackCooldown, symbol)
-    // Speed 0 on both so neither walks: this test is about WHEN the attacker
-    // swings, and movement would add a second, confounding source of drift.
+    // (id, x, y, hp, team, speed, attackRange, damage, attackCooldown, symbol).
+    // Speed 0 so movement adds no drift.
     auto attacker = std::make_shared<MeleeTroop>(1, 9.0f, 9.0f, 2000, 0,
                                                  0.0f, 1.2f, 100, 12, 'K');
     auto target = std::make_shared<MeleeTroop>(2, 9.0f, 9.5f, 5000, 1,
@@ -142,8 +113,8 @@ TEST_CASE("a copied attacker re-arms on the same tick as the original",
 
     Board copy = original.deepCopy();
 
-    // Trace the TARGET's hp: the tick it first drops is the tick the attacker's
-    // cooldown reached zero, which is the quantity under test.
+    // Trace the target's hp: its first drop marks when the cooldown reached
+    // zero.
     auto traceTarget = [](Board& b) {
         std::vector<int> out;
         for (int t = 0; t < 30; ++t) {
@@ -160,26 +131,18 @@ TEST_CASE("a copied attacker re-arms on the same tick as the original",
 
     REQUIRE(a == b);
 
-    // Non-vacuous: the attacker must actually have landed hits in the window.
+    // Non-vacuous: hits landed in the window.
     REQUIRE(a.front() > a.back());
 }
 
 TEST_CASE("a copied attacker keeps its position in the damage ramp, not just its cooldown",
           "[deepcopy][timing]") {
-    // ticksOnTarget is the ONE field in item 17's table with no adequate
-    // behavioural proxy, which is why it is the only accessor that request
-    // actually bought. getDamagePerTick() collapses it into at most four ramp
-    // BUCKETS via getCurrentDamage(), so a copy that rewound ticksOnTarget by a
-    // few ticks WITHIN a bucket stays invisible to an hp trace -- and on a card
-    // with rangeFalloff the proxy varies continuously with distance and the
-    // ramp stage stops being separable from it at all.
-    //
-    // ticksOnTarget also feeds the hit-SPEED ramp (cooldownFraction), so a
-    // desync here changes when later hits land, not merely how hard they hit.
+    // ticksOnTarget's only behavioural proxy, getDamagePerTick(), collapses it
+    // into ramp buckets, so a within-bucket rewind is invisible to an hp trace.
+    // It also drives the hit-speed ramp, so a desync changes when later hits
+    // land.
     Board original;
-    // Speed 0 on both so neither walks, matching the re-arm test above: this is
-    // about engagement bookkeeping, and movement would add a second source of
-    // drift.
+    // Speed 0, as in the re-arm test.
     auto attacker = std::make_shared<MeleeTroop>(1, 9.0f, 9.0f, 2000, 0,
                                                  0.0f, 1.2f, 100, 12, 'K');
     auto target = std::make_shared<MeleeTroop>(2, 9.0f, 9.5f, 5000, 1,
@@ -188,8 +151,8 @@ TEST_CASE("a copied attacker keeps its position in the damage ramp, not just its
     original.addEntity(target);
     original.commitPendingEntities(0);
 
-    // Accumulate a deliberately non-round ticksOnTarget before copying, so a
-    // copy that reset it to 0 or rounded it to a ramp boundary is caught.
+    // A deliberately non-round ticksOnTarget, so a reset or rounded copy is
+    // caught.
     for (int t = 0; t < 17; ++t) tickBoard(original, t);
 
     Board copy = original.deepCopy();
@@ -205,8 +168,7 @@ TEST_CASE("a copied attacker keeps its position in the damage ramp, not just its
         return -1;
     };
 
-    // Non-vacuous: the attacker must really be engaged, or both sides read 0
-    // and the comparison would pass on a copy that carried nothing at all.
+    // Non-vacuous: the attacker is engaged, or both sides read 0.
     REQUIRE(ticksOnTargetOf(original) > 0);
     REQUIRE(ticksOnTargetOf(copy) == ticksOnTargetOf(original));
 }

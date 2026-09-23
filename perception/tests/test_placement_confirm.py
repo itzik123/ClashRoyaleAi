@@ -1,8 +1,6 @@
-"""The 2x2 that separates 'the game refused it' from 'the ledger lost it'.
-
-These run against synthetic GameStates rather than an emulator, because the
-whole value of the cross-tab is that its two axes are independent -- and that is
-a property of the code, testable offline, not of any particular match.
+"""The 2x2 that separates "the game refused it" from "the ledger lost it".
+Synthetic GameStates rather than an emulator: the independence of the two axes
+is a property of the code.
 """
 from __future__ import annotations
 
@@ -36,8 +34,8 @@ def place(conf, gs, *, slot=0, card="minions", tile=(9, 8), now=0.0):
 def test_expected_units_comes_from_crbabs_own_table():
     assert expected_unit_names("minions") == frozenset({"minion"})
     assert expected_unit_names("giant") == frozenset({"giant"})
-    # A spell spawns no board presence at all, which is why it must be excluded
-    # from the unit axis rather than scored as a failure.
+    # A spell spawns no board presence, so it is excluded from the unit axis
+    # rather than scored as a failure.
     assert expected_unit_names("fireball") == frozenset()
 
 
@@ -59,10 +57,9 @@ def test_only_our_own_units_count():
 
 
 def test_a_unit_already_on_the_board_does_not_confirm():
-    """The baseline is taken at issue time, so standing units are not evidence.
-
-    Without this, playing a second Minions while the first three are still
-    alive would confirm itself instantly.
+    """The baseline is taken at issue time, so standing units are not evidence: a
+    second Minions played while the first three live would otherwise confirm
+    itself.
     """
     conf = PlacementConfirmer()
     standing = FakeState(units=(FakeUnit("minion", 0),) * 3)
@@ -93,11 +90,8 @@ def test_hand_cycling_confirms_independently_of_units():
 
 
 def test_an_unreadable_slot_is_not_a_hand_change():
-    """A card reader going blind must not be read as a card being played.
-
-    This is the failure the ledger already has -- inferring an event from a
-    reading that merely got worse -- and repeating it here would confirm
-    placements from detector noise.
+    """A card reader going blind must not read as a card being played, or
+    placements get confirmed from detector noise.
     """
     conf = PlacementConfirmer()
     conf.issue(FakeState(my_hand=(2, 1, 41, 25)), slot=1, card_name="archers",
@@ -116,10 +110,8 @@ def test_refused_requires_both_oracles_silent():
 
 
 def test_two_placements_of_one_card_do_not_share_the_same_body():
-    """One Minion appearing is evidence for ONE placement, not for both.
-
-    Sharing it would bias the whole measurement towards "it landed", which is
-    the direction that hides refusals.
+    """One Minion appearing is evidence for one placement, not both; sharing it
+    biases the measurement toward "it landed", hiding refusals.
     """
     conf = PlacementConfirmer()
     first = place(conf, FakeState(), now=0.0)
@@ -127,14 +119,15 @@ def test_two_placements_of_one_card_do_not_share_the_same_body():
     conf.observe(FakeState(units=(FakeUnit("minion", 0),)), now=1.0)
     assert first.unit_confirmed
     assert not second.unit_confirmed
-    # A second body then confirms the second placement too.
+    # A second body then confirms the second placement.
     conf.observe(FakeState(units=(FakeUnit("minion", 0),) * 2), now=1.5)
     assert second.unit_confirmed
 
 
 def test_cross_tab_separates_the_ledgers_failure_from_the_games():
-    """The whole point: a placement the ledger wrote off but a unit confirms is
-    a METRIC bug, not a refused placement."""
+    """A placement the ledger wrote off but a unit confirms is a metric bug, not a
+    refusal.
+    """
     conf = PlacementConfirmer()
     landed = place(conf, FakeState(), card="minions", now=0.0)
     refused = place(conf, FakeState(), slot=1, card="giant", now=0.0)
@@ -147,8 +140,9 @@ def test_cross_tab_separates_the_ledgers_failure_from_the_games():
 
 
 def test_spells_are_excluded_from_the_cross_tab():
-    """Counting a Fireball as 'no unit appeared' would manufacture a refusal
-    every time the agent played its only spell."""
+    """Counting a Fireball as "no unit appeared" would manufacture a refusal every
+    time the agent cast it.
+    """
     conf = PlacementConfirmer()
     rec = conf.issue(FakeState(), slot=0, card_name="fireball", card_sim_id=7,
                      tile=(9, 8), tap=(360, 900), now=0.0)
@@ -157,7 +151,7 @@ def test_spells_are_excluded_from_the_cross_tab():
     assert conf.refused() == []
 
 
-# -- the ledger side of the join ------------------------------------------
+# --- the ledger side of the join ---
 
 
 def test_ledger_reports_which_plays_it_confirmed_not_just_how_many():
@@ -184,7 +178,7 @@ def test_ledger_reports_which_plays_it_wrote_off():
 
 
 def test_untagged_plays_still_work():
-    """Backwards compatibility: every existing caller passes no tag."""
+    """Backwards compatibility: existing callers pass no tag."""
     led = ElixirLedger(costs=(3.0, 4.0, 5.0))
     for t, v in ((0.0, 10), (0.1, 10), (0.2, 10)):
         led.update(v, now=t)

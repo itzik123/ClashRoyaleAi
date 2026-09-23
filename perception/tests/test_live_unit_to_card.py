@@ -1,9 +1,6 @@
-"""Tests for live/unit_to_card.py.
-
-These run against the real engine binding and the real CRBAB tables rather
-than fixtures, because the whole point of the module is that the two agree --
-a fixture would freeze one side and stop detecting exactly the drift the
-module exists to catch.
+"""Tests for live/unit_to_card.py, against the real engine binding and CRBAB
+tables: a fixture would freeze one side and miss the drift the module exists to
+catch.
 """
 from __future__ import annotations
 
@@ -24,9 +21,9 @@ def test_every_detector_class_maps(engine):
 
 
 def test_our_own_deck_resolves(engine):
-    """`archer` and `minion` were among the 27 originally unmapped names, and
-    Archers and Minions are two of our eight cards -- so this is the case that
-    made the mapping blocking rather than cosmetic."""
+    """`archer` and `minion` do not match engine names, and Archers and Minions
+    are two of our cards: the case that makes the mapping necessary.
+    """
     expected = {
         "archer": "Archers", "minion": "Minions", "valkyrie": "Valkyrie",
         "cannon": "Cannon", "giant": "Giant", "musketeer": "Musketeer",
@@ -58,13 +55,14 @@ def test_death_spawns_map_to_their_parent_card(engine, unit, parent):
     ("minion", "Minions"),            # over Minion Horde
 ])
 def test_ambiguous_units_take_the_documented_preference(engine, unit, card):
-    """One unit, several possible parents. The choice must be deliberate."""
+    """One unit, several possible parents: the choice must be deliberate."""
     assert engine.get_card_info(card_id_for(unit))["name"] == card
 
 
 def test_projectiles_are_not_board_presence(engine):
     """ClashEnv skips !isTargetable() entities, so a spell in flight must not
-    become a spatial-channel entry."""
+    become a spatial-channel entry.
+    """
     for name in PROJECTILE_CLASSES:
         assert is_board_presence(name) is False
         card_id_for(name)          # still resolvable, just not board presence
@@ -72,8 +70,9 @@ def test_projectiles_are_not_board_presence(engine):
 
 
 def test_unknown_unit_raises_rather_than_defaulting(engine):
-    """A wrong card id is worse than a missing one -- it fills the attribute
-    channels with another card's damage, range and speed."""
+    """A wrong card id is worse than a missing one: it fills the attribute
+    channels with another card's stats.
+    """
     with pytest.raises(UnitMappingError):
         card_id_for("not_a_real_unit")
 

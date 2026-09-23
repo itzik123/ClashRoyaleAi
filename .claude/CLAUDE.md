@@ -519,9 +519,9 @@ tiles per *tick*, so the registry's Giant `0.3f` meant **3.0 tiles/s** against
 a real-game Slow of ~0.75 — a Giant crossed bridge-to-tower in ~3.5 s.
 `MOVEMENT_SPEED_SCALE = 0.2f` in `CardStats.h` now converts the registry's
 tier literals into real-game tiles/tick. It is applied at **three** sites:
-`CardRegistry.h:127` plus both `include/core/SpiritEmpressForms.h` assignments
-(lines 32 and 50 — the file is in `core/`, not `entities/`), which set
-`stats.speed` directly and so bypass `CardStats::troop()`.
+`CardRegistry::troop()` plus both `stats.speed` assignments in
+`include/core/SpiritEmpressForms.h` (the file is in `core/`, not `entities/`),
+which set the speed directly and so bypass `troop()`.
 
 Those two are raw literals rather than `SPEED_*` tiers, and that is **correct,
 not an oversight**: Spirit Empress is one of the 13 cards on the 2026-08-24
@@ -590,8 +590,8 @@ planner's arrival-condition are separate literals, they can disagree.
 > 2026-08-20 simulator-audit section. When a fix of this shape lands, sweep
 > EVERY branch of the function, not the one the reproduction happened to take.
 
-**Still wrong, unmeasured, and in the same direction:** `Projectile.h:88` has
-its own untouched `speed`, never recalibrated alongside the movement fix.
+**Still wrong, unmeasured, and in the same direction:** `Projectile`'s own
+`speed` was never recalibrated alongside the movement fix.
 
 **SPEED TIERS REACH SPAWNED UNITS TOO, since 2026-08-26 -- the 2026-08-24
 rework did not.** That rework round-tripped "109 / 109 match", and 109 is the
@@ -1037,7 +1037,7 @@ workaround — reverse-engineering the shuffle by search — is in
 0.135 ms and its shuffle is uniform over all 70 hand-sets.
 
 **`python_ai/replays/*.json` carry a labelled placement stream.**
-`train.py:252` adds `actionCardId` / `actionX` / `actionY` per tick, which
+`rl/replay.py`'s annotator adds `actionCardId` / `actionX` / `actionY` per tick, which
 `GameLogger` itself does not write. Two catches: it labels **only the learner's
 own plays** (the heuristic opponent's are logged nowhere), and **the training
 run rewrites that directory continuously** — observed dropping from 8 files to
@@ -1671,7 +1671,7 @@ whenever that happens.
 In `random_opponent` the console prints **two** stage numbers, `4/2`. The
 first is the frozen mirror stage; the second is the CURRENT random deck's own
 progress through the same six stages. It resets to 0 every time a new deck is
-sampled (`train.py:1376`), so `4/5 -> 4/0` is a new deck, not a regression.
+sampled (`CurriculumManager` in `rl/curriculum.py`), so `4/5 -> 4/0` is a new deck, not a regression.
 
 ### Network (`models/net.py`, 1.89 M params)
 
@@ -1830,7 +1830,7 @@ drop-as-they-cross-the-bridge, kiting all want 0.1–0.3 s).
 > and repays 0.027 at the end, so gradient ascent on that objective cannot find
 > one at any network capacity.
 >
-> **It DRIFTED; it was not wrong when written.** `weights.py` still says 0.6 is
+> **It DRIFTED; it was not wrong when written.** `weights.py` justified 0.6 as
 > "above the discounted value of a win (~0.28 at these episode lengths)", and
 > at the ~112-decision episodes of that era `0.99^112 = 0.32` made 0.6 a
 > deliberate ~2x bias. The **2026-08-07 movement-speed fix tripled match
@@ -2656,7 +2656,7 @@ the teacher simply cannot express it.
    wrong on all three counts** and deterred the work for months. The reality,
    established 2026-08-11:
 
-   - **`clone()` already exists** (`Entity.h:113`), overridden in four types as
+   - **`clone()` already exists** (`Entity.h`), overridden in four types as
      three lines of implicit-copy-constructor each. Copy-construction of
      concrete entities is already relied on in production.
    - **Effects need no deep copy.** All five effect interfaces declare `apply`
@@ -2676,7 +2676,7 @@ the teacher simply cannot express it.
    tower, building, spell and projectile** and still looks like it worked.
    Hence a separate `snapshot()` with a throwing default.
 
-   The one genuine hazard is **`Projectile::target`** (`Projectile.h:16`), the
+   The one genuine hazard is **`Projectile::target`** (`Projectile.h`), the
    only entity-pointer *member* in the hierarchy — every other
    `shared_ptr<Entity>` is a per-tick local inside `findTarget`/
    `resolveCurrentTarget`. An implicit copy carries it verbatim, so a
@@ -2921,9 +2921,9 @@ python_ai/           READ-ONLY by default — training runs here.
     hybrid_policy.py   Inference-time composition of net + advisor + gate.
 
   rewards/
-    weights.py         Every W_* and threshold, with the measurement that
-                       justifies it, and an explicit list of which terms are
-                       policy-invariant and which are DELIBERATELY biasing.
+    weights.py         Every W_* and threshold, and which terms are
+                       potential-based and which DELIBERATELY biasing. The
+                       measurements behind them are in docs/DECISIONS.md.
     shaping.py         compute_shaping and the terms it composes. No torch.
     elixir_shaping.py  The potential-based solvency term.
 
@@ -2940,8 +2940,8 @@ python_ai/           READ-ONLY by default — training runs here.
     gae.py             One GAE. The truncation-bootstrap form is a strict
                        generalization of the plain one, and it is tested.
     buffer.py          RolloutBuffer; add() refuses a partial row.
-    entropy.py         EntropyController, with the seven-instance history of
-                       normalizer bugs it exists to prevent.
+    entropy.py         EntropyController. The history of the normaliser bugs
+                       it prevents is in docs/DECISIONS.md.
     curriculum.py      CURRICULUM_STAGES (module scope, so a test can import
                        it) + CurriculumManager.
     engine_stats.py    infos -> the stats dict, and why every default is the

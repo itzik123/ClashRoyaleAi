@@ -1,53 +1,35 @@
 """How closely does the engine's physics match the real game?
 
-Takes a real board off a recording, steps it forward with the ENGINE, and
-compares against what the recording actually shows one horizon later. Three
-numbers per horizon:
+Takes a real board off a recording, steps it forward with the engine, and
+compares with what the recording shows one horizon later. Three numbers per
+horizon:
 
-    floor       rebuilding the board in the engine and stepping the minimum
-                one tick. This is the ceiling on every other number here --
-                whatever it loses is reconstruction, not dynamics, and a
-                prediction score cannot be read without it.
-    stale       the board as it was, scored against the board that followed.
-                This is what the live loop acts on today.
+    floor       rebuild the board and step the minimum one tick. What it loses
+                is reconstruction, not dynamics, and no prediction can beat it.
+    stale       the board as it was, scored against the board that followed:
+                what the live loop acts on today.
     predicted   the engine's forecast, scored the same way.
 
-`predicted > stale` means the engine's dynamics carry real information about
-the next second and the ~1 s of end-to-end latency is partly recoverable.
-`predicted < stale` means stepping this engine forward actively misinforms,
-and -- more importantly -- that the agent is training against physics the real
-game does not share.
+`predicted > stale` means the engine's dynamics carry information about the
+next second and some of the ~1 s latency is recoverable. `predicted < stale`
+means stepping this engine misinforms, and that the agent trains on physics the
+real game does not share.
 
-WHY OCCUPANCY, AND WHY TOWERS ARE EXCLUDED
-------------------------------------------
-Scored as intersection-over-union of occupied cells. Unit HP, tower HP, elixir
-and the match clock cannot be reconstructed at all (no setters exist -- see
-forecast.py), so any whole-observation distance would be dominated by those
-resets rather than by dynamics. Occupancy survives all of them.
+Scored as intersection-over-union of occupied cells with towers excluded:
+forecast.py does not reconstruct unit HP, tower HP, elixir or the clock, and
+towers never move (six guaranteed matches would dominate a quiet board).
 
-Towers are excluded because they never move: leaving them in adds six
-guaranteed matches to every comparison, which on a quiet board is most of the
-score.
+Speed is measured on both sides: the engine's by injection, the real game's
+from card classes that appear exactly once on a side in both frames of a pair,
+where displacement needs no tracker.
 
-SPEED IS MEASURED ON BOTH SIDES
--------------------------------
-The engine's own tiles/second comes from injecting and measuring, not from
-reading a constant. The real game's comes from card classes that appear
-exactly once on a side in both frames of a pair, where displacement is
-unambiguous without a tracker. Comparing the two is the single most direct
-statement of where the physics differ, and it needs no forecast at all.
-
-CALIBRATION CAVEATS THAT APPLY TO EVERY NUMBER BELOW
-----------------------------------------------------
-  * `TILE_Y_OFFSET` is derived from two board heights, not measured. A
-    constant row error shifts both sides equally, so it damages the
-    engine-vs-real speed comparison little, but it is not zero.
-  * The detector is the same one the live loop uses, so its errors are in
-    both `stale` and `predicted` -- which is the right control, since the
-    live loop would eat them too.
-  * The engine has NO deploy time; the real game freezes a troop ~1 s after
-    it lands. Newly placed units are therefore predicted worst, and they are
-    the ones that matter most.
+Caveats on every number:
+  * `TILE_Y_OFFSET` is derived, not measured; a constant row error shifts
+    both sides equally, so it barely affects the speed comparison.
+  * The detector's errors are in both `stale` and `predicted`, the right
+    control since the live loop eats them too.
+  * Every rebuilt unit gets a fresh deploy second (forecast.py does not
+    pass deploy_ticks), so newly placed units are predicted worst.
 """
 from __future__ import annotations
 
@@ -62,8 +44,7 @@ _PERCEPTION_ROOT = Path(__file__).resolve().parent.parent
 if str(_PERCEPTION_ROOT) not in sys.path:
     sys.path.insert(0, str(_PERCEPTION_ROOT))
 
-# The detector logs a DEBUG line per frame, which at several hundred frames
-# buries the report it is being run to produce.
+# The detector logs a DEBUG line per frame, which would bury the report.
 from loguru import logger  # noqa: E402
 
 logger.remove()
@@ -86,16 +67,14 @@ from forecast import (  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
 from live.mvp_loop import DECK, deck_costs  # noqa: E402
 
-# The recordings are 1920x1080 DESKTOP captures; the emulator occupies this
-# sub-rectangle (CLAUDE.md, "Recording real matches"). Verified rather than
-# assumed: uncropped, the elixir reader returns 0 and the detector finds five
-# phantom enemies; cropped it reads a plausible 6 with sane unit counts.
+# The recordings are 1920x1080 desktop captures and the emulator occupies this
+# sub-rectangle. Uncropped, the elixir reader returns 0 and the detector finds
+# phantom enemies.
 EMULATOR_CROP = (686, 40, 1236, 1012)      # left, top, right, bottom
 
-# Menus and the end screen produce confident nonsense, and the CRBAB screen
-# classifier's `in_game` hash was cut from a different emulator profile so it
-# reports `unknown` on these files. Elixir reads 0 off-match and essentially
-# never during play, which makes it the more reliable gate here.
+# Menus and the end screen produce confident nonsense, and CRBAB's `in_game`
+# hash was cut from another emulator profile (it reports `unknown` here).
+# Elixir reads 0 off-match and almost never during play, so it is the gate.
 SKIP_HEAD_FRAC = 0.15
 SKIP_TAIL_FRAC = 0.10
 
@@ -103,11 +82,9 @@ DEFAULT_HORIZONS = (0.5, 1.0, 2.0)
 
 
 def perceive(detector, frame):
-    """The live loop's own perception path, minus the ledger and the debit.
-
-    Deliberately the same calls in the same order as `mvp_loop.perceive`: a
-    harness that measured a DIFFERENT pipeline from the one that plays would
-    be measuring nothing anyone runs.
+    """The live loop's own perception path, minus the ledger and the debit: the
+    same calls in the same order as `mvp_loop.perceive`, so this measures the
+    pipeline that plays.
     """
     left, top, right, bottom = EMULATOR_CROP
     cropped = frame.image[top:bottom, left:right]
@@ -125,25 +102,18 @@ def perceive(detector, frame):
 
 
 def real_occupancy(game_state, team):
-    """Occupied cells straight from perception, towers not included.
-
-    Built from the GameState rather than by encoding it and reading the
-    observation back: the encoder is verified byte-exact against the engine,
-    so the round trip would be a slower way to get the same set, and one more
-    place for a layout assumption to hide.
+    """Occupied cells straight from perception, towers excluded. Built from the
+    GameState: the encoder is byte-exact against the engine, so a round trip
+    would give the same set, slower.
     """
     return {(u.tile_x, u.tile_y) for u in game_state.units
             if int(u.team) == int(team) and int(u.card_sim_id) >= 0}
 
 
 def sole_positions(game_state):
-    """{card name: (x, y)} for classes with exactly one body on one side.
-
-    Association without a tracker. If a side shows exactly one Musketeer in
-    both frames of a pair, the displacement between them is unambiguous; two
-    Musketeers and it is a guess. Restricting to the unambiguous case gives
-    fewer samples of a number that means something, rather than more of one
-    that does not.
+    """{card name: (x, y)} for classes with exactly one body on one side:
+    association without a tracker. Fewer samples of a number that means
+    something.
     """
     by_class = defaultdict(list)
     for u in game_state.units:
@@ -153,11 +123,8 @@ def sole_positions(game_state):
 
 
 def sanity_check_frame(game_state):
-    """Our units low-y, theirs high-y, or the whole comparison is mirrored.
-
-    Costs nothing and catches the one class of fault this project has already
-    paid for twice -- a coordinate frame that is silently flipped or offset
-    looks exactly like 'the engine's physics are wrong'.
+    """Our units low-y, theirs high-y, or the comparison is mirrored. A silently
+    flipped or offset coordinate frame looks exactly like wrong physics.
     """
     mine = [u.tile_y for u in game_state.units if int(u.team) == 0]
     theirs = [u.tile_y for u in game_state.units if int(u.team) == 1]
@@ -169,33 +136,26 @@ def sanity_check_frame(game_state):
 def run(paths, samples_per_video, horizons, time_scales=(1.0,), verbose=False):
     """Steps the engine by `h * scale` to predict `h`, for each scale given.
 
-    The decisive control. If the engine's troops move N times too fast, then
-    dynamics that are otherwise correct would predict real footage well at
-    `scale = 1/N` and badly at 1.0. Sweeping it separates "the engine models
-    the wrong physics" from "the engine models the right physics at the wrong
-    rate", which need completely different responses -- the second is one
-    constant, the first is a rewrite.
+    If the engine's troops move N times too fast, otherwise-correct dynamics
+    predict footage well at `scale = 1/N` and badly at 1.0. The sweep separates
+    wrong physics (a rewrite) from right physics at the wrong rate (one
+    constant).
 
-    ALL SCALES SHARE ONE PASS over the recordings. Perception is ~99% of the
-    cost here and a forecast is microseconds, so re-running the detector per
-    scale would multiply a 20-minute measurement by the number of scales for
-    no new information. Sharing the pass also makes the comparison PAIRED:
-    every scale is scored on exactly the same boards, so a difference between
-    them cannot be sampling.
+    All scales share one pass: perception is ~99% of the cost and a forecast is
+    microseconds, and scoring every scale on the same boards makes the
+    comparison paired.
     """
     detector = Detector(DECK)
     costs, _warn = deck_costs(DECK)
     forecaster = SimForecaster([c for c in _engine_deck()])
     towers = tower_cells()
 
-    # `stale` does not depend on the scale, so it is scored once per horizon
-    # rather than recomputed identically for every scale.
+    # `stale` does not depend on the scale; scored once per horizon.
     stale_scores = {h: [] for h in horizons}
-    # "Reconstruct but do not step", scored against the SAME truth. Without
-    # this, `pred` is compared against a `stale` that never paid the
-    # reconstruction cost, so a perfect predictor still loses -- the ceiling
-    # on any rebuilt board is the floor (~0.52), while `stale` has none.
-    # This is the control that isolates the effect of STEPPING.
+    # "Reconstruct but do not step", scored against the same truth. Without it
+    # `pred` is compared with a `stale` that never paid the reconstruction
+    # cost, so a perfect predictor still loses (the rebuilt board's ceiling is
+    # ~0.52). Isolates the effect of stepping.
     rebuilt_scores = {h: [] for h in horizons}
     scores = {(s, h): [] for s in time_scales for h in horizons}
     floor: list[float] = []
@@ -249,7 +209,7 @@ def run(paths, samples_per_video, horizons, time_scales=(1.0,), verbose=False):
                     now, [MIN_HORIZON_S, *scaled.values()])}
 
                 # Reconstruction floor: the rebuilt board at the shortest
-                # horizon, against the board it was built FROM.
+                # horizon, against the board it was built from.
                 base = predictions[min(predictions)]
                 rebuilt = ((occupancy(base.observation, 0) - towers)
                            | (occupancy(base.observation, 1) - towers))
@@ -269,12 +229,10 @@ def run(paths, samples_per_video, horizons, time_scales=(1.0,), verbose=False):
                             | (occupancy(predictions[key].observation, 1) - towers))
                         scores[(s, h)].append(agreement(pred, truth))
 
-                    # Real-game speed, from unambiguous single-instance
-                    # classes. Keyed BY HORIZON, because the shortest ones
-                    # cannot resolve it: a real unit at ~0.75 tiles/s covers
-                    # 0.4 tiles in 0.5 s, which quantises to 0 or 1 cell --
-                    # i.e. 0 or 2 tiles/s. Only the longest horizon carries
-                    # enough displacement for the number to mean anything.
+                    # Real-game speed, keyed by horizon: at the short ones a
+                    # ~0.75 tiles/s unit covers 0.4 tiles in 0.5 s, which
+                    # quantises to 0 or 2 tiles/s. Only the longest horizon
+                    # carries enough displacement.
                     a, b = sole_positions(now), sole_positions(later)
                     for cls in set(a) & set(b):
                         dx = b[cls][0] - a[cls][0]
@@ -293,7 +251,7 @@ def run(paths, samples_per_video, horizons, time_scales=(1.0,), verbose=False):
 
 
 def _engine_deck():
-    """DECK as engine card ids -- the same mapping the live loop uses."""
+    """DECK as engine card ids, via the live loop's mapping."""
     from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
     return [hand_card_id_for(c.name) for c in DECK]
 
@@ -317,16 +275,11 @@ def report(result, horizons):
     if result["extent"]:
         xs = [e[0] for e in result["extent"]] + [e[1] for e in result["extent"]]
         ys = [e[2] for e in result["extent"]] + [e[3] for e in result["extent"]]
-        # Speed in tiles/second is only meaningful if a detector tile IS an
-        # engine tile. If the grid were scaled wrong, units would occupy a
-        # sub-range of the board and every speed below would be wrong by the
-        # same factor -- which would look exactly like an engine speed bug.
-        # The enemy Princess towers sit on row 27 and the King on row 30, and
-        # rows past the King are behind everything worth attacking -- units
-        # essentially never go there. An earlier version of this check demanded
-        # max(y) >= 29 and raised a false alarm on a perfectly good grid
-        # measuring 1..28. The deepest NORMAL position is a unit engaging an
-        # enemy Princess tower, so that is what the threshold is set to.
+        # Speed in tiles/second means something only if a detector tile is an
+        # engine tile; a mis-scaled grid would put units in a sub-range of the
+        # board and look exactly like an engine speed bug. Units rarely go past
+        # the King's row, so the check asks for the deepest normal position, a
+        # unit engaging an enemy Princess Tower (row 27).
         span_ok = (min(xs) <= 2 and max(xs) >= 15
                    and min(ys) <= 4 and max(ys) >= 26)
         verdict = "OK" if span_ok else (
@@ -368,8 +321,7 @@ def report(result, horizons):
             row += f"  {means[sc]:>8.3f}"
         best = max(means, key=lambda k: means[k])
         # Judged against `rebuilt`, not `stale`: both paid the reconstruction
-        # cost, so the difference between them is the effect of stepping
-        # alone. Beating `stale` too is the stronger, separate claim.
+        # cost, so the difference is stepping alone.
         tag = f"x{best:g}"
         if means[best] > rb.mean():
             tag += " beats rebuilt"
@@ -402,7 +354,7 @@ def report(result, horizons):
         except Exception:                                   # noqa: BLE001
             continue
         if not np.isfinite(engine) or engine <= 0.05:
-            continue        # a building; "does not move" is not a speed gap
+            continue        # a building: not moving is not a speed gap
         med = float(np.median(samples))
         p90 = float(np.percentile(samples, 90))
         ratio = engine / p90 if p90 > 0 else float("inf")

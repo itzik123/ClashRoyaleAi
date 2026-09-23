@@ -1,26 +1,8 @@
-"""The placement mask must track the board after the agent LOSES a tower.
+"""The placement mask tracks the board after the agent loses a tower.
 
-`_build_placement_legality` probes `is_valid_placement` once at construction and
-caches it, on the stated premise that legality is board-state-independent. That
-premise was measured against TROOPS on the board. It does not hold for a
-DESTROYED TOWER:
-
-    own LEFT princess destroyed   242 -> 251 legal cells   (+9, its footprint)
-    own RIGHT princess destroyed  242 -> 251 legal cells   (+9)
-    enemy princess destroyed      242 -> 242               ( 0, no change)
-
-The tower's own 3x3 footprint is cleared when it dies. The cached table, built
-on a full board, keeps masking those nine cells off forever -- so the policy can
-never deploy in its own fallen tower's footprint, which is precisely the ground
-you defend after losing a tower.
-
-Direction matters for severity: this mask FORBIDS legal cells, it does not
-permit illegal ones, so it costs options rather than injecting gradient noise
-the way the affordability bug did. But it is a real divergence between the mask
-and the engine, in a state most matches reach.
-
-GAMEPLAY-AFFECTING: it widens the action space in a state the agent reaches
-often, so win rates from before it are not strictly comparable.
+When our own Princess dies its 3x3 footprint becomes legal (an enemy tower
+dying changes nothing). A table cached on a full board would forbid those cells
+forever, exactly the ground defended after losing a tower.
 """
 import numpy as np
 import pytest
@@ -49,11 +31,8 @@ def _obs(g, net):
 
 
 def _force_hand(g, cards):
-    """Put `cards` in team 0's hand, so a specific card can be masked for.
-
-    The opening hand is a shuffled subset of the deck, so `hand.index(card)`
-    raises for the half of the deck that happens not to be drawn -- which is
-    what a first draft of this file did.
+    """Put `cards` in team 0's hand so a specific card can be masked for; the
+    opening hand is a random subset of the deck.
     """
     ok = g.set_hand_for_team(0, list(cards))
     if not ok:
@@ -62,7 +41,7 @@ def _force_hand(g, cards):
 
 
 def _mask_cells_for_slot(net, obs, slot):
-    """Cells the MASK permits for the card in hand slot `slot`."""
+    """Cells the mask permits for the card in hand slot `slot`."""
     idx = torch.tensor([slot])
     m = net.placement_mask(obs, idx)[0]
     return {(c % net.board_width, c // net.board_width)
@@ -70,7 +49,7 @@ def _mask_cells_for_slot(net, obs, slot):
 
 
 def _assert_mask_matches_engine(net, g, label):
-    """Compare mask against engine for EVERY occupied hand slot."""
+    """Compare mask against engine for every occupied hand slot."""
     obs = _obs(g, net)
     hand = net.hand_card_ids(obs)[0].tolist()
     checked = 0
@@ -102,8 +81,9 @@ def _engine_cells(g, card_id, net):
 def test_the_engine_frees_the_footprint_of_our_own_dead_princess(slot,
                                                                  expect_centre,
                                                                  net):
-    """Pins the engine behaviour the fix exists to track, so the test suite
-    states the fact independently of our implementation of it."""
+    """Pins the engine behaviour the fix tracks, independently of our
+    implementation.
+    """
     g = _game()
     before = _engine_cells(g, DECK[0], net)
     assert g.destroy_tower(0, slot) is True
@@ -118,7 +98,7 @@ def test_the_engine_frees_the_footprint_of_our_own_dead_princess(slot,
 
 
 def test_an_enemy_tower_dying_changes_nothing(net):
-    """The asymmetry is the reason only our OWN towers are tracked."""
+    """The asymmetry is why only our own towers are tracked."""
     g = _game()
     before = _engine_cells(g, DECK[0], net)
     g.destroy_tower(1, 1)
@@ -127,7 +107,7 @@ def test_an_enemy_tower_dying_changes_nothing(net):
 
 @pytest.mark.parametrize("slot", [1, 2])
 def test_the_MASK_follows_the_engine_after_our_tower_falls(slot, net):
-    """THE regression test: mask and engine must agree in the destroyed state."""
+    """The regression test: mask and engine agree in the destroyed state."""
     g = _game()
     g.destroy_tower(0, slot)
     for _ in range(2):
@@ -137,11 +117,11 @@ def test_the_MASK_follows_the_engine_after_our_tower_falls(slot, net):
 
 
 def test_the_mask_still_matches_on_a_FULL_board(net):
-    """The change must not loosen anything while the towers stand."""
+    """Nothing loosens while the towers stand."""
     g = _game()
     _assert_mask_matches_engine(net, g, "intact board")
-    # ...and again with the other half of the deck forced into hand, so every
-    # card in DECK is actually exercised rather than whichever four were dealt.
+    # ...and with the other half of the deck in hand, so every card is
+    # exercised.
     _force_hand(g, DECK[4:])
     _assert_mask_matches_engine(net, g, "intact board, second half of deck")
 
@@ -156,9 +136,9 @@ def test_both_princesses_down_frees_both_footprints(net):
 
 
 def test_every_deck_card_agrees_in_the_destroyed_state(net):
-    """Per-card, because the freed cells still have to satisfy each card's own
-    placement rules -- a footprint being clear does not make it legal for
-    everything."""
+    """Per card: a clear footprint still has to satisfy each card's own placement
+    rules.
+    """
     g = _game()
     g.destroy_tower(0, 1)
     for _ in range(2):
@@ -170,13 +150,9 @@ def test_every_deck_card_agrees_in_the_destroyed_state(net):
 
 @pytest.mark.slow
 def test_the_probe_WINDOW_is_wide_enough_for_every_registered_card(net):
-    """The expensive guard on the cheap implementation.
-
-    The freed-cell table is built by probing only a bounded window around each
-    tower, rather than re-probing the whole board for every card in every tower
-    state. This test does the full, exhaustive comparison for EVERY registered
-    card and every cell, so an under-sized window is caught here rather than
-    becoming a silent mask divergence.
+    """The freed-cell table probes only a window around each tower; this
+    exhaustive comparison over every registered card catches an undersized
+    window.
     """
     ids = [c for c in E.get_all_card_ids()]
     for slot in (1, 2):

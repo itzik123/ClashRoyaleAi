@@ -1,28 +1,10 @@
 """The value-clip range on a batch with no estimable spread.
 
-`run_update` scales the critic's trust region to the batch's own return spread:
-
-    vf_clip_range = clamp(vf_clip_std_frac * r.std(), min=eps_clip)
-
-`Tensor.std()` is the UNBIASED estimator, so with fewer than two masked-in rows
-it divides by n-1 = 0 and returns NaN -- and `torch.clamp` propagates NaN rather
-than flooring it. So the guard READS as "never tighter than eps_clip" while
-actually passing NaN through, which is the shape of check this project has been
-bitten by repeatedly: one that cannot do the job it appears to do.
-
-The NaN then reaches `value_clipped`, `critic_loss_per_elem`, and the total
-loss, where the containment guard drops EVERY minibatch. The update survives
-(that is what the guard is for) but learns nothing, and `std()` also emits a
-UserWarning into a suite that is kept warning-clean.
-
-`gae.normalize` already guards precisely this case, with precisely this
-reasoning ("A batch with fewer than two masked-in rows has NO ESTIMABLE SPREAD
-... Zero is the correct answer instead"). This applies the same rule to the one
-statistic in that block still computing an unguarded `std()`.
-
-Reachable only on a degenerate batch -- it needs all but one row to be a
-phantom post-autoreset step -- but the cost of the guard is one comparison and
-the cost of the hole is a silently dead update.
+`run_update` sets `vf_clip_range = clamp(vf_clip_std_frac * r.std(),
+min=eps_clip)`. The unbiased `std()` of fewer than two rows is NaN, and
+`torch.clamp` propagates NaN rather than flooring it, so the "never tighter
+than eps_clip" guard would pass NaN into the loss and every minibatch would be
+dropped. `safe_std` returns 0 there, the rule `gae.normalize` already applies.
 """
 import warnings
 
@@ -38,7 +20,8 @@ def test_no_estimable_spread_is_zero_not_nan(n):
 
 
 def test_it_does_not_warn_on_a_degenerate_input():
-    """`std()` on n<2 emits a UserWarning; the suite is kept warning-clean."""
+    """`std()` on n < 2 emits a UserWarning; the suite is kept warning-clean.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert safe_std(torch.randn(1)) == 0.0
@@ -56,7 +39,7 @@ def test_a_constant_batch_has_zero_spread():
 
 
 def test_the_clip_range_floors_at_eps_clip_instead_of_going_nan():
-    """The property the caller actually depends on."""
+    """The property the caller depends on."""
     eps_clip = 0.2
     for n in (0, 1, 2, 64):
         torch.manual_seed(n)
@@ -66,11 +49,12 @@ def test_the_clip_range_floors_at_eps_clip_instead_of_going_nan():
         assert rng >= eps_clip
 
 def test_clamp_alone_would_NOT_have_floored_it():
-    """Negative control: pins that the hazard was real and that `clamp(min=)`
-    is not itself sufficient, so nobody 'simplifies' the guard away later."""
+    """Negative control: `clamp(min=)` alone does not floor NaN, so the guard must
+    not be "simplified" away.
+    """
     with warnings.catch_warnings():
-        # This test's whole point is to build the NaN the guard prevents, so
-        # the degrees-of-freedom warning is expected here and only here.
+        # This test builds the NaN on purpose, so the degrees-of-freedom
+        # warning is expected here only.
         warnings.simplefilter("ignore", UserWarning)
         nan_std = torch.randn(1).std()      # NaN by construction
     assert nan_std != nan_std
@@ -83,8 +67,9 @@ def test_clamp_alone_would_NOT_have_floored_it():
 @pytest.mark.slow
 def test_run_update_survives_a_batch_with_almost_no_valid_rows(tmp_path,
                                                                monkeypatch):
-    """End to end: an almost-entirely-phantom rollout must still produce a
-    finite clip range and must not have every minibatch dropped."""
+    """End to end: an almost entirely phantom rollout still yields a finite clip
+    range and keeps its minibatches.
+    """
     import gymnasium as gym
 
     from python_ai.envs import gym_wrapper
@@ -121,7 +106,7 @@ def test_run_update_survives_a_batch_with_almost_no_valid_rows(tmp_path,
     t.setup()
     try:
         t.collect_rollout()
-        # Force the degenerate case: one valid row in the entire batch.
+        # Force the degenerate case: one valid row in the whole batch.
         t.buffer._data["valid"] = [
             torch.zeros(cfg.num_envs) for _ in t.buffer._data["valid"]]
         t.buffer._data["valid"][0] = torch.tensor([1.0, 0.0])

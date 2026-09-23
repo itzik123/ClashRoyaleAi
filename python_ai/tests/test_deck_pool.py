@@ -1,10 +1,8 @@
-"""The phase-1 meta-deck pool: loading, validation, and PFSP weighting.
+"""The phase-1 meta-deck pool: loading, validation and PFSP weighting.
 
-The pool decides WHICH OPPONENT the agent trains against, so every failure mode
-here is silent by nature -- a dropped deck still trains, a misspelt card still
-trains, a champion the teacher cannot use still trains. Each of those is a run
-measuring a different opponent distribution than the file says it is measuring.
-Hence: every one of them raises, and these tests pin that it raises.
+Every failure here is silent by nature (a dropped deck, a misspelt card, an
+unusable Champion all still train, on a different opponent distribution), so
+each one raises and these tests pin that.
 """
 import json
 
@@ -31,7 +29,7 @@ def _deck(name="d1", cards=None, **extra):
     return entry
 
 
-# ------------------------------------------------------------- the shipped --
+# --- the shipped pool ---
 def test_the_shipped_pool_loads_and_every_deck_is_legal():
     decks = deck_pool.load_pool()
     assert len(decks) >= 8, "a pool this small cannot teach generalization"
@@ -44,11 +42,8 @@ def test_the_shipped_pool_loads_and_every_deck_is_legal():
 
 
 def test_the_mirror_is_still_in_the_pool():
-    """The 2.6 mirror is DEMOTED to one matchup of many, never deleted.
-
-    It is the deck the agent plays, so it stays the single most informative
-    single matchup -- and dropping it entirely would trade one overfit
-    distribution for another.
+    """The mirror is one matchup of many, never deleted: it is still the single
+    most informative matchup.
     """
     decks = {d.name: d for d in deck_pool.load_pool()}
     assert "hog_26_mirror" in decks
@@ -57,19 +52,16 @@ def test_the_mirror_is_still_in_the_pool():
 
 
 def test_the_pool_is_not_mostly_the_agents_own_archetype():
-    """A pool of sixteen cycle decks is a mirror with extra steps.
-
-    The three dead cards answer TANKS, CLUSTERS and SWARMS, so the pool has to
-    contain decks that produce those. Checked on the tag vocabulary rather than
-    on specific decks, so swapping a deck for another of the same archetype
-    keeps this passing and gutting the variety does not.
+    """The pool must produce the tanks, clusters, swarms and sieges the defensive
+    cards answer. Checked on tags, so swapping a deck for another of its
+    archetype keeps passing while gutting the variety does not.
     """
     tags = {t for d in deck_pool.load_pool() for t in d.tags}
     for needed in ("beatdown", "swarm", "cluster", "siege"):
         assert needed in tags, f"the pool offers nothing tagged {needed!r}"
 
 
-# --------------------------------------------------------------- validation --
+# --- validation ---
 def test_an_unknown_card_name_raises_and_names_the_deck_and_the_card(tmp_path):
     path = _write(tmp_path, [_deck(cards=[
         "Knight", "Archers", "Giant", "Arrows",
@@ -92,15 +84,16 @@ def test_a_malformed_deck_raises(tmp_path, cards, fragment):
 
 
 def test_a_champion_is_refused_because_the_teacher_cannot_use_its_ability(tmp_path):
-    """A Champion the teacher holds is a strictly worse card than the real one,
-    so the deck silently stops being the deck it is named after."""
+    """A Champion held by a teacher that cannot use its ability is a worse card,
+    so the deck would silently stop being the deck it is named after.
+    """
     path = _write(tmp_path, [_deck(cards=[
         "Archer Queen", "Archers", "Giant", "Arrows",
         "Goblins", "Musketeer", "Fireball", "Skeletons"])])
     with pytest.raises(deck_pool.DeckPoolError) as e:
         deck_pool.load_pool(path)
     assert "Champion" in str(e.value)
-    # ...and the escape hatch works, for when abilities are wired.
+    # ...and the escape hatch works.
     assert len(deck_pool.load_pool(path, allow_champions=True)) == 1
 
 
@@ -122,7 +115,7 @@ def test_an_all_disabled_pool_raises_rather_than_training_on_nothing(tmp_path):
         deck_pool.load_pool(path)
 
 
-# ------------------------------------------------------------------- PFSP --
+# --- PFSP ---
 def test_pfsp_concentrates_on_hard_but_winnable_decks():
     w = deck_pool.pfsp_weights({"easy": 0.95, "even": 0.50, "hard": 0.25})
     assert w["hard"] > w["even"] > w["easy"], (
@@ -132,9 +125,8 @@ def test_pfsp_concentrates_on_hard_but_winnable_decks():
 
 
 def test_a_deck_below_the_win_rate_floor_is_parked_at_the_minimum():
-    """A structurally lost matchup is not a curriculum, it is a zero-gradient
-    state -- the exact failure the 2026-08-19 curriculum pivot exists to avoid.
-    Uncapped `(1-wr)^2` would give it the LARGEST weight of all.
+    """With the floor requested, an unwinnable matchup must not get the largest
+    weight, as uncapped (1-wr)^2 would give it.
     """
     w = deck_pool.pfsp_weights({"hopeless": 0.02, "hard": 0.25, "even": 0.50},
                                floor=0.20)
@@ -143,8 +135,9 @@ def test_a_deck_below_the_win_rate_floor_is_parked_at_the_minimum():
 
 
 def test_nothing_is_ever_weighted_to_zero():
-    """A deck that stops being sampled is a deck the policy is free to forget.
-    Same argument as phase 2's PFSP_MIN_WEIGHT, one level down."""
+    """A deck that stops being sampled is one the policy is free to forget (as
+    PFSP_MIN_WEIGHT in phase 2).
+    """
     w = deck_pool.pfsp_weights({f"d{i}": r for i, r in
                                 enumerate([0.0, 0.5, 1.0, 1.0, 1.0])})
     assert all(v > 0 for v in w.values())
@@ -162,14 +155,9 @@ def test_sampling_respects_the_weights():
 
 
 def test_a_pool_nothing_can_beat_yet_is_sampled_uniformly():
-    """The state every fresh run starts in.
-
-    `(1 - wr)^2` ranks a 0.02 deck above a 0.19 one, so a policy losing
-    everything would be handed the matchup it loses hardest. When nothing
-    clears the (explicitly requested) gate the deck axis has no usable ranking
-    and hands out equal shares. Until 2026-09-15 this branch was EASIEST-first
-    and -- with the production gate at 0.0 -- unreachable; see
-    test_deck_pool_cold_start.py.
+    """The state a fresh run starts in: when nothing clears the requested gate
+    there is no usable ranking, so shares are equal (see
+    test_deck_pool_cold_start.py).
     """
     w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "least_bad": 0.19},
                                floor=0.20)
@@ -178,16 +166,16 @@ def test_a_pool_nothing_can_beat_yet_is_sampled_uniformly():
 
 
 def test_one_winnable_deck_is_enough_to_restore_normal_pfsp():
-    """The fallback is for 'nothing works', not 'most things do not'."""
+    """The fallback is for "nothing works", not "most things do not"."""
     w = deck_pool.pfsp_weights({"awful": 0.02, "bad": 0.10, "ok": 0.55},
                                floor=0.20)
     assert w["ok"] > w["awful"], "normal PFSP must resume once anything clears"
 
 
 def test_the_shipped_pool_keeps_its_old_priors_only_as_provenance():
-    """The 2.6-measured priors are kept in the file, under a key the loader does
-    not read -- see test_deck_pool_cold_start.py for why the run starts from
-    NEUTRAL_PRIOR instead."""
+    """The old priors stay in the file under a key the loader does not read; the
+    run starts from NEUTRAL_PRIOR (see test_deck_pool_cold_start.py).
+    """
     import json
     raw = json.loads(open(deck_pool.DEFAULT_POOL_PATH, encoding="utf-8").read())         if hasattr(deck_pool, "DEFAULT_POOL_PATH") else None
     decks = deck_pool.load_pool()
@@ -198,20 +186,12 @@ def test_the_shipped_pool_keeps_its_old_priors_only_as_provenance():
                    if isinstance(e, dict))
 
 
-# --------------------------------------------------------------------------
-# 2026-09-06: the floor is OFF by default. See POOL_WINRATE_FLOOR's own comment
-# for the measurement; the mechanism is kept and tested, only the default moved.
-# --------------------------------------------------------------------------
+# --- the win-rate floor is off by default; the mechanism is kept ---
 
 def test_the_win_rate_floor_is_off_by_default():
-    """A deck the agent cannot beat YET must attract the most training time.
-
-    The floor was parking six of sixteen decks at 0.84% of episodes each while
-    the two decks the teacher could not even pilot took 53% between them -- so
-    it was selecting for TEACHER INCOMPETENCE, not for deck difficulty. The
-    heavy decks (Royal Giant, Royal Hogs, Mega Knight, P.E.K.K.A.) are exactly
-    the ones a 2.6 cycle deck exists to defend against, and are the only place
-    the agent can learn to hold a big push.
+    """A deck the agent cannot beat yet gets the most training time: the heavy
+    decks are exactly what a cycle deck exists to defend against. The floor had
+    selected for teacher incompetence rather than deck difficulty.
     """
     w = deck_pool.pfsp_weights({"crushing": 0.00, "hard": 0.25, "easy": 0.85})
     assert w["crushing"] > w["hard"] > w["easy"], (
@@ -219,19 +199,18 @@ def test_the_win_rate_floor_is_off_by_default():
 
 
 def test_the_floor_mechanism_still_works_when_asked_for():
-    """Kept, not deleted: `floor=` restores the old behaviour in one argument,
-    which is what makes turning it off a reversible decision rather than a
-    rewrite."""
+    """Kept: `floor=` restores the old behaviour in one argument, so turning it
+    off is reversible.
+    """
     w = deck_pool.pfsp_weights({"hopeless": 0.02, "hard": 0.25, "even": 0.50},
                                floor=0.20)
     assert w["hopeless"] < w["hard"]
 
 
 def test_the_shipped_pool_starts_uniform_for_a_new_policy():
-    """Replaces the 2026-09-06 assertion that episode 0 is spent on the decks a
-    TRAINED 2.6 policy lost to. For a from-scratch run on a new deck nothing is
-    known yet, and the run starts from equal shares; the live estimator ranks
-    the decks within ~10 matches each."""
+    """For a from-scratch run nothing is known yet: equal shares, ranked by the
+    live estimator within ~10 matches per deck.
+    """
     decks = deck_pool.load_pool()
     w = deck_pool.pfsp_weights({d.name: d.prior_win_rate for d in decks})
     assert max(w.values()) == pytest.approx(min(w.values()))

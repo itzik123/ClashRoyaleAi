@@ -1,7 +1,7 @@
 """Reading the KataCR replay format, and mapping it onto our engine.
 
-An episode is an lzma-compressed pickled dict with three parallel lists at
-~5 fps:
+An episode is an lzma-compressed pickled dict with three parallel lists at ~5
+fps:
 
     state[i]  = {'time': int seconds, 'elixir': int|None,
                  'cards': [next, slot1..slot4] as CLASSIFIER indices,
@@ -9,13 +9,12 @@ An episode is an lzma-compressed pickled dict with three parallel lists at
     action[i] = {'xy': ndarray|None, 'card_id': 0..4}   # 0 = no action
     reward[i] = float
 
-`cls` indexes KataCR's `label_list.unit_list`; `cards` indexes the CARD
-CLASSIFIER's own label set, which is NOT `card_list.py`'s 126-card list -- it is
-the sorted directory names of the 2.6-deck classification dataset, with 'empty'
-at index 1 (`classification/train.py:EMPTY_CARD_INDEX = 1`).
-
-That mapping is VERIFIED, not assumed: see `tests/test_katacr_card_mapping.py`,
-which re-derives it from an episode's own elixir ledger.
+`cls` indexes KataCR's `label_list.unit_list`. `cards` indexes the card
+classifier's own label set: the sorted directory names of the 2.6-deck
+classification dataset, with 'empty' at index 1
+(`classification/train.py:EMPTY_CARD_INDEX = 1`), not `card_list.py`'s 126-card
+list. Verified by `tests/test_katacr_card_mapping.py`, which re-derives it from
+an episode's own elixir ledger.
 """
 from __future__ import annotations
 
@@ -27,8 +26,8 @@ from typing import Any
 
 import numpy as np
 
-# Sorted directory names of the 2.6 card-classification dataset. 'empty' lands
-# at index 1 by alphabetical order, which is what EMPTY_CARD_INDEX = 1 pins.
+# Sorted directory names of the 2.6 card-classification dataset; 'empty' lands
+# at index 1 alphabetically, as EMPTY_CARD_INDEX = 1 pins.
 KATACR_CARD_CLASSES = [
     "cannon", "empty", "fireball", "hog-rider", "ice-golem", "ice-spirit",
     "ice-spirit-evolution", "musketeer", "skeletons", "skeletons-evolution",
@@ -36,16 +35,16 @@ KATACR_CARD_CLASSES = [
 ]
 EMPTY_CARD_INDEX = 1
 
-# Their canonical elixir costs, used ONLY by the mapping test as an independent
-# oracle -- never to drive the engine, which prices cards itself.
+# Canonical elixir costs, used only by the mapping test as an independent
+# oracle, never to drive the engine.
 KATACR_CARD_ELIXIR = {
     "cannon": 3, "fireball": 4, "hog-rider": 4, "ice-golem": 2,
     "ice-spirit": 1, "musketeer": 4, "skeletons": 1, "the-log": 2,
     "ice-spirit-evolution": 1, "skeletons-evolution": 1,
 }
 
-# Detected classes that are scenery rather than deployed bodies. Our engine's
-# unit-count channels do not include towers, so neither may theirs.
+# Detected classes that are scenery, not deployed bodies: our unit-count
+# channels exclude towers, so theirs must too.
 NON_BODY_CLASSES = {
     "king-tower", "queen-tower", "cannoneer-tower", "dagger-duchess-tower",
     "dagger-duchess-tower-bar", "tower-bar", "king-tower-bar", "bar",
@@ -63,22 +62,17 @@ class Episode:
     reward: np.ndarray
     idx2unit: dict[int, str]
 
-    # Filled by load_episode: seconds = _sec_per_frame * i + _sec_at_zero, and
-    # frames at/after n_frames are not gameplay.
+    # Filled by load_episode: seconds = _sec_per_frame * i + _sec_at_zero;
+    # frames at or after n_frames are not gameplay.
     _sec_per_frame: float = 0.2
     _sec_at_zero: float = 0.0
     _n_valid: int = 0
 
     @property
     def n_frames(self) -> int:
-        """Gameplay frames only.
-
-        The recorded `time` field is a clean monotonic second counter for the
-        whole match and then RESETS on the final frame or two -- the victory
-        screen, where the clock OCR reads a different part of the UI. Deriving
-        the frame rate from the endpoints therefore reported 641 fps on one
-        episode and 1.2e9 on another, which silently collapsed every timestamp
-        to zero. The tail is trimmed here instead.
+        """Gameplay frames only. The recorded `time` counter resets on the final
+        frame or two (the victory screen), so deriving the frame rate from the
+        endpoints gives nonsense; the tail is trimmed.
         """
         return self._n_valid
 
@@ -87,9 +81,9 @@ class Episode:
         return 1.0 / self._sec_per_frame
 
     def seconds_at(self, i: int) -> float:
-        """Frame index -> match seconds, from a robust fit rather than from
-        `state['time']` directly, which is quantised to whole seconds and so
-        cannot express a sub-second placement."""
+        """Frame index -> match seconds, from a robust fit: `state['time']` is
+        quantised to whole seconds and cannot express a sub-second placement.
+        """
         return self._sec_at_zero + i * self._sec_per_frame
 
     def card_name_at(self, frame: int, slot: int) -> str:
@@ -101,12 +95,10 @@ class Episode:
 
 
 def _timebase(state, tol_seconds: float = 3.0, k: int = 100):
-    """Robust (seconds-per-frame, offset, n_valid) from the recorded clock.
-
-    The slope is a median of long-baseline differences rather than a least
-    squares fit, so an isolated OCR blip cannot move it; `n_valid` then trims
-    the trailing frames that disagree with that line by more than `tol`, which
-    is what removes the victory screen.
+    """Robust (seconds-per-frame, offset, n_valid) from the recorded clock. The
+    slope is a median of long-baseline differences, so an OCR blip cannot move
+    it; `n_valid` trims trailing frames off the line by more than `tol` (the
+    victory screen).
     """
     t = np.asarray([s["time"] for s in state], dtype=np.float64)
     n = len(t)

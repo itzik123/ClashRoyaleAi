@@ -1,28 +1,8 @@
-"""A seeded run must reproduce its OPENING HANDS, not just its weights.
+"""A seeded run reproduces its opening hands, not just its weights.
 
-`rl/seeding.py` calls itself "One seed, every stochastic source. The single
-entry point for determinism", and its own docstring lists the C++ engine's
-opening-hand shuffle among the sources it accounts for. It did not reach it:
-
-  * `seed_everything` covers torch / numpy-global / stdlib-random,
-  * `worker_seeds` feeds each env a `scenario_seed`, which seeds that env's
-    scenario Generator ONLY,
-  * `MicroRoyaleEnv` seeds the engine exclusively from `reset(seed=...)`,
-  * and `BaseTrainer.setup` called `self.envs.reset()` with NO seed.
-
-So the engine's `mt19937` stayed on OS entropy. Measured before the fix, two
-trainers built with CLASH_SEED=4242:
-
-    network init identical : True
-    opening hands run A    : [[7, 24, 6, 33], [24, 25, 6, 7]]
-    opening hands run B    : [[24, 33, 25, 72], [40, 15, 25, 24]]
-
-The run still PRINTED "Deterministic run: seed=4242". That is the damaging part:
-a paired A/B could not hold the openings fixed across arms, a crash could not be
-re-run, and nothing said so -- while the console asserted the opposite.
-
-The opening hand decides what the agent is able to play, so it is not a minor
-stochastic source; it is most of the episode's variance.
+The engine's opening-hand shuffle is most of an episode's variance;
+`BaseTrainer.setup` must seed it through `reset(seed=...)`, or a paired A/B
+cannot hold openings fixed while the run reports itself deterministic.
 """
 import numpy as np
 import pytest
@@ -78,7 +58,7 @@ def _hands(t):
 
 @pytest.mark.slow
 def test_the_same_seed_reproduces_the_opening_hands(tmp_path, monkeypatch):
-    """THE regression test."""
+    """The regression test."""
     a = _build(tmp_path / "a", monkeypatch, 4242)
     ha = _hands(a)
     a.envs.close()
@@ -95,8 +75,9 @@ def test_the_same_seed_reproduces_the_opening_hands(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_different_seeds_still_deal_different_openings(tmp_path, monkeypatch):
-    """The control. Without it, a bug that pinned every run to one fixed hand
-    would satisfy the test above perfectly."""
+    """Control: a bug pinning every run to one fixed hand would satisfy the test
+    above.
+    """
     a = _build(tmp_path / "a", monkeypatch, 1)
     ha = _hands(a)
     a.envs.close()
@@ -110,9 +91,9 @@ def test_different_seeds_still_deal_different_openings(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_an_UNSEEDED_run_is_still_random(tmp_path, monkeypatch):
-    """Seeding is opt-in and must stay so: every win rate in CLAUDE.md was
-    earned unseeded, and making runs deterministic by default would silently
-    change what every existing configuration does."""
+    """Seeding stays opt-in: making runs deterministic by default would silently
+    change every existing configuration.
+    """
     seen = set()
     for i in range(3):
         t = _build(tmp_path / f"u{i}", monkeypatch, None)
@@ -123,8 +104,9 @@ def test_an_UNSEEDED_run_is_still_random(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_the_two_workers_do_not_get_the_SAME_opening(tmp_path, monkeypatch):
-    """Per-worker seeds must stay distinct, or the vectorized envs run in
-    lockstep and the rollout's effective batch collapses to one trajectory."""
+    """Per-worker seeds stay distinct, or the vectorised envs run in lockstep and
+    the batch collapses to one trajectory.
+    """
     t = _build(tmp_path / "d", monkeypatch, 99)
     hands = _hands(t)
     t.envs.close()
@@ -132,7 +114,7 @@ def test_the_two_workers_do_not_get_the_SAME_opening(tmp_path, monkeypatch):
         "both workers dealt the same opening hand -- they are sharing a seed")
 
 
-# --- the seed derivation itself -------------------------------------------
+# --- the seed derivation itself ---
 
 def test_engine_seeds_are_reproducible_and_distinct():
     a = engine_seeds(7, 4)
@@ -141,9 +123,9 @@ def test_engine_seeds_are_reproducible_and_distinct():
 
 
 def test_engine_seeds_are_INDEPENDENT_of_the_scenario_stream():
-    """Reusing one integer for both would tie WHICH SCENARIO is injected to
-    WHICH HAND is dealt -- a correlation that could bias an experiment while
-    looking perfectly seeded."""
+    """One integer for both would tie which scenario is injected to which hand is
+    dealt.
+    """
     assert engine_seeds(7, 4) != worker_seeds(7, 4)
 
 

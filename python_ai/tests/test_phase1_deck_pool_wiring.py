@@ -1,18 +1,9 @@
-"""The pool as the phase-1 env actually uses it.
+"""The deck pool as the phase-1 env uses it.
 
-Three things go silently wrong when an opponent deck changes, and all three
-have precedent in this repo:
-
-  * the ENGINE gets the new deck and the TEACHER does not, so the bot reasons
-    about the previous deck's win condition and cycle -- `set_opponent_deck`
-    carries a comment about exactly this;
-  * the deck is applied and then reverted by the next auto-reset, because
-    `reset()` re-applies `self.opp_deck`;
-  * the deck never changes at all, and the run looks identical to the mirror
-    run it was supposed to replace.
-
-The last one is the dangerous one: it produces a clean log, a plausible win
-rate, and a completely different experiment from the one being reported.
+When the opponent deck changes, three things can go silently wrong: the teacher
+keeps the old deck while the engine has the new one; the next auto-reset
+reverts the deck; or the deck never changes at all, which yields a clean log of
+a different experiment than the one reported.
 """
 import pytest
 
@@ -47,9 +38,9 @@ def test_enabling_it_actually_varies_the_opponent_deck_across_episodes():
 
 
 def test_the_teacher_is_repointed_at_the_deck_it_is_actually_holding():
-    """A teacher still holding the previous deck's role table treats the new
-    deck's win condition as a plain melee troop -- a silent degradation that
-    reads as 'the teacher is weak against other decks'."""
+    """A teacher holding the previous deck's role table misreads the new win
+    condition.
+    """
     env = _env()
     for _ in range(15):
         env.reset()
@@ -60,7 +51,7 @@ def test_the_sampled_deck_survives_into_the_engine():
     env = _env()
     env.reset()
     assert list(env.game.get_hand_for_team(1)) or True   # engine accepted it
-    # Every card the opponent holds must come from the deck we just set.
+    # Every card the opponent holds comes from the deck just set.
     hand = [c for c in env.game.get_hand_for_team(1) if c >= 0]
     assert set(hand) <= set(env.current_opp_deck)
 
@@ -78,12 +69,8 @@ def test_an_empty_restriction_raises_rather_than_silently_falling_back():
 
 
 def test_outcomes_move_the_local_estimate_toward_what_happened():
-    """The EWMA must converge to the OUTCOMES, not stay near its seed.
-
-    Written without assuming a starting value: the pool ships measured priors,
-    so the mirror starts at 1.0 and an assertion like `> start + 0.2` is
-    unsatisfiable there. What matters is that live results overwrite the prior
-    in both directions -- the prior is a seed and never a gate.
+    """Live results overwrite the prior in both directions; the prior is a seed,
+    never a gate.
     """
     env = _env(deck_pool=["hog_26_mirror"])
     env.reset()
@@ -97,16 +84,17 @@ def test_outcomes_move_the_local_estimate_toward_what_happened():
 
 
 def test_the_readout_reports_every_deck_in_the_pool():
-    """A deck missing from the read-out is a deck whose collapse is invisible,
-    which is the whole reason this diagnostic exists."""
+    """A deck missing from the read-out is a deck whose collapse is invisible.
+    """
     env = _env()
     stats = env.get_deck_pool_stats()
     assert set(stats) == {d.name for d in deck_pool.load_pool()}
 
 
 def test_the_pool_takes_precedence_over_randomize_opp_deck():
-    """They are different distributions, not two strengths of one. A config
-    that sets both must not silently get the registry draw."""
+    """Different distributions, not two strengths of one: a config setting both
+    must not silently get the registry draw.
+    """
     env = _env(randomize_opp_deck=True)
     pool_decks = {tuple(sorted(d.card_ids)) for d in deck_pool.load_pool()}
     for _ in range(20):
@@ -115,12 +103,9 @@ def test_the_pool_takes_precedence_over_randomize_opp_deck():
 
 
 def test_set_opponent_deck_cannot_pin_a_deck_the_pool_will_overwrite():
-    """`reset()` samples the pool BEFORE honouring `self.opp_deck`, so a caller
-    that sets a deck and then relies on it is silently wrong from the next
-    episode. The trainer's `random_opponent` phase used to do exactly that.
-
-    This pins the ACTUAL behaviour so the trainer's guard stays justified: with
-    the pool on, an explicit set does not survive a reset.
+    """`reset()` samples the pool before honouring `self.opp_deck`, so with the
+    pool on an explicit set does not survive a reset; the trainer guards
+    against relying on it.
     """
     env = _env()
     env.set_opponent_deck(list(gym_wrapper.DEFAULT_DECK))
@@ -134,20 +119,9 @@ def test_set_opponent_deck_cannot_pin_a_deck_the_pool_will_overwrite():
 
 
 def test_the_estimate_leaves_an_optimistic_prior_within_a_few_matches():
-    """The shipped priors come from a TRAINED policy, so for a fresh net their
-    ordering is right and their level is far too high. A flat-rate EWMA would
-    keep feeding a random-init policy the decks the ep-32,484 policy found
-    hard-but-winnable -- which for a fresh net are unwinnable -- for thousands
-    of episodes. Measured on a fresh run: 0 wins in 50 episodes.
-
-    The count-weighted rate has to collapse an optimistic prior within a handful
-    of matches, so PFSP re-weights on THIS policy's evidence rather than on the
-    one the priors were measured from.
-
-    MEASURED AGAINST THE PRIOR, not against POOL_WINRATE_FLOOR, which this test
-    used as its yardstick until 2026-09-06 and which is now 0.0 -- nothing can
-    sit below that, so the old assertion could no longer fail. The floor moving
-    says nothing about the estimator, which is what this test is for.
+    """The count-weighted rate collapses an optimistic prior within a few matches,
+    so PFSP re-weights on this policy's evidence rather than on the policy the
+    priors came from. Measured against the prior itself.
     """
     env = _env(deck_pool=["mega_knight_ram"])
     env.reset()
@@ -164,8 +138,9 @@ def test_the_estimate_leaves_an_optimistic_prior_within_a_few_matches():
 
 
 def test_a_late_estimate_is_still_stable_against_noise():
-    """The early speed must not turn into permanent twitchiness: once a deck has
-    a real history, one result may not swing it across the floor."""
+    """The early speed must not become permanent twitchiness: with a real history,
+    one result may not swing the estimate far.
+    """
     env = _env(deck_pool=["hog_26_mirror"])
     env.reset()
     for _ in range(200):

@@ -1,39 +1,16 @@
-"""Is playing the Hog Rider WORTH IT? Forced usage, paired, engine-scored.
+"""Is playing the win condition worth it? Forced usage, paired, engine-scored.
 
-THE QUESTION
-------------
-The 2.6 net plays its win condition on 0.0-0.4% of decisions. Two explanations
-fit that equally well and they call for opposite responses:
+A near-zero play rate fits two explanations with opposite fixes:
 
-  PATHOLOGY   the card head is stuck in a zero-gradient trap -- the
-              win-condition reward can only pay for damage the Hog deals, the
-              Hog is never played, so the term pays zero forever and cannot
-              bootstrap the behaviour it is meant to reward. Fix: force
-              exploration.
+  PATHOLOGY   a zero-gradient trap: the win-condition reward pays only for damage the card deals, so an unplayed card is never rewarded. Fix: force exploration.
+  VALUATION   the card is a bad buy against this opponent and the policy knows it. Fix: nothing; forcing it makes the agent worse.
 
-  VALUATION   0% is correct. Against this opponent the Hog is a bad buy and the
-              policy has worked that out. Fix: nothing, and forcing it would
-              make the agent worse.
-
-This project has run exactly this experiment once before and VALUATION won:
-forcing Fireball dropped win rate 97% -> 23%. So the prior is not on the side
-of intervening, and the measurement has to come before the fix.
-
-DESIGN
-------
-Paired on `env.snapshot()`, so both arms get a bit-identical opening -- same
-shuffled hand, same heuristic lane. Opponent is the C++ HeuristicOpponent at
-1.5x elixir, where CLAUDE.md records there is headroom on both sides (at 1.0x
-the policy wins ~100% and both arms saturate, pinning the delta at 0 by the
-opponent rather than by the treatment).
-
-The forced arm changes ONLY WHICH CARD is played, never where: the Hog goes to
-the cell the net's own placement head chose for it. That keeps the comparison
-about the card's value rather than about placement quality, which prove_hog.py
-already measures separately (at ep 18,013: indistinguishable from chance).
-
-`--force-prob` below 1.0 makes this an epsilon-exploration probe rather than a
-hard override, which is the shape any actual fix would take.
+Paired on `env.snapshot()` against the C++ heuristic at 1.5x elixir (at 1.0x
+both arms saturate). The forced arm changes only which card is played, never
+where: it goes to the net's own placement cell, keeping the question about the
+card rather than the placement (prove_hog.py measures that). `--force-prob`
+below 1.0 makes it an epsilon-exploration probe, the shape a real fix would
+take.
 """
 
 from __future__ import annotations
@@ -46,9 +23,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -62,8 +37,7 @@ from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 from python_ai.advisors import tactics  # noqa: E402
 
-# BOARD_WIDTH lives on the CLASS, not the module -- same binding prove_hog.py
-# uses. `clash_royale_env.BOARD_WIDTH` raises AttributeError.
+# BOARD_WIDTH lives on the class; the module has no such attribute.
 E = CE.ClashRoyaleEnv
 
 NOOP = 4
@@ -96,22 +70,16 @@ def play(net, env, force_prob, rng, stats, advisor_cell=False,
         smart_cell = None
 
         if smart_force and WIN_CONDITION_ID in ids:
-            # SMART FORCE: the trigger is the advisor's own TIMING gate, not a
-            # coin. A random epsilon ignores macro entirely -- it fires while a
-            # push is landing, the 4 elixir is then unavailable for the answer,
-            # and the loss is charged to the Hog when the real cause was the
-            # moment. That confound makes a viable card look unviable.
+            # Smart force: triggered by the advisor's timing gate rather than a
+            # coin. A random epsilon fires mid-defence, when the elixir is
+            # needed for the answer, and charges the loss to the card instead
+            # of the moment.
             #
-            # hog_advice returns the bridge cell when its three conditions hold
-            # (our half clear, solvent, opponent not banked) and None otherwise,
-            # so this forces WHEN and WHERE together -- the only configuration
-            # in which "the Hog is unviable" can honestly be concluded.
-            # gate_mult is the OPPONENT'S elixir multiplier. The gate's
-            # opp_elixir_estimate reconstructs their bar from income minus
-            # spend, and income scales with it. Left at 1.0 while the test
-            # runs at 1.5x it under-estimates them by ~50%, so the gate
-            # opens precisely when they are banked -- the opposite of the
-            # condition it exists to enforce.
+            # hog_advice returns the bridge cell when its conditions hold (our
+            # half clear, solvent, opponent not banked), so this forces when
+            # and where together. gate_mult is the opponent's elixir
+            # multiplier: the gate reconstructs their bar from income, which
+            # scales with it.
             advice = tactics.hog_advice(np.asarray(obs_l, np.float32),
                                         legal=hog_legal,
                                         multiplier=gate_mult)
@@ -124,11 +92,8 @@ def play(net, env, force_prob, rng, stats, advisor_cell=False,
 
         if (not forced_now) and force_prob > 0.0 and WIN_CONDITION_ID in ids:
             slot = ids.index(WIN_CONDITION_ID)
-            # Only force what the engine would actually accept. Forcing an
-            # unaffordable slot makes playCard return false silently, which
-            # would score as "we played the Hog" while nothing reached the
-            # board -- the exact silent-failure mode the affordability mask
-            # was added to remove.
+            # Only force what the engine accepts: an unaffordable slot makes
+            # playCard fail silently.
             if bool(mask[0, slot]) and rng.random() < force_prob:
                 card = slot
                 forced_now = True
@@ -138,15 +103,9 @@ def play(net, env, force_prob, rng, stats, advisor_cell=False,
             px, py = float(smart_cell[0]), float(smart_cell[1])
             stats["advisor_placed"] += 1
         elif forced_now and advisor_cell:
-            # BYPASS THE PLACEMENT HEAD. This is the whole point of the third
-            # arm: arms 1 and 2 both place the forced Hog wherever the NET
-            # wants it, and prove_hog measures that cell at -48.3 against a
-            # random legal one. So neither can separate "the Hog is unviable in
-            # this engine" from "the head has not learned where to put it".
-            #
-            # best_hog_cell, not hog_advice: hog_advice carries the TIMING gate,
-            # and timing is being forced externally here. Mixing the two would
-            # confound which half of the rule is being tested.
+            # Bypass the placement head, separating "the card is unviable" from
+            # "the head has not learned where to put it". best_hog_cell rather
+            # than hog_advice, since timing is forced externally here.
             ax, ay, _rank = tactics.best_hog_cell(
                 np.asarray(obs_l, np.float32), legal=hog_legal)
             px, py = float(ax), float(ay)
@@ -195,9 +154,8 @@ def main() -> int:
 
     hog_legal = net._placement_legal[WIN_CONDITION_ID].numpy().astype(bool)
 
-    # (force_prob, use_advisor_cell). All arms share ONE set of snapshot
-    # openings, so every pair is bit-identical across arms and the three are
-    # directly comparable rather than three separate experiments.
+    # (force_prob, use_advisor_cell). All arms share one set of snapshot
+    # openings.
     arms = {"baseline": (0.0, False),
             f"forced@{args.force_prob} net-cell": (args.force_prob, False)}
     if args.advisor_cell:
@@ -213,9 +171,8 @@ def main() -> int:
         root.reset()
         base = root.snapshot()
         for name, (prob, use_adv) in arms.items():
-            # Same RNG stream per pair, so both forced arms draw their epsilon
-            # coin at the SAME steps. Otherwise they would differ in WHEN they
-            # forced as well as WHERE, confounding the placement comparison.
+            # Same RNG stream per pair, so the forced arms draw their coin at
+            # the same steps.
             rng = random.Random(args.seed * 100003 + i)
             smart = (prob == "smart")
             scores[name].append(play(net, base.snapshot(),

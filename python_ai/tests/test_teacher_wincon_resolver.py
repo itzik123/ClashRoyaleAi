@@ -1,23 +1,10 @@
-"""ONE win-condition resolver for the teacher and the agent's reward.
+"""One win-condition resolver, shared by the teacher and the agent's reward.
 
-Until 2026-09-15 there were two copies and both ranked by COST ("the most
-expensive building-targeter"). Measured failures (audits 05 and 07):
-
-* the agent's `W_WIN_CONDITION_DAMAGE` term went silently dead for every deck
-  whose route to a tower is a siege building, a spawning spell or a
-  deploy-anywhere troop (4 of 8 plausible replacement decks);
-* on a Miner deck the teacher named a 2-elixir Ice Golem, and Miner control got
-  no win condition at all (a Miner targets ground, so it is not a targeter);
-* LavaLoon was inverted (Lava Hound over Balloon).
-
-The two defects found while FIXING it are pinned too, because both looked right
-until the whole pool was printed:
-
-* per-elixir ranking named the Miner over the Balloon: the probe saturates at
-  one Princess (2534 HP), so every card that takes a tower reads 2534/cost and
-  the cheapest wins;
-* a rolling spell was probed on a cell it cannot be cast on, and Barbarian
-  Barrel beat the Graveyard in graveyard_control.
+Eligible cards (building-targeters, deploy-anywhere troops, siege buildings,
+spawning spells) are ranked by measured tower damage from a legal attack cell,
+absolute first. Two traps are pinned: per-elixir ranking picks the cheapest
+card once the probe saturates at one Princess, and a rolling spell must not be
+probed on a cell it cannot be cast on.
 """
 import pytest
 
@@ -65,7 +52,8 @@ def test_a_miner_beats_a_cheap_building_targeting_tank():
 
 
 def test_a_deck_with_no_route_to_a_tower_has_no_win_condition():
-    """CONTROL that must return None, or the resolver is vacuously permissive."""
+    """Control that must return None, or the resolver is vacuously permissive.
+    """
     deck = [7, 3, 29, 33, 25, 26, 27, 32]    # body-less spells and defensive buildings
     assert wincon(deck) is None
 
@@ -81,11 +69,10 @@ def test_a_rolling_spell_is_never_probed_on_a_cell_it_cannot_be_cast_on():
     assert teacher.wincon_damage_per_elixir(110) > 0.0     # Graveyard, control
 
 
-# --- TODO 00.6: a SPAWNER building is not a siege win condition --------------
-# `siege_reach > 0` admitted every building whose SPAWNED bodies walk to a tower.
-# Measured over 28 decks: Splashyard named Tombstone over its Graveyard, and a
-# Barbarian Hut outranked the Giant beside it (6182 in a 1200-tick siege window
-# against a troop's 300-tick one). The 16 pool decks are the control above.
+# --- a spawner building is not a siege win condition ---
+# Only a building that fires at the tower itself counts as siege; a hut's
+# spawned bodies also walk to a tower, but that does not make the hut the win
+# condition. The pool decks above are the control.
 
 X_BOW, MORTAR, BARB_HUT, GOBLIN_HUT, TOMBSTONE, GOBLIN_CAGE, GOBLIN_DRILL = (
     92, 93, 94, 95, 96, 97, 98)
@@ -119,8 +106,9 @@ def test_a_barbarian_hut_does_not_outrank_the_giant_beside_it():
 
 
 def test_a_goblin_drill_is_measured_and_played_beside_the_enemy_tower():
-    """From the own siege row a Drill measured 0 tower damage in 300 ticks;
-    beside the tower, 2654. It is deploy-anywhere, like the Miner."""
+    """From its own siege row a Drill deals nothing; beside the tower it does. It
+    is deploy-anywhere, like the Miner.
+    """
     import numpy as np
     from python_ai import engine_constants as EC
     assert teacher._wincon_eligible(GOBLIN_DRILL, False)

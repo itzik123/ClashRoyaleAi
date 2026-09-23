@@ -4,23 +4,9 @@
 #include "AreaSpell.h"
 #include "Board.h"
 
-// Mighty Miner's "Explosive Escape": teleports him to the horizontally-
-// mirrored position across the board's center vertical line -- same Y, only
-// X flips (a lane swap, not a top/bottom flip) -- via
-// newX = (board.getWidth() - 1) - x, the same board-mirroring convention
-// already used by ClashEnv::extractObservationForTeam and
-// GameManager::reset()'s King Tower comment, just applied to X here instead
-// of Y. Leaves a bomb behind at his ORIGINAL (pre-teleport) position: a
-// plain AreaSpell spawned directly (not through CardFactories::spawnSpell,
-// since this fires mid-battle from an ability, not a card play), reusing
-// AreaSpell's own delayTicks/knockback support instead of a new delayed-
-// damage primitive. groundOnly stays false: hits ground and air alike, per
-// research.
-//
-// bombRadius/bombKnockback below aren't part of the sourced research data
-// (a "medium area" and "knocks back" with no exact published numbers) --
-// reasonable engine-internal geometry constants, same caveat as
-// CombatEntity::splashRadius/shieldHp elsewhere in this codebase.
+// Mighty Miner's "Explosive Escape": swaps to the mirrored lane (x only) and
+// leaves a delayed bomb at his original position, hitting ground and air.
+// bombRadius and bombKnockback are not from published data.
 class MightyMinerEscapeEffect : public IAbilityEffect {
     float bombRadius;
     int bombDamage;
@@ -36,7 +22,7 @@ public:
         Vector2D originalPosition = self.position;
 
         mirrorToOppositeLane(self, board.getWidth());
-        // Y intentionally unchanged -- a lane swap, not a top/bottom flip.
+        // y unchanged: a lane swap, not a top/bottom flip.
 
         auto bomb = std::make_shared<AreaSpell>(
             board.allocateId(), originalPosition.x, originalPosition.y, self.team,

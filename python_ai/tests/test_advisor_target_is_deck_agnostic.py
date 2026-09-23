@@ -1,10 +1,7 @@
-"""The advisor target must speak for whatever deck is being trained.
+"""The advisor target speaks for whatever deck is trained.
 
-Until 2026-09-15 `ADVISOR_CARDS` was three literal ids -- Cannon 25, Fireball 7,
-Hog 15 -- so on 5 of 8 plausible replacement decks the advisor-target coverage
-term (10% of log(612) on the placement head) trained on ZERO cards, silently
-(audit 07, F1). Roles now come from `card_probes`, which measures what a card
-does. For the shipped deck the table is unchanged, card for card.
+Roles come from `card_probes`, which measures what a card does; for the shipped
+deck the table is unchanged.
 """
 import numpy as np
 import pytest
@@ -26,11 +23,11 @@ def test_the_shipped_deck_keeps_exactly_its_three_rules():
     # Royal Giant control: the targeter, the spell and the building all speak.
     ("royal giant,fisherman,hunter,electro spirit,skeletons,lightning,the log,cannon",
      {"Royal Giant": "wincon", "Lightning": "spell", "Cannon": "building"}),
-    # A Tesla does the Cannon's job and must get the Cannon's rule.
+    # A Tesla does the Cannon's job and gets the Cannon's rule.
     ("hog rider,musketeer,tesla,ice golem,skeletons,ice spirit,the log,fireball",
      {"Hog Rider": "wincon", "Tesla": "building", "Fireball": "spell"}),
-    # Miner control: Poison is the only card a rule fits. The Miner skips the
-    # bridge, so the bridge-commit rule must NOT claim it.
+    # Miner control: only Poison fits a rule. The Miner skips the bridge, so
+    # the bridge-commit rule must not claim it.
     ("miner,poison,bomber,musketeer,valkyrie,skeletons,ice spirit,the log",
      {"Poison": "spell"}),
 ])

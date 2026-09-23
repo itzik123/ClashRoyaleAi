@@ -1,35 +1,20 @@
-"""Measure the LIVE hand classifier against constraints the game itself enforces.
+"""Measure a hand classifier against constraints the game itself enforces.
 
-WHY THIS EXISTS
----------------
-Hand identity had one number attached to it -- "templates agreed with the elixir
-ledger 33.8% of the time" -- and that number was measured on
-`perception/readers/hand.py`, which has NO CALLER. The live loop reads its hand
-from the vendored CRBAB `CardDetector` (an 8x8 greyscale perceptual hash with a
-Hungarian assignment), a completely different classifier. So the one published
-accuracy figure describes dead code.
+No hand labels are needed. A correct reading cannot violate three invariants:
 
-This tool measures the classifier that actually runs.
+  1. No off-deck card. We chose the deck.
+  2. No duplicate. Eight distinct cards in a strict FIFO cannot fill two slots
+     with one card.
+  3. No early return. The cycle is 4 in hand + 4 in queue, so a card that
+     leaves the hand cannot return until four others are played. The
+     strongest, and the only one that catches a classifier wrong consistently
+     rather than noisily.
 
-THERE ARE NO LABELS, AND NONE ARE NEEDED
-----------------------------------------
-Nobody hand-annotated the live frames, but the game enforces three structural
-invariants that a correct reading cannot violate. Each is a ground truth that
-costs nothing to check:
+Plus a rate check: a hand holds for a deck-specific time between plays, so a
+reading changing much faster is churning.
 
-  1. NO OFF-DECK CARD. We chose the deck; a card outside it is a misread.
-  2. NO DUPLICATE. Eight distinct cards in a strict FIFO cannot put the same
-     card in two slots.
-  3. NO EARLY RETURN. The cycle is 4 in hand + 4 in queue, so a card that
-     leaves the hand cannot come back until four OTHER cards have been played.
-     This is the strongest of the three and the only one that catches a
-     classifier which is wrong CONSISTENTLY rather than noisily.
-
-Plus one rate check: a hand holds ~9.3 s between plays, so a reading that
-changes much faster than that is churning, whatever it reports.
-
-`--compare` additionally scores candidate representations on the same frames,
-so a proposed fix is measured against the incumbent rather than argued about.
+`--compare` scores candidate representations on the same frames, so a proposed
+fix is measured against the incumbent.
 """
 
 from __future__ import annotations
@@ -55,19 +40,15 @@ from clashroyalebuildabot.detectors.card_detector import CardDetector  # noqa: E
 from clashroyalebuildabot.detectors.screen_detector import ScreenDetector  # noqa: E402
 from clashroyalebuildabot.namespaces.cards import Cards  # noqa: E402
 
-# The deck in the live recording, and the one mvp_loop.py is configured for.
+# The deck in the live recording.
 DECK = [Cards.VALKYRIE, Cards.ARCHERS, Cards.MINIONS, Cards.CANNON,
         Cards.FIREBALL, Cards.GIANT, Cards.MUSKETEER, Cards.MINIPEKKA]
 
-# A real hand holds this long between plays (readers/hand.py, measured over a
-# 326 s recording of the GIANT deck). Used only to express churn as a multiple.
-#
-# IT IS DECK-SPECIFIC AND MUST NOT BE APPLIED ACROSS DECKS. The 2.6 Hog Cycle
-# averages 2.625 elixir a card against the Giant deck's 4.1, so it turns its
-# hand over roughly twice as fast by design, and scoring it against 9.3 s
-# reports a correct reading as "churning 2.3x too fast". Pass
-# `real_hold_seconds=None` for a deck with no measured figure: the churn
-# multiple is then omitted rather than computed against the wrong constant.
+# How long a real hand holds between plays, measured over a 326 s recording of
+# the Giant deck; used only to express churn as a multiple. Deck-specific: the
+# 2.6 Hog Cycle cycles about twice as fast (2.625 elixir a card against 4.1),
+# so pass `real_hold_seconds=None` for a deck without a measured figure and the
+# multiple is omitted.
 REAL_HOLD_SECONDS = 9.3
 
 
@@ -84,14 +65,10 @@ def load_frames(directory: Path, limit: int | None, stride: int):
 
 
 def collapse_blanks(readings):
-    """Carry the last non-blank card forward, per slot.
-
-    Playing a card empties its slot for a few frames while the next slides in,
-    so the raw stream reads `X -> blank -> Y` for a single play. Left alone
-    that is two transitions, which both double-counts plays and turns an
-    `X -> blank -> X` flicker into a card returning after one play -- something
-    the 8-slot FIFO makes impossible. Neither is a classifier error, so the
-    cycle test has to see through the gap rather than score it.
+    """Carry the last non-blank card forward, per slot. A play empties its slot
+    for a few frames, so one play reads `X -> blank -> Y`; left alone that is
+    two transitions, and an `X -> blank -> X` flicker becomes a card returning
+    after one play. Neither is a classifier error.
     """
     out = []
     last: list[str | None] = [None, None, None, None]
@@ -109,12 +86,9 @@ def collapse_blanks(readings):
 
 def audit(readings: list[tuple[str, tuple[str, ...]]], fps: float,
           deck=None, real_hold_seconds: float | None = REAL_HOLD_SECONDS) -> dict:
-    """Score a stream of 4-card hand readings against the three invariants.
-
-    `deck` defaults to this module's DECK, which is the GIANT recording's.
-    Passing the wrong one makes the off-deck count meaningless in the loudest
-    possible way -- every card in the hand is "off-deck" and the rate reads
-    100.0% for every arm, which is what it did before this parameter existed.
+    """Score a stream of 4-card hand readings against the three invariants. `deck`
+    defaults to this module's DECK, the Giant recording's; the wrong deck makes
+    every card "off-deck".
     """
     readings = collapse_blanks(readings)
     deck_names = {c.name for c in (deck if deck is not None else DECK)}
@@ -153,17 +127,8 @@ def audit(readings: list[tuple[str, tuple[str, ...]]], fps: float,
             left = [c for c in previous if c not in hand]
             entered = [c for c in hand if c not in previous]
             # Only single-slot transitions carry cycle information; a
-            # multi-slot jump means frames were dropped or the read is garbage.
-            #
-            # BLANK IS NOT A CARD AND MUST NOT ENTER THE CYCLE TEST. Playing a
-            # card empties its slot for a few frames while the next one slides
-            # in, so a single real play reads as `X -> blank -> Y`. Counting
-            # those as two transitions both inflates the play counter and makes
-            # a flicker `X -> blank -> X` look like a card returning after one
-            # play, which is impossible by construction. An earlier version of
-            # this function did exactly that and attributed 62.9% of
-            # transitions to misclassification when the reading was in fact
-            # stable and correct.
+            # multi-slot jump means dropped frames or a garbage read. Blank is
+            # not a card and never enters the cycle test (see collapse_blanks).
             if len(left) == 1 and len(entered) == 1 and \
                     "blank" not in (left[0], entered[0]):
                 plays_seen += 1

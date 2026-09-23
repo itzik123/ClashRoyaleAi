@@ -3,33 +3,20 @@
     perception/.venv/Scripts/python.exe perception/tools/build_digit_templates.py \
         --video "<file>.mp4" --anchor-at 60.0 --anchor-clock 2:09
 
-HOW THE LABELS ARE OBTAINED WITHOUT LABELLING ANYTHING
--------------------------------------------------------
-Templates need labelled glyphs, and reading the clock is the very thing they
-are for -- so the obvious approach is circular.
-
-It is broken with a single human reading. The match clock is a monotone
-countdown at exactly one second per second, so ONE (video timestamp, clock
-value) pair determines the clock at every other frame in the recording:
+Templates need labelled glyphs, and reading the clock is what they are for. One
+human reading breaks the circle: the clock counts down at one second per
+second, so one (video timestamp, clock value) pair fixes it everywhere:
 
     clock(t) = anchor_clock - (t - anchor_t)
 
-Every digit cell in every frame is then labelled for free, and each of the ten
-glyphs appears many times over three minutes. The template for each is the
-per-pixel MEDIAN of its samples, which discards the ones corrupted by a
-transition frame or a passing animation without needing to detect them.
+Every digit cell in every frame is labelled for free. Each template is the
+per-pixel median of its samples, discarding transition and animation frames
+without detecting them. The result is verified by reading the whole recording
+back: templates built from a few hundred crops must reproduce thousands of
+frames, including digit combinations the anchor never showed.
 
-The result is verified by reading the whole recording back and comparing
-against the same arithmetic. That check is not circular: the templates are
-built from a few hundred crops and then asked to reproduce ~5000 frames,
-including every digit combination the anchor frame never showed.
-
-WHY NOT SHIP PRE-RENDERED GLYPHS
----------------------------------
-They would encode an assumption about the font's rasterisation at one
-specific scale. Any mismatch shows up as uniformly mediocre match scores
-rather than an obvious failure -- the worst kind of calibration bug. Cropping
-from the recording itself cannot have that problem.
+Cropped from the recording rather than shipped: pre-rendered glyphs assume one
+rasterisation, and a mismatch shows only as uniformly mediocre scores.
 """
 
 from __future__ import annotations
@@ -52,9 +39,9 @@ from readers.clock import (  # noqa: E402
 )
 
 
-# The clock is drawn during the intro flourish too, partly transparent and
-# partly occluded. Templates built from those frames are blurred toward the
-# background. The arena is fully up a few seconds after the countdown.
+# During the intro flourish the clock is partly transparent and occluded;
+# templates from those frames blur toward the background. The arena is fully up
+# a few seconds after the countdown.
 ARENA_VISIBLE_AFTER_S = 19.0
 
 
@@ -64,13 +51,10 @@ def parse_clock(text: str) -> int:
 
 
 def open_source(video: Path | None, frames: Path | None):
-    """A recording, either a video file or a record_match.py directory.
-
-    The directory form exists because live capture is variable-rate: WGC
-    delivers on window repaints, so a frame's real capture stamp is the only
-    honest time for it. Every label here is `anchor - (t - anchor_t)`, so a
-    synthesised timestamp would mislabel glyphs and bake the error into the
-    templates rather than surfacing it as a bad read.
+    """A recording: a video file or a record_match.py directory. Live capture is
+    variable-rate, so a frame's real capture stamp is its only honest time;
+    every label is `anchor - (t - anchor_t)`, so a synthesised stamp would
+    mislabel glyphs and bake the error into the templates.
     """
     if (video is None) == (frames is None):
         raise SystemExit("pass exactly one of --video or --frames")
@@ -81,14 +65,10 @@ def open_source(video: Path | None, frames: Path | None):
 
 
 def resolve_roi(profile_path: Path | None, roi: tuple[int, int, int, int] | None):
-    """The clock ROI, from an explicit rectangle or a calibration profile.
-
-    `--roi` is not a shortcut around calibration. The live path takes its tile
-    mapping from ClashRoyaleBuildABot's own constants, not from a homography,
-    so a profile built for this resolution would have to carry a fabricated one
-    -- and a fabricated homography sitting in `config/` is exactly the kind of
-    thing that later gets used for real. The ROI is a measured rectangle and is
-    passed as one.
+    """The clock ROI, from an explicit rectangle or a calibration profile. The
+    live path takes its tile mapping from CRBAB's constants, so a profile for
+    this resolution would need a fabricated homography, which would later get
+    used for real. The ROI is a measured rectangle and passed as one.
     """
     if roi is not None:
         return roi
@@ -108,24 +88,22 @@ def build(source, roi, anchor_t: float, anchor_clock: int,
     for frame in source.sample_every(sample_fps):
         t = frame.wall_time_ms / 1000.0
         remaining = anchor_clock - (t - anchor_t)
-        # Only the stretch where the clock is actually running and fully
-        # legible. Before the anchor the arena may still be loading; below
-        # zero the match is over.
+        # Only where the clock is running and fully legible: before the anchor
+        # the arena may be loading, below zero the match is over.
         if remaining <= 1 or remaining > 172 or t < ARENA_VISIBLE_AFTER_S:
             continue
         remaining_int = int(round(remaining))
-        # Skip frames within 0.25s of a tick, where the rendered digit may be
-        # mid-change and would poison the median with a blend of two glyphs.
+        # Skip frames within 0.25 s of a tick, where the digit may be
+        # mid-change and would blend two glyphs into the median.
         if abs(remaining - remaining_int) > 0.25:
             continue
 
         digits = f"{remaining_int // 60}{(remaining_int % 60) // 10}{remaining_int % 10}"
         patch = cv2.cvtColor(frame.image[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
         for glyph, cell in zip(digits, _split_mss_cells(patch)):
-            # Normalised HERE, not at match time, so crops of the same digit
-            # taken from cells of different widths stack coherently. Pooling
-            # raw cells was the defect that scored 24.7% -- see
-            # readers.clock.normalise_glyph.
+            # Normalised here, not at match time, so crops of one digit from
+            # cells of different widths stack coherently (see
+            # readers.clock.normalise_glyph).
             samples[glyph].append(normalise_glyph(cell))
 
     source.close()
@@ -167,17 +145,10 @@ def verify(source, roi, templates: DigitTemplates,
         samples.append((t, int(reading.seconds_remaining), reading.confidence))
     source.close()
 
-    # The anchor was read by eye from ONE frame, so its sub-second phase is
-    # unknown: "2:09" is on screen for a whole second and there is no way to
-    # tell from the reading which part of that second the anchor frame fell
-    # in. Left unmodelled, every sample near a tick boundary looks like an
-    # off-by-one misread when the reader was in fact correct -- which is
-    # exactly what the first version of this check reported, at every sample
-    # landing on a .8s offset.
-    #
-    # So the phase is fitted: one scalar, over the whole recording, chosen to
-    # maximise agreement. It cannot mask a real error, because a genuine
-    # misread is wrong at every phase.
+    # The anchor was read from one frame, so its sub-second phase is unknown,
+    # and samples near a tick boundary would look like off-by-one misreads. The
+    # phase is fitted: one scalar over the whole recording, maximising
+    # agreement. It cannot mask a real error, which is wrong at every phase.
     best_correct, best_phase, best_errors = -1, 0.0, []
     for phase in np.arange(0.0, 1.0, 0.05):
         errors, correct = [], 0
@@ -223,7 +194,7 @@ def main() -> int:
     roi = resolve_roi(args.profile, tuple(args.roi) if args.roi else None)
     templates = build(open_source(args.video, args.frames), roi,
                       args.anchor_at, anchor, args.out)
-    # Re-open: a FrameSource is forward-only, so the build pass consumed it.
+    # Re-open: a FrameSource is forward-only and the build pass consumed it.
     verify(open_source(args.video, args.frames), roi, templates,
            args.anchor_at, anchor)
     return 0

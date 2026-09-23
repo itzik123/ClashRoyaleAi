@@ -7,30 +7,10 @@
 #include <sstream>
 #include <string>
 
-// NAMING SPAWN-CHILDREN IN A REPLAY.
-//
-// perception/UPSTREAM_REQUESTS.md item 20 reported this as "spawned entities
-// carry no cardId". That diagnosis was wrong, and the correction is the reason
-// this file exists rather than a new Entity field:
-//
-//   * Spawn-children DO carry a cardId. CardRegistry assigns them deliberately
-//     NEGATIVE ids -- Golemite is -1, and the comment above golemiteStats()
-//     records that the scheme keeps them clear of GameManager's own
-//     TOWER_KING_ID/TOWER_PRINCESS_ID (-2/-3).
-//   * They also carry the RIGHT NAME already: CardFactories::applyCardMetadata
-//     sets entity->name = stats.name, so a Golemite has been called "Golemite"
-//     on the board the whole time.
-//
-// The actual gap was only that GameLogger never WROTE that name, while its
-// "cardMeta" block is built from CardRegistry's registered (positive) ids and
-// so can never resolve a negative one. The viewer was therefore pushed onto its
-// symbol fallback, and 36 of the registry's 90 symbols (40%) are shared by more
-// than one card -- so a spawned body could be shown under another card's name
-// and HP maximum.
-//
-// Writing the name closes that without touching Entity, without threading a new
-// field through the six spawn sites, and without going near cardId -- which
-// stats attribution and therefore reward shaping both read.
+// Naming spawn-children in a replay. They carry negative cardIds (Golemite is
+// -1), which cardMeta cannot resolve, and many symbols are shared by several
+// cards. The entity already has the right name (applyCardMetadata sets it), so
+// GameLogger writes it.
 
 namespace {
 
@@ -41,8 +21,8 @@ std::string readFile(const std::string& path) {
     return ss.str();
 }
 
-// Extract the single JSON object that starts at `needle`, so an assertion about
-// one entity cannot be satisfied by text belonging to cardMeta or another row.
+// Extract the JSON object starting at `needle`, so an assertion cannot be
+// satisfied by cardMeta or another row.
 std::string objectContaining(const std::string& json, const std::string& needle) {
     const size_t at = json.find(needle);
     if (at == std::string::npos) return {};
@@ -59,8 +39,8 @@ TEST_CASE("a replay names an entity whose negative cardId cardMeta cannot resolv
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     Board& board = game.getBoard();
 
-    // A death-spawn child, standing in for the Golemites a dying Golem leaves:
-    // the negative cardId is the part cardMeta cannot look up.
+    // A death-spawn child, as a dying Golem leaves: its negative cardId is what
+    // cardMeta cannot look up.
     auto golemite = std::make_shared<MeleeTroop>(9001, 9.0f, 9.0f, 1039, 0,
                                                  0.0f, 0.25f, 84, 25, 'q');
     golemite->name = "Golemite";
@@ -78,20 +58,19 @@ TEST_CASE("a replay names an entity whose negative cardId cardMeta cannot resolv
 
     const std::string row = objectContaining(json, "\"id\":9001");
 
-    // Non-vacuous: we must really have found the entity's own row.
+    // Non-vacuous: the entity's own row was found.
     INFO("entity row: " << row);
     REQUIRE(!row.empty());
     REQUIRE(row.find("\"cardId\":-1") != std::string::npos);
 
-    // The point of the change: the row carries the name, so the viewer never
-    // has to guess from a symbol 40% of the roster shares.
+    // The row carries the name, so the viewer need not guess from a shared
+    // symbol.
     REQUIRE(row.find("\"name\":\"Golemite\"") != std::string::npos);
 }
 
 TEST_CASE("a replay still names an ordinary card played from hand",
           "[replay][logger][names]") {
-    // Guard against a fix that only special-cases negative ids: the name must
-    // be written for every entity, not just the ones cardMeta misses.
+    // The name is written for every entity, not only the ones cardMeta misses.
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     Board& board = game.getBoard();
 
@@ -118,11 +97,8 @@ TEST_CASE("a replay still names an ordinary card played from hand",
 
 TEST_CASE("a name containing a JSON metacharacter does not corrupt the replay",
           "[replay][logger][names]") {
-    // The symbol field already learned this lesson the hard way -- Ram Rider's
-    // symbol is '"', which broke every replay containing one until escapeChar
-    // was applied unconditionally. A name is attacker-free but far wider than a
-    // char, so it goes through the same escaping rather than trusting the
-    // roster to stay quote-free.
+    // Names go through the same escaping as symbols (Ram Rider's symbol is
+    // '"').
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     Board& board = game.getBoard();
 
@@ -141,6 +117,6 @@ TEST_CASE("a name containing a JSON metacharacter does not corrupt the replay",
     const std::string json = readFile(path);
     std::remove(path.c_str());
 
-    // Both metacharacters must arrive escaped, and no bare ones may survive.
+    // Both metacharacters arrive escaped, with no bare ones left.
     REQUIRE(json.find("Say \\\"hi\\\"\\\\now") != std::string::npos);
 }

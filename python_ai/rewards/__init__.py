@@ -1,3 +1,3 @@
-"""Reward shaping, split three ways so a weight change is not a code change:
-`weights` holds the constants and the measurements that justify them, `shaping`
-holds the terms, `elixir_shaping` holds the potential-based solvency term."""
+"""Reward shaping: `weights` holds the constants, `shaping` the terms,
+`elixir_shaping` the potential-based solvency term.
+"""

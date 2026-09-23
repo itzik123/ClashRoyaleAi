@@ -1,11 +1,4 @@
-"""scenario_offense.py -- an accelerator, kept default-OFF.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""scenario_offense.py: an accelerator, kept default-OFF."""
 import os
 import sys
 
@@ -44,15 +37,13 @@ from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 
 
-# --------------------------------------------------------------------------
-# scenario_offense.py -- Proposal A, kept as an accelerator and default-OFF
-# --------------------------------------------------------------------------
+# --- scenario_offense.py, default-OFF ---
 
 def test_offensive_scenarios_are_off_by_default():
-    """THE ORDER MATTERS. Injection changes the state distribution, not the
-    payoff, so switching it on before the payoff is fixed just pays a negative
-    price more often -- which is exactly what the four forced-usage experiments
-    measured. It stays off until prove_environment.py says otherwise."""
+    """Injection changes the state distribution, not the payoff, so enabling it
+    before the payoff is right just pays a negative price more often. Off until
+    prove_environment.py says otherwise.
+    """
     from python_ai.envs import scenario_offense
     assert scenario_offense.OFFENSIVE_SCENARIO_PROB == 0.0
     env = gym_wrapper.MicroRoyaleEnv()
@@ -62,10 +53,10 @@ def test_offensive_scenarios_are_off_by_default():
 
 
 def test_offensive_scenario_reports_a_stale_pyd_instead_of_an_attributeerror():
-    """set_elixir_for_team/set_hand_for_team were added by commit 26de409 and
-    the post-build copy into python_ai/ can silently fail (MSB3073). Discovering
-    that as an AttributeError mid-episode inside a scenario constructor is the
-    worst possible place; the check is hoisted to the entry point."""
+    """The state setters may be missing from a stale .pyd (the post-build copy can
+    fail with MSB3073); report that at the entry point, not as an
+    AttributeError mid-episode.
+    """
     from python_ai.envs import scenario_offense
     if scenario_offense.HAS_STATE_SETTERS:
         pytest.skip("this .pyd exports the state setters")
@@ -81,9 +72,9 @@ def test_offensive_scenario_reports_a_stale_pyd_instead_of_an_attributeerror():
     not scenario_offense.HAS_STATE_SETTERS,
     reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
 def test_punish_window_actually_builds_the_position_it_claims():
-    """A silently rejected setup still counts as an injected episode and would
-    report practice that never happened -- set_hand_for_team returns False
-    rather than raising, so the return value is the only signal."""
+    """set_hand_for_team returns False rather than raising, so a rejected setup
+    would count as practice that never happened.
+    """
     from python_ai.envs import scenario_offense
     rng = np.random.default_rng(0)
     env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
@@ -93,7 +84,7 @@ def test_punish_window_actually_builds_the_position_it_claims():
     assert 15 in list(env.get_hand_for_team(0)), "the win condition must be in hand"
     assert env.get_elixir_for_team(0) == pytest.approx(8.0)
     assert env.get_elixir_for_team(1) == pytest.approx(1.0)
-    # Their commitment is on the board, visible to us as ENEMY mass.
+    # Their commitment is on the board, visible to us as enemy mass.
     obs = np.asarray(env.get_observation_for_team(0), np.float32)
     plane = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
     enemy = sum(float(obs[c * plane:(c + 1) * plane].sum()) for c in (4, 5, 6))
@@ -120,9 +111,9 @@ def test_counter_push_leaves_our_own_units_alive_on_our_side():
     not scenario_offense.HAS_STATE_SETTERS,
     reason="needs set_elixir_for_team/set_hand_for_team (stale .pyd)")
 def test_scenario_injection_reobserves_after_rewriting_the_state():
-    """reset() returns the observation BEFORE the rewrite. If the env forgets to
-    re-read it, the agent's first observation describes a position that no
-    longer exists -- invisible in every metric."""
+    """reset() returns the observation from before the rewrite; the env must
+    re-read it.
+    """
     env = gym_wrapper.MicroRoyaleEnv({"offensive_scenario_prob": 1.0,
                                       "scenario_seed": 0})
     obs, _ = env.reset()
@@ -131,11 +122,10 @@ def test_scenario_injection_reobserves_after_rewriting_the_state():
     assert np.allclose(obs, live), "the returned observation is pre-scenario"
 
 def test_teacher_follows_a_deck_change():
-    """Phase 1's `random_opponent` re-rolls the opponent deck every few hundred
-    episodes. A teacher still holding the OLD deck's role table would treat the
-    new deck's win condition as a plain melee troop and count cycle distance
-    over cards it no longer holds -- a silent degradation that reads as "the
-    teacher is weak against random decks"."""
+    """The opponent deck changes during phase 1; a teacher holding the old deck's
+    role table would misread the new win condition and count cycle over cards
+    it no longer holds.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
     t = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1)
@@ -149,9 +139,9 @@ def test_teacher_follows_a_deck_change():
 
 
 def test_env_deck_changes_propagate_to_the_teacher():
-    """Two separate paths write the opponent deck -- set_opponent_deck() and
-    reset()'s randomize_opp_deck branch, which writes straight to self.game.
-    The second is the easy one to miss."""
+    """Two paths write the opponent deck: set_opponent_deck() and reset()'s
+    randomize_opp_deck branch, which writes to self.game directly.
+    """
     env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher"})
     assert env.teacher.wincon_id == 15
     env.set_opponent_deck([2, 6, 25, 40, 24, 72, 33, 7])

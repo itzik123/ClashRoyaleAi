@@ -1,9 +1,7 @@
-"""Tests for live/adapter.py -- the CRBAB State -> GameState join.
+"""Tests for live/adapter.py, the CRBAB State -> GameState join.
 
-Driven by hand-built stand-ins for CRBAB's namespaces rather than by running
-the detector. The detector costs ~4 s a frame and is not what is under test:
-what is under test is the set of translations the adapter performs, every one
-of which exists because of a measured gap.
+Driven by hand-built stand-ins for CRBAB's namespaces rather than the detector
+(~4 s a frame): what is under test is the adapter's translations.
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ from live.adapter import (  # noqa: E402
 from live.board_filter import BOARD_HEIGHT  # noqa: E402
 
 
-# --- stand-ins for the CRBAB namespaces -------------------------------------
+# --- stand-ins for the CRBAB namespaces ---
 @dataclass
 class FakeUnit:
     name: str
@@ -80,12 +78,10 @@ def unit(name, tile_x, tile_y, conf=0.9, bbox=(100, 200, 130, 240)):
 def state(allies=(), enemies=(), elixir=5.0, cards=("giant", "fireball",
                                                     "valkyrie", "archers"),
           next_card="minions"):
-    """`cards` is the HAND, four slots, as the tests mean it.
-
-    The detector's own list is five entries -- CARD_CONFIG[0] is the bottom-left
-    "Next" preview box and only [1:] are hand slots -- so the preview is
-    prepended here rather than in every caller. Building the fake as four
-    entries is what let the off-by-one in `_hand_ids` pass a full suite.
+    """`cards` is the hand, four slots. The detector's own list has five entries
+    (CARD_CONFIG[0] is the "Next" preview), so the preview is prepended here; a
+    four-entry fake is what let the off-by-one in `_hand_ids` pass a full
+    suite.
     """
     nums = FakeNumbers(FakeNumber(0.5), FakeNumber(0.5), FakeNumber(1.0),
                        FakeNumber(1.0), FakeNumber(elixir))
@@ -95,11 +91,9 @@ def state(allies=(), enemies=(), elixir=5.0, cards=("giant", "fireball",
 
 @pytest.fixture
 def frames():
-    """A native frame and its detector-space resize, both blank.
-
-    Blank is the point: with no badges anywhere, every unit falls through to
-    the "no widget drawn" path, which is what isolates the adapter's own logic
-    from the HP reader's.
+    """A native frame and its detector-space resize, both blank. With no badges
+    anywhere every unit takes the "no widget drawn" path, isolating the adapter
+    from the HP reader.
     """
     from clashroyalebuildabot.constants import SCREENSHOT_HEIGHT, SCREENSHOT_WIDTH
     native = np.zeros((1280, 720, 3), np.uint8)
@@ -107,10 +101,11 @@ def frames():
     return native, small
 
 
-# --- the tile frame ---------------------------------------------------------
+# --- the tile frame ---
 
 def test_engine_board_is_two_rows_taller_than_the_arena():
-    """ClashEnv adds a row behind each King that the real board does not have."""
+    """ClashEnv adds a row behind each King that the real board does not have.
+    """
     assert ENGINE_BOARD_HEIGHT == BOARD_HEIGHT + 2
     assert ENGINE_BOARD_HEIGHT == 34
 
@@ -121,26 +116,25 @@ def test_tile_conversion_shifts_rows_only():
 
 
 def test_converted_rows_stay_inside_the_engine_board():
-    """Both ends, because an off-by-one here is invisible in every metric --
-    the 2026-07-31 team-1 bug displaced a whole observation by one row and
-    survived a coordinate audit."""
+    """Both ends: an off-by-one here is invisible in every metric."""
     for y in (0, BOARD_HEIGHT - 1):
         _x, ey = to_engine_tile(0, y)
         assert 0 <= ey < ENGINE_BOARD_HEIGHT
 
 
 def test_offset_is_flagged_as_unverified(engine, frames):
-    """It is derived from the two heights, not measured against a 720x1280
-    calibration -- none exists. A consumer must meet that caveat."""
+    """Derived from the two heights, not measured against a calibration; a
+    consumer must meet that caveat.
+    """
     gs, _ = build_game_state(state(), *frames)
     assert "tile_offset_unverified" in gs.flags
 
 
-# --- what gets dropped ------------------------------------------------------
+# --- what gets dropped ---
 
 def test_off_board_detections_are_dropped(engine, frames):
-    """31% of raw detections sat outside the arena, all of them the two player
-    avatar icons read as `knight`."""
+    """The two player avatar icons are detected as `knight`, outside the arena.
+    """
     gs, rep = build_game_state(
         state(allies=[unit("knight", 19, 5), unit("knight", -2, 13),
                       unit("giant", 8, 10)]), *frames)
@@ -151,7 +145,8 @@ def test_off_board_detections_are_dropped(engine, frames):
 
 def test_projectiles_are_not_board_presence(engine, frames):
     """ClashEnv skips anything !isTargetable(), so a spell in flight must not
-    reach the spatial channels."""
+    reach the spatial channels.
+    """
     gs, rep = build_game_state(
         state(allies=[unit("giant_snowball", 8, 10), unit("giant", 8, 11)]),
         *frames)
@@ -159,7 +154,7 @@ def test_projectiles_are_not_board_presence(engine, frames):
     assert [u.unit_name for u in gs.units] == ["giant"]
 
 
-# --- identity ---------------------------------------------------------------
+# --- identity ---
 
 def test_units_carry_engine_card_ids(engine, frames):
     gs, _ = build_game_state(state(allies=[unit("archer", 6, 12)]), *frames)
@@ -167,9 +162,9 @@ def test_units_carry_engine_card_ids(engine, frames):
 
 
 def test_hand_uses_the_card_table_not_the_unit_table(engine, frames):
-    """Fireball spawns no unit, so resolving the hand through the UNIT table
-    silently returned the sentinel for it while the three cards that do spawn
-    same-named units looked fine."""
+    """Fireball spawns no unit, so resolving the hand through the unit table would
+    silently return the sentinel for it.
+    """
     gs, _ = build_game_state(state(cards=("giant", "fireball", "valkyrie",
                                           "musketeer")), *frames)
     assert UNKNOWN_CARD_SIM_ID not in gs.my_hand
@@ -177,15 +172,9 @@ def test_hand_uses_the_card_table_not_the_unit_table(engine, frames):
 
 
 def test_hand_skips_the_next_card_preview(engine, frames):
-    """CARD_CONFIG[0] is the bottom-left "Next" box, not a hand slot.
-
-    Reading `state.cards[:4]` put a card the player does not hold into
-    observation slot 0, shifted every real card one slot right, and dropped
-    hand slot 3. Since the actuator taps physical slot `i`, the agent asked for
-    what it saw in slot i and got the card beside it -- every placement, all
-    match. Verified live: on-screen Next=Giant with hand
-    [Archers, Valkyrie, MiniPEKKA, Cannon] was reported as
-    [giant, archers, valkyrie, minipekka].
+    """CARD_CONFIG[0] is the "Next" box, not a hand slot. Reading `cards[:4]`
+    shifts every real card one slot right; since the actuator taps physical
+    slot `i`, every placement plays the card beside the one asked for.
     """
     gs, _ = build_game_state(
         state(next_card="giant",
@@ -208,12 +197,12 @@ def test_unreadable_hand_slot_is_the_sentinel_not_an_error(engine, frames):
     assert gs.my_hand[1] == UNKNOWN_CARD_SIM_ID
 
 
-# --- HP and side ------------------------------------------------------------
+# --- HP and side ---
 
 def test_absent_widget_means_undamaged_but_unmeasured(engine, frames):
-    """Clash Royale draws no bar over a healthy unit, so 1.0 is right -- but
-    `hp_measured` must stay False, because a missed bar in a crowd is
-    indistinguishable from a healthy unit on a single frame."""
+    """No bar is drawn over a healthy unit, so 1.0 is right, but `hp_measured`
+    stays False: a missed bar in a crowd looks the same on one frame.
+    """
     gs, rep = build_game_state(state(allies=[unit("giant", 8, 10)]), *frames)
     u = gs.units[0]
     assert u.hp_fraction == 1.0
@@ -222,10 +211,9 @@ def test_absent_widget_means_undamaged_but_unmeasured(engine, frames):
 
 
 def test_team_comes_from_the_detector_not_the_badge(engine, frames):
-    """The badge was going to override side.onnx. Measured on 67 associated
-    detections the two disagree on 10%, and of five checked by eye the badge
-    was right twice and wrong twice -- so neither dominates and the
-    disagreement is surfaced rather than silently resolved."""
+    """Neither side signal dominates, so disagreement is surfaced rather than
+    resolved (see unit_hp.py).
+    """
     gs, _ = build_game_state(
         state(allies=[unit("giant", 8, 10)], enemies=[unit("valkyrie", 8, 20)]),
         *frames)
@@ -234,8 +222,8 @@ def test_team_comes_from_the_detector_not_the_badge(engine, frames):
 
 
 def test_kings_are_read_and_princesses_pass_through(engine, frames):
-    """CRBAB reads the two Princess bars and not the King, while extra scalars
-    3 and 6 need the King."""
+    """CRBAB reads only the Princess bars; extra scalars 3 and 6 need the Kings.
+    """
     gs, _ = build_game_state(state(), *frames)
     for tower in (gs.own_king, gs.opp_king):
         assert 0.0 <= tower.hp_fraction <= 1.0
@@ -245,19 +233,10 @@ def test_kings_are_read_and_princesses_pass_through(engine, frames):
 
 
 def test_a_zero_princess_is_unmeasured_not_destroyed(engine, frames):
-    """0.0 means "could not read the bar", NOT "destroyed".
-
-    This test asserted the opposite until 2026-07-31, justified on 71 ladder
-    frames where a real decay to zero looked monotone and physical
-    (1.000, 0.744, 0.231, 0.077, then 0.000 held). The first live capture
-    falsified it: `right_ally_princess_hp` read 0.0 in **101 of 101** frames
-    while the tower stood at FULL health -- its own ROI shows the numeral 1890,
-    a level-5 Princess at maximum.
-
-    A tower wrongly marked destroyed is worse than one marked unknown: extra
-    scalars 3-8 are tower HP, and a live tower reported dead tells the policy
-    a lane is already lost. See BOT_REQUESTS.md item 7 -- the real fix is to
-    read the numeral instead of the bar.
+    """0.0 means "could not read the bar", not "destroyed": `_calculate_hp`
+    returns 0.0 when it cannot colour-match, and a live capture read a
+    full-health Princess as 0.0 every frame. A live tower reported dead tells
+    the policy a lane is lost. See BOT_REQUESTS.md item 7.
     """
     st = state()
     st.numbers.left_enemy_princess_hp = FakeNumber(0.0)
@@ -267,9 +246,9 @@ def test_a_zero_princess_is_unmeasured_not_destroyed(engine, frames):
 
 
 def test_a_readable_princess_is_measured(engine, frames):
-    """The contrast to the test above: a nonzero reading IS trusted, and is
-    already a fraction -- CRBAB's `_calculate_hp` returns change_point/39, not
-    absolute HP -- so nothing is rescaled here."""
+    """The contrast: a nonzero reading is trusted, and is already a fraction
+    (`_calculate_hp` returns change_point/39), so nothing is rescaled.
+    """
     st = state()
     st.numbers.left_enemy_princess_hp = FakeNumber(0.5)
     gs, _ = build_game_state(st, *frames)
@@ -282,7 +261,7 @@ def test_elixir_is_never_negative(engine, frames):
     assert gs.my_elixir == 0.0
 
 
-# --- shape ------------------------------------------------------------------
+# --- shape ---
 
 def test_output_is_a_game_state(engine, frames):
     gs, rep = build_game_state(state(), *frames, seconds_elapsed=42.5,
@@ -295,6 +274,6 @@ def test_output_is_a_game_state(engine, frames):
 
 
 def test_confidence_floor_is_below_one():
-    """A disagreement has to actually lower the number, or the flag is the only
-    signal and a numeric consumer sees nothing."""
+    """A disagreement must lower the number, or a numeric consumer sees nothing.
+    """
     assert 0.0 < SIDE_DISAGREEMENT_CONFIDENCE < 1.0

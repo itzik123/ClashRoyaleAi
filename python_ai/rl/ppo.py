@@ -1,27 +1,16 @@
 """The recurrent PPO update: truncated BPTT, per-head entropy, coverage, aux.
 
-This is the ~250 lines that were duplicated verbatim between `train.py` and
-`train_selfplay.py`. The arithmetic here is byte-for-byte what both loops did;
-the extraction adds nothing to the objective and removes nothing from it. What
-it does add is a place to TEST it -- `tests/test_rl_ppo.py` pins the masking
-rules, the entropy normalization and the fact that the coverage term never
-touches the PPO ratio.
+Three masks:
 
-THE THREE MASKS, and each one is there because getting it wrong was measured:
-
-  `valid`     0 on phantom post-autoreset steps, where the sampled action was
-              never executed. Excluded from every loss term.
-  `decision`  1 where >=2 card arms were legal. The ACTOR and the ENTROPY terms
-              are normalized by this, not by `valid`: on a forced step the
-              masked distribution is a point mass (log-prob 0, ratio 1,
-              entropy 0), so it contributes nothing but WOULD inflate the
-              denominator and shrink the actor's effective step by ~3.7x.
-              The CRITIC still uses `valid` -- the value function must be
-              learned on every real state, choice or not.
-  `placed`    `decision` AND the chosen arm was not the no-op. The placement
-              entropy term uses this. Averaging in the no-op steps let the head
-              earn the bonus for free on steps whose sampled cell never reached
-              the board: measured 0.462 reported = 0.850 no-op vs 0.090 real.
+  `valid`     0 on phantom post-autoreset steps, whose action never ran.
+              Excluded from every loss term.
+  `decision`  1 where >= 2 card arms were legal. The actor and entropy terms
+              are normalized by this: a forced step is a point mass that
+              contributes nothing but would inflate the denominator ~3.7x.
+              The critic still uses `valid`.
+  `placed`    `decision` and the chosen arm was not the no-op. Placement
+              entropy uses this; on no-op steps the sampled cell never
+              reaches the board, so it would be a free bonus.
 """
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -41,13 +30,10 @@ from python_ai.rl.optim_step import clip_and_step
 
 
 def _mean(xs):
-    """Mean of a possibly-EMPTY list of minibatch stats.
+    """Mean of a possibly empty list of minibatch stats; NaN when empty.
 
-    Empty means every minibatch in the update was dropped by the non-finite
-    guard. NaN is the honest report for that -- returning 0.0 would render a
-    numerically broken update as a healthy-looking flat line, which is the
-    class of "safe guaranteed zero" this project has been bitten by repeatedly.
-    `np.mean([])` would also warn, and the suite is kept warning-clean.
+    Empty means the non-finite guard dropped every minibatch, and 0.0 would
+    read as a healthy flat line.
     """
     return float(np.mean(xs)) if xs else float("nan")
 
@@ -56,9 +42,8 @@ def _mean(xs):
 class UpdateStats:
     """Everything one PPO update produced, for the caller to log.
 
-    Returned rather than written to a SummaryWriter here on purpose: the two
-    pipelines log to different series names and the exploiter logs to none, so
-    the updater must not own a writer.
+    Returned rather than written here: the pipelines log to different series
+    and the exploiter logs to none.
     """
     actor_loss: float = 0.0
     critic_loss: float = 0.0
@@ -67,67 +52,47 @@ class UpdateStats:
     clip_frac: float = 0.0
     aux_ce: float = 0.0
     aux_acc: float = 0.0
-    #: The same next-card cross-entropy read off the DETACHED cycle branch
-    #: rather than off hx. Diverges from aux_ce by construction: this one sees
-    #: only the 24-dim block and answers "is card identity still recoverable
-    #: here", while aux_ce needs the recurrence to have integrated the play
-    #: history. Ceiling for the branch is ~0.55 accuracy; ~0.22 is the marginal.
+    #: The same next-card loss read off the detached cycle branch rather than
+    #: hx: is card identity still recoverable from the 24-dim block alone?
+    #: Marginal ~0.22 accuracy, ceiling ~0.55.
     cycle_id_ce: float = 0.0
     cycle_id_acc: float = 0.0
     ent_card: float = 0.0
     ent_placement: float = 0.0
-    #: Placement entropy on the no-op arm. Kept purely as the contrast that
-    #: makes the 2026-08-11 fix legible: if this and `ent_placement` ever
-    #: converge, the no-op arm stopped being a free ride.
+    #: Placement entropy on the no-op arm, as a contrast to `ent_placement`.
     ent_placement_noop: float = float("nan")
     coverage_entropy: float = 0.0
-    #: Read `advisor_kl` and `advisor_rows` as a PAIR, never KL alone. KL falls
-    #: both when the head learns the advisor's surface and when the advisor
-    #: simply stops speaking, and those are opposite situations.
+    #: Read `advisor_kl` with `advisor_rows`: KL also falls when the advisor
+    #: stops speaking.
     advisor_kl: float = 0.0
     advisor_rows: float = 0.0
-    #: mean over deck cards of relu(floor - P(play card | card in hand)).
-    #: EXACTLY 0.0 on a healthy deck, so any sustained nonzero value means a
-    #: card head is at or below the floor and is being pushed back up. Read it
-    #: with `deck_min_card_prob`, which says how bad the worst card is -- the
-    #: penalty alone cannot distinguish one dead card from four slightly-low
-    #: ones. See rl/deck_coverage.py for why the entropy controller is blind
-    #: to this and held its own target perfectly while the deck halved.
+    #: Mean over deck cards of relu(floor - P(play card | card in hand)).
+    #: Exactly 0.0 on a healthy deck; read with `deck_min_card_prob`. See
+    #: rl/deck_coverage.py.
     deck_coverage: float = 0.0
-    #: min over deck cards of P(play card | card in hand). The direct readout
-    #: the 2026-08-28 run never had: it sat near 0.001 for 30,000 episodes.
+    #: Min over deck cards of P(play card | card in hand).
     deck_min_card_prob: float = 0.0
-    #: max |ratio - 1| over the FIRST minibatch of epoch 0, where the weights
-    #: have not moved yet and the ratio must be exactly 1. Anything else means
-    #: the rollout's log-probs and the update's disagree -- the classic
-    #: recurrent-PPO self-check, now logged every update.
+    #: max |ratio - 1| over the first minibatch of epoch 0, before any weight
+    #: has moved. Must be ~0; anything else means rollout and update log-probs
+    #: disagree.
     ratio_dev_first: float = 0.0
-    #: Mean Champion-ability entropy (fraction of log 2) over rows where an
-    #: activation was legal; nan when the deck has no Champion or none was ready.
+    #: Mean Champion-ability entropy (fraction of log 2) over rows where
+    #: activation was legal; nan without a ready Champion.
     ent_ability: float = float("nan")
-    #: card id -> H(placement | card) as a fraction of that card's own
-    #: reachable maximum. THE conditional-collapse detector: the aggregate
-    #: provably cannot see a per-card collapse, because a mixture of eight
-    #: sharp, well-separated modes has high entropy even when every component
-    #: is a delta. On 2026-08-11 the aggregate read a healthy 0.462 while
-    #: Cannon sat at 0.017 with 96.4% of its mass on one cell.
+    #: card id -> H(placement | card) as a fraction of that card's reachable
+    #: maximum. The aggregate cannot see a per-card collapse: a mixture of
+    #: sharp, well-separated modes still has high entropy.
     per_card_placement_entropy: dict = field(default_factory=dict)
-    #: Minibatches whose gradient was non-finite and whose optimizer step was
-    #: therefore DROPPED. Must be 0 on a healthy run. Anything above 0 means
-    #: real gradient was discarded -- see the containment guard in `update`.
-    #: A sustained nonzero count is a genuine numerical fault (an exploding
-    #: ratio, a bad reward), not something the guard has "handled": the guard
-    #: only stops it from becoming permanent.
+    #: Minibatches dropped for a non-finite gradient. Must be 0; a sustained
+    #: nonzero count is a real numerical fault the guard only contains.
     nonfinite_skips: int = 0
 
     @property
     def worst_card(self):
         """(card_id, entropy) of the most collapsed card, or None.
 
-        Read this NEXT TO modal share, not instead of it: the most-played card
-        legitimately has the lowest entropy (Mini PEKKA measured 0.086 while
-        being the healthiest card in the deck). A good head is SHARP but MOVES
-        ITS MODE with the board; a broken one returns one cell regardless.
+        Read next to modal share: the most-played card legitimately has the
+        lowest entropy. A good head is sharp but moves its mode with the board.
         """
         if not self.per_card_placement_entropy:
             return None
@@ -143,9 +108,8 @@ class PPOUpdater:
         self.net = net
         self.optimizer = optimizer
         self.cfg = cfg
-        #: log(number of placement cells). Only the ADVISOR term needs it --
-        #: both entropy heads are normalized per step by their own REACHABLE
-        #: arm count, which is the 2026-08-16 fix.
+        #: Only the advisor term needs log(placement cells); the entropy heads
+        #: are normalized by their reachable arm count.
         self.log_n_placement = float(np.log(net.placement_cells))
 
     def _segments(self, device):
@@ -163,22 +127,15 @@ class PPOUpdater:
                collect_per_card=True, deck_coverage_coef=None, aux_scale=1.0):
         """Run `ppo_epochs` passes over the rollout and return an UpdateStats.
 
-        `batch` is `RolloutBuffer.stack()`; `advantages_norm` and `returns` come
-        from `rl.gae`. `vf_clip_range` is scaled to this batch's own return
-        spread -- see `PPOConfig.vf_clip_std_frac`.
+        `batch` is `RolloutBuffer.stack()`; `advantages_norm` and `returns`
+        come from `rl.gae`.
         """
         cfg, net = self.cfg, self.net
         L, B_total = cfg.bptt_chunk, cfg.num_envs
         device = batch["obs"].device
 
-        # The gather indices below are built from cfg, not from `batch`, so a
-        # batch of the wrong shape fails deep inside an advanced-indexing
-        # expression as an IndexError naming no tensor -- or, if it is LONGER
-        # than cfg says, succeeds while silently training on a prefix. Name it
-        # here instead. The live rollout cannot desync (it adds exactly
-        # update_timestep rows, then updates, then clears); this guards the
-        # boundary against a subclass overriding `collect_rollout` and against
-        # a config edited between a resume and the next rollout.
+        # The gather indices come from cfg, so a mismatched batch would fail
+        # obscurely or silently train on a prefix.
         got_t, got_n = batch["rewards"].shape[:2]
         if (got_t, got_n) != (cfg.update_timestep, cfg.num_envs):
             raise ValueError(
@@ -198,9 +155,8 @@ class PPOUpdater:
         decision_seq = batch["decision"]
         values_seq = batch["values"]
         old_logprobs_seq = batch["logprobs"]
-        # ONE backward scan per update, not per minibatch: turning the
-        # per-step "what did they play" stream into "what do they play NEXT"
-        # needs the whole (T, N) block and the episode boundaries in `masks`.
+        # One backward scan per update: next-card labels need the whole (T, N)
+        # block and the episode boundaries.
         aux_label_seq, aux_has_seq = next_card_labels(
             batch["aux_opp_played"], masks_seq, valid_seq)
         hx_in_seq, cx_in_seq = batch["hx_in"], batch["cx_in"]
@@ -223,9 +179,8 @@ class PPOUpdater:
         cyc_losses, cyc_accs = [], []
         coverage_ents, coverage_kls, coverage_hits = [], [], []
         deck_pens, deck_min_probs = [], []
-        # Resolved once per update, not per minibatch: the module default is
-        # the shipping value and an explicit argument is how an experiment arm
-        # (or a test) turns the term off without editing code.
+        # The module default is the shipping value; an argument lets an
+        # experiment turn it off.
         deck_coef = (deck_coverage.DECK_COVERAGE_COEF
                      if deck_coverage_coef is None else deck_coverage_coef)
         ent_card_log, ent_place_log, ent_place_noop_log = [], [], []
@@ -245,15 +200,10 @@ class PPOUpdater:
                 tt = t0.unsqueeze(0) + chunk_offsets
                 ee = ev.unsqueeze(0).expand(L, B)
 
-                # Batch the (non-recurrent) CNN + scalar feature extraction over
-                # the whole chunk at once, then loop only the cheap LSTMCell.
+                # Batch the non-recurrent feature extraction over the whole
+                # chunk, taking the trunk's pre-pool activation for the
+                # high-resolution placement branch from the same call.
                 mb_obs_flat = obs_seq[tt, ee].reshape(L * B, -1)
-                # ...and the trunk's PRE-pool activation with it, for the
-                # high-resolution placement branch. Taken from the same call
-                # rather than rebuilt inside placement_given_card: identical
-                # arithmetic either way, but rebuilding would re-run the trunk's
-                # first conv -- the most expensive layer in it -- once per
-                # minibatch per epoch.
                 (feats_seq, card_embeds_seq, spatial_seq,
                  hires_seq) = net.extract_features_hires(mb_obs_flat)
                 feats_seq = feats_seq.view(L, B, -1)
@@ -262,11 +212,9 @@ class PPOUpdater:
                 mb_obs_seq = mb_obs_flat.view(L, B, -1)
                 card_embeds_seq = card_embeds_seq.view(
                     L, B, net.hand_size + 1, -1)
-                # Recomputed from the SAME stored observations the rollout acted
-                # on, so it is bit-identical to the mask applied when the action
-                # was sampled. DERIVING it (rather than storing it) is what
-                # makes drift impossible -- a mask that drifts silently corrupts
-                # the PPO ratio.
+                # Recomputed from the stored observations rather than stored,
+                # so it matches the sampling-time mask by construction; a
+                # drifting mask would corrupt the ratio.
                 card_mask_seq = net.affordability_mask(mb_obs_flat).view(
                     L, B, net.hand_size + 1)
 
@@ -274,32 +222,18 @@ class PPOUpdater:
                 mb_place_actions = placement_actions_seq[tt, ee]
                 mb_masks = masks_seq[tt, ee]
 
-                # Resume from the hidden state actually recorded at this chunk's
-                # first timestep (stored-state truncated BPTT).
+                # Resume from the hidden state recorded at the chunk's first
+                # step.
                 rhx = hx_in_seq[t0, ev]
                 rcx = cx_in_seq[t0, ev]
-                # ONE batched pass over the whole chunk. Only the LSTM is
-                # genuinely recurrent; the card/value/aux/placement heads are
-                # pointwise in time. Measured 1.82x on the forward pass, and
-                # verified equal to the looped path to within float32 round-off
-                # (max abs logit delta 1.1e-08 vs an eps of 1.19e-07).
-                #
-                # mb_card_actions is the STORED action, not a fresh sample:
-                # placement must be conditioned on exactly the card the log-prob
-                # is scored against, or the ratio breaks silently.
+                # One batched pass over the chunk; only the LSTM is recurrent.
+                # Placement is conditioned on the stored card, the one the
+                # log-prob is scored against.
                 cf_idx = coverage_slot_seq[tt, ee]
-                # Read UP HERE rather than with the other masks below, because
-                # the placement head is now told which rows to bother with.
-                # Pure reordering of an index read -- no arithmetic moves.
                 mb_decision = decision_seq[tt, ee]
-                # EVERY consumer of both placement maps is decision-masked:
-                # actor_loss by mb_decision, placement entropy by mb_placed
-                # (a subset), clip_frac by mb_decision, and both halves of
-                # coverage_terms by decision. So the rows dropped here
-                # contribute exactly 0.0 to the loss and exactly 0.0 to the
-                # gradient -- pinned by tests/test_rl_ppo_compaction.py, which
-                # corrupts those rows in the UNMODIFIED path and demands the
-                # resulting weights are bit-identical.
+                # Every consumer of the placement maps is decision-masked, so
+                # skipping non-decision rows changes neither loss nor gradient
+                # (tests/test_rl_ppo_compaction.py).
                 active_rows = (mb_decision.reshape(-1) > 0).nonzero(
                     as_tuple=True)[0]
                 fwd = net.forward_sequence(
@@ -307,9 +241,8 @@ class PPOUpdater:
                     card_mask_seq, mb_card_actions, mb_masks, (rhx, rcx),
                     extra_card_idx_seq=cf_idx, hires_seq=hires_seq,
                     active_rows=active_rows,
-                    # Passed only when there ARE abilities, so a Champion-less
-                    # deck calls forward_sequence with exactly the old
-                    # signature -- which is what a test that wraps it expects.
+                    # Only passed with abilities, so a Champion-less deck keeps
+                    # the old signature.
                     **({"with_ability": True} if ability_actions_seq is not None else {}))
                 (cl_seq, pl_seq, new_values, new_aux_logits,
                  _, cf_pl_seq) = fwd[:6]
@@ -317,8 +250,9 @@ class PPOUpdater:
                 place_dist_t = Categorical(logits=pl_seq)
                 new_logprobs = (card_dist_t.log_prob(mb_card_actions)
                                 + place_dist_t.log_prob(mb_place_actions))
-                # The Champion ability is part of the JOINT action, scored under
-                # the readiness mask it was sampled with (rl/abilities.py).
+                # The Champion ability is part of the joint action, scored
+                # under the readiness mask it was sampled with
+                # (rl/abilities.py).
                 ent_ability_frac = None
                 if ability_actions_seq is not None:
                     mb_ready = ability_ready_seq[tt, ee].bool()
@@ -327,12 +261,8 @@ class PPOUpdater:
                     new_logprobs = new_logprobs + ab_lp
                     ent_ability_frac = (ab_ent * mb_ready.float()) / math.log(2.0)
 
-                # --- normalize each head by the entropy it can ACTUALLY reach.
-                # Both distributions are already masked to their legal arms, so
-                # the most entropy a step can carry is log(n_legal) -- never
-                # log(total arms). See rl/entropy.py for the full measurement.
-                # clamp(min=2) only guards log(1)=0; single-arm rows carry zero
-                # entropy and are excluded by mb_decision regardless.
+                # Normalize each head by the entropy it can reach,
+                # log(n_legal), not log(total arms). See rl/entropy.py.
                 n_card_legal = card_mask_seq.sum(-1).clamp(min=2).float()
                 n_place_legal = torch.isfinite(pl_seq).sum(-1).clamp(min=2).float()
                 new_ent_card = card_dist_t.entropy() / torch.log(n_card_legal)
@@ -344,11 +274,8 @@ class PPOUpdater:
                 mb_old_values = values_seq[tt, ee]
                 mb_valid = valid_seq[tt, ee]
                 n_valid = mb_valid.sum().clamp(min=1.0)
-                # Kept BEFORE the clamp: `clamp(min=1)` makes an empty chunk
-                # arithmetically safe but also indistinguishable from a chunk
-                # with exactly one decision, and every statistic denominated by
-                # this is UNDEFINED rather than zero when the count is 0. See
-                # the guarded appends at the bottom of the loop.
+                # Before the clamp: with no decision in the chunk the
+                # decision-denominated stats are undefined, not zero.
                 has_decision = bool(mb_decision.sum() > 0)
                 n_decision = mb_decision.sum().clamp(min=1.0)
 
@@ -361,10 +288,9 @@ class PPOUpdater:
                 surr2 = torch.clamp(ratios, 1 - cfg.eps_clip,
                                     1 + cfg.eps_clip) * mb_adv
 
-                # Value clipping (PPO2-style): cap how far the critic may move
-                # from its rollout-time value in one update. Take the WORSE
-                # (larger) of clipped/unclipped so the critic cannot dodge the
-                # penalty by jumping back and forth outside the trust region.
+                # PPO2 value clipping: take the worse of clipped and unclipped,
+                # so the critic cannot dodge the penalty by jumping outside the
+                # trust region.
                 value_clipped = mb_old_values + torch.clamp(
                     new_values - mb_old_values, -vf_clip_range, vf_clip_range)
                 critic_loss_per_elem = torch.max(
@@ -376,17 +302,17 @@ class PPOUpdater:
                 critic_loss = (critic_loss_per_elem * mb_valid).sum() / n_valid
                 ent_card_mean = (new_ent_card * mb_decision).sum() / n_decision
 
-                # Placement entropy is measured and rewarded ONLY on steps that
-                # actually PLACED a card -- see the module docstring's `placed`.
+                # Placement entropy only on steps that placed a card; see the
+                # module docstring.
                 mb_placed = mb_decision * (
                     mb_card_actions != net.hand_size).float()
                 n_placed = float(mb_placed.sum())
                 if n_placed > 0.0:
                     ent_place_mean = (new_ent_place * mb_placed).sum() / n_placed
                 else:
-                    # No placement anywhere in the chunk: keep the old
-                    # denominator rather than feed the controller a 0, which it
-                    # would chase as a total collapse.
+                    # No placement in the chunk: fall back to the decision
+                    # denominator rather than report a 0 the controller would
+                    # chase as a collapse.
                     ent_place_mean = (new_ent_place
                                       * mb_decision).sum() / n_decision
 
@@ -396,18 +322,11 @@ class PPOUpdater:
                         mb_obs_flat, mb_card_actions, mb_placed, mb_decision,
                         L, B)
 
-                # --- placement coverage ---------------------------------
-                # Entropy (or, where the advisor has a rule, KL to its surface)
-                # for a card that was AFFORDABLE this step, chosen or not. A
-                # REGULARIZER, not part of the PPO objective: it never touches
-                # new_logprobs, so the ratio is unaffected and the update stays
-                # a valid PPO step.
-                #
-                # Its coefficient is deliberately FIXED rather than tied to the
-                # adaptive placement coefficient. The controller lowers that one
-                # when REAL placements are sharp enough, which is exactly the
-                # condition under which an unplayed card is freezing -- tying
-                # the two would switch coverage off precisely when it is needed.
+                # Placement coverage: entropy (or KL to the advisor's surface)
+                # for every affordable card, chosen or not. A regularizer that
+                # never enters the PPO ratio. Its coefficient is fixed because
+                # the adaptive placement coefficient drops exactly when an
+                # unplayed card is freezing.
                 mb_cov_targets = (coverage_target_seq[tt, ee]
                                   if coverage_target_seq is not None else None)
                 cov_delta, cov_ent_frac, cov_kl, cov_n = \
@@ -418,25 +337,14 @@ class PPOUpdater:
                 coverage_kls.append(float(cov_kl))
                 coverage_hits.append(float(cov_n))
 
-                # --- deck coverage --------------------------------------
-                # A hinge floor under P(play card | card in hand), per DECK
-                # card. Also a REGULARIZER on the same terms as the block
-                # above: it reads `cl_seq` only, and never the stored-action
-                # log-probs the PPO ratio is built from, so the ratio is
-                # untouched and the update stays a valid PPO step. (The test
-                # that pins this scans this region textually -- do not name
-                # that tensor here even in a comment.)
-                #
-                # It is not redundant with the entropy bonus and cannot be
-                # replaced by raising it: entropy is measured over hand SLOTS
-                # per decision, which a five-card policy satisfies exactly
-                # while three cards sit at zero. See rl/deck_coverage.py.
-                # THREAT-GATED. The ungated form cost 0.42 win-rate points: a
-                # Cannon is worth +841 tower HP under attack and ~nothing on a
-                # quiet board, so pushing it everywhere spent 3 elixir a time
-                # on boards that did not need it. `threat_level_batch` is the
-                # SAME definition the solvency gate uses, batched -- not a
-                # second copy.
+                # Deck coverage: a hinge floor under P(play card | card in
+                # hand), per deck card. Also a regularizer outside the ratio (a
+                # test scans this region textually, so do not name the log-prob
+                # tensor here). Entropy over hand slots cannot replace it: a
+                # five-card policy satisfies that while three cards sit at
+                # zero. Threat-gated, since a Cannon is worth a lot under
+                # attack and nothing on a quiet board; ungated it cost 0.42
+                # win-rate points.
                 with torch.no_grad():
                     threat = (tactics.threat_level_batch(mb_obs_flat)
                               > tactics.DECK_COVERAGE_THREAT_HP).float()
@@ -449,30 +357,21 @@ class PPOUpdater:
                     deck_pens.append(float(deck_pen.detach()))
                     deck_min_probs.append(deck_min_p)
 
-                # ent_*_mean are ALREADY fractions of each head's reachable
-                # maximum (divided per step above), so no second division here.
+                # Already fractions of each head's reachable maximum.
                 entropy_bonus = (ent_coef_card * ent_card_mean
                                  + ent_coef_placement * ent_place_mean)
                 if ent_ability_frac is not None:
-                    # Same coefficient as the card head, and the same "fraction
-                    # of the reachable maximum" units: a ready ability is a
-                    # 2-way choice (log 2); an unready one carries none.
+                    # Same coefficient and units as the card head: a ready
+                    # ability is a 2-way choice.
                     n_ready = ability_ready_seq[tt, ee].float().sum().clamp(min=1.0)
                     ent_ab_mean = ent_ability_frac.sum() / n_ready
                     entropy_bonus = entropy_bonus + ent_coef_card * ent_ab_mean
                     if bool(ability_ready_seq[tt, ee].any()):
                         ent_ability_log.append(float(ent_ab_mean.detach()))
 
-                # Auxiliary NEXT-OPPONENT-CARD loss (cross-entropy).
-                #
-                # Masked by aux_has, which is STRICTLY NARROWER than mb_valid:
-                # it already carries `valid`, and it additionally drops every
-                # step with no future play -- the tail of each episode. Those
-                # rows have no answer at all, so a `reduction="mean"` over the
-                # full minibatch would average real losses against fabricated
-                # ones. Denominator is the count of LABELLED rows, and a
-                # minibatch can legitimately have none (an opponent that never
-                # plays again), so it is floored rather than assumed positive.
+                # Next-opponent-card cross-entropy, over labelled rows only:
+                # `aux_has` also drops each episode's tail, which has no next
+                # play.
                 mb_aux_has = aux_has_seq[tt, ee]
                 n_aux = mb_aux_has.sum().clamp_min(1.0)
                 aux_ce_all = F.cross_entropy(
@@ -484,53 +383,21 @@ class PPOUpdater:
                             == aux_label_seq[tt, ee]).float()
                            * mb_aux_has).sum() / n_aux
 
-                # --- THE STALE-HEAD CAP (2026-09-03) ----------------------
-                # `aux_card_head` reads hx with NO detach, so its gradient runs
-                # back through the LSTM and the whole trunk -- by design, it is
-                # a representation-shaping term. `aux_card_scale = 0.02` was
-                # calibrated when its CE sat at ~1.5, which put the weighted
-                # term at ~0.015, i.e. comparable to the actor loss.
-                #
-                # THE 2026-09-03 DECK POOL INVALIDATED THAT CALIBRATION, and
-                # measured it: the opponent went from our 8 mirror cards to ~60
-                # across 16 decks, the head was fitted to the old 8, and its CE
-                # jumped to 13.76 -- against ln(185) = 5.22 for predicting
-                # UNIFORMLY. Worse than uniform is the signature of a stale
-                # classifier meeting a new label distribution: confidently
-                # wrong. The weighted term became 0.138 against an actor loss of
-                # ~0.020, so the shared trunk was being pulled ~7x harder toward
-                # "learn 60 unfamiliar card identities" than toward "win", and
-                # the policy's win rate fell 0.58 -> 0.00 in 126 episodes.
-                #
-                # Same failure class this file already records twice: a constant
-                # calibrated against a measurement a later change moved.
-                #
-                # The cap is a magnitude rescale, not a clamp. `clamp(max=)`
-                # gives ZERO gradient above the ceiling, which would freeze the
-                # head exactly when it most needs to relearn; multiplying by a
-                # DETACHED factor <= 1 keeps every gradient direction and only
-                # bounds the size. At or below the ceiling the factor is exactly
-                # 1.0, so the normal regime -- every run before this date -- is
-                # bit-identical.
+                # Cap the aux term's magnitude at the uniform CE, ln(n_cards).
+                # The head reads hx without a detach, so a stale head (e.g.
+                # after the opponent pool changed) would drag the whole trunk.
+                # A detached rescale rather than a clamp, which would zero the
+                # gradient exactly when the head must relearn; below the
+                # ceiling the factor is 1.
                 aux_ceiling = math.log(new_aux_logits.shape[-1])
                 aux_for_grad = aux_loss * (
                     aux_ceiling / aux_loss.detach().clamp_min(1e-6)
                 ).clamp(max=1.0)
 
-                # --- cycle-branch IDENTITY loss (2026-08-28) --------------
-                # Same label, same mask, different reader: this one is a
-                # linear head on the 24-dim ScalarEncoder cycle branch, which
-                # `ScalarEncoder.forward` detaches from everything else. So
-                # this is the ONLY gradient those 3,752 parameters get, and it
-                # asks for card identity -- the thing PPO was measured
-                # destroying at 248:1. It reaches cycle_id_head and the branch
-                # and goes no further: the LSTM, the trunk and every policy
-                # head sit downstream of that detach.
-                #
-                # The branch is recomputed here rather than lifted out of
-                # feats_seq because feats_seq carries the DETACHED copy, which
-                # has no graph to backpropagate through. Same parameters, one
-                # extra Linear(185,16) + Linear(32,24) on the minibatch.
+                # Cycle-branch identity loss: same label and mask, read off the
+                # detached 24-dim ScalarEncoder branch, so this is the only
+                # gradient that branch gets. Recomputed rather than taken from
+                # feats_seq, which carries the detached copy.
                 if net.cycle_id_head is not None:
                     cyc_feat = net.cycle_features(mb_obs_flat)
                     cyc_logits = net.predict_cycle_card(cyc_feat).view(
@@ -547,8 +414,8 @@ class PPOUpdater:
                     cycle_id_loss = torch.zeros((), device=device)
                     cycle_id_acc = torch.zeros((), device=device)
 
-                # cov_delta carries both signs already: the entropy half is a
-                # bonus (negative), the advisor KL a penalty (positive).
+                # The coverage delta is already signed: an entropy bonus
+                # (negative) plus an advisor KL penalty (positive).
                 loss = (actor_loss + 0.5 * critic_loss - entropy_bonus
                         + cov_delta
                         + deck_coef * deck_pen
@@ -559,32 +426,16 @@ class PPOUpdater:
                 self.optimizer.zero_grad()
                 loss.backward()
 
-                # THE CONTAINMENT GUARD. A single non-finite element anywhere
-                # in this minibatch -- an exp() overflow in the PPO ratio, a
-                # NaN out of `gae.normalize` on a degenerate batch, a bad
-                # reward reaching GAE -- turns EVERY parameter to NaN in one
-                # optimizer step. `clip_grad_norm_` does not stop it: it scales
-                # by max_norm/(nan+eps), which is itself nan, so the poison is
-                # multiplied THROUGH the clip and into every tensor.
-                #
-                # Measured 2026-08-26: 32 of 32 parameter tensors NaN after one
-                # bad step, and PERMANENTLY so -- Adam's moment estimates carry
-                # the NaN forward, so a subsequent clean batch does not recover
-                # it. The run then trains on, reports NaN for every metric, and
-                # the periodic checkpoint OVERWRITES the last good weights.
-                #
-                # Dropping the step is the only defensible response: there is
-                # no descent direction in a non-finite gradient, so the correct
-                # step size is zero. The stats appends are skipped with it, so
-                # a corrupt minibatch cannot drag the reported means either.
+                # Drop a minibatch with a non-finite gradient. One NaN step
+                # poisons every parameter (clip_grad_norm_ multiplies it
+                # through) and Adam's moments keep it there, so the next
+                # checkpoint would overwrite the good weights.
                 if not clip_and_step(self.optimizer, self.net.parameters(),
                                      cfg.max_grad_norm):
                     nonfinite_skips += 1
                     continue
 
-                # `valid`-denominated, so informative on every surviving
-                # minibatch: a chunk with no CHOICE still has real states, and
-                # the critic and the auxiliary head genuinely trained on them.
+                # Valid-denominated: informative on every surviving minibatch.
                 critic_losses.append(critic_loss.item())
                 total_losses.append(loss.item())
                 aux_losses.append(aux_loss.item())
@@ -592,33 +443,19 @@ class PPOUpdater:
                 cyc_losses.append(cycle_id_loss.item())
                 cyc_accs.append(cycle_id_acc.item())
 
-                # DECISION-denominated, and therefore UNDEFINED -- not zero --
-                # on a chunk where nothing was ever affordable. Such a chunk is
-                # not exotic: P(nothing affordable) is 73.9% per step, so runs
-                # of them are what a spent-down agent produces.
-                #
-                # These terms are correctly 0 in the LOSS there (a point-mass
-                # distribution has no gradient), but recording that 0 as a
-                # MEASUREMENT is what does the damage: `ent_card`/`ent_placement`
-                # feed EntropyController, whose non-finite guard cannot catch a
-                # finite 0.0, so it reads a total policy collapse and drives the
-                # coefficient UP -- measured 0.05 -> 0.0596, +19% in one update,
-                # on a batch carrying no information at all.
-                #
-                # Skipping the append hands the whole-update case to `_mean([])`,
-                # which already returns NaN for exactly this reason, and the
-                # controller already holds its coefficients on a non-finite
-                # reading. A MIXED update averages only the informative chunks.
+                # Decision-denominated, so undefined, not zero, on a chunk with
+                # no choice (common for a spent-down agent). Recording a 0
+                # would make EntropyController read a collapse and raise its
+                # coefficient; skipping hands the empty case to `_mean([])`,
+                # which returns NaN.
                 if has_decision:
                     actor_losses.append(actor_loss.item())
                     entropy_bonuses.append(
                         (ent_card_mean + ent_place_mean).item())
                     ent_card_log.append(ent_card_mean.item())
                     ent_place_log.append(ent_place_mean.item())
-                    # Fraction of DECISION samples where the ratio hit the clip
-                    # range. Forced steps have ratio exactly 1.0 by construction
-                    # and would dilute this toward 0 however much the policy
-                    # moved -- which is the same reason it is guarded here.
+                    # Clip fraction over decision steps only; forced steps have
+                    # ratio exactly 1.
                     clipped = ((ratios - 1.0).abs() > cfg.eps_clip).float()
                     clip_fracs.append(
                         ((clipped * mb_decision).sum() / n_decision).item())
@@ -653,13 +490,9 @@ class PPOUpdater:
                           mb_card_actions, mb_placed, mb_decision, L, B):
         """H(placement | card) per card id, plus the no-op arm for contrast.
 
-        Accumulated on epoch 0 only, from tensors the update already computed,
-        so it costs no extra simulation and no extra forward pass.
-
-        `new_ent_place` is already divided by log(n_legal) per step, which is
-        what makes cards comparable at all: a spell sees 588 legal cells, a
-        plain troop 242, the Cannon 208, so a raw nat count is not comparable
-        across cards.
+        Epoch 0 only, from tensors the update already computed. Entropies are
+        per-step fractions of log(n_legal), which is what makes cards with
+        different legal areas comparable.
         """
         net = self.net
         with torch.no_grad():

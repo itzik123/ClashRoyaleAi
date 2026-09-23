@@ -1,13 +1,8 @@
-// Analytic probe of the waypoint function's ABSORBING SET.
-//
-// Independent of any card: asks Board::getNextWaypoint directly, over a fine
-// sweep of positions, "is the waypoint you just handed me one I am already
-// within WAYPOINT_ARRIVAL_EPS of, while my real destination is still far
-// away?" Every such position is a state Troop::moveTowards refuses to leave --
-// position unchanged, so waypoint unchanged, so stuck forever.
-//
-// This is the direct proof of the mechanism. The card-level sweep in
-// bridge_audit.cpp shows the SYMPTOM; this shows the SET.
+// Analytic probe of the waypoint function's absorbing set. Asks
+// Board::getNextWaypoint directly, over a fine sweep of positions: is the
+// waypoint handed back one I am already within WAYPOINT_ARRIVAL_EPS of, while
+// my destination is still far? Every such position is one Troop::moveTowards
+// never leaves. bridge_audit.cpp shows the symptom; this shows the set.
 
 #include "ArenaLayout.h"
 #include "Board.h"
@@ -37,10 +32,8 @@ int main() {
         int trapped = 0;
         float minY = 1e9f, maxY = -1e9f;
 
-        // Sweep the two bridge columns finely through the whole river region.
-        // Read off the board plus a tile either side, never restated: literals
-        // here silently turned this into a sweep of open water the moment the
-        // arena was corrected on 2026-08-21.
+        // Sweep the two bridge columns finely through the river region,
+        // positions read off the board plus a tile either side.
         const float lb = board.getLeftBridge().x, rb = board.getRightBridge().x;
         for (float bx : { lb, rb, lb - 1.0f, lb + 1.0f, rb - 1.0f, rb + 1.0f }) {
             for (float y = 14.0f; y <= 19.0f; y += 0.0005f) {
@@ -77,13 +70,10 @@ int main() {
         std::cout << "\n";
     }
 
-    // ---- whole-board generalization ----
-    //
-    // The sweeps above target the place the bug was found. This one asks the
-    // same question everywhere, against a spread of destinations, so a trap
-    // somewhere nobody thought to look still gets reported. Coarser in y (the
-    // trap discs are 0.01 wide, so 0.002 still lands several samples inside
-    // one) but it covers the whole 18x34 board.
+    // --- whole board ---
+    // The same question everywhere, against a spread of destinations. Coarser
+    // in y (the trap discs are 0.01 wide, so 0.002 still samples each several
+    // times), but covering the whole board.
     std::cout << "=== whole-board absorbing-state sweep ===\n";
     std::vector<Vector2D> allDests = {
         { ArenaLayout::LEFT_LANE_X,  ArenaLayout::princessY(1) },
@@ -121,17 +111,11 @@ int main() {
     std::cout << "  absorbing states: " << trapped << "\n";
     std::cout << "\n";
 
-    // ---- the LANE COMPOSITION ----
-    //
-    // At runtime the engine composes LanePath::approachPoint with
-    // Board::getNextWaypoint -- CombatEntity::update's single moveTowards call.
-    // Either can be absorbing-free while the PAIR is not: approachPoint's
-    // intermediate waypoint W1 is a point getNextWaypoint has never been asked
-    // about before. This sweeps what a unit actually follows.
-    //
-    // Run three ways, because the curve only ENGAGES once a lane's Princess is
-    // gone. With both alive approachPoint is the identity, and a sweep of that
-    // alone would measure nothing while looking thorough.
+    // --- the lane composition ---
+    // At runtime LanePath::approachPoint feeds Board::getNextWaypoint; either
+    // can be trap-free while the pair is not, since W1 is a point
+    // getNextWaypoint is never otherwise asked about. Run three ways, because
+    // the curve engages only once a lane's Princess is gone.
     std::cout << "=== lane-composition absorbing-state sweep ===\n";
     long long laneTested = 0;
     int laneTrapped = 0;

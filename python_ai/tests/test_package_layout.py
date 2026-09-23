@@ -1,9 +1,5 @@
-"""The structure itself, pinned. Layout decays silently unless something checks.
-
-Every assertion here corresponds to a specific coupling this refactor removed.
-Without them the tree drifts straight back: someone needs a constant, imports
-the module that happens to hold it, and three months later a probe that wanted
-to read one .pth again pulls in two trainers, a card-registry probe and torch.
+"""The package structure, pinned: without these checks the tree drifts back into
+cross-layer imports.
 """
 import ast
 import importlib
@@ -42,14 +38,13 @@ def _first_party_imports(path):
     return out
 
 
-# ------------------------------------------------------------- the package --
+# --- the package ---
 def test_every_package_exists_and_is_importable():
     for name in PACKAGES:
         assert (PKG / name).is_dir(), name
-        # `tests/` is deliberately a namespace portion rather than a regular
-        # package: adding __init__.py there changes how pytest names collected
-        # modules, and nothing needs it -- `python_ai.tests.helpers` resolves
-        # either way because `python_ai` itself is a regular package.
+        # `tests/` is a namespace portion, not a regular package: an
+        # __init__.py there changes how pytest names collected modules, and
+        # `python_ai.tests.helpers` resolves either way.
         if name != "tests":
             assert (PKG / name / "__init__.py").is_file(), name
         importlib.import_module(f"python_ai.{name}")
@@ -63,13 +58,9 @@ def test_the_shared_test_helpers_are_importable_by_their_package_path():
 
 def test_no_python_module_is_left_loose_at_the_package_root():
     """Only the package marker, the pytest bootstrap, the shipping config, the
-    engine constants and the trainee's deck belong here. Everything else has a
-    home.
-
-    `deck.py` joined on 2026-09-15 for the same reason `engine_constants.py` is
-    here: it is a LEAF every layer reads (envs, advisors, rewards-adjacent
-    tools, both trainers) and it imports nothing from python_ai, so any
-    subpackage that owned it would create an import edge pointing the wrong way.
+    engine constants and the trainee's deck live at the root. The last two are
+    leaves every layer reads and that import nothing from python_ai, so any
+    subpackage owning them would point an import edge the wrong way.
     """
     loose = {p.name for p in PKG.glob("*.py")}
     assert loose == {"__init__.py", "conftest.py", "shipping.py",
@@ -77,8 +68,8 @@ def test_no_python_module_is_left_loose_at_the_package_root():
 
 
 def test_importing_the_package_makes_the_compiled_engine_importable():
-    """The .pyd is unpackaged and lives in python_ai/. Doing this once in
-    __init__ is what replaced ~30 copies of a sys.path.insert line."""
+    """The .pyd is unpackaged in python_ai/; `__init__` puts it on the path once.
+    """
     assert python_ai.PACKAGE_DIR in __import__("sys").path
     importlib.import_module("clash_royale_env")
 
@@ -88,10 +79,11 @@ def test_repo_root_is_one_level_above_the_package():
     assert (pathlib.Path(python_ai.REPO_ROOT) / "include").is_dir()
 
 
-# ------------------------------------------------------- dependency direction --
+# --- dependency direction ---
 def test_the_model_layer_never_imports_a_trainer_or_an_environment():
-    """`policy_io` exists precisely so a probe can turn a .pth into a ready net
-    WITHOUT importing an experiment script and, through it, both trainers."""
+    """`policy_io` turns a .pth into a ready net without importing an experiment
+    script or a trainer.
+    """
     for name in _modules("models"):
         path = PKG / "models" / f"{name.rsplit('.', 1)[1]}.py"
         for imported in _first_party_imports(path):
@@ -101,9 +93,7 @@ def test_the_model_layer_never_imports_a_trainer_or_an_environment():
 
 
 def test_the_rl_package_never_imports_a_trainer():
-    """The direction is trainers -> rl, never back. A cycle here would make the
-    algorithm depend on which pipeline is using it, which is the exact fusion
-    this refactor undid."""
+    """The direction is trainers -> rl, never back."""
     for name in _modules("rl"):
         path = PKG / "rl" / f"{name.rsplit('.', 1)[1]}.py"
         for imported in _first_party_imports(path):
@@ -111,9 +101,10 @@ def test_the_rl_package_never_imports_a_trainer():
 
 
 def test_the_reward_layer_imports_no_torch_and_no_trainer():
-    """The shaping terms are pure functions of the engine's own statistics.
-    Keeping torch out of them is what makes them testable with plain arrays --
-    and what makes it obvious that they cannot accidentally touch the policy."""
+    """The shaping terms are pure functions of engine statistics: no torch
+    (testable with plain arrays, cannot touch the policy) and no trainer or rl
+    import.
+    """
     for module in ("shaping", "weights", "elixir_shaping"):
         src = (PKG / "rewards" / f"{module}.py").read_text(encoding="utf-8")
         assert "import torch" not in src, module
@@ -123,19 +114,18 @@ def test_the_reward_layer_imports_no_torch_and_no_trainer():
 
 
 def test_the_shipping_config_stays_cheap_to_import():
-    """It was importing a 1,152-line experiment harness -- and through it
-    bc_pretrain, torch and a card-registry probe -- to reach one dataclass.
-    A file that names the deployable configuration should be the cheapest thing
-    in the tree to read, not the most expensive."""
+    """The deployable configuration must be the cheapest thing in the tree to
+    import.
+    """
     imports = _first_party_imports(PKG / "shipping.py")
     assert not any(".trainers" in i for i in imports), imports
     assert not any(".eval" in i for i in imports), imports
 
 
 def test_the_search_core_is_not_inside_an_experiment_script():
-    """Five modules used to import `_build_candidates` and `_search_action` --
-    underscore-private names -- out of an A/B harness whose main() runs a whole
-    experiment."""
+    """The search core is public in search/search.py, not private names inside an
+    A/B harness.
+    """
     from python_ai.search import search
     for name in ("policy_head", "greedy_from_logits", "build_candidates",
                  "search_action", "play_episode", "outcome_score"):
@@ -146,8 +136,8 @@ def test_the_search_core_is_not_inside_an_experiment_script():
 def test_nobody_imports_the_search_internals_from_the_ab_harness_any_more():
     offenders = []
     for path in PKG.rglob("*.py"):
-        # This file names the forbidden import in order to forbid it; a scan
-        # that could match its own source can only ever fail.
+        # This file names the forbidden import; a scan matching its own source
+        # could only fail.
         if ("__pycache__" in path.parts or path.name == "search_ab_test.py"
                 or path.resolve() == pathlib.Path(__file__).resolve()):
             continue
@@ -157,11 +147,11 @@ def test_nobody_imports_the_search_internals_from_the_ab_harness_any_more():
     assert not offenders, offenders
 
 
-# ------------------------------------------------------------ entry points --
+# --- entry points ---
 def test_every_runnable_script_can_find_the_package_when_run_as_a_file():
-    """`python python_ai/eval/prove_hog.py` must keep working: the repo root is
-    not on sys.path there, so `python_ai.*` would not resolve. bc_pretrain.py
-    was missing this bootstrap entirely and could not be run at all."""
+    """`python python_ai/eval/prove_hog.py` must keep working: run as a file the
+    repo root is not on sys.path.
+    """
     missing = []
     for path in sorted(PKG.rglob("*.py")):
         if "__pycache__" in path.parts or "venv" in path.parts:
@@ -177,9 +167,9 @@ def test_every_runnable_script_can_find_the_package_when_run_as_a_file():
 
 
 def test_no_module_still_carries_the_old_flat_sys_path_bootstrap():
-    """`sys.path.insert(0, dirname(__file__))` put the module's OWN directory on
-    the path -- which under the package layout would let `python_ai/eval/foo.py`
-    be imported twice under two different names."""
+    """`sys.path.insert(0, dirname(__file__))` would let a module be imported
+    twice under two names.
+    """
     needle = "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))"
     offenders = []
     for path in PKG.rglob("*.py"):
@@ -193,40 +183,26 @@ def test_no_module_still_carries_the_old_flat_sys_path_bootstrap():
 
 @pytest.mark.parametrize("package", PACKAGES)
 def test_every_module_in_every_package_imports(package):
-    """The cheapest possible regression on a rename: an unreachable module is
-    invisible until the day someone runs it."""
+    """The cheapest regression on a rename: an unreachable module is invisible
+    until someone runs it.
+    """
     for name in _modules(package):
         if package == "tests":
             continue
         importlib.import_module(name)
 
 
-# --- "derive; do not restate" ---------------------------------------------
-#
-# CLAUDE.md's rule for arena geometry: "Nothing may keep a second copy. Four
-# did, and all four were stale." The count has since moved twice -- the
-# observation encoder's channel 8 was a fifth, and web/viewer.html a sixth --
-# and the reason the rule keeps being broken is that a restated constant is
-# CORRECT on the day it is written. It only becomes a defect when the arena
-# moves, which is exactly when nobody re-greps for literals.
-#
-# `ArenaLayout` is bound to Python as `clash_royale_env.ARENA_*` and surfaced
-# through `engine_constants`, so every consumer inside this package CAN derive.
-# The 2026-08-21 re-centring is what makes this concrete: it moved the bridges
-# from 3.0/14.0 to 2.5/14.5, and every hardcoded copy silently disagreed with
-# the engine from that commit onward.
+# --- derive, do not restate ---
+# Arena geometry is bound as `clash_royale_env.ARENA_*` and surfaced through
+# `engine_constants`, so every consumer here can derive it. A restated constant
+# is correct the day it is written and wrong the day the arena moves.
 
 def test_no_module_restates_a_geometry_constant_it_could_derive():
     """A module-level literal equal to a bound arena value is a second copy.
 
-    Matched on the VALUE and not on a fixed name list, because the next one
-    will not be called RIVER_Y -- but on the value ALONE this over-fires:
-    `FIREBALL_RADIUS = 2.5` is a blast radius that merely collides with
-    `LEFT_BRIDGE_X = 2.5`, and they are unrelated quantities that happen to
-    share a number. So the name must also read as POSITIONAL. That is a real
-    limitation and worth stating: this catches a coordinate restated under a
-    coordinate-ish name, which is every instance the project has actually hit,
-    and would miss one hidden behind a name like `FIREBALL_RADIUS`.
+    Matched on the value, and to avoid false hits (`FIREBALL_RADIUS = 2.5`
+    collides with `LEFT_BRIDGE_X = 2.5`) only under a positional-looking name.
+    That misses a coordinate hidden behind an unrelated name.
     """
     import pathlib
     import re
@@ -259,18 +235,8 @@ def test_no_module_restates_a_geometry_constant_it_could_derive():
 
 
 def test_the_offensive_scenario_reads_its_geometry_from_the_engine():
-    """The specific copies this test was written for, and one of them was
-    ALREADY STALE when it was found.
-
-    `BRIDGE_XS` read (4.0, 14.0) -- the arena as it stood BEFORE the
-    2026-08-21 re-centring moved the bridges to 2.5 / 14.5. Per CLAUDE.md,
-    x = 4 is WATER. The module is default-OFF (OFFENSIVE_SCENARIO_PROB = 0.0),
-    so no run was harmed; but the first person to switch Proposal A on would
-    have injected every offensive scenario 1.5 tiles off-lane and measured the
-    wrong thing, with nothing to say so.
-
-    Pinning the EQUALITY rather than the literal is the whole point: it fails
-    the next time the arena moves, instead of going quietly stale again.
+    """The offensive scenario reads its bridges and river from the engine; pinning
+    the equality fails the next time the arena moves.
     """
     from python_ai import engine_constants as EC
     from python_ai.envs import scenario_offense

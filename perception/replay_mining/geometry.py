@@ -1,19 +1,14 @@
 """Their detected-pixel-cell frame -> our engine's board frame.
 
-Their arena is 32 rows and ours is 34, their y runs from the OPPONENT's edge
-downward while ours runs from team 0's edge upward, and their unit coordinates
-are detected bounding-box centres rather than tile centres. So the two frames
-differ by a flip, a scale and an offset.
+Their arena is 32 rows to our 34, their y runs down from the opponent's edge
+while ours runs up from team 0's, and their coordinates are detected bbox
+centres rather than tile centres: a flip, a scale and an offset. The transform
+is fitted per episode from the four towers, which both sides see, with our side
+from the bound `ARENA_*` constants, rather than hardcoded where it would go
+stale when either arena moved.
 
-Rather than hardcode that transform -- which is exactly the "second copy of a
-constant" this repo has been bitten by six times, and which would go stale the
-moment either side's arena moved -- it is FITTED PER EPISODE from landmarks
-both sides can see: the four towers. Our side of each landmark comes from the
-bound `ARENA_*` constants, so the engine remains the only source of truth.
-
-The fit's residual is returned with it and is a first-class output: a large
-residual means the episode's detections are unreliable and the episode should
-be dropped, not silently reconstructed against a bad transform.
+The fit's residual is returned with it: a large one means the episode's
+detections are unreliable and it should be dropped.
 """
 from __future__ import annotations
 
@@ -38,10 +33,8 @@ class BoardTransform:
 
 
 def _their_tower_landmarks(episode) -> dict[tuple[str, int, str], tuple[float, float]]:
-    """Median detected centre for each (tower class, side, lane).
-
-    Median over the whole episode, because a single frame's detection is noisy
-    and a tower does not move.
+    """Median detected centre per (tower class, side, lane), over the whole
+    episode: a single detection is noisy and a tower does not move.
     """
     buckets: dict[tuple[str, int, str], list[tuple[float, float]]] = {}
     for s in episode.state[:episode.n_frames]:
@@ -63,9 +56,8 @@ def _their_tower_landmarks(episode) -> dict[tuple[str, int, str], tuple[float, f
 
 
 def _our_tower_landmarks() -> dict[tuple[str, int, str], tuple[float, float]]:
-    """The same landmarks in OUR frame, derived from the bound arena constants.
-
-    bel=0 is the ego player, which we reconstruct as team 0.
+    """The same landmarks in our frame, from the bound arena constants. bel=0 is
+    the ego player, reconstructed as team 0.
     """
     out = {}
     for bel, team in ((0, 0), (1, 1)):

@@ -1,59 +1,25 @@
-"""Can search actually AIM this card, or can it only rank the head's noise?
+"""Can search actually aim this card, or only rank the head's noise?
 
-WHY THIS EXISTS
----------------
-Commit 1b77f27 measured widened search against an engine oracle for ONE card,
-the Cannon, and found it captured 81% of the ceiling (+994 tower HP of a
-possible +1223) where un-widened search got +236. That result is the entire
-justification for distilling search into the placement head.
+A gate on distilling search into the placement head: distilling an expert that
+cannot aim degrades the student.
 
-It was never measured for The Log or Fireball -- the two cards the placement
-constraint was actually diagnosed on (`quality_hi` 0.217 and 0.685). The Log in
-particular has the flattest head in the deck (top-1 0.0288), so it is the card
-most dependent on widening and the least likely to have a critic that can rank
-the widened set.
+On states where the card is in hand, affordable, and the board offers it the
+most, five arms are played through the engine and scored by it:
 
-Distilling an expert that cannot aim is not neutral. CLAUDE.md records that
-more data from a WEAK expert actively degrades selectivity (p0 rises faster than
-p1, ratio 3.07 -> 2.31 -> 2.17). So this is a GATE, not a curiosity: it decides
-whether expert iteration has anything real to teach these two cards.
-
-WHAT IS MEASURED
-----------------
-On states where the target card is in hand, affordable, and the board offers it
-the MOST (top of the collected opportunity distribution -- aiming only matters
-where there is something to aim at), five arms are each PAID through the engine
-and scored by the engine:
-
-    policy today        whatever the greedy policy does here (may be a no-op)
+    policy today        what the greedy policy does here (may be a no-op)
     card @ argmax       the card forced at its placement head's argmax cell
-    card @ search top-k search over the head's own top-k cells (widening OFF)
+    card @ search top-k search over the head's own top-k cells (no widening)
     card @ search WIDE  search over the widened spatial proposal set
-    card @ oracle       the best cell in that same widened set, by ENGINE
+    card @ oracle       the best cell in that same widened set, by engine rollout
 
-Score is net tower HP conceded over a fixed horizon -- ally tower HP lost minus
-enemy tower HP lost, so LOWER IS BETTER and one number covers a card that
-defends and a card that trades.
+The score is net tower HP conceded over a fixed horizon (ally lost minus enemy
+lost; lower is better). The oracle ranges over the widened set, not the whole
+board, isolating the critic's ranking from proposal coverage. During a rollout
+our side no-ops and the opponent plays, the convention `search.search_action`
+uses.
 
-THE ORACLE IS DELIBERATELY OVER THE WIDENED SET, NOT THE WHOLE BOARD. The
-question distillation needs answered is "of the cells widening proposes, how
-much of the available value does the CRITIC's ranking capture" -- that isolates
-scoring quality from proposal coverage, and proposal coverage is the half
-already known to work. A whole-board oracle would blend the two.
-
-DURING A ROLLOUT OUR SIDE NO-OPS AND THE OPPONENT PLAYS. That isolates the
-value of this one placement instead of blending it with whatever the policy
-does next, and it is the same convention `search.search_action` uses for its own
-candidate rollouts, so the arms are not being scored under a different physics
-from the one search optimises against.
-
-THE IDENTICAL-ARMS CONTROL IS LOAD-BEARING. `card @ argmax` is evaluated TWICE
-and the two must agree exactly. They only do if `snapshot()` copies the
-opponent's RNG state, i.e. if the arms are genuinely paired. If that control
-prints a non-zero delta, every other number in the table is measuring opponent
-randomness and none of them mean anything.
-
-Usage:
+`card @ argmax` is evaluated twice and the two must agree exactly; a non-zero
+delta means the arms are not paired and every number is opponent randomness.
 
     ... -m python_ai.eval.probe_placement_oracle --weights model_weights_phase6.pth
     ... -m python_ai.eval.probe_placement_oracle --cards "The Log" --states 20
@@ -81,43 +47,29 @@ from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.search import search as S  # noqa: E402
 from python_ai.search.config import SearchCfg  # noqa: E402
 
-#: The value map each card is aimed by -- the same two `probe_card_discrimination`
-#: uses, so "opportunity" means one thing across both harnesses.
+#: The value map each card is aimed by, shared with probe_card_discrimination.
 VALUE_MAP = {
     "Fireball": lambda o: tactics.spell_catch_map(o),
     "The Log": log_catch_map,
-    # Cannon is the POSITIVE CONTROL, not a target. Commit 1b77f27 measured it
-    # at +1223 HP of oracle ceiling with widening capturing 81%, so this
-    # harness reproducing that is what makes a NULL on the other two
-    # trustworthy rather than just evidence the harness is broken. Its
-    # opportunity is threat on our half -- a scalar, not a cell map, so it is
-    # broadcast to the board shape purely to share one code path.
+    # Cannon is the positive control: a harness that reproduces its known
+    # result makes a null on the other cards trustworthy. Its opportunity is a
+    # scalar, broadcast to share one code path.
     "Cannon": lambda o: np.full((1, 1), tactics.threat_level(o), np.float32),
 }
 
 
 def build_net(path, device):
-    """Always via `policy_io.load_net`.
-
-    Hand-rolling this passed `len(DEFAULT_DECK)` as MicroRoyaleNet's first
-    positional argument, which is NOT the deck size, and the loader then
-    discarded `cnn_trunk.0.weight` as a shape mismatch -- a probe running on a
-    randomly-initialised first conv layer, reporting numbers the whole time.
+    """Always via `policy_io.load_net`; a hand-rolled constructor once loaded a
+    net with a random first conv layer.
     """
     return load_net(path, device)
 
 
 def make_env(stage, seed, deck):
-    """Phase 1's env as the RUN configures it: teacher opponent, a pool deck.
+    """Phase 1's env as the run configures it: teacher opponent, a pool deck.
 
-    THE KEY IS `opponent`, NOT `opponent_kind`. The first version of this probe
-    passed `opponent_kind` -- which `gym_wrapper` does not read -- so it
-    silently fell back to "builtin" and measured against the C++
-    HeuristicOpponent on the 2.6 MIRROR: exactly the distribution this file's
-    own docstring criticises `expert_collect` for using, and the one that ranks
-    16th of 16 on opportunity for these cards. A config key that is ignored
-    rather than rejected is the same silent-default hazard as the four stale
-    arena copies.
+    The key is `opponent`; an unread key such as `opponent_kind` silently falls
+    back to the C++ heuristic on the mirror.
     """
     env = gym_wrapper.MicroRoyaleEnv({
         "ai_deck": list(gym_wrapper.DEFAULT_DECK),
@@ -131,17 +83,15 @@ def make_env(stage, seed, deck):
 
 
 def tower_hp(sim):
-    """(ally, enemy) total tower HP, board slots 0=King, 1=LEFT, 2=RIGHT."""
+    """(ally, enemy) total tower HP; board slots 0=King, 1=LEFT, 2=RIGHT."""
     ally = sum(max(0.0, sim.get_tower_hp(0, s)) for s in range(3))
     enemy = sum(max(0.0, sim.get_tower_hp(1, s)) for s in range(3))
     return ally, enemy
 
 
 def rollout_score(snap, action, horizon):
-    """Net tower HP conceded by taking `action` here, then no-opping.
-
-    LOWER IS BETTER. One number covers defence (ally HP preserved) and trade
-    (enemy HP taken), which a card like Fireball does both of.
+    """Net tower HP conceded by taking `action` here, then no-opping. Lower is
+    better.
     """
     sim = snap.snapshot()
     a0, e0 = tower_hp(sim)
@@ -160,20 +110,18 @@ def rollout_score(snap, action, horizon):
 @torch.no_grad()
 def collect_states(net, card_name, *, episodes, stage, seed0, device, want,
                    max_steps=400):
-    """States where the card is live and the board offers it the most.
+    """The `want` highest-opportunity states where the card is live.
 
-    Returns the `want` highest-opportunity states, each carrying the snapshot
-    the arms are replayed from and the hidden state the net had on arrival --
-    the LSTM's memory is part of the state, and scoring a stored board with a
-    zeroed hidden state would evaluate a different position.
+    Each carries the snapshot the arms replay from and the net's hidden state
+    on arrival; scoring a stored board with a zeroed hidden state would
+    evaluate a different position.
     """
     from python_ai.opponents import deck_pool
 
     vmap = VALUE_MAP[card_name]
     deck = list(gym_wrapper.DEFAULT_DECK)
     card_id = next(c for c in deck if E.get_card_info(c)["name"] == card_name)
-    # Round-robin over the pool, so every deck is represented rather than
-    # whichever ones PFSP would have favoured.
+    # Round-robin over the pool, so every deck is represented.
     pool = deck_pool.load_pool()
     found = []
     for ep in range(episodes):
@@ -207,12 +155,9 @@ def collect_states(net, card_name, *, episodes, stage, seed0, device, want,
             done = bool(term or trunc)
             hidden = hn
             steps += 1
-    # DE-DUPLICATE BEFORE RANKING. `skip_frames = 10` means consecutive
-    # decisions see almost the same board, so a naive "top N by opportunity"
-    # happily returns N copies of a single moment -- n=16 that is really n=2,
-    # with paired statistics computed over the duplicates. States are kept at
-    # least MIN_TICK_GAP apart within an episode, and no episode may supply
-    # more than a third of the sample.
+    # De-duplicate before ranking: consecutive decisions see almost the same
+    # board, so a naive top-N returns copies of one moment. Keep states
+    # MIN_TICK_GAP apart, and at most a third from any episode.
     MIN_TICK_GAP = 100
     per_ep_cap = max(1, want // 3)
     found.sort(key=lambda r: -r["opp"])
@@ -240,11 +185,11 @@ def arms_for_state(net, st, card_name, cfg, device, horizon):
     cl, ce, sm, _, hn = S.policy_head(net, obs_t, hidden)
     slot = st["slot"]
 
-    # policy today -- this project's own definition of "the policy playing".
+    # Policy today.
     g_card, gx, gy, _ = S.greedy_from_logits(net, obs_t, cl, ce, sm, hn)
     out = {"policy": (g_card, gx, gy)}
 
-    # the card forced at its own placement argmax
+    # The card forced at its own placement argmax.
     idx = torch.tensor([slot], device=device)
     pl = net.placement_given_card(hn[0], ce, idx, obs_t, sm)
     pmask = net.placement_mask(obs_t, idx)
@@ -254,9 +199,8 @@ def arms_for_state(net, st, card_name, cfg, device, horizon):
     out["argmax"] = (slot, float(x_t.item()), float(y_t.item()))
     out["argmax_ctrl"] = out["argmax"]          # the identical-arms control
 
-    # Force this card to be search's ONLY expanded arm, so the comparison is
-    # about CELLS. Left to itself search would often expand a different card
-    # and the arms would stop being about placement at all.
+    # Make this card search's only expanded arm, so the comparison is about
+    # cells.
     forced = torch.full_like(cl, float("-inf"))
     forced[0, slot] = 0.0
     greedy_here = out["argmax"]
@@ -279,7 +223,7 @@ def arms_for_state(net, st, card_name, cfg, device, horizon):
 
 @torch.no_grad()
 def critic_rank(net, snap, cands, cfg, hidden, device):
-    """Pick from `cands` the way search does: roll out, score by the critic."""
+    """Pick from `cands` as search does: roll out, score by the critic."""
     if len(cands) == 1:
         return cands[0]
     final_obs, terminal = [], []
@@ -332,7 +276,7 @@ def run_card(net, card_name, args, device):
 
         arms["narrow"] = critic_rank(net, snap, narrow_c, cfg, hidden, device)
         arms["wide"] = critic_rank(net, snap, wide_c, cfg, hidden, device)
-        # ORACLE: the best cell in the widened set, ranked by the ENGINE.
+        # Oracle: the best cell in the widened set, ranked by the engine.
         oracle_scores = [(rollout_score(snap, a, args.horizon), a)
                          for a in wide_c]
         arms["oracle"] = min(oracle_scores)[1]
@@ -366,16 +310,16 @@ def run_card(net, card_name, args, device):
     print(f"  candidates per decision: narrow {np.mean(n_narrow):.1f}, "
           f"wide {np.mean(n_wide):.1f}")
 
-    # The number the gate turns on: how much of the oracle's headroom over the
-    # head's own argmax does the critic's ranking of the widened set collect?
+    # The gate: how much of the oracle's headroom over the head's argmax does
+    # the critic's ranking of the widened set collect?
     head = rows["argmax"]["vec"]
     wide = rows["wide"]["vec"]
     orac = rows["oracle"]["vec"]
     ceiling = float((head - orac).mean())
     got = float((head - wide).mean())
     capture = (got / ceiling) if abs(ceiling) > 1e-9 else float("nan")
-    # `paired` reports b - a. Both arms are "HP conceded", so the improvement
-    # widening buys is argmax - wide: pass wide as a and argmax as b.
+    # `paired` reports b - a and both arms are HP conceded, so pass wide as a
+    # and argmax as b.
     pr = paired(wide, head)
     print(f"\n  WIDE vs argmax: {got:>+8.0f} HP   "
           f"95% CI [{pr.lo:+.0f}, {pr.hi:+.0f}]   "

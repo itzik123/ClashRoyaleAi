@@ -1,22 +1,12 @@
-"""Hard-real-time latency budget for decision-time search.
+"""Per-decision latency budget for live decision-time search.
 
-The offline result (shipping.py) chose horizon 12 on WALL-CLOCK-PER-EPISODE
-grounds -- 1.5x cost was cheap because nothing was waiting. Live is a different
-constraint entirely: the emulator does not pause, so what matters is the
-per-decision TAIL, not the mean. A search whose p99 blows the budget drops
-physical reaction windows even if its average looks fine.
+The emulator does not pause, so the tail matters, not the mean: a search whose
+p99 exceeds the budget misses reaction windows. Measures the real
+`search_action` path over mid-match states and reports p50/p95/p99 for a grid
+of (horizon, K), plus the greedy failsafe as the floor.
 
-So this measures the REAL `search_action` code path (not a cost model of it)
-over a realistic mid-match state distribution, and reports p50/p95/p99 for a
-grid of (horizon, K). The greedy path is measured too, because that is the
-failsafe and its own latency is the floor everything else sits on.
-
-READ THE TAIL, NOT THE MEAN. A budget is a promise about the worst case.
-
-CONTENTION: if pipeline-2 training is running while this executes, every number
-here is pessimistic -- 8 worker processes plus the trainer are competing for the
-same cores. That is the conservative direction for a safety budget, and it is
-noted in the output rather than corrected for.
+Numbers taken while training runs are pessimistic (shared cores), the safe
+direction for a budget.
 """
 import argparse
 import os
@@ -78,9 +68,8 @@ def measure(net, device, cfg, n_decisions, opp_elixir, warmup=15):
 
         if i >= warmup:
             greedy_ms.append((t1 - t0) * 1000.0)
-            # search cost is the INCREMENT over greedy plus greedy itself: the
-            # live loop must pay both, since greedy runs first and its logits
-            # seed the candidate set.
+            # The live loop pays greedy plus the search, since greedy's logits
+            # seed the candidates.
             search_ms.append((t2 - t0) * 1000.0)
             ncands.append(n)
         i += 1
@@ -120,7 +109,7 @@ def main():
     print(f"{'config':<26}{'n':>5}{'K':>5}{'p50':>9}{'p95':>9}{'p99':>9}{'max':>9}   verdict")
     print("-" * 90)
 
-    # greedy alone, once -- it is the failsafe and the floor.
+    # Greedy alone: the failsafe and the floor.
     g, s, _ = measure(net, device, SearchCfg(horizon=1, k_cards=1, k_cells=1),
                       args.decisions, args.opp_elixir)
     print(f"{'GREEDY (failsafe)':<26}{len(g):>5}{1:>5}{percentile(g,50):>9.1f}"
@@ -133,10 +122,8 @@ def main():
             cfg = SearchCfg(horizon=horizon, k_cards=k_cards, k_cells=k_cells)
             _, s, nc = measure(net, device, cfg, args.decisions, args.opp_elixir)
             s, nc = np.asarray(s), np.asarray(nc)
-            # Cost of a REAL search only. K==1 means nothing was affordable, so
-            # search_action returns immediately without rolling anything
-            # forward -- averaging those in reports a budget the worst case
-            # never has to meet. The tail is what the budget is about.
+            # Only real searches: at K == 1 search_action returns without
+            # rolling anything forward.
             real = s[nc >= 2]
             if real.size < 20:
                 print(f"h={horizon} k_cards={k_cards} k_cells={k_cells}"

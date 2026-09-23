@@ -1,48 +1,18 @@
-"""THE PAIRED A/B that measured what decision-time search is worth.
+"""Paired win-rate A/B: 1-ply decision-time search vs the raw policy.
 
-The search itself lives in `search/search.py` now -- this file is the
-EXPERIMENT: pairing, the arms, and the exact-McNemar read-out. Splitting them
-was overdue: five other modules imported this script's underscore-private
-functions, which meant reaching across a module boundary into a harness whose
-main() runs a whole experiment.
+The search lives in `search/search.py`; this is the experiment. At each
+decision the search arm rolls K candidates forward on a copy of the
+environment, scores each with the critic and plays the best; the policy arm
+plays the same net greedily.
 
-1-ply decision-time search vs the raw policy: a PAIRED win-rate A/B.
+Each trial resets one environment and hands both arms a bit-identical snapshot
+of it (same hand, same opponent lane), removing the opening from the variance.
 
-Consumes `ClashRoyaleEnv.snapshot()` (perception/UPSTREAM_REQUESTS.md item 13).
-At each decision the search arm proposes K candidate actions, rolls each one
-forward on a throwaway copy of the live environment, scores the resulting
-position with the critic, and plays the best. The policy arm plays the same
-network greedily, exactly as `train_selfplay.evaluate_against_roster` does.
+Read the deviation rate first: if search almost never disagrees with greedy,
+the arms are near-identical and the win-rate comparison carries no information
+at any n. The paired CI is printed whether or not it excludes zero.
 
-WHY PAIRED, AND WHY THAT IS THE POINT
--------------------------------------
-The engine's RNG still cannot be seeded (UPSTREAM item 7 is open), so the usual
-way to compare two agents is unpaired, and UPSTREAM item 7 works out the cost:
-~1,568 episodes per arm to resolve a 5-point win-rate difference at 80% power.
-
-snapshot() sidesteps that. Each trial resets ONE environment, snapshots it, and
-hands both arms a bit-identical copy -- same shuffled opening hand, same
-heuristic-opponent lane, same everything at t=0. The shared opening is removed
-from the variance rather than averaged over, which is what pairing buys, and it
-needs no engine RNG change at all.
-
-WHAT THIS CANNOT TELL YOU
--------------------------
-UPSTREAM item 13 records a previous attempt at this question whose confidence
-interval came out 15x wider than the effect, and the honest reading of that was
-"underpowered null", not "search does not work". Two things guard against
-repeating it:
-
-  * `--trials` is reported alongside a paired CI, and the CI is printed whether
-    or not it excludes zero.
-  * DEVIATION RATE is reported first. If search almost never disagrees with the
-    greedy policy, the two arms are near-identical by construction and the
-    win-rate comparison carries no information regardless of how many episodes
-    are run. That diagnostic is cheap and it is the one that says whether the
-    experiment measured anything at all.
-
-Run:
-    python_ai/venv/Scripts/python.exe python_ai/search_ab_test.py --trials 100
+    python_ai/venv/Scripts/python.exe python_ai/eval/search_ab_test.py --trials 100
 """
 import argparse
 import math
@@ -53,9 +23,7 @@ import time
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -79,20 +47,14 @@ def main():
     ap.add_argument("--terminal-weight", type=float, default=10.0)
     ap.add_argument("--max-steps", type=int, default=400)
     ap.add_argument("--max-ticks", type=int, default=3600)
-    # The curriculum's hardest rung. At 1.0 the ep-64k policy wins ~100% of
-    # games and BOTH arms saturate, so the paired delta is pinned at zero by a
-    # ceiling rather than by search being useless -- measured, not assumed:
-    # 4/4 trials came back 1.000 vs 1.000. A comparison needs an opponent with
-    # headroom on both sides. CLAUDE.md records this policy family plateauing
-    # around 0.86 at 1.5x, which is where the resolution is.
+    # At 1.0 both arms saturate near 100% and the delta is pinned at zero by
+    # the ceiling; 1.5 leaves headroom on both sides.
     ap.add_argument("--opp-elixir", type=float, default=1.5,
                     help="opponent elixir multiplier; 1.0 saturates at this skill level")
     ap.add_argument("--time-budget", type=float, default=0.0, help="seconds; 0 = no limit")
     args = ap.parse_args()
-    # A real SearchCfg, not the argparse namespace. They are duck-compatible,
-    # which is how the namespace came to be passed straight through -- and the
-    # whole reason SearchCfg exists is that two callers reaching different
-    # settings under the same name is a silent way to compare two experiments.
+    # A real SearchCfg rather than the argparse namespace, so every caller
+    # names the same settings.
     search = SearchCfg(horizon=args.horizon, k_cards=args.k_cards,
                        k_cells=args.k_cells,
                        terminal_weight=args.terminal_weight,
@@ -192,7 +154,7 @@ def main():
     print(f"\nwall clock             : policy {a_time / n:.2f}s/ep, search {b_time / n:.2f}s/ep "
           f"({b_time / max(1e-9, a_time):.1f}x)")
 
-    # Power check, stated up front rather than left for the reader to work out.
+    # Power check.
     if n > 1 and se > 0:
         detectable = 1.96 * se
         print(f"\nsmallest effect this n could resolve: +/-{detectable:.4f} "

@@ -6,13 +6,9 @@
 #include <random>
 #include <vector>
 
-// ============================================================================
-// The built-in C++ opponent. It is phase 1's ClashEnv::step() opponent and all
-// three BUILTIN_ANCHORS in the phase-2 Elo roster, so what it believes is a
-// threat decides what those anchors measure.
-//
-// It had no coverage at all before this file.
-// ============================================================================
+// The built-in C++ opponent: phase 1's ClashEnv::step() opponent and the three
+// builtin Elo anchors, so what it treats as a threat decides what those anchors
+// measure.
 
 namespace {
 
@@ -25,8 +21,8 @@ const std::vector<int>& deck() {
     return d;
 }
 
-// Did one act() call actually commit elixir? Cheaper and more direct than
-// diffing the hand, and it cannot be fooled by a cycle.
+// Did one act() call commit elixir? More direct than diffing the hand, and a
+// cycle cannot fool it.
 bool actsOn(int intruderCardId) {
     GameManager game(deck(), deck());
     game.reset();
@@ -34,8 +30,7 @@ bool actsOn(int intruderCardId) {
     HeuristicOpponent bot;
     bot.reset(rng);
 
-    // Deep in team 1's half, well past the river, where a real incursion would
-    // demand an answer.
+    // Deep in team 1's half, where a real incursion demands an answer.
     CardRegistry::getInstance().getCard(intruderCardId)->spawnEntity(9.0f, 25.0f, 0, game.getBoard());
     game.getBoard().commitPendingEntities();
 
@@ -47,24 +42,17 @@ bool actsOn(int intruderCardId) {
 } // namespace
 
 TEST_CASE("the built-in opponent answers a real incursion", "[heuristic]") {
-    // The control for the case below. Without it, "did not react to a spell"
-    // is satisfied by a bot that never reacts to anything -- and this bot
-    // holds elixir below 7 by design, so that failure mode is live.
+    // The control for the case below: this bot holds elixir below 7 by design,
+    // so "did not react to a spell" would also pass for a bot that never
+    // reacts.
     REQUIRE(actsOn(HOG_RIDER));
 }
 
 TEST_CASE("the built-in opponent does not defend against a spell marker",
           "[heuristic][regression]") {
-    // Its threat scan walked every living enemy entity and excluded only
-    // Towers. An AreaSpell is a living entity (hp 1) parked at its impact
-    // point for the length of its fuse, and a Projectile likewise -- so a
-    // Fireball thrown at the opponent's own tower registered as the deepest
-    // incursion on the board and bought a full defensive placement against
-    // something that was never a unit. It is also the strongest affordable
-    // card it holds, so the misread is expensive.
-    //
-    // isTargetable() is the discriminator the rest of the engine already uses
-    // for exactly this ("Projectiles and pending spells are not board
-    // presence" -- ClashEnv::extractObservationForTeam).
+    // An AreaSpell sits on the board at its impact point for its whole fuse (hp
+    // 1), and a Projectile while in flight; a threat scan must skip both, via
+    // isTargetable(), or a Fireball at the bot's tower buys a full defensive
+    // placement.
     REQUIRE_FALSE(actsOn(FIREBALL));
 }

@@ -1,31 +1,13 @@
-"""Forward+backward cost of ONE PPO update chunk, at the shape the update
-really runs at -- the instrument for the 15% throughput budget.
+"""Forward+backward cost of one PPO update chunk, at the shape the update really
+runs at.
 
-WHY THIS FILE EXISTS. Phase 4 changes three things inside the network
-(receptive field, scalar encoder, BPTT horizon) and every one of them is an
-accuracy bet paid for in wall clock. This repo has an explicit rule against
-answering "is it better" from a forward pass, but "what does it COST" is
-exactly a forward-pass question, and it is the one that decides whether a
-change is admissible at all: 943 ep/hour on a CPU-only box, with CLAUDE.md
-putting the CNN trunk at 43% of update wall-clock and the placement head at
-41%.
+The shape is the measurement: rl/ppo.py runs the trunk on a flat (L*B) batch
+and loops only the LSTMCell, so a benchmark at rollout shape would measure a
+different network. L and B are derived from PPOConfig.
 
-THE SHAPE IS THE MEASUREMENT. `rl/ppo.py` runs the trunk on a FLAT (L*B) batch
-and loops only the LSTMCell -- that asymmetry is why `forward_sequence` was
-worth 1.82x, and a benchmark at rollout shape (B=8) would measure a different
-network. L and B are derived from PPOConfig here rather than restated, so this
-cannot drift away from the update it claims to model.
-
-TWO VARIANTS IN ONE PROCESS, INTERLEAVED. `tools/audit/collision_bench.cpp`
-holds both the old and new collision paths in a single binary for a reason this
-file inherits: a CPU A/B split across two processes measures thermal state,
-BLAS thread placement and scheduler luck at least as much as it measures the
-code. `compare()` therefore alternates A,B,A,B... and reports MEDIANS, so drift
-during the run lands on both arms equally. Medians, not means, because the
-tail here is OS preemption -- one descheduled repeat moves a mean and not a
-median.
-
-Run it:
+Variants run in one process, interleaved A,B,A,B... with the order reversed
+every other round, and medians are reported, so thermal drift and OS preemption
+land on every arm equally.
 
     python_ai/venv/Scripts/python.exe -m python_ai.eval.profile_architecture
 """
@@ -37,9 +19,7 @@ import time
 
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -50,11 +30,10 @@ from python_ai.rl.optim_step import clip_and_step  # noqa: E402
 
 
 def update_chunk_shape(cfg=None):
-    """(L, B) of one PPO minibatch, derived from the config, never restated.
+    """(L, B) of one PPO minibatch, derived from the config.
 
-    Mirrors rl/ppo.py: `segments_per_rollout` chunks of `bptt_chunk` steps are
-    split across `num_minibatches`, so one minibatch is B segments of L steps
-    and the trunk sees L*B flat rows.
+    Mirrors rl/ppo.py: `segments_per_rollout` chunks of `bptt_chunk` steps
+    split across `num_minibatches`, so the trunk sees L*B flat rows.
     """
     cfg = cfg or PPOConfig()
     segments = cfg.segments_per_rollout
@@ -67,14 +46,10 @@ def chunks_per_update(cfg=None):
 
 
 def make_chunk_runner(net, L, B, obs_dim=None, seed=0):
-    """Build the batch and optimizer ONCE; return a closure that runs one chunk.
+    """Build the batch and optimizer once; return a closure that runs one chunk.
 
-    Allocation is hoisted out deliberately. The observation batch alone is
-    L*B*obs_dim floats -- 500 x 13,976 = 28 MB -- and re-allocating it per timed
-    round churns enough memory to move the arm that happens to run after it.
-    That is not a hypothetical: the first version of this file rebuilt the batch
-    and an Adam state per round and reported a baseline 35% slower than the same
-    net measured alone.
+    Allocation is hoisted out because re-allocating a ~28 MB batch per round
+    churns enough memory to slow whichever arm runs next.
     """
     obs_dim = obs_dim or (net.spatial_size + net.scalar_size)
     g = torch.Generator().manual_seed(seed)
@@ -87,7 +62,7 @@ def make_chunk_runner(net, L, B, obs_dim=None, seed=0):
     opt = torch.optim.Adam(net.parameters(), lr=3e-4)
 
     def run_one():
-        """Same call sequence as rl/ppo.py: the budget is on the whole update."""
+        """Same call sequence as rl/ppo.py."""
         opt.zero_grad(set_to_none=True)
         feats, cembeds, spatial, hires = net.extract_features_hires(flat)
         feats = feats.view(L, B, -1)
@@ -105,9 +80,7 @@ def make_chunk_runner(net, L, B, obs_dim=None, seed=0):
                 + vals.float().pow(2).mean() + aux.float().pow(2).mean()
                 + cf_pl.float().nan_to_num().pow(2).mean())
         loss.backward()
-        # The real update clips before stepping (rl/ppo.py -> clip_and_step),
-        # and clipping 1.9M parameters is not free, so timing a bare
-        # `opt.step()` here would under-report the update it claims to model.
+        # The real update clips before stepping, and clipping is not free.
         clip_and_step(opt, net.parameters(), 0.5)
 
     return run_one
@@ -143,11 +116,10 @@ def param_table(net):
 
 
 def compare(factories, L=None, B=None, repeats=12, cfg=None, shapes=None):
-    """Interleaved A/B/A/B... so drift lands on every arm equally.
+    """Interleaved timing of every arm, so drift lands on each equally.
 
-    `factories` is {label: callable-returning-net}. Nets are built ONCE up
-    front (construction cost is not what we are measuring) and then timed in
-    round-robin order.
+    `factories` is {label: callable-returning-net}; nets are built once up
+    front.
     """
     cfg = cfg or PPOConfig()
     if L is None or B is None:
@@ -155,28 +127,21 @@ def compare(factories, L=None, B=None, repeats=12, cfg=None, shapes=None):
     nets = {label: make() for label, make in factories.items()}
     for net in nets.values():
         net.train()
-    # `shapes` lets one arm run at a different (L, B) -- needed to compare BPTT
-    # horizons, where the whole point is that the shape changes. It stays a
-    # fair comparison only because L*B (the flat rows through the trunk, 84% of
-    # the update) is held constant by construction; the caller is responsible
-    # for that and _fmt prints the rows so it can be checked.
+    # `shapes` lets an arm run at a different (L, B), for comparing BPTT
+    # horizons. That is fair only while L*B, the flat rows through the trunk,
+    # is held constant; the caller must ensure it.
     shapes = shapes or {}
     runners = {label: make_chunk_runner(net, *shapes.get(label, (L, B)))
                for label, net in nets.items()}
 
     per_arm = {label: [] for label in nets}
-    # A full warmup round for EVERY arm before any timed round, so no arm pays
-    # another's lazy-allocation cost.
+    # Warm every arm before any timed round, so no arm pays another's lazy
+    # allocation.
     for run_one in runners.values():
         run_one()
         run_one()
-    # ORDER IS ALTERNATED, not merely round-robin. Measured on this box with
-    # two IDENTICAL arms, a fixed order reported the second arm 6.8% slower --
-    # it inherits the cache the first arm just evicted, every round, so the bias
-    # never averages out and lands entirely on whichever arm is listed last.
-    # That is larger than the effects being measured here, so a fixed order
-    # would have "found" a cost in a change that made none. Reversing every
-    # other round puts each arm first half the time.
+    # Alternate the order: with a fixed order the second arm inherits the cache
+    # the first evicted, and reads slower every round.
     order = list(runners)
     for r in range(repeats):
         for label in (order if r % 2 == 0 else order[::-1]):

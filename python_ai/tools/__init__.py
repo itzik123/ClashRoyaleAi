@@ -1,2 +1,3 @@
-"""Operational scripts: pre-flight validation, run monitoring, experiment
-setup. Nothing here is imported by the training path either."""
+"""Operational scripts: pre-flight validation, run monitoring, experiment setup.
+Not imported by the training path.
+"""

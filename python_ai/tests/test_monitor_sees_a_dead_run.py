@@ -1,10 +1,4 @@
-"""`tools/monitor_run.py` must be able to tell a DEAD run from a slow one.
-
-Audit 08 (2026-09-15): every check in it was finite-vs-NaN, a norm, memory, or
-the placement probe -- and that probe watched a Giant, which is not in the deck.
-It read no win rate, no reward and no curriculum state, so a from-scratch run
-that lost 4,000 straight games reported "0 alarm(s)".
-"""
+"""`tools/monitor_run.py` must tell a dead run from a slow one."""
 import sys
 
 import pytest
@@ -43,7 +37,7 @@ def test_a_run_pinned_at_zero_wins_is_an_alarm(tmp_path, monkeypatch, capsys):
 
 
 def test_a_learning_run_is_not_an_alarm(tmp_path, monkeypatch, capsys):
-    """CONTROL: the check must not fire on a run that is getting better."""
+    """Control: the check must not fire on a run that is getting better."""
     _write_run(tmp_path, lambda ep: min(0.6, ep / 4000.0), stage=2)
     code, out = _run(monkeypatch, tmp_path, capsys)
     assert "[ALARM] win rate" not in out

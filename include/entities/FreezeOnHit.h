@@ -2,10 +2,8 @@
 #include "OnHitEffect.h"
 #include "CombatEntity.h"
 
-// Separated from OnHitEffect.h because calling target->applyFreeze(...)
-// needs CombatEntity's complete definition -- and CombatEntity.h itself
-// includes OnHitEffect.h for the IOnHitEffect interface. Splitting the
-// interface from this concrete effect breaks that cycle.
+// Kept out of OnHitEffect.h: calling applyFreeze needs CombatEntity's full
+// definition, and CombatEntity.h includes OnHitEffect.h.
 class FreezeOnHit : public IOnHitEffect {
     int ticks;
     float slowFactor;

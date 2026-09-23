@@ -1,34 +1,22 @@
-"""Does a reconstructed board's WRONG tower HP change which action search picks?
+"""Does a reconstructed board's wrong tower HP change which action search picks?
 
-ORIGINAL PREMISE, NOW SUPERSEDED: there was no way to write tower HP into the
-engine, so a reconstructed board always reported both sides untouched and
-symmetric. `set_tower_hp` / `destroy_tower` landed 2026-08-24 (item 22), so
-that is no longer true.
+The live mirror writes tower HP measured by perception (`set_tower_hp`), and
+that measurement is unreliable: `live/adapter.py` reads the bar, and CRBAB's
+`_calculate_hp` returns 0.0 both for "empty" and "could not match". So the
+board will sometimes carry wrong tower HP, and this prices that error.
 
-The question did not go away with it -- it got sharper. Stage 2 injects a
-tower HP that perception MEASURED (hp_fraction 0.87 on our right princess,
-0.81 on the enemy king in one sampled frame), and that measurement is known to
-be unreliable: `live/adapter.py` still reads the BAR (TODO.md), and CRBAB's
-`_calculate_hp` returns 0.0 both for "empty" and for "could not match the
-colours". So the board will now carry tower HP that is sometimes WRONG rather
-than uniformly full, and this probe prices exactly that error.
-
-Whether that MATTERS is a separate question from whether it is wrong. Search
-compares candidates on one board, so a bias shared by every candidate cancels;
-only a bias that reorders them costs anything. This measures the reordering
-directly, in the SIMULATOR where the true tower HP is known:
+Search compares candidates on one board, so a bias shared by every candidate
+cancels; only one that reorders them costs anything. Measured in the simulator,
+where true tower HP is known:
 
     ranking A   candidates scored on the real observation
-    ranking B   the same candidates, tower scalars overwritten to FULL
+    ranking B   the same candidates, tower scalars overwritten to full
     metric      how often argmax(A) != argmax(B)
 
-Everything else is held identical -- same states, same candidate set, same net,
-same hidden state. So a disagreement is attributable to the six tower scalars
-and nothing else.
-
-Deliberately measured on states where the towers are ACTUALLY damaged. Early in
-a match the real board is already near-full and the corruption is nearly a
-no-op, which would dilute the estimate toward zero and understate the problem.
+Everything else is identical (states, candidates, net, hidden state), so a
+disagreement is attributable to the six tower scalars. Measured on states where
+towers are actually damaged: near-full early-match boards would dilute the
+estimate toward zero.
 """
 
 from __future__ import annotations
@@ -51,8 +39,8 @@ if str(_PY_AI.parent) not in sys.path:
 
 import engine as _engine_build  # noqa: F401,E402 -- fresh build first
 
-# The six tower-HP scalars sit inside the appended extra scalars: index 0 is
-# elapsed time, 1-2 the two cumulative elixir spends, 3-8 the tower HPs.
+# The six tower-HP scalars in the extra scalars: 0 is elapsed time, 1-2 the
+# cumulative elixir spends, 3-8 the tower HPs.
 TOWER_SCALAR_SLICE = slice(-6, None)
 
 
@@ -70,7 +58,7 @@ def main() -> int:
 
     import shutil
     import tempfile
-    # The live phase-2 run rewrites this file; read a copy.
+    # A live training run rewrites this file; read a copy.
     frozen = Path(tempfile.gettempdir()) / "towerhp_probe.pth"
     shutil.copy2(args.checkpoint, frozen)
     blob = torch.load(frozen, map_location="cpu", weights_only=False)
@@ -79,13 +67,12 @@ def main() -> int:
     net.load_state_dict(blob["model"] if "model" in blob else blob, strict=False)
     net.eval()
 
-    # Not `from gym_wrapper import DEFAULT_DECK`: that pulls in gymnasium,
-    # which perception's venv deliberately does not carry. Same single source
-    # of truth, read the same way the live loop reads it.
+    # Not `from gym_wrapper import DEFAULT_DECK`, which pulls in gymnasium;
+    # read the way the live loop reads it.
     from live.mvp_loop import _training_deck_ids  # noqa: PLC0415
     DEFAULT_DECK = _training_deck_ids()
-    # 3600 explicitly -- bindings.cpp defaults max_ticks to 1800, HALF the
-    # length the policy trained at.
+    # 3600 explicitly: bindings.cpp defaults max_ticks to 1800, half the
+    # training length.
     env = cre.ClashRoyaleEnv(DEFAULT_DECK, DEFAULT_DECK, 3600)
 
     changed = total = skipped = 0
@@ -99,9 +86,8 @@ def main() -> int:
             obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
             towers = obs[TOWER_SCALAR_SLICE].copy()
 
-            # "Full" means what a FRESH env reports, not 1.0 -- the scalars are
-            # normalised by max building HP, so a princess at full reads 0.6322.
-            # Hardcoding 1.0 here would measure a board that cannot exist.
+            # "Full" is what a fresh env reports, not 1.0: the scalars are
+            # normalised by max building HP, so a full Princess reads 0.6322.
             if not hasattr(main, "_full"):
                 probe = cre.ClashRoyaleEnv(DEFAULT_DECK, DEFAULT_DECK, 3600)
                 probe.reset()
@@ -121,8 +107,8 @@ def main() -> int:
                 with torch.no_grad():
                     batch = torch.from_numpy(np.stack([obs, corrupted]))
                     feats, _, _ = net.extract_features(batch)
-                    # The SAME hidden state for both rows, so the only
-                    # difference reaching the heads is the tower scalars.
+                    # The same hidden state for both rows, so only the tower
+                    # scalars differ.
                     h2 = (hx.expand(2, 256).contiguous(),
                           cx.expand(2, 256).contiguous())
                     out = net.step_lstm_and_card(feats, h2)
@@ -134,9 +120,9 @@ def main() -> int:
                 if a != b:
                     changed += 1
 
-            # Advance the match with the real observation. Hidden state is
-            # carried so the states sampled are the ones a recurrent policy
-            # actually reaches, rather than a reflex policy's trajectory.
+            # Advance the match with the real observation, carrying hidden
+            # state, so the sampled states are those a recurrent policy
+            # reaches.
             with torch.no_grad():
                 o = torch.from_numpy(obs).unsqueeze(0)
                 feats, _, _ = net.extract_features(o)

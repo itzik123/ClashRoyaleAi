@@ -1,43 +1,24 @@
-"""Widen a checkpoint's scalar `extra` branch for a new extra scalar.
+"""Widen a checkpoint's scalar `extra` branch for a newly appended extra scalar.
 
-WHY THIS IS SMALL, which is the first thing to know before reaching for it.
-The obvious mental model -- "the observation grew, so the input layer of the
-actor and the critic must grow" -- has not been true since the 2026-08-27
-scalar-branch rework. `scalar_mlp` is four independent branches (econ / hand /
-extra / cycle) whose outputs are CONCATENATED to a fixed 64, and only the
-`extra` branch reads the NUM_EXTRA_SCALARS block:
+Only one layer depends on NUM_EXTRA_SCALARS:
 
     scalar_mlp.extra : Linear(NUM_EXTRA_SCALARS, 12)
 
-So one 12xN matrix changes, the concatenation still sums to 64, and
-`LSTMCell(1504, 256)` -- 1.8 M parameters, 96% of the net -- is untouched.
-Adding the elixir-phase scalar moves 12 numbers out of 1,900,165.
+The four scalar branches concatenate to a fixed 64, so the LSTM and everything
+downstream are untouched.
 
-WHY PAD RATHER THAN LET load_state_dict_flexible DISCARD IT. That helper
-already tolerates a shape mismatch by dropping the tensor and warming up the
-rest, which would cost only 120 parameters. Padding is still worth doing,
-because dropping RE-RANDOMISES the nine trained columns as collateral: the new
-layer would start from scratch on time-fraction, both elixir-spend scalars and
-all six tower HPs -- inputs the policy has been reading for 32,484 episodes. A
-zero-padded column preserves every one of those weights bit-exactly and makes
-the migrated net's output IDENTICAL to the original's on any observation,
-because the new input is multiplied by zero. The agent resumes with its
-existing behaviour intact and learns what the phase means from there.
+The new column is zero-padded rather than left for load_state_dict_flexible to
+discard: discarding re-randomises the trained columns too, while a zero column
+keeps the migrated net's output identical to the original's on every
+observation.
 
-THE OPTIMIZER IS HALF THE JOB. A training checkpoint here carries Adam's
-`exp_avg` and `exp_avg_sq`, which mirror each parameter's shape. Migrating the
-weight alone produces a file that loads a model fine and then throws on
-`optimizer.load_state_dict`, or -- worse, depending on the torch version --
-silently drops the moment estimates for the whole layer. Both moments are
-padded with zeros here, which is the correct value: it tells Adam the new
-column has no history, which is exactly true.
+Adam's `exp_avg` and `exp_avg_sq` mirror each parameter's shape, so both are
+padded with zeros as well (no history, which is true); migrating the weight
+alone produces a file that fails on `optimizer.load_state_dict`.
 
-NOTHING IS HARDCODED. The target width is read from the engine's own
-NUM_EXTRA_SCALARS, so this script does not need editing when a future scalar is
-appended -- and it refuses to run against a stale .pyd rather than reporting
-"nothing to do", which is the failure that would otherwise look like success.
+The target width is read from the engine, and the script refuses a stale .pyd
+rather than reporting "nothing to do".
 
-Usage:
     python_ai/venv/Scripts/python.exe -m python_ai.tools.migrate_checkpoint_elixir_phase \\
         --in  python_ai/model_weights_phase4.pth \\
         --out python_ai/model_weights_phase5.pth
@@ -46,9 +27,7 @@ import argparse
 import os
 import sys
 
-# Entry-point bootstrap: put the repo root on sys.path so `python_ai` imports
-# whether this is run as a script or with -m. Same four lines every entry point
-# in this package carries.
+# Put the repo root on sys.path, for script and -m invocation alike.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -59,13 +38,11 @@ import python_ai  # noqa: F401  -- the sys.path append that finds the .pyd
 from python_ai import engine_constants as EC
 from python_ai.models.net import MicroRoyaleNet
 from python_ai.envs import gym_wrapper
-# Not torch.save: a torn write leaves a truncated .pth, and the whole point of
-# this script is to produce the file a multi-day run will resume from.
-# `test_checkpoint_paths.py` enforces this across the package and caught the
-# first draft of this file writing directly.
+# atomic_save, never torch.save: a torn write would truncate the file a run
+# resumes from.
 from python_ai.rl.checkpointing import atomic_save
 
-# The one parameter whose width tracks NUM_EXTRA_SCALARS. Named once.
+# The one parameter whose width tracks NUM_EXTRA_SCALARS.
 EXTRA_W = "scalar_mlp.extra.weight"
 EXTRA_B = "scalar_mlp.extra.bias"
 
@@ -73,11 +50,8 @@ EXTRA_B = "scalar_mlp.extra.bias"
 def _param_index(net, name):
     """Position of `name` in net.parameters() order.
 
-    Adam's state dict is keyed by that POSITION, not by name, so this is the
-    only way to find the moments belonging to a named parameter. Ordering is
-    `named_parameters()`, which is registration order and stable for a fixed
-    architecture -- and the architecture is fixed here by construction, since
-    the net is built from the same module this checkpoint was trained with.
+    Adam's state dict is keyed by that position, not by name; registration
+    order is stable for a fixed architecture.
     """
     for i, (n, _p) in enumerate(net.named_parameters()):
         if n == name:
@@ -120,14 +94,14 @@ def migrate(ckpt, target_width, verbose=True):
         print(f"  {EXTRA_W}  {tuple(original.shape)} -> {tuple(sd[EXTRA_W].shape)}")
         print(f"  {EXTRA_B}  {tuple(sd[EXTRA_B].shape)} (unchanged -- bias is per-OUTPUT)")
 
-    # The assertion that makes this a migration rather than a hope: the trained
-    # columns must survive bit-exactly and the new ones must be exactly zero.
+    # The trained columns must survive bit-exactly and the new ones must be
+    # zero.
     assert torch.equal(sd[EXTRA_W][:, :old_width], original), \
         "trained columns were altered by the pad"
     assert torch.count_nonzero(sd[EXTRA_W][:, old_width:]) == 0, \
         "new columns are not zero"
 
-    # --- optimizer moments -------------------------------------------------
+    # --- optimizer moments ---
     opt = ckpt.get("optimizer") if isinstance(ckpt, dict) else None
     if opt is None:
         if verbose:
@@ -157,12 +131,10 @@ def migrate(ckpt, target_width, verbose=True):
 
 
 def verify(path, target_width):
-    """Load the migrated file the way training will, and prove the pad is inert.
+    """Load the migrated file as training will, and prove the pad is inert.
 
-    Two separate claims, because they can fail independently: that the file
-    LOADS strictly (no silent discard hiding a mistake), and that the migrated
-    net is numerically INDIFFERENT to the new scalar -- which is the actual
-    promise made to the caller.
+    Two claims that can fail independently: the file loads with no silent
+    discard, and the net's output does not depend on the new scalar.
     """
     ck = torch.load(path, map_location="cpu", weights_only=False)
     sd = ck["model"] if "model" in ck else ck
@@ -176,16 +148,10 @@ def verify(path, target_width):
         raise SystemExit(f"!! extra-branch keys did not load: {hard}")
     net.eval()
 
-    # The promise: changing ONLY the new scalar must not change the branch's
-    # output. Driven through the real module, not by re-reading the weights --
-    # a check that reads the same tensor it just wrote cannot fail.
-    #
-    # Shapes come from the NET, not from engine_constants: ScalarEncoder is fed
-    # the scalar TAIL of the observation, so its `extra_start` is relative to
-    # that tail, while the engine's EXTRA_SCALARS_START is relative to the whole
-    # vector and includes the 12,852-wide spatial block. They are different
-    # quantities that both mean "where the extra scalars begin", and using the
-    # wrong one here builds a vector of the wrong width.
+    # Drive the real module: a check that re-reads the tensor it just wrote
+    # cannot fail. Shapes come from the net: the encoder's `extra_start` is
+    # relative to the scalar tail, not to the whole observation like the
+    # engine's EXTRA_SCALARS_START.
     enc = net.scalar_mlp
     lo = torch.randn(4, net.scalar_size)
     hi = lo.clone()
@@ -223,9 +189,8 @@ def main():
     else:
         dst = a.dst if os.path.isabs(a.dst) else os.path.join(python_ai.PACKAGE_DIR, a.dst)
 
-    # Refusing to write onto the input is not politeness: a training run may
-    # be resuming from it right now, and an in-place rewrite of a live
-    # checkpoint is unrecoverable if anything below throws.
+    # Never write onto the input: a run may be resuming from it, and a failed
+    # in-place rewrite is unrecoverable.
     if os.path.abspath(src) == os.path.abspath(dst):
         raise SystemExit("!! --out must differ from --in; migrate to a new file "
                          "so the original stays resumable if this goes wrong.")
@@ -233,8 +198,8 @@ def main():
         raise SystemExit(f"!! {dst} exists; pass --force to overwrite.")
 
     target = EC.NUM_EXTRA_SCALARS
-    # observation_size() is an instance method, so derive the total the same way
-    # ClashEnv::observationSize() does rather than constructing an env for it.
+    # observation_size() is an instance method; derive the total as
+    # ClashEnv::observationSize() does.
     print(f"engine reports NUM_EXTRA_SCALARS = {target}, "
           f"observation size = {EC.CYCLE_START + EC.CYCLE_BLOCK_SIZE}")
 

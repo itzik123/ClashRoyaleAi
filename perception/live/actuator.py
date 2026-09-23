@@ -1,94 +1,38 @@
 """Place a card on the real screen: tile coordinates -> two taps.
 
-THE UNTESTED JOINT
-------------------
-Everything upstream of this has been measured against recorded frames. This
-has not run at all. It is also the one stage where being wrong is invisible
-from the inside: a tap landing on the wrong tile produces a perfectly valid
-GameState on the next frame, showing a unit somewhere the agent did not intend,
-and nothing in the pipeline flags it. That is why it is worth closing the loop
-here before anything upstream gets polished further.
+A tap on the wrong tile is invisible from inside the pipeline: the next frame
+is a valid GameState showing a unit where the agent did not intend.
 
-WHY TWO TAPS AND NOT A DRAG
----------------------------
-Clash Royale places a card by selecting it in the hand and then tapping the
-target. `ClashRoyaleBuildABot` does exactly that (`Bot.play_action`), and this
-follows it rather than inventing a drag gesture, because the tap pair is what
-upstream has running against the real game.
+Select the card, then tap the target, as CRBAB's `Bot.play_action` does against
+the real game.
 
-TAPPING IS ASYNCHRONOUS, AND HAS TO BE
---------------------------------------
-A tap costs ~410 ms and a placement is two of them, so acting inline cost the
-decision loop ~1.7 s -- measured live, the loop fell from 1.0 Hz to ~0.6 Hz
-exactly when the agent was most active. That breaks the thing the whole
-pipelined design exists to protect: the policy is recurrent and was trained
-stepping once per second, so a cadence that stretches whenever it plays feeds
-the LSTM intervals it never saw.
+Taps run off the decision thread. A tap costs ~400 ms and a placement is two,
+and the policy is recurrent and was trained stepping once per second, so inline
+taps would stretch its cadence exactly when it plays.
 
-Where the time goes, measured on this emulator:
+Events are written straight to the touch device as one 144-byte payload. `input
+tap` starts a Java app_process per call, and `sendevent` is slower still (one
+process per event); what costs is device-side process count. Down a persistent
+`adb shell` the raw write is ~50 ms against ~129 ms one-shot, the difference
+being host-side connection setup.
 
-    adb shell echo          one-shot 107 ms   persistent shell   3.2 ms
-    adb shell input         one-shot 413 ms   persistent shell   412 ms
+Two properties of this emulator matter: the panel is landscape (`wm size`
+1280x720) while the app renders 720x1280 rotated onto it, and touch axes are
+the panel's; and a contact needs duration, since press and release in one write
+does not register as a tap. An `input tap` fallback is kept because the device
+path, axis ranges and rotation are all emulator-specific.
 
-So it is NOT host-side process spawn. `input` is a Java program and Android
-starts an app_process for every invocation; a persistent host channel collapses
-trivial commands 107 -> 3 ms and does nothing at all for `input`.
+A placement is enqueued whole, so its two taps never interleave with another's.
 
-That last point stopped being true once the tap stopped being `input` -- see
-below. A persistent shell IS used now, because the raw path's cost is host-side
-connection setup and nothing else: 129 ms one-shot against 50 ms down an
-already-open shell.
+Three coordinate spaces are in play:
 
-Taps therefore move OFF the decision thread. That fixed the cadence; the
-latency itself is fixed below.
-
-CUTTING THE LATENCY: RAW EVDEV, NOT sendevent
----------------------------------------------
-The obvious next step was `sendevent`, to skip the JVM. Measured, it is SLOWER:
-
-    6 sendevent calls (one tap)        362 ms
-    input tap                          307 ms
-
-Each `sendevent` is its own process, and six device-side spawns cost more than
-one JVM start. The cost was never the JVM specifically -- it is process count.
-
-So the events are written to the device directly instead, as one 144-byte
-payload, which is one process rather than six:
-
-    one-shot   `echo <b64> | base64 -d > /dev/input/event4`     129 ms
-    persistent shell, same command                               50 ms
-
-TWO THINGS THIS GOT WRONG FIRST, both found by tapping a real button:
-
-  * The panel is LANDSCAPE. `wm size` reports 1280x720 while the app renders
-    720x1280 rotated onto it, and the touch device's axes are the PANEL's. The
-    first attempt assumed the app's frame and landed a tap meant for the
-    top-right hamburger on the top-left profile banner instead.
-
-  * A contact needs DURATION. Press and release in a single write is a
-    zero-length touch and does not register as a tap; it dismissed a menu
-    rather than pressing the button under it.
-
-An `input tap` fallback is kept, because the device path, the axis ranges and
-the rotation are all properties of this emulator.
-
-A placement is enqueued whole. Its two taps must not interleave with another
-placement's, or a card-select lands against the wrong tile tap.
-
-COORDINATES ARE ANDROID'S, NOT THE SCREEN'S
--------------------------------------------
-`adb shell input tap` takes coordinates in the Android display space
-(720x1280 here), NOT in captured-frame pixels and NOT in desktop pixels. Three
-spaces are in play and confusing them silently misplaces every card:
-
-    Android display   720 x 1280   what input tap wants, and what CRBAB's
+    Android display   720 x 1280   what taps want, and what CRBAB's
                                    TILE_INIT_*/TILE_* constants are in
     captured frame    549 x 976    what the detector and readers see
     desktop           1920 x 1020  the WGC surface, physical pixels
 
-The conversion is CRBAB's own `_get_tile_centre` inverse, imported rather than
-re-derived -- a second copy of TILE_INIT_X here is precisely the duplicated
-constant CLAUDE.md names as having gone stale twice.
+The conversion is the inverse of CRBAB's own `_get_tile_centre`, imported
+rather than re-derived.
 """
 from __future__ import annotations
 
@@ -127,10 +71,8 @@ SYN_REPORT, SYN_MT_REPORT = 0, 2
 # The device reports both axes as 0..32767 regardless of the panel's shape.
 ABS_MAX = 32767
 
-# How long the contact is held. Press and release in one write is a
-# zero-duration touch and does not register; 60 ms was verified against real
-# buttons. Cheap -- it is an on-device sleep inside a round trip we are making
-# anyway, not another round trip.
+# How long the contact is held; 60 ms was verified against real buttons. An
+# on-device sleep inside a round trip already being made.
 TOUCH_HOLD_S = 0.06
 
 # Marks the end of a command down the persistent shell.
@@ -143,10 +85,8 @@ def _input_event(ev_type: int, code: int, value: int) -> bytes:
     fields are zero."""
     return struct.pack("<qqHHi", 0, 0, ev_type, code, value)
 
-# Between the card tap and the tile tap. The card has to register as selected
-# before the placement lands; without a gap the second tap can be swallowed.
-# Both taps go in ONE `adb shell`, so the ~410 ms `input` costs sit between
-# them anyway and this is belt and braces.
+# Between the card tap and the tile tap, so the card registers as selected
+# before the placement lands.
 TAP_GAP_S = 0.08
 
 
@@ -170,69 +110,47 @@ def card_centre(slot: int) -> Tap:
 
 
 def tile_centre(tile_x: int, tile_y: int) -> Tap:
-    """Android coordinates of a DETECTOR-frame tile (18x32).
+    """Android coordinates of a detector-frame tile (18x32).
 
-    Detector frame, not engine frame. The engine's board is 18x34 with an extra
-    row behind each King, so anything holding engine coordinates must convert
-    first -- `engine_tile_centre` does that. Mixing the two shifts every
-    placement by one row, which is the bug class this project has already paid
-    for once.
+    Not the engine frame, which is 18x34 with an extra row behind each King;
+    engine coordinates go through `engine_tile_centre`. Mixing the two shifts
+    every placement by a row.
     """
     x = TILE_INIT_X + (tile_x + 0.5) * TILE_WIDTH
     y = DISPLAY_HEIGHT - TILE_INIT_Y - (tile_y + 0.5) * TILE_HEIGHT
     return Tap(int(round(x)), int(round(y)))
 
 
-# The detector frame is 18x32; the engine frame is 18x34 (an extra row behind
-# each King). engine_tile_centre subtracts TILE_Y_OFFSET to convert, so engine
-# rows outside [TILE_Y_OFFSET, TILE_Y_OFFSET + DETECTOR_ROWS) have NO detector
-# row and therefore no tappable pixel -- their "centre" lands outside the arena
-# rectangle entirely.
+# Engine rows outside [TILE_Y_OFFSET, TILE_Y_OFFSET + DETECTOR_ROWS) have no
+# detector row, so their "centre" lands outside the arena.
 DETECTOR_ROWS = 32
 
 
 def engine_row_is_tappable(tile_y: int) -> bool:
-    """Does this ENGINE row correspond to a real, tappable arena row?
+    """Does this engine row correspond to a real, tappable arena row?
 
-    The engine's board is 34 rows and the arena is 32, so with TILE_Y_OFFSET = 1
-    engine row 0 converts to detector row -1: a row that does not exist on
-    screen. Its tap lands below the board whatever the tile grid is, in the dead
-    strip above the card tray, and the game silently drops the placement.
-
-    ONLY ROW 0. Engine rows 1..15 are the real own half and are all reachable --
-    verified live at 100% acceptance across columns 0, 9 and 17.
-
-    That is worth stating explicitly because for a while they were NOT, and the
-    cause was not this function. The 2026-08-05 tile-grid refit put the arena's
-    bottom edge at y=1003.8 when the game stops accepting taps at y=981, so
-    engine row 1 was tapped at y=989 -- below the board -- and measured 0/6
-    acceptance live while this predicate happily called it tappable. Widening
-    the mask here would have been the wrong fix for a wrong grid; see
-    clashroyalebuildabot/constants.py.
-
-    Derived from the geometry rather than hardcoded to `y > 0` so it stays
-    correct if TILE_Y_OFFSET is ever re-fitted. This is the same discipline
-    CLAUDE.md requires of engine constants: live where derivable.
+    The engine board is 34 rows and the arena 32, so with TILE_Y_OFFSET = 1
+    engine row 0 is detector row -1: its tap lands in the strip above the card
+    tray and the game drops the placement. Only row 0: engine rows 1..15 were
+    verified live at 100% acceptance across columns 0, 9 and 17. Derived from
+    the geometry, not hardcoded to `y > 0`, so it follows a re-fitted offset.
     """
     return 0 <= tile_y - TILE_Y_OFFSET < DETECTOR_ROWS
 
 
 def engine_tile_centre(tile_x: int, tile_y: int) -> Tap:
-    """Android coordinates of an ENGINE-frame tile (18x34).
-
-    The policy emits engine coordinates, so this is the one a live loop wants.
-    Note the offset is still unverified -- see adapter.TILE_Y_OFFSET -- so a
-    systematic one-row placement error is possible and would show up here
-    first, as cards landing a row nearer or further than intended.
+    """Android coordinates of an engine-frame tile (18x34), which is what the
+    policy emits. The offset is derived rather than measured
+    (adapter.TILE_Y_OFFSET); a systematic one-row error would show up here
+    first.
     """
     return tile_centre(tile_x, tile_y - TILE_Y_OFFSET)
 
 
 class RawTouch:
-    """Screen coordinates -> a shell command that writes evdev events.
-
-    Stateless and pure: it builds a command string and never talks to adb, so
-    the whole coordinate mapping is testable without an emulator.
+    """Screen coordinates -> a shell command that writes evdev events. Pure:
+    builds a string and never talks to adb, so the mapping is testable without
+    an emulator.
     """
 
     def __init__(self, panel_w: int, panel_h: int,
@@ -242,8 +160,7 @@ class RawTouch:
         self.screen_w, self.screen_h = screen_w, screen_h
         self.device = device
         # The app is rotated onto the panel when one is portrait and the other
-        # landscape. Assuming otherwise put a tap meant for the top-right
-        # corner into the top-left one.
+        # landscape.
         self.rotated = (panel_w > panel_h) != (screen_w > screen_h)
 
     def to_device(self, x: int, y: int) -> tuple[int, int]:
@@ -282,10 +199,7 @@ class RawTouch:
                           self._write(self._release())))
 
     def placement_script(self, card: Tap, target: Tap) -> str:
-        """Both taps of a placement in ONE round trip.
-
-        The waits happen on the device, inside a trip we are making anyway, so
-        the gap costs nothing extra.
+        """Both taps of a placement in one round trip; the waits happen on-device.
         """
         return "; ".join((self.tap_script(card.x, card.y),
                           f"sleep {TAP_GAP_S}",
@@ -293,11 +207,8 @@ class RawTouch:
 
 
 class AdbActuator:
-    """Taps via adb, off the caller's thread. Dry run only records intent.
-
-    Dry run is the default on purpose: this module can misplace real cards in a
-    real match, so acting has to be asked for explicitly rather than being what
-    happens if a caller forgets a flag.
+    """Taps via adb, off the caller's thread. Dry run, the default, only records
+    intent: acting on a real match must be asked for.
     """
 
     def __init__(self, dry_run: bool = True, adb: Path = ADB,
@@ -314,17 +225,15 @@ class AdbActuator:
         if not dry_run and not self.adb.exists():
             raise ActuationError(f"adb not found at {self.adb}")
         if raw_touch and not dry_run:
-            # Probed once rather than assumed: the device path, the axis ranges
-            # and the rotation are all properties of THIS emulator, and being
-            # wrong about any of them taps the wrong place rather than failing.
+            # Probed, not assumed: device path, axis ranges and rotation are
+            # properties of this emulator, and being wrong taps the wrong place
+            # rather than failing.
             self.raw = self._probe_raw_touch()
 
-        # Depth ONE, and a full queue drops rather than blocks. Both are
-        # deliberate. Blocking would put the latency straight back on the
-        # decision thread, and queueing would let a placement land seconds
-        # after the board it was chosen for -- by which time it is not a late
-        # move, it is a different and probably wrong one. A drop is counted
-        # and visible; a silent late tap is neither.
+        # Depth one, and a full queue drops rather than blocks. Blocking puts
+        # the latency back on the decision thread; queueing lets a placement
+        # land seconds after the board it was chosen for. A drop is counted and
+        # visible.
         self._q: queue.Queue = queue.Queue(maxsize=1)
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
@@ -333,21 +242,18 @@ class AdbActuator:
                                             daemon=True)
             self._worker.start()
 
-    # -- public ---------------------------------------------------------------
+    # --- public ---
 
     def play(self, slot: int, tile_x: int, tile_y: int, *,
              engine_frame: bool = True) -> tuple[Tap, Tap]:
         """Queue "select this hand slot, then tap this tile". Returns at once.
-
-        The pair is enqueued WHOLE. Interleaving two placements' taps would
-        pair a card-select with the wrong tile tap and put the card somewhere
-        nobody asked for.
+        Enqueued whole, so two placements' taps cannot interleave.
         """
         card = card_centre(slot)
         target = (engine_tile_centre(tile_x, tile_y) if engine_frame
                   else tile_centre(tile_x, tile_y))
-        # Recorded synchronously, at intent, so `taps` is deterministic for
-        # callers and tests regardless of when the worker gets to it.
+        # Recorded at intent, so `taps` is deterministic regardless of when the
+        # worker runs.
         self.taps.extend((card, target))
         if not self.dry_run:
             try:
@@ -357,13 +263,10 @@ class AdbActuator:
         return card, target
 
     def play_pixel(self, slot: int, px: int, py: int) -> tuple[Tap, Tap]:
-        """Select a hand slot, then tap a RAW SCREEN PIXEL.
+        """Select a hand slot, then tap a raw screen pixel.
 
-        For calibration only: `play()` is the path the agent uses and the one
-        whose tile conversion is under test, so a measurement of WHERE the
-        arena's deployable edge sits cannot go through it without assuming the
-        answer. This takes the tile grid out of the loop entirely, which is what
-        makes a pixel-space bisection of the boundary meaningful.
+        Calibration only: `play()` goes through the tile conversion under test,
+        so measuring where the deployable edge sits must bypass it.
         """
         card = card_centre(slot)
         target = Tap(int(px), int(py))
@@ -376,12 +279,9 @@ class AdbActuator:
         return card, target
 
     def flush(self) -> None:
-        """Block until every queued placement has actually been sent.
-
-        For callers that must observe the RESULT of a tap -- the placement
-        probe screenshots the board and would otherwise photograph it before
-        the card had landed. The decision loop must never call this; blocking
-        is the exact thing this class was changed to stop doing.
+        """Block until every queued placement has been sent. For callers that
+        observe a tap's result (the placement probe screenshots the board). The
+        decision loop must never call this.
         """
         if self._worker is not None:
             self._q.join()
@@ -399,7 +299,7 @@ class AdbActuator:
     def pending(self) -> int:
         return self._q.qsize()
 
-    # -- internals ------------------------------------------------------------
+    # --- internals ---
 
     def _probe_raw_touch(self) -> RawTouch | None:
         """The panel's real geometry, or None to fall back to `input tap`."""
@@ -431,12 +331,8 @@ class AdbActuator:
         return cmd + list(args)
 
     def _open_shell(self):
-        """One long-lived `adb shell`, so a placement pays no connection cost.
-
-        Measured on this box: the same command costs 129 ms as a one-shot
-        `adb shell` and 50 ms down an already-open one. That is pure host-side
-        connection setup, and it is ~80 ms off every placement without changing
-        a single timing constant on the device.
+        """One long-lived `adb shell`, so a placement pays no connection cost (~80
+        ms per placement).
         """
         return subprocess.Popen(
             self._adb("shell"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -447,10 +343,8 @@ class AdbActuator:
             self._shell_persistent(script)
             return
         except Exception:                                   # noqa: BLE001
-            # A dead or wedged shell must not cost us the placement: drop it
-            # and fall back, and the next call reopens. Silently retrying
-            # forever down a broken pipe would look exactly like an actuator
-            # that had stopped working.
+            # A dead or wedged shell must not cost the placement: drop it, fall
+            # back, and reopen next call.
             self._close_shell()
         done = subprocess.run(self._adb("shell", script), capture_output=True,
                               text=True, timeout=20)
@@ -461,9 +355,8 @@ class AdbActuator:
     def _shell_persistent(self, script: str) -> None:
         if self._proc is None or self._proc.poll() is not None:
             self._proc = self._open_shell()
-        # A sentinel rather than a fixed read: the script's own output is not
-        # something this can predict, and reading a fixed number of lines would
-        # desynchronise the stream the first time one of them printed anything.
+        # A sentinel, not a fixed line count: the script's output is
+        # unpredictable, and a fixed read would desynchronise the stream.
         self._proc.stdin.write(f"{script}; echo {_SENTINEL}\n")
         self._proc.stdin.flush()
         deadline = time.monotonic() + 20.0
@@ -492,9 +385,8 @@ class AdbActuator:
             except queue.Empty:
                 continue
             try:
-                # One `adb shell` for the whole placement either way: two host
-                # round trips buy nothing, and with raw touch the holds and the
-                # gap happen on-device inside a trip we are making anyway.
+                # One `adb shell` for the whole placement; with raw touch the
+                # holds and gap happen on-device.
                 if self.raw is not None:
                     self._shell(self.raw.placement_script(card, target))
                 else:
@@ -502,8 +394,8 @@ class AdbActuator:
                                 f"sleep {TAP_GAP_S}; "
                                 f"input tap {target.x} {target.y}")
             except Exception as exc:                        # noqa: BLE001
-                # A failed tap must not kill the worker: the loop would then
-                # look like it was still acting while nothing reached the game.
+                # A failed tap must not kill the worker, or the loop would look
+                # like it was acting while nothing reached the game.
                 self.errors += 1
                 self.last_error = exc
             finally:

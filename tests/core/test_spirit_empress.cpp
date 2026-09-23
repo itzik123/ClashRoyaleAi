@@ -5,7 +5,7 @@
 
 TEST_CASE("Spirit Empress plays the ground form (cost 3) when elixir is below 6", "[game_manager][spirit_empress]") {
     GameManager game({ 165, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    game.playerAI.hand[0] = 165; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 165; // force into hand: the opening hand is random
     game.playerAI.elixir = 5.0f;
 
     REQUIRE(game.playCard(0, 165, 9.0f, 10.0f));
@@ -16,13 +16,13 @@ TEST_CASE("Spirit Empress plays the ground form (cost 3) when elixir is below 6"
     auto it = std::find_if(entities.begin(), entities.end(),
         [](const auto& e) { return e->name == "Spirit Empress"; });
     REQUIRE(it != entities.end());
-    REQUIRE((*it)->getCollisionRadius() >= 0.0f); // sanity: a real entity, not null
+    REQUIRE((*it)->getCollisionRadius() >= 0.0f); // a real entity
     REQUIRE_FALSE((*it)->isFlying);
 }
 
 TEST_CASE("Spirit Empress plays the flying form (cost 6) when elixir is at or above 6", "[game_manager][spirit_empress]") {
     GameManager game({ 165, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    game.playerAI.hand[0] = 165; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 165; // force into hand: the opening hand is random
     game.playerAI.elixir = 10.0f;
 
     REQUIRE(game.playCard(0, 165, 9.0f, 10.0f));
@@ -38,7 +38,7 @@ TEST_CASE("Spirit Empress plays the flying form (cost 6) when elixir is at or ab
 
 TEST_CASE("Spirit Empress fails when even the cheaper ground form is unaffordable", "[game_manager][spirit_empress]") {
     GameManager game({ 165, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    game.playerAI.hand[0] = 165; // force into hand -- opening hand is now randomized (so this fails for the right reason: unaffordable, not "card not in hand")
+    game.playerAI.hand[0] = 165; // force into hand, so this fails for being unaffordable, not for being absent
     game.playerAI.elixir = 2.0f;
 
     REQUIRE_FALSE(game.playCard(0, 165, 9.0f, 10.0f));

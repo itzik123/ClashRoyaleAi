@@ -1,26 +1,13 @@
-"""Per-card usage probe. Read-only: never touches a live training run.
+"""Per-card usage probe for phase 1, which logs no per-card diagnostic of its own.
 
-Exists because phase 1 (`train.py`) has no per-card diagnostic at all -- the
-Cards/Game counter only lives in phase 2 -- while the single open question about
-the current DEFAULT_DECK is whether the 5-cost Giant is ever played. That
-question was previously answered only by ad hoc probes, and the answer
-(never, across four full runs) is why the deck was swapped away and back.
+Loads a checkpoint off disk and runs its own environments, so it is safe to run
+beside a live trainer.
 
-Reads `model_weights.pth` off disk and runs its own environments, so it is safe
-to run against a live trainer. The only interaction is a file read of a
-checkpoint the trainer writes atomically-enough (torch.save to a fresh path);
-if it ever races, the failure is a clean load error, not corruption.
+    python_ai/venv/Scripts/python.exe python_ai/eval/probe_card_usage.py --episodes 40 --greedy
 
-Usage (needs the 3.11 venv -- the .pyd is 3.11 only):
-
-    python_ai/venv/Scripts/python.exe python_ai/probe_card_usage.py
-    python_ai/venv/Scripts/python.exe python_ai/probe_card_usage.py --episodes 40 --greedy
-
-Reports, per card: how often it was PLAYED, and -- separately -- how often it
-was even AFFORDABLE. Those two must be read together: a card at 0% usage that
-was affordable 40% of the time is a policy choice, while one that was
-affordable 2% of the time is starved by the cost curve, and the fixes are
-opposite.
+Reports per card how often it was played and how often it was affordable. Read
+them together: rarely played but often affordable is a policy choice; rarely
+affordable is the cost curve.
 """
 
 import argparse
@@ -32,9 +19,7 @@ import numpy as np
 import torch
 from torch.distributions import Categorical
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -68,8 +53,8 @@ def main():
     if os.path.exists(weights):
         ck = torch.load(weights, map_location="cpu", weights_only=False)
         sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-        # Flexible, not strict -- see probe_aux_robustness.py for why: a
-        # checkpoint predating the `place_hires` branch is not a mismatch.
+        # Flexible load: a checkpoint predating a newer branch is not a
+        # mismatch.
         load_state_dict_flexible(net, sd, os.path.basename(weights))
         ep = ck.get("episodes_completed", "?") if isinstance(ck, dict) else "?"
         print(f"loaded {os.path.basename(weights)} (episode {ep})")
@@ -100,10 +85,8 @@ def main():
                 cell = place.argmax(-1) if args.greedy else Categorical(logits=place).sample()
             x, y = net.cell_to_xy(cell)
 
-            # Which real card ids the mask said were affordable THIS step, read
-            # from the same observation the decision was made on -- the hand
-            # rotates the instant a card is played, so reading get_hand()
-            # afterwards would report the NEXT card, not the chosen one.
+            # Read the hand from the observation the decision was made on; the
+            # hand rotates as soon as a card is played.
             hand_ids = net.hand_card_ids(t)[0].tolist()
             for slot, cid in enumerate(hand_ids):
                 if cid >= 0 and bool(mask[0, slot]):
@@ -130,13 +113,10 @@ def main():
     print(f"\n{args.episodes} episodes, {steps} decision steps, "
           f"{total_plays} card plays, {noops} no-ops "
           f"({noops / max(1, steps):.0%})   mode={'greedy' if args.greedy else 'sampled'}\n")
-    # play share and affordability share are NOT comparable directly -- measured
-    # affordability sits at 3-9% for every card, so any absolute threshold on it
-    # mislabels the whole deck. The meaningful quantity is TAKE-UP: play share
-    # divided by opportunity share, i.e. "when this card was legal, how often
-    # did the policy pick it relative to how often it picked anything". Take-up
-    # near 0 with healthy affordability is a policy choice; low affordability is
-    # the cost curve. They need opposite fixes, so they must be separable.
+    # Affordability alone mislabels the deck (every card sits at a few
+    # percent). Take-up is play share divided by affordability share: low
+    # take-up with healthy affordability is a policy choice, low affordability
+    # is the cost curve.
     print(f"{'card':<14}{'cost':>5}{'% of plays':>12}{'% steps aff.':>14}{'take-up':>9}")
     print("-" * 54)
     for c in sorted(deck, key=lambda k: -played[k]):

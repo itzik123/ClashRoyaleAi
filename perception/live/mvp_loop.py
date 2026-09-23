@@ -1,38 +1,18 @@
 """Minimal end-to-end loop: screen -> GameState -> decision -> tap.
 
-TWO POLICIES, AND WHY THE STUPID ONE IS STILL HERE
---------------------------------------------------
-`--policy neural` runs the trained network: `perception_encoder` turns a
-GameState into the 13,606-float observation and `NeuralPolicy` steps the net.
-That path works and is the one to use for real play.
+Two policies. `--policy neural` runs the trained network: `perception_encoder`
+turns a GameState into the observation and `NeuralPolicy` steps the net.
+`--policy scripted` (the default) is a hand-written rule that isolates the
+integration from the policy: capture, detector, adapter, tile->screen
+conversion and tap are real in both modes, so a fault that reproduces under
+`scripted` is in the pipeline, not the network.
 
-`--policy scripted` (the default) is a hand-written rule, kept because it
-isolates the integration from the policy. Every OTHER joint is real in both
-modes -- live capture, the detector, the adapter, the tile->screen conversion
-and the tap -- so a fault that reproduces under `scripted` is a fault in the
-pipeline, not in the network. That is worth one small class.
+The loop exists to surface integration faults invisible inside any one
+component: a tap on the wrong tile yields a valid GameState showing a unit
+nobody intended; the detector competes with capture for CPU; the whole chain
+must fit the policy's 1 Hz.
 
-An earlier version of this docstring claimed the encoder "does not exist yet"
-and that the trained policy therefore could not be reached. It has existed
-since 2026-08-16; the stale text is recorded here because it misled a session
-into re-deriving a component the repo already had.
-
-WHAT THIS IS FOR
-----------------
-Finding integration faults early, in the open. Specifically the ones that are
-invisible from inside a single component:
-
-  * a tap landing on the wrong tile produces a perfectly valid GameState next
-    frame, showing a unit somewhere nobody intended;
-  * the detector has only ever been run on recorded frames, never against a
-    live match while competing with capture for CPU;
-  * the whole chain has to fit inside the 1 Hz the policy acts at, and each
-    piece was timed alone.
-
-DRY RUN IS THE DEFAULT
-----------------------
-This can place real cards in a real match. Acting has to be asked for with
-`--act`, so a forgotten flag means the loop watches rather than plays.
+Dry run is the default. Acting on a real match needs `--act`.
 """
 from __future__ import annotations
 
@@ -50,17 +30,13 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# The engine binding lives in python_ai/ and is NOT importable by default.
-# `live/unit_to_card.py` needs it for the card registry, and the tests only get
-# away without this because conftest's `engine` fixture adds the path. Any real
-# entry point has to do it itself -- which is exactly the kind of gap that only
-# shows up the first time the pieces run in one process.
+# The engine binding lives in python_ai/ and is not importable by default;
+# live/unit_to_card.py needs it for the card registry.
 _ENGINE = _ROOT.parent / "python_ai"
 if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
-# ...and the repo root, so the `python_ai.*` package resolves too. The
-# python_ai/ entry above stays: clash_royale_env is an unpackaged .pyd
-# that lives inside it.
+# ...and the repo root, so `python_ai.*` resolves. The python_ai/ entry stays:
+# clash_royale_env is an unpackaged .pyd inside it.
 if str(_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_ROOT.parent))
 
@@ -81,18 +57,12 @@ from live.pipeline import PerceptionWorker, Stages  # noqa: E402
 from live.placement_confirm import PlacementConfirmer  # noqa: E402
 
 def _training_deck_ids() -> list[int]:
-    """`gym_wrapper.DEFAULT_DECK`, read from source rather than imported.
+    """`gym_wrapper.DEFAULT_DECK`, parsed from source rather than imported.
 
     Importing it would pull in gymnasium and torch, which perception's venv
-    deliberately does not carry -- the module is self-contained with its own
-    requirements.txt. Parsing the assignment gets the SAME single source of
-    truth without the dependency, and without a second copy of the list living
-    over here where it can go stale (which is exactly what happened to the
-    hand-written CRBAB deck this replaces).
-
-    Deliberately strict: a DEFAULT_DECK that is missing, or is not a plain list
-    of int literals, raises. Guessing a deck is how the live loop ends up
-    playing cards the policy has never seen.
+    does not carry. Parsing keeps one source of truth without the dependency.
+    Strict: a DEFAULT_DECK that is missing or not a plain list of int literals
+    raises, since a guessed deck means playing cards the policy has never seen.
     """
     import ast  # noqa: PLC0415
 
@@ -115,23 +85,13 @@ def _training_deck_ids() -> list[int]:
 
 
 def _deck_from_training() -> list:
-    """The live deck, DERIVED from the deck the policy was trained on.
+    """The live deck, derived from the deck the policy was trained on.
 
-    This used to be a hand-written list of CRBAB cards, and it was the Giant
-    deck long after training moved to 2.6 Hog Cycle -- three of eight cards in
-    common. Nothing detected it: the loop is internally consistent whatever the
-    list says, so the agent simply played a deck it had never seen, and the
-    affordability mask, the hand one-hots and every card-conditioned placement
-    were computed for the wrong cards.
-
-    Deriving it means the live deck cannot drift from `DEFAULT_DECK` again, and
-    a change upstream either follows automatically or fails LOUDLY here. That
-    is the same rule the rest of this project applies to engine constants: live
-    where derivable, never a second copy.
-
-    Raises rather than dropping an unmappable card. A short deck would leave
-    the agent permanently unable to play a slot it believes it holds, which is
-    far harder to spot than a startup failure.
+    The loop is internally consistent whatever deck it holds, so a mismatch is
+    invisible at runtime: the affordability mask, hand one-hots and
+    card-conditioned placement would all be computed for the wrong cards.
+    Raises on an unmappable card rather than returning a short deck, which
+    would leave a slot the agent believes it holds permanently unplayable.
     """
     from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
 
@@ -143,9 +103,8 @@ def _deck_from_training() -> list:
         if not name or name == "blank":
             continue
         sim_id = hand_card_id_for(name)
-        # First writer wins: Evolutions reuse their base card's name verbatim,
-        # so a name can never identify a card on its own and the base entry is
-        # the one that matches what the registry hands back.
+        # First writer wins: Evolutions reuse their base card's name, and the
+        # base entry is the one the registry hands back.
         by_sim_id.setdefault(sim_id, card)
 
     deck, missing = [], []
@@ -166,54 +125,43 @@ def _deck_from_training() -> list:
 
 DECK = _deck_from_training()
 
-# A defensive tile in our own half, in ENGINE coordinates. Deliberately fixed:
-# the point is to exercise the placement path, not to play well.
+# A fixed defensive tile in our own half, in engine coordinates: the point is
+# to exercise placement, not to play well.
 DEFAULT_TILE = (9, 8)
 
 # Below this the loop is acting on a board that has already changed.
 DECISION_HZ = 1.0
 
-# MAX_STALENESS_MS is imported from action_gate rather than defined here, so the
-# threshold that REPORTS staleness and the one that REFUSES to act on it cannot
-# drift apart.
+# Imported from action_gate so the threshold that reports staleness and the one
+# that refuses to act on it cannot drift apart.
 
 
-# The longest the loop will hold a decision back to get a fresher board. Caps
-# the cadence jitter a wait introduces: 150 ms on a 1000 ms tick is 15%, and
-# the phase-lock means it only happens while converging, not every tick.
+# The longest the loop will hold a decision for a fresher board: 150 ms on a
+# 1000 ms tick, and only while the phase lock converges.
 FRESHNESS_WAIT_CAP_S = 0.15
 
-# Added to the predicted arrival so a board landing slightly late is still
-# caught. Without it the wait expires just before the thing it is waiting for.
+# Slack on the predicted arrival, so a board landing slightly late is still
+# caught.
 FRESHNESS_WAIT_SLACK_S = 0.03
 
 
 def wait_for_fresher(worker, snap):
     """Hold the decision briefly if a newer board is about to land.
 
-    THE WASTE THIS REMOVES. The producer publishes at its own rate and the
-    decision loop samples at 1 Hz on an unrelated phase, so the board being
-    acted on has typically been sitting finished for part of a producer period.
-    That time is pure loss: it ages the world model without buying anything.
+    The producer publishes at its own rate and the loop samples at 1 Hz on an
+    unrelated phase, so the board in hand has usually sat finished for part of
+    a producer period, ageing the world model for nothing. Waiting for the next
+    board shrinks the gap between capture and the card landing, which decides
+    whether a counter meets a push or arrives behind it.
 
-    Waiting for the next board shrinks the gap between "when the board was
-    captured" and "when the card lands", because the newer board is captured
-    later while the card lands only slightly later. The gap is what decides
-    whether a counter meets the Battle Ram or arrives behind it.
-
-    WHY IT IS BOUNDED, AND CONDITIONAL. Waiting is not free -- the action does
-    land later in wall time -- so it is only worth it when the board in hand is
-    already stale and the next is imminent. If the board just arrived, the next
-    one is a whole period away and waiting would trade a lot of delay for
-    nothing. Hence: wait only when the predicted arrival is within
-    FRESHNESS_WAIT_CAP_S.
+    Waiting delays the action, so it is only worth it when the board in hand is
+    stale and the next is imminent: within FRESHNESS_WAIT_CAP_S.
 
     Returns (snapshot, waited_ms).
     """
     period = worker.period
     if period is None:
-        # Not enough history to predict an arrival. Acting now is the safe
-        # default; waiting on a guessed period waits for nothing.
+        # Not enough history to predict an arrival; act now.
         return snap, 0.0
 
     started = time.perf_counter()
@@ -231,24 +179,15 @@ def wait_for_fresher(worker, snap):
 
 
 def deck_costs(deck) -> tuple[tuple[float, ...], list[str]]:
-    """The distinct elixir costs in `deck`, and anything worth complaining about.
+    """The distinct elixir costs in `deck`, and any warnings.
 
-    The ledger explains an elixir drop by decomposing it into card costs, so its
-    cost table has to be the DECK's. Left at its default of (3, 4, 5) -- which
-    happens to be exactly this deck's profile -- a deck containing a 2 or a 6
-    would produce drops matching no legal combination, and those placements
-    would vanish from the ledger silently. Not an error, not a warning: simply
-    absent, with `my_elixir_spent` drifting further off for the rest of the
-    match. That is the whole reason this is derived rather than assumed.
+    The ledger explains an elixir drop by decomposing it into card costs, so
+    its cost table must be the deck's: a cost missing from it makes drops that
+    match no combination, and those placements vanish from the ledger silently.
 
-    Costs come from the ENGINE registry, because that is what fills the
-    observation's cost scalars and therefore what `affordability_mask` gates on.
-    A ledger disagreeing with the mask about what a card costs would be a second
-    source of truth for the same number.
-
-    CRBAB carries its own cost per card, so the two are cross-checked. They
-    describe the same real game and a disagreement means one of them is wrong
-    about it -- worth saying out loud rather than silently preferring either.
+    Costs come from the engine registry, which fills the observation's cost
+    scalars and so is what `affordability_mask` gates on. CRBAB's own per-card
+    cost is cross-checked and a disagreement reported.
     """
     import clash_royale_env as engine  # noqa: PLC0415
 
@@ -270,8 +209,7 @@ def deck_costs(deck) -> tuple[tuple[float, ...], list[str]]:
                 engine_cost = None
         if engine_cost is None:
             # Fall back rather than drop it: a missing cost removes a whole
-            # card's worth of explanations from the table, which is the exact
-            # silent loss this function exists to prevent.
+            # card's worth of explanations from the table.
             costs.add(crbab)
             warnings.append(f"{card.name}: not in the engine registry, "
                             f"using CRBAB's cost {crbab:.0f}")
@@ -286,12 +224,9 @@ def deck_costs(deck) -> tuple[tuple[float, ...], list[str]]:
 def deck_cost_by_sim_id(deck) -> dict[int, float]:
     """simulator card id -> elixir cost, for HandTracker.
 
-    Separate from `deck_costs` because the two want different shapes for
-    different jobs: the ledger decomposes a DROP and so needs the distinct
-    costs, while the tracker has to answer "which card in hand cost 4?" and so
-    needs them per card. Both read the ENGINE registry, so they cannot disagree
-    about what a card costs -- which would be a second source of truth for the
-    number `affordability_mask` is gated on.
+    The ledger decomposes a drop and needs the distinct costs; the tracker
+    answers "which card in hand cost 4?" and needs them per card. Both read the
+    engine registry, so they cannot disagree.
     """
     import clash_royale_env as engine  # noqa: PLC0415
 
@@ -313,12 +248,8 @@ def deck_cost_by_sim_id(deck) -> dict[int, float]:
 
 
 def hand_cost(gs, slot: int) -> float | None:
-    """What the card in `slot` costs, from the engine's own registry.
-
-    Via the binding rather than a cost table copied into this file -- the
-    duplicated-constant drift CLAUDE.md names as having gone stale twice.
-    Returns None for an unreadable slot rather than guessing, so an unknown
-    card cannot silently debit the wrong amount.
+    """What the card in `slot` costs, from the engine registry. None for an
+    unreadable slot, so an unknown card cannot debit the wrong amount.
     """
     try:
         import clash_royale_env as engine  # noqa: PLC0415
@@ -340,7 +271,8 @@ class Decision:
 
 class ScriptedPolicy:
     """Play the cheapest ready card, on a cooldown. A placeholder with a
-    deliberately obvious name, so nobody mistakes it for the agent."""
+    deliberately obvious name.
+    """
 
     def __init__(self, cooldown_s: float = 3.0, tile=DEFAULT_TILE):
         self.cooldown_s = cooldown_s
@@ -360,18 +292,13 @@ class ScriptedPolicy:
 class NeuralPolicy:
     """The trained agent, reading a real screen.
 
-    Everything it needs already exists: `perception_encoder` turns a GameState
-    into the 13,606 floats it was trained on, and the masks it applies are its
-    own methods reading that same vector -- so affordability and placement
-    legality are computed exactly as they are in training rather than
-    reimplemented here, which is what keeps rollout and deployment from
-    drifting apart.
+    `perception_encoder` builds the observation it was trained on, and the
+    masks are the net's own methods reading that vector, so affordability and
+    placement legality are computed exactly as in training.
 
-    HIDDEN STATE IS THE PART THAT IS EASY TO GET WRONG. The LSTM carries the
-    match's history, so it must persist across frames and reset when a NEW
-    match begins. Resetting every frame would silently reduce a recurrent
-    policy to a reflex one, and every diagnostic would still look healthy --
-    the same shape of failure as the team-1 observation bug.
+    The LSTM carries the match's history: it must persist across frames and
+    reset only when a new match begins. Resetting every frame would silently
+    reduce the policy to a reflex one.
     """
 
     def __init__(self, checkpoint: Path, deck_ability_slots: int = 0,
@@ -386,16 +313,12 @@ class NeuralPolicy:
         self.net = MicroRoyaleNet(num_ability_slots=deck_ability_slots)
         blob = torch.load(checkpoint, map_location="cpu", weights_only=False)
         state = blob["model"] if "model" in blob else blob
-        # NOT strict. Every checkpoint written before 2026-08-14 predates the
-        # high-resolution placement branch (`place_hires`/`place_ctx_hi`), whose
-        # final conv is zero-initialized -- so a net missing those tensors is
-        # not degraded, it computes exactly the pre-branch function.
-        #
-        # strict=False alone would be too quiet, though: it also swallows a
-        # checkpoint carrying tensors this net has no home for, which is a
-        # genuinely different model being loaded. So the missing keys are
-        # checked against the one prefix that is allowed to be absent, and
-        # anything unexpected is fatal.
+        # Not strict: a checkpoint predating the high-resolution placement
+        # branch (`place_hires`/`place_ctx_hi`) lacks those tensors, and their
+        # final conv is zero-initialised, so the net computes exactly the
+        # pre-branch function. strict=False alone would also swallow tensors
+        # this net has no home for, so missing keys are checked against the one
+        # allowed prefix and anything unexpected is fatal.
         missing, unexpected = self.net.load_state_dict(state, strict=False)
         allowed = tuple(k for k in missing
                         if k.startswith(("place_hires", "place_ctx_hi")))
@@ -412,12 +335,10 @@ class NeuralPolicy:
         self._hx = None
         self._cx = None
         self._was_in_game = False
-        # Which placement cells the actuator can actually reach, computed once
-        # from the tile geometry (see actuator.engine_row_is_tappable). Built
-        # here rather than per decision because it is a constant of the screen
-        # mapping, and asserted non-empty so a future geometry change that
-        # masked EVERY cell would fail loudly instead of turning the agent into
-        # a permanent no-op.
+        # Which placement cells the actuator can reach (see
+        # actuator.engine_row_is_tappable). A constant of the screen mapping,
+        # asserted non-empty so a geometry change masking every cell fails
+        # loudly instead of making the agent a permanent no-op.
         from live.actuator import engine_row_is_tappable  # noqa: PLC0415
         cells = self.net.placement_cells
         width = self.net.board_width
@@ -432,22 +353,14 @@ class NeuralPolicy:
         print(f"placement: {n_ok}/{cells} cells reachable by the actuator "
               f"({cells - n_ok} engine rows have no detector row)")
 
-        # Per-card legality, straight from the ENGINE's own predicate.
+        # Per-card legality from the engine's own predicate. The net's
+        # placement_mask grants a troop every own-half cell; the engine also
+        # rejects the back-row dead zone and tower footprints, and those are
+        # placements the real game refuses. The predicate is independent of
+        # board state, so this is a constant table per card.
         #
-        # model.py's placement_mask grants a troop every own-half cell; the
-        # engine additionally rejects the back-row dead zone and the tower
-        # footprints. Measured gap on DEFAULT_DECK: 46 cells for every troop,
-        # 80 for the Cannon (building clearance), 12 for Fireball. Those are
-        # the placements the real game refuses -- a 180 s match issued three
-        # Cannons at (2,5)/(2,6)/(2,7), all inside the left Princess Tower's
-        # footprint, and all three came back unconfirmed.
-        #
-        # Safe to precompute: UPSTREAM_REQUESTS item 12 measured this predicate
-        # to be independent of board state (208/288 for Cannon on an empty
-        # board and with six troops deployed, 0 cells lost to units), so it is
-        # three constant tables rather than a per-step query.
-        # DECK holds CRBAB card objects, not simulator ids -- hand_card_id_for
-        # is the existing bridge between the two namespaces (mapping/card_map.json).
+        # DECK holds CRBAB card objects, not simulator ids; hand_card_id_for
+        # bridges the two (mapping/card_map.json).
         import clash_royale_env  # noqa: PLC0415
         from live.unit_to_card import (  # noqa: PLC0415
             UNKNOWN_CARD_SIM_ID,
@@ -467,19 +380,15 @@ class NeuralPolicy:
         print(f"placement: engine-legal cells per card {counts} "
               f"(of {cells}; unmasked would be {cells})")
 
-        # --- tactical officer -------------------------------------------------
-        # The trained placement head is a constant function for Cannon, Fireball
-        # and Giant and is worth LESS than a random cell (PLACEMENT_COLLAPSE.md).
-        # For those three the WHERE is taken out of the network and given to
-        # tactics.py, whose cells are scored against the engine's own accounting:
-        # Cannon 564 vs 12 tower HP preserved, Fireball 2.405 vs 0.000 elixir
-        # killed, Giant 536 vs 3 tower damage dealt.
+        # --- tactical officer ---
+        # For Cannon, Fireball and Giant the learned placement is worse than a
+        # random cell, so tactics.py, scored against the engine's own
+        # accounting, chooses the cell.
         #
-        # The advisor is handed the SAME masks the sampled path uses, intersected
-        # -- engine legality AND actuator reachability. Handing it only the engine
-        # mask would let it propose engine row 0, whose tap lands below the arena
-        # and is silently dropped: precisely the bug the tile-grid fix closed, and
-        # an override is exactly the kind of code that would reintroduce it.
+        # The advisor gets the same masks the sampled path uses, intersected:
+        # engine legality and actuator reachability. The engine mask alone
+        # would let it propose engine row 0, whose tap lands below the arena
+        # and is dropped.
         self._tactical = tactical
         self._advisor_legal = {
             cid: (m & self._tappable_cells)[0].numpy().astype(bool)
@@ -505,12 +414,10 @@ class NeuralPolicy:
 
     @staticmethod
     def _card_id_for_slot(gs, slot: int):
-        """The simulator card id sitting in this hand slot, or None.
+        """The simulator card id in this hand slot, or None.
 
-        Read from the perceived hand rather than assumed from DECK order: the
-        hand cycles, so slot 2 is a different card minute to minute, and the
-        card-icon reader is the weakest in the pipeline (see GameState.my_hand)
-        so a blank or misread slot has to be representable.
+        Read from the perceived hand, not DECK order: the hand cycles, and a
+        blank or misread slot must be representable.
         """
         hand = getattr(gs, "my_hand", ()) or ()
         if 0 <= slot < len(hand):
@@ -529,33 +436,17 @@ class NeuralPolicy:
             card_mask = self.net.affordability_mask(obs)
             if self._gate is not None:
                 # Veto spends that would leave us unable to answer, but only
-                # while nothing is attacking, and only up to what the opponent
-                # could actually punish with (their elixir, reconstructed from
-                # the observation -- see below for why it is no longer the net's
-                # own head).
+                # while nothing is attacking and only up to what the opponent
+                # could punish with.
                 from python_ai.advisors import tactics  # noqa: PLC0415
                 o = obs[0].numpy()
-                # From the net, not sliced here -- see
-                # MicroRoyaleNet.hand_costs_from_obs, which replaced three
-                # copies of this offset arithmetic (this was the third).
+                # From the net, not sliced here:
+                # MicroRoyaleNet.hand_costs_from_obs.
                 costs = self.net.hand_costs_from_obs(obs)[0].tolist()
-                # DERIVED, not predicted. `net.predict_opp_elixir` was deleted
-                # on 2026-08-28 -- the head was measured to be an affine
-                # function of two scalars the observation already carries
-                # (ordinary least squares on them scores MAE 0.0000), so it
-                # learned nothing and was replaced by the next-card head. This
-                # call was never updated, and it raised AttributeError on the
-                # first in-game frame, i.e. `--policy neural` could not survive
-                # entering a match at all.
-                #
-                # `tactics.opp_elixir_estimate` is the same reconstruction the
-                # teacher uses: start + regen*t - their observed cumulative
-                # spend. It reads a FLAT regen rate and the match has run
-                # 1x/2x/3x phases since 2026-09-02, so it under-reads after
-                # 2:00 -- which opens the solvency gate slightly more often
-                # than it should late in a game. Noted rather than fixed here:
-                # the gate is off by default (`--no-tactical` is the A/B arm,
-                # and `USE_SOLVENCY_GATE` ships False).
+                # Opponent elixir is reconstructed as the teacher does it:
+                # start + regen*t - their observed spend. It assumes a flat
+                # regen rate, so it under-reads after 2:00 in the phased match.
+                # The gate is off by default (`USE_SOLVENCY_GATE` ships False).
                 opp = float(tactics.opp_elixir_estimate(o))
                 allow = torch.tensor([self._gate.mask(o, costs, opp)],
                                      dtype=torch.bool)
@@ -565,15 +456,13 @@ class NeuralPolicy:
             card = torch.distributions.Categorical(logits=logits).sample()
             slot = int(card.item())
             if slot >= self.net.hand_size:
-                # The last column is the always-legal no-op. Deliberately not
-                # forced into a play: "hold elixir" is a real decision and the
-                # affordability mask guarantees this column is never masked.
+                # The last column is the always-legal no-op; "hold elixir" is a
+                # real decision.
                 return Decision(None, DEFAULT_TILE, "no-op")
-            # --- tactical override: the advisor decides WHERE for the three
-            # cards whose learned placement is worse than a random cell.
-            # Returns immediately: the three masks below exist to filter the
-            # NETWORK's distribution, and the advisor has already been handed
-            # their intersection, so re-applying them would be redundant.
+            # --- tactical override ---
+            # The advisor already received the intersection of the masks below,
+            # which exist to filter the network's distribution, so this returns
+            # immediately.
             card_id = self._card_id_for_slot(gs, slot)
             if card_id in self._override_ids:
                 legal = self._advisor_legal.get(card_id)
@@ -593,37 +482,29 @@ class NeuralPolicy:
                 self._hx, embeds, card, obs, smap)
             placement = placement.masked_fill(
                 ~self.net.placement_mask(obs, card), float("-inf"))
-            # SECOND mask, live-only: model.py's placement_mask is built from
-            # the ENGINE's bounds, which include rows this screen mapping cannot
-            # reach. Engine row 0 converts to detector row -1, whose tap lands
-            # below the arena -- the game drops the placement silently and the
-            # elixir ledger reports it as "issued but never confirmed".
-            #
-            # Applied here and not in model.py on purpose: this is a property of
-            # the ACTUATOR, not of the game. Narrowing the training action space
-            # would change what the policy learns and invalidate its win-rate
-            # history, to fix something that only exists on this screen.
+            # Second mask, live-only: the net's placement_mask follows the
+            # engine's bounds, which include rows this screen mapping cannot
+            # reach (engine row 0 taps below the arena and the game drops it).
+            # It belongs to the actuator, not the game; narrowing the training
+            # action space would change what the policy learns.
             placement = placement.masked_fill(
                 ~self._tappable_cells.to(placement.device), float("-inf"))
-            # THIRD mask: the engine's own isValidPlacement for THIS card.
-            # Keyed on the card id rather than the slot, because the slot's
-            # contents change as the hand cycles. An unrecognised id (hand
-            # misread, blank slot) falls through unmasked rather than blocking
-            # the play -- perception being unsure is not a reason to refuse a
-            # placement the game may well accept.
+            # Third mask: the engine's isValidPlacement for this card, keyed on
+            # card id because slot contents cycle. An unrecognised id falls
+            # through unmasked: perception being unsure is no reason to refuse
+            # a placement the game may accept.
             legal = self._legal_by_card.get(self._card_id_for_slot(gs, slot))
             if legal is not None:
                 placement = placement.masked_fill(
                     ~legal.to(placement.device), float("-inf"))
             if not torch.isfinite(placement).any():
-                # Every cell for this card is masked. Waiting is correct and
-                # honest; sampling from an all -inf row would return cell 0 and
-                # tap somewhere arbitrary.
+                # Every cell masked: wait. Sampling an all -inf row would
+                # return cell 0 and tap somewhere arbitrary.
                 return Decision(None, DEFAULT_TILE, "no-op (no legal cell)")
             cell = torch.distributions.Categorical(logits=placement).sample()
             x, y = self.net.cell_to_xy(cell)
-        # cell_to_xy returns ENGINE board coordinates, which is what the
-        # actuator's engine_tile_centre expects.
+        # cell_to_xy returns engine coordinates, which engine_tile_centre
+        # expects.
         return Decision(slot, (int(x.item()), int(y.item())),
                         f"net slot {slot} -> ({int(x.item())},{int(y.item())})")
 
@@ -738,16 +619,13 @@ def main() -> int:
     print(f"{'ACTING - will place real cards' if args.act else 'DRY RUN - watching only'}")
     if args.frames:
         if args.frames_fps:
-            # A CONSTANT-RATE DUMP, DECLARED AS ONE.
-            #
-            # RecordingSource carries real per-frame capture stamps and is the
-            # right source for tools/record_match.py output, which is
-            # variable-rate by nature. A directory extracted from a CFR video
-            # has no manifest and genuinely IS constant-rate, so synthesising
-            # timestamps at a stated rate is correct rather than a fiction --
-            # but it has to be STATED, because doing it silently to a real
-            # variable-rate recording would bake drift into the clock
-            # templates. Hence a flag and not a fallback.
+            # A constant-rate dump, declared as one. RecordingSource carries
+            # real per-frame stamps and suits tools/record_match.py output,
+            # which is variable-rate. A directory extracted from a CFR video
+            # has no manifest and is genuinely constant-rate, so synthesised
+            # timestamps are correct, but only when stated: applied silently to
+            # a variable-rate recording they would bake drift into the clock
+            # templates. Hence a flag, not a fallback.
             from capture.frames import FrameDirSource  # noqa: PLC0415
             source = FrameDirSource(args.frames, fps=args.frames_fps)
             print(f"replaying {source.frame_count} stills from {args.frames} "
@@ -760,28 +638,16 @@ def main() -> int:
         source = WindowSource(args.window)
     detector = Detector(DECK)
 
-    # SWAP IN THE DECK-RESTRICTED HAND CLASSIFIER, AT THE COMPOSITION ROOT.
+    # Swap in the deck-restricted hand classifier at the composition root.
+    # `Detector.run` calls `self.card_detector.run(image) -> (cards, ready)`
+    # and DeckHandDetector answers in the same shape, so no fork of the
+    # vendored detector is needed.
     #
-    # `Detector.run` calls `self.card_detector.run(image) -> (cards, ready)`,
-    # and `DeckHandDetector` answers with the same shape, so this one binding
-    # is the whole integration -- no fork of the vendored detector.
-    #
-    # Measured on assets/live/match_practice_01 (tools/bench_hand.py), over
-    # 120 blind-labelled slot crops sampled across ALL in-match slots:
-    # identity 90.0% -> 96.7%, and impossible cycle transitions 60.0% -> 5.3%.
-    #
-    # The second number is the one that matters, and the reason is NOT that
-    # the incumbent hallucinates on empty slots -- measured, both arms name a
-    # card on 0.0% of the 87 genuinely empty ones. It is stable within-deck
-    # confusion: the incumbent reads Musketeer correctly only 46.2% of the
-    # time, mostly as Mini P.E.K.K.A, and a card that is CONSISTENTLY wrong
-    # produces a hand history the 8-card FIFO says is impossible.
-    #
-    # The pool is deck-specific by construction, so a pool built for another
-    # deck CANNOT be used -- it would silently map every unseen card onto
-    # whichever of its eight it least mismatches. That case falls back to the
-    # incumbent and says so loudly rather than failing to start, because the
-    # incumbent still works; it is merely worse.
+    # The gain is fewer impossible cycle transitions: the stock reader confuses
+    # cards within the deck consistently, which produces a hand history the
+    # 8-card FIFO rules out. A pool built for another deck cannot be used (it
+    # would map every unseen card onto its nearest eight), so that case falls
+    # back to the stock reader, loudly.
     if args.hand != "crbab":
         try:
             from live.deck_hand import DeckHandDetector  # noqa: PLC0415
@@ -798,14 +664,13 @@ def main() -> int:
     else:
         print("hand classifier: crbab (incumbent)")
 
-    # Recorded in the run's own output: a timing log that does not say which
-    # execution provider produced it cannot be compared against another.
+    # Recorded in the run's output: a timing log that does not name its
+    # execution provider cannot be compared with another.
     print(f"execution provider: "
           f"{detector.unit_detector.sess.get_providers()[0]}")
     if args.ensure_match:
-        # tools/ is not a package on the path -- the live package is. Added
-        # here rather than at import time so a run without the flag does not
-        # depend on the emulator navigation code at all.
+        # tools/ is not on the path. Added here so a run without the flag does
+        # not depend on the navigation code.
         if str(_ROOT / "tools") not in sys.path:
             sys.path.insert(0, str(_ROOT / "tools"))
         from match_nav import ensure_in_match  # noqa: PLC0415
@@ -815,8 +680,8 @@ def main() -> int:
     if args.act:
         print(f"actuator backend: {actuator.backend}")
     if args.policy == "neural":
-        # Copied first: the live phase-2 run rewrites this file periodically
-        # and reading it mid-write loads a truncated checkpoint.
+        # Copied first: a live training run rewrites this file, and reading it
+        # mid-write loads a truncated checkpoint.
         import shutil, tempfile  # noqa: PLC0415
         frozen = Path(tempfile.gettempdir()) / "mvp_policy_snapshot.pth"
         shutil.copy2(args.checkpoint, frozen)
@@ -832,27 +697,23 @@ def main() -> int:
     for warning in cost_warnings:
         print(f"  !! card cost: {warning}")
     print(f"deck costs: {', '.join(f'{c:.0f}' for c in costs)}")
-    # Printed in full because the live deck is DERIVED from the training deck
-    # and a mismatch between the two is invisible at runtime -- the loop is
-    # internally consistent whatever deck it holds. This line is what makes
-    # "the live environment matches the training environment" auditable rather
-    # than assumed.
+    # Printed in full: the loop is consistent whatever deck it holds, so this
+    # line is what makes "live matches training" auditable.
     print("deck (derived from gym_wrapper.DEFAULT_DECK): "
           + ", ".join(c.name for c in DECK))
     ledger = ElixirLedger(costs=costs)
 
-    # THE HAND COMES FROM THE CYCLE, NOT THE SCREEN. Measured over this capture,
-    # the per-frame reading changes ~2.5x more often than cards are actually
-    # played, and 88% of its slot changes have no elixir drop behind them. The
-    # cycle is a strict 8-slot FIFO, so the play history determines the hand
-    # exactly, and plays are the thing we read WELL (the ledger recovered 27
-    # cards against an affordable ceiling of 28). See hand_tracker.py.
+    # The hand comes from the cycle, not the screen. The per-frame reading
+    # changes far more often than cards are played, and most of its slot
+    # changes have no elixir drop behind them; the cycle is a strict 8-slot
+    # FIFO, so the play history, which is read well, determines the hand
+    # exactly. See hand_tracker.py.
     tracker = HandTracker(deck=tuple(_training_deck_ids()),
                           costs=deck_cost_by_sim_id(DECK))
     gate = ActionGate(enforce_staleness=not args.ignore_staleness)
-    # Independent of the ledger by construction -- see placement_confirm.py.
-    # The ledger says whether the elixir trace reconciled; this says whether a
-    # unit actually appeared. Only both being silent means the game refused it.
+    # Independent of the ledger: the ledger says whether the elixir trace
+    # reconciled, this says whether a unit appeared. Only both being silent
+    # means the game refused it.
     confirmer = PlacementConfirmer()
 
     print(f"capture {source.size[0]}x{source.size[1]}   "
@@ -860,32 +721,23 @@ def main() -> int:
     print("  t     screen     units  elix  spent  hand                    "
           "decision                 ms")
 
-    # Offline this whole function medians 190 ms; the first live run implied
-    # ~2700 ms. Timing it by stage is the only way to tell which stage grew,
-    # and the answer decides whether the next lever is the execution provider,
-    # the capture, or the adapter. Guessing cost a DirectML venv build that
-    # would have addressed 4% of the budget.
+    # Timed by stage, so a slow run says which stage grew: execution provider,
+    # capture or adapter.
     stages = Stages()
 
-    # THE MATCH GATE. Updated only here, on whichever thread owns perception,
-    # so there is a single writer; the decision loop only ever READS
-    # `match.in_match`, which is atomic in CPython.
-    #
-    # It replaces a bare `state.screen.name == "in_game"` at two sites. That
-    # test has no hysteresis, so one misread frame at a boundary either admitted
-    # lobby frames to the readers or ended the match in our bookkeeping while it
-    # was still being played. Measured over the 2,510-frame live capture, gating
-    # takes off-deck card reads from 7.8% to 0.5% and duplicates from 8.7% to
-    # 1.7% -- a quarter of every capture is not a battle at all.
+    # The match gate. Updated only here, on the thread that owns perception, so
+    # there is a single writer; the decision loop only reads `match.in_match`.
+    # It is debounced, unlike the raw `screen.name == "in_game"`, which let one
+    # misread frame admit lobby frames to the readers or end the match early.
     match = MatchState()
-    # A new battle deals a fresh opening hand, so the previous match's FIFO
-    # describes a game that has ended. Re-seeding costs one consensus window;
-    # carrying it over is wrong for the whole match.
+    # A new battle deals a fresh opening hand; the previous match's FIFO no
+    # longer applies.
     match.on_change(lambda in_match: tracker.reset() if in_match else None)
 
     def perceive(frame):
-        """capture-frame -> (State, GameState). Runs on whichever thread owns
-        perception: the worker when pipelined, the loop when --serial."""
+        """capture-frame -> (State, GameState). Runs on the thread that owns
+        perception: the worker when pipelined, the loop when --serial.
+        """
         t = time.perf_counter()
         native = Image.fromarray(frame.image[:, :, ::-1])       # BGR -> RGB
         small = native.resize((SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), Image.LANCZOS)
@@ -897,9 +749,9 @@ def main() -> int:
         in_match = match.update(state.screen.name)
         plays_before = len(ledger.plays)
         if in_match:
-            # The reading's own capture time, not now(): the ledger models how
-            # much elixir regenerated between samples, and at this rate a
-            # frame's worth of latency is a quarter of an elixir.
+            # The reading's own capture time, not now(): the ledger models
+            # regeneration between samples, and a frame of latency is a quarter
+            # of an elixir.
             ledger.update(state.numbers.elixir.number,
                           now=frame.wall_time_ms / 1000.0)
         gs, _report = build_game_state(
@@ -907,34 +759,23 @@ def main() -> int:
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
             my_elixir_spent=ledger.spent)
 
-        # THE HAND IS REPLACED BY THE TRACKER'S, not merged with it. The screen
-        # reading still feeds the tracker -- as the seed, as the tie-breaker
-        # between two in-hand cards of equal cost, and as the desync detector --
-        # but what the policy sees is the FIFO's answer.
-        #
-        # Only while in a match: the tracker advances on elixir drops, and
-        # outside a battle there is no elixir bar to drop.
+        # The hand is replaced by the tracker's, not merged. The screen reading
+        # still feeds the tracker as seed, tie-breaker between equal-cost cards
+        # and desync detector, but the policy sees the FIFO's answer. Only in a
+        # match: the tracker advances on elixir drops.
         if in_match:
             tracker.update(tuple(getattr(gs, "my_hand", ()) or ()),
                            ledger.plays[plays_before:])
             # Until the consensus window fills, `as_tuple()` is four UNKNOWNs,
-            # which would mask every slot as unplayable and freeze the agent for
-            # the first ~25 frames of every match. The screen reading is the
-            # better estimate in exactly that window, so it stands until the
-            # tracker has actually seeded.
+            # which would mask every slot and freeze the agent for the first
+            # ~25 frames; the screen reading stands until then.
             if tracker.seeded:
                 gs = replace(gs, my_hand=tracker.as_tuple())
-        # OPTIMISTIC DEBIT. The bar the agent is reading is ~1 s old and its
-        # last tap needs another ~0.9 s to land, so cards it has already
-        # committed are still shown as affordable -- and it spends the same
-        # elixir two and three times over. Measured: four placements against a
-        # single unchanged reading of 10, which is also what fills the
-        # actuator queue and gets taps dropped.
-        #
-        # Subtracting what we have promised but not yet seen leave the bar is
-        # not a fiction, it is the better estimate, and it is what a human does
-        # without thinking about it. `my_elixir` drives affordability_mask, so
-        # this is the value the policy is actually gated on.
+        # Optimistic debit. The bar being read is ~1 s old and the last tap
+        # needs ~0.9 s more to land, so committed cards still look affordable
+        # and the same elixir gets spent several times over. Subtracting what
+        # is promised but not yet seen leave the bar is the better estimate,
+        # and `my_elixir` is what affordability_mask gates on.
         owed = ledger.unconfirmed_cost
         if owed:
             gs = replace(gs, my_elixir=max(0.0, gs.my_elixir - owed))
@@ -946,8 +787,8 @@ def main() -> int:
     worker = None
     if pipelined:
         # Replay is never pipelined: it is the deterministic integration test,
-        # and a background thread racing a finite recording would reproduce
-        # differently every run.
+        # and a thread racing a finite recording would reproduce differently
+        # each run.
         worker = PerceptionWorker(source, detector, perceive)
         worker.start()
         print("perception: BACKGROUND THREAD (decisions use the newest board)")
@@ -1001,33 +842,29 @@ def main() -> int:
                     continue
                 board_index = frame.index
 
-            # Phase-locked, not on a fixed grid: the next tick is measured from
-            # the decision that actually happened, so a wait shifts the whole
-            # cadence rather than being repaid by a short interval afterwards.
-            # Once aligned to the producer, boards arrive just before each tick
-            # and the wait stops triggering by itself.
+            # Phase-locked: the next tick is measured from the decision that
+            # happened, so a wait shifts the cadence instead of being repaid by
+            # a short interval. Once aligned to the producer the wait stops
+            # triggering.
             if replay is None:
                 next_due = time.perf_counter() + 1.0 / DECISION_HZ
 
-            # Fold this board into every placement still awaiting a verdict --
-            # but only ONCE per board. The decision loop can sample the same
-            # published board twice when the producer is slower than 1 Hz, and
-            # counting it twice would inflate `observations` into looking like
-            # evidence was gathered when nothing new was seen.
+            # Fold this board into every pending placement, once per board: the
+            # loop can sample the same published board twice when the producer
+            # is slower than 1 Hz, and counting it twice would inflate
+            # `observations`.
             if board_index != last_observed:
                 confirmer.observe(gs, time.perf_counter())
                 last_observed = board_index
 
-            # The DEBOUNCED gate, not `state.screen.name`: the raw read flips
-            # on a single bad frame, and this value both starts the policy's
-            # recurrent state and releases taps.
+            # The debounced gate, not `state.screen.name`: this value starts
+            # the policy's recurrent state and releases taps.
             in_game = match.in_match
             if hasattr(policy, "on_screen_change"):
                 policy.on_screen_change(in_game)
-            # The policy steps every tick whatever the gate decides: it is
-            # recurrent and was trained stepping once per second, so skipping
-            # steps to match the producer's rate would change the LSTM's
-            # cadence away from training. Only the TAP is gated.
+            # The policy steps every tick regardless of the gate: it was
+            # trained stepping once per second, and skipping steps would change
+            # the LSTM's cadence. Only the tap is gated.
             decision = (policy.decide(gs, state.ready, now) if in_game
                         else Decision(None, DEFAULT_TILE, "not in game"))
             if decision.slot is not None:
@@ -1038,29 +875,13 @@ def main() -> int:
                     # Recorded only after the tap returns, so an adb failure
                     # leaves the board available to retry.
                     gate.record(board_index)
-                    # THE NAME MUST COME FROM THE HAND THE POLICY READ, which
-                    # is `gs.my_hand` (deck_hand.DeckHandDetector, matching
-                    # deck-specific templates). It used to come from
-                    # `state.cards[1:5]`, CRBAB's stock icon detector -- a
-                    # SECOND, noisier read of the same slots.
-                    #
-                    # Measured on the 2026-09-06 live run, 35 placements: the
-                    # two disagreed on 18 of them, 51%. The tracked hand was
-                    # self-consistent throughout (0 duplicate cards, 0 cards
-                    # outside DEFAULT_DECK, 6 unreadable slots in 140) while the
-                    # stock read produced names like "blank" for slots that held
-                    # a real card.
-                    #
-                    # That mislabelling propagates: `expected_unit_names` builds
-                    # the confirmation oracle's target from THIS name, so a
-                    # wrong name makes the oracle hunt for a unit that was never
-                    # played and report "no evidence it landed". The run's
-                    # 27% unit-appeared rate is therefore mostly a measurement
-                    # artefact, not 73% missed taps.
-                    #
-                    # Falls back to the stock crop only where the tracked slot
-                    # is unreadable, which is the one case it carries more
-                    # information than nothing.
+                    # The name comes from the hand the policy read
+                    # (`gs.my_hand`), not CRBAB's stock icon read of
+                    # `state.cards[1:5]`, which disagrees with the tracked hand
+                    # on about half of placements. The confirmation oracle
+                    # builds its target from this name, so a wrong one has it
+                    # hunting for a unit never played. The stock crop is used
+                    # only where the tracked slot is unreadable.
                     hand_names = [c.name for c in state.cards[1:5]]
                     tracked_name = _sim_id_to_detector_name(
                         gs.my_hand[decision.slot]
@@ -1075,22 +896,18 @@ def main() -> int:
                         now=time.perf_counter(),
                         owed=ledger.unconfirmed_cost)
                     # Ground truth: we know exactly which card and what it
-                    # cost, which no amount of staring at the bar can recover
-                    # once 3 and 4 quantise to the same drop.
-                    # Only a tap that was actually SENT spends elixir. In dry
-                    # run nothing reaches the game, and on a replay the elixir
-                    # being read is a human's -- recording our imaginary plays
-                    # there would attribute their drops to us and corrupt the
-                    # very trace the ledger is validated against.
+                    # cost, which the bar cannot recover once 3 and 4 quantise
+                    # to the same drop. Only a tap actually sent spends elixir:
+                    # in dry run nothing reaches the game, and on a replay the
+                    # elixir being read is a human's.
                     cost = (None if actuator.dry_run
                             else hand_cost(gs, decision.slot))
                     if cost is not None:
-                        # No timestamp: the ledger stamps it with its own frame
-                        # clock. Passing a wall clock here would mix time bases
-                        # with the readings and nothing would ever expire.
-                        # Tagged with the confirmer's own sequence number, which
-                        # is what lets the two verdicts be cross-tabulated
-                        # instead of merely counted side by side.
+                        # No timestamp: the ledger stamps it on its own frame
+                        # clock, and a wall clock would mix time bases so
+                        # nothing ever expires. Tagged with the confirmer's
+                        # sequence number so the two verdicts can be
+                        # cross-tabulated.
                         ledger.record_play(cost, tag=rec.seq)
                 else:
                     gate.refuse(verdict.reason)
@@ -1101,7 +918,7 @@ def main() -> int:
             slow += ms > 1000.0
             stale += age_ms > MAX_STALENESS_MS
             ages.append(age_ms)
-            # [1:5], not [:4] -- cards[0] is the "Next" preview. See
+            # [1:5], not [:4]: cards[0] is the "Next" preview. See
             # adapter._hand_ids.
             hand = ",".join(c.name[:6] for c in state.cards[1:5])
             print(f"  {now - t0:5.1f} {state.screen.name[:10]:<10} "
@@ -1145,8 +962,8 @@ def main() -> int:
           f"{'' if args.act else ' (dry run - none sent)'}")
     if actuator.dropped or actuator.errors:
         # Dropped means a placement was still being tapped when the next was
-        # chosen. Rare at 1 Hz against a ~900 ms placement, and a real signal
-        # if it is not: the actuator has become the bottleneck again.
+        # chosen: rare at 1 Hz, and a sign the actuator is the bottleneck if
+        # not.
         print(f"actuator: {actuator.dropped} dropped (still tapping), "
               f"{actuator.errors} errors"
               + (f" - last {actuator.last_error!r}" if actuator.last_error else ""))
@@ -1154,10 +971,9 @@ def main() -> int:
           f"residual {ledger.residual:+.0f}, "
           f"{ledger.rejected} issued plays never confirmed")
 
-    # THE MEASUREMENT THIS RUN EXISTS FOR. `ledger.rejected` above conflates a
-    # refused placement with a reconciliation failure; the cross-tab separates
-    # them, and the listed rows are the ground-truth dataset of what the real
-    # game actually rejects.
+    # `ledger.rejected` conflates a refused placement with a reconciliation
+    # failure; the cross-tab separates them, and its listed rows are ground
+    # truth for what the real game rejects.
     confirmer.close_all()
     confirmer.apply_ledger(ledger.confirmed_tags, ledger.rejected_tags)
     print()

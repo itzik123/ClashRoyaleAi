@@ -1,16 +1,11 @@
-"""Stage 2: fit the policy heads to the search's value distribution.
+"""Stage 2 of expert iteration: fit the policy heads to the search's value
+distribution.
 
-FROZEN TRUNK IS THE DEFAULT AND THE MEASUREMENT SAYS SO. The frozen arm reaches
-nearly the same conditional lift as the full-network arm (+0.1027 vs +0.1415)
-with ZERO critic drift and a sharper selectivity ratio -- and the critic IS the
-expert here, so drifting it degrades every future label. `critic_drift()` in
-`expert_metrics.py` is what verifies the freeze actually held rather than
-assuming it.
-
-TEMPERATURE IS THE KNOB, AND IT MUST BE PICKED FROM THE TARGET'S OWN ENTROPY,
-never tuned on the outcome. Candidate value spread is mean 0.221 / median 0.193,
-at which T=0.25 puts the target at 94% of maximum entropy -- near-uniform, no
-signal, while looking like it is training. T=0.05 puts it at ~55%.
+The trunk is frozen by default: it reaches nearly the conditional lift of full
+fine-tuning with zero critic drift, and the critic is the expert, so moving it
+degrades every future label (`expert_metrics.critic_drift` checks). The
+temperature must be chosen from the target's own entropy, never from the
+outcome; see `calibrate_temperature`.
 """
 import os
 import sys
@@ -22,9 +17,8 @@ import torch
 
 from python_ai.rl.optim_step import clip_and_step
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path; importing the package also
+# makes `clash_royale_env` importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -38,31 +32,24 @@ from python_ai.trainers import bc_pretrain  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 BOARD_W, BOARD_H = CE.BOARD_WIDTH, CE.BOARD_HEIGHT
 
-# Everything upstream of the action heads. Frozen by default -- see the module
-# docstring. `card_id_embed`/`noop_embed` feed placement_given_card AND are read
-# by extract_features, so they count as trunk: training them would move the
-# features the critic sees, which is the thing freezing exists to prevent.
-# `cycle_id_head` is trunk for the same reason `aux_card_head` is: it is not an
-# action head, and it is the only gradient the (detached) cycle branch has, so
-# leaving it trainable here would let a distillation run reshape the branch --
-# the exact thing the detach exists to prevent.
+# Everything upstream of the action heads, frozen by default.
+# `card_id_embed`/`noop_embed` are read by extract_features, so training them
+# would move the critic's features. `cycle_id_head` is the detached cycle
+# branch's only gradient, so training it here would reshape the branch.
 TRUNK_MODULES = ("cnn_trunk", "scalar_mlp", "card_id_embed", "lstm",
                  "value_head", "aux_card_head", "cycle_id_head")
 
 TRUNK_PARAMS = ("noop_embed",)
 
-# The heads expert iteration is allowed to move.
+# The heads expert iteration may move.
 POLICY_MODULES = ("card_head", "place_ctx", "place_up")
 
-# --------------------------------------------------------------------------
-# stage 2: distil
-# --------------------------------------------------------------------------
+# --- stage 2: distil ---
 
 def freeze_trunk(net):
     """Freeze everything except the action heads. Returns (trainable, frozen).
 
-    Adam skips parameters whose .grad is None, so requires_grad=False is
-    sufficient here and needs no change to bc_pretrain.train_bc.
+    Adam skips parameters without gradients, so requires_grad=False suffices.
     """
     for p in net.parameters():
         p.requires_grad = False
@@ -78,10 +65,8 @@ def freeze_trunk(net):
     frozen = sum(p.numel() for p in net.parameters() if not p.requires_grad)
     return trainable, frozen
 
-#: Where the soft target should sit, as a fraction of log(n_candidates).
-#: At ~0 it is the argmax label that already measured a null (+0.016, p=0.553);
-#: at ~1 it is uniform and carries no preference at all. 0.55 is the band the
-#: working arms were measured in.
+#: Where the soft target should sit, as a fraction of log(n_candidates): near 0
+#: is the hard argmax label (measured null), near 1 is uniform.
 TARGET_ENTROPY_FRAC = 0.55
 
 
@@ -108,14 +93,9 @@ def calibrate_temperature(cand_value, cand_n, target_frac=None,
                           lo=1e-4, hi=10.0, iters=60):
     """The T whose target sits at `target_frac` of maximum entropy.
 
-    WHY THIS IS SOLVED PER ROUND RATHER THAN PASSED AS A FLAG. T is a property
-    of the CRITIC's value spread, and expert iteration changes the critic --
-    so a temperature calibrated once is correct only for round 0. It is also
-    the single knob this project has already lost a run to: T=0.25 put the
-    target at 94% of maximum entropy, near-uniform and carrying no signal,
-    while looking exactly like training.
-
-    Entropy is monotone increasing in T, so a bisection is exact and cheap.
+    Solved per dataset because T depends on the critic's value spread, which
+    expert iteration changes. A badly chosen T gives a near-uniform target that
+    looks like training. Entropy is monotone in T, so bisection is exact.
     """
     target_frac = TARGET_ENTROPY_FRAC if target_frac is None else target_frac
 
@@ -137,14 +117,8 @@ def calibrate_temperature(cand_value, cand_n, target_frac=None,
 
 
 def candidate_target(values, n, temperature):
-    """softmax(values / T) over the n real candidates. Rows with n<2 are dead.
-
-    Temperature is THE knob here and is deliberately not tuned against the
-    outcome metric. Too cold and this collapses back to the argmax label that
-    already failed; too hot and every candidate looks equally good and there is
-    no signal. It is chosen from the TARGET's own entropy (reported by
-    --target-entropy) so the choice is made before any result is seen, which is
-    the same discipline the 8.0 upweight was picked with.
+    """softmax(values / T) over the n real candidates; rows with n < 2 carry
+    nothing.
     """
     v = values[:n]
     z = (v - v.max()) / max(1e-6, temperature)
@@ -153,32 +127,17 @@ def candidate_target(values, n, temperature):
 
 def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
                        temperature=0.25, episode_filter=None, verbose=True):
-    """AlphaZero-style distillation: fit the policy to search's VALUE ranking.
+    """AlphaZero-style distillation: fit the policy to search's value distribution
+    over K joint candidates.
 
-    Separate from bc_pretrain.train_bc rather than a flag on it, because the
-    loss is a different shape, not a different weighting. train_bc fits one hard
-    (card, cell) label per row; this fits a DISTRIBUTION over K joint candidate
-    actions, which needs the policy's own factorisation composed explicitly:
+    The policy's factorisation is composed explicitly, log p_i = log P(card_i)
+    + log P(cell_i | card_i), or just log P(no-op) for the no-op (the engine
+    ignores its placement). The loss is soft-target cross-entropy, sum_i -q_i
+    log p_i.
 
-        log p_i = log P(card_i) + log P(cell_i | card_i)
-
-    and for the no-op candidate just log P(no-op), since the engine ignores
-    placement when cardIndex >= HAND_SIZE.
-
-    Loss is cross-entropy with soft targets, sum_i -q_i log p_i, i.e. KL(q||p)
-    up to a constant in q.
-
-    Two things this buys that the hard-label version could not:
-
-      * MARGIN. The hard label says only "candidate 0 lost". The distribution
-        says whether it lost by 0.01 or by 0.8, which is exactly the difference
-        between "waiting is marginally better" and "playing here is a blunder"
-        -- the signal a conditional rule needs and the one the ablation showed
-        was missing.
-      * PLACEMENT COVERAGE. The hard-label placement loss is masked to rows
-        that played a card, which is 10.3% of rows and starved the head. Here
-        every row with >= 2 candidates contributes placement gradient whenever
-        candidates differ in cell, no-op rows included.
+    Unlike hard labels, the target carries the margin between candidates, and
+    every row with >= 2 candidates trains the placement head, not only rows
+    that played a card.
     """
     net = net.to(device).train()
     opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=lr)
@@ -188,10 +147,8 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
         keep = set(int(e) for e in episode_filter)
         ep_ids = np.asarray([e for e in ep_ids if int(e) in keep])
 
-    # NOT torch.tensor(data["obs"]) -- that doubles peak RAM (13606 floats/row,
-    # ~1.1 GB per 80 episodes) for no benefit, since the recurrent replay below
-    # only ever touches one episode at a time. Converting per episode is what
-    # lets the dataset scale past the machine's ~5 GB of free memory.
+    # Observations are converted per episode, not all at once, so the dataset
+    # can exceed free memory.
     obs_np = data["obs"]
     cand_card = data["cand_card"]
     cand_cell = data["cand_cell"]
@@ -226,9 +183,8 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
                         dtype=torch.float32, device=device)
                     card_lp = torch.log_softmax(cl, dim=-1)[0]
 
-                    # One placement forward per DISTINCT card among candidates,
-                    # not per candidate -- k_cards is 3 by default while K is up
-                    # to 7, so this roughly halves the cost of the dearest head.
+                    # One placement forward per distinct card among the
+                    # candidates.
                     cards = [int(cand_card[row, i]) for i in range(n)]
                     place_lp = {}
                     for c in set(cards):
@@ -247,9 +203,8 @@ def train_distribution(data, net, device, epochs=4, lr=3e-4, batch_episodes=8,
                         else:
                             logp.append(card_lp[c] + place_lp[c][int(cand_cell[row, i])])
                     logp = torch.stack(logp)
-                    # A candidate the mask forbids has -inf log-prob and would
-                    # make the loss inf. Drop it and renormalise, same idea as
-                    # train_bc dropping mask-illegal targets.
+                    # A mask-forbidden candidate has -inf log-prob; drop it and
+                    # renormalise.
                     ok = torch.isfinite(logp)
                     if ok.sum() < 2:
                         continue

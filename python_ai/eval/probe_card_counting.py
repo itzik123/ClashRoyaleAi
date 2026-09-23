@@ -1,50 +1,23 @@
-"""Does the policy actually COUNT CARDS, or does it merely carry the cycle
-channels around? Offline linear probes on a frozen checkpoint.
+"""Does the recurrent state carry the opponent's card cycle, or only the
+observation?
 
-WHAT IS BEING ASKED. Item 24 put the opponent's `seen[]`/`recency[]` into the
-observation and Phase 4 gave that block a dedicated 24-dim scalar branch. Both
-are plumbing. The question neither settles is whether the RECURRENT STATE ends
-up carrying the opponent's cycle in a linearly decodable form.
+Offline linear probes on a frozen checkpoint, over four feature sets, since a
+probe's score means nothing without its floor and ceiling beside it:
 
-THE CONTROL THAT DECIDES IT, AND THE MISTAKE IT AVOIDS. This project has
-already read one auxiliary head as evidence of memory and been wrong: the
-opponent-elixir head scored MAE 0.77 and looked like a capability, until an
-ordinary least-squares fit on two scalars ALREADY IN THE OBSERVATION scored
-0.0000. The lesson is that a probe's absolute score means nothing without the
-ceiling and the floor beside it. So four feature sets are fitted, never one:
+    hx_trained     256   the checkpoint's LSTM state
+    hx_untrained   256   a random-init net stepped over the same rollouts: the random-projection floor. If trained ~= untrained, training contributed nothing.
+    cycle_raw      370   seen[] + recency[] from the observation: the information ceiling
+    noncycle       754   everything else: how much is guessable without the cycle
 
-    hx_trained     256   the checkpoint's LSTM state -- what the policy carries
-    hx_untrained   256   a RANDOM-INIT net stepped over the SAME rollouts.
-                         The random-projection floor. If trained ~= untrained,
-                         training contributed nothing and the score is just
-                         Johnson-Lindenstrauss doing its job.
-    cycle_raw      370   seen[] + recency[] straight from the observation.
-                         The information CEILING actually available.
-    noncycle       754   everything else (elixir, costs, hand one-hots, the
-                         extra scalars). How much is guessable WITHOUT the
-                         cycle at all -- the confound floor.
+Two targets:
 
-`hx_untrained` is the one that matters most, and it is the analogue of the OLS
-control that overturned the elixir result.
+    HAND    is deck card c in the opponent's hand now? (8 binary probes; deterministic given the play history)
+    NEXT    which deck card does the opponent play next? (8-way; irreducible entropy, so `cycle_raw` sets the ceiling)
 
-TWO TARGETS, because "counting cards" is two different claims:
+Ground truth comes from the engine, never from the channels being probed. The
+split is by episode, never by row: consecutive decisions share almost all their
+state and a row split leaks the answer.
 
-    HAND    is deck-card c in the opponent's hand right now? (8 binary probes)
-            This is what a human literally tracks, and it is DETERMINISTIC
-            given the play history, so a high ceiling is expected.
-    NEXT    which deck card does the opponent play next? (8-way)
-            Carries irreducible entropy -- the opponent chooses heuristically
-            among the four it holds -- so the ceiling is well below 1.0 and
-            `cycle_raw` is what measures where it sits.
-
-Ground truth comes from the engine (`get_hand_for_team`, `get_last_played_tick`),
-never from the cycle channels being probed.
-
-SPLIT BY EPISODE, NEVER BY ROW. Consecutive decisions share almost all of their
-state; a random row split leaks the answer across the split and every probe
-scores high for a reason that has nothing to do with memory.
-
-Run:
     python_ai/venv/Scripts/python.exe -m python_ai.eval.probe_card_counting \
         --checkpoint stage_checkpoints/stage0_ep00000939.pth --episodes 40
 """
@@ -74,11 +47,9 @@ def collect(checkpoint, episodes, seed=0, max_steps=400):
     if checkpoint:
         sd = torch.load(checkpoint, map_location="cpu", weights_only=False)
         if isinstance(sd, dict):
-            # This repo's checkpoints nest the weights under "model". Probing a
-            # checkpoint whose weights silently failed to load is the worst
-            # possible failure here -- the "trained" arm becomes a second random
-            # net and the probe reports no-learning with total confidence. So
-            # the key is REQUIRED to resolve, and a miss raises.
+            # Checkpoints nest the weights under "model". Weights that silently
+            # fail to load would make the trained arm a second random net and
+            # the probe would report no learning, so a miss raises.
             for k in ("model", "model_state_dict", "state_dict"):
                 if k in sd and isinstance(sd[k], dict):
                     sd = sd[k]
@@ -148,7 +119,7 @@ def collect(checkpoint, episodes, seed=0, max_steps=400):
                 {"card_index": int(idx), "target_x": int(x.item()),
                  "target_y": int(y.item())})
 
-            # Ground truth from the ENGINE, not from the channels being probed.
+            # Ground truth from the engine.
             for c in DEFAULT_DECK:
                 lt = g.get_last_played_tick(OPPONENT_TEAM, c)
                 if lt > last_tick[c]:
@@ -157,7 +128,7 @@ def collect(checkpoint, episodes, seed=0, max_steps=400):
             if term or trunc:
                 break
 
-        # Label each decision with the NEXT opponent play after it.
+        # Label each decision with the next opponent play after it.
         j = 0
         for r in ep_rows:
             while j < len(plays) and plays[j][0] < r["t"]:
@@ -210,7 +181,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=40)
     ap.add_argument("--threads", type=int, default=1)
     args = ap.parse_args()
-    torch.set_num_threads(args.threads)   # be polite to the live training run
+    torch.set_num_threads(args.threads)   # be polite to a live training run
 
     rows = collect(args.checkpoint, args.episodes)
     print(f"rows={len(rows)}  episodes={len({r['ep'] for r in rows})}  "

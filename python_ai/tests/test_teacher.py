@@ -1,11 +1,4 @@
-"""teacher.py -- the utility-search sparring partner, and the curriculum.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""teacher.py: the utility-search opponent, and the curriculum."""
 import os
 import sys
 
@@ -44,18 +37,10 @@ from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 
 
-# ==========================================================================
-# teacher.py -- the utility-search sparring partner (2026-08-19)
-# ==========================================================================
-# The elixir-multiplier curriculum priced the win condition negatively (see
-# CLAUDE.md's 1.5x hypothesis and its monotone dose-response). It is replaced
-# by a COMPETENCE curriculum: a deterministic utility-search bot at a symmetric
-# 1.0x economy, whose difficulty is dialed on lookahead/width/epsilon.
-#
-# These tests pin the parts that fail SILENTLY. In particular a wrong team-1
-# frame conversion makes every team-1 placement illegal, which reads as "the
-# bot is weak" rather than "the bot is broken" -- exactly the class of bug this
-# project has paid for three times.
+# Difficulty is competence (lookahead, width, epsilon) at a symmetric 1.0x
+# economy, never an elixir handicap. These pin the parts that fail silently: a
+# wrong team-1 frame conversion makes every team-1 placement illegal, which
+# reads as "the bot is weak".
 
 
 def test_card_roles_derives_roles_from_the_engine_not_a_hardcoded_list():
@@ -66,9 +51,8 @@ def test_card_roles_derives_roles_from_the_engine_not_a_hardcoded_list():
     assert roles[33] == "spell"     # The Log
     assert roles[25] == "building"  # Cannon
     assert roles[6] == "ranged"     # Musketeer
-    # Ice Golem also targets buildings but is a 2-cost shield, not a win
-    # condition -- highest-cost building-targeter wins, the same tiebreak
-    # gym_wrapper._find_win_condition uses.
+    # Ice Golem also targets buildings but is a 2-cost tank, not the win
+    # condition.
     assert roles[40] != "wincon"
     assert set(roles) == set(gym_wrapper.DEFAULT_DECK)
 
@@ -82,9 +66,10 @@ def _teacher_env(ticks=40):
 
 
 def test_teacher_candidates_are_all_legal_for_either_team():
-    """is_valid_placement takes ABSOLUTE y for both teams while step_self_play
-    takes team 1's y MIRRORED. Get that backwards and team 1 silently never
-    places anything."""
+    """is_valid_placement takes absolute y for both teams while step_self_play
+    takes team 1's y mirrored; backwards, team 1 silently never places
+    anything.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
     for team in (0, 1):
@@ -116,8 +101,9 @@ def test_teacher_never_proposes_an_unaffordable_card():
 
 
 def test_noop_scores_exactly_zero_so_the_teacher_can_hold_elixir():
-    """The no-op baseline is what makes every other score a MARGINAL value. If
-    it drifts, the bot either dumps elixir on sight or freezes forever."""
+    """The no-op baseline makes every other score a marginal value; if it drifts,
+    the bot dumps elixir on sight or freezes.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
     env = _teacher_env()
@@ -130,9 +116,9 @@ def test_noop_scores_exactly_zero_so_the_teacher_can_hold_elixir():
 
 
 def test_rollout_does_not_touch_the_live_match():
-    """snapshot() deep-copies the stats collectors. If that ever regresses,
-    every hypothetical hit lands in the REAL match's statistics -- and those
-    feed the reward shaping, so a search would corrupt its own returns."""
+    """snapshot() deep-copies the stats collectors; otherwise hypothetical hits
+    land in the real match's statistics, which feed the reward.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
     env = _teacher_env()
@@ -147,15 +133,13 @@ def test_rollout_does_not_touch_the_live_match():
 
 
 def test_teacher_is_side_agnostic():
-    """One class plays both sides. A broken team-1 frame shows up here as a
-    bot that never lands a card, not as an exception."""
+    """One class plays both sides; a broken team-1 frame shows up as a bot that
+    never lands a card, not an exception.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
-    # SEEDED. A bare reset() drew team 1's opening hand from
-    # std::random_device, so "how many cards land in 120 decisions" varied per
-    # invocation and this occasionally tripped its own >= 5 floor. That was
-    # latent for as long as the scorer was lenient. `ClashRoyaleEnv.seed()`
-    # seeds both engine generators and re-deals (2026-08-21).
+    # Seeded: an unseeded reset() draws team 1's hand from OS entropy, and the
+    # landed-card count would vary per invocation.
     env = CE(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
     env.seed(0)
     t1 = UtilityTeacher(gym_wrapper.DEFAULT_DECK, team=1, horizon_ticks=30, seed=0)
@@ -175,20 +159,13 @@ def test_teacher_is_side_agnostic():
 
 
 def test_cycle_tracker_order_logic_against_an_exact_simulated_cycle():
-    """The ORDER half of CycleTracker, tested deterministically with no engine.
+    """The order half of CycleTracker, against an exact model of the engine's rule
+    (the played card goes to the back of the queue, the front fills the vacated
+    slot), with no engine.
 
-    WHY NOT DRIVE THE ENGINE. Two engine-driven versions of this test passed
-    VACUOUSLY and one stayed flaky. Playing hand slot 0 every step rotates only
-    slot 0, so a Hog dealt into slots 1-3 never leaves the hand; playing the
-    CHEAPEST affordable card fails the same way for the opposite reason, since
-    2.6 has two 1-cost cards and a 4-cost Hog is never cheapest; and a uniform
-    draw still misses when the match ends before the Hog is ever affordable.
-    A vacuous pass on a cycle tracker is worse than no test at all -- 2.6 is
-    DEFINED by cycling -- so the logic is pinned here against an exact model and
-    the engine agreement is checked separately below.
-
-    The model is the engine's own rule: the played card goes to the BACK of the
-    queue, the front of the queue fills the vacated hand slot.
+    Engine-driven versions pass vacuously: playing slot 0 only rotates slot 0,
+    playing the cheapest card never plays a 4-cost Hog, and a match can end
+    before the Hog is affordable. Engine agreement is checked separately below.
     """
     from python_ai.opponents.teacher import CycleTracker
 
@@ -206,9 +183,8 @@ def test_cycle_tracker_order_logic_against_an_exact_simulated_cycle():
         queue.append(played)
         ct.observe(list(hand))
 
-        # A card just played sits at the back of a 4-long queue, so it is
-        # exactly 4 plays from returning. Membership alone is satisfied by ANY
-        # ordering; this is the part that can actually be wrong.
+        # A card just played sits at the back of a 4-long queue, exactly 4
+        # plays from returning. Membership alone is satisfied by any ordering.
         assert ct.distance_to(played) == 4, (
             f"{played} was just played; expected 4, got {ct.distance_to(played)}")
         for i, card in enumerate(queue):
@@ -220,10 +196,9 @@ def test_cycle_tracker_order_logic_against_an_exact_simulated_cycle():
 
 
 def test_cycle_tracker_agrees_with_the_engines_own_hand():
-    """The identity invariant, against the real engine: distance is 0 exactly
-    when the card is in hand. Runs several matches because one can end before
-    the win condition is ever affordable, and asserts at the end that at least
-    one rotation was actually observed -- otherwise this passes vacuously too.
+    """Against the real engine: distance is 0 exactly when the card is in hand.
+    Several matches, asserting at the end that a rotation was actually
+    observed.
     """
     from python_ai.opponents.teacher import CycleTracker
 
@@ -262,19 +237,16 @@ def test_cycle_tracker_agrees_with_the_engines_own_hand():
 def test_teacher_stages_are_competence_not_economy():
     from python_ai.opponents.teacher import TEACHER_STAGES
 
-    # ELEVEN rungs since 2026-09-03 (was 6). The count is asserted so the
-    # table cannot shrink back silently, but every property below is what
-    # actually matters and holds at any length.
+    # The count is asserted so the table cannot shrink silently; the properties
+    # below hold at any length.
     assert len(TEACHER_STAGES) == 11
     for s in TEACHER_STAGES:
         assert set(s) == {"horizon_ticks", "epsilon", "k_cells", "max_combos",
                           "reactive"}, (
             "a stage must never carry an elixir multiplier -- that is the whole "
             "point of this curriculum")
-        # The claim above is about ECONOMY, so state it directly rather than
-        # relying on the key set alone. `max_combos` was added on 2026-08-20 as
-        # a third COMPETENCE axis (how many two-card sequences the bot may
-        # simulate), and a future axis should have to pass this too.
+        # The claim is about economy, so check every key directly; a future
+        # competence axis must pass this too.
         for key in s:
             assert "elixir" not in key and "multiplier" not in key, key
     eps = [s["epsilon"] for s in TEACHER_STAGES]
@@ -284,8 +256,7 @@ def test_teacher_stages_are_competence_not_economy():
     assert hor == sorted(hor), "lookahead must rise monotonically"
     assert combos == sorted(combos), "combo width must rise monotonically"
     # A combo's follow-up lands 10 ticks in, so a rung whose rollout stops
-    # before that would charge two cards and simulate one. The ladder must not
-    # be able to ask for combos it cannot score.
+    # sooner would charge two cards and simulate one.
     from python_ai.opponents.teacher import COMBO_MIN_HORIZON_TICKS
     for s in TEACHER_STAGES:
         if s["max_combos"] > 0:
@@ -311,19 +282,18 @@ def test_epsilon_one_still_only_emits_legal_actions():
 
 
 def test_default_env_is_unchanged_and_still_uses_the_cpp_heuristic():
-    """The teacher is OPT-IN. Every existing harness, probe and eval anchor
-    constructs MicroRoyaleEnv with no opponent key and must keep getting the C++
-    HeuristicOpponent, or every historical number silently stops being
-    comparable."""
+    """The teacher is opt-in: harnesses constructing MicroRoyaleEnv with no
+    opponent key keep the C++ HeuristicOpponent.
+    """
     env = gym_wrapper.MicroRoyaleEnv()
     assert env.teacher is None
     assert env.opponent_kind == "builtin"
 
 
 def test_teacher_env_produces_the_same_info_keys_as_the_builtin_env():
-    """train.py reads ~20 keys out of info. stepSelfPlay returns a different
-    result type than step (observation0/reward0, no observation/reward), so the
-    routing is the one place those could diverge."""
+    """train.py reads many info keys, and stepSelfPlay returns a different result
+    type than step, so the routing is where they could diverge.
+    """
     a = gym_wrapper.MicroRoyaleEnv()
     a.reset()
     b = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 2})
@@ -337,9 +307,9 @@ def test_teacher_env_produces_the_same_info_keys_as_the_builtin_env():
 
 
 def test_teacher_opponent_actually_plays_cards():
-    """A teacher that silently never plays looks exactly like a weak opponent.
-    This is the end-to-end version of the frame check in
-    test_teacher_candidates_are_all_legal_for_either_team."""
+    """A teacher that silently never plays looks like a weak opponent: the
+    end-to-end frame check.
+    """
     env = gym_wrapper.MicroRoyaleEnv({"opponent": "teacher", "teacher_stage": 3})
     env.reset()
     act = {"card_index": np.array([CE.HAND_SIZE]),
@@ -355,22 +325,16 @@ def test_teacher_opponent_actually_plays_cards():
 
 def test_set_teacher_stage_is_a_noop_on_a_builtin_env():
     """train.py calls envs.call('set_teacher_stage', n) unconditionally; on a
-    heuristic env that must not raise."""
+    heuristic env it must not raise.
+    """
     env = gym_wrapper.MicroRoyaleEnv()
     env.set_teacher_stage(4)          # must not raise
     assert env.teacher is None
 
 
-#: PIPELINE 1's training path -- `trainers/train.py` plus the loop and the
-#: curriculum that moved out of it into `rl/`. Scanning train.py alone, which is
-#: what this test used to do, would now pass while the banned call sat one
-#: import away.
-#:
-#: Deliberately NOT pipeline 2: `envs/selfplay_env.BUILTIN_TRAINING_OPPONENTS`
-#: really does put "builtin:heuristic@1.35" and "@1.50" in the PFSP pool, so a
-#: multiplier there is the anchor's own identity, not a curriculum handicap.
-#: The 2026-08-19 pivot was about phase 1's ladder and this test's claim is
-#: about phase 1's ladder.
+#: Pipeline 1's training path: trainers/train.py plus the loop and curriculum
+#: in rl/. Not pipeline 2, whose PFSP pool deliberately includes heuristic
+#: anchors at 1.35x / 1.50x as their own identity.
 def _phase1_training_sources():
     import pathlib
     root = pathlib.Path(python_ai.PACKAGE_DIR)
@@ -379,32 +343,17 @@ def _phase1_training_sources():
 
 
 def _curriculum_stages_literal():
-    """The real object, imported.
-
-    This used to PARSE `train.py` with `ast`, because CURRICULUM_STAGES was a
-    local of `train_ppo()` and could not be imported at all. That worked, and it
-    was a smell worth acting on: a constant nothing can import is a constant
-    nothing can check, and a parser that finds nothing can only be told apart
-    from a parser that finds the wrong thing by the assertion it raises. It now
-    lives at module scope in `rl/curriculum.py`.
-    """
+    """The real object, imported from rl/curriculum.py."""
     from python_ai.rl.curriculum import CURRICULUM_STAGES
     return CURRICULUM_STAGES
 
 
 def test_training_never_raises_the_opponent_elixir_multiplier():
-    """THE PIN ON THE 2026-08-19 PIVOT.
+    """Phase 1's training path never sets an opponent elixir multiplier.
 
-    The 1.5x handicap is what priced the win condition negatively -- measured
-    monotone across 1.0/1.25/1.5x, and the reason four separate Hog
-    interventions all returned null. The API survives for the ~15 measurement
-    harnesses that sweep it (including the falsifier that justified the change);
-    phase 1's training path must never call it again.
-
-    AST-based, not line-based. The line scan this replaces skipped anything
-    starting with `#`, which silently exempted every mention inside a DOCSTRING
-    -- and a docstring is exactly where a future author would explain the ban
-    before quietly reintroducing it below.
+    The handicap priced the win condition negatively. The API remains for the
+    measurement harnesses that sweep it. AST-based rather than line-based, so a
+    mention cannot hide in a docstring.
     """
     import ast
     offenders = []
@@ -417,7 +366,7 @@ def test_training_never_raises_the_opponent_elixir_multiplier():
             elif isinstance(node, ast.Constant) and node.value in (
                     "set_opponent_elixir_multiplier", "opp_elixir_multiplier"):
                 # `envs.call("set_opponent_elixir_multiplier", m)` and the
-                # env-config key are the two indirect routes to the same thing.
+                # env-config key are the two indirect routes.
                 offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
     assert not offenders, (
         "phase 1's training path sets an opponent elixir multiplier:\n  "
@@ -425,7 +374,7 @@ def test_training_never_raises_the_opponent_elixir_multiplier():
 
 
 def test_curriculum_lives_where_a_test_can_import_it():
-    """The regression for the reason the two tests below used to parse source."""
+    """CURRICULUM_STAGES is importable at module scope."""
     from python_ai.rl import curriculum
     assert curriculum.CURRICULUM_STAGES is _curriculum_stages_literal()
 
@@ -434,23 +383,22 @@ def test_curriculum_stages_are_competence_not_economy():
     from python_ai.rl.curriculum import STAGE_WIN_RATE_GATE
 
     stages = _curriculum_stages_literal()
-    assert len(stages) == 11          # was 6 before 2026-09-03
+    assert len(stages) == 11          # eleven rungs
     for s in stages:
         assert "opp_elixir_multiplier" not in s, (
             "a curriculum stage must never carry an elixir multiplier again")
         assert "teacher_stage" in s
     assert [s["teacher_stage"] for s in stages] == list(range(11))
-    # The gate moved 0.80 -> 0.65 WITH the rung split, and the two must not be
-    # separated: 0.80 across eleven rungs is a strictly harder ladder than the
-    # six-rung version it replaced. Read from the constant rather than
-    # restated, so retuning it stays a one-line change.
+    # The gate and the rung split go together (see test_rl_curriculum.py); read
+    # from the constant, not restated.
     assert ([s["win_rate_threshold"] for s in stages]
             == [STAGE_WIN_RATE_GATE] * 10 + [None])
 
 
 def test_curriculum_stage_count_matches_the_teacher_ladder():
-    """If these ever drift, CURRICULUM_STAGES would index past the end of
-    TEACHER_STAGES -- or, worse, silently stop at a rung short of the top."""
+    """Drift would index past the end of TEACHER_STAGES, or stop a rung short of
+    the top.
+    """
     from python_ai.opponents.teacher import TEACHER_STAGES
     stages = _curriculum_stages_literal()
     assert len(stages) == len(TEACHER_STAGES)

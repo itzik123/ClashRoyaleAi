@@ -1,126 +1,48 @@
 """Step a perceived board forward using the engine's own dynamics.
 
-WHY THIS EXISTS -- TWO QUESTIONS, ONE MECHANISM
------------------------------------------------
-  fidelity   The agent trains against this engine and then plays the real
-             game. Any interaction the engine models differently is a lesson
-             it learns wrong, and no amount of training fixes a wrong lesson.
-             Stepping a REAL board forward and comparing against what really
-             happened next measures that directly -- per card, per horizon --
-             instead of by reading the constants and hoping.
+Two questions, one mechanism:
 
-  lookahead  End-to-end latency is ~1 s (perception staleness + actuator +
-             deploy), so the board the policy acts on is always about a second
-             out of date. If the engine predicts the next second better than
-             the stale board does, that second is recoverable.
+  fidelity   The agent trains in this engine and plays the real game, so any
+             interaction the engine models differently is a lesson learned
+             wrong. Stepping a real board forward and comparing with what
+             happened next measures that per card and per horizon.
+  lookahead  End-to-end latency is ~1 s, so the board the policy acts on is
+             always a second old. If the engine predicts the next second
+             better than the stale board does, that second is recoverable.
 
-The second question is only worth asking if the first says the dynamics are
-close, which is why this module answers both and the harness reports both.
+The second is only worth asking if the first says the dynamics are close.
 
-WHY inject + step, NOT copy
----------------------------
-Branching search over candidate actions needs a `GameManager` copy, and
-`Board` holds `shared_ptr<Entity>`, so a plain copy is shallow.
+Single-line prediction needs no branching, so this is reset, inject, step,
+read; branching search over candidates uses `snapshot()` in
+python_ai/search/realtime_search.py. It steps with step_self_play, because step
+also runs HeuristicOpponent, which would deploy cards the real opponent never
+played. A card index outside [0, 4) is a pure "advance time" step.
 
-This used to read "genuinely blocked on a virtual `Entity::clone()`". **That is
-no longer true and has not been since 2026-08-11**: `Entity::clone()` exists,
-every concrete subtype overrides it, and `snapshot()` is bound (see
-UPSTREAM_REQUESTS.md item 13, DONE, and tests/core/test_board_deepcopy.cpp /
-test_game_manager_snapshot.cpp). CLAUDE.md's open problem #2 has already been
-corrected; this docstring had not been, which left the repo's own top-ranked
-unexploited asset looking blocked on surgery that already happened.
+What the rebuild does not reconstruct. The engine has setters for all of these
+(inject's hp and deploy_ticks, set_tower_hp, set_current_tick,
+set_elixir_for_team, set_hand_for_team) and this module uses none of them yet:
 
-What this module does is still inject + step rather than snapshot, for a
-different and smaller reason: single-line forward prediction needs no branching
-at all -- reset, inject what was seen, step, read. Branching search over
-candidates is `python_ai/realtime_search.py`'s job and it uses `snapshot()`
-already. The two were conflated here, and that conflation is what kept this
-unexplored.
+  unit HP      injected units spawn at full health;
+  deploy       every injected unit gets a fresh deploy second;
+  tower HP     full after reset;
+  clock        zero;
+  elixir       the starting value;
+  the hand     whatever reset() deals, so two forecasts of one board differ
+               in the hand scalars (never in the spatial ones).
+  removal      entities cannot be deleted, so each call rebuilds from scratch.
 
-WHY step_self_play, NOT step
-----------------------------
-`ClashEnv::step` also runs `HeuristicOpponent`, which would deploy cards the
-real opponent never played -- the prediction would hallucinate an enemy push
-and then be judged against footage that contains none. `stepSelfPlay`
-deliberately never calls `opponentTurn()`.
+Consumers (tools/sim_fidelity.py, tools/measure_decoupling.py) therefore score
+unit occupancy with towers excluded, which none of these gaps touch and which
+is what the lookahead question is about. A whole-observation distance is
+reported too but folds in the HP and tower resets. Anyone feeding a forecast to
+the policy must overwrite the hand from perception first: `affordability_mask`
+reads those scalars. set_hand_for_team returns a bool and can refuse; check it.
 
-Any card index outside [0, 4) is a no-op in both, which is how a pure
-"advance time" step is expressed.
+Stepping 0.5 s then 1.0 s is bit-identical to stepping 1.5 s: combat is
+deterministic and a no-op forecast never touches the engine's one RNG.
 
-WHAT CANNOT BE RECONSTRUCTED -- read this before trusting a number
-------------------------------------------------------------------
-`inject` is additive. Two setters exist as of 2026-08-17 and THIS MODULE DOES
-NOT USE THEM YET -- see "NOT YET MIGRATED" below. Everything here describes the
-state as this module actually rebuilds it today:
-
-  unit HP     injected units spawn at FULL health. Perception measures a
-              fraction and it cannot be applied. No setter exists for this.
-  tower HP    always full after reset. These are extra scalars 3-8, i.e. the
-              six numbers the win condition is defined on. No setter exists.
-  match clock always zero. No setter exists.
-  removal     an entity that perception no longer sees cannot be deleted;
-              the state is rebuilt from scratch each call instead.
-  elixir      always the starting value -- BUT `set_elixir_for_team(team,
-              value)` now exists and would fix this.
-  the HAND    `reset()` reshuffles from an unseeded mt19937, so two forecasts
-              of the SAME board come back with different hands. Measured:
-              forecasting one board twice differs in 11 floats, every one of
-              them a hand one-hot or a hand cost, and in ZERO of the 12,852
-              spatial floats. `set_hand_for_team(team, cards)` now exists and
-              would fix this; it RETURNS A BOOL and can refuse, which a caller
-              must check -- a silently-accepted misread is worse than none.
-
-That last one is the trap for anyone who later feeds a forecast straight to
-the policy: the board would be a prediction but the hand would be fiction,
-and `affordability_mask` is built from those very scalars. The hand must be
-overwritten from perception before the vector is used as a policy input.
-
-NOT YET MIGRATED -- a platform limit until 2026-08-17, a deliberate no-op since
--------------------------------------------------------------------------------
-`ClashEnv::setElixirForTeam` / `setHandForTeam` (bound as `set_elixir_for_team`
-/ `set_hand_for_team`) were added on 2026-08-17 (26de409), and their own C++
-comment names THIS FILE as the motivating problem: "forecast.py rebuilds a board
-by calling reset() and injecting units... the reconstructed position had the
-right units and a fabricated hand/elixir."
-
-This module still goes through `reset()` + `inject()`. That is a TODO, not a
-platform limit -- but wiring it up today would move NOTHING that is currently
-measured, which is why it has not been rushed:
-
-  * `forecast()` consumes exactly one field of the input state,
-    `game_state.units` (see the loop below) -- never a hand, never an elixir.
-  * Both consumers score TOWER-EXCLUDED UNIT OCCUPANCY
-    (`tools/sim_fidelity.py`, `tools/measure_decoupling.py`), so the fabricated
-    hand and elixir are already outside every reported metric.
-  * No source of a team-1 HAND exists on this side at all. Team-1 ELIXIR does
-    have one (`track/opp_elixir.py`, and live, the net's own
-    `predict_opp_elixir` -- which is precisely what ClashEnv's comment asks
-    for), so elixir is the half that could land first.
-
-So: migrate when a consumer starts scoring something hand- or elixir-dependent,
-and check `set_hand_for_team`'s BOOL RETURN when you do -- it refuses rather
-than accepting a misread, and a silently-ignored refusal is worse than no
-update at all.
-
-It is also what makes cumulative stepping safe. Stepping 0.5 s and then
-another 1.0 s is bit-identical to stepping 1.5 s across the whole spatial
-half of the observation -- the engine's combat is deterministic and a no-op
-forecast never touches the one RNG it has.
-
-This is why the harness's primary metric is UNIT OCCUPANCY with towers
-excluded. Occupancy is the one thing that survives all five gaps intact, and
-it is exactly what the lookahead question is about -- where the units are.
-A whole-observation distance is reported too, but it folds in the HP and tower
-resets and must not be read as dynamics error.
-
-THE MATERIALISING TICK
-----------------------
-Injected entities are not on the board until one update has run: measured, a
-read at zero ticks returns the six towers and nothing else, and the injected
-unit first appears at tick 1. So the shortest horizon this can express is one
-tick, 0.1 s, and `horizon_s=0` is not a thing that can be asked for. Every
-horizon below therefore already contains 100 ms of engine dynamics, which is
-small but is not nothing and is not hidden.
+Injected entities appear only after one update, so the shortest horizon is one
+tick (0.1 s) and every horizon includes 100 ms of engine dynamics.
 """
 from __future__ import annotations
 
@@ -135,35 +57,28 @@ from timebase import TICKS_PER_SECOND, ticks_to_seconds
 _PYTHON_AI = Path(__file__).resolve().parent.parent / "python_ai"
 if str(_PYTHON_AI) not in sys.path:
     sys.path.insert(0, str(_PYTHON_AI))
-# ...and the repo root, so the `python_ai.*` package resolves too. The
-# python_ai/ entry above stays: clash_royale_env is an unpackaged .pyd
-# that lives inside it.
+# ...and the repo root, so `python_ai.*` resolves. The python_ai/ entry stays:
+# clash_royale_env is an unpackaged .pyd inside it.
 if str(_PYTHON_AI.parent) not in sys.path:
     sys.path.insert(0, str(_PYTHON_AI.parent))
 
-# Any index outside [0, 4) skips the play branch in stepSelfPlay -- see
-# ClashEnv::stepSelfPlay's `cardIndex0 >= 0 && cardIndex0 < 4`.
+# Any index outside [0, 4) skips stepSelfPlay's play branch (`cardIndex0 >= 0
+# && cardIndex0 < 4`).
 NO_OP_CARD = 9
 
 # One tick is the floor: an injected entity does not exist until an update has
-# run. See "THE MATERIALISING TICK" above.
+# run.
 MIN_HORIZON_S = 1.0 / TICKS_PER_SECOND
 
 
 def _import_engine():
-    """The engine bindings, preferring a FRESHER build over python_ai/'s copy.
+    """The engine bindings, preferring a fresher build over python_ai/'s copy.
 
-    The build copies its .pyd into python_ai/ as a post-build step, and that
-    copy FAILS (MSB3073) whenever a training process has the module mapped --
-    Windows will not overwrite a loaded DLL. So during a live run python_ai/
-    holds a stale binary and `build_python/Release/` holds the current one, and
-    importing the stale copy silently omits whatever was just added: the
-    state-estimator setters landed on 2026-08-17 and were invisible here for
-    exactly that reason.
-
-    Preferring the build output rather than copying over python_ai/ is
-    deliberate. Overwriting it mid-run is the one thing that could disturb a
-    multi-hour training job, and perception has no business doing that.
+    The post-build copy into python_ai/ fails (MSB3073) while a training
+    process has the module mapped, so during a live run build_python/Release/
+    holds the current binary and python_ai/ a stale one. This prefers the build
+    output rather than overwriting python_ai/, which could disturb the training
+    run.
     """
     import engine  # noqa: PLC0415
     return engine.load()
@@ -188,10 +103,8 @@ class Forecast:
 
 
 class SimForecaster:
-    """Rebuilds a perceived board in the engine and steps it forward.
-
-    Holds ONE env across calls. `reset()` costs 0.135 ms and is the documented
-    way to clear the board, since entities cannot be removed individually.
+    """Rebuilds a perceived board in the engine and steps it forward. Holds one
+    env across calls; `reset()` (0.135 ms) is the only way to clear the board.
     """
 
     def __init__(self, deck, engine=None):
@@ -201,27 +114,18 @@ class SimForecaster:
         self._bodies: dict[int, int] = {}
 
     def bodies_per_card(self, card_id) -> int:
-        """How many entities ONE injection of this card creates.
+        """How many entities one injection of this card creates.
 
-        `inject` spawns a CARD; perception detects BODIES. Injecting once per
-        detected body therefore multiplies every swarm card by its own body
-        count -- measured on real footage, four detected spear goblins became
-        twelve, and the reconstructed board had 12 occupied cells against
-        perception's 7 before a single tick was stepped.
-
-        Measured from the engine, not tabulated: `get_card_info` does not
-        report it, and a hand-written table would be a second copy of an
-        engine fact that changes whenever a card is rebalanced.
-
-        Counted through the CH_COUNT channel rather than by occupied cells,
-        because bodies of a swarm routinely share one cell and counting cells
-        would report Minions as 1.
+        `inject` spawns a card; perception detects bodies. Injecting once per
+        body multiplies every swarm by its own body count. Measured from the
+        engine rather than tabulated (`get_card_info` does not report it), and
+        counted through CH_COUNT rather than occupied cells, since a swarm's
+        bodies share cells.
         """
         card_id = int(card_id)
         if card_id not in self._bodies:
-            # Self-contained: resets first, so it can never be called into the
-            # middle of a forecast and silently return a count contaminated by
-            # whatever else was on the board.
+            # Resets first, so a count can never be contaminated by a board
+            # under construction.
             self._env.reset()
             self._env.step_self_play(NO_OP_CARD, 0.0, 0.0,
                                      NO_OP_CARD, 0.0, 0.0, 1)
@@ -240,20 +144,16 @@ class SimForecaster:
         return int(round(float(block.sum()) * enc.MAX_CELL_UNITS))
 
     def forecast(self, game_state, horizons_s) -> list[Forecast]:
-        """Predict `game_state` forward to each horizon.
-
-        Horizons are stepped CUMULATIVELY on one trajectory rather than
-        re-simulated per horizon -- the engine is deterministic, so stepping
-        1 s then another 0.5 s is bit-identical to stepping 1.5 s, and doing it
-        once costs a fraction as much.
+        """Predict `game_state` forward to each horizon. Horizons are stepped
+        cumulatively on one trajectory: the engine is deterministic, so this
+        equals re-simulating each and costs a fraction.
         """
         wanted = sorted({max(float(h), MIN_HORIZON_S) for h in horizons_s})
         if not wanted:
             return []
 
-        # Group first, and resolve every body count BEFORE the reset below:
-        # bodies_per_card resets the env itself, so calling it mid-injection
-        # would wipe the board being built.
+        # Resolve every body count before the reset below: bodies_per_card
+        # resets the env itself.
         groups: dict[tuple[int, int], list] = {}
         unmappable = 0
         for unit in game_state.units:
@@ -267,21 +167,18 @@ class SimForecaster:
         self._env.reset()
         injected = 0
         for (card_id, team), members in groups.items():
-            # One injection per CARD, not per detected body. A card that
-            # spawns three goblins must be injected once for every three
-            # bodies seen, or the reconstructed board carries three times the
-            # swarm the real one does.
+            # One injection per card, not per detected body, or the rebuilt
+            # board carries three times the swarm.
             per_card = bodies[card_id]
             count = max(1, round(len(members) / per_card))
-            # Spread the injection points across the detected bodies rather
-            # than stacking them all on the first, so a swarm strung out along
-            # a lane is rebuilt along that lane.
+            # Spread injection points across the detected bodies, so a swarm
+            # strung along a lane is rebuilt along it.
             step = max(1, len(members) // count)
             for i in range(count):
                 unit = members[min(i * step, len(members) - 1)]
-                # Cell CENTRE. The engine truncates with static_cast<int>, so
-                # +0.5 lands in the tile perception named rather than on its
-                # edge, where float error could tip it into the neighbour.
+                # Cell centre. The engine truncates, so +0.5 lands in the named
+                # tile rather than on an edge where float error could tip it
+                # over.
                 self._env.inject(card_id,
                                  float(unit.tile_x) + 0.5,
                                  float(unit.tile_y) + 0.5,
@@ -306,31 +203,14 @@ class SimForecaster:
         return out
 
     def measure_speed(self, card_id, min_tiles=6.0, max_ticks=200) -> float:
-        """The engine's own tiles/second for one card, measured not read.
+        """The engine's own tiles/second for one card, measured by injecting into
+        open ground: `get_card_info` does not expose speed, and CH_SPEED's
+        divisor would be a copied constant.
 
-        `get_card_info` does not expose speed and the observation's CH_SPEED
-        is normalised by a divisor this module would have to copy. Injecting
-        into open ground and measuring displacement asks the engine directly,
-        which is the rule this project already follows for every other engine
-        constant.
-
-        Measured over a LONG baseline, not a fixed short one. The observation
-        is cell-quantised, so displacement carries about +/-1 tile of error
-        regardless of duration: over a 3-tile walk that is 33%, over a 10-tile
-        walk it is 10%. A first version used a flat 10 ticks and reported the
-        Giant at 3.61 tiles/s against a true 3.0 -- the error was the
-        quantisation, not the engine.
-
-        Starts MID-BOARD, clear of every tower. An earlier version started at
-        (5.5, 4.5) and worked only while troops were fast: once movement was
-        corrected to real-game speed the unit no longer cleared its own left
-        Princess Tower at (4, 6) within the tick cap, merged into a tower cell,
-        and the measurement aborted early -- reporting the Giant at 0.17
-        tiles/s against a true ~0.58. The bug was latent the whole time and
-        surfaced only when the thing being measured changed.
-
-        `max_ticks` is generous for the same reason: at real-game speed a unit
-        needs roughly five times as long to cover the same ground.
+        Measured over a long baseline, since cell quantisation adds about +/-1
+        tile of error regardless of duration. Starts mid-board, clear of every
+        tower, so a slow unit does not merge into a tower cell and abort early.
+        `max_ticks` is generous for slow units.
         """
         self._env.reset()
         self._env.inject(int(card_id), 9.5, 8.5, 0)
@@ -345,10 +225,7 @@ class SimForecaster:
             self._env.step_self_play(NO_OP_CARD, 0.0, 0.0,
                                      NO_OP_CARD, 0.0, 0.0, 2)
             stepped += 2
-            # CENTROID of the card's bodies, not "the one cell". A first
-            # version required exactly one occupied cell and so returned nan
-            # for every swarm -- Archers, Minions, Spear Goblins and Skeletons
-            # all spawn more than one body and never satisfy it.
+            # Centroid of the card's bodies, so swarms are measurable.
             cell = _unit_centroid(
                 np.asarray(self._env.get_observation_for_team(0), np.float32))
             if cell is None:                     # died, or walked into a tower
@@ -356,17 +233,14 @@ class SimForecaster:
             latest = cell
             moved = float(np.hypot(latest[0] - first[0], latest[1] - first[1]))
         if moved <= 0.0:
-            # A building does not move. That is a real answer, not a failure.
+            # A building does not move: a real answer, not a failure.
             return 0.0
         return moved / ticks_to_seconds(stepped - 1)
 
 
-# --- reading boards back out ------------------------------------------------
-#
-# Layout knowledge lives in python_ai/models/perception_encoder.py and is imported,
-# never restated. Channels 0-3 are team 0's four type classes and 4-7 team 1's;
-# CLAUDE.md's rule about not keeping a second copy of an engine constant covers
-# the layout just as much as the numbers.
+# --- reading boards back out ---
+# Layout knowledge is imported from python_ai/models/perception_encoder.py,
+# never restated. Channels 0-3 are team 0's four type classes, 4-7 team 1's.
 
 def _encoder():
     from python_ai.models import perception_encoder  # noqa: PLC0415
@@ -374,12 +248,9 @@ def _encoder():
 
 
 def tower_cells() -> set[tuple[int, int]]:
-    """The six tower cells, which must be excluded from any agreement score.
-
-    Towers never move, so leaving them in guarantees six matching cells in
-    every comparison and inflates agreement by a constant that depends only on
-    how many units happen to be on the board. On a quiet board that is most of
-    the score.
+    """The six tower cells, excluded from any agreement score: towers never move,
+    so leaving them in inflates agreement by a constant that dominates on a
+    quiet board.
     """
     enc = _encoder()
     width = enc.BOARD_WIDTH
@@ -389,11 +260,8 @@ def tower_cells() -> set[tuple[int, int]]:
 
 
 def occupancy(observation, team) -> set[tuple[int, int]]:
-    """Cells holding at least one unit of `team`, towers included.
-
-    HP-independent on purpose. It is the one reading that survives the
-    reconstruction gaps listed in the module docstring, so it is the only
-    honest basis for "did the units end up where the engine said".
+    """Cells holding at least one unit of `team`, towers included. HP-independent,
+    so it survives the reconstruction gaps in the module docstring.
     """
     enc = _encoder()
     plane, width = enc.PLANE, enc.BOARD_WIDTH
@@ -408,11 +276,8 @@ def occupancy(observation, team) -> set[tuple[int, int]]:
 
 
 def _unit_centroid(observation):
-    """Mean position of team 0's non-tower cells, or None if there are none.
-
-    A centroid rather than a single cell so swarms are measurable: Archers,
-    Minions, Spear Goblins and Skeletons all spawn several bodies, and a
-    "exactly one cell" rule reports nan for every one of them.
+    """Mean position of team 0's non-tower cells, or None if there are none. A
+    centroid, so swarms are measurable.
     """
     cells = occupancy(observation, 0) - tower_cells()
     if not cells:
@@ -425,12 +290,9 @@ def _unit_centroid(observation):
 def agreement(predicted, actual) -> float:
     """Intersection over union of two occupancy sets.
 
-    Association-free by construction. Perception gives units no identity --
-    `UnitObservation` has no track id -- so any metric needing to say WHICH
-    unit moved where would first have to solve data association, and would
-    then be reporting the tracker's errors as the engine's.
-
-    Empty vs empty is 1.0: two boards that agree nothing is there agree.
+    Association-free: perception gives units no identity (`UnitObservation` has
+    no track id), so a metric saying which unit moved where would report the
+    tracker's errors as the engine's. Empty vs empty is 1.0.
     """
     if not predicted and not actual:
         return 1.0

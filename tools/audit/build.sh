@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# Compiles a standalone audit instrument against the header-only engine, under
-# WSL g++. The companion of build.ps1, which needs MSVC.
+# Compiles a standalone audit instrument against the header-only engine under
+# WSL g++, for machines without MSVC. See build.ps1 for why these are not CMake
+# targets.
 #
-# BOTH EXIST BECAUSE THE TOOLCHAIN DIFFERS BETWEEN THE MACHINES THIS REPO IS
-# WORKED ON, which CLAUDE.md documents at length: one box has a full MSVC
-# install and no WSL, the other has WSL 2.6 with g++ 13.3 and no MSVC at all.
-# On the second box build.ps1 cannot run, and before this file the audit
-# instruments were simply unavailable there.
-#
-# Deliberately NOT a CMake target, for the same reason as build.ps1: these are
-# measurement harnesses, and adding targets would force a reconfigure of the
-# generated solution that the .pyd and the Catch2 suite both build from.
-#
-# NOTE ON COMPARING NUMBERS ACROSS THE TWO ROUTES: g++/glibc and MSVC/UCRT do
-# not produce the same absolute timings, and the two machines' CPUs differ by
-# more than the compilers do. Ratios within one run are comparable; absolute
-# milliseconds across runs on different boxes are not.
+# Absolute timings are not comparable with build.ps1's; ratios within a run are.
 #
 # Usage:  bash tools/audit/build.sh engine_profile && tools/audit/bin/engine_profile
 set -euo pipefail

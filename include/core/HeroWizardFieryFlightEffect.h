@@ -3,10 +3,9 @@
 #include "CombatEntity.h"
 #include "Board.h"
 
-// Hero Wizard's "Fiery Flight": takes flight and, for the same duration,
-// every landed attack also pulses a damaging, pulling tornado centered on
-// the target -- see CombatEntity::temporaryFlightTicksRemaining/
-// flightPulseTicksRemaining and update()'s own attack-landing block.
+// Hero Wizard's "Fiery Flight": takes flight, and for the same duration each
+// landed attack pulses a damaging, pulling tornado on the target (handled in
+// CombatEntity::update).
 class HeroWizardFieryFlightEffect : public IAbilityEffect {
     int durationTicks;
     float pulseRadius;

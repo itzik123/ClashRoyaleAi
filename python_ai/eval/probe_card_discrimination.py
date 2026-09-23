@@ -1,60 +1,30 @@
-"""Is a card being played MORE, or being played WHEN IT IS WORTH PLAYING?
+"""Is a card played more, or played when it is worth playing?
 
-WHY THIS EXISTS, AND WHY THE OBVIOUS METRIC CANNOT ANSWER IT
------------------------------------------------------------
-The 2026-09-03 deck pool predicts that Cannon / The Log / Fireball become worth
-their elixir because the opponent now produces the threats they answer. The
-tempting way to check that is P(play card | in hand) going up. It is not
-sufficient, and this project has now recorded the same failure SIX times: an
-AGGREGATE cannot see a CONDITIONAL. A policy that simply plays Fireball more
-often everywhere scores identically to one that learned when to play it, and the
-first is strictly worse -- it is the marginal drift that made every previous
-attempt to raise these cards cost win rate.
-
-So the quantity here is DISCRIMINATION:
+P(play | in hand) cannot tell the two apart: a policy that plays Fireball more
+everywhere scores the same as one that learned when. So this measures
+discrimination:
 
     p_hi = P(play C | C in hand, affordable, the board offers C a lot)
     p_lo = P(play C | C in hand, affordable, the board offers C nothing)
 
-  * both rise together      -> SYSTEMIC drift. Not the win being claimed.
-  * p_hi rises, p_lo flat   -> the policy learned the CONDITION. This is the
-                               thing the deck pool was supposed to buy.
-  * p_hi/p_lo flat, both up -> same as the first case, stated as a ratio.
+Both rising together is systemic drift; p_hi rising with p_lo flat is the
+policy learning the condition. Each card is split on what it answers, the same
+quantities as measure_deck_matchups.py: Fireball on best spell catch, The Log
+on best corridor catch, Cannon on threat HP on our half.
 
-The split is per card, on the quantity that card actually answers:
-Fireball on best spell catch, The Log on best corridor catch, Cannon on threat
-HP on our half -- the same three `measure_deck_matchups.py` measures, so
-"opportunity" means one thing across both harnesses.
+Every number is a mean over states of the card slot's exact softmax
+probability, not a count of sampled plays, which for a rarely played card would
+need many thousands of decisions.
 
-READ THE PROBABILITY, DO NOT COUNT THE SAMPLES
-----------------------------------------------
-Fireball sits at P = 0.0011. Counting sampled plays needs ~10,000 decisions to
-see it at all, and CLAUDE.md's own noise floor for this class of probe is
-+-0.005 run to run. The softmax probability of the card's hand slot is the same
-quantity with no sampling noise whatsoever, and it is available from the forward
-pass this probe already does. Every number below is a mean over states of an
-exact per-state probability.
+Checkpoints are compared on one frozen bank of observation sequences, collected
+once. Each checkpoint replays the sequences and builds its own hidden state
+(teacher forcing); storing one net's (hx, cx) would feed another its memory.
 
-A FROZEN STATE BANK, REPLAYED THROUGH THE LSTM
------------------------------------------------
-Checkpoints are compared on the SAME states, or the state distribution moves
-underneath the comparison and a policy that merely reaches different boards
-reads as a policy that changed its mind. The bank stores whole OBSERVATION
-SEQUENCES rather than isolated states, because the net is recurrent: each
-checkpoint replays the stored sequence and builds its OWN hidden state from it
-(teacher forcing). Storing the baseline's `(hx, cx)` instead would feed one
-checkpoint another's memory.
-
-The bank is collected once from whatever policy is current when this is first
-run, and every later checkpoint is scored against that same bank.
-
-Usage:
-
-    # collect once (writes the bank next to --out)
+    # collect once
     ... -m python_ai.eval.probe_card_discrimination --collect --episodes 16 \\
         --weights model_weights_phase5.pth --bank bank.npz
 
-    # score any checkpoint against it, repeatedly, during a run
+    # score any checkpoint against it
     ... -m python_ai.eval.probe_card_discrimination --bank bank.npz \\
         --weights model_weights_phase6.pth --csv trend.csv
 """
@@ -79,20 +49,16 @@ from python_ai.eval.measure_deck_matchups import log_catch_map  # noqa: E402
 from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.models.policy_io import load_state_dict_flexible  # noqa: E402
 
-#: The three cards the deck pool is supposed to revive, each with the board
-#: quantity it actually answers. Named, not id'd, so the table survives a deck
-#: change; resolved against DEFAULT_DECK at run time.
+#: The watched cards and the board quantity each answers. By name, resolved
+#: against DEFAULT_DECK at run time.
 WATCHED = {
     "Fireball": "fb",
     "The Log": "log",
     "Cannon": "threat",
 }
 
-#: A state counts as HIGH opportunity for a card if that card's own quantity is
-#: at or above this percentile of the bank, and LOW at or below the other.
-#: Percentiles rather than absolute thresholds because the three quantities are
-#: in different units (spell catch HP, corridor catch HP, threat HP) and because
-#: an absolute cut would move meaning the moment the deck pool changes.
+#: High / low opportunity percentiles. Percentiles, since the three quantities
+#: have different units and absolute cuts would shift with the deck pool.
 HI_PCTL, LO_PCTL = 70.0, 30.0
 
 
@@ -193,20 +159,15 @@ def score(net, seqs):
     """Per-state probability of each watched card, by teacher-forced replay.
 
     Returns (probs, in_hand, quality), each (n_states, n_watched):
-      probs       softmax probability of that card's hand slot, 0 where absent
-      in_hand     True where the card is in hand AND affordable
-      quality     expected value under the placement distribution divided by
-                  the best any cell could get -- placement QUALITY, which is
-                  where the 2026-08-29 autopsy put the real constraint. nan for
-                  Cannon, which has no per-cell value map.
+      probs       softmax probability of the card's hand slot, 0 where absent
+      in_hand     True where the card is in hand and affordable
+      quality     expected value under the placement distribution / the best cell's value; nan for Cannon, which has no per-cell value map
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     watch_ids = [next(c for c in deck if E.get_card_info(c)["name"] == n)
                  for n in WATCHED]
-    # Cards whose value has a CELL MAP, so placement quality is answerable.
-    # Cannon has none -- its value is a defensive interaction over time, not a
-    # per-cell number -- and inventing a proxy for it would put a made-up
-    # quantity next to two measured ones. It reports nan instead.
+    # Cards with a per-cell value map. Cannon's value is a defensive
+    # interaction over time, so it reports nan rather than a made-up proxy.
     vmap = {"Fireball": lambda o: tactics.spell_catch_map(o),
             "The Log": log_catch_map}
     P, H, Q = [], [], []
@@ -235,11 +196,9 @@ def score(net, seqs):
                 if name not in vmap:
                     q_row.append(np.nan)
                     continue
-                # PLACEMENT QUALITY: the share of the achievable value this
-                # card's placement distribution actually expects to collect.
-                # The 2026-08-29 autopsy put the real constraint HERE -- "the
-                # card head was correctly pricing a broken placement head" --
-                # so a usage rise with a flat quality is a hollow win.
+                # Placement quality: the share of the achievable value the
+                # placement distribution expects to collect. A usage rise with
+                # flat quality is hollow.
                 idx = torch.tensor([slot])
                 pl = net.placement_given_card(hx, embeds, idx, t, spatial_f)
                 pmask = net.placement_mask(t, idx)
@@ -283,16 +242,14 @@ def analyse(probs, in_hand, quality, opp, decks, lengths_per_state):
             "ratio": (p_hi / p_lo) if p_lo > 1e-9 else float("nan"),
             "hi_cut": float(hi_cut),
             "lo_cut": float(lo_cut),
-            # Placement quality on the states that matter -- the HIGH ones. On
-            # a board offering nothing there is no good cell to find, so a
-            # quality number averaged over all states mostly measures the
-            # boards where the question is meaningless.
+            # Quality on high-opportunity states only; on an empty board there
+            # is no good cell to find.
             "quality_hi": (float(np.nanmean(qual[hi]))
                            if hi.any() and not np.all(np.isnan(qual[hi]))
                            else float("nan")),
         }
-    # Per-deck marginal, for attribution: a rise concentrated in the decks that
-    # OFFER the card something is the mechanism working; a uniform rise is not.
+    # Per-deck marginal: a rise concentrated in decks that offer the card
+    # something is the mechanism working.
     per_deck = {}
     state_deck = np.concatenate([[d] * n for d, n in
                                  zip(decks, lengths_per_state)])

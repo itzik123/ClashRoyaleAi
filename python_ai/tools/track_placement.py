@@ -1,39 +1,18 @@
-"""Watch a live run for the four quantities the placement work turns on.
+"""Watch a live run for the quantities the placement work turns on.
 
-WHY A SEPARATE PROCESS. `probe_card_discrimination` replays a multi-thousand
-state bank through the LSTM -- 27 s for 3,611 states. Calling that from inside
-`train.py`'s loop would stall the rollout every time it fired, and `train.py` is
-the live training script. This reads the CHECKPOINT and the TensorBoard event
-file only, never the trainer's memory, so it cannot perturb the run it watches
--- the same contract `tools/monitor_run.py` already keeps.
+A separate process because replaying the bank through the LSTM takes tens of
+seconds and would stall the rollout. Reads the checkpoint and the event files
+only, like tools/monitor_run.py.
 
-WHAT IT WATCHES, AND WHAT EACH IS READ AGAINST
------------------------------------------------
-  quantity            baseline it only means something against
+  quantity            read against
   ------------------  ---------------------------------------------------
-  hi/lo ratio         its own value at the run's start. A marginal that
-                      rises with a FLAT ratio is SYSTEMIC DRIFT, not
-                      learning -- the failure this project has recorded
-                      six times, and the exact shape of the 2026-09-03
-                      deck-pool result.
-  quality_hi          the share of achievable placement value the head
-                      expects to collect. Fireball 0.675, The Log 0.203 at
-                      ep 32,875. This is the number 490 episodes of deck
-                      pool did NOT move (signal 0.0).
-  Aux/NextCard_CE     ln(185) = 5.22 is uniform. The stale-head failure
-                      read 13.76 -- worse than uniform is "confidently
-                      wrong", and at aux_card_scale it pulled the shared
-                      trunk ~7x harder toward card identities than toward
-                      winning.
-  Decks/WinRate_*     POOL_WINRATE_FLOOR = 0.20. A deck below it should
-                      LOSE episode share and climb back out on its own.
+  hi/lo ratio         its own value at the run's start; a marginal rising with a flat ratio is systemic drift
+  quality_hi          the share of achievable placement value the head expects to collect
+  Aux/NextCard_CE     ln(185) = 5.22 is uniform; above it the head is confidently wrong
+  Decks/WinRate_*     the pool floor
 
-SIGNAL BEFORE TREND. Every card row carries |delta| over the step-to-step
-scatter of the series so far. Below ~2 a movement is not separable from PPO
-jitter, and this project has already been fooled once by a three-point read of
-a series whose fourth point reversed it.
-
-Usage:
+Every card row carries its signal (|delta| over step-to-step scatter); below ~2
+a movement is not separable from PPO jitter.
 
     ... -m python_ai.tools.track_placement --bank python_ai/eval/banks/<b>.npz \\
         --weights model_weights_phase7.pth --run-dir runs/phase7 \\
@@ -59,18 +38,11 @@ POOL_WINRATE_FLOOR = 0.20                   # opponents/deck_pool.py
 
 
 def scalars(run_dir):
-    """Every scalar series under `run_dir`, MERGED across all event files.
+    """Every scalar series under `run_dir`, merged across all event files.
 
-    Reading only the newest file was wrong across a restart: each run writes its
-    own tfevents, and low-cadence series (`Decks/WinRate/*` fires every
-    DECK_READOUT_EVERY episodes) are simply absent from a fresh one for a while.
-    The report then printed "worst deck None", which reads as a failure when it
-    only means "this file is young" -- and this session restarted three times,
-    so it misfired every time.
-
-    Series are concatenated and sorted by step, then de-duplicated keeping the
-    LAST value written for a step, so a re-run that revisits episode numbers
-    reports the newer measurement rather than a stale one.
+    Each run writes its own tfevents, and low-cadence series are absent from a
+    young file, so reading only the newest one misreports after a restart.
+    Points are sorted by step, keeping the last value written for a step.
     """
     try:
         from tensorboard.backend.event_processing.event_accumulator import (
@@ -112,10 +84,9 @@ def episodes_of(path):
 
 
 def score_checkpoint(weights, bank, csv_path):
-    """Run the discrimination probe as a subprocess and append to the CSV.
-
-    A subprocess rather than an import so a probe that dies -- a half-written
-    checkpoint being the obvious way -- cannot take the watcher down with it.
+    """Run the discrimination probe as a subprocess and append to the CSV, so a
+    probe that dies (e.g. on a half-written checkpoint) cannot take the watcher
+    down.
     """
     cmd = [sys.executable, "-m", "python_ai.eval.probe_card_discrimination",
            "--bank", bank, "--weights", weights, "--csv", csv_path]
@@ -142,8 +113,8 @@ def read_trend(csv_path):
 def signal(series):
     """|last - first| over the step-to-step scatter of the series.
 
-    The project's own rule: below ~2 a trend is not separable from PPO jitter.
-    Needs at least three points, because two define a line through any noise.
+    Below ~2 a trend is not separable from PPO jitter. Needs three points: two
+    define a line through any noise.
     """
     v = np.array([x for x in series if np.isfinite(x)], dtype=np.float64)
     if v.size < 3:

@@ -1,34 +1,10 @@
-"""What the update REPORTS when a minibatch carries no trainable decision.
+"""What the update reports when a minibatch carries no trainable decision.
 
-A chunk in which nothing was ever affordable is not exotic: `forward_sequence`'s
-own comment records P(nothing affordable) = 73.9% per step, and an agent that
-has just spent down produces runs of them. On such a chunk the actor and both
-entropy terms are correctly ZERO -- there is no choice to score, the masked
-distribution is a point mass, and no gradient should flow.
-
-The bug is not in the loss, it is in the READ-OUT. `ent_card_mean` and
-`ent_place_mean` were appended to the diagnostic logs unconditionally, so a
-chunk with no decision rows contributed a literal 0.0 "measured entropy". That
-0.0 is finite, so `EntropyController._step_one`'s non-finite guard does not
-catch it, and the controller reads it as a total policy collapse and drives the
-coefficient UP:
-
-    exponent = rate * (target - 0.0) > 0   =>   step = exp(+) > 1
-
-which is exactly the failure `rl/ppo.py`'s own fallback comment says it exists
-to avoid ("keep the old denominator rather than feed the controller a 0, which
-it would chase as a total collapse") -- the fallback simply had the same hole
-one level up, because its denominator is also decision-masked.
-
-`_mean([])` already returns NaN for the whole-update case, with the reasoning
-that "NaN is the honest report... returning 0.0 would render a numerically
-broken update as a healthy-looking flat line". This applies that same
-convention per-minibatch.
-
-THE LOSS MUST NOT CHANGE. A no-decision chunk still has real states, so the
-critic and the auxiliary head must keep training on it -- reporting NaN must
-not become a NaN in the loss, or the containment guard would drop a step that
-was perfectly fine.
+A chunk where nothing was affordable is common, and there the actor and entropy
+terms are correctly zero. The report must be NaN, not 0.0: a finite 0.0
+"measured entropy" passes the controller's non-finite guard and is read as a
+total collapse, driving the coefficient up. The loss must not change: the
+critic and the aux head still train on those states.
 """
 import numpy as np
 import pytest
@@ -100,7 +76,7 @@ def _run(net, batch):
 
 
 def test_a_no_decision_update_reports_entropy_as_UNDEFINED_not_zero():
-    """The headline. 0.0 and "no data" are different diagnoses."""
+    """0.0 and "no data" are different diagnoses."""
     net, batch = _rollout(0.0)
     stats = _run(net, batch)
     assert np.isnan(stats.ent_card), (
@@ -128,8 +104,7 @@ def test_the_controller_HOLDS_instead_of_chasing_the_collapse():
 
 
 def test_a_zero_would_have_driven_the_coefficient_UP():
-    """The negative control: proves the 0.0 really was harmful, so the fix is
-    not defending against an imaginary failure."""
+    """Negative control: a 0.0 really would raise the coefficient."""
     ctrl = EntropyController(EntropyConfig())
     before = ctrl.coef_card
     ctrl.update(0.0, 0.0, 0)
@@ -139,11 +114,8 @@ def test_a_zero_would_have_driven_the_coefficient_UP():
 
 
 def test_the_LOSS_is_untouched_by_the_reporting_change():
-    """A no-decision chunk still contains real states.
-
-    The actor and entropy terms are legitimately zero there, but the critic and
-    the auxiliary head must keep learning -- so the update must still take its
-    optimizer step and must NOT be dropped as non-finite.
+    """A no-decision chunk still has real states: the critic and aux head keep
+    learning, so the step is taken and not dropped as non-finite.
     """
     net, batch = _rollout(0.0)
     before = [p.detach().clone() for p in net.parameters()]
@@ -161,8 +133,7 @@ def test_the_LOSS_is_untouched_by_the_reporting_change():
 
 
 def test_a_normal_batch_still_reports_finite_entropy():
-    """The other half of the control -- the change must not make every update
-    report NaN."""
+    """Control: a normal batch still reports finite entropy."""
     net, batch = _rollout(1.0)
     stats = _run(net, batch)
     assert np.isfinite(stats.ent_card)
@@ -172,8 +143,8 @@ def test_a_normal_batch_still_reports_finite_entropy():
 
 
 def test_a_MIXED_update_averages_only_the_informative_minibatches():
-    """With some chunks informative and some not, the reported mean must come
-    from the informative ones -- not be dragged toward 0 by the empty ones."""
+    """With mixed chunks, the reported mean comes from the informative ones only.
+    """
     cfg = PPOConfig(num_envs=2, update_timestep=4, bptt_chunk=2,
                     num_minibatches=2, ppo_epochs=1)
     import clash_royale_env
@@ -203,7 +174,7 @@ def test_a_MIXED_update_averages_only_the_informative_minibatches():
             cell = torch.distributions.Categorical(logits=pl).sample()
             lp = (torch.distributions.Categorical(logits=logits).log_prob(card)
                   + torch.distributions.Categorical(logits=pl).log_prob(cell))
-        # first half of the timesteps decide, second half are all forced
+        # First half of the timesteps decide, second half are forced.
         buf.add(obs=obs, card_actions=card, placement_actions=cell,
                 decision=torch.full((2,), 1.0 if t < 2 else 0.0),
                 hx_in=hx, cx_in=cx, logprobs=lp, values=value.squeeze(-1),

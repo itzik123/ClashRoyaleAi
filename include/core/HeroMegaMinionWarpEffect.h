@@ -5,12 +5,9 @@
 #include "Board.h"
 #include "StatsEvents.h"
 
-// Hero Mega Minion's "Wounding Warp": teleports (infinite range, maxRadius
-// 0 to findHpExtremeEnemy) to the lowest-HP enemy anywhere on the board and
-// deals bonus damage on arrival. Gated to fire only once per deployment via
-// the registration's own usesLimit=1, and unusable for the first 1.5s after
-// spawn via CardStats::initialAbilityCooldownTicks -- neither is this
-// effect's own concern.
+// Hero Mega Minion's "Wounding Warp": teleports to the lowest-HP enemy anywhere
+// and deals bonus damage. The once-per-deploy limit and the initial cooldown
+// come from the registration.
 class HeroMegaMinionWarpEffect : public IAbilityEffect {
     int bonusDamage;
 

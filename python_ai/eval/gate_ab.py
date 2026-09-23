@@ -1,15 +1,10 @@
 """Paired A/B for the inference-time solvency gate.
 
-Inference-only, so no training run is needed and both arms can be handed a
-bit-identical opening via env.snapshot() -- which is what makes a win-rate
-comparison affordable here at all.
+Both arms get a bit-identical opening via env.snapshot(). Reports the
+bankruptcy rate (what the gate is designed to move, thousands of samples per
+episode) alongside win rate (what matters, and far noisier).
 
-Reports the bankruptcy statistic (the thing the gate is designed to move, and a
-per-decision rate with thousands of samples per episode) alongside win rate (the
-thing that matters, and which needs far more episodes to resolve -- the control
-arm alone has measured 0.570-0.775 across runs of this same net).
-
-    python_ai/venv/Scripts/python.exe python_ai/gate_ab.py --n 120
+    python_ai/venv/Scripts/python.exe python_ai/eval/gate_ab.py --n 120
 """
 import argparse
 import os
@@ -19,9 +14,7 @@ from math import comb
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -34,14 +27,6 @@ from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.models.policy_io import LSTM_HIDDEN  # noqa: E402
 from python_ai.search.search import outcome_score  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
-
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
 
 CE = clash_royale_env.ClashRoyaleEnv
 SKIP = 10
@@ -62,14 +47,11 @@ def play(net, env, device, gate):
         mask = net.affordability_mask(t)
 
         if gate is not None:
-            # Costs come from the net rather than being sliced out here -- see
-            # MicroRoyaleNet.hand_costs_from_obs, which replaced three copies
-            # of this offset arithmetic.
             costs = net.hand_costs_from_obs(t)[0].tolist()
             allow = torch.tensor([gate.mask(o, costs)], dtype=torch.bool, device=device)
             newmask = mask & allow
-            # Never produce an all-illegal row: the no-op column is always legal
-            # in both, so this can only ever remove card slots.
+            # The no-op column is legal in both masks, so this only ever
+            # removes card slots.
             blocked += int((mask & ~newmask).sum())
             mask = newmask
 

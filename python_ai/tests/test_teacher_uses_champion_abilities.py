@@ -1,11 +1,7 @@
-"""The teacher activates a Champion's ability -- in a fight, not on arrival.
+"""The teacher activates a Champion's ability in a fight, not on arrival.
 
-Until 2026-09-16 the UtilityTeacher never issued an ability (no ability code at
-all; gym_wrapper passed False for team 1), so the phase-1 MIRROR of a Champion
-deck played the Champion as a plain troop. Readiness turns true the moment a
-Champion is deployed with elixir to spare (measured: Golden Knight, Archer
-Queen, Monk all ready from their first second), so "activate when ready" would
-spend the ability on arrival; the rule also requires an enemy force on the board.
+Readiness is true the moment a Champion lands with elixir to spare, so the rule
+also requires an enemy force on the board.
 """
 import numpy as np
 

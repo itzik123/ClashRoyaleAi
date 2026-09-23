@@ -1,23 +1,8 @@
 """Can the teacher pilot a deck whose win condition is not a walking troop?
 
-`card_roles` promotes "the most expensive BUILDING-TARGETER" to wincon, which is
-the right rule for a Hog, a Giant or a Royal Giant and finds NOTHING in a deck
-whose route to a tower is a siege building (Mortar, X-Bow) or a spell that
-spawns bodies (Goblin Barrel, Graveyard). Measured 2026-09-06 against a
-do-nothing opponent, the teacher piloting those decks never spent a single
-elixir on the card the deck is named for, and could not close a defenceless
-match inside the full 3600 ticks:
-
-    deck              twr dmg   ticks   elixir spent   wincon card's own spend
-    hog_26_mirror        8515     718           23.4   Hog Rider 6.0
-    xbow_30_cycle        2486    3600            6.0   X-Bow 0.0
-    graveyard_control    2407    3600            6.1   Graveyard 0.0
-    mortar_cycle         4683    1769           15.0   Mortar 0.0
-    classic_log_bait     5405    1734            7.9   Goblin Barrel 0.0
-
-Everything here is DERIVED BY INJECTION, never a card-name list -- the same
-technique `_card_table_uncached` already uses to recover a card's class, and for
-the same reason: a literal id would be wrong the next time the pool is edited.
+Siege buildings (Mortar, X-Bow) and body-spawning spells (Goblin Barrel,
+Graveyard) are win conditions too, and each needs a cell that actually reaches
+the enemy tower. Everything is derived by injection, never a card-name list.
 """
 import os
 import sys
@@ -51,12 +36,12 @@ def _deck(pool, name):
     return next(d for d in pool if d.name == name).card_ids
 
 
-# -- the roles ------------------------------------------------------------
+# --- the roles ---
 
 def test_every_pool_deck_has_exactly_one_win_condition(pool):
-    """A deck with no wincon cannot attack AT ALL: every combo family bails on
-    `wincon_id is None`, so the teacher is left purely reactive and runs the
-    clock out against an opponent that is doing nothing."""
+    """A deck with no win condition cannot attack at all: every combo family bails
+    on `wincon_id is None`.
+    """
     missing = [d.name for d in pool
                if not any(r == "wincon"
                           for r in T.card_roles(d.card_ids).values())]
@@ -64,19 +49,21 @@ def test_every_pool_deck_has_exactly_one_win_condition(pool):
 
 
 def test_a_siege_building_becomes_the_win_condition(pool, by_name):
-    """Mortar and X-Bow reach the enemy tower from the own half; Tesla, Cannon
-    and Inferno Tower do not. The rule must separate them by REACH."""
+    """Mortar and X-Bow reach the enemy tower from the own half; Tesla, Cannon and
+    Inferno Tower do not. Separated by reach.
+    """
     roles = {d.name: T.card_roles(d.card_ids) for d in pool}
     assert roles["mortar_cycle"][by_name["Mortar"]] == "wincon"
     assert roles["xbow_30_cycle"][by_name["X-Bow"]] == "wincon"
-    # ...and the short-ranged building in that same deck is NOT promoted.
+    # ...and the short-ranged building in that deck is not promoted.
     assert roles["xbow_30_cycle"][by_name["Tesla"]] == "building"
 
 
 def test_a_spell_that_spawns_bodies_becomes_the_win_condition(pool, by_name):
-    """Goblin Barrel puts three goblins on the enemy tower. A direct-damage
-    spell in the same deck (The Log, Rocket) must NOT be promoted -- it damages
-    a tower too, so "does it hurt the tower" cannot be the discriminator."""
+    """Goblin Barrel puts bodies on the tower. A direct-damage spell in the same
+    deck also hurts a tower, so "does it hurt the tower" cannot be the
+    discriminator.
+    """
     for name in ("dart_bait_cycle", "classic_log_bait_inferno"):
         roles = T.card_roles(_deck(pool, name))
         assert roles[by_name["Goblin Barrel"]] == "wincon", name
@@ -86,16 +73,10 @@ def test_a_spell_that_spawns_bodies_becomes_the_win_condition(pool, by_name):
 
 
 def test_decks_that_already_had_a_win_condition_are_untouched(pool, by_name):
-    """The blast radius of the win-condition resolver on the eleven decks that
-    already resolved one under the old cost ranking.
-
-    THREE MOVED ON 2026-09-15, DELIBERATELY. The old rule was "most expensive
-    building-targeter"; the resolver now ranks every eligible card (targeter,
-    deploy-anywhere, siege, spawning spell) by MEASURED tower damage. Measured
-    300-tick damage alone: Miner 1746 vs Wall Breakers 700, and Balloon 2534 vs
-    Lava Hound 901. So `miner_poison_control` and `wall_breakers_cycle` now name
-    the Miner and `lavaloon` the Balloon -- the cards a human names those decks
-    after. The other eight are unchanged, and those were the point of this test.
+    """The decks that resolved a win condition under the old cost ranking. Three
+    moved with the damage-ranked resolver, to the card a human names the deck
+    after (Miner over Wall Breakers, Balloon over Lava Hound); the rest are
+    unchanged.
     """
     expected = {
         "hog_26_mirror": "Hog Rider",
@@ -117,7 +98,7 @@ def test_decks_that_already_had_a_win_condition_are_untouched(pool, by_name):
             f"{name}: wincon moved to {E.get_card_info(wc)['name']}")
 
 
-# -- the cells ------------------------------------------------------------
+# --- the cells ---
 
 def _empty_env(deck):
     env = CE(list(deck), list(deck), 3600)
@@ -132,9 +113,9 @@ def _enemy_tower_hp(env):
 def _damage_from(deck, card_id, x, y, ticks=1200):
     """Enemy tower HP actually lost, both sides no-op.
 
-    step_self_play, never step: plain step() runs the C++ HeuristicOpponent,
-    which defends -- and get_tower_damage_dealt reads 1620 on a board with
-    nothing on it at all, so it cannot be the metric either.
+    step_self_play, never step (which runs the defending C++ heuristic); and
+    get_tower_damage_dealt reads non-zero on an empty board, so tower HP is the
+    metric.
     """
     env = _empty_env(deck)
     before = _enemy_tower_hp(env)
@@ -149,9 +130,9 @@ def _damage_from(deck, card_id, x, y, ticks=1200):
                                             ("xbow_30_cycle", "X-Bow")])
 def test_the_proposed_siege_cell_actually_reaches_the_enemy_tower(
         pool, by_name, deck_name, card):
-    """34 of a siege building's 170 legal cells damage the enemy tower and the
-    other 136 do exactly ZERO, so proposing the wrong row is indistinguishable
-    from not proposing the card at all."""
+    """Most of a siege building's legal cells deal exactly zero, so proposing the
+    wrong row is as good as not proposing the card.
+    """
     deck = _deck(pool, deck_name)
     cid = by_name[card]
     t = T.UtilityTeacher(deck, team=0, horizon_ticks=0, k_cells=3)
@@ -166,10 +147,9 @@ def test_the_proposed_siege_cell_actually_reaches_the_enemy_tower(
 
 
 def test_the_proposed_barrel_cell_lands_on_an_enemy_princess_tower(pool, by_name):
-    """A spawning spell is worth 1320 on the tower against 600 in our own half,
-    and the teacher's spell rule aims at ENEMY TROOP CLUSTERS -- which is
-    nowhere at all on a quiet board, so it proposed the argmax of an all-zero
-    map, cell (0, 0)."""
+    """A spawning spell is worth far more on the tower, and the spell rule aims at
+    enemy troop clusters, which do not exist on a quiet board.
+    """
     deck = _deck(pool, "dart_bait_cycle")
     cid = by_name["Goblin Barrel"]
     t = T.UtilityTeacher(deck, team=0, horizon_ticks=0, k_cells=3)
@@ -184,21 +164,17 @@ def test_the_proposed_barrel_cell_lands_on_an_enemy_princess_tower(pool, by_name
         f"y={EC.princess_y(1)}")
 
 
-# -- the frame ------------------------------------------------------------
+# --- the frame ---
 
 @pytest.mark.parametrize("deck_name", ["mortar_cycle", "xbow_30_cycle",
                                        "dart_bait_cycle",
                                        "classic_log_bait_inferno",
                                        "graveyard_control"])
 def test_the_new_win_condition_is_playable_as_TEAM_1(pool, deck_name):
-    """THE TEACHER IS TEAM 1 IN TRAINING, so a cell that is only legal for team 0
-    makes this whole fix a no-op where it matters -- and the symptom is a bot
-    that quietly never plays its win condition, which reads as "weak teacher",
-    not as "broken code". That is the 2026-07-31 team-1 frame bug's shape and
-    the reason `to_absolute_y` is a single conversion point.
-
-    `is_valid_placement` takes ABSOLUTE y for both teams while `_cells_for`
-    returns OWN-frame cells, so this asserts the composition of the two.
+    """The teacher is team 1 in training, so a cell legal only for team 0 would
+    make the fix a no-op where it matters, reading as "weak teacher".
+    `is_valid_placement` takes absolute y while `_cells_for` returns own-frame
+    cells; this checks the composition.
     """
     deck = _deck(pool, deck_name)
     for team in (0, 1):

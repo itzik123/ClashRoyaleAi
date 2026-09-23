@@ -15,7 +15,7 @@ public:
         return copy;
     }
 
-    // Board::deepCopy -- id and hp preserved exactly, unlike clone() above.
+    // For Board::deepCopy: id and hp preserved, unlike clone().
     std::shared_ptr<Entity> snapshot() const override {
         return std::make_shared<MeleeTroop>(*this);
     }

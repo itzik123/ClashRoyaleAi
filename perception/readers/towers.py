@@ -1,44 +1,23 @@
-"""Tower HP, read from the on-screen bars. VALIDATION ONLY.
+"""Tower HP, read from the on-screen bars. Validation only.
 
-READ THIS BEFORE USING ANYTHING IN THIS FILE
---------------------------------------------
-Nothing here may enter the observation vector, reach the policy, or be fed
-into the simulator. Not as a feature, not as a correction, not as a tie-break.
+Nothing here may enter the observation, reach the policy, or be fed to the
+simulator. The battle is deterministic, so once what was played, where and when
+are known, the simulator derives HP itself; observing it as an input would
+replace a derived quantity with a noisy measurement of it and hide errors in
+the event stream.
 
-The brief was explicit that HP should not be an input, and it is right: the
-battle is deterministic, so once WHAT was played, WHERE and WHEN are known,
-the simulator derives HP itself. Observing it as an input would replace a
-derived quantity with a noisy measurement of the same thing and hide errors
-in the event stream instead of exposing them.
+But an estimator with no observed quantity cannot know it has drifted. Tower HP
+is the cheapest checksum: six slowly changing numbers at fixed positions, and
+every upstream failure (a missed placement, a misclassified card, a
+mislocalised tile) eventually shows as predicted HP diverging from observed. So
+it is measured, compared and reported, never consumed.
 
-But a state estimator with no observed quantity at all cannot know it has
-drifted. Tower HP is the cheapest possible checksum: six numbers, changing
-slowly, rendered as bars at fixed positions. Every upstream failure -- a
-missed placement, a misclassified card, a mislocalised tile -- eventually
-shows up as predicted HP diverging from observed HP.
+The Kings are read but reported separately, since SimDriver.divergence excludes
+them.
 
-So it is measured, compared, and reported. Never consumed.
-
-WHY THE KING TOWERS ARE READ BUT REPORTED SEPARATELY
------------------------------------------------------
-The engine's King Tower has no activation condition -- Tower.h gives it none,
-so it fires from tick 0, while the real King is dormant until activated. King
-HP therefore diverges systematically from the first second of every match no
-matter how good perception is. Folding it into one number would add a large
-constant error to every measurement and bury the signal.
-SimDriver.divergence excludes the Kings for exactly this reason; they are
-still read here because their divergence is itself a useful diagnostic -- it
-should track the KNOWN discrepancy, and if it does not, something else is
-wrong too.
-
-BAR FRACTION, NOT DIGITS
-------------------------
-The bar is a filled fraction at a fixed position, so the same pixel-counting
-approach as the elixir bar applies, and for the same reasons: no OCR, no
-model, deterministic. Converting a fraction to absolute HP needs the tower's
-max HP, which depends on the Tower Troop variant in play -- supplied by the
-caller, never assumed, because a wrong maximum scales every reading by a
-constant and the resulting divergence curve looks like a real drift.
+Bar fraction, not digits: the same pixel-counting as the elixir bar. Converting
+to absolute HP needs the tower's max HP, supplied by the caller, since a wrong
+maximum scales every reading and the divergence curve then looks like drift.
 """
 
 from __future__ import annotations
@@ -55,7 +34,7 @@ TOWER_KEYS = (
 
 PRINCESS_KEYS = tuple(k for k in TOWER_KEYS if "princess" in k)
 
-# HSV windows for the two team colours of the HP bar.
+# HSV windows for the HP bar's two team colours.
 BLUE_HUE_RANGE = (95, 125)
 RED_HUE_RANGE = (0, 12)
 MIN_SATURATION = 100
@@ -76,12 +55,9 @@ class TowerReading:
 class TowerHpReader:
     """Reads the six tower HP bars.
 
-    `max_hp` must be supplied per tower. The engine's own values are King
-    4008 and Princess whatever towerTroopStats() gives for the variant in
-    play (GameManager::addTower) -- but the RECORDED game's values depend on
-    card levels, which this simulator does not model at all. So they are a
-    caller input, and getting them wrong scales the divergence curve by a
-    constant that is easy to mistake for real drift.
+    `max_hp` is supplied per tower: the recorded game's maxima depend on the
+    account's tower level, which the simulator does not model, and getting them
+    wrong scales the divergence curve by a constant that looks like real drift.
     """
 
     def __init__(
@@ -127,10 +103,9 @@ class TowerHpReader:
         band = mask[h // 4: max(h // 4 + 1, 3 * h // 4), :]
         column_filled = band.mean(axis=0) > 0.5
 
-        # The bar drains from one end, so the fill is a prefix. Measuring the
-        # longest prefix rather than the total count means a stray matching
-        # pixel elsewhere in the ROI -- a bit of team-coloured scenery -- adds
-        # nothing instead of inflating the reading.
+        # The bar drains from one end, so the fill is a prefix; measuring the
+        # longest prefix means a stray team-coloured pixel elsewhere adds
+        # nothing.
         prefix = 0
         for filled in column_filled:
             if not filled:
@@ -138,8 +113,8 @@ class TowerHpReader:
             prefix += 1
         fraction = prefix / max(1, len(column_filled))
 
-        # If the total matching count greatly exceeds the prefix, the ROI is
-        # picking up something beyond the bar and the reading is suspect.
+        # A total matching count far above the prefix means the ROI is catching
+        # something beyond the bar.
         total = int(column_filled.sum())
         confidence = 1.0 if total <= prefix + 2 else 0.4
 
@@ -151,10 +126,8 @@ class TowerHpReader:
 
 
 def divergence_excluding_kings(predicted: dict[str, int], observed: dict[str, int]) -> float:
-    """Mean absolute HP error over the Princess towers only.
-
-    Mirrors SimDriver.divergence so the two cannot drift apart. See this
-    module's docstring for why the Kings are excluded.
+    """Mean absolute HP error over the Princess towers only, mirroring
+    SimDriver.divergence.
     """
     keys = [k for k in PRINCESS_KEYS if k in predicted and k in observed]
     if not keys:
@@ -163,12 +136,7 @@ def divergence_excluding_kings(predicted: dict[str, int], observed: dict[str, in
 
 
 def king_divergence(predicted: dict[str, int], observed: dict[str, int]) -> float:
-    """King-tower divergence, reported separately as a diagnostic.
-
-    Expected to be non-zero and to grow -- the engine's King never sleeps.
-    Useful because it should track that KNOWN discrepancy; if it behaves
-    differently, something beyond the activation gap is wrong.
-    """
+    """King-tower divergence, reported separately as a diagnostic."""
     keys = [k for k in ("own_king", "opp_king") if k in predicted and k in observed]
     if not keys:
         return 0.0

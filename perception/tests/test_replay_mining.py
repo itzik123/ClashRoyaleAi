@@ -1,15 +1,10 @@
-"""Guards for the replay-mining probe.
+"""Guards for the replay-mining probe. Two things fail silently:
 
-Two things here can go wrong silently and did during development:
-
-  - the KataCR card index. It is NOT `card_list.py`'s 126-card list; it is the
-    sorted directory names of the 2.6-deck classification dataset. Reading it
-    with the wrong table produces plausible card names ('mirror', 'fire-spirit')
-    and a completely wrong event stream.
-  - the frame timebase. `state['time']` resets on the victory screen, and
-    deriving the frame rate from the endpoints reported 641 fps on one episode
-    and 1.2e9 on another, which collapsed every timestamp to zero and silently
-    emptied the metrics.
+  - the KataCR card index: the sorted directory names of the 2.6-deck
+    classification dataset, not `card_list.py`'s 126-card list. The wrong table
+    gives plausible names ('mirror', 'fire-spirit') and a wrong event stream.
+  - the frame timebase: `state['time']` resets on the victory screen, so an
+    endpoint-derived frame rate collapses every timestamp to zero.
 """
 import numpy as np
 import pytest
@@ -18,11 +13,8 @@ from perception.replay_mining import katacr_format as kf
 
 
 def test_katacr_card_classes_are_the_default_deck_plus_empty_and_evolutions():
-    """The corpus's 2.6 deck must be exactly our DEFAULT_DECK.
-
-    If this fails the corpus is a different deck and its value drops sharply --
-    which is the step-0 check, pinned so a future dataset swap cannot pass
-    unnoticed.
+    """The corpus's 2.6 deck must be exactly our DEFAULT_DECK; pinned so a future
+    dataset swap cannot pass unnoticed.
     """
     playable = {c for c in kf.KATACR_CARD_CLASSES
                 if c != "empty" and not c.endswith("-evolution")}
@@ -31,9 +23,8 @@ def test_katacr_card_classes_are_the_default_deck_plus_empty_and_evolutions():
         "ice-spirit", "musketeer", "skeletons", "the-log",
     }
     assert kf.KATACR_CARD_CLASSES[kf.EMPTY_CARD_INDEX] == "empty"
-    # 'empty' must land where sorting puts it, which is what EMPTY_CARD_INDEX
-    # pins upstream. Restating the index without this check would let the two
-    # drift apart.
+    # 'empty' must land where sorting puts it, as EMPTY_CARD_INDEX pins
+    # upstream.
     assert kf.KATACR_CARD_CLASSES == sorted(kf.KATACR_CARD_CLASSES)
 
 
@@ -60,6 +51,6 @@ def test_timebase_survives_an_isolated_ocr_blip():
 
 
 def test_timebase_never_returns_a_degenerate_rate():
-    """The failure that started this: endpoints equal -> fps of 1.2e9."""
+    """Equal endpoints must not produce an absurd frame rate."""
     spf, _, _ = kf._timebase(_fake_state([3] * 50))
     assert spf == pytest.approx(0.2)                   # documented dataset rate

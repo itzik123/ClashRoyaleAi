@@ -1,22 +1,9 @@
-"""What a deck turns ON and OFF in this training system -- said out loud.
+"""Report what a deck turns on and off in this training system.
 
-Run at the top of every training run (`trainers/train.py`) and by
-`tools/validate_pipeline.py`. Nothing here changes behaviour; it reports.
-
-WHY. The 2026-09-15 pre-launch audit found one bug four times: a mechanism keyed
-to the 2.6 Hog Cycle that, under any other deck, quietly contributed nothing --
-no exception, no warning, no log line, and a run that looks healthy:
-
-  * the advisor-target term (10% of log(612) on the placement head) trained on
-    zero cards for 5 of 8 plausible replacement decks;
-  * the win-condition reward went dead for siege/spell/Miner decks;
-  * the lethal-spell and value-spell terms were keyed to Fireball (id 7);
-  * 60% of scenario injection builds boards whose answer is a Fireball.
-
-Several of those are FIXED (the advisor, the win condition and, since
-2026-09-16, the spell terms are derived now); the rest are reported here, so a
-deck choice is an informed one and the log of a run records what it trained
-with.
+Printed at the top of every training run and by `tools/validate_pipeline.py`;
+changes nothing. Several mechanisms were once keyed to the 2.6 Hog Cycle and
+silently contributed nothing under another deck; most now derive from the deck,
+and whatever a deck still switches off is stated here.
 """
 import clash_royale_env as E
 
@@ -42,7 +29,6 @@ def validate_deck(deck, *, strict=True):
     out.append(("INFO", f"average cost {sum(costs) / len(costs):.3f}, "
                         f"max {max(costs):g}, min {min(costs):g}"))
 
-    # --- hard blockers ------------------------------------------------------
     champions = [c for c in deck if info[c]["is_champion"] or info[c]["is_hero"]]
     if champions:
         out.append(("WARN",
@@ -53,7 +39,6 @@ def validate_deck(deck, *, strict=True):
                     f"board). Watch Policy/Entropy_Ability and the ability's use in "
                     f"replays early in the run."))
 
-    # --- the win condition ---------------------------------------------------
     roles = teacher.card_roles(deck)
     wincon = next((c for c, r in roles.items() if r == "wincon"), None)
     if wincon is None:
@@ -68,7 +53,6 @@ def validate_deck(deck, *, strict=True):
                     f"win condition: {name(wincon)} ({per:.0f} tower HP per elixir alone"
                     f"{' -- WEAK: below ' + str(int(teacher.WINCON_WEAK_DAMAGE_PER_ELIXIR)) if level == 'WARN' else ''})"))
 
-    # --- the advisor target -------------------------------------------------
     table = advisor_target.advisor_cards_for(deck)
     uncovered = [name(c) for c in deck if c not in table]
     msg = (f"advisor target speaks for {len(table)}/8 cards "
@@ -76,9 +60,7 @@ def validate_deck(deck, *, strict=True):
            f"entropy bonus only for: {', '.join(uncovered) or 'none'}")
     out.append(("WARN" if not table else "INFO", msg))
 
-    # --- the spell reward terms and scenarios ----------------------------------
-    # Keyed to the DECK'S damage spell since 2026-09-16 (they were keyed to card
-    # id 7, and silently zero for any deck without Fireball -- TODO.md 00.3).
+    # The spell terms follow the deck's damage spell.
     spell = card_probes.damage_spell(deck)
     if spell is None:
         out.append(("WARN",
@@ -100,7 +82,6 @@ def validate_deck(deck, *, strict=True):
                                 "damage spell); bridge-push scenarios keep the full "
                                 "injection budget"))
 
-    # --- other facts ----------------------------------------------------------
     damaging_spells = [c for c in deck if card_probes.spell_effect(c) is not None]
     if not damaging_spells:
         out.append(("INFO", "no area-damage spell in the deck"))

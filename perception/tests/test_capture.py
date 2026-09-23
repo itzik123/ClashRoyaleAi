@@ -1,9 +1,6 @@
-"""Capture layer, against synthetic media generated on the fly.
-
-Deliberately does not need a recording. The properties worth testing here --
-ordering, timestamps, decimation, the variable-frame-rate guard -- are all
-properties of the reader, and a synthetic file exercises them more precisely
-than a real one because its ground truth is exact.
+"""Capture layer, against synthetic media generated on the fly. Ordering,
+timestamps, decimation and the variable-frame-rate guard are properties of the
+reader, and a synthetic file's ground truth is exact.
 """
 
 from __future__ import annotations
@@ -24,7 +21,8 @@ def _write_video(path, frames=90, fps=30, size=(320, 180)):
     assert writer.isOpened(), "no mp4v encoder available in this OpenCV build"
     for i in range(frames):
         image = np.full((size[1], size[0], 3), i % 256, np.uint8)
-        # A moving marker so frame identity is checkable, not just frame count.
+        # A moving marker, so frame identity is checkable, not just frame
+        # count.
         cv2.rectangle(image, (i % size[0], 10), (i % size[0] + 6, 40), (0, 0, 255), -1)
         writer.write(image)
     writer.release()
@@ -62,17 +60,15 @@ def test_probe_does_not_disturb_the_read_position(tmp_path):
 
 
 def test_vfr_source_refuses_to_report_an_fps(tmp_path):
-    """The guard that matters most for phone recordings.
-
-    A variable-rate file still reports a nominal fps and still decodes fine,
-    so nothing looks wrong -- while every index-derived tick is wrong by an
-    amount that varies with how busy the screen was, which correlates with
-    exactly the moments placements happen.
+    """The guard that matters most for phone recordings: a variable-rate file
+    reports a nominal fps and decodes fine, while every index-derived tick is
+    wrong by an amount that grows when the screen is busy, i.e. when placements
+    happen.
     """
     path = _write_video(tmp_path / "clip.mp4", frames=30, fps=30)
     source = VideoSource(path)
-    # Force the probe's verdict rather than authoring a genuinely VFR file,
-    # which no cross-platform OpenCV writer can produce reliably.
+    # Force the probe's verdict: no cross-platform OpenCV writer reliably
+    # produces a genuinely VFR file.
     source._timing = {
         "nominal_fps": 30.0, "sampled_frames": 30, "is_cfr": False,
         "measured_fps": float("nan"), "jitter": 0.42,
@@ -138,7 +134,9 @@ def test_missing_inputs_raise_clearly(tmp_path):
 
 
 def test_window_capture_is_not_implemented_yet():
-    """Live capture is explicitly out of scope until video works end to end."""
+    """The `capture` package does not re-export WindowSource; it lives in
+    capture.window, which needs the Windows capture API.
+    """
     import capture
     assert not hasattr(capture, "WindowSource")
     assert issubclass(VideoSource, FrameSource)

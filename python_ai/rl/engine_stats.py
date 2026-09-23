@@ -1,49 +1,33 @@
 """Turn the vector env's batched `infos` into the stats dict the shaping reads.
 
-Both pipelines built this same 17-key dictionary inline, with the same defaults
-and the same comments. It is a real piece of logic, not plumbing: EVERY default
-here is chosen so that a MISSING key contributes exactly zero to the reward,
-never a spurious spike.
+Every default makes a missing key contribute exactly zero to the reward. Keys
+go missing because gymnasium only batches a key some env reported this step,
+and reset() returns `{}`, so when every env auto-resets at once the key is
+absent:
 
-WHY A KEY CAN BE MISSING AT ALL. gymnasium's info-batching only creates a key if
-at least one env actually reported it this step (`AsyncVectorEnv._add_info`),
-and the env wrappers return `{}` from `reset()`. So on the rare-but-real step
-where EVERY env auto-resets at once -- several timing out on the same tick early
-in training -- the whole key is absent rather than present with defaults.
-
-The defaults are therefore not cosmetic:
-
-  cumulative counters -> 0, because `compute_shaping`'s `delta()` clamp turns a
-      counter that appears to go backwards into a delta of exactly 0.
-  towers_alive        -> 3 (a full set), so a missing key yields a zero crown
-      delta rather than a phantom three-crown swing.
-  enemy_tower_hp / spell_* -> the "no opportunity" state, so a missing key can
-      only ever zero the lethal-spell potential, never fabricate one. That
-      includes `spell_damage` and `spell_cost`: 0.0 is "this deck has no damage
-      spell", under which both spell terms are structurally zero.
+  cumulative counters -> 0 (compute_shaping's delta clamp turns it into 0)
+  towers_alive        -> 3, so no phantom crown swing
+  enemy_tower_hp, spell_* -> "no opportunity", which can only zero the
+      lethal-spell potential; spell_damage/spell_cost 0.0 means "no damage
+      spell", under which both spell terms are zero
 """
 import numpy as np
 import torch
 
-#: Cumulative or instantaneous counters that default to a zero of their own
-#: dtype. Split by dtype because elixir_spent is a float (card costs) while the
-#: damage counters are ints.
+#: Default to a zero of their own dtype: damage counters are ints, elixir is a
+#: float.
 _INT_KEYS = (
     "team0_troop_damage", "team1_troop_damage",
     "team0_building_damage", "team1_building_damage",
     "team0_tower_damage", "team1_tower_damage",
-    #: Cumulative damage by the deck's win condition -- input to
-    #: compute_shaping's win-condition term. Contributes exactly zero for a
-    #: deck with no building-targeter, where the key is absent.
+    #: Cumulative damage by the deck's win condition; absent for a deck without
+    #: a building-targeter.
     "team0_wincon_damage",
 )
 _FLOAT_KEYS = ("team0_elixir_spent", "team1_elixir_spent")
-#: Inputs to the two spell terms, for the DECK'S damage spell
-#: (`card_probes.damage_spell`), not card id 7. value_killed and elixir_spent
-#: are BOTH needed: value-destroyed alone makes a whiffed spell free, which is
-#: the guaranteed-zero trap that parked the Cannon in a back corner.
-#: spell_damage / spell_cost are per-env constants of the deck, published every
-#: step so a missing key defaults to "no spell" like everything else here.
+#: Inputs to the two spell terms, for the deck's damage spell. Both value
+#: killed and elixir spent are needed, or a whiffed spell is free. spell_damage
+#: / spell_cost are per-deck constants published every step.
 _SPELL_KEYS = ("spell_in_hand", "spell_value_killed", "spell_elixir_spent",
                "spell_damage", "spell_cost")
 
@@ -61,7 +45,7 @@ def extract_engine_stats(infos, num_envs):
     stats["enemy_tower_hp"] = np.asarray(
         infos.get("enemy_tower_hp", np.zeros((num_envs, 3), dtype=np.float32)),
         dtype=np.float32).reshape(num_envs, 3)
-    # Instantaneous reading (not cumulative) -- feeds the overflow penalty.
+    # Instantaneous, not cumulative.
     stats["team0_elixir_current"] = infos.get("elixir", zeros_f)
     stats["team0_towers_alive"] = infos.get(
         "team0_towers_alive", np.full(num_envs, 3, dtype=np.int64))
@@ -73,21 +57,14 @@ def extract_engine_stats(infos, num_envs):
 def reseat_prev_stats(stats, prev_stats, first_real):
     """`prev_stats` with the rows of `first_real` envs replaced by `stats`' own.
 
-    THE PHANTOM-STEP HOLE THIS CLOSES. Under NEXT_STEP autoreset the step after
-    `done` returns `{}` for info, so every key above takes its default -- and
-    that step's shaping is correctly masked by `* (1 - prev_dones)`. But the
-    trainer then carries those FABRICATED stats forward as the previous state of
-    the new episode's first real step. The defaults are zero-contribution for
-    counters (the delta clamp) and for the tower potential (Phi(0) = 0); they are
-    NOT for the solvency potential, where Phi(elixir=0) = -0.1. Measured
-    2026-09-15: +0.084 on the first real step of every episode, unmasked, twice
-    the solvency term's whole legitimate per-episode magnitude.
+    The phantom post-autoreset step reports `{}`, so its stats are all
+    defaults, and they become the "previous state" of the next episode's first
+    real step. That is harmless for the counters and the tower potential but
+    not for the solvency potential (Phi(elixir=0) = -0.1), which paid +0.084 on
+    every episode's first step. Substituting the current row makes that
+    transition's shaping ~0, correct since the true s0 was never observed.
 
-    Substituting the current row makes that single transition's potential term
-    (gamma-1)*Phi(s1) ~= 0 and every delta term exactly 0 -- which is correct,
-    since the true s0 was never observed. Envs mid-episode are untouched.
-
-    first_real: (num_envs,) bool -- envs whose PREVIOUS step was the phantom.
+    first_real: (num_envs,) bool -- envs whose previous step was the phantom.
     """
     first_real = np.asarray(first_real, dtype=bool)
     if prev_stats is None or not first_real.any():
@@ -102,16 +79,11 @@ def reseat_prev_stats(stats, prev_stats, first_real):
 
 
 def opponent_played_card(infos, num_envs):
-    """Which card the opponent played during THIS step, or -1 for none.
+    """The card the opponent played during this step, or -1 for none.
 
-    Raw per-step stream, not yet the training label -- `next_card_labels`
-    turns it into one. Hidden information: it travels through `info` and never
-    through the observation, because at the moment the agent acted this play
-    had not happened yet.
-
-    The default is -1 ("nothing played"), which is the value that contributes
-    exactly zero to the loss, matching this module's rule for every other
-    default: on the all-envs-auto-reset step the key is absent entirely.
+    The raw per-step stream; `next_card_labels` turns it into training labels.
+    Carried in `info`, never the observation. -1 (also the default for a
+    missing key) contributes nothing to the loss.
     """
     return np.asarray(
         infos.get("opp_played_card", np.full(num_envs, -1, dtype=np.int64)),
@@ -119,29 +91,17 @@ def opponent_played_card(infos, num_envs):
 
 
 def next_card_labels(played, masks, valid):
-    """(T, N) per-step plays -> (T, N) NEXT-card labels + their loss mask.
+    """(T, N) per-step plays -> (T, N) next-card labels and their loss mask.
 
     The label for step t is the first card the opponent plays at or after t,
-    within the same episode. Computed by ONE backward scan carrying the next
-    known play, which is why this is done once per update rather than per
-    minibatch.
+    within the same episode, found by one backward scan. The carry is cleared
+    at `masks[t] == 0` (an episode ended at t) before step t reads it, so
+    labels never cross into the next match; step t's own play still counts.
 
-    `masks[t] == 0` marks the step an episode ENDED on. Scanning backward, the
-    carry has to be cleared there BEFORE step t reads it: everything after t
-    belongs to a different episode and using it would teach the net to predict
-    the next match's opening play from this match's final state. Step t's own
-    `played[t]` is still valid -- the episode ended after that play, not
-    before it.
-
-    Steps with no future play (the tail of every episode, where the opponent
-    simply never plays again) get label -1 and mask 0. They are DROPPED, not
-    given a "no card" class: "they played nothing for the rest of the match"
-    is an artifact of where the episode stopped, not a fact about the
-    opponent, and giving it a class would make it the majority label.
-
-    Returns (labels, has_label) with labels clamped to 0 where has_label is 0,
-    so the tensor is always a legal index for cross_entropy even on the rows
-    the mask discards.
+    Steps with no future play get label -1 and mask 0 rather than a "no card"
+    class, which would become the majority label for an artifact of where the
+    episode stopped. Labels are clamped to 0 on masked rows so they stay legal
+    indices.
     """
     T, N = played.shape
     labels = torch.full_like(played, -1)

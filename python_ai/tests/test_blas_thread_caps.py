@@ -1,36 +1,11 @@
 """The BLAS thread cap, and the import-order invariant it depends on.
 
-WHY THIS EXISTS. `import numpy` (scipy-openblas) commits 32.1 MB of private
-memory PER BLAS THREAD, and with the variable unset OpenBLAS defaults to one
-thread per core. Measured on this machine (12 logical processors):
-
-    OPENBLAS_NUM_THREADS   private commit added by `import numpy`
-    unset                  397.4 MB
-    1                       44.1 MB
-    2                       76.1 MB
-    4                      140.4 MB
-    8                      268.8 MB
-    12                     397.5 MB          (== unset, confirming the default)
-
-i.e. `private_MB ~= 44.1 + 32.1 * (threads - 1)`. The WORKING SET is flat at
-~16 MB across every setting, so this is invisible in Task Manager's default
-column and shows only in private commit -- it looks like nothing until the
-commit limit is hit. A phase-1 run is 1 main + `num_envs` workers, so at the
-default num_envs=8 that is nine processes each paying ~353 MB it cannot use.
-
-THE TRAP THIS FILE REALLY GUARDS. The variable is read by OpenBLAS when the
-library LOADS, so setting it after numpy is imported does exactly nothing --
-measured, and bit-identical to never setting it at all:
-
-    set before numpy                      43.9 MB
-    gymnasium (=> numpy) first, then set  403.3 MB
-    gymnasium first, never set            403.3 MB
-
-Both trainers used to `import gymnasium` BEFORE `import python_ai`, so putting
-the cap in `python_ai/__init__.py` alone would have been a silent no-op that
-measures as a fix and changes nothing. The static test below is the part that
-keeps it working: it fails if any entry point ever again imports a
-numpy-pulling module ahead of `python_ai`.
+`import numpy` (scipy-openblas) commits ~32 MB of private memory per BLAS
+thread, one thread per core by default, invisible in the working set.
+`python_ai/__init__.py` sets OPENBLAS_NUM_THREADS=1, but OpenBLAS reads it when
+the library loads, so the cap is a silent no-op if anything pulls numpy before
+`import python_ai`. The static test below keeps the entry points in the right
+order.
 """
 import ast
 import os
@@ -47,13 +22,14 @@ ENTRY_POINTS = (
     "trainers/train_selfplay.py",
 )
 
-#: Modules whose import loads numpy (and therefore OpenBLAS) transitively.
+#: Modules whose import loads numpy (and so OpenBLAS) transitively.
 _NUMPY_PULLERS = {"numpy", "gymnasium", "torch", "scipy", "pandas",
                   "clash_royale_env"}
 
 
 def _first_import_positions(path):
-    """(lineno of first python_ai import, [(lineno, module) pulled earlier])."""
+    """(lineno of first python_ai import, [(lineno, module) pulled earlier]).
+    """
     with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=path)
 
@@ -77,12 +53,8 @@ def _first_import_positions(path):
 
 @pytest.mark.parametrize("rel", ENTRY_POINTS)
 def test_python_ai_is_imported_before_anything_that_loads_numpy(rel):
-    """THE regression detector for the cap.
-
-    OpenBLAS reads its thread count at library load. Once numpy is in, the
-    cap can no longer take effect, and it fails SILENTLY -- the run simply
-    keeps paying ~353 MB per process. A static check is the only thing that
-    catches the reordering that causes it.
+    """The regression detector: once numpy is loaded the cap cannot take effect,
+    and nothing fails.
     """
     path = os.path.join(python_ai.PACKAGE_DIR, *rel.split("/"))
     python_ai_line, pullers = _first_import_positions(path)
@@ -102,22 +74,15 @@ def test_the_package_caps_openblas_on_import():
 
 
 def test_the_cap_is_a_default_not_an_override(monkeypatch):
-    """An explicit setting from the caller must win -- someone benchmarking
-    numpy, or a box where a wider BLAS genuinely helps, sets this deliberately.
-    """
+    """An explicit setting from the caller wins."""
     monkeypatch.setenv("OPENBLAS_NUM_THREADS", "4")
     python_ai._apply_blas_caps()
     assert os.environ["OPENBLAS_NUM_THREADS"] == "4"
 
 
 def test_torch_intra_op_threads_are_NOT_capped():
-    """OMP_NUM_THREADS is deliberately left alone.
-
-    The main process spends ~87% of its wall clock in the PPO update, which is
-    conv-bound, and torch's intra-op parallelism runs on OpenMP. Capping that
-    to 1 to save memory would trade the update's throughput for RAM the update
-    does not use -- torch costs ~166 MB at import regardless of thread count
-    and only ~4.4 MB per OMP thread, so there is nothing to win there.
+    """OMP_NUM_THREADS is left alone: the conv-bound PPO update runs on torch's
+    OpenMP threads, and those cost little memory.
     """
     assert "OMP_NUM_THREADS" not in python_ai.BLAS_THREAD_VARS
     import torch
@@ -177,12 +142,9 @@ def _child_commit(mode):
 @pytest.mark.skipif(sys.platform != "win32", reason="uses psapi")
 @pytest.mark.slow
 def test_importing_the_package_actually_cuts_the_commit():
-    """The end-to-end proof, in a CHILD process.
-
-    Not assertable in-process: OpenBLAS is already loaded here, so the only
-    honest measurement spawns a fresh interpreter. Compares `import python_ai`
-    first against the uncapped control on the SAME machine, so the assertion
-    does not hardcode this box's core count.
+    """End to end, in a child process (OpenBLAS is already loaded here). Compares
+    against an uncapped control on the same machine, so no core count is
+    hardcoded.
     """
     capped = _child_commit("import python_ai")
     control = _child_commit("pass")

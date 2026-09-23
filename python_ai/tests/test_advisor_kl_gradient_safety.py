@@ -1,33 +1,14 @@
-"""Why `masked_kl_elementwise` does NOT produce NaN gradients -- and the
-property that keeps it that way.
+"""`masked_kl_elementwise` produces no NaN gradients.
 
-`-inf` sits on illegal cells in BOTH distributions, so `lo.exp()` is 0 there and
-`(lo - ln)` is `-inf - -inf = nan`. The original form computed `term = 0 * nan`
-and then zeroed the result with `torch.where`, which fixes the FORWARD and does
-NOT fix the backward: `where` still differentiates the branch it did not select,
-and `0 * nan = nan`. With `a = lo.exp()` and `b = (lo - ln)`:
+`-inf` sits on illegal cells in both distributions, so the naive product is `0
+* (-inf - -inf) = 0 * nan`. Masking the result with `torch.where` fixes the
+forward but not the backward, which still differentiates the unselected branch.
+The function substitutes the operands before the arithmetic instead, so no NaN
+is created; the forward is bit-identical on every reachable input.
 
-    grad_a = grad_term * b = 0 * nan = NAN
-    grad_b = grad_term * a = 0 * 0   = 0
-
-So a NaN really was produced. It stayed harmless only because `grad_a` flows
-into `log_softmax(target_logits)` and the target is a CONSTANT -- the advisor's
-surface, buffered from numpy during the rollout. Two implicit properties were
-holding the safety up: that the target never requires grad, and that no row is
-entirely `-inf`. The second is demonstrably load-bearing -- a fully-masked row
-put NaN straight into the trainable `new_logits.grad` while the forward read a
-clean 0.0.
-
-`masked_kl_elementwise` now substitutes the OPERANDS before the arithmetic
-instead of masking the result, so no NaN is created and neither property has to
-hold. The forward is bit-identical on every reachable input.
-
-ONE CASE REMAINS UNSAFE AND IS DELIBERATELY LEFT SO: an all-`-inf` row is
-already `[nan, nan, nan]` coming out of `log_softmax` itself, upstream of
-anything this function does. It cannot occur -- see
-`test_a_fully_masked_row_is_clean_FORWARD_but_not_backward` for the two
-invariants that prevent it -- and defending it would cost a branch on every
-call. That test pins the boundary rather than papering over it.
+An all-`-inf` row is the one unsafe case, left so deliberately: `log_softmax`
+already returns NaN there, upstream of this function, and the row cannot occur
+(see the test below).
 """
 import pytest
 import torch
@@ -58,26 +39,14 @@ def test_the_gradient_into_new_logits_is_finite(name, new, tgt):
 
 
 def test_a_fully_masked_row_is_clean_FORWARD_but_not_backward():
-    """The one case this function does NOT make safe, recorded exactly.
+    """The one case this function does not make safe, recorded exactly.
 
-    An all-`-inf` row is degenerate before any of this function's arithmetic
-    runs: `log_softmax([-inf, -inf, -inf])` is `[nan, nan, nan]`, so the NaN is
-    created inside log_softmax's own backward and no amount of sanitizing its
-    OUTPUT can remove it. Fixing it would mean substituting the logits before
-    the softmax, which costs a branch on every call to defend a state that
-    cannot occur.
+    `log_softmax([-inf, -inf, -inf])` is NaN inside its own backward, so
+    sanitising its output cannot help. The row cannot occur, by two invariants
+    this test would expose if dropped:
 
-    IT CANNOT OCCUR, by two independent invariants, and both are worth naming
-    because this test is the thing that will notice if either is dropped:
-
-      * `net.placement_mask` always leaves at least one legal cell -- there is
-        always a legal row, so no row comes out entirely `-inf`;
-      * `forward_sequence`'s row-compaction fills INACTIVE rows with ZEROS
-        rather than `-inf`, a choice its own comment makes for exactly this
-        reason (an all-`-inf` row gives `Categorical.entropy() = nan`).
-
-    So the assertion here is deliberately the honest one: forward clean, and
-    the backward NaN documented rather than papered over.
+      * `net.placement_mask` always leaves at least one legal cell;
+      * `forward_sequence`'s row compaction fills inactive rows with zeros, not `-inf`.
     """
     n = torch.tensor([[NI, NI, NI]], requires_grad=True)
     t = torch.tensor([[NI, NI, NI]])
@@ -106,8 +75,7 @@ def test_the_kl_is_positive_when_they_differ():
 
 
 def test_illegal_cells_contribute_EXACTLY_zero():
-    """Widening the mask must not change the KL of the cells that remain --
-    otherwise the term silently depends on how many cells are illegal."""
+    """Widening the mask must not change the KL of the remaining cells."""
     n_small = torch.tensor([[1.0, 2.0, 0.3]], requires_grad=True)
     t_small = torch.tensor([[3.0, -1.0, 0.7]])
     n_big = torch.tensor([[1.0, 2.0, 0.3, NI, NI, NI]], requires_grad=True)
@@ -118,13 +86,9 @@ def test_illegal_cells_contribute_EXACTLY_zero():
 
 
 def test_the_TARGET_is_never_differentiable_in_the_real_path():
-    """THE assumption the gradient safety rests on.
-
-    A NaN genuinely IS produced in the backward (grad into `lo.exp()` is
-    0 * nan). It is dropped only because the target is a constant. Passing a
-    target that requires grad makes that NaN reach a trainable tensor -- this
-    test documents and demonstrates it, so the day someone distils from a
-    LEARNED teacher they find out here.
+    """The target's gradient stays finite even if it requires grad (e.g.
+    distilling from a learned teacher), because the operands, not the result,
+    are sanitised.
     """
     n = torch.tensor([[1.0, 2.0, 0.3, NI, NI]], requires_grad=True)
     t = torch.tensor([[3.0, -1.0, 0.7, NI, NI]], requires_grad=True)
@@ -141,8 +105,9 @@ def test_the_TARGET_is_never_differentiable_in_the_real_path():
 
 
 def test_the_buffered_advisor_target_does_not_require_grad():
-    """The production path, checked rather than assumed: the advisor surface is
-    built from numpy during the rollout and buffered."""
+    """The production path: the advisor surface is built from numpy and buffered,
+    so it never requires grad.
+    """
     import numpy as np
     tgt = torch.from_numpy(np.zeros((2, 4), dtype=np.float32))
     assert tgt.requires_grad is False

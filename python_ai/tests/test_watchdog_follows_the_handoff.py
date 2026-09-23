@@ -1,11 +1,6 @@
-"""`tools/run_watchdog.py` across the phase-1 -> phase-2 handoff (audit 08, gap 1).
-
-It matched trainers with `*trainers.train*`, which misses the phase-2 child
-(`...\python_ai\trainers\train_selfplay.py`: a backslash where the pattern
-wants a dot) and any phase 1 launched by path. After the handoff it saw
-"process gone", relaunched PHASE 1, which found its budget exhausted and
-launched ANOTHER phase 2 -- up to five concurrent phase-2 trainers writing one
-checkpoint. Its `--weights` default also pointed at an old run's checkpoint.
+"""`tools/run_watchdog.py` across the phase-1 -> phase-2 handoff: both phases are
+recognised in every launch form, and the phase furthest along is the one
+relaunched.
 """
 import pytest
 

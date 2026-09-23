@@ -1,9 +1,6 @@
-// Minimal reproduction of the soak's residual stall.
-//
-// Places one team-1 Musketeer at the exact position the soak dump reported
-// (4.001, 15.132) and watches it. If it walks, the stall needs another entity
-// to reproduce and the soak dump tells us which. If it stands still here, this
-// is the minimal case.
+// Minimal reproduction of the soak's residual stall: one team-1 Musketeer at
+// the reported position (4.001, 15.132). If it walks, the stall needs another
+// entity; if it stands still, this is the minimal case.
 
 #include "GameManager.h"
 #include "CardRegistry.h"
@@ -72,11 +69,10 @@ int main() {
     // ...and the same without the friendly Cannon, to ablate it.
     watch("soak board minus the friendly Cannon", 6, 1, 3.9762f, 16.7321f,
           { { 25, 0, 9.537f, 8.485f } });
-    // The collision wedge, with the real card and the real board: a team-0
-    // Ice Golem in the pocket between its own King Tower (9, 2.5) r=2.0 and a
-    // team-0 Cannon at (12.032, 4.169) r=1.0. Approached from slightly outside
-    // the fixed point, because the soak trace shows it CONVERGES to that point
-    // rather than sitting exactly on it.
+    // The collision wedge with real cards: a team-0 Ice Golem in the pocket
+    // between its own King Tower (r=2.0) and a team-0 Cannon (r=1.0),
+    // approached from slightly outside, since the unit converges onto the fixed
+    // point.
     watch("collision wedge: Ice Golem between own King and own Cannon",
           40, 0, 11.58f, 2.84f, { { 25, 0, 12.032f, 4.169f } });
     return 0;

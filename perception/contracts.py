@@ -1,28 +1,18 @@
 """Data contract between the perception pipeline and everything downstream.
 
-Dataclasses only -- no logic, no imports beyond the standard library. Every
-other module in `perception/` depends on this one; this one depends on
-nothing. That is deliberate: the contract has to be readable and diffable on
-its own, without pulling in numpy/opencv, so the bridge and the trackers can
-be unit-tested with no capture stack installed at all.
+Dataclasses only, standard library only. Every module in `perception/` depends
+on this one and it depends on nothing, so the contract is readable on its own
+and the bridge and trackers are testable with no capture stack installed.
 
-Two fields here look redundant and are not. Both exist because of a concrete
-gap in the simulator, and both would be very easy to drop by accident:
+Two fields look redundant and are not:
 
-  * `confidence`, on essentially everything. The engine has no
-    representation of uncertainty whatsoever -- the observation vector is a
-    dense float grid with no mask channel, no NaN, no "unknown" sentinel (see
-    ClashEnv::extractObservationForTeam). A tile is either occupied or it is
-    zero, and zero means "empty", never "I could not see". So uncertainty
-    cannot be handed to the engine and cannot be represented inside it: it
-    has to live in this layer, or it does not exist anywhere.
-
+  * `confidence`, on nearly everything. The engine's observation has no
+    representation of uncertainty (no mask channel, no sentinel): zero means
+    "empty", never "could not see". Uncertainty lives in this layer or
+    nowhere.
   * `wall_time_ms`, on PlacementEvent. The simulator applies a play on the
-    exact tick it is told to, with no actuation delay model -- real input has
-    roughly 100ms of it (touch -> render -> capture -> decode). Without a
-    real-clock stamp taken at capture time, that offset can never be measured
-    after the fact, only guessed. Keeping the raw timestamp costs 8 bytes and
-    is the only thing that makes the calibration possible later.
+    exact tick it is told, with no actuation delay; real input has ~100 ms of
+    it. A capture-time stamp is the only way to measure that offset later.
 """
 
 from __future__ import annotations
@@ -32,38 +22,21 @@ from enum import Enum
 
 
 class Phase(Enum):
-    """Which elixir-rate regime the match is currently in.
+    """Which elixir-rate regime the match is in, as the screen shows it.
 
-    THE SIMULATOR HAS PHASES SINCE 2026-09-02, and this docstring's previous
-    claim ("no multiplier, no overtime, and no phase concept anywhere in the
-    engine") is no longer true. `GameManager::elixirMultiplierAtTick` runs the
-    real schedule -- 1x, double from 2:00 (`DOUBLE_ELIXIR_TICK = 1200`), triple
-    from 3:00 (`TRIPLE_ELIXIR_TICK = 1800`) -- the multiplier is observation
-    scalar 9, and `elixir_multiplier_at_tick(tick)` is bound. See
-    `perception/UPSTREAM_REQUESTS.md` item 26.
+    The engine runs its own schedule (`GameManager::elixirMultiplierAtTick`:
+    double from 2:00, triple from 3:00) derived from its own clock, so a mirror
+    driven through `set_current_tick` is already correct; this enum is the
+    sensor's reading and is never pushed into the engine, where it would be a
+    second source of truth. bridge/sim_driver.py ignores it.
 
-    What has NOT changed is that this enum is still not consumed by the
-    engine, and should not be: the engine derives its phase from its OWN clock,
-    so a mirror driven through `set_current_tick` is already correct and
-    pushing a Phase into it would be a second, conflicting source of truth.
-    This type remains the SENSOR's reading of what the screen shows.
+    OVERTIME is its own member because it differs in more than elixir (sudden
+    death, tower activation), while the engine runs a fixed 3600-tick match and
+    resolves a timeout on tower HP.
 
-    Two differences from the engine's schedule are real and deliberate:
-    OVERTIME is a distinct member here because it differs in every respect
-    other than elixir (sudden death, tower activation), and the engine has no
-    overtime concept at all -- it runs a fixed 3600-tick match and resolves a
-    timeout on tower HP. Do not read these two as the same axis.
-
-    (`oppElixirMultiplier` is still a training-curriculum knob for handicapping
-    the built-in opponent -- it is not a game phase, it COMPOSES with the phase
-    rather than replacing it, and driving it from here would silently corrupt
-    the opponent model.)
-
-    This field is produced, carried, logged, and asserted on -- and then
-    ignored by bridge/sim_driver.py, on purpose. It is here so that the
-    perception layer is already correct on the day the engine grows phases,
-    and so the gap is visible in the type rather than buried in a comment.
-    See perception/README.md, "Known gaps".
+    `oppElixirMultiplier` is a curriculum handicap on the built-in opponent
+    that composes with the phase; it is not a phase, and must not be driven
+    from here.
     """
 
     SINGLE = 1
@@ -73,14 +46,10 @@ class Phase(Enum):
 
 
 class EventSource(Enum):
-    """How a PlacementEvent was produced.
-
-    Matters because the two sides of the board are labelled by completely
-    different mechanisms with completely different error profiles: our own
-    plays are read off the hand (a card vacating a slot is a near-certain
-    placement), while the opponent's are detected from board pixels. Anything
-    that aggregates confidence across both -- the divergence metric above
-    all -- needs to be able to tell them apart.
+    """How a PlacementEvent was produced. Our own plays and the opponent's are
+    labelled by different mechanisms with different error profiles, and
+    anything aggregating confidence across both (the divergence metric above
+    all) must tell them apart.
     """
 
     OWN_HAND = "own_hand"          # inferred from our own hand changing
@@ -88,22 +57,19 @@ class EventSource(Enum):
     REPLAY_GROUND_TRUTH = "replay"  # read from a simulator replay JSON (tests)
 
 
-# Sentinel for PlacementEvent.card_sim_id: a placement that was detected and
-# localised, but whose card has no counterpart in the simulator's registry.
-# Deliberately not None -- the field stays a plain int so consumers can never
-# get a TypeError instead of the explicit branch they should have written.
-# See mapping/card_map.json and bridge/sim_driver.py's own handling.
+# Sentinel for PlacementEvent.card_sim_id: detected and localised, but with no
+# counterpart in the simulator's registry. Not None, so the field stays a plain
+# int and consumers write the explicit branch. See mapping/card_map.json and
+# bridge/sim_driver.py.
 UNKNOWN_CARD_SIM_ID = -1
 
 
 @dataclass(frozen=True)
 class PlacementEvent:
-    """One card being put on the board, by either player.
-
-    Frozen: events are the append-only spine of the whole pipeline. Once a
-    placement has been emitted and fed to the simulator, mutating it would
-    desynchronise the estimator from its own history with no way to detect
-    that it happened.
+    """One card being put on the board, by either player. Frozen: events are the
+    append-only spine of the pipeline, and mutating one after it reached the
+    simulator would desynchronise the estimator from its own history
+    undetectably.
     """
 
     tick: int
@@ -186,11 +152,10 @@ class CycleState:
 class UnitObservation:
     """One unit visible on the board, as the live sensor sees it.
 
-    `hp_fraction` is relative to THIS CARD'S OWN maximum, not to any global
-    constant. The bar on screen is a fraction of the unit's own health and
-    nothing on screen states the absolute number, so converting here would
-    require a max-HP table inside perception -- which is the consumer's, since
-    only it knows what normalisation the observation wants.
+    `hp_fraction` is relative to this card's own maximum: the bar shows a
+    fraction and nothing on screen states the absolute number. Converting would
+    need a max-HP table, which belongs to the consumer that knows the
+    observation's normalisation.
     """
 
     card_sim_id: int
@@ -233,13 +198,10 @@ class UnitObservation:
 
 @dataclass(frozen=True)
 class TowerObservation:
-    """One of the six towers.
-
-    `hp_fraction`, not absolute HP, for the same reason as UnitObservation --
-    and additionally because tower maxima depend on the player's tower level,
-    which is not on screen. The engine's own towers are level 9 (2534 HP) while
-    the recordings are levels 4-5 (1750-1890), so an absolute number would be
-    wrong by ~30% and by a DIFFERENT factor per player.
+    """One of the six towers. `hp_fraction`, not absolute HP: tower maxima depend
+    on the player's tower level, which is not on screen (the engine's are level
+    9, 2534 HP; the recordings' levels 4-5, 1750-1890), so an absolute number
+    would be wrong by a different factor per player.
     """
 
     hp_fraction: float
@@ -251,14 +213,12 @@ class TowerObservation:
 class GameState:
     """Everything the live sensor reads off one frame. Perception's only output.
 
-    Deliberately NOT the 13,606-float observation vector. Encoding belongs to
-    the training side, which owns the layout and has already changed it once
-    (6253 -> 13606 on 2026-07-29). A compact state survives that; an encoder on
-    this side of the boundary does not. A GameState can also be logged, diffed
-    and eyeballed, which a float vector cannot.
+    Not the observation vector: encoding belongs to the training side, which
+    owns the layout and changes it. A compact state survives that, and can be
+    logged, diffed and eyeballed.
 
-    SHARED CONTRACT. Neither side changes it alone -- see the coordination
-    section of docs/design/specs/2026-07-30-perception-live-sensor-design.md.
+    Shared contract: neither side changes it alone (see the coordination
+    section of docs/design/specs/2026-07-30-perception-live-sensor-design.md).
     """
 
     units: tuple[UnitObservation, ...]
@@ -323,12 +283,9 @@ class GameState:
 
 @dataclass(frozen=True)
 class BoardGeometry:
-    """Board dimensions and landmarks, in simulator tile coordinates.
-
-    Populated from the live engine where possible rather than hardcoded --
-    see geometry.py. Exists as a dataclass so calibration code can be handed
-    a geometry without importing the engine at all (which is what lets the
-    homography tests run with no .pyd present).
+    """Board dimensions and landmarks, in simulator tile coordinates. Populated
+    from the live engine where possible (geometry.py); a dataclass so
+    calibration code can take a geometry without importing the engine.
     """
 
     width: int
@@ -347,12 +304,10 @@ class BoardGeometry:
 
 @dataclass
 class CalibrationProfile:
-    """Screen -> tile mapping plus the fixed ROIs for one capture resolution.
-
-    One profile per (device, resolution). A resolution change invalidates
-    every pixel constant in here, which is why the resolution is part of the
-    identity rather than a field that can quietly disagree with the frames
-    being fed in -- see calib/homography.py's own size assertion.
+    """Screen -> tile mapping plus the fixed ROIs for one capture resolution. One
+    profile per (device, resolution): a resolution change invalidates every
+    pixel constant, so resolution is part of the identity (see
+    calib/homography.py's size assertion).
     """
 
     name: str

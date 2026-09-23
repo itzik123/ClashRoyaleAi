@@ -1,38 +1,26 @@
-"""Score candidate card-icon representations against the SAME in-match frames.
+"""Score candidate card-icon representations against the same in-match frames.
 
-The live classifier reduces a 61x73 colour crop to 64 GREY values (an 8x8
-perceptual hash) and matches by L1. That is a 70x reduction which also discards
-colour entirely. This tool asks whether that is what is costing us, by holding
-everything else fixed -- the crops, the Hungarian assignment, the blank
-padding -- and varying only the feature.
+CRBAB's classifier reduces a 61x73 colour crop to an 8x8 grey hash (a 70x
+reduction that discards colour) and matches by L1. This holds everything else
+fixed (crops, Hungarian assignment, blank padding) and varies only the feature.
 
-SCORING WITHOUT LABELS
-----------------------
-Nobody annotated these frames. The game's own rules supply ground truth anyway:
+Scored without labels, from the game's rules:
 
-  * IMPOSSIBLE EARLY RETURNS. The cycle is a strict 8-slot FIFO, so a card
-    that leaves the hand cannot return until four OTHERS have been played.
-    This is the primary metric -- it is the only one that catches a classifier
-    that is wrong CONSISTENTLY rather than noisily, and a random relabelling
-    cannot improve it by accident.
-  * MEDIAN HOLD. A real hand holds ~9.3 s between plays. Reading faster than
-    that is churn by definition.
-  * FREQUENCY SPREAD. Over a whole match every card is drawn about equally.
-    max/min share across the deck is ~1.0 for a good reader; the incumbent
-    measures ~6x.
+  * Impossible early returns. A card that leaves the hand cannot return until
+    four others are played. The primary metric: it catches a classifier wrong
+    consistently rather than noisily, and relabelling cannot game it.
+  * Median hold. A real hand holds several seconds between plays; faster
+    reading is churn.
+  * Frequency spread. Over a match every card is drawn about equally, so
+    max/min share is ~1.0 for a good reader.
 
-A representation only wins if it moves the FIRST of those. The other two are
-easy to game -- a classifier that always answers the same hand scores a perfect
-hold time and an infinite spread.
+A representation wins only if it moves the first; the other two are gamed by
+always answering the same hand.
 
-DIMMING IS THE CONSTRAINT THAT KILLS NAIVE FEATURES
----------------------------------------------------
-An unaffordable card is rendered dark and low-contrast. That is why the
-incumbent carries three brightness variants per template and takes the min.
-Any replacement must be invariant to it or it will classify affordability
-instead of identity: contrast normalisation (subtract mean, divide by sd) and
-hue histograms both are, raw RGB is not, which is why raw RGB is included as a
-control rather than as a candidate.
+Any feature must be invariant to affordability dimming (an unaffordable card is
+dark and low-contrast) or it classifies affordability instead of identity.
+Contrast normalisation and hue histograms are; raw RGB is not, and is included
+as a control.
 """
 
 from __future__ import annotations
@@ -70,9 +58,8 @@ MULTI_HASH_SCALE = 0.355
 MULTI_HASH_INTERCEPT = 163
 
 
-# --------------------------------------------------------------------------
-# Features. Each maps a BGR crop to a 1-D float vector; distance is L1 on it.
-# --------------------------------------------------------------------------
+# --- features ---
+# Each maps a BGR crop to a 1-D float vector; distance is L1.
 
 def f_grey8(bgr: np.ndarray) -> np.ndarray:
     """The incumbent: 8x8 bilinear grey, raw values."""
@@ -99,14 +86,12 @@ def f_rgb8(bgr: np.ndarray) -> np.ndarray:
 
 
 def f_hue_hist16(bgr: np.ndarray) -> np.ndarray:
-    """py-clash-bot's approach: a 16-bin hue histogram.
-
-    Hue is invariant to the affordability dimming by construction, which is the
-    real argument for it -- not that colour carries more bits.
+    """py-clash-bot's approach: a 16-bin hue histogram, invariant to affordability
+    dimming by construction.
     """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    # Mask out near-grey and near-black pixels: their hue is numerically
-    # defined but visually meaningless, and they would otherwise dominate.
+    # Mask near-grey and near-black pixels, whose hue is numerically defined
+    # but meaningless.
     mask = ((hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 40)).astype(np.uint8)
     hist = cv2.calcHist([hsv], [0], mask, [16], [0, 180]).ravel().astype(np.float32)
     return hist / (hist.sum() + 1e-6) * 100.0
@@ -137,7 +122,7 @@ def build_templates(fn, multi: bool):
         base = fn(bgr)
         if multi:
             # The incumbent's dimming handling: light and dark variants, min
-            # distance over the three. Only meaningful for raw-value features.
+            # distance over the three. Meaningful only for raw-value features.
             light = MULTI_HASH_SCALE * base + MULTI_HASH_INTERCEPT
             dark = (base - MULTI_HASH_INTERCEPT) / MULTI_HASH_SCALE
             out.append(np.stack([base, light, dark]))

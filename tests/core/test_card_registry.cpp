@@ -49,10 +49,8 @@ TEST_CASE("Spawned entities carry the card's display name", "[card_registry][nam
 }
 
 TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[card_registry][data]") {
-    // id, name, cost, isSpell. Cost reflects the same real-game data sync as
-    // the rest of CardRegistry's stats (see the constructor's header comment).
-    // Card ids 16, 37 and 38 were never defined and stay that way here on
-    // purpose (not something a data sync should silently fill in).
+    // id, name, cost, isSpell. Ids 16, 37 and 38 were never defined and stay
+    // undefined.
     const std::vector<std::tuple<int, std::string, float, bool>> expected = {
         {0, "Knight", 3.0f, false}, {1, "Archers", 3.0f, false}, {2, "Giant", 5.0f, false},
         {3, "Arrows", 3.0f, true}, {4, "Goblins", 2.0f, false}, {5, "Mini PEKKA", 4.0f, false},
@@ -69,8 +67,7 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {39, "Giant Skeleton", 6.0f, false}, {40, "Ice Golem", 2.0f, false},
         {41, "Minions", 3.0f, false}, {42, "Minion Horde", 5.0f, false}, {43, "Mega Minion", 3.0f, false},
         {44, "Baby Dragon", 4.0f, false}, {45, "Balloon", 5.0f, false},
-        // 2026 roster expansion (ids 46-107) -- see CardRegistry.h's own
-        // constructor comment for the excluded-cards list this stops short of.
+        // The 2026 roster expansion (ids 46-107).
         {46, "Dark Prince", 4.0f, false}, {47, "Royal Ghost", 3.0f, false}, {48, "Mega Knight", 7.0f, false},
         {49, "Battle Healer", 4.0f, false}, {50, "Bandit", 3.0f, false}, {51, "Berserker", 2.0f, false},
         {52, "Miner", 3.0f, false}, {53, "Fisherman", 3.0f, false}, {54, "Ronin", 5.0f, false},
@@ -97,47 +94,47 @@ TEST_CASE("Every currently-defined card resolves with id/name/cost/isSpell", "[c
         {115, "Mighty Miner", 4.0f, false}, {116, "Golden Knight", 4.0f, false}, {117, "Skeleton King", 4.0f, false},
         {118, "Archer Queen", 5.0f, false}, {119, "Monk", 4.0f, false}, {120, "Little Prince", 3.0f, false},
         {121, "Goblinstein", 5.0f, false}, {122, "Boss Bandit", 6.0f, false},
-        {123, "Wall Breakers", 2.0f, false}, // Evolution slot -- same name/cost as base id 83
-        {124, "Zap", 2.0f, true}, // Evolution slot -- same name/cost as base id 29
-        {125, "Skeletons", 1.0f, false}, // Evolution slot -- same name/cost as base id 24
-        {126, "Bats", 2.0f, false}, // Evolution slot -- same name/cost as base id 78
-        {127, "Bomber", 2.0f, false}, // Evolution slot -- same name/cost as base id 9
-        {128, "Archers", 3.0f, false}, // Evolution slot -- same name/cost as base id 1
-        {129, "Cannon", 3.0f, false}, // Evolution slot -- same name/cost as base id 25
-        {130, "Firecracker", 3.0f, false}, // Evolution slot -- same name/cost as base id 64
-        {131, "Dart Goblin", 3.0f, false}, // Evolution slot -- same name/cost as base id 20
-        {132, "Goblin Barrel", 3.0f, true}, // Evolution slot -- same name/cost as base id 109
-        {133, "Skeleton Army", 3.0f, false}, // Evolution slot -- same name/cost as base id 12
-        {134, "Skeleton Barrel", 3.0f, false}, // Evolution slot -- same name/cost as base id 89
-        {135, "Knight", 3.0f, false}, // Evolution slot -- same name/cost as base id 0
-        {136, "Royal Ghost", 3.0f, false}, // Evolution slot -- same name/cost as base id 47
-        {137, "Baby Dragon", 4.0f, false}, // Evolution slot -- same name/cost as base id 44
-        {138, "Furnace", 4.0f, false}, // Evolution slot -- same name/cost as base id 70
-        {139, "Goblin Cage", 4.0f, false}, // Evolution slot -- same name/cost as base id 97
-        {140, "Musketeer", 4.0f, false}, // Evolution slot -- same name/cost as base id 6
-        {141, "Wizard", 5.0f, false}, // Evolution slot -- same name/cost as base id 11
-        {142, "Witch", 5.0f, false}, // Evolution slot -- same name/cost as base id 71
-        {143, "Royal Giant", 6.0f, false}, // Evolution slot -- same name/cost as base id 18
-        {144, "Ice Spirit", 1.0f, false}, // Evolution slot -- same name/cost as base id 72
-        {145, "Princess", 3.0f, false}, // Evolution slot -- same name/cost as base id 61
-        {146, "Hunter", 4.0f, false}, // Evolution slot -- same name/cost as base id 62
-        {147, "Valkyrie", 4.0f, false}, // Evolution slot -- same name/cost as base id 10
-        {148, "P.E.K.K.A.", 7.0f, false}, // Evolution slot -- same name/cost as base id 13
-        {149, "Minion Horde", 5.0f, false}, // Evolution slot -- same name/cost as base id 42
-        {150, "Royal Recruits", 7.0f, false}, // Evolution slot -- same name/cost as base id 77
-        {151, "Electro Dragon", 5.0f, false}, // Evolution slot -- same name/cost as base id 57
-        {152, "Mortar", 4.0f, false}, // Evolution slot -- same name/cost as base id 93
-        {153, "Goblin Drill", 4.0f, false}, // Evolution slot -- same name/cost as base id 98
-        {154, "Tesla", 4.0f, false}, // Evolution slot -- same name/cost as base id 26
-        {155, "Barbarians", 5.0f, false}, // Evolution slot -- same name/cost as base id 8
-        {156, "Lumberjack", 4.0f, false}, // Evolution slot -- same name/cost as base id 21
-        {157, "Executioner", 5.0f, false}, // Evolution slot -- same name/cost as base id 36
-        {158, "Giant Snowball", 2.0f, true}, // Evolution slot -- same name/cost as base id 100
-        {159, "Goblin Giant", 6.0f, false}, // Evolution slot -- same name/cost as base id 88
-        {160, "Mega Knight", 7.0f, false}, // Evolution slot -- same name/cost as base id 48
-        {161, "Battle Ram", 4.0f, false}, // Evolution slot -- same name/cost as base id 81
-        {162, "Royal Hogs", 5.0f, false}, // Evolution slot -- same name/cost as base id 82
-        {163, "Inferno Dragon", 4.0f, false}, // Evolution slot -- same name/cost as base id 56
+        {123, "Wall Breakers", 2.0f, false}, // Evolution of id 83
+        {124, "Zap", 2.0f, true}, // Evolution of id 29
+        {125, "Skeletons", 1.0f, false}, // Evolution of id 24
+        {126, "Bats", 2.0f, false}, // Evolution of id 78
+        {127, "Bomber", 2.0f, false}, // Evolution of id 9
+        {128, "Archers", 3.0f, false}, // Evolution of id 1
+        {129, "Cannon", 3.0f, false}, // Evolution of id 25
+        {130, "Firecracker", 3.0f, false}, // Evolution of id 64
+        {131, "Dart Goblin", 3.0f, false}, // Evolution of id 20
+        {132, "Goblin Barrel", 3.0f, true}, // Evolution of id 109
+        {133, "Skeleton Army", 3.0f, false}, // Evolution of id 12
+        {134, "Skeleton Barrel", 3.0f, false}, // Evolution of id 89
+        {135, "Knight", 3.0f, false}, // Evolution of id 0
+        {136, "Royal Ghost", 3.0f, false}, // Evolution of id 47
+        {137, "Baby Dragon", 4.0f, false}, // Evolution of id 44
+        {138, "Furnace", 4.0f, false}, // Evolution of id 70
+        {139, "Goblin Cage", 4.0f, false}, // Evolution of id 97
+        {140, "Musketeer", 4.0f, false}, // Evolution of id 6
+        {141, "Wizard", 5.0f, false}, // Evolution of id 11
+        {142, "Witch", 5.0f, false}, // Evolution of id 71
+        {143, "Royal Giant", 6.0f, false}, // Evolution of id 18
+        {144, "Ice Spirit", 1.0f, false}, // Evolution of id 72
+        {145, "Princess", 3.0f, false}, // Evolution of id 61
+        {146, "Hunter", 4.0f, false}, // Evolution of id 62
+        {147, "Valkyrie", 4.0f, false}, // Evolution of id 10
+        {148, "P.E.K.K.A.", 7.0f, false}, // Evolution of id 13
+        {149, "Minion Horde", 5.0f, false}, // Evolution of id 42
+        {150, "Royal Recruits", 7.0f, false}, // Evolution of id 77
+        {151, "Electro Dragon", 5.0f, false}, // Evolution of id 57
+        {152, "Mortar", 4.0f, false}, // Evolution of id 93
+        {153, "Goblin Drill", 4.0f, false}, // Evolution of id 98
+        {154, "Tesla", 4.0f, false}, // Evolution of id 26
+        {155, "Barbarians", 5.0f, false}, // Evolution of id 8
+        {156, "Lumberjack", 4.0f, false}, // Evolution of id 21
+        {157, "Executioner", 5.0f, false}, // Evolution of id 36
+        {158, "Giant Snowball", 2.0f, true}, // Evolution of id 100
+        {159, "Goblin Giant", 6.0f, false}, // Evolution of id 88
+        {160, "Mega Knight", 7.0f, false}, // Evolution of id 48
+        {161, "Battle Ram", 4.0f, false}, // Evolution of id 81
+        {162, "Royal Hogs", 5.0f, false}, // Evolution of id 82
+        {163, "Inferno Dragon", 4.0f, false}, // Evolution of id 56
         {164, "Mirror", 3.0f, true},
         {165, "Spirit Empress", 3.0f, false},
         {168, "Hero Musketeer", 4.0f, false}, {170, "Hero Mini P.E.K.K.A.", 4.0f, false},
@@ -275,9 +272,8 @@ TEST_CASE("Executioner's axe hits its target twice: on arrival, then again on th
     REQUIRE(enemy->hp == 821); // 1000 - 179
     REQUIRE(axe->isAlive()); // still out on its return trip, not dead after one hit
 
-    // Matches the real GameManager::step() contract (only ever calls
-    // update() on entities still isAlive()) -- Projectile, like AreaSpell,
-    // has no internal guard against being updated again after it dies.
+    // As GameManager::step() does, only update a living entity; Projectile has
+    // no guard against updates after death.
     while (axe->isAlive()) axe->update(board);
     REQUIRE(enemy->hp == 642); // 1000 - 179*2
 }
@@ -304,15 +300,10 @@ TEST_CASE("MeleeBuildingTargeter archetype wires ignoresRiver for Hog Rider", "[
     REQUIRE(targeter->riverIgnores);
 }
 
-// Real-game river-crossing troops (confirmed): Hog Rider (covered above),
-// Ram Rider, Royal Hogs, Prince, Dark Prince (the "jumpers"), plus Royal
-// Ghost and Battle Healer -- all cross the river directly rather than
-// routing to a bridge. Boss Bandit, the regular Bandit, and Mega Knight are
-// a documented approximation of the same idea (their real river-crossing is
-// tied to a specific ability -- dash for the Bandits, the periodic jump for
-// Mega Knight -- but this engine has no discrete "currently mid-ability"
-// movement state to gate that more precisely on -- see Bandit's own
-// registry comment).
+// River-crossing troops: Hog Rider (above), Ram Rider, Royal Hogs, Prince, Dark
+// Prince, Royal Ghost and Battle Healer. Bandit, Boss Bandit and Mega Knight
+// cross via an ability (dash, jump); with no "mid-ability" state they always
+// ignore the river.
 TEST_CASE("River-crossing troops all spawn with riverIgnores set", "[card_registry][river]") {
     Board board;
     for (int id : { 87, 82, 14, 46, 47, 49, 50, 122, 48 }) { // Ram Rider, Royal Hogs, Prince, Dark Prince, Royal Ghost, Battle Healer, Bandit, Boss Bandit, Mega Knight
@@ -329,18 +320,13 @@ TEST_CASE("River-crossing troops all spawn with riverIgnores set", "[card_regist
         REQUIRE(troop->riverIgnores);
         checked++;
     }
-    // 8 of the 9 cards spawn a single entity each, +1 for Ram Rider's
-    // independently-spawned crossbow secondary unit (must ALSO ignore the
-    // river -- see ramRiderCrossbowStats' own comment -- or it desyncs from
-    // the ram at the riverbank), +3 more for Royal Hogs' own 4-unit squad
-    // (its offsets carry 4 members, not 1) = 8 + 1 + 1 + 3 = 13.
+    // 8 cards spawn one entity each, Royal Hogs four (+3), and Ram Rider's
+    // crossbow also ignores the river (+1): 13.
     REQUIRE(checked == 13);
 }
 
-// Battle Ram (81) also charges (see CardStats::withCharge) but was NOT
-// confirmed as a river-crosser -- must stay river-respecting so this
-// engine doesn't silently over-generalize "has a charge mechanic" into
-// "crosses the river" for a card that was never confirmed to.
+// Battle Ram also charges but is not a river-crosser; a charge must not imply
+// crossing.
 TEST_CASE("Battle Ram (has a charge mechanic, but wasn't confirmed as a river-crosser) still respects the river",
         "[card_registry][river]") {
     Board board;
@@ -507,11 +493,11 @@ TEST_CASE("Inferno Tower's damage ramps up the longer it stays locked onto the s
 
     for (int i = 0; i < 39; ++i) tower->update(board); // advance to just before ticksOnTarget == 40
     int hpBefore = enemy->hp;
-    tower->update(board); // ticksOnTarget == 40 (an attack tick, cooldown 4 divides evenly): full damage
+    tower->update(board); // ticksOnTarget == 40 on an attack tick (cooldown 4 divides it): full damage
     REQUIRE(hpBefore - enemy->hp == 847);
 }
 
-// ---------------- flying cards ----------------
+// --- flying cards ---
 
 TEST_CASE("Archers can hit flying enemies (real-game Target: Air & Ground)", "[card_registry][flying]") {
     Board board;
@@ -705,17 +691,11 @@ TEST_CASE("Ice Wizard is genuinely ranged: freeze lands with the arrow, not when
 
 TEST_CASE("Ice Golem's slow is on its death explosion, never on its attack",
           "[card_registry][on_hit][regression]") {
-    // This case used to assert the opposite -- that an Ice Golem freezes what
-    // it HITS -- and so pinned the defect in place. The real card has no
-    // on-attack slow; the slow belongs to the death explosion. See the
-    // registry entry for card id 40.
-    //
-    // The direction matters more than it looks: an Ice Golem is a
-    // building-targeter, so its target is always a Crown Tower or a defensive
-    // building, i.e. something that cannot walk out of the effect and whose
-    // only freeze-sensitive property is its FIRE RATE.
+    // An Ice Golem does not freeze what it hits; its slow belongs to the death
+    // explosion (card 40). It targets buildings, whose only freeze-sensitive
+    // property is their fire rate.
     Board board;
-    // Ice Golem is a MeleeBuildingTargeter: it only ever targets Buildings.
+    // Ice Golem only ever targets Buildings.
     auto enemy = std::make_shared<Building>(1, 5.0f, 5.5f, 1000, 1, 'C', 5.0f, 10, 10);
     spawn(board, enemy);
 
@@ -728,13 +708,12 @@ TEST_CASE("Ice Golem's slow is on its death explosion, never on its attack",
     const int hpBeforeAttack = enemy->hp;
     golem->update(board);
 
-    // Control: the attack really did land, so "no freeze" is a statement
-    // about the hit rather than about nothing happening.
+    // Control: the attack landed, so "no freeze" is about the hit.
     REQUIRE(enemy->hp < hpBeforeAttack);
     REQUIRE(enemy->freezeTicks == 0);
     REQUIRE(enemy->freezeSlow == Catch::Approx(1.0f));
 
-    // ... and dying DOES slow: same duration and strength, correct trigger.
+    // ...and dying does slow: same duration and strength, the right trigger.
     golem->hp = 0;
     board.cleanDeadEntities();
     REQUIRE(enemy->freezeTicks == 30);
@@ -750,8 +729,8 @@ TEST_CASE("Electro Wizard stuns on hit via the on-hit decorator (freeze with slo
     electroWizard->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
-    // Electro Wizard also spawns a deploy-zap AreaSpell alongside itself now,
-    // so the troop isn't necessarily board.getEntities().back() anymore.
+    // Electro Wizard also spawns a deploy-zap AreaSpell, so the troop is not
+    // necessarily the last entity.
     std::shared_ptr<MeleeTroop> electroWizardEntity;
     for (const auto& e : board.getEntities()) {
         auto troop = std::dynamic_pointer_cast<MeleeTroop>(e);
@@ -759,9 +738,8 @@ TEST_CASE("Electro Wizard stuns on hit via the on-hit decorator (freeze with slo
     }
     REQUIRE(electroWizardEntity != nullptr);
 
-    // Direct-damage attack (no projectile -- the real card is an instant
-    // zap): damage and stun both land the same tick. Only one enemy in
-    // range, so it takes the full 230, not the split half.
+    // Direct damage (an instant zap): damage and stun land the same tick. One
+    // enemy in range, so it takes the full damage, not the split half.
     advancePastDeploy(electroWizardEntity, board);
     electroWizardEntity->update(board);
 
@@ -834,7 +812,7 @@ TEST_CASE("Ordinary melee troops are unaffected by the on-hit decorator (Knight)
     REQUIRE(enemy->freezeTicks == 0);
 }
 
-// ---------------- 2026 roster expansion ----------------
+// --- 2026 roster expansion ---
 
 TEST_CASE("Freeze deals no direct damage but fully stuns everyone in radius via the new spellOnHit hook", "[card_registry][spell_on_hit]") {
     Board board;
@@ -1050,22 +1028,16 @@ TEST_CASE("Graveyard rains Skeletons over its duration, one small batch per tick
     for (const auto& e : board.getEntities()) {
         if (e->name == "Skeletons") skeletonCount++;
     }
-    // 12, from the published card: one Skeleton every 0.5 s, 12 total since
-    // the 2026-01-06 balance change.
+    // 12, from the published card: one Skeleton every 0.5 s since the
+    // 2026-01-06 balance change.
     REQUIRE(skeletonCount == 12);
 }
 
 TEST_CASE("Graveyard spawns faster than a Princess Tower can kill", "[card_registry][spell][spawn]") {
-    // THE RULE THE CARD IS BUILT ON, asserted as a RELATIONSHIP rather than as
-    // the number 5, so retuning either side stays free and letting them collide
-    // again does not.
-    //
-    // Measured 2026-09-06: at the previous 10-tick cadence Graveyard dealt ZERO
-    // tower damage from all 588 of its legal cells. All nine Skeletons really
-    // did spawn -- but one 81-hp body per 10 ticks against a tower firing once
-    // per 10 ticks is a standing population of 1 forever, and none of them ever
-    // lived long enough to swing. Counting the bodies could not see that, which
-    // is why this second case exists next to the count above.
+    // The rule the card is built on, as a relationship rather than the number
+    // 5: Skeletons must arrive faster than a Princess Tower fires, or each dies
+    // before the next appears and none ever swings. Counting bodies cannot see
+    // that, hence this case.
     Board board;
     CardRegistry::getInstance().getCard(110)->spawnEntity(9.0f, 9.0f, 0, board);
     board.commitPendingEntities();
@@ -1092,7 +1064,7 @@ TEST_CASE("Graveyard spawns faster than a Princess Tower can kill", "[card_regis
     for (size_t i = 1; i < arrivals.size(); ++i)
         widestGap = std::max(widestGap, arrivals[i] - arrivals[i - 1]);
 
-    // The yardstick is read from a real Princess Tower, not written here.
+    // The yardstick is read from a real Princess Tower.
     Tower princess(999, 3.0f, 6.0f, 2534, 1, 7.0f, 50, 10, 'P');
     REQUIRE(widestGap < princess.getAttackCooldown());
 }
@@ -1151,7 +1123,7 @@ TEST_CASE("Mighty Miner (115) is a Champion with the correct stats, ramp, and ab
     Board board;
     const CardDefinition* def = CardRegistry::getInstance().getCard(115);
     REQUIRE(def != nullptr);
-    REQUIRE_FALSE(def->deployAnywhere); // unlike the regular Miner (52): confirmed no deploy-anywhere
+    REQUIRE_FALSE(def->deployAnywhere); // unlike the regular Miner (52)
 
     def->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
@@ -1160,8 +1132,8 @@ TEST_CASE("Mighty Miner (115) is a Champion with the correct stats, ramp, and ab
     REQUIRE(miner != nullptr);
     REQUIRE(miner->hp == 2250);
     REQUIRE(miner->isChampion);
-    // Sourced (Liquipedia version history): 2 seconds per stage transition
-    // as of the 2025-01-08 balance patch -- 20 ticks to stage 2, 40 to max.
+    // Liquipedia: 2 s per stage since the 2025-01-08 patch, so 20 ticks to
+    // stage 2 and 40 to max.
     REQUIRE(miner->rampMidTick == 20);
     REQUIRE(miner->rampFullTick == 40);
     REQUIRE(miner->abilityElixirCost == Catch::Approx(1.0f));
@@ -1176,7 +1148,7 @@ TEST_CASE("CardDefinition::isChampion is set for all 8 Champions and no ordinary
         REQUIRE(def != nullptr);
         REQUIRE(def->isChampion);
     }
-    // A handful of ordinary troops/spells/buildings, none of them Champions.
+    // Ordinary cards, none of them Champions.
     for (int id : { 0, 4, 25, 52, 114 }) {
         const CardDefinition* def = CardRegistry::getInstance().getCard(id);
         REQUIRE(def != nullptr);
@@ -1192,9 +1164,7 @@ TEST_CASE("countChampions counts how many Champion cards appear in a deck", "[ca
     REQUIRE(countChampions({ 9999 }) == 0); // unknown id: ignored, not a crash
 }
 
-// Same shape as countChampions's own test above -- countHeroes is its exact
-// Hero-flagged counterpart (see CardRegistry.h), added for symmetry when the
-// Hero mechanic was introduced.
+// As countChampions, for Heroes.
 TEST_CASE("countHeroes counts how many Hero cards appear in a deck", "[card_registry][hero]") {
     REQUIRE(countHeroes({ 0, 1, 2, 3, 4, 5, 6, 7 }) == 0); // no Hero at all
     REQUIRE(countHeroes({ 170, 1, 2, 3, 4, 5, 6, 7 }) == 1); // Hero Mini P.E.K.K.A. only
@@ -1204,11 +1174,10 @@ TEST_CASE("countHeroes counts how many Hero cards appear in a deck", "[card_regi
     REQUIRE(countHeroes({ 9999 }) == 0); // unknown id: ignored, not a crash
 }
 
-// ---------------- validateDeckSlots ----------------
-// Slot 0 = Evolution slot, slot 1 = Heroic slot (Champion), slot 2 = Wild
-// Card (Champion or Evolution), slots 3-7 = plain only. Id 123 (Wall
-// Breakers Evolution) and id 115 (Mighty Miner, a Champion) are used
-// throughout as the two flagged cards.
+// --- validateDeckSlots ---
+// Slot 0 = Evolution, slot 1 = Heroic (Champion), slot 2 = Wild Card (Champion
+// or Evolution), slots 3-7 plain. Ids 123 (Wall Breakers Evolution) and 115
+// (Mighty Miner) are the flagged cards.
 
 TEST_CASE("validateDeckSlots accepts a fully plain deck", "[card_registry][deck_slots]") {
     REQUIRE(validateDeckSlots({ 0, 1, 2, 3, 4, 5, 6, 7 }).empty());
@@ -1243,7 +1212,7 @@ TEST_CASE("validateDeckSlots rejects an unregistered card id in any slot", "[car
     REQUIRE_FALSE(validateDeckSlots({ 9999, 1, 2, 3, 4, 5, 6, 7 }).empty());
 }
 
-// ---------------- wiki-research pass: closing the "no sourced stats" gaps ----------------
+// --- death spawns and effects from the research pass ---
 
 TEST_CASE("Lava Hound splits into 6 Lava Pups on death", "[card_registry][death]") {
     Board board;
@@ -1302,10 +1271,8 @@ TEST_CASE("Mother Witch's curse arms a Cursed Hog that spawns for HER team when 
     board.addEntity(enemy);
     board.commitPendingEntities();
 
-    // Mother Witch is a RangedSquad card -- her onHit effect (CursedHogOnHit)
-    // only lands when her Projectile actually arrives, not the instant she
-    // fires. Drive the same update/commit loop GameManager::step() uses
-    // until the curse lands.
+    // Mother Witch is ranged: her curse lands when the projectile arrives.
+    // Drive the GameManager::step() update/commit loop until it does.
     for (int i = 0; i < 20 && enemy->curseTicksRemaining == 0; ++i) {
         for (const auto& e : board.getEntities()) {
             if (e->isAlive()) e->update(board);
@@ -1384,9 +1351,8 @@ TEST_CASE("Goblin Demolisher transforms into a kamikaze that detonates on a buil
     REQUIRE(kamikaze != nullptr);
     REQUIRE(kamikaze->team == 0);
 
-    // The kamikaze form only targets buildings and self-destructs on its
-    // first hit -- verify it against a building-shaped target, close
-    // enough to attack immediately.
+    // The kamikaze form targets only buildings and dies on its first hit; check
+    // it against a building-shaped target in range.
     auto building = std::make_shared<Building>(999, 5.0f, 5.4f, 5000, 1, 'C', 5.0f, 10, 10);
     spawn(board, building);
     advancePastDeploy(kamikaze, board);
@@ -1404,8 +1370,7 @@ TEST_CASE("Mega Knight jumps to a distant target instead of walking, via the rea
     CardRegistry::getInstance().getCard(48)->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
-    // Mega Knight also has a deploy-slam spawn effect (a separate
-    // AreaSpell entity) -- find the actual troop, not just take .back().
+    // Mega Knight also spawns a deploy-slam AreaSpell; find the troop itself.
     std::shared_ptr<MeleeTroop> knight;
     for (const auto& e : board.getEntities()) {
         knight = std::dynamic_pointer_cast<MeleeTroop>(e);
@@ -1464,14 +1429,9 @@ TEST_CASE("X-Bow can't fire until its slow initial deploy delay elapses", "[card
 
 TEST_CASE("Mother Witch's curse arms ONE hog spawn no matter how many times she hits",
           "[card_registry][on_hit][regression]") {
-    // CursedHogOnHit wrapped the victim's deathEffect in a NEW
-    // CompositeDeathEffect on every single hit, nesting the previous chain
-    // inside it. Three hits meant three nested composites and three hogs on
-    // death; a Musketeer taking twenty hits from a Mother Witch died into
-    // twenty of them, and the chain's depth grew with the hit count.
-    //
-    // The curse itself should refresh on every hit -- that part was right.
-    // Only the spawn should be armed once.
+    // Each curse hit must not wrap the victim's deathEffect in a new composite:
+    // N hits would nest N composites and spawn N hogs. The curse refreshes; the
+    // spawn is armed once.
     Board board;
 
     CardStats hogStats;
@@ -1493,7 +1453,7 @@ TEST_CASE("Mother Witch's curse arms ONE hog spawn no matter how many times she 
     curse.apply(victim);
     curse.apply(victim);
 
-    // The curse refreshes -- that half is correct and must stay.
+    // The curse refreshes: that half must stay.
     REQUIRE(victim->curseTicksRemaining == 60);
     REQUIRE(victim->curseDamageTakenMultiplier == Catch::Approx(1.3f));
 
@@ -1508,19 +1468,15 @@ TEST_CASE("Mother Witch's curse arms ONE hog spawn no matter how many times she 
 }
 
 
-// ============================================================================
-// SPEED TIERS reach SPAWNED units too (2026-08-26 audit).
-//
-// The 2026-08-24 rework put every playable card on one of five real tiers and
-// round-tripped "109 / 109 match". 109 is the count of cards with an OFFICIAL
-// ROW; the child CardStats that death effects spawn have no row of their own
-// and were never in that set. Measured with tools/audit/spawn_speed_audit.cpp.
-// ============================================================================
+// --- speed tiers reach spawned units ---
+// Child CardStats spawned by effects have no official speed row, so they must
+// take the tier of the playable card they share a name with. Measured with
+// tools/audit/spawn_speed_audit.cpp.
 
 namespace {
 
 // Speed of the first troop this card puts on the board, in tiles/tick as
-// Troop::moveTowards actually reads it. -1 if the card spawns no troop.
+// Troop::moveTowards reads it; -1 if it spawns no troop.
 float firstTroopSpeed(int cardId) {
     Board board;
     const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
@@ -1536,14 +1492,8 @@ float firstTroopSpeed(int cardId) {
 
 TEST_CASE("no unit moves slower than the slowest speed the real game has",
           "[card_registry][speed][regression]") {
-    // The published table bottoms out at 30 tiles/min -- SPEED_VERY_SLOW. A
-    // unit below it is slower than ANY real card, which is not a balance
-    // opinion but an out-of-range value.
-    //
-    // Golemite was registered at a raw 0.2f, i.e. 0.400 tiles/s against
-    // VERY_SLOW's 0.663 -- 40% below the floor, and 2.5x slower than the Golem
-    // it splits out of. It is a pre-rework literal that the tier pass did not
-    // reach because a Golemite is not a playable card.
+    // The published table bottoms out at 30 tiles/min, SPEED_VERY_SLOW; a unit
+    // below it is slower than any real card.
     const float floorSpeed = SPEED_VERY_SLOW * MOVEMENT_SPEED_SCALE;
 
     Board board;
@@ -1566,18 +1516,14 @@ TEST_CASE("no unit moves slower than the slowest speed the real game has",
 
 TEST_CASE("a spawned unit moves at the same speed as its own playable card",
           "[card_registry][speed][regression]") {
-    // Bats exist twice in the registry: card id 78, which the tier pass moved
-    // to SPEED_VERY_FAST, and the child stats a Night Witch spawns, still on a
-    // raw 0.85f. Same name, same 81 hp, same 81 damage, same 12-tick cooldown
-    // -- and 36% different speed.
-    //
-    // This needs no external source to call wrong: the registry contradicts
-    // itself, and one of the two entries is on a real tier.
+    // Bats exist twice: card 78 and the child stats a Night Witch spawns. Same
+    // name, hp, damage and cooldown, so their speeds must agree; no external
+    // source is needed to call a difference wrong.
     const float playableBats = firstTroopSpeed(78);
     REQUIRE(playableBats > 0.0f);
     REQUIRE(playableBats == Catch::Approx(SPEED_VERY_FAST * MOVEMENT_SPEED_SCALE));
 
-    // Night Witch (58) releases 3 Bats on death via SpawnOnDeath.
+    // Night Witch (58) releases 3 Bats on death.
     Board board;
     CardRegistry::getInstance().getCard(58)->spawnEntity(9.0f, 10.0f, 0, board);
     board.commitPendingEntities();
@@ -1601,20 +1547,13 @@ TEST_CASE("a spawned unit moves at the same speed as its own playable card",
 
 TEST_CASE("every spawned unit moves at the speed of its own playable card",
           "[card_registry][speed][regression]") {
-    // THE invariant this catches, and the reason the earlier "is it near some
-    // tier" check could not: a unit sitting on the WRONG tier is still sitting
-    // on a tier. Goblins spawned by a hut ran at 2.000 tiles/s -- 0.6% off
-    // FAST, so "on tier" -- while the Goblins card itself is VERY_FAST at
-    // 2.651. Nothing flagged it because nothing compared the two.
+    // A spawned unit and a playable card with the same name and identical hp,
+    // range, damage and cooldown are the same unit, so their speeds must agree.
+    // This catches a unit on the wrong tier, which a "near some tier" check
+    // passes.
     //
-    // The comparison needs no external source. A spawned unit and a playable
-    // card sharing a NAME, identical in hp, range, damage and cooldown, are the
-    // same unit; where they disagree on speed the registry contradicts itself,
-    // and the card is the copy the 2026-08-24 tier pass actually reached.
-    //
-    // Four names are excluded, and only four: compound cards whose SECONDARY
-    // unit is registered under the parent's name while being a deliberately
-    // different creature -- different archetype, range and hp.
+    // Four names are excluded, and only four: compound cards whose secondary
+    // unit is registered under the parent's name but is a different creature.
     const std::vector<std::string> compound = {
         "Goblin Machine", "Goblinstein", "Ram Rider", "Rascals"
     };
@@ -1628,11 +1567,11 @@ TEST_CASE("every spawned unit moves at the speed of its own playable card",
         return -1.0f;
     };
 
-    // What each PLAYABLE card says its own unit's speed is.
+    // What each playable card says its unit's speed is.
     std::map<std::string, float> playable;
     for (const auto& entry : CardRegistry::getInstance().getAllCards()) {
         const CardDefinition& def = entry.second;
-        if (def.isEvolution) continue;           // deliberately differs from its base
+        if (def.isEvolution) continue;           // an Evolution deliberately differs from its base
         const float s = primarySpeedOf(&def);
         if (s > 0.0f) playable[def.name] = s;
     }
@@ -1648,8 +1587,8 @@ TEST_CASE("every spawned unit moves at the speed of its own playable card",
         def.spawnEntity(9.0f, 10.0f, 0, board);
         board.commitPendingEntities();
 
-        // Let periodic spawners (Furnace, Tombstone, the huts) actually fire,
-        // then kill everything so death spawns land too.
+        // Let periodic spawners fire, then kill everything so death spawns land
+        // too.
         for (int tick = 1; tick <= 120; ++tick) {
             board.currentTick = tick;
             for (const auto& e : board.getEntities()) if (e->isAlive()) e->update(board);

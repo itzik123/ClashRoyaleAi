@@ -1,35 +1,22 @@
-"""Does a placement at THIS engine cell actually deploy? Measured, one at a time.
+"""Does a placement at this engine cell actually deploy? Measured, one trial at a
+time.
 
     perception/.venv/Scripts/python.exe perception/tools/placement_truth.py \
         --rows 1,2,3,8 --xs 0,4,9,14,17 --repeat 1
 
-WHY A CONTROLLED PROBE AND NOT THE LIVE LOOP
---------------------------------------------
-A live match measures placement legality and elixir management at the same
-time, and the second dominates. Measured over one 160 s run: the agent issued
-34 placements at one every 4.7 s against a sustainable rate of one per ~9.5 s,
-so it sat at 0-3 elixir the whole match and a large share of its taps could not
-have been afforded whatever cell they named. Any per-cell success rate read off
-that run is mostly reading the elixir budget.
+A live match confounds placement legality with elixir management: an agent
+playing faster than it can afford fails taps whatever cell they name. Probing
+only from a full bar removes the confound.
 
-This removes the confound completely by probing only from a FULL bar.
-
-THE ORACLE, AND WHY IT IS CLEAN
--------------------------------
-Elixir is capped at 10. Waiting for the cap before every trial means:
+Elixir caps at 10, so from the cap:
 
     the bar is still 10 two seconds later   ->  nothing was spent, REFUSED
     the bar has left the cap                ->  a card was played, ACCEPTED
 
-No regeneration term, no subset-sum over ambiguous integer drops, no window --
-the very things that make `ElixirLedger` unable to answer this question. We are
-the only party spending our own elixir, so there is no other explanation for
-leaving the cap.
-
-Two secondary oracles are recorded beside it and must agree: the hand slot
-cycling, and a unit of the expected type appearing. Where the three disagree
-the disagreement is printed rather than voted away -- an oracle that quietly
-outvotes the others is how this project got "0 illegal placements out of 32".
+No regeneration term and no subset-sum over ambiguous drops, the things that
+stop `ElixirLedger` answering this. Two secondary oracles are recorded beside
+it (the hand slot cycling, a unit of the expected type appearing);
+disagreements are printed, not voted away.
 """
 from __future__ import annotations
 
@@ -60,9 +47,9 @@ from live.actuator import ADB, AdbActuator, engine_tile_centre  # noqa: E402
 from live.placement_confirm import expected_unit_names  # noqa: E402
 from match_nav import ensure_in_match, screencap  # noqa: E402
 
-# Long enough for the two taps (~900 ms) to reach the game and the resulting
-# board to be drawn, short enough that regeneration cannot carry the bar back
-# to the cap: 2.2 s buys at most 0.79 elixir, against a minimum card cost of 3.
+# Long enough for the two taps (~900 ms) to land and the board to be drawn,
+# short enough that regeneration cannot refill the bar: 2.2 s buys at most 0.79
+# elixir, below any card's cost.
 SETTLE_S = 2.2
 
 CAP = 10.0
@@ -79,7 +66,7 @@ def own_counts(state) -> Counter:
 
 
 def hand_names(state) -> list[str]:
-    """Slots 0-3. cards[0] is the Next preview -- see adapter._hand_ids."""
+    """Slots 0-3. cards[0] is the Next preview (adapter._hand_ids)."""
     return [c.name for c in state.cards[1:5]]
 
 
@@ -100,11 +87,8 @@ def wait_for_cap(detector, adb: Path, timeout_s: float = 45.0):
 
 
 def pick_slot(state, want_spell: bool = False) -> int | None:
-    """A hand slot holding a card that spawns a body (or a spell if asked).
-
-    Prefers a unit-spawning card so all three oracles can speak. Fireball would
-    leave the unit axis blind, which is fine for the elixir oracle but wastes
-    the cross-check.
+    """A hand slot holding a card that spawns a body (or a spell if asked), so all
+    three oracles can speak.
     """
     for slot, name in enumerate(hand_names(state)):
         if name in ("", "blank"):
@@ -163,8 +147,8 @@ def main() -> int:
         ensure_in_match(detector, args.adb, verbose=False)
         state = wait_for_cap(detector, args.adb)
         if state is None or state.screen.name != "in_game":
-            # The match ended mid-wait; ensure_in_match starts a new one on the
-            # next iteration and the trial is simply retried.
+            # The match ended mid-wait; ensure_in_match starts a new one and
+            # the trial is retried.
             print(f"  {i:>3}  ({x:>2},{y:>2})  -- match ended while waiting, "
                   f"re-queueing")
             trials.append((x, y))
@@ -198,8 +182,8 @@ def main() -> int:
         after_units = own_counts(after)
         after_hand = hand_names(after)
 
-        # THE PRIMARY ORACLE. Started at the cap, so any departure from it is
-        # spend and nothing else.
+        # The primary oracle: started at the cap, so any departure from it is
+        # spend.
         spent = after_elixir < CAP - 0.5
         hand_changed = (after_hand[slot] != before_hand[slot]
                         and after_hand[slot] not in ("", "blank")

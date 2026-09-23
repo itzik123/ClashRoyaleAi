@@ -1,34 +1,20 @@
-"""Keep a long unattended phase-1 run alive.
+"""Keep a long unattended run alive.
 
-WHY. A 25-hour run that dies at hour 3 costs 22 hours of nothing, and the ways
-it dies are quiet: an OOM kill leaves no traceback, and a wedged worker leaves
-the log simply not advancing. Neither is visible to a log tail that greps for
-"Traceback".
+Runs die quietly: an OOM kill leaves no traceback and a wedged worker just
+stops the log. Two liveness tests, since they fail differently:
 
-Two independent liveness tests, because they fail differently:
+  * the process is gone                                   -> crashed or killed
+  * alive, but the episode counter has not moved for `--stall-minutes` -> wedged
 
-  * the PROCESS is gone            -> crashed or was killed
-  * the process is alive but the
-    EPISODE COUNTER has not moved  -> wedged; a deadlocked worker keeps the
-    for `--stall-minutes`             parent alive indefinitely
+Restarting is safe: the trainer checkpoints every CLASH_SAVE_EVERY episodes,
+PFSP deck estimates included.
 
-Restarting is cheap and safe by construction: the trainer checkpoints every
-CLASH_SAVE_EVERY episodes, and since 2026-09-04 the PFSP deck estimates ride in
-the checkpoint too, so a resume no longer throws away what the run learned about
-the pool. Before that fix an automatic restarter would have quietly degraded the
-run every time it fired.
+Phase 1 ends by launching phase 2 and exiting, so the watchdog recognises both
+phases in every launch form, relaunches the phase whose checkpoint is furthest
+along, and watches that phase's log.
 
-FOLLOWS THE HANDOFF (2026-09-15, audit 08). Phase 1 ends by launching phase 2
-and exiting. This used to match only `*trainers.train*`, which misses the
-phase-2 child (`...trainers\train_selfplay.py`) and any launch by path: after
-the handoff it saw "process gone", relaunched PHASE 1, which found its budget
-spent and launched ANOTHER phase 2 -- up to five phase-2 trainers on one
-checkpoint. It now recognises both phases in every launch form, relaunches the
-phase whose checkpoint is furthest along, and watches that phase's log.
-
-REFUSES TO RESTART-LOOP. If more than `--max-restarts` fire inside one hour the
-watchdog stops and says so: something is repeatably broken and relaunching it
-faster is not the answer.
+More than `--max-restarts` inside an hour stops the watchdog: something is
+repeatably broken.
 """
 import argparse
 import os
@@ -115,8 +101,8 @@ def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log", required=True,
                     help="phase 1's console log; phase 2's is found from --logdir")
-    # NO DEFAULT checkpoint. This defaulted to model_weights_phase7.pth, which
-    # exists: a watchdog started with defaults resumed an old run.
+    # No default checkpoint: a watchdog started with defaults must not resume
+    # an old run.
     ap.add_argument("--weights", default=None,
                     help="CLASH_WEIGHTS for the trainer; unset = the default path")
     ap.add_argument("--logdir", default=None,
@@ -125,10 +111,9 @@ def build_parser():
     ap.add_argument("--num-envs", default=None)
     ap.add_argument("--check-every", type=float, default=120.0)
     ap.add_argument("--stall-minutes", type=float, default=25.0,
-                    help="no episode progress for this long counts as wedged. "
-                         "Generous on purpose: a PPO update is ~47s and a "
-                         "checkpoint write pauses the loop, so a tight bound "
-                         "would kill a healthy run mid-update.")
+                    help="no episode progress for this long counts as wedged; "
+                         "generous, since PPO updates and checkpoint writes "
+                         "pause the loop")
     ap.add_argument("--max-restarts", type=int, default=4)
     return ap
 
@@ -137,8 +122,8 @@ def main():
     args = build_parser().parse_args()
 
     env_extra = {"CLASH_SAVE_EVERY": args.save_every}
-    # Set in THIS process too, so phase_to_resume() resolves the same paths the
-    # trainer will.
+    # Set here too, so phase_to_resume() resolves the same paths as the
+    # trainer.
     if args.weights:
         env_extra["CLASH_WEIGHTS"] = os.environ["CLASH_WEIGHTS"] = args.weights
     if args.logdir:

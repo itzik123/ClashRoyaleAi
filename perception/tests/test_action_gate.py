@@ -1,9 +1,6 @@
-"""Tests for live/action_gate.py.
-
-The gate is the last thing between the agent and a real match, so these pin
-behaviour rather than implementation: what it must refuse, what it must let
-through, and -- the case that actually costs elixir -- what happens when a tap
-fails partway.
+"""Tests for live/action_gate.py, the last thing between the agent and a real
+match: what it must refuse, what it must let through, and what happens when a
+tap fails partway.
 """
 from __future__ import annotations
 
@@ -16,8 +13,8 @@ def test_a_fresh_new_board_is_allowed():
 
 
 def test_the_same_board_cannot_be_acted_on_twice():
-    """The measured failure: 44 taps for ~22 placements, the policy repeating
-    itself as the board sat unchanged. Three Giants for one intent, with --act.
+    """The measured failure: the policy repeating itself as the board sat
+    unchanged, several Giants for one intent under --act.
     """
     gate = ActionGate()
     assert gate.check(7, 100.0).allowed
@@ -34,8 +31,9 @@ def test_the_next_board_is_allowed_again():
 
 
 def test_a_stale_board_is_refused_even_though_it_is_new():
-    """Freshness and novelty are different properties. A board nobody has acted
-    on is still the wrong thing to act on if the match has moved past it."""
+    """Freshness and novelty differ: a board nobody acted on is still wrong to act
+    on if the match has moved past it.
+    """
     gate = ActionGate()
     decision = gate.check(1, MAX_STALENESS_MS + 1)
     assert not decision.allowed
@@ -43,9 +41,9 @@ def test_a_stale_board_is_refused_even_though_it_is_new():
 
 
 def test_duplicate_outranks_stale():
-    """Both can hold at once. Reporting it as `stale` would suggest the
-    producer had fallen behind, when the actual fact is that this exact board
-    was already played -- which is the more specific and more actionable one."""
+    """Both can hold at once; `duplicate` is the more specific fact, while `stale`
+    would suggest the producer fell behind.
+    """
     gate = ActionGate()
     gate.record(3)
     assert gate.check(3, 10_000.0).reason == "duplicate"
@@ -59,9 +57,10 @@ def test_staleness_can_be_switched_off_without_losing_idempotency():
 
 
 def test_a_failed_tap_does_not_burn_the_board():
-    """check() and record() are separate precisely so a tap that raises leaves
-    the board available. Recording on intent rather than on success would turn
-    one adb failure into a placement silently skipped for good."""
+    """check() and record() are separate so a tap that raises leaves the board
+    available; recording on intent would turn one adb failure into a placement
+    skipped for good.
+    """
     gate = ActionGate()
     assert gate.check(5, 100.0).allowed
     # ... actuator raises here, so record() is never reached ...
@@ -69,9 +68,10 @@ def test_a_failed_tap_does_not_burn_the_board():
 
 
 def test_counts_separate_the_two_refusals():
-    """A run full of `duplicate` means the producer is slower than the loop; a
-    run full of `stale` means it has stopped keeping up. One combined counter
-    could not tell them apart."""
+    """A run full of `duplicate` means the producer is slower than the loop; full
+    of `stale`, that it stopped keeping up. One counter could not tell them
+    apart.
+    """
     gate = ActionGate()
     gate.record(1)
     for _ in range(3):
@@ -95,14 +95,10 @@ def test_decision_is_truthy_so_callers_can_branch_on_it_directly():
 
 
 def test_one_action_per_board_against_a_real_slow_producer():
-    """The invariant end to end, under the condition that actually broke it:
-    a producer slower than the decision loop. Reproduces the 0.36 Hz-vs-1 Hz
-    shape that measured 44 taps for ~22 placements, and asserts every tap
-    lands on a distinct board.
-
-    Uses the real PerceptionWorker rather than a stub, because the property
-    being tested is about how the worker republishes -- a stub that returned
-    a fresh index each call would pass while proving nothing.
+    """The invariant end to end under the condition that broke it, a producer
+    slower than the decision loop: every tap lands on a distinct board. Uses
+    the real PerceptionWorker, since the property is about how it republishes;
+    a stub returning a fresh index each call would prove nothing.
     """
     import time
 
@@ -143,5 +139,5 @@ def test_one_action_per_board_against_a_real_slow_producer():
     assert len(acted_on) == len(set(acted_on)), "acted twice on one board"
     assert acted_on, "gate blocked everything"
     # The consumer polled far faster than the producer published, so the gate
-    # must have done real work rather than never being exercised.
+    # did real work.
     assert gate.refused.get("duplicate", 0) > len(acted_on)

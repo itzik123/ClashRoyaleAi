@@ -840,7 +840,7 @@ specific failure that audit note existed to stop.
 ### The live residue — this is the part that is still WORK
 
 - **Channels 0-7 assign rather than accumulate** (was BOT item 3). Agreed by
-  both sides, one line in `ClashEnv.h:267`:
+  both sides, one line in `ClashEnv.h`'s `extractObservationForTeam`:
 
   ```cpp
   obs[getIndex(channel, y, x)] = normalizedHp;                       // now

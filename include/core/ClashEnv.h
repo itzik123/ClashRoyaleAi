@@ -5,9 +5,8 @@
 #include "Building.h"
 #include "BuildingTargeter.h"
 #include "RangedTroop.h"
-// Explicit, not relied on transitively through RangedTroop.h: the attribute
-// channels read Troop::speed and CombatEntity::damage/attackRange/targetsAir
-// directly.
+// Included explicitly: the attribute channels read Troop and CombatEntity
+// fields directly.
 #include "Troop.h"
 #include "CombatEntity.h"
 #include "GameLogger.h"
@@ -23,13 +22,9 @@ struct StepResult {
     bool done;
 };
 
-// Historical/true self-play: both sides act each step instead of team 1 being
-// driven by the built-in random opponentTurn(). observation1 is already from
-// team 1's OWN point of view (see extractObservationForTeam) so the exact
-// same network that plays team 0 elsewhere can also drive team 1 here.
-// reward0 is from team 0's perspective (+1/-1/0, same convention as
-// StepResult::reward); this is a zero-sum win/loss, so team 1's reward is
-// just -reward0 -- not worth a redundant field.
+// Self-play: both sides act each step. observation1 is from team 1's own
+// mirrored point of view, so one network can drive either side. reward0 is team
+// 0's (+1/-1/0); the game is zero-sum, so team 1's is -reward0.
 struct SelfPlayStepResult {
     std::vector<float> observation0;
     std::vector<float> observation1;
@@ -37,20 +32,11 @@ struct SelfPlayStepResult {
     bool done;
 };
 
-// The same advance, for a caller that is going to throw both observations away.
-//
-// A candidate rollout wants the SIMULATION, not a description of it:
-// `UtilityTeacher.execute_steps` steps a snapshot in 10-tick chunks and
-// discards the result object every time, while `rollout_stats` reads exactly
-// ONE observation at the end. Measured on the training box (48 episodes,
-// teacher stage 5): 1,000,152 observation vectors built inside rollouts against
-// 51,566 read -- 19.4 : 1. Each is a 13,606-float allocate-fill-and-free whose
-// cost is O(entities), against 0.0006 ms for the physics tick it accompanies.
-// See perception/UPSTREAM_REQUESTS.md item 21.
-//
-// Not a different simulation: both entry points run ONE shared tick loop
-// (runSelfPlayTicks), so they cannot diverge in what they simulate. The only
-// difference is what they RETURN.
+// The same advance for a caller that discards both observations. Rollouts step
+// a snapshot many times and read one observation at the end, and building each
+// unused observation costs far more than the physics tick
+// (perception/UPSTREAM_REQUESTS.md item 21). Both entry points share
+// runSelfPlayTicks, so they cannot diverge; only the return differs.
 struct SelfPlayFastResult {
     float reward0;
     bool done;
@@ -58,186 +44,88 @@ struct SelfPlayFastResult {
 
 class ClashEnv {
 public:
-    // Structural constants the observation/action encoding is actually built
-    // from -- public (and bound read-only in bindings.cpp) so the Python side
-    // can query them directly at runtime instead of hardcoding a matching copy
-    // that has to be remembered and hand-updated every time one of these
-    // changes on the C++ side. Confirmed painful in practice: silent drift
-    // here (a card-roster bump, a board-geometry change) has crashed training
-    // more than once this project's history before this was queryable.
+    // Structural constants of the observation and action encoding, bound
+    // read-only so Python queries them instead of keeping copies.
     static constexpr int BOARD_WIDTH = 18;
-    // Real-map sync: 34, not 32 -- one extra row behind each King Tower
-    // (mostly dead space, a narrow center gap is real ground). See Board.h's
-    // BACK_ROW_OPENING_HALF_WIDTH / isBackRowDeadZone for the placement side
-    // of this; this constant only affects the observation tensor's shape.
+    // 34 rows: one mostly-dead row behind each King (see
+    // Board::isBackRowDeadZone).
     static constexpr int BOARD_HEIGHT = 34;
-    // Spatial channels, per team: melee troops / ranged troops / building-targeters
-    // (win-conditions like Hog, Giant, Golem) / buildings (towers + defensive).
-    // Unit-TYPE visibility is what lets the net answer "what is attacking me and
-    // with what should I respond" -- with HP-only channels a wounded PEKKA and a
-    // Skeleton looked identical.
+    // Spatial channels:
     //
-    // 0-3: ally melee, ranged, tank, buildings | 4-7: enemy same | 8: river/bridges
+    //   0-3: ally melee, ranged, building-targeter (win conditions), buildings | 4-7: enemy, same | 8: river / bridges
     //
-    // 9-20 are ATTRIBUTE channels, added because 0-8 could not express three
-    // things the game is actually decided by:
-    //
-    //  (a) AIR vs GROUND. isFlying/targetsAir have existed on Entity/
-    //      CombatEntity since flying cards were added, and were visible
-    //      NOWHERE in the observation. A Balloon and a Hog Rider were both
-    //      just "building-targeter"; a Minion and a Knight were both just
-    //      "melee". "Can the thing I am about to play even hit that" was
-    //      unanswerable from the observation, so no air/ground counterplay
-    //      could ever be learned no matter how long training ran.
-    //  (b) HOW MANY units are in a cell. Channels 0-7 store an HP fraction by
-    //      ASSIGNMENT, so a Skeleton Army collapsed to a handful of cells
-    //      indistinguishable from a handful of single skeletons.
-    //  (c) WHAT a unit does. Two ranged units with equal HP fractions were
-    //      identical regardless of damage, reach or speed.
-    //
-    // Encoded as per-cell attributes rather than a NUM_CARD_IDS-deep one-hot
-    // stack: identity per se is not what the decision needs, the attributes
-    // are, and a 185-channel board would be ~113k floats per observation.
-    // ALLY channel first, ENEMY second, so every pair is (base + isAlly?0:1)
-    // exactly like the 0-3/4-7 blocks above.
-    static constexpr int CH_COUNT = 9;    // 9 ally / 10 enemy -- units per cell
-    static constexpr int CH_FLYING = 11;  // 11 ally / 12 enemy -- any flyer here
-    static constexpr int CH_ANTIAIR = 13; // 13 ally / 14 enemy -- can hit air
-    static constexpr int CH_DPS = 15;     // 15 ally / 16 enemy -- damage per tick
-    static constexpr int CH_RANGE = 17;   // 17 ally / 18 enemy -- attack range
-    static constexpr int CH_SPEED = 19;   // 19 ally / 20 enemy -- move speed
+    // 9-20 are attribute channels, for what 0-8 cannot express: air vs ground,
+    // how many units share a cell (0-7 store one HP fraction by assignment),
+    // and what a unit does (damage, reach, speed). Per-cell attributes rather
+    // than a card-id one-hot stack, which would be ~113k floats. Ally first,
+    // enemy second, as in 0-3 / 4-7.
+    static constexpr int CH_COUNT = 9;    // 9 ally / 10 enemy: units per cell
+    static constexpr int CH_FLYING = 11;  // 11 / 12: any flyer here
+    static constexpr int CH_ANTIAIR = 13; // 13 / 14: can hit air
+    static constexpr int CH_DPS = 15;     // 15 / 16: damage per tick
+    static constexpr int CH_RANGE = 17;   // 17 / 18: attack range
+    static constexpr int CH_SPEED = 19;   // 19 / 20: move speed
     static constexpr int NUM_CHANNELS = 21;
     static constexpr int HAND_SIZE = 4;
-    // One-hot size for card identity in hand. Registered ids currently run up
-    // to 175 (Evolutions 123-163, Mirror 164, Spirit Empress 165, Heroes
-    // 166-175) -- kept a few slots ahead of that max so future card
-    // additions don't silently go blind again the way ids 120-122 did
-    // between the last bump and this one (see CardRegistry.h for the actual
-    // registered range). No longer needs a matching manual bump in
-    // python_ai/model.py -- see this constant's binding in bindings.cpp.
-    // ALIAS, not a value. The definition moved to CardRegistry.h on 2026-08-27
-    // so `GameManager` -- which cannot include this header -- can size its
-    // per-card cycle tracking from the same constant instead of restating it.
-    // The Python binding still reads `ClashRoyaleEnv.NUM_CARD_IDS` and still
-    // gets 185.
+    // One-hot width for card identity. An alias: the value lives in
+    // CardRegistry.h (CARD_ID_COUNT) so GameManager, which cannot include this
+    // header, sizes its cycle tracking from it too. Kept a few ids ahead of the
+    // highest registered id.
     static constexpr int NUM_CARD_IDS = CARD_ID_COUNT;
     static constexpr float MAX_TROOP_HP = 4256.0f;
     static constexpr float MAX_BUILDING_HP = 4008.0f;
 
-    // Normalizers for the attribute channels above. Picked from the real
-    // spread in CardRegistry rather than guessed: troop speeds run 0.5
-    // (Knight/Musketeer/Valkyrie) to 1.0+ (Goblins/Skeletons); attack ranges
-    // run 0.5 (Skeletons) to 6.0 (Musketeer) for troops and up to ~9 for
-    // Princess Towers; damage/attackCooldown runs ~7/tick (Skeletons) to
-    // ~47/tick (Mini PEKKA). Every attribute channel is clamped to 1.0, so a
-    // future outlier card saturates instead of blowing the input scale.
+    // Normalisers for the attribute channels, from the registry's real spread.
+    // Every attribute is clamped to 1.0, so an outlier card saturates rather
+    // than blowing up the input scale.
     static constexpr float MAX_UNIT_DPS = 60.0f;
     static constexpr float MAX_ATTACK_RANGE = 12.0f;
     static constexpr float MAX_UNIT_SPEED = 1.5f;
     static constexpr float MAX_CELL_UNITS = 5.0f;
 
-    // Scalars appended AFTER the existing [elixir, costs, one-hots] block --
-    // see extractObservationForTeam's tail. Appended, never inserted, so
-    // every existing offset into the scalar section (model.py's onehot_start,
-    // train_selfplay.py's scripted opponents) stays valid unchanged.
+    // Scalars after the [elixir, costs, one-hots] block:
+    //
     //   0 time fraction | 1 own elixir spent | 2 opp elixir spent
     //   3-5 own king/left/right tower HP | 6-8 enemy king/left/right tower HP
-    //   9 elixir phase multiplier / 3.0   (2026-09-02)
+    //   9 elixir phase multiplier / 3.0
     //
-    // Scalar 9 is APPENDED to this block rather than to the very end of the
-    // observation, which moves CYCLE_START by one. That is safe by
-    // construction and deliberately so: CYCLE_START is derived from
-    // EXTRA_SCALARS_START + NUM_EXTRA_SCALARS, and every consumer reads the
-    // bound offset rather than a literal (see the forward-offset note below,
-    // and engine_constants.py, which re-exports both). The alternative --
-    // appending after the cycle blocks to avoid moving anything -- would put a
-    // match-clock scalar outside the branch that encodes match-clock scalars,
-    // for no benefit the derivation does not already give.
-    //
-    // WHY THE PHASE IS OBSERVABLE AND NOT CHEATING, by the same test the
-    // cycle blocks are argued from: a human sees the "2x ELIXIR" banner and
-    // the match clock. This is the least hidden thing on the screen. Without
-    // it the state is not Markovian for the decision it governs -- the value
-    // of holding elixir for a bigger push depends on the rate that elixir
-    // will arrive at, and two boards identical except for the clock have
-    // genuinely different optimal play.
-    //
-    // Normalised by 3.0 (the maximum), so it reads 0.333 / 0.667 / 1.000 and
-    // stays on the same [0, 1] scale as every other scalar here.
+    // The phase is observable (the "2x ELIXIR" banner and the clock), and
+    // without it the state is not Markovian: the value of holding elixir
+    // depends on the rate it will arrive at.
     static constexpr int NUM_EXTRA_SCALARS = 10;
 
-    // --- OPPONENT CARD-CYCLE BLOCKS (2026-08-27, UPSTREAM_REQUESTS item 24) --
-    // Two NUM_CARD_IDS-wide blocks appended AFTER the extra scalars, describing
-    // what the OPPONENT has shown this match:
+    // --- opponent card-cycle blocks (perception/UPSTREAM_REQUESTS.md item 24)
+    // ---
+    // Two NUM_CARD_IDS-wide blocks after the extra scalars, describing what the
+    // OPPONENT has shown this match:
     //
-    //   block 0  seen[c]     1.0 once they have played card c at least once
+    //   block 0  seen[c]     1.0 once they have played card c
     //   block 1  recency[c]  exp(-(now - lastPlayed[c]) / TAU), else 0.0
     //
-    // WHY THIS IS NOT CHEATING, which is the whole design constraint here. The
-    // encoder already draws the line in the right place for elixir -- it gives
-    // the agent the opponent's cumulative SPEND ("you see every card they play
-    // and you know what it costs") and withholds their current elixir, because
-    // spend is observable and the elixir bar is not. By that same test a card's
-    // IDENTITY is observable: a human watching the screen sees the Hog, knows
-    // it was a Hog, and knows it cannot be back for about a cycle. The encoder
-    // was keeping the cost sum and throwing the identity away -- the one
-    // summary that destroys exactly the cycle information this restores.
-    // Nothing here reveals the opponent's HAND, which stays hidden.
-    //
-    // WHY RECENCY DECAYS rather than being a raw timestamp: a decay needs no
-    // normalisation against match length, saturates gracefully, and answers the
-    // question actually being asked ("can that card be back yet?") instead of
-    // one the agent would have to do arithmetic on. TAU is one cycle.
+    // Not cheating: a human watching sees every card played, just as the
+    // encoder already exposes the opponent's spend but not their elixir. The
+    // hand stays hidden. Recency decays rather than being a timestamp, so it
+    // needs no normalisation and answers "can it be back yet?" directly.
     static constexpr int NUM_CYCLE_BLOCKS = 2;
     static constexpr int CYCLE_BLOCK_SIZE = NUM_CYCLE_BLOCKS * NUM_CARD_IDS;
-    // 200 ticks = 20 s at this engine's 10 ticks/s (see perception/timebase.py
-    // for that conversion's single source). An 8-card cycle at ordinary play is
-    // roughly 20-30 s, so one TAU is about one rotation: a card played half a
-    // cycle ago reads ~0.61, a full cycle ago ~0.37, two cycles ~0.14.
+    // 200 ticks = 20 s, about one 8-card rotation: half a cycle ago reads
+    // ~0.61, a full cycle ~0.37.
     static constexpr float CYCLE_RECENCY_TAU_TICKS = 200.0f;
 
-    // --- NAMED OFFSETS INTO THE OBSERVATION --------------------------------
-    // Where each appended section STARTS, measured forward from index 0.
-    //
-    // These exist because the sections were previously located by subtracting
-    // from the end -- `observation_size() - NUM_EXTRA_SCALARS` -- which is
-    // correct only while the extra scalars are the LAST thing in the vector.
-    // Adding the cycle blocks behind them made five Python call sites read
-    // card-recency floats as tower HP, and one of those feeds the reward
-    // shaping's tower potential. Nothing would have raised; the returns would
-    // simply have gone quietly wrong.
-    //
-    // A forward offset cannot be invalidated by an append, which is the only
-    // kind of change this layout permits. Bound to Python (see bindings.cpp)
-    // so the offset has ONE definition rather than one per consumer.
+    // --- named offsets into the observation ---
+    // Where each appended section starts, measured forward from index 0. The
+    // layout only ever grows by appending, so a forward offset cannot be
+    // invalidated; subtracting from the end breaks on the next append. Bound to
+    // Python.
     static constexpr int EXTRA_SCALARS_START =
           BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS   // spatial channels
         + 1                                            // own elixir
         + HAND_SIZE                                    // hand costs
         + HAND_SIZE * NUM_CARD_IDS;                    // hand identity one-hots
     static constexpr int CYCLE_START = EXTRA_SCALARS_START + NUM_EXTRA_SCALARS;
-    // Ceiling on cumulative per-match elixir spend used to normalize scalars
-    // 1-2.
-    //
-    // RAISED 140 -> 280 on 2026-09-02, and this is NOT cosmetic. The old value
-    // was sized against a flat 1x match: 3600 * 0.035 + 5 starting = 131, with
-    // 140 leaving headroom. The elixir phases roughly double lifetime income --
-    //
-    //     1200 ticks @ 1x = 42     (0:00 - 2:00)
-    //     600 ticks  @ 2x = 42     (2:00 - 3:00)
-    //     1800 ticks @ 3x = 189    (3:00 - 6:00)
-    //                       ---
-    //                       273  + 5 starting = 278
-    //
-    // -- so at 140 BOTH spend scalars would have saturated at exactly 1.0 part
-    // way through the match and stayed there, going blind precisely when the
-    // elixir economy is the thing that decides the game. The clamp meant
-    // nothing would have raised; the input would just have gone constant. Same
-    // failure shape as the constants the 2026-08-07 speed fix invalidated: a
-    // normaliser calibrated against a measurement a later change moved.
-    // 280 covers the full-length worst case with margin to spare, and the
-    // curriculum's oppElixirMultiplier only ever scales the OPPONENT's income,
-    // which is scalar 2 and equally covered.
+    // Ceiling on cumulative per-match elixir spend, the normaliser of scalars
+    // 1-2. Sized for a full-length match under the elixir phases (~278
+    // including the starting 5), so the spend scalars never saturate mid-match.
     static constexpr float MAX_MATCH_ELIXIR = 280.0f;
 
 private:
@@ -248,20 +136,13 @@ private:
     HeuristicOpponent heuristicOpponent;
     GameLogger logger;
 
-    // Disambiguates the snapshot constructor from the implicit copy
-    // constructor, which must keep its ordinary shallow meaning -- pybind11
-    // and anything else that copies a ClashEnv by value relies on it.
+    // Distinguishes the snapshot constructor from the ordinary (shallow) copy
+    // constructor, which pybind11 relies on.
     struct SnapshotTag {};
 
-    // A constructor rather than copy-then-fix, because GameManager's implicit
-    // copy ASSIGNMENT is deleted: it holds `const float ELIXIR_REGEN_RATE`, so
-    // `game = other.game.snapshot()` does not compile. Copy-INITIALISING it in
-    // the member list works, and in C++17 the prvalue is elided straight into
-    // place rather than moved.
-    //
-    // Initialiser order matches declaration order exactly (game, maxTicks,
-    // currentTick, rng, heuristicOpponent) -- `logger` is omitted on purpose
-    // and default-constructs empty, see snapshot() below.
+    // A constructor rather than copy-then-fix: GameManager's copy assignment is
+    // deleted (it holds a const member), but copy-initialising it here works.
+    // `logger` is left out and starts empty (see snapshot()).
     ClashEnv(const ClashEnv& other, SnapshotTag)
         : game(other.game.snapshot()),
           maxTicks(other.maxTicks),
@@ -269,21 +150,14 @@ private:
           rng(other.rng),
           heuristicOpponent(other.heuristicOpponent) {}
 
-    // Generalized over which team the observation is FOR, so the same
-    // network -- always trained believing it's "team 0" (self near low y,
-    // enemy near high y, self always channels 0-3) -- can also drive team 1
-    // in self-play by getting an observation from team 1's own point of view.
-    // team==0 reproduces the exact previous behavior byte-for-byte.
+    // The observation from `team`'s own point of view: the network always sees
+    // itself as team 0 (near low y, channels 0-3), so it can drive either side.
+    // team 0's output is unmirrored.
     std::vector<float> extractObservationForTeam(int team) {
         int spatialSize = BOARD_WIDTH * BOARD_HEIGHT * NUM_CHANNELS;
-        // reserve() the FULL observation before resize() lays down the spatial
-        // block. Built the obvious way -- construct at spatialSize, then
-        // push_back the 754-float scalar tail -- the vector's capacity is
-        // exactly spatialSize when the first push_back arrives, so it
-        // reallocates and copies all 12,852 floats it just finished zeroing.
-        // This is the single hottest function in the C++ layer (measured at
-        // 0.069 ms against a 0.0011 ms physics tick, i.e. 63x the simulation it
-        // describes), and that copy was pure waste.
+        // Reserve the full observation before laying down the spatial block, so
+        // the scalar push_backs never reallocate and copy it. This is the
+        // hottest function in the C++ layer.
         std::vector<float> obs;
         obs.reserve(observationSize());
         obs.resize(spatialSize, 0.0f);
@@ -292,27 +166,9 @@ private:
             return channel * (BOARD_HEIGHT * BOARD_WIDTH) + y * BOARD_WIDTH + x;
         };
 
-        // River/bridge marker row -- x is already left/right symmetric (both
-        // teams' towers and the bridge gaps sit at the same x coordinates).
-        //
-        // The SAME row for both teams, deliberately. Each team's observation is
-        // its own mirrored frame, so for the two to be interchangeable -- which
-        // is the whole premise of driving team 1 with a network trained as
-        // team 0 -- the marker has to land on the same row index in both. This
-        // used to be (team == 0) ? 17 : BOARD_HEIGHT - 1 - 17, i.e. row 17 for
-        // team 0 and row 16 for team 1, so a net that learned where the bridges
-        // are as team 0 saw them one row nearer when driving team 1: 36
-        // differing cells in this channel at reset, on an empty board.
-        // See perception/UPSTREAM_REQUESTS.md item 6.
-        //
-        // The bridge columns come from Board::isOnBridge, NOT from a literal
-        // here. They were `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)` until
-        // 2026-08-21, and when the arena was corrected the physics moved and
-        // this did not: the network was told columns 2 and 15 (real bridge)
-        // were water and columns 4 and 13 (real water) were bridge. Half of
-        // the crossing map it learns from was wrong, in both directions, while
-        // every C++ test still passed -- because nothing compared this channel
-        // against the movement rule it is supposed to describe.
+        // River/bridge marker row. The same row for both teams, since each
+        // observation is its own mirrored frame. Bridge columns come from
+        // Board::isOnBridge, the rule the physics uses.
         constexpr int riverRow = 17;
         const Board& board = game.getBoard();
         for (int x = 0; x < BOARD_WIDTH; ++x) {
@@ -322,46 +178,26 @@ private:
 
         for (const auto& entity : game.getBoard().getEntities()) {
             if (!entity->isAlive()) continue;
-            // Projectiles and pending spells are not board presence
+            // Projectiles and pending spells are not board presence.
             if (!entity->isTargetable()) continue;
 
             int x = static_cast<int>(entity->position.x);
-            // Mirrored for team 1: physically team 1 sits near high y, but its
-            // own network needs to see itself near low y (same layout it was
-            // trained on as "team 0"), so flip before placing into the grid.
-            //
-            // Mirror the POSITION, then truncate -- not the other way round.
-            // This was `BOARD_HEIGHT - 1 - static_cast<int>(position.y)`, and
-            // `33 - int(y)` equals `int(33 - y)` only when y is an integer.
-            // Every troop in play sits at a fractional y, so team 1's entire
-            // observation was displaced one row, every tick, for both its own
-            // and enemy units -- while team 0's was correct. Measured: a policy
-            // played against a bit-exact copy of itself scored 0.598 as team 0
-            // over 400 episodes (95% CI [0.548, 0.647]).
-            //
-            // It survived the 2026-07-30 geometry audit because the Princess
-            // towers sit at y = 27.0 (integer, mirrors correctly) while the
-            // Kings sit at y = 30.5 (fractional, off by one) -- the positions
-            // themselves are symmetric, so auditing coordinates finds nothing.
-            // See perception/UPSTREAM_REQUESTS.md item 5.
-            //
-            // std::floor rather than a bare cast so an entity behind the back
-            // row yields -1 and is rejected by the bounds check below, instead
-            // of truncating toward zero into row 0.
+            // Mirrored for team 1, which physically sits near high y. Mirror
+            // the position, then truncate: `33 - int(y)` equals `int(33 - y)`
+            // only for integer y, and every troop sits at a fractional y.
+            // std::floor so an entity behind the back row yields -1 and is
+            // dropped.
             int y = (team == 0)
                 ? static_cast<int>(entity->position.y)
                 : static_cast<int>(std::floor((BOARD_HEIGHT - 1) - entity->position.y));
 
             if (x < 0 || x >= BOARD_WIDTH || y < 0 || y >= BOARD_HEIGHT) continue;
 
-            // Type category: building / building-targeter (tank) / ranged / melee.
-            // BuildingTargeter* also matches RangedBuildingTargeter (inheritance).
+            // Type category: building / building-targeter / ranged / melee.
+            // BuildingTargeter* also matches RangedBuildingTargeter.
             int typeOffset;
-            // Entity::isBuilding() -- a one-word virtual, overridden to true by
-            // Building and inherited by Tower, and nothing else in the
-            // hierarchy overrides it. Exactly equivalent to the
-            // dynamic_cast<Building*> this replaces, without the RTTI walk, on
-            // a loop that runs over every entity on every observation.
+            // isBuilding() instead of a dynamic_cast, on a loop over every
+            // entity.
             bool isBuilding = entity->isBuilding();
             if (isBuilding) typeOffset = 3;
             else if (dynamic_cast<BuildingTargeter*>(entity.get()) != nullptr) typeOffset = 2;
@@ -370,29 +206,23 @@ private:
 
             float maxHp = isBuilding ? MAX_BUILDING_HP : MAX_TROOP_HP;
             float normalizedHp = std::min(static_cast<float>(entity->hp) / maxHp, 1.0f);
-            // "Ally" = whichever team this observation is FOR, always channels
-            // 0-3 -- not hardcoded to raw team 0 anymore.
+            // "Ally" is whichever team this observation is for.
             bool isAlly = (entity->team == team);
             int channel = (isAlly ? 0 : 4) + typeOffset;
 
             obs[getIndex(channel, y, x)] = normalizedHp;
 
-            // --- attribute channels (9-20) ---------------------------------
-            // Side offset is 0 for ally / 1 for enemy, matching the 0-3 vs
-            // 4-7 split above.
+            // --- attribute channels (9-20); side 0 = ally, 1 = enemy ---
             int side = isAlly ? 0 : 1;
 
-            // COUNT accumulates (+=) where the HP channels assign (=). This
-            // is the whole point of the channel: it is the only place a
-            // 15-skeleton Skeleton Army stops looking like one skeleton.
+            // COUNT accumulates where the HP channels assign, so a Skeleton
+            // Army stops looking like one skeleton.
             float& cell = obs[getIndex(CH_COUNT + side, y, x)];
             cell = std::min(cell + 1.0f / MAX_CELL_UNITS, 1.0f);
 
-            // The remaining attributes take the MAX over units sharing a
-            // cell, not the last writer and not the sum: the decision these
-            // feed is "what is the most dangerous thing standing here and can
-            // I hit it", so the strongest occupant is the right summary. A
-            // sum would make three skeletons read like a PEKKA.
+            // The other attributes take the max over a cell's occupants: the
+            // decision is "what is the most dangerous thing here, and can I hit
+            // it". A sum would make three skeletons read like a P.E.K.K.A.
             auto putMax = [&](int channelBase, float value) {
                 float& slot = obs[getIndex(channelBase + side, y, x)];
                 slot = std::max(slot, std::min(value, 1.0f));
@@ -402,9 +232,7 @@ private:
 
             if (const auto* combat = dynamic_cast<const CombatEntity*>(entity.get())) {
                 if (combat->targetsAir) putMax(CH_ANTIAIR, 1.0f);
-                // Per-TICK damage, not per-attack: attackCooldown is in ticks
-                // and a 755-damage Mini PEKKA swinging every 16 ticks is not
-                // 3.7x a 202-damage Knight swinging every 12.
+                // Per tick, not per attack.
                 putMax(CH_DPS, combat->getDamagePerTick() / MAX_UNIT_DPS);
                 putMax(CH_RANGE, combat->getAttackRange() / MAX_ATTACK_RANGE);
             }
@@ -420,65 +248,34 @@ private:
             obs.push_back(card ? card->cost / 10.0f : 0.0f);
         }
 
-        // Card IDENTITY per hand slot (one-hot). Costs alone made a Hog Rider and a
-        // Musketeer indistinguishable (both 0.4), so no card-specific strategy could
-        // ever be learned.
+        // Card identity per hand slot; costs alone cannot tell a Hog Rider from
+        // a Musketeer.
         for (int cardId : game.getHand(team)) {
-            // Zero the whole block and set the one hot bit, instead of 185
-            // branchy push_backs per hand slot (740 per observation). An
-            // out-of-range or -1 cardId leaves the block all zeros, exactly as
-            // the equality test did.
+            // Zero the block and set one bit. An out-of-range or -1 id leaves
+            // it all zeros.
             const size_t base = obs.size();
             obs.resize(base + NUM_CARD_IDS, 0.0f);
             if (cardId >= 0 && cardId < NUM_CARD_IDS) obs[base + cardId] = 1.0f;
         }
 
-        // --- appended scalars (NUM_EXTRA_SCALARS) --------------------------
-        // TIME. Until this was added the observation had NO temporal
-        // component at all: tick 100 and tick 3500 with the same board were
-        // literally the same input vector. That is not a missing convenience,
-        // it made the state non-Markovian for two decisions that now exist --
-        // TimeoutRules decides a timed-out match on towers (so "I am ahead,
-        // run the clock down" is a real strategy the agent could not even
-        // represent), and the critic was being asked to predict a
-        // time-dependent return from a time-free input, making part of its
-        // residual variance structurally unlearnable rather than undertrained.
+        // --- appended scalars (NUM_EXTRA_SCALARS) ---
+        // Time. Without it the state is not Markovian: TimeoutRules decides a
+        // timed-out match on towers, and the critic predicts a time-dependent
+        // return.
         obs.push_back(static_cast<float>(currentTick) / static_cast<float>(maxTicks));
 
-        // ELIXIR SPENT, both sides, cumulative this match. Deliberately the
-        // SPEND and not the opponent's current elixir: spend is what a human
-        // can actually observe (you see every card they play and you know
-        // what it costs), current elixir is hidden information. Handing the
-        // agent the hidden value would train a policy that cannot be deployed
-        // against a real opponent through perception/. Estimating the hidden
-        // value from these is exactly what the network's auxiliary elixir
-        // head is asked to learn instead.
+        // Cumulative elixir spent, both sides. The spend, not the opponent's
+        // current elixir: a human sees every card played and knows its cost,
+        // but not the bar.
         obs.push_back(std::min(game.getStatistics().elixirSpent(team) / MAX_MATCH_ELIXIR, 1.0f));
         obs.push_back(std::min(game.getStatistics().elixirSpent(1 - team) / MAX_MATCH_ELIXIR, 1.0f));
 
-        // TOWER HP as explicit scalars. It is technically present in the
-        // building channel already, but only as one cell's value that has to
-        // survive two MaxPools -- while being the single number the win
-        // condition is defined on. A destroyed tower reads 0.0 (it is no
-        // longer a live entity), which is exactly the right encoding.
-        // Left/right are by x, and x is NOT mirrored for team 1 -- same
-        // convention the spatial channels above already use (team 1's view is
-        // a y-flip, not a 180-degree rotation), so this stays consistent with
-        // them rather than inventing a second frame.
-        // ONE pass for all six values, not six passes of one.
-        //
-        // This was a lambda called six times, each walking the whole entity
-        // list with a dynamic_cast per entity -- roughly 200 RTTI queries per
-        // observation to produce six floats, on a function called once per
-        // agent per decision.
-        //
-        // Left/right is decided against ArenaLayout::CENTER_X (8.5), not
-        // BOARD_WIDTH / 2.0f (9.0). Those are different numbers, and 8.5 is the
-        // one the rest of the engine uses -- it is the fixed point of the
-        // mirror 17 - x, and GameManager::findTower answers this identical
-        // question with it. No tower currently sits in the half-tile between
-        // them so the classification was right by luck; CLAUDE.md's rule is
-        // that a second copy of a constant is a scheduled defect regardless.
+        // Tower HP as explicit scalars: the win condition is defined on them,
+        // and in the building channel each is one cell that must survive two
+        // MaxPools. A destroyed tower reads 0.0. Left/right are by x, which is
+        // not mirrored for team 1 (its view is a y-flip), and judged against
+        // ArenaLayout::CENTER_X, as GameManager::findTower does. One pass for
+        // all six.
         float towerHp[2][3] = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
         for (const auto& entity : game.getBoard().getEntities()) {
             if (!entity->isAlive() || !entity->isTower()) continue;
@@ -491,55 +288,32 @@ private:
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[0][which]);
         for (int which = 0; which < 3; ++which) obs.push_back(towerHp[1][which]);
 
-        // ELIXIR PHASE (scalar 9). Symmetric -- the phase is a property of the
-        // match clock, so both teams see the identical value and no mirroring
-        // applies, unlike the tower block above.
-        //
-        // Derived from GameManager's own schedule rather than recomputed from
-        // the time fraction at scalar 0. Recomputing here would need maxTicks
-        // AND the two boundaries restated in this file, and the whole point of
-        // elixirMultiplierAtTick being static and public is that this is the
-        // one place the answer comes from.
-        //
-        // NOT redundant with scalar 0 despite both deriving from the tick.
-        // Scalar 0 is currentTick/maxTicks, a smooth ramp; the phase is a step
-        // function of it. A ReLU MLP can represent a step, but it has to LEARN
-        // the two thresholds from a scalar whose own scale depends on maxTicks
-        // -- and the reward consequence of crossing 2:00 is discontinuous.
-        // Handing it over costs one float.
+        // Elixir phase (scalar 9). The same for both teams. Read from
+        // GameManager's schedule rather than recomputed from scalar 0, and not
+        // redundant with it: scalar 0 is a smooth ramp, the phase a step, and
+        // crossing 2:00 changes the reward discontinuously.
         obs.push_back(game.getElixirMultiplier() / GameManager::MAX_ELIXIR_MULTIPLIER);
 
-        // --- OPPONENT CARD CYCLE (item 24) ---------------------------------
-        // Two NUM_CARD_IDS-wide blocks describing what the OTHER side has
-        // shown. Appended last, after the extra scalars, so every existing
-        // forward offset into the scalar section stays exactly where it was --
-        // the same rule NUM_EXTRA_SCALARS itself was added under.
-        //
-        // `1 - team`, never `team`: this is what the observer has watched the
-        // OPPONENT play. Reading it for `team` would hand the agent its own
-        // cycle, which it can already see in its own hand one-hots, and would
-        // leave the actually-missing information still missing.
+        // --- opponent card cycle (item 24) ---
+        // `1 - team`: what the observer has watched the OPPONENT play; its own
+        // cycle is already visible in its hand.
         const int opponent = 1 - team;
         const int now = currentTick;
         for (int block = 0; block < NUM_CYCLE_BLOCKS; ++block) {
             for (int cardId = 0; cardId < NUM_CARD_IDS; ++cardId) {
                 const int last = game.getLastPlayedTick(opponent, cardId);
                 if (last < 0) {
-                    // Never played. BOTH blocks are 0 here, and that is the
-                    // point of having two: seen=0/recency=0 is "no information
-                    // about this card", while seen=1/recency~0 is the very
-                    // different "they have it and it went a long time ago".
+                    // Never played: both blocks 0. seen=0 means "no
+                    // information"; seen=1 with recency ~0 means "they have it,
+                    // played long ago".
                     obs.push_back(0.0f);
                     continue;
                 }
                 if (block == 0) {
                     obs.push_back(1.0f);
                 } else {
-                    // std::max guards the one case that can run backwards:
-                    // set_current_tick() lets a state estimator rewind the
-                    // clock, and a negative age would make exp() blow up past
-                    // 1.0 and break the [0,1] contract every other channel
-                    // keeps. Clamped to "just played" instead.
+                    // set_current_tick() can rewind the clock; a negative age
+                    // would push exp() past 1.0.
                     const float age = static_cast<float>(std::max(0, now - last));
                     obs.push_back(std::exp(-age / CYCLE_RECENCY_TAU_TICKS));
                 }
@@ -553,17 +327,13 @@ private:
 
     float calculateReward() {
         if (!game.isGameOver()) {
-            // Reaching the tick limit is NOT a draw. Both Kings are still up
-            // (or GameManager would have flagged game-over), so the match is
-            // decided on towers -- see TimeoutRules for the exact ordering.
-            // Before this, every timed-out match scored 0.0, which taught the
-            // agent that running the clock out was a neutral outcome rather
-            // than a loss it should have been trying to avoid.
+            // The tick limit is not a draw: both Kings are up, so TimeoutRules
+            // decides on towers.
             if (currentTick >= maxTicks) {
                 MatchRules::Outcome timeoutOutcome = TimeoutRules::resolve(game.getBoard());
                 if (timeoutOutcome.loserTeam == 1) return 1.0f;
                 if (timeoutOutcome.loserTeam == 0) return -1.0f;
-                return 0.0f;   // exact tie on towers AND weakest-tower HP
+                return 0.0f;   // exact tie on towers and weakest-tower HP
             }
             return 0.0f;
         }
@@ -573,9 +343,7 @@ private:
         return 0.0f;
     }
 
-    // Delegates to HeuristicOpponent -- see that header for what the previous
-    // inline implementation was and the measurements that motivated replacing
-    // it. Kept as a method so every existing call site in step() is unchanged.
+    // See HeuristicOpponent.
     void opponentTurn() {
         heuristicOpponent.act(game, rng);
     }
@@ -587,45 +355,20 @@ public:
         : game(aiDeck, oppDeck, aiTowerTroop, oppTowerTroop), maxTicks(maxTicks), currentTick(0),
           rng(std::random_device{}()) { heuristicOpponent.reset(rng); }
 
-    // Independent copy of this environment, for decision-time search: try a
-    // candidate action on the copy, roll it forward, score it, throw it away.
-    // Nothing done to the copy can reach this env. See GameManager::snapshot
-    // and Board::deepCopy for the two layers underneath.
-    //
-    // Everything is carried across except the replay logger, which starts
-    // EMPTY. That is deliberate on both counts:
-    //   * cost -- GameLogger accumulates a TickSnapshot per tick with an
-    //     EntitySnapshot per entity, so by mid-match it is the largest thing
-    //     in the object. Search copies an env once per candidate per decision,
-    //     and copying a thousand ticks of history to simulate twenty is the
-    //     kind of overhead that makes lookahead look infeasible when it isn't.
-    //   * meaning -- a rollout is a hypothetical, not a match. Its ticks do
-    //     not belong in a replay of the real one, and save_log() on a snapshot
-    //     writing out the parent's real history followed by imagined ticks
-    //     would be worse than either.
-    // `rng` and `heuristicOpponent` ARE copied, so the opponent plays the same
-    // way in the rollout as it would have in the real match -- a search whose
-    // opponent behaved differently from the real one would be scoring the
-    // wrong game.
+    // An independent copy for decision-time search (see GameManager::snapshot
+    // and Board::deepCopy underneath). The replay logger starts empty: copying
+    // a match's history per candidate is the largest cost, and a rollout's
+    // ticks do not belong in the real replay. `rng` and `heuristicOpponent` are
+    // copied, so the opponent behaves in the rollout as it would in the real
+    // match.
     ClashEnv snapshot() const { return ClashEnv(*this, SnapshotTag{}); }
 
-    // Built from the named offsets above rather than restating the section
-    // list, so the size and the offsets cannot disagree: appending a section
-    // means extending CYCLE_START's chain, and this follows automatically.
+    // Built from the named offsets, so size and offsets cannot disagree.
     int observationSize() const { return CYCLE_START + CYCLE_BLOCK_SIZE; }
 
-    // Thin delegates to GameManager's own placement-bound queries (see that
-    // class's comment) -- exposed here since ClashEnv, not GameManager, is
-    // what's actually bound to Python. Lets the training scripts scale their
-    // action space from the engine's real enforced bounds instead of a
-    // hardcoded copy of the same numbers.
-    // How many of `team`'s TOWERS are still standing (King + Princesses only --
-    // Cannon/Tombstone and other placed buildings are not crowns). Exposed so
-    // the Python reward can put a deliberate, NON-potential-based bonus on the
-    // discrete act of destroying a tower. That bias is the point: the
-    // potential-based tower term is policy-invariant by construction, which
-    // measurably left "pure defence" as the true optimum against this engine's
-    // opponent -- the agent stopped playing its win condition entirely.
+    // How many of `team`'s towers stand (King and Princesses only). The reward
+    // puts a deliberately non-potential-based bonus on destroying a tower: the
+    // policy-invariant tower term left pure defence optimal.
     int getTowersAlive(int team) const {
         int count = 0;
         for (const auto& entity : game.getBoard().getEntities()) {
@@ -635,26 +378,11 @@ public:
         return count;
     }
 
-    // Who won, by TimeoutRules' FULL rule: tower count, then the weakest
-    // surviving tower's HP, and only an exact tie is a draw.
-    //
-    // Returns MatchRules::Outcome::loserTeam -- -1 draw, 0 team 0 lost,
-    // 1 team 1 lost -- the same convention calculateReward already consumes.
-    //
-    // Exists because getTowersAlive() above is the ONLY outcome-shaped thing
-    // Python can reach, and TimeoutRules::resolve had exactly one C++ call
-    // site (calculateReward) and no binding at all. So every evaluation script
-    // that wanted a verdict without going through `reward` re-derived one from
-    // tower counts and silently dropped the HP tie-break, reporting a draw for
-    // matches this engine calls a win. That happened EIGHT times across three
-    // waves before it was made a binding instead of a convention -- see
-    // perception/UPSTREAM_REQUESTS.md item 16 and
-    // python_ai/eval/match_outcome.py.
-    //
-    // Read-only and additive: TimeoutRules::resolve is already static, already
-    // takes a const Board&, and mutates nothing. No gameplay change, no
-    // observation or action-space change, so existing checkpoints are
-    // unaffected.
+    // The winner by TimeoutRules' full rule (tower count, then weakest tower
+    // hp, then draw), as MatchRules::Outcome::loserTeam: -1 draw, else the
+    // losing team. Bound so evaluation scripts read the verdict instead of
+    // re-deriving it from tower counts and dropping the tie-break
+    // (python_ai/eval/match_outcome.py).
     int resolveTimeoutOutcome() const {
         return TimeoutRules::resolve(game.getBoard()).loserTeam;
     }
@@ -662,21 +390,9 @@ public:
     float getMaxPlacementX() const { return game.getMaxPlacementX(); }
     float getOwnHalfMaxY() const { return game.getOwnHalfMaxY(); }
 
-    // Would playCard accept this card here? READ-ONLY: a pure query that
-    // touches no state and changes no gameplay path.
-    //
-    // Exposed because the Python action space was building its placement mask
-    // from its own idea of the legal area -- the 16 own-half rows -- while the
-    // engine additionally rejects Board::isBackRowDeadZone and the tower
-    // footprints. Measured on the ep~45,800 checkpoint over 1,340 decision
-    // steps, 58.7% of the policy's card choices were refused here and returned
-    // false silently, which is indistinguishable from a no-op and puts pure
-    // noise into the gradient. See perception/UPSTREAM_REQUESTS.md item 12.
-    //
-    // Deliberately not re-derived on the Python side: this predicate combines
-    // board bounds, the back-row dead zone, per-card placementRadius/isSpell/
-    // deployAnywhere and the tower footprint clearance. A second copy of that
-    // geometry is exactly the drift this project has already paid for twice.
+    // Would playCard accept this card here? A pure query, bound so the Python
+    // placement mask uses the engine's own predicate (bounds, back-row dead
+    // zone, footprint, own half, tower clearance) rather than a copy of it.
     bool isValidPlacementForCard(int cardId, float x, float y, int team) const {
         const CardDefinition* def = CardRegistry::getInstance().getCard(cardId);
         if (!def) return false;
@@ -688,7 +404,7 @@ public:
     std::vector<float> reset() {
         logger.clear();
         game.reset();
-        // New lane choice per match -- see HeuristicOpponent::reset.
+        // New lane per match (HeuristicOpponent::reset).
         heuristicOpponent.reset(rng);
         logger.logTick(0, game);
         currentTick = 0;
@@ -703,14 +419,8 @@ public:
         return game.getElixir(0);
     }
 
-    // Either team's CURRENT elixir. Deliberately NOT part of the observation
-    // vector -- the opponent's elixir is hidden information a human cannot
-    // read off the screen, so a policy conditioned on it could never be
-    // deployed through perception/. It is exposed here only as the SUPERVISION
-    // TARGET for the network's auxiliary elixir-estimation head: the net sees
-    // elapsed time and both sides' cumulative spend (see the appended scalars
-    // in extractObservationForTeam) and is trained to infer this from them,
-    // which is exactly the elixir counting strong human players do by hand.
+    // Either team's current elixir. Not in the observation: the opponent's bar
+    // is hidden on a real screen. For tests, probes and the teacher.
     float getElixirForTeam(int team) const {
         return game.getElixir(team);
     }
@@ -719,35 +429,20 @@ public:
         return game.isGameOver() || currentTick >= maxTicks;
     }
 
-    // Champion ability: true iff `team` currently has a living, deployed
-    // Champion whose ability is off cooldown AND affordable right now.
-    // Exposed as a plain accessor rather than folded into the flat
-    // observation vector returned by step()/reset() -- growing that vector
-    // would silently break python_ai/model.py's fixed scalar_size formula
-    // (self.scalar_size = 1 + hand_size + hand_size*num_card_ids, computed
-    // independently of observationSize() -- see MatchStatistics-adjacent
-    // discussion in the Champion plan for why this stays out of the
-    // vector).
-    // slot: 1 = Heroic, 2 = Wild Card (see CardRegistry::validateDeckSlots) --
-    // defaults to 1 so any single-Champion-in-slot-1 caller keeps compiling
-    // and behaving unchanged. The two slots are fully independent.
+    // Whether `team`'s Champion in `slot` (1 = Heroic, 2 = Wild Card) can
+    // activate now. An accessor, not an observation field.
     bool isChampionAbilityReady(int team, int slot = 1) const {
         return game.isChampionAbilityReady(team, slot);
     }
 
-    // Activates `team`'s deployed Champion's ability in the given slot, if
-    // any -- see GameManager::activateChampionAbility. Exposed directly
-    // (not just via step()'s activateAbilitySlot1/2 params below) so tests /
-    // ad hoc scripts can trigger it without going through a full
-    // skip_frames window.
+    // Activates the ability directly, for tests and scripts that do not go
+    // through step().
     bool activateChampionAbility(int team, int slot = 1) {
         return game.activateChampionAbility(team, slot);
     }
 
-    // activateAbilitySlot1/2 correspond to deck slots 1 (Heroic) and 2
-    // (Wild Card) -- see GameManager::activateChampionAbility's own slot
-    // parameter. Independent triggers: either, both, or neither can fire
-    // the same step.
+    // activateAbilitySlot1/2: deck slots 1 (Heroic) and 2 (Wild Card),
+    // independent.
     StepResult step(int cardIndex, float targetX, float targetY, int skipFrames = 10,
             bool activateAbilitySlot1 = false, bool activateAbilitySlot2 = false) {
         float totalReward = 0.0f;
@@ -784,49 +479,29 @@ public:
         return { extractObservation(), totalReward, isDone };
     }
 
-    // team 1's own point of view (mirrored) -- see extractObservationForTeam.
-    // Used by self-play: after reset()/step(), the trainer also needs an
-    // observation to feed whatever policy (frozen historical snapshot, or a
-    // second live network) is driving team 1 this step.
+    // The observation from `team`'s own point of view, for whatever policy
+    // drives team 1 in self-play.
     std::vector<float> getObservationForTeam(int team) {
         return extractObservationForTeam(team);
     }
 
-    // Test-only escape hatch: ClashEnv wraps GameManager privately (Python
-    // only ever drives it through step()/reset()), but tests that need to
-    // force a specific hand slot -- e.g. after hand randomization made the
-    // opening hand's exact contents non-deterministic -- have no other way
-    // to reach playerAI/playerOpponent the way GameManager-level tests
-    // already do directly. Not meant for anything but tests.
+    // Test-only access to the wrapped GameManager.
     GameManager& debugGame() { return game; }
 
-    // Self-play stepping: BOTH sides' actions are supplied externally instead
-    // of team 1 being driven by the built-in random opponentTurn() (which
-    // this does NOT call at all). targetY1 arrives in team 1's own local
-    // frame -- the same mirrored frame its observation came in -- and is
-    // converted back to real board Y before actually placing anything;
-    // mirroring twice is the identity, so the same formula that produced the
-    // observation also inverts it here.
+    // Self-play stepping: both sides' actions come from outside and
+    // opponentTurn() is not called. targetY1 arrives in team 1's mirrored frame
+    // and is converted back; mirroring twice is the identity.
 private:
-    // What the self-play tick loop produces, before anybody decides whether an
-    // observation is wanted.
+    // What the self-play tick loop produces, before deciding whether to build
+    // observations.
     struct SelfPlayTickOutcome {
         float reward;
         bool done;
     };
 
-    // THE self-play tick loop -- one copy, shared by stepSelfPlay and
-    // stepSelfPlayFast. Extracted 2026-08-23 so that a rollout can skip
-    // building two 13,606-float observations it never reads (see
-    // SelfPlayFastResult above).
-    //
-    // Extracted rather than duplicated on purpose. This project has been bitten
-    // four separate times by the same fact encoded twice and drifting apart --
-    // the river band, the arena bridges, "close enough" in two waypoint sites,
-    // and the observation encoder against the movement rule. Two step functions
-    // with two copies of this loop would be the fifth, and the drift would be
-    // invisible: the fast path is used only inside rollouts, whose results are
-    // never compared against anything.
+    // The one self-play tick loop, shared by stepSelfPlay and stepSelfPlayFast
+    // so the two cannot drift; the fast path runs only inside rollouts, where a
+    // divergence would go unnoticed.
     SelfPlayTickOutcome runSelfPlayTicks(int cardIndex0, float targetX0, float targetY0,
                                           int cardIndex1, float targetX1, float targetY1,
                                           int skipFrames,
@@ -872,8 +547,7 @@ private:
     }
 
 public:
-    // Unchanged in behaviour: the loop above is the same loop this used to
-    // contain, and the return below is the same return it always had.
+    // Advance, then both observations.
     SelfPlayStepResult stepSelfPlay(int cardIndex0, float targetX0, float targetY0,
                                      int cardIndex1, float targetX1, float targetY1,
                                      int skipFrames = 10,
@@ -887,12 +561,8 @@ public:
                  out.reward, out.done };
     }
 
-    // Identical advance, no observations built. For decision-time search and
-    // for UtilityTeacher's candidate rollouts -- anything that steps a snapshot
-    // and reads the board through a separate, deliberate
-    // getObservationForTeam() call at the end, if at all.
-    //
-    // If you need an observation from this, you wanted stepSelfPlay.
+    // The same advance with no observations, for search and teacher rollouts
+    // that read the board once at the end, if at all.
     SelfPlayFastResult stepSelfPlayFast(int cardIndex0, float targetX0, float targetY0,
                                          int cardIndex1, float targetX1, float targetY1,
                                          int skipFrames = 10,
@@ -912,47 +582,30 @@ public:
         }
     }
 
-    // General form of injectEnemy above -- kept as a separate method (not a
-    // refactor of injectEnemy into a team=1 call) so no existing caller
-    // changes. Requested by perception/ (see its own UPSTREAM_REQUESTS.md)
-    // as a state-estimator primitive: spawns directly, bypassing hand/
-    // elixir/placement legality entirely, which is correct for an
-    // estimator replaying placements the real game already validated.
-    // hp < 0 keeps the card's full health and deployTicks < 0 keeps
-    // DEPLOY_TIME_TICKS, so every pre-item-22 call site is bit-identical.
+    // The general form of injectEnemy, for state estimation: spawns directly,
+    // bypassing hand, elixir and placement legality, since the real game
+    // already validated the placement. hp < 0 keeps full health; deployTicks <
+    // 0 keeps DEPLOY_TIME_TICKS.
     //
-    // WHY deployTicks EXISTS, since it looks like a detail and is not:
-    // spawnEntity routes through CardFactories::applyCardMetadata, which sets
-    // deployTicksRemaining = DEPLOY_TIME_TICKS unconditionally. A mirror
-    // rebuilt from perception therefore handed EVERY unit a fresh deploy
-    // second -- including one that had been walking for six -- so every
-    // rollout believed it had an extra second before anything could act. The
-    // 2026-08-19 audit measured that same second in the other direction at
-    // ~520 tower HP on a supported push. Passing 0 says "this unit is already
-    // on the board", which is what perception can actually see.
+    // Pass deployTicks = 0 for a unit perception can already see:
+    // applyCardMetadata otherwise hands every injected unit a fresh deploy
+    // second, including one that has been walking for six.
     void inject(int cardId, float x, float y, int team,
                 float hp = -1.0f, int deployTicks = -1) {
         const auto* card = CardRegistry::getInstance().getCard(cardId);
         if (!card) return;
         Board& board = game.getBoard();
-        // spawnEntity is void-returning, so the pending queue is the only
-        // handle back to what it just created -- the same route
-        // GameManager::playCard uses to reach a Champion it just deployed.
-        //
-        // Taking the whole RANGE rather than one index is what makes a
-        // multi-body card come back right: Skeletons spawn three entities
-        // from one call, and applying the reading to the first alone would
-        // leave two at full health, i.e. a threat three times fresher than
-        // the one on screen.
+        // The pending range is the handle back to what spawnEntity created; the
+        // whole range, so a multi-body card (Skeletons: three) is overridden
+        // for every body.
         const size_t before = board.pendingEntityCount();
         card->spawnEntity(x, y, team, board);
         if (hp < 0.0f && deployTicks < 0) return;   // nothing to override
         for (size_t i = before; i < board.pendingEntityCount(); ++i) {
             const std::shared_ptr<Entity>& e = board.getPendingEntity(i);
             if (hp >= 0.0f) {
-                // e->hp is still the card's own full health here, so it is
-                // the correct per-card ceiling -- no registry lookup needed,
-                // and it stays right for every card automatically.
+                // e->hp is still the card's full health here, the natural
+                // ceiling.
                 int want = static_cast<int>(hp + 0.5f);
                 if (want > e->hp) want = e->hp;
                 if (want < 1) want = 1;
@@ -966,114 +619,63 @@ public:
         }
     }
 
-    // getHand() above is team-0-only; this is the general form, requested
-    // alongside inject() so an estimator can read either side's hand
-    // without a second, parallel accessor per team.
+    // getHand() is team 0 only; this serves either team.
     std::vector<int> getHandForTeam(int team) const {
         return game.getHand(team);
     }
 
-    // The WRITE half of the estimator interface -- see GameManager::setElixir
-    // and setHand for the semantics and for why setHand can refuse.
-    //
-    // These complete the loop perception/ was missing: inject() could rebuild
-    // the BOARD, but elixir and the hand came from reset() and were therefore
-    // fabricated, which is what made decision-time search over a reconstructed
-    // state score fiction rather than the real position.
-    //
-    // Opponent elixir is hidden information on a real screen and is expected to
-    // be supplied from MicroRoyaleNet's auxiliary opponent-elixir head, which
-    // exists for exactly this and measures ~0.9 MAE against a
-    // predict-the-mean baseline of 1.35.
+    // The write half of the estimator interface; see GameManager::setElixir /
+    // setHand, including why setHand can refuse.
     void setElixirForTeam(int team, float value) { game.setElixir(team, value); }
     bool setHandForTeam(int team, const std::vector<int>& cards) {
         return game.setHand(team, cards);
     }
 
-    // --- item 22 (2026-08-24): tower HP and the match clock ---------------
-    // Thin wrappers; the contracts (slot convention, the hp <= 0 refusal, why
-    // hp is engine-absolute) live on GameManager beside the implementations.
+    // --- tower HP and the match clock (item 22) ---
+    // Thin wrappers; the contracts live on GameManager.
     bool setTowerHp(int team, int slot, float hp) { return game.setTowerHp(team, slot, hp); }
     bool destroyTower(int team, int slot) { return game.destroyTower(team, slot); }
     int getTowerHp(int team, int slot) const { return game.getTowerHp(team, slot); }
     int getTowerMaxHp(int team, int slot) const { return game.getTowerMaxHp(team, slot); }
 
-    // The one field no combination of the others can reconstruct. Clamped to
-    // [0, maxTicks] -- maxTicks IS reachable and means the match has run out,
-    // so it is not excluded.
-    //
-    // Sets BOTH clocks. ClashEnv::currentTick drives the observation's time
-    // scalar and the done condition; GameManager::currentTick stamps spawn
-    // events and drives ability cooldown arithmetic. They are incremented
-    // together everywhere else, and a setter that moved one would create
-    // exactly the second, driftable copy this codebase removes elsewhere.
+    // The one field nothing else reconstructs. Clamped to [0, maxTicks]. Sets
+    // both clocks: this one drives the time scalar and the done condition,
+    // GameManager's the event stamps and ability cooldowns.
     void setCurrentTick(int tick) {
         currentTick = std::max(0, std::min(tick, maxTicks));
         game.setCurrentTick(currentTick);
     }
 
-    // The matching read. Absent until 2026-08-27, which is why the cycle
-    // observation's own tests could not previously say "one TAU after the
-    // play" without re-deriving the clock from outside.
+    // The matching read.
     int getCurrentTick() const { return currentTick; }
 
-    // The elixir phase in force (1.0 / 2.0 / 3.0). Forwarded from
-    // GameManager, which owns the schedule -- this is the accessor
-    // perception/, the replay logger and any probe read, so that none of them
-    // has to know the two boundary ticks.
+    // The elixir phase in force (1.0 / 2.0 / 3.0), so readers need not know the
+    // boundary ticks.
     float getElixirMultiplier() const { return game.getElixirMultiplier(); }
 
-    // Record that `team` played `cardId` right now, WITHOUT spawning anything.
+    // Records that `team` played `cardId` now, without spawning anything.
     //
-    // Exists for the live mirror in `perception/`, and it is not redundant
-    // with `inject`. The two answer different questions and deliberately do
-    // not call each other:
-    //
-    //   inject()         a BODY is on the board at (x, y). Used to reconcile
-    //                    the mirror against what the camera sees, including
-    //                    units that have been walking for six seconds.
-    //   notePlayedCard() a PLAY was OBSERVED. This is the cycle fact.
-    //
-    // `inject` routes through `spawnEntity` directly rather than through
-    // `GameManager::playCard` -- by design, since a mirrored unit must not
-    // cost the mirror elixir or consume a hand slot -- and playCard is where
-    // cycle tracking is hooked. So without this, every card the estimator ever
-    // saw would be invisible to the cycle blocks and the feature would work in
-    // training and silently do nothing in deployment: exactly the class of gap
-    // this project's observability rule exists to prevent.
-    //
-    // Not called by `inject` itself on purpose. Scenario setup and unit tests
-    // inject bodies to build a position, and having that quietly assert "they
-    // just played this" would put fiction into an observation channel whose
-    // whole value is that it reports only what was really seen.
+    // For the live mirror in perception/, and not redundant with inject():
+    // inject() puts a BODY on the board without going through playCard (so it
+    // costs no elixir and no hand slot), and playCard is where cycle tracking
+    // is hooked. Without this, every card the estimator saw would be missing
+    // from the cycle blocks in deployment. inject() does not call it: scenario
+    // setup and tests inject bodies that were never played.
     void notePlayedCard(int team, int cardId) {
         game.notePlayedCard(team, cardId);
     }
 
-    // Tick at which `team` last played `cardId`, or -1 for never this match.
-    // The raw number behind the recency channel, exposed so a caller can check
-    // WHAT was recorded separately from HOW it is encoded -- a test that can
-    // only see exp(-age/TAU) has to invert the encoding to say anything about
-    // the tracking, and would then be asserting against its own arithmetic.
+    // The raw tick behind the recency channel, so a test can check what was
+    // recorded separately from how it is encoded.
     int getLastPlayedTick(int team, int cardId) const {
         return game.getLastPlayedTick(team, cardId);
     }
 
-    // Make this environment reproducible: same seed -> same opening hands,
-    // same cycle order, same heuristic rolls.
-    //
-    // BOTH generators, because there are two and they do different jobs.
-    // `rng` here drives HeuristicOpponent; `game`'s drives the opening-hand
-    // shuffle in PlayerState::initializeDeck. The XOR offset keeps the two
-    // streams from being identical -- both are std::mt19937, and seeding them
-    // alike would correlate the heuristic's choices with the hand it was
-    // dealt.
-    //
-    // THE reset() IS LOAD-BEARING. initializeDeck runs INSIDE
-    // GameManager::reset(), so a seed applied after construction would
-    // otherwise leave the hand already in play untouched and only take effect
-    // from the following episode -- a silent, surprising no-op. Seeding
-    // re-deals.
+    // Reproducibility: same seed, same opening hands, cycle order and heuristic
+    // rolls. Seeds both generators (this one drives HeuristicOpponent, `game`'s
+    // deals the hands), offset by an XOR so the streams are not identical. The
+    // reset() re-deals; without it the seed would only apply from the next
+    // episode.
     void seed(unsigned int s) {
         rng.seed(s);
         heuristicOpponent.reset(rng);
@@ -1093,65 +695,33 @@ public:
         logger.save(filepath);
     }
 
-    // Thin pass-throughs to GameManager::getStatistics() -- plain ints (not
-    // the JSON string) since these are read every training step across
-    // several vectorized envs; avoiding a JSON round-trip on that hot path.
-    // See MatchStatistics.h for what these actually measure.
+    // Plain ints, read every training step (no JSON round trip). See
+    // MatchStatistics.h.
     int getTroopDamageDealt(int team) const { return game.getStatistics().troopDamageDealt(team); }
     int getBuildingDamageDealt(int team) const { return game.getStatistics().buildingDamageDealt(team); }
     int getTowerDamageDealt(int team) const { return game.getStatistics().towerDamageDealt(team); }
-    // Heuristic-1 inputs: elixir value a given card has destroyed, and the
-    // elixir it has been spent on (casts = spend / cost). Both are needed --
-    // rewarding only the value destroyed makes a whiffed spell FREE, which is
-    // the same guaranteed-zero trap that put the Cannon in a back corner.
+    // Elixir value a card has destroyed, and the elixir spent on it. Both are
+    // needed: rewarding only value destroyed would make a whiffed spell free.
     float getElixirValueKilledBy(int cardId, int team) const {
         return game.getStatistics().elixirValueKilledBy(cardId, team);
     }
     float getElixirSpentOnCard(int cardId, int team) const {
         return game.getStatistics().elixirSpentByCard(cardId, team);
     }
-    // Total damage one card has dealt, cumulative this match. Already tracked
-    // by DamageCollector::byCard; this only exposes it, so nothing about the
-    // simulation changes.
-    //
-    // Added 2026-08-17 for the win-condition damage term in train.py. The
-    // reward needs "how much has the WIN CONDITION hurt them", and the two
-    // existing accessors cannot express it: towerDamageDealt is per TEAM (it
-    // cannot tell a Hog's damage from a Musketeer's) and damageByTargetType is
-    // per target class (it cannot tell WHICH card did it).
-    //
-    // NOTE what this is and is not: it is damage by that card to ANYTHING, not
-    // tower damage specifically. For a BuildingTargeter win condition
-    // (Hog Rider, Giant, Balloon...) the two nearly coincide, because such a
-    // unit only ever attacks buildings -- the only contamination is an enemy
-    // DEPLOYED building (a Cannon it chews through on the way). Using it for a
-    // card that attacks troops would measure something quite different.
+    // Total damage one card has dealt this match, to anything. For a
+    // building-targeting win condition this is nearly all tower damage (plus
+    // any deployed building in its path); for a troop-targeting card it
+    // measures something else.
     int getDamageDealtByCard(int cardId, int team) const {
         return game.getStatistics().damageDealtByCard(cardId, team);
     }
     float getElixirSpent(int team) const { return game.getStatistics().elixirSpent(team); }
 };
 
-// Every id CardRegistry actually has registered right now (real, playable
-// cards only -- death/periodic/secondary child-unit stats like Golemite or
-// Ram Rider's crossbow use negative sentinel ids and are never add()-ed, so
-// they never appear here). A free function, not a ClashEnv method, since
-// CardRegistry is a singleton independent of any particular env instance.
-//
-// Exists so Python-side random-deck sampling (gym_wrapper.py, train.py) can
-// derive its card pool from whatever's actually registered instead of a
-// hardcoded id range + exclusion list that silently drifts out of sync the
-// next time a card is added to (or removed from) CardRegistry.h -- exactly
-// what happened here: a hardcoded range(46) pool went stale the moment the
-// roster grew to 114 registered cards, and a hand-maintained exclusion list
-// is exactly the kind of thing that's easy to get wrong in the other
-// direction too (mistaking real registered ids for gaps).
-// Evolution-slot ids (see CardRegistry::addEvolution) are deliberately
-// excluded -- they're not an independently-playable 8th-of-a-deck card,
-// they're an upgrade equipped onto whichever base card already occupies a
-// slot. Without this filter, random-deck sampling (train.py's
-// RANDOM_DECK_POOL, gym_wrapper.py's randomize_opp_deck) would start
-// picking them as if they were ordinary standalone cards.
+// Every registered playable card id. Child units (Golemite, Ram Rider's
+// crossbow) have negative ids and are never registered; Evolutions are excluded
+// because they are upgrades equipped onto a base card, not standalone cards.
+// Lets Python sample random decks from what is actually registered.
 inline std::vector<int> getAllCardIds() {
     std::vector<int> ids;
     for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
@@ -1161,23 +731,11 @@ inline std::vector<int> getAllCardIds() {
     return ids;
 }
 
-// Builds a random 8-card deck that's ALWAYS validateDeckSlots-legal by
-// construction, not by rejection-sampling and retrying -- buckets every
-// registered card into plain/Evolution/special-unit pools once, then fills
-// each deck slot only from whichever pools CardRegistry::validateDeckSlots
-// actually allows there (slot 0: plain+Evolution, slot 1: plain+special
-// unit, slot 2: plain+Evolution+special unit, slots 3-7: plain only),
-// independently rolling a moderate chance per eligible slot of using a
-// special unit/Evolution instead of defaulting to plain. "Special unit"
-// means Champion OR Hero (see CardDefinition::isHero's own comment --
-// Heroes and Champions share the same two deck slots), bucketed together
-// since they're equally eligible everywhere validateDeckSlots allows one.
-// That chance is a training-curriculum judgment call (not sourced from the
-// game itself) picked so random decks aren't artificially special-unit/
-// Evolution-heavy compared to a real deck. Never repeats a card within one
-// deck (a real deck can't either) -- always possible here since every pool
-// comfortably exceeds the at-most-2 special cards any single deck could
-// ever need.
+// A random 8-card deck that is legal by construction: each slot draws only from
+// the pools CardRegistry::validateDeckSlots allows there (slot 0: plain +
+// Evolution; slot 1: plain + Champion/Hero; slot 2: all three; slots 3-7:
+// plain), with a moderate chance per eligible slot of a special card. The
+// chance is a training choice, not a game rule. No card repeats.
 inline std::vector<int> sampleRandomDeck(std::mt19937& rng) {
     std::vector<int> plainPool, evolutionPool, specialUnitPool;
     for (const auto& [id, def] : CardRegistry::getInstance().getAllCards()) {
@@ -1203,11 +761,11 @@ inline std::vector<int> sampleRandomDeck(std::mt19937& rng) {
     // Slot 0: Evolution slot.
     deck[0] = (!evolutionPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
         ? pickFrom(evolutionPool) : pickFrom(plainPool);
-    // Slot 1: Heroic slot (Champion/Hero-eligible).
+    // Slot 1: Heroic slot (Champion / Hero).
     deck[1] = (!specialUnitPool.empty() && chance01(rng) < SPECIAL_SLOT_CHANCE)
         ? pickFrom(specialUnitPool) : pickFrom(plainPool);
-    // Slot 2: Wild Card slot (Champion/Hero OR Evolution-eligible) -- roll
-    // once for "special or not", then once more for which kind if so.
+    // Slot 2: Wild Card slot (Champion / Hero or Evolution): roll for special,
+    // then for which kind.
     bool slot2Special = (!evolutionPool.empty() || !specialUnitPool.empty())
         && chance01(rng) < SPECIAL_SLOT_CHANCE;
     if (slot2Special) {

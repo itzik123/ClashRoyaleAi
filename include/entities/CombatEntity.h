@@ -14,32 +14,19 @@
 
 class CombatEntity;
 
-// Forward-declared here, defined after the class (below) -- CombatEntity's
-// own update() calls applyAreaBuff/applyAreaHeal directly (unlike
-// applySplashDamage, which only ever gets called from leaf classes that
-// include this whole header first), so the class body needs to see these
-// signatures before they're fully defined.
-// Returns whichever entities actually got buffed -- callers that need to
-// do something ELSE to the same targets (Royal Chef's Tower Troop also
-// bumps hp on whoever it just buffed) can reuse the exact selection
-// instead of re-scanning the board. Every existing caller ignores the
-// return value, so this is backward compatible.
+// Declared here, defined after the class, because update() calls them from
+// inside the class body. applyAreaBuff returns the entities it buffed.
 inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, float multiplier, int durationTicks, int maxTargets);
 inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, int amount);
-// Forward-declared for the same reason as the two above: Mega Knight's
-// jump (see update() below) calls this directly from inside the class
-// body, before its own definition later in this file is visible.
+// Declared early for the same reason (Mega Knight's jump in update()).
 inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
     int attackerId, int attackerTeam, int attackerCardId, int dealt);
-// Forward-declared for the same reason: Evolved Valkyrie's on-hit pull
-// (see update() below) calls this directly from inside the class body.
+// Declared early for Evolved Valkyrie's on-hit pull in update().
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
     int excludeId, int attackerTeam);
-// Forward-declared for the same reason: Hero Knight's Triumphant Taunt
-// (see HeroKnightTauntEffect) calls this directly, and it's defined later
-// in this file alongside applyPullNearby/applySplashDamage.
+// Declared early for Hero Knight's taunt (HeroKnightTauntEffect).
 inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
     int taunterId, int taunterTeam);
 
@@ -51,407 +38,233 @@ protected:
     float currentCooldown;
     std::vector<std::shared_ptr<IOnHitEffect>> onHitEffects;
 
-    // Ramp bookkeeping: which target this attacker has been locked onto, and
-    // for how many consecutive ticks. Tracked unconditionally (cheap, two
-    // ints) even for the vast majority of entities that never ramp, so the
-    // logic lives in exactly one place instead of being opt-in duplicated.
+    // Ramp bookkeeping: the locked target and how many consecutive ticks on it.
+    // Tracked for every entity so the logic lives in one place.
     int currentTargetId = -1;
     int ticksOnTarget = 0;
-    // Ticks elapsed since the last landed hit (any target) -- also tracked
-    // unconditionally, same reasoning. Only consulted when
-    // rampGracePeriodTicks > 0 (Inferno Dragon Evolution): normally
-    // (rampGracePeriodTicks == 0) a target switch or losing the target
-    // entirely resets ticksOnTarget straight to 0, same as always. With a
-    // grace period configured, that reset is deferred -- the current ramp
-    // stage is preserved across a target switch, or through a gap with no
-    // target at all, for up to rampGracePeriodTicks, only actually
-    // resetting once this counter crosses that threshold without a hit
-    // landing. A freeze/stun still resets immediately regardless (see
-    // wasFrozen below) -- the grace period only ever softens the "lost my
-    // target" case, never the "got stunned" one.
+    // Ticks since the last landed hit. Consulted only with rampGracePeriodTicks
+    // > 0 (Inferno Dragon Evolution): a lost or switched target then keeps its
+    // ramp stage for up to the grace period instead of resetting at once. A
+    // stun still resets immediately.
     int ticksSinceLastHit = 0;
 
-    // How many targets the attack actually landed on this time (1 normally,
-    // up to maxSplitTargets otherwise) -- set right before performAttack()
-    // is invoked, purely so getCurrentDamage() can divide by it.
+    // How many targets this attack landed on, set just before performAttack()
+    // so getCurrentDamage() can divide by it.
     int currentHitCount = 1;
 
 public:
-    // Freeze only ever means anything to something that attacks or moves
-    // (cooldown/speed slowdown below), so it lives here rather than on
-    // Entity -- AreaSpell and Projectile can never be frozen, since neither
-    // is ever a valid findTarget() result (both are isTargetable() == false).
+    // Freeze lives here, not on Entity: only things that attack or move can be
+    // frozen.
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
-    // "Was this unit frozen when this tick began" -- set once at the top of
-    // update(), BEFORE freezeTicks is decremented, and read by
-    // Troop::moveTowards further down the same call.
-    //
-    // It exists because freezeTicks alone could not answer that question
-    // consistently. update() drains the attack cooldown from inside the
-    // `freezeTicks > 0` branch, i.e. before the decrement; moveTowards ran
-    // after it and re-tested the same field, by which point the last tick of
-    // any freeze already read as thawed. applyFreeze(N) therefore slowed
-    // attacks for N ticks and movement for N-1, and a 1-tick stun did not
-    // stop movement at all. One fact, two readers, straddling a mutation --
-    // the same shape as the bridge-mouth absorbing states.
-    //
-    // Transient: recomputed at the top of every update(), so it needs no
-    // special handling in snapshot() (the implicit copy carries it) and
-    // nothing outside update()'s own call tree should read it.
+    // Whether this unit was frozen when the tick began: set at the top of
+    // update(), before freezeTicks is decremented, and read by
+    // Troop::moveTowards later in the same call, so attacks and movement see
+    // the same freeze. Recomputed every update().
     bool frozenThisTick = false;
 
-    // Ticks left of this unit's deploy time -- see CardStats.h's
-    // DEPLOY_TIME_TICKS. While > 0 the unit is on the board and fully
-    // targetable/damageable, but does not move, target or attack.
+    // Ticks left of deploy time (CardStats.h, DEPLOY_TIME_TICKS): on the board,
+    // targetable and damageable, but not moving, targeting or attacking.
     //
-    // Deliberately NOT reusing freezeTicks, even though the observable effect
-    // overlaps. freezeTicks means "something stunned me", and the ramp system
-    // reads it that way: `wasFrozen` breaks the target lock and resets the
-    // charge/ramp ("a stun resets the charge"). A newly deployed unit has not
-    // been stunned and must not start life with its ramp state reset by an
-    // event that never happened. Separate field, separate meaning.
-    //
-    // Carried by the implicit copy constructor, so Board::deepCopy snapshots
-    // keep a unit's exact remaining deploy time -- a rollout that reset it to
-    // 0 would let search evaluate a board where every unit acts a second early.
+    // Not freezeTicks: a freeze means "stunned" and resets the ramp and charge,
+    // and a new unit has not been stunned. The implicit copy carries it, so
+    // snapshots keep the exact remaining deploy time.
     int deployTicksRemaining = 0;
 
-    // Poison-style damage-over-time mark (Dart Goblin/Firecracker
-    // Evolutions) -- see applyDot/PoisonOnHit. dotTicksRemaining == 0
-    // (the default) means no active mark; ticks down independently of
-    // freeze/curse.
+    // Damage-over-time mark (Dart Goblin / Firecracker Evolutions; see
+    // applyDot, PoisonOnHit). Ticks down independently of freeze and curse.
     int dotDamagePerTick = 0;
     int dotTicksRemaining = 0;
     int dotTickInterval = 0;
     int dotTicksUntilNextDamage = 0;
 
-    // Whether this attacker's findTarget() may pick a flying candidate.
-    // Lives here (not Entity) because only things that attack care --
-    // Troop and Building alike (Inferno Tower/Tesla hit air, Cannon/Bomb
-    // Tower don't) -- and it's only ever read on `this`, never cast off a
-    // generic candidate the way isFlying is (see Entity.h).
+    // Whether findTarget() may pick a flyer. Only read on `this`, unlike
+    // isFlying.
     bool targetsAir = false;
 
-    // Fired once by onDeath() below (e.g. Golem spawning two Golemites).
-    // Lives here, not Entity, for the same reason as onHitEffects: only
-    // something that's a real combatant ever has one.
+    // Fired once by onDeath() (e.g. Golem spawning Golemites).
     std::shared_ptr<IDeathEffect> deathEffect;
 
-    // Ramping damage (Inferno Tower): `damage` scales up the longer this
-    // attacker stays locked onto the *same* target, reaching rampStartFraction
-    // until rampMidTick, rampMidFraction until rampFullTick, and full damage
-    // after -- reset by a target switch, losing the target, or being frozen
-    // (matches the real "stun resets the charge" rule). rampFullTick == 0
-    // (the default) disables ramping entirely: getCurrentDamage() is just
-    // `damage`, unchanged, for every card that doesn't opt in.
+    // Ramping damage (Inferno Tower): the longer the lock on the same target,
+    // the more damage: rampStartFraction until rampMidTick, rampMidFraction
+    // until rampFullTick, then full. Reset by a target switch, losing the
+    // target, or a stun. rampFullTick == 0 disables it.
     int rampMidTick = 0;
     int rampFullTick = 0;
     float rampStartFraction = 1.0f;
     float rampMidFraction = 1.0f;
 
-    // 4th ramp stage (Inferno Dragon Evolution only): a rarely-reached
-    // stage beyond rampFullTick, dealing rampStage4Fraction * damage
-    // instead of the usual full damage. rampStage4Tick == 0 (the default)
-    // disables it, leaving getCurrentDamage's 3-stage schedule above
-    // completely unchanged for every other ramping card (Inferno Tower,
-    // regular Inferno Dragon, Mighty Miner).
+    // Fourth ramp stage beyond rampFullTick (Inferno Dragon Evolution only). 0
+    // disables it.
     int rampStage4Tick = 0;
     float rampStage4Fraction = 1.0f;
 
-    // Grace period before a lost/switched target resets the ramp (Inferno
-    // Dragon Evolution only) -- see ticksSinceLastHit above for the full
-    // explanation. 0 (the default) means an instant reset, exactly like
-    // every other ramping card today.
+    // Grace period before a lost or switched target resets the ramp (see
+    // ticksSinceLastHit). 0 resets at once.
     int rampGracePeriodTicks = 0;
 
-    // Split-target attacks (Electro Wizard): instead of hitting only the
-    // closest enemy, hits up to this many of the closest enemies at once,
-    // each for damage / (however many were actually found this attack) --
-    // full damage if only one target is in range, matching the real card.
-    // 1 (the default) is the normal single-target case every other card uses.
+    // Split-target attacks (Electro Wizard): hits up to this many of the
+    // closest enemies, each for damage / (targets actually hit).
     int maxSplitTargets = 1;
-    // Temporary split-target window (Hero Magic Archer's Triple Threat):
-    // bumps maxSplitTargets up for a fixed duration, then restores it --
-    // reuses the Electro Wizard machinery above as a documented
-    // approximation of "fires 2 extra arrows" (this engine divides damage
-    // across split targets rather than firing genuinely independent
-    // projectiles). baseMaxSplitTargets captures whatever maxSplitTargets
-    // was at the moment the window opened (always 1 for every card that
-    // uses this, since no card both split-targets permanently AND has this
-    // ability), restored once temporarySplitTargetsTicksRemaining reaches 0.
-    // 0 (the default) is every card without an active window.
+    // Temporary split-target window (Hero Magic Archer's Triple Threat), an
+    // approximation of extra arrows via the split machinery.
+    // baseMaxSplitTargets is restored when the window closes.
     int temporarySplitTargetsTicksRemaining = 0;
     int baseMaxSplitTargets = 1;
 
-    // Electro Dragon's chain: unlike Electro Wizard's split (which divides
-    // `damage` across however many targets it hit), each chained target
-    // takes the FULL damage value independently. false (the default)
-    // keeps every other split-target card's existing divide-by-hitcount
-    // behavior unchanged.
+    // Electro Dragon's chain: every chained target takes full damage rather
+    // than a share.
     bool splitTargetsFullDamage = false;
 
-    // Splash damage (Wizard, Bowler, Valkyrie, ...): every regular attack
-    // also hits every other enemy within this radius of the primary
-    // target's position, for the same amount as the primary hit -- ground
-    // and air alike, regardless of whether this attacker's own targetsAir
-    // could normally reach flying units (an explosion doesn't care what
-    // the thrower could aim at; matches AreaSpell's own non-ground-only
-    // default). 0.0f (the default) is every card that doesn't opt in.
-    // See applySplashDamage below -- a free function, not a method, since
-    // Projectile needs it too and isn't a CombatEntity.
+    // Splash (Wizard, Bowler, Valkyrie...): every regular attack also hits
+    // every other enemy within this radius of the primary target, ground and
+    // air alike, regardless of targetsAir. A free function (applySplashDamage)
+    // because Projectile needs it too.
     float splashRadius = 0.0f;
 
-    // Shield (Guards, Royal Recruits, Dark Prince, Cannon Cart): a second
-    // HP pool that absorbs damage first, from any source (direct hit,
-    // splash, spell) since it's implemented in takeDamage() itself, not
-    // per-attacker. Doesn't regenerate. 0 (the default) is every card
-    // without one.
+    // Shield (Guards, Royal Recruits, Dark Prince, Cannon Cart): a second hp
+    // pool that absorbs damage from any source first. Does not regenerate.
     int shieldHp = 0;
-    // Fixed-duration shield expiry (Hero Knight's Triumphant Taunt: the
-    // shield lasts exactly 5s even if never fully depleted by damage) --
-    // distinct from shieldHp's own permanent variant above, which never
-    // expires on its own. 0 (the default) is every card using the
-    // permanent shieldHp above unaffected -- update() only zeroes shieldHp
-    // once this counts down to 0, never touching it otherwise.
+    // Timed shield expiry (Hero Knight's taunt: the shield lasts 5 s even if
+    // not depleted). 0 leaves shieldHp permanent.
     int shieldExpiresTicksRemaining = 0;
 
-    // Forced retarget (Hero Knight's Triumphant Taunt): while > 0, this
-    // entity's update() is forced onto forcedTargetEntityId instead of its
-    // own normal resolveCurrentTarget()/findTarget() resolution -- see
-    // applyTauntNearby below and update()'s own targeting block. 0 (the
-    // default) is every card without one, whose targeting is entirely
-    // unaffected.
+    // Forced retarget (Hero Knight's taunt): while > 0, update() attacks
+    // forcedTargetEntityId instead of its normal target (see applyTauntNearby).
     int forcedTargetEntityId = -1;
     int forcedTargetTicksRemaining = 0;
 
-    // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
-    // Bandit): once this attacker has moved at least chargeThreshold tiles
-    // continuously without landing a hit, its next attack deals
-    // chargeMultiplier x damage -- then chargeProgress resets to 0,
-    // charged or not, same as the real game's "have to run it up again"
-    // rule. chargeThreshold == 0.0f (the default) disables the mechanic
-    // for every card that doesn't opt in.
+    // Charge (Prince, Battle Ram, Ram Rider, Royal Hogs, Bandit): after moving
+    // chargeThreshold tiles without landing a hit, the next attack deals
+    // chargeMultiplier x damage, and progress resets either way. 0 disables it.
     float chargeThreshold = 0.0f;
     float chargeMultiplier = 1.0f;
     float chargeProgress = 0.0f;
 
-    // Sticky charge (Evolved Battle Ram): unlike the "have to run it up
-    // again" reset above, once this attacker has reached chargeThreshold
-    // ONE time, chargeMultiplier keeps applying to every hit for the rest
-    // of its life instead of resetting -- "constantly ramming into its
-    // target... dealing double damage for every connection made."
-    // chargeIsSticky == false (the default) is every other charging card
-    // (Prince, base Battle Ram, Ram Rider, Royal Hogs, Bandit), completely
-    // unaffected. chargeHasStuck is internal bookkeeping, not
-    // CardStats-configurable.
+    // Sticky charge (Evolved Battle Ram): once reached, the charge bonus
+    // applies to every hit for the rest of its life. chargeHasStuck is
+    // internal.
     bool chargeIsSticky = false;
     bool chargeHasStuck = false;
 
-    // Enrage (Berserker): attack cooldown shortens (up to 2x speed at 0 hp)
-    // and a small self-heal lands with every hit, scaling with how much of
-    // enrageMaxHp is already gone. enrageMaxHp == 0 (the default) disables
-    // the mechanic; set to the card's own starting hp to enable it (see
-    // CardStats::withEnrage).
+    // Enrage (Berserker): the attack cooldown shortens (up to 2x speed at 0 hp)
+    // and each hit heals, scaling with hp lost. enrageMaxHp == 0 disables it
+    // (see CardStats::withEnrage).
     int enrageMaxHp = 0;
     int enrageHealPerHit = 0;
 
-    // Parry (Ronin): every parryIntervalTicks ticks, the next incoming hit
-    // is fully negated instead of applying normally, then the timer
-    // resets. The real card also reflects bonus damage back at the
-    // attacker and only parries ground-melee hits (ranged/air/spells
-    // bypass it) -- neither is modeled (takeDamage carries no attacker
-    // identity to reflect at, and no melee-vs-ranged distinction exists
-    // anywhere in this engine), so this is a simpler "occasionally shrugs
-    // off an incoming hit entirely" approximation. parryIntervalTicks == 0
-    // (the default) disables the mechanic; parryTicksUntilReady <= 0 means
-    // ready to parry the next hit, right away at spawn.
+    // Parry (Ronin): every parryIntervalTicks, the next incoming hit is
+    // negated. The real card also reflects damage and parries only ground
+    // melee; neither is modelled (takeDamage has no attacker, and there is no
+    // melee/ranged distinction). Ready at spawn.
     int parryIntervalTicks = 0;
     int parryTicksUntilReady = 0;
 
-    // Hook (Fisherman): when the current target is beyond attackRange but
-    // still within hookRange, instantly pulls it to just inside melee
-    // range instead of walking toward it -- consumes this tick's attack
-    // cooldown, so the actual damage lands on a later, normal-range hit.
-    // hookRange == 0.0f (the default) disables the mechanic.
+    // Hook (Fisherman): a target beyond attackRange but within hookRange is
+    // pulled to just inside melee range. Consumes the cooldown; the damage
+    // lands on a later hit.
     float hookRange = 0.0f;
 
-    // Invisibility (Royal Ghost, Suspicious Bush): untargetable except for
-    // a brief window right after this attacker lands a hit, which reveals
-    // it -- see isTargetable() and revealTicksAfterAttack below.
-    // startsInvisible == false (the default) is every card without it.
+    // Invisibility (Royal Ghost, Suspicious Bush): untargetable except briefly
+    // after landing a hit.
     bool startsInvisible = false;
     int revealTicksAfterAttack = 0;
     int visibleTicksRemaining = 0;
 
-    // Periodic spawning/effects while alive (Witch, Night Witch, Furnace,
-    // Barbarian Hut, Goblin Hut, Tombstone, Goblin Drill): every
-    // periodicIntervalTicks ticks, fires periodicEffect at this entity's
-    // own position/team -- unrelated to deathEffect, which fires once, on
-    // death, instead. periodicIntervalTicks == 0 (the default) disables
-    // the mechanic; no timer runs and periodicEffect is never read.
+    // Periodic effects while alive (Witch, Night Witch, Furnace, huts,
+    // Tombstone, Goblin Drill): fires periodicEffect every
+    // periodicIntervalTicks. 0 disables it.
     std::shared_ptr<IPeriodicEffect> periodicEffect;
     int periodicIntervalTicks = 0;
     int periodicTicksUntilNext = 0;
 
-    // Temporary damage buff (Rage spell/potion, Rune Giant's ally
-    // enchant): while buffTicksRemaining > 0, getCurrentDamage() is
-    // multiplied by buffDamageMultiplier. Real Rage also boosts movement/
-    // attack speed; only the damage part is modeled (speed lives on
-    // Troop, a layer above CombatEntity -- not worth duplicating this
-    // multiplier system there for one card's secondary effect).
-    // buffTicksRemaining == 0 (the default) is every card unaffected.
+    // Temporary damage buff (Rage, Rune Giant's enchant). Real Rage also speeds
+    // movement and attacks; only damage is modelled, since speed lives on
+    // Troop.
     float buffDamageMultiplier = 1.0f;
     int buffTicksRemaining = 0;
 
-    // Temporary damage-taken debuff (Mother Witch's curse): while
-    // curseTicksRemaining > 0, incoming damage in takeDamage() is
-    // multiplied by curseDamageTakenMultiplier before shield/parry see it.
-    // curseTicksRemaining == 0 (the default) is every card unaffected.
+    // Damage-taken debuff (Mother Witch's curse), applied in takeDamage()
+    // before shield and parry.
     float curseDamageTakenMultiplier = 1.0f;
     int curseTicksRemaining = 0;
-    // Latch: has Mother Witch's on-death hog spawn already been attached to
-    // this entity's deathEffect? See CursedHogOnHit. The curse's DURATION is
-    // meant to refresh on every hit, but its SPAWN is a one-time arming --
-    // without this, each hit wrapped the existing deathEffect in another
-    // CompositeDeathEffect containing the previous chain, so N hits produced N
-    // nested composites and N hogs on death. false (the default) is every
-    // entity that has never been cursed.
+    // Latch: Mother Witch's hog spawn is armed once (see CursedHogOnHit); the
+    // curse's duration still refreshes.
     bool curseDeathSpawnAttached = false;
-    // Latch, same idiom as curseDeathSpawnAttached above: has the Royal Chef
-    // Tower Troop already served this ally? The real card grants a troop
-    // "+1 Level", once -- it does not serve the same troop over and over.
-    // Without this, RoyalChefBuffEffect re-picked whichever ally happened to be
-    // nearest and applied `hp += hp / 10` again, so a tank parked beside the
-    // tower compounded geometrically: measured 1000 -> 1100 -> 1771 hp over six
-    // servings (+77%), unbounded in match length. false (the default) is every
-    // entity, including every match not using this Tower Troop at all.
+    // Latch: the Royal Chef serves each ally once (see RoyalChefBuffEffect).
     bool royalChefServed = false;
 
-    // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
-    // Battle Healer's heal): fires the configured effect(s) at nearby
-    // allies right after this attacker's own hit lands. auraEveryNAttacks
-    // == 0 (the default) disables the buff aura; healAllyAmount == 0
-    // disables the heal aura -- each opts in independently.
+    // Ally auras on landed attacks: Rune Giant's every-Nth buff, Battle
+    // Healer's heal. Independent opt-ins.
     float auraRadius = 0.0f;
-    int auraMaxTargets = 1000000; // effectively "everyone in radius" unless a card sets a real cap
+    int auraMaxTargets = 1000000; // everyone in radius unless capped
     int auraEveryNAttacks = 0;
     int attacksSinceAura = 0;
     float auraBuffMultiplier = 1.0f;
     int auraBuffDurationTicks = 0;
     int healAllyAmount = 0;
 
-    // Burst-on-Nth-attack (Dagger Duchess/Evolution burst mechanics): every
-    // burstEveryNAttacks-th landed hit deals burstDamageMultiplier extra
-    // damage to itself, instead of buffing allies the way the aura above
-    // does. currentHitIsBurst is transient, set right before performAttack
-    // fires and read back by getCurrentDamage() -- same idiom as
-    // lastAttackDistance/currentHitCount below.
+    // Every Nth landed hit deals burstDamageMultiplier x damage (Dagger
+    // Duchess, some Evolutions). currentHitIsBurst is set just before
+    // performAttack and read by getCurrentDamage().
     int burstEveryNAttacks = 0;
     float burstDamageMultiplier = 1.0f;
     int attacksSinceBurst = 0;
     bool currentHitIsBurst = false;
 
-    // Composable extra behavior when this entity actually TAKES damage
-    // (mirrors onHitEffects, which fires for the attacker that LANDS a
-    // hit) -- e.g. an evolution that buffs itself when struck. nullptr
-    // (the default) is every card without one.
+    // Fired when this entity actually takes damage; the receiving-end
+    // counterpart of onHitEffects.
     std::shared_ptr<IOnDamageTakenEffect> onDamageTakenEffect;
 
-    // Self-heal on landing a hit (Evolved Bats) -- healOnHitMaxHp is an
-    // absolute cap, not a multiplier; 0 (the default) disables it.
+    // Self-heal on landing a hit (Evolved Bats); healOnHitMaxHp is an absolute
+    // cap.
     int healOnHitAmount = 0;
     int healOnHitMaxHp = 0;
 
-    // Self-spawn on landing a hit, capped inside the effect itself
-    // (Evolved Skeletons) -- see CappedSpawnOnHitEffect. nullptr (the
-    // default) is every card without one.
+    // Self-spawn on landing a hit (Evolved Skeletons); the cap lives in
+    // CappedSpawnOnHitEffect.
     std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
 
-    // Pull nearby enemies toward self on landing a hit (Evolved
-    // Valkyrie's Whirlwind Axe) -- see applyPullNearby below.
-    // onHitPullRadius == 0.0f (the default) disables it. Buildings/Towers
-    // are never actually displaced by the pull (enforced inside
-    // pullToward itself, Entity.h), but onHitPullDamage -- a separate,
-    // typically-low amount applied via applySplashDamage -- still reaches
-    // everyone in radius, matching the sourced "including Crown Towers"
-    // wording; only the physical pull exempts them.
+    // Pull nearby enemies on landing a hit (Evolved Valkyrie). Buildings are
+    // never moved (pullToward), but onHitPullDamage reaches them, towers
+    // included, as sourced.
     float onHitPullRadius = 0.0f;
     float onHitPullDistance = 0.0f;
     int onHitPullDamage = 0;
 
-    // Kamikaze (Wall Breakers, the "Spirit" troops): dies immediately
-    // after landing its one hit instead of surviving to attack
-    // repeatedly. For ranged troops this fires the instant the shot is
-    // launched (performAttack spawning the Projectile), not on the
-    // projectile's later arrival -- the shooter vanishing slightly before
-    // the real card's on-arrival timing, a minor simplification. false
-    // (the default) is every other card here.
+    // Kamikaze (Wall Breakers, the Spirits): dies after its one hit. A ranged
+    // unit dies when the shot is launched, slightly before the real on-arrival
+    // timing.
     bool dieAfterFirstHit = false;
 
-    // Dash invulnerability (Bandit): immune to all damage while charging
-    // in for a hit. The real card is only invulnerable during a short
-    // (~0.8s) dash burst once a target is in range; this engine has no
-    // separate "dash" state from ordinary charge-buildup movement, so
-    // it's approximated as invulnerable once past the halfway point of
-    // closing the charge distance (chargeProgress >= half of
-    // chargeThreshold) -- a longer window than the real 0.8s, but the
-    // same spirit ("hard to punish mid-charge"). false (the default) is
-    // every card without a charge, or with one but no invulnerability.
+    // Dash invulnerability (Bandit). With no separate dash state, immune once
+    // past half the charge distance: a longer window than the real ~0.8 s.
     bool chargeGrantsInvulnerability = false;
 
-    // Reset (not just pause) the attack cooldown on being frozen/stunned
-    // (Sparky: a Zap mid-charge makes her start her whole 4s wind-up over
-    // instead of merely slowing it). false (the default) is every other
-    // card, which only gets the normal freezeSlow cooldown-drain-rate
-    // treatment in update() below.
+    // A stun resets, not just slows, the attack cooldown (Sparky restarts her
+    // wind-up after a Zap).
     bool resetCooldownOnFreeze = false;
 
-    // Recoil after landing an attack (Firecracker: kicks herself backward
-    // away from her own target). recoilDistance == 0.0f (the default)
-    // is every card without one. See Entity.h's pushAway.
+    // Recoil after attacking (Firecracker); see pushAway.
     float recoilDistance = 0.0f;
 
-    // Minimum attack range / "blind spot" (Mortar): can't hit anything
-    // closer than this, on top of the normal `attackRange` maximum --
-    // real game leaves the attacker just standing idle against a target
-    // that's ducked inside the blind spot instead of retargeting, but
-    // this engine's targeting has no notion of "valid target, but
-    // currently unreachable" separate from "not a valid target at all",
-    // so a candidate inside the blind spot is filtered out of
-    // findTarget() entirely, same as if it were on the wrong team --
-    // this attacker just finds the next-closest legal target instead of
-    // freezing up. 0.0f (the default) is every card without one.
+    // Minimum range / blind spot (Mortar). The real attacker idles against a
+    // target inside it; here such a target is simply not valid, so the attacker
+    // picks the next legal one.
     float minAttackRange = 0.0f;
 
-    // Sight/aggro range (distinct from attackRange -- see findTarget()
-    // below): how far this attacker can detect an enemy troop/building to
-    // go fight instead of just heading for the enemy tower. Sourced per-
-    // card (a Clash Royale community stats breakdown of exactly this,
-    // not shown on the in-game card info screens); 5.5 tiles is that
-    // source's own stated "main standard for most cards", used here as
-    // the default for every card not individually called out with its
-    // own value. For buildings this is generally the same number as
-    // their own attackRange (buildings can't chase, so sight beyond
-    // attack range would never actually matter) but is still set
-    // per-card from the same source rather than derived from
-    // attackRange, since the two aren't always exactly equal in the
-    // sourced data.
+    // Sight / aggro range (distinct from attackRange; see findTarget()): how
+    // far this unit can detect an enemy to go fight instead of heading for a
+    // tower. Sourced per card; 5.5 is the source's standard for cards without
+    // their own value. Set per card for buildings too, not derived from
+    // attackRange.
     float sightRange = 5.5f;
 
-    // HP-threshold transform (Cannon Cart: at <=50% hp, permanently
-    // grounds itself and gets a fixed lifespan before self-destructing).
-    // transformAtHpFraction == 0.0f (the default) disables the mechanic;
-    // transformCheckMaxHp is the hp this attacker spawned with (read back
-    // by CardStats::withHpTransform, same "reads back hp already set"
-    // idiom as withEnrage) -- the fraction is computed against that, not
-    // against whatever hp happens to be at any later moment. Modeled by
-    // reusing applyFreeze(ticks, 0.0f) to zero out movement for the
-    // transform's duration (see update() below) rather than adding a
-    // second, CombatEntity-level "speed" concept -- Troop already has its
-    // own speed field one layer up, and a full 0.0 freeze already means
-    // "can't move" exactly like the real transform's grounding.
+    // HP-threshold transform (Cannon Cart: at <= 50% hp it grounds itself and
+    // self-destructs after a fixed lifespan). The fraction is of
+    // transformCheckMaxHp, the spawn hp. Grounding reuses applyFreeze(ticks,
+    // 0).
     float transformAtHpFraction = 0.0f;
     int transformCheckMaxHp = 0;
     int transformLifetimeTicks = 0;
@@ -459,193 +272,96 @@ public:
     bool hasTransformed = false;
     int transformTicksRemaining = 0;
 
-    // HP-threshold transform, archetype-swap variant (Goblin Demolisher:
-    // becomes a fundamentally different unit -- ranged squad turns into a
-    // melee building-only kamikaze -- not just "the same stats, grounded"
-    // like Cannon Cart above). This engine has no way to change an
-    // already-spawned entity's C++ type in place, so it's modeled by
-    // killing this entity outright the instant the threshold is crossed
-    // (see update() below) and letting the ordinary deathEffect/
-    // SpawnOnDeath machinery -- already used everywhere else for
-    // Golem/Golemites, Lava Hound/Pups, etc. -- spawn the transformed
-    // form as a normal, independent child entity. false (the default) is
-    // every other transform-capable card, which uses
-    // transformBecomesStationary instead.
+    // Transform into a different unit (Goblin Demolisher): an entity's C++ type
+    // cannot change in place, so it dies at the threshold and
+    // transformDeathEffect spawns the new form.
     bool transformKillsSelf = false;
-    // Fired only by the transformKillsSelf self-kill itself (see update()
-    // below) -- deliberately a SEPARATE slot from the ordinary
-    // `deathEffect` above, not a reuse of it. A genuine combat death (a
-    // hit big enough to skip straight past the transform threshold to 0
-    // hp in one blow, never triggering the transform check at all) must
-    // NOT also spawn the transformed form -- only an actual
-    // threshold-triggered transform should.
+    // A separate slot from `deathEffect`: a hit that kills outright, skipping
+    // the threshold, must not spawn the transformed form.
     std::shared_ptr<IDeathEffect> transformDeathEffect;
 
-    // Periodic jump (Mega Knight): once a ground target is between
-    // jumpMinRange and jumpMaxRange away (farther than normal
-    // attackRange), instantly closes the distance -- reusing the exact
-    // same pullToward primitive as Fisherman's hook, just pulling this
-    // attacker toward the target instead of the other way around -- and
-    // lands a boosted, splashy hit immediately instead of spending
-    // several ticks walking in. jumpMaxRange == 0.0f (the default)
-    // disables the mechanic for every card without one.
+    // Periodic jump (Mega Knight): a ground target between jumpMinRange and
+    // jumpMaxRange is closed on instantly with a boosted, splashing hit.
     float jumpMinRange = 0.0f;
     float jumpMaxRange = 0.0f;
     float jumpDamageMultiplier = 1.0f;
     float jumpSplashRadius = 0.0f;
 
-    // Piercing-line hit (Bowler, Magic Archer): instead of a circular
-    // splash around the primary target, hits everyone within splashRadius
-    // of the straight line from this attacker's own position toward the
-    // target, out to lineSplashRange total distance -- splashRadius is
-    // reused as the line's half-width rather than adding a whole separate
-    // field, matching this engine's existing habit of dual-purposing one
-    // field across a card's single active mode (see auraRadius above).
-    // lineSplash == false (the default) is every other card, which keeps
-    // the ordinary circular applySplashDamage behavior.
+    // Piercing line (Bowler, Magic Archer): hits everyone within splashRadius
+    // (reused as the half-width) of the line from this attacker toward the
+    // target, out to lineSplashRange.
     bool lineSplash = false;
     float lineSplashRange = 0.0f;
 
-    // Range-based damage falloff (Hunter): unlike every other numeric
-    // field on this class, this one is NOT modeling a sourced mechanic --
-    // the wiki research explicitly found no documented falloff formula
-    // (the real effect is 10 fixed-damage pellets in a random spread,
-    // fewer of which statistically land at range; no angle/probability
-    // curve is published anywhere). This is a deliberately invented,
-    // clearly-labeled approximation of the *qualitative* behavior
-    // ("weaker at range") via a deterministic linear scale instead --
-    // kept deterministic on purpose, matching every other mechanic in
-    // this engine (including the real game's OTHER randomized cards,
-    // e.g. Bowler's knockback, all modeled without dice rolls), since
-    // combat here needs to stay reproducible for both tests and RL
-    // training. rangeFalloff == false (the default) is every other card.
+    // Range falloff (Hunter). Not a sourced mechanic: the real card fires 10
+    // randomly spread pellets and no curve is published. A deterministic linear
+    // scale approximates "weaker at range", keeping combat reproducible.
     bool rangeFalloff = false;
     float rangeFalloffMinFraction = 1.0f; // damage fraction at max range
 
-    // Bonus damage within a specific distance band (Archers' Power Shot:
-    // +50% at 4-6 tiles; Executioner's Axe Smash: +75% at <= 3.5 tiles) --
-    // distinct from rangeFalloff above (a continuous scale-down across the
-    // whole range), this is a flat multiplier that only applies while
-    // lastAttackDistance falls within [rangeBandMinDist, rangeBandMaxDist].
-    // rangeBandMaxDist == 0.0f (the default) disables it for every card
-    // that doesn't opt in.
+    // Bonus damage within a distance band (Archers' Power Shot: +50% at 4-6
+    // tiles; Executioner's Axe Smash: +75% at <= 3.5), from lastAttackDistance.
+    // rangeBandMaxDist == 0 disables it.
     float rangeBandMinDist = 0.0f;
     float rangeBandMaxDist = 0.0f;
     float rangeBandDamageMultiplier = 1.0f;
 
-    // Distance to the target at the moment of the most recent attack --
-    // set right alongside currentHitCount, just before performAttack(),
-    // purely so getCurrentDamage() (a const method with no target of its
-    // own) has something to scale rangeFalloff against.
+    // Distance to the target at the last attack, for getCurrentDamage(), which
+    // has no target of its own.
     float lastAttackDistance = 0.0f;
 
-    // Champion-only activated ability (Mighty Miner's "Explosive Escape",
-    // and any future Champion). isChampion itself gates no combat behavior
-    // on its own -- Champions fight exactly like an ordinary troop of
-    // their archetype (see CardStats::isChampion's own comment for why
-    // this isn't a 7th Archetype); it exists purely so
-    // GameManager::activateChampionAbility can find "my one deployed
-    // Champion" on the board by scanning for (team, isAlive(), isChampion)
-    // instead of a fragile cardId allowlist. false (the default) is every
-    // non-Champion card.
+    // Champion marker. Gates no combat behaviour; lets GameManager find the
+    // deployed Champion.
     bool isChampion = false;
-    // Hero marker (see CardStats::isHero's own comment) -- every existing
-    // Champion-slot consumer (PlayerState::seedSlotState, GameManager::
-    // playCard's tracking hook/Mirror-block) checks `isChampion || isHero`,
-    // so a Hero shares the exact same per-slot ability-tracking/activation
-    // path as a Champion without any of that machinery needing to change.
-    // false (the default) is every non-Hero card, including all 8 Champions.
+    // Hero marker; Champion-slot code checks `isChampion || isHero`, so Heroes
+    // share the Champion path.
     bool isHero = false;
-    // In-battle elixir cost of activating this ability -- separate from
-    // CardStats::cost (the up-front deploy cost already spent placing this
-    // entity on the board), charged again on every activation by
-    // GameManager::activateChampionAbility. 0.0f (the default, alongside
-    // abilityEffect == nullptr) means "no activated ability" -- every
-    // non-Champion card.
+    // Elixir charged on each activation, on top of the card's deploy cost. 0
+    // with a null abilityEffect means no ability.
     float abilityElixirCost = 0.0f;
-    // Cooldown between activations, and how many ticks remain before the
-    // next one is allowed. abilityCooldownRemaining starts at 0 -- ready
-    // immediately at deploy, matching the real game's Champions (no forced
-    // wait before the first use) -- and is reset to abilityCooldownTicks
-    // every time activateAbility() actually fires.
+    // Cooldown between activations. Starts at 0 (ready at deploy) and resets to
+    // abilityCooldownTicks on each activation.
     int abilityCooldownTicks = 0;
     int abilityCooldownRemaining = 0;
-    // What the ability actually does (Mighty Miner: teleport + delayed bomb
-    // -- see MightyMinerEscapeEffect in core/, following the same
-    // "concrete effects live in core/" convention as SpawnOnDeath/
-    // PeriodicSpawnEffect). nullptr (the default) is every card without
-    // one -- activateAbility() is always a no-op in that case, regardless
-    // of cooldown.
+    // What the ability does (e.g. MightyMinerEscapeEffect in core/). nullptr
+    // makes activateAbility() a no-op.
     std::shared_ptr<IAbilityEffect> abilityEffect;
-    // -1 (the default) means unlimited activations, gated only by cooldown/
-    // elixir like every other Champion. 0 or positive is a hard cap on how
-    // many times activateAbility() can ever fire (Boss Bandit: 2 uses per
-    // deployment, no more once exhausted regardless of cooldown/elixir).
+    // -1 is unlimited; otherwise a hard cap on activations (Boss Bandit: 2).
     int abilityUsesRemaining = -1;
 
-    // Soul collection (Skeleton King's Soul Summoning): counts nearby
-    // deaths -- ally or enemy alike, matching the real card's "a troop
-    // dies in his presence" wording -- via onNearbyDeath below, up to
-    // maxSouls. soulCollectionRadius == 0.0f (the default) is every
-    // non-soul-collecting card; onNearbyDeath is simply never relevant for
-    // them (no filter needed there beyond the radius check itself).
+    // Soul collection (Skeleton King): counts deaths within radius, ally or
+    // enemy, via onNearbyDeath, up to maxSouls.
     float soulCollectionRadius = 0.0f;
     int soulCount = 0;
     int maxSouls = 0;
 
-    // Temporary invisibility + attack-speed buff (Archer Queen's Cloaking
-    // Cape, Boss Bandit's Getaway Grenade) -- a fixed-duration window,
-    // unlike startsInvisible/revealTicksAfterAttack above (which reveals
-    // on landing a hit, not after a timer). The real cards' accompanying
-    // movement-speed change isn't modeled -- speed lives on Troop, a layer
-    // above CombatEntity, same documented gap as Rage's own movement-speed
-    // component elsewhere in this codebase.
+    // Timed invisibility plus attack-speed buff (Archer Queen's Cloaking Cape,
+    // Boss Bandit's Getaway Grenade). Their movement-speed change is not
+    // modelled.
     int temporaryInvisibilityTicksRemaining = 0;
     float temporaryHitSpeedMultiplier = 1.0f;
 
-    // Self-haste on landing a hit, refreshing on every subsequent hit
-    // (Evolved Barbarians' Blade Rage: +35% attack speed for 3s, timer
-    // resets while they keep attacking) -- deliberately separate from
-    // temporaryInvisibilityTicksRemaining/temporaryHitSpeedMultiplier
-    // above: those are champion-ability-activation-only (see
-    // CardFactories::applyCardMetadata's own comment) and carry an
-    // invisibility side effect this needs to avoid. selfHasteDurationTicks
-    // == 0 (the default) disables it; the real card's accompanying
-    // movement-speed component isn't modeled, same documented gap as
-    // Rage/Baby Dragon Evolution elsewhere in this file.
+    // Self-haste on each landed hit, refreshed while attacking (Evolved
+    // Barbarians' Blade Rage: +35% attack speed for 3 s). Separate from the
+    // ability haste above, which carries invisibility. Movement speed not
+    // modelled.
     int selfHasteDurationTicks = 0;
     float selfHasteCooldownMultiplier = 1.0f;
     int selfHasteTicksRemaining = 0;
 
-    // Temporary flight (Hero Wizard's Fiery Flight): isFlying itself lives
-    // on Entity (see its own comment there) and is already read live every
-    // tick by isValidTarget/Troop::moveTowards/Board's collision grouping,
-    // so toggling it at runtime needs no new field of its own -- this timer
-    // just reverts isFlying=false once the window ends. Does NOT also
-    // toggle ignoresRiver (fixed at spawn, CardFactories::
-    // shouldIgnoreRiver) -- an accepted gap, same as the real ability not
-    // relocating her across the map either. 0 (the default) is every card
-    // without a temporary flight window.
+    // Temporary flight (Hero Wizard's Fiery Flight): isFlying is read live
+    // everywhere, so this timer only reverts it. ignoresRiver is fixed at spawn
+    // and not toggled.
     int temporaryFlightTicksRemaining = 0;
-    // On-hit tornado pulse while the flight window is active (Hero
-    // Wizard's Fiery Flight: fireballs gain their own damaging, pulling
-    // tornado) -- see update()'s attack-landing block. Centered on the
-    // TARGET's position, unlike Evolved Valkyrie's onHitPullRadius above
-    // (centered on self) -- this accompanies a ranged hit landing on the
-    // target, not a melee spin around the caster. 0 (the default) is every
-    // card without one.
+    // On-hit tornado pulse during the flight window, centred on the TARGET
+    // (unlike Evolved Valkyrie's pull, centred on self).
     int flightPulseTicksRemaining = 0;
     float flightPulseRadius = 0.0f;
     int flightPulseDamage = 0;
     float flightPulsePullDistance = 0.0f;
 
-    // Hit-speed ramp while locked onto the same target (Little Prince):
-    // unlike rampMidTick/rampFullTick above (which ramp DAMAGE while
-    // attackCooldown stays fixed, for Inferno Dragon/Tower/Mighty Miner),
-    // this ramps the COOLDOWN itself down -- he fires faster, not harder,
-    // the longer he stays locked on. hitSpeedRampFullTick == 0 (the
-    // default) disables it for every other card, matching rampFullTick's
-    // own "0 disables" convention.
+    // Hit-speed ramp while locked on the same target (Little Prince): the
+    // cooldown shrinks, rather than the damage growing. 0 disables it.
     int hitSpeedRampMidTick = 0;
     int hitSpeedRampFullTick = 0;
     float hitSpeedRampMidFraction = 1.0f;
@@ -661,9 +377,7 @@ public:
         return (!startsInvisible || visibleTicksRemaining > 0) && temporaryInvisibilityTicksRemaining <= 0;
     }
 
-    // Soul collection (Skeleton King) -- see soulCollectionRadius's own
-    // comment. Counts ANY death within radius, ally or enemy alike,
-    // matching the real card's wording.
+    // Soul collection: any death within radius, ally or enemy.
     void onNearbyDeath(Board&, const Vector2D& deathPosition, int) override {
         if (soulCollectionRadius <= 0.0f || soulCount >= maxSouls) return;
         if (position.distanceTo(deathPosition) <= soulCollectionRadius) {
@@ -681,49 +395,37 @@ public:
         curseTicksRemaining = ticks;
     }
 
-    // Activated ability (Champion-only). Fires abilityEffect and resets the
-    // cooldown, but only when one is actually configured and off cooldown
-    // -- elixir affordability is GameManager's concern (mirrors playCard's
-    // own split: CombatEntity/CardFactories never touch PlayerState), so
-    // the caller (GameManager::activateChampionAbility) must confirm and
-    // deduct elixir BEFORE calling this; this method only ever gates on
-    // cooldown/configuration. Returns whether it actually fired.
+    // Fires abilityEffect and restarts the cooldown if configured, off cooldown
+    // and not exhausted. Elixir is GameManager's concern and must be checked
+    // and deducted before calling. Returns whether it fired.
     bool activateAbility(Board& board) {
         if (!abilityEffect || abilityCooldownRemaining > 0) return false;
-        if (abilityUsesRemaining == 0) return false; // exhausted (Boss Bandit-style limited uses)
+        if (abilityUsesRemaining == 0) return false; // exhausted
         abilityEffect->apply(board, *this);
         abilityCooldownRemaining = abilityCooldownTicks;
         if (abilityUsesRemaining > 0) abilityUsesRemaining--;
         return true;
     }
 
-    // Deploy delay (X-Bow: ~3.5s slow lock-on before its first shot,
-    // instead of every other card's immediately-ready-to-fire default).
-    // Called once, right after spawn, by whichever CardFactories function
-    // built this entity -- currentCooldown is otherwise protected, so
-    // this is the one seam that lets data-driven setup seed it without
-    // exposing the field itself.
+    // Deploy delay before the first shot (X-Bow's slow lock-on). Called once
+    // after spawn by CardFactories; the one seam onto the protected cooldown.
     void seedCooldown(int ticks) {
         currentCooldown = static_cast<float>(ticks);
     }
 
-    // Parry checked before shield: a parried hit is negated outright, not
-    // absorbed by (and wasting) shield capacity. Shield absorbs first,
-    // dollar-for-dollar, before any of this spills onto real hp -- matches
-    // the real game's "shield breaks silently, no damage carries over"
-    // rule (a hit bigger than the remaining shield only costs the excess,
-    // not double-counted).
+    // Parry is checked before shield, so a parried hit costs no shield. The
+    // shield absorbs first and only the excess reaches hp.
     void takeDamage(int amount) override {
         if (chargeGrantsInvulnerability && chargeThreshold > 0.0f
             && chargeProgress >= chargeThreshold * 0.5f) {
-            return; // mid-dash: fully immune
+            return; // mid-dash: immune
         }
         if (curseTicksRemaining > 0) {
             amount = static_cast<int>(amount * curseDamageTakenMultiplier);
         }
         if (parryIntervalTicks > 0 && parryTicksUntilReady <= 0) {
             parryTicksUntilReady = parryIntervalTicks;
-            return; // fully negated
+            return; // negated
         }
         if (shieldHp > 0) {
             int absorbed = (shieldHp < amount) ? shieldHp : amount;
@@ -736,10 +438,7 @@ public:
         }
     }
 
-    // Refreshes the mark outright (unlike applyFreeze's independent-judge
-    // idiom) -- matches applyBuff/applyCurse's simpler "latest application
-    // wins" behavior, the more common idiom for this kind of timed mark
-    // in this codebase.
+    // The latest application replaces the mark, like applyBuff / applyCurse.
     void applyDot(int damagePerTick, int totalTicks, int tickInterval) {
         dotDamagePerTick = damagePerTick;
         dotTicksRemaining = totalTicks;
@@ -748,10 +447,9 @@ public:
     }
 
     void applyFreeze(int ticks, float slowFactor) {
-        // Duration and strength are judged independently so a new freeze can
-        // never leave the target better off than it already was: a shorter
-        // but stronger slow no longer gets silently dropped just because a
-        // longer, weaker one is already active.
+        // Duration and strength are judged independently, so a new freeze never
+        // leaves the target better off: a shorter but stronger slow is not
+        // dropped for a longer, weaker one.
         freezeTicks = std::max(freezeTicks, ticks);
         freezeSlow = std::min(freezeSlow, slowFactor);
         if (resetCooldownOnFreeze && ticks > 0) {
@@ -759,38 +457,24 @@ public:
         }
     }
 
-    // Composes extra behavior (e.g. freeze) onto every successful attack,
-    // without needing a bespoke Entity subclass per effect combination.
+    // Composes extra behaviour onto every successful attack.
     void addOnHitEffect(std::shared_ptr<IOnHitEffect> effect) {
         onHitEffects.push_back(std::move(effect));
     }
 
     void update(Board& board) override {
-        // DEPLOY TIME. A unit that has just landed is inert -- it does not
-        // move, does not acquire a target and does not attack -- but it IS on
-        // the board and IS targetable, which is what the real game does and
-        // what makes a mistimed defensive placement punishable.
-        //
-        // Only the DECREMENT happens here; the bail-out is further down, after
-        // the status-timer block. Returning from the very top instead was the
-        // first attempt and it was WRONG: it also froze freeze/shield/buff/
-        // curse/ability-cooldown and the poison damage-over-time mark, so a
-        // unit deployed into a Poison would have been briefly immune and a
-        // Champion's ability cooldown would have stopped counting. Inert is not
-        // the same as time-stopped. Caught by
-        // test_game_manager.cpp's champion-cooldown case.
+        // Deploy time: only the decrement happens here. The bail-out is below
+        // the status timers, because a deploying unit is inert, not
+        // time-stopped: poison, cooldowns and buffs keep ticking.
         const bool deploying = deployTicksRemaining > 0;
         if (deploying) deployTicksRemaining--;
 
-        // Captured before the decrement below so a freeze that's about to
-        // expire this very tick still counts as "was frozen" for the ramp
-        // reset -- matches the real "a stun resets the charge" rule for
-        // every tick actually spent frozen, not all-but-the-last one.
+        // Captured before the decrement, so the last tick of a freeze still
+        // counts as frozen for the ramp reset.
         bool wasFrozen = freezeTicks > 0;
-        // Same answer, published for Troop::moveTowards -- which runs after
-        // the decrement below and cannot re-derive it. See frozenThisTick.
+        // Published for Troop::moveTowards, which runs after the decrement.
         frozenThisTick = wasFrozen;
-        ticksSinceLastHit++; // zeroed below the moment a hit actually lands this tick
+        ticksSinceLastHit++; // zeroed below when a hit lands
 
         if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
             && static_cast<float>(hp) / static_cast<float>(transformCheckMaxHp) <= transformAtHpFraction) {
@@ -798,11 +482,9 @@ public:
             if (transformKillsSelf) {
                 hp = 0;
                 if (transformDeathEffect) transformDeathEffect->apply(board, position, team);
-                // Dead this tick -- skip the rest of update() (targeting,
-                // movement, attack) entirely. Board::cleanDeadEntities()
-                // still runs its own normal dead-entity cleanup later this
-                // tick, but with deathEffect (not transformDeathEffect)
-                // left unset on this card, that pass fires nothing further.
+                // Dead this tick: skip targeting, movement and attack.
+                // cleanDeadEntities fires nothing more, since deathEffect is
+                // unset on this card.
                 return;
             }
             transformTicksRemaining = transformLifetimeTicks;
@@ -848,11 +530,8 @@ public:
             if (shieldExpiresTicksRemaining == 0) shieldHp = 0;
         }
 
-        // Poison-style damage-over-time mark from PoisonOnHit (Dart
-        // Goblin/Firecracker Evolutions) -- independent of freeze/curse,
-        // ticks down even while otherwise idle. takeDamage (not a direct
-        // hp -=) so shield/parry/curse-on-incoming-damage still apply,
-        // same as every other damage source.
+        // The damage-over-time mark, through takeDamage so shield, parry and
+        // curse apply.
         if (dotTicksRemaining > 0) {
             dotTicksRemaining--;
             dotTicksUntilNextDamage--;
@@ -862,9 +541,8 @@ public:
             }
         }
 
-        // Everything above this line is bookkeeping that must keep running
-        // while deploying. Everything below it -- periodic spawns, targeting,
-        // movement, attacking -- is ACTION, and a deploying unit takes none.
+        // Above: bookkeeping that runs while deploying. Below: action, which a
+        // deploying unit takes none of.
         if (deploying) return;
 
         if (periodicIntervalTicks > 0) {
@@ -875,40 +553,11 @@ public:
             }
         }
 
-        // Target-lock only applies once actually in attack range -- not
-        // while still chasing. If the currently-locked target is within
-        // effectiveRangeTo (i.e. this attacker is genuinely fighting it
-        // this tick, or about to), resolveCurrentTarget() is trusted as-is
-        // and findTarget() never runs: an attacker mid-fight doesn't get
-        // distracted just because something else wandered closer. But if
-        // the lock target is out of attack range (still being approached,
-        // never reached it, or just left it -- pulled out by Tornado,
-        // knocked back, etc.), there is deliberately NO lock: a fresh
-        // findTarget() scan runs this same tick and every tick after,
-        // freely switching to whatever's actually closest now. This is
-        // also where findTarget's own sightRange limit does the real
-        // work -- an attacker only ever chases something it can actually
-        // see, falling back to the nearest enemy tower once nothing else
-        // is in sight (see findTarget's own comment).
-        //
-        // A stun breaks the lock outright, same as leaving effective
-        // range: resolveCurrentTarget() is skipped entirely on a tick
-        // spent frozen, forcing a fresh findTarget() scan -- if something
-        // is already in attack range once the stun clears (or during a
-        // partial slow that still lets this tick's cooldown reach 0),
-        // this attacker goes straight for it rather than blindly resuming
-        // whatever it was fighting before. Matches the ramp system's own
-        // "stun resets the charge" rule (below) being a full reset, not
-        // just a number going back to 0 while the old fight continues
-        // uninterrupted.
-        // Forced retarget (Hero Knight's Triumphant Taunt) overrides the
-        // whole normal lock/findTarget chain below outright -- resolved
-        // first, same linear id-scan idiom as resolveCurrentTarget itself.
-        // Once forced, this becomes THE target for every purpose below
-        // (movement, lock bookkeeping, attack) exactly like any normally-
-        // resolved one; forcedTargetTicksRemaining <= 0 (every card without
-        // an active taunt on it) leaves this whole block a no-op, falling
-        // straight through to the unchanged original resolution.
+        // Targeting. A taunt overrides everything. Otherwise the lock is
+        // trusted only while the locked target is within attack range; out of
+        // range (still approaching, knocked back, pulled away) there is no
+        // lock, and findTarget() re-scans every tick for whatever is closest in
+        // sight. A stun breaks the lock outright.
         std::shared_ptr<Entity> target;
         if (forcedTargetTicksRemaining > 0) {
             for (const auto& e : board.getEntities()) {
@@ -927,10 +576,7 @@ public:
 
         if (target) {
             if (wasFrozen) {
-                // Stun always resets immediately, grace period or not --
-                // "or it is hit by a stun attack" is an unconditional
-                // reset in the sourced Evolution text, same as the
-                // baseline (non-evolved) rule this branch already covered.
+                // A stun resets unconditionally, grace period or not.
                 currentTargetId = target->id;
                 ticksOnTarget = 0;
                 ticksSinceLastHit = 0;
@@ -938,9 +584,8 @@ public:
                 bool withinGrace = rampGracePeriodTicks > 0 && ticksSinceLastHit < rampGracePeriodTicks;
                 currentTargetId = target->id;
                 if (!withinGrace) ticksOnTarget = 0;
-                // else: keep the current ramp stage across the switch --
-                // this tick neither resets nor increments it, matching the
-                // existing "switch tick itself doesn't count" shape below.
+                // else keep the ramp stage across the switch; this tick neither
+                // resets nor increments it.
             } else {
                 ticksOnTarget++;
             }
@@ -950,17 +595,13 @@ public:
 
             if (dist <= effectiveAttackRange) {
                 if (currentCooldown == 0.0f) {
-                    // Effects are applied by performAttack itself, not here,
-                    // because *when* they should fire depends on *when* the
-                    // damage actually lands: instantly for a direct hit, but
-                    // only on arrival for an attack that spawns a projectile.
+                    // Effects are applied by performAttack, since when they
+                    // fire depends on when the damage lands (at once for a
+                    // direct hit, on arrival for a projectile).
                     lastAttackDistance = dist;
-                    // Fired here (rather than on projectile arrival) is
-                    // fine for ticksSinceLastHit specifically -- the only
-                    // card that ever configures rampGracePeriodTicks
-                    // (Inferno Dragon Evolution) attacks instantly, same
-                    // "no projectile travel time" shaping as the base
-                    // Inferno Dragon (see its own CardRegistry comment).
+                    // Reset here, not on projectile arrival: the only
+                    // grace-period card (Inferno Dragon Evolution) attacks
+                    // instantly.
                     ticksSinceLastHit = 0;
                     if (burstEveryNAttacks > 0) {
                         attacksSinceBurst++;
@@ -992,32 +633,23 @@ public:
                             hp = (hp + enrageHealPerHit < enrageMaxHp) ? hp + enrageHealPerHit : enrageMaxHp;
                         }
                     }
-                    // Hit-speed ramp (Little Prince): fires faster, not
-                    // harder, the longer he's locked onto the same target --
-                    // ticksOnTarget already includes the hit that just
-                    // landed (incremented earlier this same update() call).
+                    // Little Prince's hit-speed ramp; ticksOnTarget already
+                    // includes this hit.
                     if (hitSpeedRampFullTick > 0) {
                         float cooldownFraction = (ticksOnTarget >= hitSpeedRampFullTick) ? hitSpeedRampFullFraction
                             : (ticksOnTarget >= hitSpeedRampMidTick) ? hitSpeedRampMidFraction
                             : 1.0f;
                         currentCooldown *= cooldownFraction;
                     }
-                    // Temporary haste (Archer Queen's Cloaking Cape, Boss
-                    // Bandit's Getaway Grenade).
+                    // Temporary ability haste (Cloaking Cape, Getaway Grenade).
                     if (temporaryInvisibilityTicksRemaining > 0) currentCooldown *= temporaryHitSpeedMultiplier;
-                    // Self-haste on hit (Evolved Barbarians' Blade Rage):
-                    // refresh the window first, then apply it to the
-                    // cooldown this same attack just set -- so the very
-                    // next attack is the hastened one, and continuing to
-                    // land hits keeps the window (and the haste) alive
-                    // indefinitely ("timer resets if they keep attacking").
+                    // Blade Rage: refresh the window, then haste the cooldown
+                    // just set, so continued hits keep the haste alive.
                     if (selfHasteDurationTicks > 0) {
                         selfHasteTicksRemaining = selfHasteDurationTicks;
                         currentCooldown *= selfHasteCooldownMultiplier;
                     }
-                    // Ally aura on landed attacks (Rune Giant's every-Nth
-                    // buff, Battle Healer's heal) -- see CombatEntity's own
-                    // aura* fields above.
+                    // Ally auras (Rune Giant's buff, Battle Healer's heal).
                     if (healAllyAmount > 0) {
                         applyAreaHeal(board, position, auraRadius, id, team, healAllyAmount);
                     }
@@ -1030,46 +662,26 @@ public:
                         }
                     }
                     if (recoilDistance > 0.0f) pushAway(*this, target->position, recoilDistance);
-                    // Self-heal on landing a hit (Evolved Bats: heals past
-                    // its own starting max hp, up to healOnHitMaxHp -- an
-                    // absolute cap set at spawn time, not a live fraction
-                    // of `hp` the way enrageMaxHp/enrageHealPerHit is).
+                    // Evolved Bats: heals past starting hp, up to the absolute
+                    // healOnHitMaxHp.
                     if (healOnHitAmount > 0 && hp < healOnHitMaxHp) {
                         hp = std::min(hp + healOnHitAmount, healOnHitMaxHp);
                     }
-                    // Self-spawn on landing a hit, capped at how many are
-                    // already alive (Evolved Skeletons' "Never-ending
-                    // Horde") -- reuses IPeriodicEffect's exact shape
-                    // (Board&, position, team) since it's the same
-                    // "spawn something at my position" need as
-                    // periodicEffect above, just triggered by a landed
-                    // hit instead of a tick interval. The cap check itself
-                    // lives inside the effect (see CappedSpawnOnHitEffect),
-                    // not here, since it needs to know which cardId to
-                    // count.
+                    // Evolved Skeletons: spawn on hit; the cap is inside
+                    // CappedSpawnOnHitEffect.
                     if (onHitSpawnEffect) onHitSpawnEffect->apply(board, position, team);
-                    // Whirlwind pull (Evolved Valkyrie): everyone in
-                    // radius takes the (typically low) pull damage,
-                    // including the entity already hit by this same
-                    // attack (excludeId -1 so nothing is skipped) and
-                    // including buildings/towers -- only the physical
-                    // pull itself exempts buildings, inside
-                    // applyPullNearby.
+                    // Whirlwind pull (Evolved Valkyrie): the pull damage
+                    // reaches everyone in radius, including this attack's
+                    // target and buildings; only the physical pull exempts
+                    // buildings.
                     if (onHitPullRadius > 0.0f) {
                         if (onHitPullDamage > 0) {
                             applySplashDamage(board, position, onHitPullRadius, -1, id, team, cardId, onHitPullDamage);
                         }
                         applyPullNearby(board, position, onHitPullRadius, onHitPullDistance, id, team);
                     }
-                    // Tornado pulse while flying (Hero Wizard's Fiery
-                    // Flight) -- centered on the TARGET, not self (see
-                    // flightPulseTicksRemaining's own comment for why this
-                    // differs from onHitPullRadius above). excludeId -1
-                    // (nothing skipped), same as Valkyrie's own onHitPullRadius
-                    // splash above -- "does its own damage" reads as
-                    // additive on top of the main hit, not a replacement,
-                    // so the primary target isn't exempted from the pulse
-                    // just because it was already hit this same attack.
+                    // Fiery Flight's tornado, centred on the target and
+                    // additive: the primary target is not exempt.
                     if (flightPulseTicksRemaining > 0 && flightPulseRadius > 0.0f) {
                         applySplashDamage(board, target->position, flightPulseRadius, -1, id, team, cardId, flightPulseDamage);
                         applyPullNearby(board, target->position, flightPulseRadius, flightPulsePullDistance, -1, team);
@@ -1077,13 +689,8 @@ public:
                     if (dieAfterFirstHit) hp = 0;
                 }
             } else if (jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {
-                // Jump: instantly close to just inside attack range instead
-                // of walking in over several ticks, then land the boosted,
-                // splashy hit immediately -- Mega Knight's leap. A simpler
-                // self-contained special case than the main attack branch
-                // above, same precedent as the hook branch below (no
-                // enrage/aura/dieAfterFirstHit follow-up, none of Mega
-                // Knight's cards need it here).
+                // Jump (Mega Knight): close to just inside attack range and
+                // land a boosted, splashing hit at once.
                 pullToward(*this, target->position, dist - effectiveAttackRange + 0.1f);
                 int jumpDamage = static_cast<int>(getCurrentDamage() * jumpDamageMultiplier);
                 target->takeDamage(jumpDamage);
@@ -1092,40 +699,27 @@ public:
                 applySplashDamage(board, target->position, jumpSplashRadius, target->id, id, team, cardId, jumpDamage);
                 currentCooldown = static_cast<float>(attackCooldown);
             } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
-                // Hook: instantly pull the target to just inside melee
-                // range instead of walking toward it. No damage lands this
-                // tick -- the real hit happens on a later, normal-range
-                // attack once it arrives, consistent with the real card
-                // (hook first, melee second). If `target` ever resolved to
-                // a building this would be a no-op, same as every other
-                // pull/push in this codebase -- see pullToward's own
-                // comment.
+                // Hook: pull the target to just inside melee range; the damage
+                // lands on a later hit. A no-op on a building.
                 pullToward(*target, position, dist - effectiveAttackRange + 0.1f);
                 currentCooldown = static_cast<float>(attackCooldown);
             } else {
                 Vector2D beforeMove = position;
-                // Lane-aware approach. A King objective is walked to UP THIS
-                // UNIT'S OWN LANE rather than cut diagonally across the arena;
-                // for every other target this is exactly target->position, so
-                // the common case is bit-identical. See LanePath::approachPoint.
+                // Lane-aware approach: a King objective is walked to up this
+                // unit's own lane; any other target is its own position
+                // (LanePath::approachPoint).
                 moveTowards(board, LanePath::approachPoint(board, team, position, target));
                 if (chargeThreshold > 0.0f) chargeProgress += beforeMove.distanceTo(position);
             }
         } else if (wasFrozen || rampGracePeriodTicks <= 0 || ticksSinceLastHit >= rampGracePeriodTicks) {
-            // No target at all -- reset fully if this tick was spent
-            // frozen (a stun always resets, bypassing any grace period
-            // entirely, same as the target-found branch above), or if
-            // there's no grace period configured (the baseline, unchanged
-            // rule), or the grace period already ran out.
+            // No target: reset fully if frozen this tick, with no grace period
+            // configured, or once it has run out.
             currentTargetId = -1;
             ticksOnTarget = 0;
             ticksSinceLastHit = 0;
         }
-        // else: not frozen this tick, and still within the grace period
-        // with no target to fight -- hold currentTargetId/ticksOnTarget
-        // exactly where they are, so the ramp stage is still there if a
-        // new target shows up before ticksSinceLastHit crosses
-        // rampGracePeriodTicks.
+        // else: within the grace period with no target, hold the ramp stage for
+        // a new target.
 
         clampPosition(board);
     }
@@ -1134,28 +728,17 @@ public:
         if (deathEffect) deathEffect->apply(board, position, team);
     }
 
-    // The one place "what radius does this thing occupy" is answered, for
-    // both range formulas below. A troop has no real radius of its own, so it
-    // borrows Entity::IMPLICIT_TROOP_RADIUS -- see that constant.
-    //
-    // PUBLIC, and a static taking an Entity, since 2026-08-28: AreaSpell's
-    // rolling sweep needs the same answer for its corridor test and is not a
-    // CombatEntity. Widening the access keeps this "the one place" -- the
-    // alternative was a second copy of the two lines inside AreaSpell, which
-    // is exactly the duplication this comment exists to prevent. Nothing about
-    // the function is CombatEntity-specific; it reads only Entity state.
+    // The radius an entity occupies for range math; a troop uses
+    // Entity::IMPLICIT_TROOP_RADIUS. Public and static because AreaSpell's
+    // rolling sweep needs it too.
     static float effectiveRadiusOf(const Entity& e) {
         const float r = e.getCollisionRadius();
         return (r > 0.0f) ? r : Entity::IMPLICIT_TROOP_RADIUS;
     }
 
 protected:
-    // Entity, not CombatEntity: targeting itself doesn't care about freeze
-    // or on-hit effects, and every other consumer of findTarget's result
-    // (range math, movement) only ever needs Entity's own surface. Keeping
-    // this Entity-typed means the only place that needs to know "is this
-    // actually a CombatEntity" is applyOnHitEffects below, where it's
-    // genuinely required -- not the whole targeting system.
+    // Entity-typed: targeting needs no CombatEntity surface; applyOnHitEffects
+    // narrows where needed.
     bool isValidTarget(const std::shared_ptr<Entity>& entity) const {
         return entity && entity->team != this->team && entity->isAlive() && entity->isTargetable()
             && entity->id != this->id && (!entity->isFlying || targetsAir)
@@ -1168,91 +751,35 @@ protected:
         return attackRange + ownEffectiveRadius() + effectiveRadiusOf(*target);
     }
 
-    // Sight, measured the SAME WAY as attack range above -- surface to surface,
-    // not centre to centre. findTarget() used to compare sightRange against a
-    // raw centre distance while attacking compared attackRange against
-    // effectiveRangeTo(), and two different conventions for the same geometric
-    // question opened a band in which an attacker could hit something it could
-    // not see, so it never acquired it and simply stood there.
-    //
-    // Measured 2026-08-20: a Princess Tower (attackRange 7.5, sightRange 7.5,
-    // radius 1.5) reaches a troop at 7.5 + 1.5 + 0.4 = 9.4 but saw it only
-    // within 7.5. A Musketeer stops at her own effective range of 7.9 -- inside
-    // that band every time -- and destroyed the tower from 8 tiles taking ZERO
-    // damage in return, 5355 damage dealt over 300 ticks against a 3204 hp
-    // tower. sightRange's own comment gives buildings sightRange == attackRange
-    // on the reasoning that "sight beyond attack range would never actually
-    // matter"; that reasoning is right and this is what makes it true.
-    //
-    // Keeping the two formulas parallel is the actual invariant: as long as
-    // sightRange >= attackRange, effective sight >= effective attack range, so
-    // nothing can ever attack what it cannot see. See
-    // tests/core/test_sight_range.cpp.
+    // Sight to `target`; see effectiveSightWith.
     float effectiveSightTo(const std::shared_ptr<Entity>& target) const {
         return effectiveSightWith(ownEffectiveRadius(), *target);
     }
 
-    // Same value, with this attacker's own radius passed in. findTarget scans
-    // every entity on the board and called effectiveSightTo per candidate,
-    // which re-derived `myRadius` -- a loop invariant, and a virtual call --
-    // once for each one. Identical arithmetic in identical order, so the
-    // result is bit-for-bit what it was.
-    // STRICT CENTRE-TO-CENTRE, since 2026-08-28. `sightRange` means exactly
-    // what the card catalogue says it means: a Hog Rider's 9.5 is 9.5 tiles
-    // from its centre to the target's centre, and at 9.51 there is NO aggro.
+    // Sight is strict centre-to-centre: a Hog Rider's 9.5 means 9.5 tiles
+    // centre to centre, as the published ranges do. Radii answer a hitbox
+    // question, not a vision one.
     //
-    // It used to be `sightRange + myRadius + effectiveRadiusOf(target)`, which
-    // inflated a Hog's aggro radius against a Cannon to 10.9 and let a Cannon
-    // parked deep in one lane drag a win condition off the other. Radii belong
-    // to a HITBOX question ("can these two touch"), not to a VISION question
-    // ("can this unit see that one"), and Clash Royale's published sight
-    // ranges are centre-to-centre.
+    // One floor: attack reach is surface-to-surface (effectiveRangeTo), so a
+    // unit whose reach exceeds its sight could hit what it cannot acquire and
+    // would stand idle. Sight is therefore floored at the unit's own attack
+    // reach. The floor binds only where attackRange is close to sightRange
+    // (towers, Musketeer-likes); for long-sight cards sightRange wins outright.
+    // Without it, two Musketeers would stop out of each other's sight.
     //
-    // THE ONE FLOOR, and it is not a softening of the rule above. Attack range
-    // in this engine IS measured surface-to-surface (`effectiveRangeTo`), so a
-    // unit whose attack REACH exceeds its sight would be able to hit something
-    // it cannot acquire -- it never targets, and simply stands there. That is
-    // the measured 2026-08-20 free-siege defect: a Princess Tower (sight 7.5,
-    // reach 7.5+1.5+0.4 = 9.4) could not see a Musketeer sitting at 8.0, and
-    // she removed the tower from 8 tiles taking ZERO damage -- 5355 damage
-    // dealt, 0 received. Flooring sight at the unit's own attack reach is what
-    // keeps "whatever it can attack, it can see" true.
-    //
-    // The floor binds ONLY where attackRange is within a couple of tiles of
-    // sightRange (towers, Musketeer-likes), and only for a card whose sight
-    // already covers its attack. For every long-sight card in the catalogue --
-    // Hog 9.5, Princess 9.5, Mortar/X-Bow 11.5, Giant 7.5, Balloon 7.7 --
-    // sightRange wins outright and the check is exactly strict
-    // centre-to-centre. A Hog's floor is 0.8+0.4+1.0 = 2.2 against a sight of
-    // 9.5, so it does nothing at all.
-    //
-    // Without the floor a Musketeer pair (sight 6.0, reach 6.0+0.4+0.4 = 6.8)
-    // would stop 6.8 apart, each outside the other's 6.0, and neither would
-    // ever acquire -- they would walk past each other to the towers. The floor
-    // is what keeps "if you can reach it, you can see it" true, and it is
-    // narrower than the old formula in every case: the old one added radii
-    // unconditionally, this one only where the alternative is a unit that
-    // cannot fight what it is standing next to.
+    // Takes the attacker's radius as a parameter so findTarget computes it
+    // once.
     float effectiveSightWith(float myRadius, const Entity& target) const {
         const float attackReach = attackRange + myRadius + effectiveRadiusOf(target);
-        // The floor applies ONLY to a well-formed card, i.e. one whose raw
-        // sightRange already covers its raw attackRange -- which the catalogue
-        // guarantees for all 148 (`no card can attack further than it can
-        // see`). Where that does NOT hold the unit is deliberately blind past
-        // its sight and must stay so: that is the entire point of sight, and
-        // `test_combat_entity.cpp` builds exactly that shape (attackRange 20
-        // against the 5.5 default) to pin it.
+        // Only for a card whose raw sightRange covers its raw attackRange,
+        // which the catalogue guarantees. Otherwise the unit stays blind past
+        // its sight, as test_combat_entity.cpp pins.
         if (sightRange >= attackRange && attackReach > sightRange) return attackReach;
         return sightRange;
     }
 
-    // Re-validates the currently-locked target (by id) rather than running
-    // a full closest-enemy scan -- Board has no id index, so this is still
-    // a linear pass, but it's the one that lets a locked-on attacker keep
-    // its target instead of findTarget() picking a new "closest" every
-    // tick. Returns nullptr if there's no lock, or the locked entity no
-    // longer exists / is no longer a legal target (dead, no longer
-    // targetable, etc).
+    // Re-validates the locked target by id rather than re-scanning for the
+    // closest. nullptr if there is no lock or the target is no longer legal.
     std::shared_ptr<Entity> resolveCurrentTarget(Board& board) const {
         if (currentTargetId < 0) return nullptr;
         for (const auto& entity : board.getEntities()) {
@@ -1263,18 +790,11 @@ protected:
         return nullptr;
     }
 
-    // Two-tier scan: prefer the closest valid enemy within sightRange (a
-    // troop or non-tower building it can actually "see"); only if nothing
-    // qualifies there, fall back to the closest enemy Tower regardless of
-    // distance -- a tower is always the eventual objective, never
-    // competing with something in-sight purely on raw distance (a closer
-    // tower does NOT steal aggro from a farther-but-still-in-sight enemy).
-    // Combined with update()'s existing "only trust the current lock while
-    // it's within actual attack range" check above, this reproduces the
-    // real game's targeting model: locked on and fighting once in attack
-    // range; freely re-evaluating "what's closest in sight" every tick
-    // while just chasing (no lock during the chase itself); and, with
-    // nothing in sight at all, heading for the nearest tower.
+    // The closest valid enemy in sight, towers competing on equal terms; with
+    // nothing in sight, this unit's lane objective. With update()'s "lock only
+    // within attack range" rule this is the real game's model: locked on once
+    // fighting, re-evaluating while chasing, heading for its lane's tower when
+    // blind.
     virtual std::shared_ptr<Entity> findTarget(Board& board) const {
         std::shared_ptr<Entity> closestInSight = nullptr;
         float minSightDistance = std::numeric_limits<float>::max();
@@ -1289,9 +809,9 @@ protected:
                 minTowerDistance = dist;
                 closestTower = entity;
             }
-            // Towers compete on distance like everything else; the tracking
-            // above serves only the out-of-sight fallback. Ranked by footprint
-            // distance (Entity::getTargetingRadius), sight gated on centre.
+            // The tower tracking above serves only the fallback. Ranked by
+            // footprint distance (Entity::getTargetingRadius); the sight gate
+            // uses centre distance.
             const float rank = dist - entity->getTargetingRadius();
             if (rank <= effectiveSightWith(myRadius, *entity) && rank < minSightDistance) {
                 minSightDistance = rank;
@@ -1300,23 +820,16 @@ protected:
         }
         if (closestInSight) return closestInSight;
 
-        // BLIND: nothing inside sight range. Walk our OWN lane's objective
-        // rather than whichever tower is nearest -- see LanePath.h for the
-        // measured case this fixes (a unit crossing the arena to the other
-        // lane's Princess once its own lane's is destroyed).
-        //
-        // Falls back to the old closest-tower answer when the lane objective is
-        // not a legal target for THIS attacker -- a Mortar's minAttackRange
-        // blind spot, an air/ground restriction -- so no existing edge case
-        // changes behaviour.
+        // Blind: walk this unit's own lane objective, not the nearest tower
+        // (LanePath.h). Falls back to the nearest tower when the lane objective
+        // is not a legal target for this attacker (a Mortar's blind spot,
+        // air/ground).
         auto laneTarget = LanePath::laneObjective(board, team, position);
         if (laneTarget && isValidTarget(laneTarget)) return laneTarget;
         return closestTower;
     }
 
-    // Only called when maxSplitTargets > 1 (Electro Wizard). Reuses
-    // findTarget's own eligibility filter, just keeping the N closest
-    // instead of only the closest one.
+    // For maxSplitTargets > 1 (Electro Wizard): the N closest valid targets.
     std::vector<std::shared_ptr<Entity>> findSplitTargets(Board& board, int maxCount) const {
         std::vector<std::shared_ptr<Entity>> candidates;
         for (const auto& entity : board.getEntities()) {
@@ -1332,50 +845,20 @@ protected:
         return candidates;
     }
 
-    // Ramped, charge-boosted, then split across however many targets this
-    // attack actually landed on. All three default to no-ops
-    // (rampFullTick == 0, chargeThreshold == 0.0f, currentHitCount == 1),
-    // so this returns `damage` unchanged for every card that doesn't opt
-    // into any of them.
-// Read-only views of protected combat stats. Added purely so the observation
-// encoder (ClashEnv::extractObservationForTeam's attribute channels) can
-// describe what a unit on the board actually does, without being granted
-// write access to it and without a friend declaration.
-//
-// This opens a short public: block and closes it again immediately below, so
-// getCurrentDamage() and everything after it keep the exact access they had
-// before. That is why damage is exposed as a derived per-tick rate here
-// rather than by making getCurrentDamage() itself public -- widening an
-// existing member's access is a bigger change than adding a new one.
+// Read-only views of protected combat stats, for the observation encoder's
+// attribute channels.
 public:
     float getAttackRange() const { return attackRange; }
     int getAttackCooldown() const { return attackCooldown; }
 
-    // Ticks this entity has been continuously engaged with its current target.
-    // Read-only, added for the deepCopy divergence tests -- same rationale as
-    // Projectile::getTargetId(), which exists so those tests can assert the
-    // remap happened instead of inferring it from where damage landed.
-    //
-    // WHY THIS ONE FIELD AND NOT THE WHOLE TIMING TABLE. Every other internal
-    // timing field has an adequate behavioural proxy and is covered that way in
-    // tests/core/test_snapshot_timing_state.cpp: currentCooldown through the
-    // public seedCooldown() seam, Building::ticksAlive through its mod-10 decay
-    // phase, AreaSpell's fuse through an hp trajectory. ticksOnTarget is the
-    // exception -- its only public proxy, getDamagePerTick(), routes through
-    // getCurrentDamage() and collapses it into at most four ramp BUCKETS, so a
-    // within-bucket desync is invisible; and on a card with rangeFalloff that
-    // proxy also varies continuously with lastAttackDistance, which stops the
-    // ramp stage from being separable at all.
-    //
-    // Additive and const: no existing symbol changes meaning, no field becomes
-    // writable, no gameplay path is touched. See perception/UPSTREAM_REQUESTS.md
-    // item 17.
+    // Ticks engaged with the current target, for the deepCopy divergence tests
+    // (perception/UPSTREAM_REQUESTS.md item 17). Its only other proxy,
+    // getDamagePerTick(), collapses it into ramp buckets, so a within-bucket
+    // desync would be invisible.
     int getTicksOnTarget() const { return ticksOnTarget; }
 
-    // Damage per TICK, the comparable quantity: a 755-damage Mini PEKKA
-    // swinging every 16 ticks is not 3.7x a 202-damage Knight swinging every
-    // 12. Built on getCurrentDamage() rather than raw `damage` so ramp,
-    // charge and buff state are all reflected.
+    // Damage per tick, the comparable quantity, including ramp, charge and buff
+    // state.
     float getDamagePerTick() const {
         int cooldown = attackCooldown > 0 ? attackCooldown : 1;
         return static_cast<float>(getCurrentDamage()) / static_cast<float>(cooldown);
@@ -1414,42 +897,33 @@ protected:
 
     virtual void performAttack(Board& board, std::shared_ptr<Entity> target) = 0;
 
-    // Called by a direct-damage performAttack override at the exact moment
-    // its damage lands. Ranged attacks don't call this -- they hand
-    // onHitEffects to the Projectile instead, so effects land with the hit.
-    // On-hit effects (freeze, etc.) only ever mean something against a
-    // CombatEntity, so the cast happens here, once, rather than forcing
-    // every target-typed signature in the codebase to narrow to
-    // CombatEntity just to serve this one specific need.
+    // Called by direct-damage performAttack overrides as the damage lands;
+    // ranged attacks hand onHitEffects to the Projectile instead. On-hit
+    // effects apply only to a CombatEntity.
     void applyOnHitEffects(const std::shared_ptr<Entity>& target) const {
         if (onHitEffects.empty()) return;
         auto combatTarget = std::dynamic_pointer_cast<CombatEntity>(target);
-        if (!combatTarget) return; // not something on-hit effects can apply to
+        if (!combatTarget) return; // nothing to apply on-hit effects to
         for (const auto& effect : onHitEffects) {
             effect->apply(combatTarget);
         }
     }
 
     virtual void moveTowards(Board& board, const Vector2D& dest) {
-        // Default: stationary entities don't move
+        // Default: stationary.
         (void)board;
         (void)dest;
     }
 };
 
-// Splash damage: applies `dealt` to every other valid enemy within `radius`
-// of `origin`, on `attackerTeam`'s behalf, each getting its own
-// DamageDealtEvent. A free function rather than a CombatEntity method,
-// since direct-damage attackers (MeleeTroop/BuildingTargeter/Building) and
-// Projectile (ranged attacks, arriving after the shooter's own
-// performAttack() already returned) both need it, and Projectile isn't a
-// CombatEntity. No-op when radius <= 0 -- every card that doesn't opt into
-// splash, the default.
+// Splash: `dealt` to every other valid enemy within `radius` of `origin`, each
+// with its own DamageDealtEvent. A free function because Projectile, not a
+// CombatEntity, needs it too. No-op for radius <= 0.
 inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
         int attackerId, int attackerTeam, int attackerCardId, int dealt) {
     if (radius <= 0.0f) return;
     for (const auto& entity : board.getEntities()) {
-        if (entity->id == excludeId) continue; // already damaged as the primary target
+        if (entity->id == excludeId) continue; // already hit as the primary target
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
         entity->takeDamage(dealt);
@@ -1458,11 +932,8 @@ inline void applySplashDamage(Board& board, const Vector2D& origin, float radius
     }
 }
 
-// On-hit area pull (Evolved Valkyrie's Whirlwind Axe): pulls every valid
-// enemy within `radius` of `origin` toward it by `distance` tiles.
-// Buildings/Towers are never actually displaced by this -- enforced
-// inside pullToward itself (Entity.h), not a check here. No-op when
-// radius or distance <= 0.
+// On-hit area pull (Evolved Valkyrie's Whirlwind Axe) toward `origin`.
+// Buildings are never moved (pullToward). No-op for radius or distance <= 0.
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
         int excludeId, int attackerTeam) {
     if (radius <= 0.0f || distance <= 0.0f) return;
@@ -1474,11 +945,8 @@ inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, 
     }
 }
 
-// Taunt (Hero Knight's Triumphant Taunt): forces every valid enemy within
-// `radius` of `origin` onto `taunterId` as their target for `ticks` --
-// see CombatEntity::forcedTargetEntityId/forcedTargetTicksRemaining and
-// update()'s own targeting block for how this actually overrides normal
-// targeting. No-op when radius or ticks <= 0.
+// Taunt (Hero Knight): forces every valid enemy within `radius` onto
+// `taunterId` for `ticks`. No-op for radius or ticks <= 0.
 inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius, int ticks,
         int taunterId, int taunterTeam) {
     if (radius <= 0.0f || ticks <= 0) return;
@@ -1492,29 +960,24 @@ inline void applyTauntNearby(Board& board, const Vector2D& origin, float radius,
     }
 }
 
-// Piercing-line splash (Bowler, Magic Archer): applies `dealt` to every
-// valid enemy within `halfWidth` of the straight line segment from
-// `origin` (the attacker's own position at the moment it fired) toward
-// `aimPoint` (the primary target's position), extended out to `range`
-// total distance from origin -- a real line/rectangle hit test instead of
-// applySplashDamage's circle-around-the-primary-target. No-op when range
-// or halfWidth <= 0 -- every card that doesn't opt into line splash.
+// Piercing line (Bowler, Magic Archer): `dealt` to every valid enemy within
+// `halfWidth` of the segment from `origin` (where the attacker fired) toward
+// `aimPoint`, out to `range`. No-op for range or halfWidth <= 0.
 inline void applyLineSplashDamage(Board& board, const Vector2D& origin, const Vector2D& aimPoint,
         float range, float halfWidth, int excludeId, int attackerId, int attackerTeam, int attackerCardId, int dealt) {
     if (range <= 0.0f || halfWidth <= 0.0f) return;
     float dx = aimPoint.x - origin.x;
     float dy = aimPoint.y - origin.y;
     float lineLen = std::sqrt(dx * dx + dy * dy);
-    if (lineLen <= 0.01f) return; // no direction to fire along
+    if (lineLen <= 0.01f) return; // no direction
     float ux = dx / lineLen, uy = dy / lineLen; // unit direction, origin -> aimPoint
 
     for (const auto& entity : board.getEntities()) {
-        if (entity->id == excludeId) continue; // already damaged as the primary target
+        if (entity->id == excludeId) continue; // already hit as the primary target
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
 
-        // Project the candidate onto the line, clamped to [0, range] so
-        // nothing behind the shooter or past the line's far end counts,
-        // then measure perpendicular distance from that closest point.
+        // Project onto the line, clamped to [0, range], then take the
+        // perpendicular distance.
         float proj = (entity->position.x - origin.x) * ux + (entity->position.y - origin.y) * uy;
         if (proj < 0.0f) proj = 0.0f;
         if (proj > range) proj = range;
@@ -1530,11 +993,9 @@ inline void applyLineSplashDamage(Board& board, const Vector2D& origin, const Ve
     }
 }
 
-// Ally buff: applies a temporary damage buff to up to maxTargets of the
-// closest same-team CombatEntity within radius of origin (Rune Giant's
-// per-3rd-attack enchant, Lumberjack's death-potion, Rage). excludeId
-// skips the source itself (a buffing unit doesn't buff itself). No-op
-// when radius <= 0 or maxTargets <= 0.
+// Damage buff on up to maxTargets of the closest same-team entities within
+// radius (Rune Giant's enchant, Lumberjack's potion, Rage), excluding the
+// source. No-op for radius or maxTargets <= 0.
 inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, const Vector2D& origin, float radius, int excludeId,
         int team, float multiplier, int durationTicks, int maxTargets) {
     if (radius <= 0.0f || maxTargets <= 0) return {};
@@ -1556,11 +1017,9 @@ inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, co
     return candidates;
 }
 
-// Ally heal (Battle Healer): heals every same-team Entity within radius of
-// origin by `amount`. excludeId skips the source itself. Entity has no
-// generic "max hp" concept to cap against (only Building tracks one, for
-// decay), so this can overheal past an ally's original spawn hp -- not
-// modeled, a minor simplification. No-op when radius <= 0 or amount <= 0.
+// Heal every same-team entity within radius by `amount` (Battle Healer),
+// excluding the source. There is no generic max hp to cap against, so it can
+// overheal. No-op for radius or amount <= 0.
 inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
         int team, int amount) {
     if (radius <= 0.0f || amount <= 0) return;

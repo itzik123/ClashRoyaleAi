@@ -1,26 +1,10 @@
-"""The rollout must not compute the trunk's first conv twice per step.
+"""The rollout computes the trunk's first conv once per step.
 
-`extract_features_hires` computes `hires_map = cnn_trunk[:2](spatial_obs)` and
-returns it; `extract_features` is a thin wrapper that computes the very same
-thing and THROWS THE MAP AWAY. `placement_given_card(hires_map=None)` then
-rebuilds it from `obs`. So a rollout step that called the wrapper ran the
-trunk's most expensive layer -- Conv2d(21->16) at the full 34x18 board, before
-any pooling -- twice on bit-identical input.
-
-`forward_sequence` already goes out of its way to avoid exactly this in the
-UPDATE path (it threads `hires_seq` through so the coverage pass cannot
-recompute conv1). The rollout was the half nobody threaded.
-
-MEASURED, 500 steps x 8 envs, best of 3, network portion only:
-
-    conv1 invocations per step   2  ->  1
-    wall clock                   6.505s -> 2.103s   (67.7% saved)
-    placement logits             bit-identical
-
-Bit-identity is not a hope here, it is arithmetic: both paths evaluate the same
-`cnn_trunk[:2]` on the same `spatial_obs`, with no RNG between them. That is the
-same guarantee `test_recomputed_hires_equals_the_passed_one` already pins from
-the other direction.
+`extract_features` computes the hires map and discards it, and
+`placement_given_card(hires_map=None)` then rebuilds it: the most expensive
+layer run twice on identical input. Threading `extract_features_hires`' map
+through is bit-identical by construction (same module, same input, no RNG
+between).
 """
 import pytest
 import torch
@@ -61,7 +45,7 @@ def _count_conv1(net, fn):
 
 
 def _rollout_step(net, obs, hx, cx, use_hires):
-    """One step shaped exactly like BaseTrainer.collect_rollout's inner body."""
+    """One step shaped like BaseTrainer.collect_rollout's inner body."""
     with torch.no_grad():
         if use_hires:
             feats, embeds, spatial, hires = net.extract_features_hires(obs)
@@ -78,9 +62,8 @@ def _rollout_step(net, obs, hx, cx, use_hires):
 
 
 def test_the_wrapper_really_does_discard_a_computed_map(net, obs):
-    """Pins the premise. If `extract_features` ever stops computing the hires
-    map internally, this whole optimization is moot and the test should say so
-    rather than silently keep asserting a count that no longer means anything.
+    """Pins the premise: if the wrapper stops computing the map internally, this
+    optimisation is moot and the test should say so.
     """
     n_wrapper, _ = _count_conv1(net, lambda: net.extract_features(obs))
     n_hires, _ = _count_conv1(net, lambda: net.extract_features_hires(obs))
@@ -90,8 +73,7 @@ def test_the_wrapper_really_does_discard_a_computed_map(net, obs):
 
 
 def test_a_rollout_step_runs_conv1_exactly_once(net, obs):
-    """THE regression test. Two invocations means the rollout went back to
-    letting placement_given_card rebuild the map it was already handed."""
+    """The regression test."""
     hx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     cx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     n, _ = _count_conv1(net, lambda: _rollout_step(net, obs, hx, cx, True))
@@ -101,11 +83,7 @@ def test_a_rollout_step_runs_conv1_exactly_once(net, obs):
 
 
 def test_the_unthreaded_shape_is_what_costs_two(net, obs):
-    """Negative control: the count is genuinely sensitive to the thing fixed.
-
-    Without it, `== 1` above could pass for an unrelated reason and nobody
-    would know the assertion had stopped measuring anything.
-    """
+    """Negative control: the count is sensitive to the thing fixed."""
     hx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     cx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     n, _ = _count_conv1(net, lambda: _rollout_step(net, obs, hx, cx, False))
@@ -113,11 +91,8 @@ def test_the_unthreaded_shape_is_what_costs_two(net, obs):
 
 
 def test_threading_the_map_is_BIT_IDENTICAL(net, obs):
-    """Same module, same input, no RNG between -- so this is exact, not close.
-
-    Compared with -inf mapped to a finite sentinel: the placement head masks
-    illegal cells to -inf, and `torch.equal` is False for nan but fine for inf;
-    the substitution keeps the comparison honest either way.
+    """Exact, not close. -inf is mapped to a finite sentinel for the comparison,
+    since masked cells are -inf.
     """
     hx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     cx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
@@ -131,8 +106,7 @@ def test_threading_the_map_is_BIT_IDENTICAL(net, obs):
 
 
 def test_the_masked_cells_stay_masked(net, obs):
-    """A cheap guard that the bit-identity check above is not comparing two
-    all-finite tensors that never exercised the mask."""
+    """The bit-identity check above must exercise the mask."""
     hx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     cx = torch.zeros(obs.shape[0], net.LSTM_HIDDEN)
     place, _, _, _ = _rollout_step(net, obs, hx, cx, True)
@@ -143,10 +117,8 @@ def test_the_masked_cells_stay_masked(net, obs):
 @pytest.mark.slow
 def test_the_live_trainer_rollout_runs_conv1_once_per_step(tmp_path,
                                                            monkeypatch):
-    """End to end, against the REAL collect_rollout rather than a lookalike.
-
-    The hand-written `_rollout_step` above could drift from the trainer's
-    actual body; this one drives BaseTrainer itself, so it cannot.
+    """End to end against the real collect_rollout, which the hand-written
+    `_rollout_step` could drift from.
     """
     import gymnasium as gym
 
@@ -191,12 +163,9 @@ def test_the_live_trainer_rollout_runs_conv1_once_per_step(tmp_path,
         f"(expected exactly {steps}, i.e. once per step)")
 
 
-# --- pipeline 2's opponent path -------------------------------------------
-#
-# `selfplay_env._opponent_action` had the same unthreaded shape and is equally
-# hot: it runs once per env per step for the whole of pipeline 2. net.py accepts
-# the duplicate conv in COLD paths (the eval harnesses rebuild the map from obs
-# on purpose); the frozen opponent's per-step decision is not one of those.
+# --- pipeline 2's opponent path ---
+# `selfplay_env._opponent_action` runs once per env per step for all of
+# pipeline 2, so it is threaded too; cold eval paths may rebuild the map.
 
 @pytest.mark.slow
 def test_the_selfplay_opponent_runs_conv1_once_per_decision(monkeypatch):
@@ -223,7 +192,7 @@ def test_the_selfplay_opponent_runs_conv1_once_per_decision(monkeypatch):
 
 @pytest.mark.slow
 def test_the_opponent_action_is_still_well_formed():
-    """The threading must not change what the opponent actually returns."""
+    """Threading does not change what the opponent returns."""
     from python_ai.envs import selfplay_env
     from python_ai.models.net import MicroRoyaleNet
 

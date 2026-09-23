@@ -1,27 +1,13 @@
-"""Per-card PLACEMENT diagnostics, paired across two checkpoints.
+"""Per-card placement diagnostics, paired across two checkpoints.
 
-WHAT IT MEASURES AND WHY THAT STATISTIC. For each deck card this reports how
-often that card's conditional placement argmax REPEATS across states -- its
-modal share -- not how peaked its distribution is. CLAUDE.md records why the
-distinction decides everything: measured on `model_weights_dist_e3.pth`, Mini
-PEKKA had the LOWEST per-card entropy in the deck and was the most-played card,
-while Cannon sat at 91.0% of its mass on one cell. An entropy readout flagged
-the healthiest card and cleared three dead ones. A good head is sharp but moves
-its mode with the board; a broken one returns one cell regardless of it.
+Reports each card's modal share (how often its conditional placement argmax
+repeats across states), not its entropy: a good head is sharp but moves its
+mode with the board, a broken one returns one cell regardless. Entropy can flag
+the healthiest card and clear dead ones.
 
-It also evaluates EVERY HAND SLOT at every decision, not only the slot that was
-played. A card the policy has stopped playing contributes nothing to a
-played-only readout -- which is exactly the blind spot that let the 2026-08-14
-collapse run for thousands of episodes -- so the cards this probe most needs to
-see are the ones a play-conditioned metric cannot show.
-
-A card must be IN HAND for its conditional map to exist, since the map is
-conditioned on the card's identity embedding through the chosen slot. Over
-enough states every deck card cycles into hand, so per-card samples accumulate
-without ever needing the card to be played.
-
-THE PAIRING. Both checkpoints are driven through the same env seeds, so the two
-arms see the same boards and per-card differences are not opponent variance.
+Every hand slot is evaluated at every decision, not only the played one, so a
+card the policy has stopped playing is still visible. Both checkpoints run on
+the same env seeds.
 
     python_ai/venv/Scripts/python.exe python_ai/eval/probe_placement_prior_ab.py \
         --weights-a _runs/prior_control/model_weights.pth \
@@ -76,7 +62,7 @@ def collect(weights, episodes, seeds, max_steps=400):
                 idx = logits.argmax(-1)
                 hand_ids = net.hand_card_ids(t)[0].tolist()
 
-                # EVERY slot, not just the chosen one.
+                # Every slot, not just the chosen one.
                 for slot, cid in enumerate(hand_ids):
                     if cid < 0:
                         continue
@@ -115,11 +101,11 @@ def collect(weights, episodes, seeds, max_steps=400):
 
 
 def prior_kl(card_id, mean_dist):
-    """KL(policy || human prior) for one card, over the legal cells.
+    """KL(policy || human prior) for one card over the legal cells, or None where
+    the prior has nothing to say.
 
-    The direct treatment-effect measure, and far more sensitive than win rate:
-    if the term is doing anything at all this must fall in the treated arm.
-    Returns None where the prior has nothing to say.
+    The direct treatment-effect measure: if the term does anything, this falls
+    in the treated arm.
     """
     env = E.ClashRoyaleEnv(list(gym_wrapper.DEFAULT_DECK),
                            list(gym_wrapper.DEFAULT_DECK), max_ticks=3600)

@@ -62,10 +62,9 @@ TEST_CASE("Multiple on-hit effects all fire on the same attack", "[on_hit_effect
 }
 
 TEST_CASE("applyOnHitEffects silently skips a target that isn't a CombatEntity", "[on_hit_effect][combat_entity]") {
-    // findTarget()/performAttack() stay Entity-typed (see CombatEntity.h), so
-    // in principle a direct-damage attacker could be pointed at a plain
-    // Entity. On-hit effects only make sense against a CombatEntity, so this
-    // must degrade gracefully -- damage still lands, the effect just doesn't.
+    // Targeting is Entity-typed, so a direct-damage attacker can hit a plain
+    // Entity. The damage lands; the on-hit effect, which needs a CombatEntity,
+    // does not.
     Board board;
     auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 1000, 1);
     spawn(board, enemy);

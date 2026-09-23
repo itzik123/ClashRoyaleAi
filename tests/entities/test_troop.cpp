@@ -6,10 +6,8 @@
 #include "Projectile.h"
 #include "Building.h"
 
-// Troop is abstract (inherits CombatEntity's pure virtual performAttack), so
-// MeleeTroop stands in for testing Troop's own movement/clamp behavior --
-// MeleeTroop adds nothing on top of Troop except a trivial direct-damage
-// attack, which is covered separately below.
+// Troop is abstract, so MeleeTroop stands in for its movement and clamp
+// behaviour.
 
 TEST_CASE("Troop moves in a straight line when target is on the same side of the river", "[troop][movement]") {
     Board board;
@@ -32,17 +30,13 @@ TEST_CASE("Troop routes through the nearest bridge when crossing the river", "[t
     spawn(board, enemy);
 
     auto troop = std::make_shared<MeleeTroop>(2, 10.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
-    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about river routing, not sight
+    troop->sightRange = 10.0f; // enemy at dist 10, past the default sight; this test is about routing
     troop->update(board);
 
-    // The right bridge is closer than the left from (10,10), so the troop must
-    // have drifted toward it rather than staying at x=10.
-    //
-    // Asserted as an INVARIANT, not as arithmetic. This used to pin a
-    // hand-computed post-move position (10.588172f), which silently became
-    // wrong -- and needed re-deriving by hand -- the moment the bridge moved.
-    // "It closes on the bridge it chose, and it heads upfield" is the property
-    // the test was really for, and it cannot go stale.
+    // The right bridge is closer from (10,10), so the troop drifts toward it.
+    // Asserted as an invariant (closes on its chosen bridge, heads upfield)
+    // rather than a hand-computed position that goes stale when the bridge
+    // moves.
     const float bridgeX = board.getRightBridge().x;
     REQUIRE(std::fabs(troop->position.x - bridgeX) < std::fabs(10.0f - bridgeX));
     REQUIRE(troop->position.x > 10.0f);
@@ -56,7 +50,7 @@ TEST_CASE("Troop with ignoresRiver set walks straight through the river band", "
 
     auto troop = std::make_shared<MeleeTroop>(2, 10.0f, 10.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'H');
     troop->setIgnoresRiver(true);
-    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about river routing, not sight
+    troop->sightRange = 10.0f; // enemy at dist 10, past the default sight; this test is about routing
     troop->update(board);
 
     // No bridge detour: x stays put, only y advances toward the target.
@@ -72,7 +66,7 @@ TEST_CASE("Freeze slows movement speed by the slow factor", "[troop][movement][f
     spawn(board, enemy);
 
     auto troop = std::make_shared<MeleeTroop>(2, 0.0f, 0.0f, 100, 0, 1.0f, 1.0f, 10, 10, 'K');
-    troop->sightRange = 10.0f; // enemy is placed at dist 10, beyond the default; this test is about freeze, not sight
+    troop->sightRange = 10.0f; // enemy at dist 10, past the default sight; this test is about freeze
     troop->update(board); // unfrozen: moves full `speed` (1.0)
     REQUIRE(troop->position.y == Catch::Approx(1.0f));
 
@@ -219,20 +213,9 @@ TEST_CASE("Building has no clone() override -- Clone was never valid against bui
 
 TEST_CASE("a freeze slows movement for exactly as many ticks as it slows the cooldown",
           "[troop][movement][freeze][regression]") {
-    // freezeTicks had TWO readers inside one update(), on opposite sides of
-    // the decrement:
-    //
-    //   CombatEntity::update()  reads it, decrements it, drains the cooldown
-    //   Troop::moveTowards()    reads it again, AFTER that decrement
-    //
-    // so applyFreeze(N) slowed the attack cooldown for N ticks and movement
-    // for N-1. On the final tick of any freeze the unit was already moving at
-    // full speed. At N = 1 -- and the engine registers 3-tick and 5-tick stuns
-    // (Electro Spirit, Zap) -- the movement half of the freeze did not happen
-    // at all.
-    //
-    // Same shape as the two absorbing states already recorded in CLAUDE.md:
-    // one fact, two readers, and they disagreed.
+    // freezeTicks is read by CombatEntity::update() and again by
+    // Troop::moveTowards() after the decrement; both halves of a freeze must
+    // last the same N ticks, including N = 1.
     Board board;
     auto enemy = std::make_shared<DummyEntity>(1, 0.0f, 10.0f, 100, 1);
     spawn(board, enemy);

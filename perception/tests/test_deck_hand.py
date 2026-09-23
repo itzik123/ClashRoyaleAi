@@ -1,35 +1,27 @@
 """The deck-restricted hand classifier, pinned against committed crops.
 
-RUN AGAINST BOTH DECKS. A pool is deck-specific, so one pool passing proves
-the templates for that deck are good and says nothing about the mechanism. The
-two suites here are different decks, different recordings, and different
-emulator window positions:
+Run against both decks: a pool is deck-specific, so one passing proves only
+that deck's templates. The two suites differ in deck, recording and emulator
+window position:
 
   giant  the July batch's deck, from assets/live/match_practice_01
-  hog26  gym_wrapper.DEFAULT_DECK -- the 2.6 Hog Cycle, which the live loop
-         actually plays -- from assets/recordings/2026-09-02 19-33-22.mp4
+  hog26  gym_wrapper.DEFAULT_DECK (2.6 Hog Cycle), which the live loop plays,
+         from assets/recordings/2026-09-02 19-33-22.mp4
 
-WHY THE FIXTURE IS CROPS AND NOT FRAMES
----------------------------------------
-`assets/live/` is gitignored (~1.5 GB of PNGs), so a test bound to it SKIPS on
-a fresh clone, which is the silent hole `perception/.gitignore`'s own
-tower-digit exception was written to avoid. Two dozen 61x87 crops are ~350 KB
-and make these assertions run everywhere.
+The fixture is crops, not frames: `assets/live/` is gitignored, so a test bound
+to it would skip on a fresh clone. Two dozen 61x87 crops are ~350 KB.
 
-The four `kind`s are the four things a hand slot can be doing, and three of
-them were each, at some point, read wrong:
+The four `kind`s are the four things a slot can be doing:
 
   clean   an affordable card, coloured, cost badge showing
-  dimmed  UNAFFORDABLE: the game renders the whole card -- badge included --
-          in true greyscale, so the magenta badge test fails on a slot that
-          very much holds a card. 15.1% of in-match slots on the giant
-          recording and 44.2% on hog26.
-  lifted  SELECTED: the art translates up ~11 px with a highlight bar below,
-          and a rigid template's correlation collapses from ~0.99 to ~0.15.
-          Measured at dy = -10/-11 on BOTH recordings, so it is a property of
-          the game's UI and not of one capture.
-  empty   the blue crown card-back between a play and the next card sliding
-          in. The only state that should read `blank`.
+  dimmed  unaffordable: the whole card, badge included, is rendered in true
+          greyscale, so the magenta badge test fails on a slot that holds a
+          card (15.1% of in-match slots on giant, 44.2% on hog26)
+  lifted  selected: the art moves up ~11 px with a highlight bar below, and a
+          rigid template's correlation collapses from ~0.99 to ~0.15 (on both
+          recordings, so a property of the game's UI)
+  empty   the blue card-back between a play and the next card. The only
+          state that should read `blank`.
 """
 
 from __future__ import annotations
@@ -73,14 +65,11 @@ def suite(request):
 
 
 def _deck(pool):
-    """The deck a pool was built for, derived FROM the pool.
+    """The deck a pool was built for, derived from the pool.
 
-    NOT imported from `tools.audit_hand_id`, though a deck list lives there.
-    `perception/tools/` shares its name with the repo root's `tools/`, and
-    conftest puts the repo root on sys.path to reach the compiled engine -- so
-    under pytest `tools.audit_hand_id` resolves into the wrong package and
-    raises ModuleNotFoundError, while the identical import works when a script
-    is run from perception/.
+    Not imported from `tools.audit_hand_id`: `perception/tools/` shares its
+    name with the repo root's `tools/`, which conftest puts on sys.path, so
+    under pytest that import resolves into the wrong package.
     """
     from clashroyalebuildabot.namespaces.cards import Cards
     from live.deck_hand import load_pool
@@ -117,13 +106,10 @@ def _window(crops, entry):
 
 
 def test_the_pool_holds_exactly_the_eight_cards_of_one_deck(suite):
-    """A pool is deck-specific: eight templates, no more and no fewer.
-
-    Asserted against the CARD REGISTRY rather than against `_deck()`, which is
-    itself derived from the pool -- comparing those two would be circular and
-    could not fail. The content is that every key resolves to a distinct known
-    card and the count is a full deck: a pool with a duplicate or a stray entry
-    is one that will mismap at runtime.
+    """A pool is deck-specific: eight templates, no more and no fewer. Asserted
+    against the card registry, not `_deck()` (derived from the pool, so
+    circular): every key resolves to a distinct known card and the count is a
+    full deck.
     """
     from clashroyalebuildabot.namespaces.cards import Cards
     from live.deck_hand import load_pool
@@ -140,14 +126,9 @@ def test_the_pool_holds_exactly_the_eight_cards_of_one_deck(suite):
 
 
 def test_the_live_pool_is_the_deck_the_agent_was_TRAINED_on():
-    """The default pool must cover `gym_wrapper.DEFAULT_DECK`, exactly.
-
-    This is the check the whole feature turns on. A pool that covers a
-    DIFFERENT deck still loads, still reads eight cards, and still looks
-    healthy -- it just maps every real card onto whichever of its eight
-    templates it least mismatches. `mvp_loop` derives its deck from
-    DEFAULT_DECK precisely so the live deck cannot drift from training, and
-    this asserts the templates followed it.
+    """The default pool must cover `gym_wrapper.DEFAULT_DECK` exactly. A pool for
+    a different deck still loads, reads eight cards and looks healthy, while
+    mapping every real card onto its nearest template.
     """
     from live.deck_hand import DEFAULT_POOL, load_pool
     from live.mvp_loop import _training_deck_ids
@@ -164,12 +145,9 @@ def test_the_live_pool_is_the_deck_the_agent_was_TRAINED_on():
 
 
 def test_a_pool_that_does_not_cover_the_deck_is_REFUSED(suite):
-    """The failure that must never be silent.
-
-    A pool built from another deck has a template for every card it saw and
-    none for the cards it did not, so an unseen card would be mapped onto
-    whichever of the eight it least mismatches -- confidently, every frame,
-    with nothing raising. Refusing at construction is the whole guard.
+    """A pool built from another deck would map an unseen card onto its nearest
+    template, confidently and every frame. Refusing at construction is the
+    guard.
     """
     from clashroyalebuildabot.namespaces.cards import Cards
     from live.deck_hand import DeckHandDetector, DeckPoolMissing
@@ -204,12 +182,9 @@ def test_an_empty_slot_reads_blank_and_is_not_guessed(suite):
 
 
 def test_an_unaffordable_card_is_read_but_reported_NOT_ready(suite):
-    """Identity and affordability are different questions.
-
-    The bug this pins is reading them off one signal: the magenta cost badge is
-    greyscaled along with the card, so gating identity on it made every
-    unaffordable card vanish -- one in seven in-match slots on the giant
-    recording, and nearly one in two on hog26.
+    """Identity and affordability are different questions: the cost badge is
+    greyscaled with the card, so gating identity on it made every unaffordable
+    card vanish.
     """
     name, crops, pool = suite
     det = _detector(pool)
@@ -232,12 +207,10 @@ def test_an_unaffordable_card_is_read_but_reported_NOT_ready(suite):
 
 
 def test_the_lift_search_is_what_recovers_a_selected_card(suite):
-    """Pins the MECHANISM, not just the outcome.
-
-    Without the vertical search a selected card scores below MIN_SCORE and
-    reads `blank`. Asserting only the identity would keep passing if the search
-    were deleted and MIN_SCORE quietly lowered instead -- which would trade
-    this bug for a worse one.
+    """Pins the mechanism, not just the outcome: without the vertical search a
+    selected card scores below MIN_SCORE and reads `blank`, and an
+    identity-only assertion would still pass if the search were deleted and
+    MIN_SCORE lowered.
     """
     from live.deck_hand import MIN_SCORE
 
@@ -258,20 +231,12 @@ def test_the_lift_search_is_what_recovers_a_selected_card(suite):
 
 
 def test_blank_is_never_produced_by_a_low_score_alone(suite):
-    """Presence is decided before identity, and the two must not be confused.
-
-    A genuinely empty slot still correlates well with its best template -- on
-    the giant recording the empty band tops out at 0.571 while the dimmed band
-    reaches down to 0.513, so the two OVERLAP and no score threshold can
-    separate them. That is why presence is decided on badge-or-greyscale first
-    and score only ranks the candidates afterwards.
-
-    The overlap is asserted over the fixture as a WHOLE, not per crop. An
-    earlier version required every empty crop to clear MIN_SCORE, which was
-    the giant recording's numbers written down as a universal: hog26 has an
-    empty slot at 0.431, below the floor. One such crop does not weaken the
-    argument -- the rule is unsafe as long as SOME empty slot scores like a
-    card -- but it did make the test fail on a correct classifier.
+    """Presence is decided before identity. An empty slot can correlate well with
+    its best template (on giant the empty band tops out at 0.571 and the dimmed
+    band reaches down to 0.513), so no score threshold separates them; presence
+    is badge-or-greyscale, and score only ranks candidates. The overlap is
+    asserted over the fixture as a whole, since individual empty crops can
+    score low.
     """
     from live.deck_hand import MIN_SCORE
 

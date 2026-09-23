@@ -1,8 +1,6 @@
 #pragma once
-// Minimal concrete stand-ins used only by the entity test suite.
-// The production hierarchy (Entity, CombatEntity, Troop, Building) is abstract
-// at several levels, so tests need small concrete subclasses to exercise the
-// shared base-class behavior in isolation from any single card's specifics.
+// Minimal concrete stand-ins for the entity tests: the production hierarchy is
+// abstract at several levels.
 #include "Board.h"
 #include "Entity.h"
 #include "CombatEntity.h"
@@ -10,32 +8,23 @@
 #include "CardStats.h"
 #include <memory>
 
-// Adds an entity to the board and makes it immediately visible to
-// findTarget()/collision queries, mirroring what GameManager::step() does
-// once per tick via commitPendingEntities().
+// Adds an entity and commits it immediately, as GameManager::step() does once
+// per tick.
 inline void spawn(Board& board, std::shared_ptr<Entity> entity) {
     board.addEntity(entity);
     board.commitPendingEntities();
 }
 
-// Advances `entity` past its deploy time (CardStats.h DEPLOY_TIME_TICKS), so a
-// test about what a card DOES can reach that behaviour without restating the
-// delay in every case.
-//
-// Only needed by tests that spawn through CardRegistry/CardFactories --
-// entities constructed directly (StationaryCombatant, DummyEntity, a bare
-// MeleeTroop) never get a deploy time, because applyCardMetadata is what sets
-// it. That split is deliberate: it keeps the mechanism tests independent of the
-// card pipeline, and it is why most of the suite needed no change at all.
+// Advances `entity` past its deploy time, so a test about what a card does need
+// not restate the delay. Only entities spawned through CardFactories have one;
+// directly constructed test entities never do.
 inline void advancePastDeploy(const std::shared_ptr<Entity>& entity, Board& board) {
     for (int i = 0; i < DEPLOY_TIME_TICKS; ++i) entity->update(board);
 }
 
-// Bare Entity with a no-op update(), for testing Entity's own state machine
-// (hp/isAlive/name) without any combat or movement behavior attached. Valid
-// as a findTarget()/performAttack() target (both stay Entity-typed) -- use
-// StationaryCombatant below only where a test specifically needs freeze or
-// on-hit effects, which really are CombatEntity-only concepts.
+// A bare Entity with a no-op update(), for Entity's own state; a valid target,
+// since targeting is Entity-typed. Use StationaryCombatant only where freeze or
+// on-hit effects are needed.
 class DummyEntity : public Entity {
 public:
     bool targetable = true;
@@ -48,9 +37,8 @@ public:
     bool isTargetable() const override { return targetable; }
 };
 
-// CombatEntity that never moves and never decays, isolating the
-// find-target / attack-range / cooldown / freeze logic that lives in
-// CombatEntity::update() from Troop's movement and Building's decay.
+// A CombatEntity that never moves or decays, isolating CombatEntity::update()'s
+// targeting, range, cooldown and freeze logic.
 class StationaryCombatant : public CombatEntity {
 public:
     int attackCount = 0;
@@ -64,17 +52,15 @@ protected:
     void performAttack(Board& board, std::shared_ptr<Entity> target) override {
         attackCount++;
         lastTargetId = target->id;
-        int dealt = getCurrentDamage(); // respects ramp/split, like every production leaf class
+        int dealt = getCurrentDamage(); // respects ramp and split, like the production leaf classes
         target->takeDamage(dealt);
-        applyOnHitEffects(target); // direct-damage style: effects land immediately, like MeleeTroop
+        applyOnHitEffects(target); // direct-damage: effects land immediately, as in MeleeTroop
         applySplashDamage(board, target->position, splashRadius, target->id, id, team, cardId, dealt);
     }
 };
 
-// Records its last apply() call instead of doing anything real, so tests can
-// assert *that* and *with what* a death effect fired without needing a real
-// spawn (SpawnOnDeath) behind it. apply() is const on the interface, hence
-// mutable here -- recording is the entire point of this double.
+// Records its last apply() call, so tests can check that and with what a death
+// effect fired. `mutable` because apply() is const.
 class RecordingDeathEffect : public IDeathEffect {
 public:
     mutable bool applied = false;
@@ -88,9 +74,7 @@ public:
     }
 };
 
-// Same idea as RecordingDeathEffect, but counts every call instead of just
-// the last one -- a periodic effect is expected to fire repeatedly over an
-// entity's lifetime, not just once.
+// Counts every call: a periodic effect fires repeatedly.
 class RecordingPeriodicEffect : public IPeriodicEffect {
 public:
     mutable int applyCount = 0;
@@ -104,8 +88,7 @@ public:
     }
 };
 
-// Same idea again, but for IAbilityEffect (Champion activated abilities) --
-// just counts calls, doesn't do anything real.
+// Counts IAbilityEffect calls.
 class RecordingAbilityEffect : public IAbilityEffect {
 public:
     mutable int applyCount = 0;

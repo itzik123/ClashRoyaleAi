@@ -1,35 +1,20 @@
 """Does the entropy floor pull a card's placement mass off its optimum?
 
-THE HYPOTHESIS. The placement entropy coefficient is pinned at its 0.01 floor,
-so there is a constant pressure toward a FLATTER placement distribution. Flatter
-means closer to uniform over the card's LEGAL cells -- and the uniform
-distribution has a fixed centre of mass set purely by the legal mask's geometry.
-So the entropy term does not push in a neutral direction: it pulls every card's
-mass toward its own legal region's centroid.
+Entropy pressure pushes toward uniform over the card's legal cells, whose
+centre of mass is fixed by the mask's geometry. For a card whose optimum sits
+at the edge of its legal region (The Log, capped at y <= 17.5 with its value
+near y ~ 17) the pull is large and one-directional; for Fireball, legal
+everywhere, it is small.
 
-For a card whose optimum sits near that centroid the pull is negligible. For a
-card whose optimum sits at the EDGE of its legal region the pull is large and
-one-directional, because there is no legal space on the far side to balance it.
+Per card, on the bank's high-opportunity states:
 
-The Log is the second case by construction: rolling spells have been capped at
-the own half plus the river (y <= 17.5) since 2026-08-29, and The Log's value is
-concentrated at y ~ 17, i.e. on that boundary. Fireball's legal region runs the
-whole board and its optimum sits comfortably inside.
+    uniform_y   centre of mass of a uniform distribution over the legal cells
+    optimum_y   centre of mass of the catch map
+    policy_y    centre of mass of the policy's placement distribution
 
-WHAT THIS MEASURES, per card, on the bank's high-opportunity states:
-
-    uniform_y   centre of mass of a UNIFORM distribution over the legal cells
-                -- where entropy pressure alone would put the mass
-    optimum_y   centre of mass of the CATCH MAP -- where the value actually is
-    policy_y    centre of mass of the policy's actual placement distribution
-
-`pull` is optimum_y - uniform_y: the distance and direction the entropy term
-fights the value signal over. `progress` is how far the policy has travelled
-from its optimum toward the uniform centroid, 0.0 meaning it still sits on the
-value and 1.0 meaning entropy has won completely.
-
-This is arithmetic on the mask and the value map. It needs no training, and it
-tests the MECHANISM rather than correlating two time series.
+`pull` = optimum_y - uniform_y. `progress` is how far the policy has moved from
+the optimum toward the uniform centroid: 0.0 = on the value, 1.0 = entropy has
+won.
 
     ... -m python_ai.eval.entropy_pull_geometry --bank <bank.npz> \\
         --weights model_weights_phase7.pth
@@ -111,9 +96,8 @@ def measure(net, seqs, card_name):
         p.append(row_com(cellp))                 # where the policy is
         legal_n.append(legal.sum())
     u, o, p = np.array(u), np.array(o), np.array(p)
-    # A handful of states have NO catch value on any legal cell (measured: 1.8%
-    # for The Log), so `optimum_y` is undefined there. nanmean rather than mean:
-    # six such states out of 334 turned every reported figure into nan.
+    # Some states have no catch value on any legal cell, leaving optimum_y
+    # undefined, hence nanmean.
     pull = o - u
     prog = np.where(np.abs(pull) > 1e-6, (o - p) / pull, np.nan)
     ok = np.isfinite(o)

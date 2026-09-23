@@ -2,10 +2,9 @@
 #include "OnHitEffect.h"
 #include "CombatEntity.h"
 
-// Applies a poison-style damage-over-time mark to whatever gets hit (Dart
-// Goblin/Firecracker Evolutions) -- see CombatEntity::applyDot. Split from
-// OnHitEffect.h for the same reason as FreezeOnHit: calling
-// target->applyDot(...) needs CombatEntity's complete definition.
+// A damage-over-time mark on whatever gets hit (Dart Goblin / Firecracker
+// Evolutions); see CombatEntity::applyDot. Split out for the same include-cycle
+// reason as FreezeOnHit.
 class PoisonOnHit : public IOnHitEffect {
     int damagePerTick;
     int totalTicks;

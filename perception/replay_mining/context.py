@@ -1,23 +1,18 @@
-"""The context key: computable identically from a replay frame and from our
+"""The context key, computable identically from a replay frame and from our
 engine's observation.
 
-THIS IS THE ONE MODULE WHERE THE TWO WORLDS HAVE TO AGREE. The prior is
-collected against a replay-side key and served against an obs-side key, so if
-the two disagree the prior is served into the wrong bucket and every number
-downstream still looks healthy. Both implementations therefore live here, and
-both end in the same `_classify`, so the only thing that can differ is how the
-threat is located -- which is what the paired test exercises.
+The prior is collected against a replay-side key and served against an obs-side
+key; if they disagree it is served into the wrong bucket while everything looks
+healthy. Both implementations live here and end in the same `_classify`, so
+only threat location can differ, which the paired test exercises.
 
-WHY THE KEY IS SO COARSE. The divergence probe measured that KataCR's detector
-undercounts badly: it misses the ego's own Princess Towers for the whole first
-20 s of every episode. Any feature built on unit COUNTS or HP MAGNITUDES is
-therefore biased between the two sides by an unknown amount. Presence and lane
-are far more robust -- a missed unit moves a count a lot and an argmax rarely --
-so the key uses only where the nearest threat is, and when.
+The key is coarse because KataCR's detector undercounts badly (it misses the
+ego's own Princess Towers for the first 20 s of every episode), biasing any
+count or HP magnitude between the two sides. Presence and lane are robust: a
+missed unit moves a count a lot and an argmax rarely. So the key uses only
+where the nearest threat is, and when.
 
-Our engine has no double-elixir mechanic (perception/contracts.py, Phase), so
-`phase` here is a TIME BUCKET and nothing more. It is not claiming the two
-worlds share an economy.
+`phase` is a time bucket, not a claim that the two worlds share an economy.
 """
 from __future__ import annotations
 
@@ -33,17 +28,15 @@ PHASE_EARLY, PHASE_LATE = 0, 1
 N_LANE, N_HALF, N_PHASE = 3, 3, 2
 N_CONTEXTS = N_LANE * N_HALF * N_PHASE
 
-#: Seconds after which a match counts as late. The real game's double elixir
-#: starts with 1:00 left of a 3:00 match; our engine's rate never changes, so
-#: this is only a coarse "how far in are we".
+#: Seconds after which a match counts as late: a coarse "how far in are we".
 PHASE_LATE_SECONDS = 120.0
 
-#: Board centre: the fixed point of the mirror, 8.5 -- NOT 9.0. See CLAUDE.md's
-#: arena section; a cell index runs 0..17 so the centre sits on the seam.
+#: Board centre, the fixed point of the mirror: 8.5, since cell indices run
+#: 0..17 and the centre sits on the seam.
 CENTRE_X = _E.ARENA_CENTER_X
 
-#: First row of the river, from the engine. tactics derives it from
-#: get_own_half_max_y() rather than restating 15.5.
+#: First row of the river, from the engine (tactics derives it from
+#: get_own_half_max_y()).
 RIVER_Y = tactics.RIVER_Y
 
 
@@ -58,8 +51,9 @@ def decode(idx: int) -> tuple[int, int, int]:
 
 
 def _classify(threat_x, threat_y, seconds: float) -> int:
-    """(nearest threat, match seconds) -> context index. The single point of
-    truth for every threshold, shared by both callers."""
+    """(nearest threat, match seconds) -> context index. The single definition of
+    every threshold, shared by both callers.
+    """
     phase = PHASE_LATE if seconds >= PHASE_LATE_SECONDS else PHASE_EARLY
     if threat_x is None or threat_y is None:
         return context_index(LANE_NONE, HALF_NONE, phase)
@@ -69,10 +63,9 @@ def _classify(threat_x, threat_y, seconds: float) -> int:
 
 
 def threat_from_obs(obs):
-    """Nearest enemy body in the team-0 frame, as (x, y) or (None, None).
-
-    'Nearest' is the smallest y -- our King sits at y=2.5, so a lower row is
-    further into our half. Ties break on HP, which only decides the LANE.
+    """Nearest enemy body in the team-0 frame, as (x, y) or (None, None). Nearest
+    is the smallest y (our King is at y=2.5). Ties break on HP, which decides
+    only the lane.
     """
     hp = tactics.enemy_hp_map(obs)
     ys, xs = np.nonzero(hp > 0.0)
@@ -90,8 +83,9 @@ def context_from_obs(obs) -> int:
 
 
 def threat_from_replay(episode, frame: int, transform):
-    """The same quantity from a recorded frame: nearest bel=1 body, mapped
-    into the engine frame so both sides speak one coordinate system."""
+    """The same quantity from a recorded frame: the nearest bel=1 body, mapped
+    into the engine frame.
+    """
     from .katacr_format import NON_BODY_CLASSES
 
     best = None

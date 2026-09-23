@@ -1,26 +1,15 @@
-// A/B for the 2026-08-26 hot-path rework of Board's two per-tick collision
-// functions.
+// A/B for the hot-path rework of Board's two per-tick collision functions. A
+// measurement harness built standalone (tools/audit/build.ps1 collision_bench).
 //
-// NOT a test: a measurement harness, built standalone against the header-only
-// engine (tools/audit/build.ps1 collision_bench) so it cannot perturb the
-// generated solution the .pyd and the Catch2 suite build from.
+// Both implementations live in this file so the board is held fixed and only
+// the function swaps; timing old and new builds separately would also swap in
+// the gameplay fixes shipped alongside. The `old*` functions are verbatim
+// copies of the pre-rework code, rewritten against the public getEntities()
+// surface.
 //
-// WHY BOTH IMPLEMENTATIONS LIVE IN THIS ONE FILE. The alternative -- time the
-// new code, stash the diff, rebuild, time the old code -- also swaps in the
-// gameplay fixes that shipped alongside (freeze duration, building expiry,
-// Ice Golem's slow), so the two runs would be simulating different matches and
-// the comparison would be measuring the workload, not the code. Holding the
-// board fixed and swapping only the FUNCTION removes that confound entirely.
-//
-// The `old*` functions below are verbatim copies of what Board.h contained
-// before the rework, rewritten against the public getEntities() surface. That
-// surface returns a const vector of shared_ptr, and the pointees are not const,
-// so they can mutate positions exactly as the originals did.
-//
-// Reports the MINIMUM of N repeats with the median alongside, matching
-// engine_profile.cpp: the cost is deterministic and the noise is strictly
-// additive, so the minimum is the least contaminated estimate and a wide
-// min/median gap flags a noisy box rather than hiding inside an average.
+// Reports the minimum of N repeats with the median beside it: the cost is
+// deterministic and the noise additive, so the minimum is the least
+// contaminated estimate and a wide gap flags a noisy box.
 
 #include "Board.h"
 #include "CardRegistry.h"
@@ -171,11 +160,10 @@ int main() {
     const int repeats = 40;
 
     for (int troops : { 12, 24, 40 }) {
-        // --- resolveCollisions ------------------------------------------
-        // Each call pushes overlapping units apart, so the board settles as it
-        // is measured. Each arm therefore gets its OWN freshly populated board:
-        // measuring them in sequence against one board would hand the second
-        // arm a settled position the first one paid to create.
+        // --- resolveCollisions ---
+        // Each call pushes overlapping units apart, so each arm gets its own
+        // freshly populated board; sharing one would hand the second arm a
+        // settled position.
         Result oldColl, newColl;
         size_t n = 0;
         {
@@ -191,10 +179,9 @@ int main() {
         std::printf("board population: %zu entities (%d troops + 6 towers + 2 buildings)\n",
                     n, troops);
 
-        // --- resolvePositionAgainstBuildings ----------------------------
-        // Read-only, so one shared board is fine here. Called once per MOVING
-        // TROOP per tick, so the per-tick cost is this number times the troop
-        // count.
+        // --- resolvePositionAgainstBuildings ---
+        // Read-only, so one shared board. Called once per moving troop per
+        // tick.
         Board board; populate(board, troops);
         const Vector2D probe{ 7.0f, 15.0f };
         Result oldRes = timeIt(repeats, 2000, [&] {
@@ -215,16 +202,10 @@ int main() {
         std::printf("\n");
     }
 
-    // --- observation construction, with the contents actually consumed ---
-    //
-    // engine_profile.cpp defeats dead-store removal with `if (obs.empty())`,
-    // which forces the VECTOR to exist but not its CONTENTS -- everything in
-    // this header is inlinable, so a compiler could in principle drop writes
-    // nobody reads and make the encoder look arbitrarily cheap. This block
-    // checksums every element, so no write is dead, and prints the checksum so
-    // the whole loop cannot be folded away. Read the number as an UPPER bound
-    // on the encoder: it includes a 13,606-element summation that the real
-    // caller does not pay.
+    // --- observation construction, contents consumed ---
+    // Every element is checksummed and the checksum printed, so no write can be
+    // optimised away. An upper bound on the encoder: it includes a summation
+    // the real caller does not pay.
     {
         ClashEnv env({ 15, 6, 25, 40, 24, 72, 33, 7 }, { 15, 6, 25, 40, 24, 72, 33, 7 });
         env.reset();
@@ -241,19 +222,15 @@ int main() {
                     r.minUs, r.medianUs, checksum);
     }
 
-    // --- equivalence, not just speed ------------------------------------
-    // A faster function that answers differently is not an optimisation. Same
-    // board, same probe, both implementations: the results must be BIT
-    // identical, which for the non-degenerate path they are by construction
-    // (identical operands in identical order).
+    // --- equivalence ---
+    // Same board, same probe, both implementations: results must be
+    // bit-identical.
     {
         Board board;
         populate(board, 24);
-        // Probes sitting EXACTLY on a collider's centre are excluded, and that
-        // exclusion is the point rather than a fudge: the degenerate branch of
-        // pushAwayFrom was itself fixed in this same pass (it under-pushed by
-        // exactly 1.0 tile), so those cells are SUPPOSED to differ. Everywhere
-        // else the two must agree bit for bit.
+        // Probes exactly on a collider's centre are excluded: the degenerate
+        // branch of pushAwayFrom was fixed in the same pass (it under-pushed by
+        // exactly 1.0), so those cells are meant to differ.
         auto onACentre = [&](const Vector2D& p) {
             for (const auto& e : board.getEntities())
                 if (e->getCollisionRadius() > 0.0f && p.distanceTo(e->position) < 0.001f) return true;

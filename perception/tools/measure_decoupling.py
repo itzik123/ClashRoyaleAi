@@ -1,35 +1,21 @@
 """Does stepping the engine forward beat acting on the stale board?
 
-THE QUESTION, STATED PRECISELY
-------------------------------
-The detector costs ~290 ms and the whole perceive() cycle ~502 ms, so the board
-the policy acts on is old: measured live, mean age 980 ms, p95 3254 ms.
-Temporal decoupling proposes to spend ~1 ms of engine time advancing that board
-to NOW instead of acting on it as-is.
+The board the policy acts on is old (a detector pass plus the rest of
+perceive()), so temporal decoupling proposes spending ~1 ms of engine time
+advancing it to now. That pays only if the engine's prediction is closer to
+what the game did next than the stale board is, which is not obvious: rebuilt
+units get a fresh deploy second, projectile speed is uncalibrated, and a
+forecast assumes both sides no-op.
 
-That is only worth doing if the engine's prediction is actually closer to what
-the game did next than the stale board is. It is not obvious: the engine has no
-deploy time, its projectile speed is untouched, and a forecast assumes both
-sides no-op. This measures it rather than assuming it.
+Both arms are reconstructed through the same reset+inject path and differ only
+in whether the engine is then stepped, so this isolates the engine's dynamics;
+detector misses affect both arms equally. The ground truth is the
+reconstruction of a later frame, so a perfect score means "the engine predicts
+what perception will see", the quantity the policy consumes, not that the
+engine models the game (sim_fidelity.py asks that).
 
-WHAT IS AND IS NOT BEING MEASURED
----------------------------------
-BOTH arms are reconstructed through the SAME reset+inject path, and differ only
-in whether the engine is then stepped. So this isolates the ENGINE'S DYNAMICS.
-It deliberately does NOT measure the detector's accuracy -- if perception missed
-a unit, both arms miss it identically and the comparison is unaffected.
-
-The ground truth is the reconstruction of a LATER frame, not the real game. So
-a perfect score here means "the engine predicts what perception will see", which
-is the quantity the policy actually consumes. It does not mean the engine models
-Clash Royale correctly; sim_fidelity.py is the tool for that question.
-
-AND THE NUMBER THIS CANNOT IMPROVE
-----------------------------------
-Forecasting does not make the detector faster. Perception latency stays at
-~502 ms per cycle whatever this says. What it can reduce is STALENESS -- the age
-of the world model at the moment a decision is made. Those are different
-quantities and conflating them would turn a real result into a fake one.
+Forecasting does not make perception faster; it can only reduce staleness, the
+age of the world model when a decision is made.
 """
 
 from __future__ import annotations
@@ -60,10 +46,9 @@ from live.mvp_loop import DECK, _training_deck_ids  # noqa: E402
 
 CAPTURE_FPS = 5.0
 
-# Must be MULTIPLES OF THE SAMPLE SPACING or no ground-truth frame exists at
-# t + horizon and the pair is silently dropped. At stride 2 on a 5 fps dump the
-# spacing is 0.4 s, so a horizon of 0.6 matches nothing. An earlier version used
-# a round-numbers grid and reported "too few pairs" for five of eight rows.
+# Horizons must be multiples of the sample spacing, or no ground-truth frame
+# exists at t + horizon and the pair is dropped (at stride 2 on a 5 fps dump
+# the spacing is 0.4 s).
 HORIZON_STEPS = [1, 2, 3, 4, 5, 6, 8]
 
 
@@ -108,7 +93,7 @@ def main() -> int:
     by_time = {round(t, 3): gs for t, gs in samples}
     times = sorted(by_time)
 
-    # Cost first: the whole proposition is that this is cheap.
+    # Cost first: the proposition is that this is cheap.
     costs_ms = []
     for _t, gs in samples[:40]:
         t0 = time.perf_counter()
@@ -136,26 +121,24 @@ def main() -> int:
                 continue
             base_gs = by_time[t]
 
-            # Ground truth: the LATER board reconstructed the same way, not
-            # stepped. Same pipeline on both sides isolates the dynamics.
+            # Ground truth: the later board reconstructed the same way, not
+            # stepped.
             actual_obs = forecaster.forecast(actual_gs, [MIN_HORIZON_S])[0].observation
             stale_obs = forecaster.forecast(base_gs, [MIN_HORIZON_S])[0].observation
             fc_obs = forecaster.forecast(base_gs, [horizon])[0].observation
 
-            # BOTH teams. Team 0 alone measures nothing here: across this
-            # capture the side classifier labels essentially every detected
-            # unit as team 1, so an own-units-only metric compares two empty
-            # sets and reports 0.0000 at every horizon. The enemy's units are
-            # also the half that matters most -- forecasting THEIR push forward
-            # is what a defensive decision is made against.
+            # Both teams: the side classifier labels almost every detected unit
+            # as team 1 here, so an own-units metric compares two empty sets.
+            # The enemy's push is also what a defensive decision is made
+            # against.
             towers = tower_cells()
             actual_cells = ((occupancy(actual_obs, 0) | occupancy(actual_obs, 1))
                             - towers)
             stale_cells = ((occupancy(stale_obs, 0) | occupancy(stale_obs, 1))
                            - towers)
             fc_cells = ((occupancy(fc_obs, 0) | occupancy(fc_obs, 1)) - towers)
-            # Nothing on the board either way carries no information about
-            # whether stepping helped, so it would only pad both arms with 1.0.
+            # An empty board either way says nothing about whether stepping
+            # helped; it would only pad both arms with 1.0.
             if not actual_cells and not stale_cells and not fc_cells:
                 continue
 
@@ -177,13 +160,10 @@ def main() -> int:
         print(f"{horizon:>7.1f}s {len(stale_scores):>5} {s_mean:>10.4f} "
               f"{f_mean:>10.4f} {f_mean - s_mean:>+8.4f} {better:>7} {worse:>6}{flag}")
 
-    # TIME-SCALE SWEEP. Predict t+H by stepping only k*H, and score against the
-    # board at t+H. k=0 IS the stale board, k=1 is a faithful forecast. This
-    # separates "the engine moves things the wrong way" (no k helps) from "the
-    # engine moves things too far" (an interior k wins), which decides whether
-    # the idea is fixable or dead. sim_fidelity.py runs the same sweep against
-    # the recordings and found its optimum at 1.0 -- if this disagrees, the two
-    # are measuring different things and the difference is the finding.
+    # Time-scale sweep: predict t+H by stepping k*H, scored against the board
+    # at t+H. k=0 is the stale board, k=1 a faithful forecast. No k helping
+    # means the engine moves things the wrong way; an interior k winning means
+    # too far. sim_fidelity.py runs the same sweep against the recordings.
     sweep_h = round(3 * spacing, 3)
     print(f"\ntime-scale sweep at horizon {sweep_h}s "
           f"(k=0 is the stale board, k=1 a faithful forecast):")

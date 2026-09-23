@@ -1,11 +1,6 @@
-"""RolloutBuffer: the invariant that eighteen bare Python lists could not hold.
-
-The buffer replaces per-field `obs_buffer.append(...)` / `torch.stack(...)` /
-`.clear()` triples that appeared in three places each, in two files. The failure
-mode that motivated the class is SILENT: a field appended on some steps and not
-others stacks into a misaligned batch, and the misalignment surfaces as a
-corrupted PPO ratio rather than as an error. `add()` refusing a partial row is
-what makes that impossible.
+"""RolloutBuffer: every field grows together, or `add()` refuses the row. A field
+appended on some steps and not others would stack into a misaligned batch and
+silently corrupt the PPO ratio.
 """
 import pytest
 import torch
@@ -29,12 +24,8 @@ def test_stack_returns_time_major_tensors():
 
 
 def test_a_partial_row_is_refused_rather_than_silently_misaligning():
-    """THE reason this class exists.
-
-    A field that is appended on some steps and not others produces a batch where
-    row t of one tensor belongs to a different timestep than row t of another.
-    Nothing downstream can detect that -- the shapes still broadcast, the update
-    still runs, and the PPO ratio is quietly wrong.
+    """The reason the class exists: a partial row would misalign every later row
+    with no error anywhere.
     """
     buf = RolloutBuffer(("a", "b"))
     with pytest.raises(KeyError, match="missing"):
@@ -42,7 +33,7 @@ def test_a_partial_row_is_refused_rather_than_silently_misaligning():
 
 
 def test_an_unexpected_field_is_refused_too():
-    """A typo'd field name would otherwise be accepted and then never stacked."""
+    """A typo'd field name would otherwise be accepted and never stacked."""
     buf = RolloutBuffer(("a",))
     with pytest.raises(KeyError, match="unexpected"):
         buf.add(a=torch.zeros(3), aa=torch.zeros(3))
@@ -58,8 +49,9 @@ def test_every_field_always_has_the_same_length():
 
 
 def test_clear_empties_every_field():
-    """A buffer that clears some lists and not others grows without bound, and
-    the leak shows up as an OOM many hours into a run."""
+    """A buffer that clears some lists and not others leaks until an OOM hours
+    into a run.
+    """
     buf = RolloutBuffer(("a", "b"))
     buf.add(**_row(buf, 1))
     buf.clear()
@@ -79,18 +71,16 @@ def test_duplicate_field_names_are_rejected_at_construction():
 
 
 def test_the_two_pipelines_declare_the_field_sets_they_actually_use():
-    """Pipeline 2 stores three extra quantities for correct bootstrapping
-    through a truncation; the advisor fields exist only when it is enabled.
-
-    Pinned so the difference between the pipelines stays ONE declaration rather
-    than being implied by which append calls happen to run.
+    """Pipeline 2 stores three extra quantities for bootstrapping through
+    truncation; the advisor fields exist only when enabled. The difference
+    stays one declaration.
     """
     assert set(TRUNCATION_FIELDS) == {"boot_nonterminal", "trunc_flag",
                                       "trunc_boot"}
     assert set(ADVISOR_FIELDS) == {"coverage_target", "coverage_has"}
     assert not set(CORE_FIELDS) & set(TRUNCATION_FIELDS)
     assert not set(CORE_FIELDS) & set(ADVISOR_FIELDS)
-    # Everything the PPO update reads must be in CORE -- see rl/ppo.py.
+    # Everything the PPO update reads must be in CORE; see rl/ppo.py.
     for required in ("obs", "card_actions", "placement_actions", "decision",
                      "hx_in", "cx_in", "logprobs", "values", "rewards",
                      "masks", "valid", "aux_opp_played", "coverage_slot"):

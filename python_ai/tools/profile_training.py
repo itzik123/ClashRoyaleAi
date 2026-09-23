@@ -1,61 +1,36 @@
-"""Where the phase-1 training hour actually goes.
+"""Where the phase-1 training hour goes.
 
-A MEASUREMENT INSTRUMENT, not part of the training path. Nothing here is
-imported by `trainers/`, `rl/` or `envs/`; every hook it installs is applied to
-a live object at runtime and torn down when the run ends, so profiling cannot
-change what a real run computes.
+A measurement instrument, not imported by the training path. Every hook is
+applied to a live object at runtime, so profiling cannot change what a run
+computes. It never writes a real checkpoint, TensorBoard event or replay;
+`--out` is a scratch directory.
 
-WHAT IT SEPARATES, and why that is the hard part
-------------------------------------------------
-The four costs the loop is made of are not independently observable from
-Python, because they are fused inside single pybind calls:
+The loop's costs are fused inside single pybind calls:
 
-    (1) engine physics        GameManager::step()
+    (1) engine physics            GameManager::step()
     (2) the C++/Python boundary   observation build + std::vector -> Python list
-    (3) the model             MicroRoyaleNet forward / backward
-    (4) overhead              resets, replay logging, GAE, buffer, IPC
+    (3) the model                 MicroRoyaleNet forward / backward
+    (4) overhead                  resets, replay logging, GAE, buffer, IPC
 
-`env.step_self_play(...)` is (1) + (2) at once and reports one number. So this
-profiler measures what it CAN see -- every boundary crossing, with counts -- and
-`tools/audit/engine_profile.cpp` measures (1) and the C++ half of (2) with no
-interpreter in the process at all. The difference between the two is the pybind
-marshalling cost, which neither instrument can produce alone. Run both.
+`env.step_self_play(...)` is (1) + (2) in one number, so this measures every
+boundary crossing with counts, and `tools/audit/engine_profile.cpp` measures
+(1) and the C++ half of (2) with no interpreter. The difference is the pybind
+marshalling cost; run both.
 
-THE DOUBLE-COUNTING TRAP, handled explicitly
----------------------------------------------
-`envs.step()` contains `get_observation_for_team`, which contains nothing.
-Summing timers naively counts the inner call twice and produces a breakdown
-adding to more than 100% of wall clock -- the classic way a profile lies. The
-ledger below tracks INCLUSIVE and EXCLUSIVE (self) time separately: a nested
-span subtracts itself from its parent, so the exclusive column always sums to
-the measured total. Read the exclusive column for "where the time is"; read the
-inclusive column for "what this subsystem costs in total".
+The ledger tracks inclusive and exclusive time: a nested span subtracts itself
+from its parent, so the exclusive column sums to the measured total.
 
-THREE MODES, because one number cannot answer both questions
--------------------------------------------------------------
-    --mode sync    every env in THIS process, so every timer is attributable.
-                   Gives the exact breakdown. Not the real throughput: the 8
-                   envs no longer run in parallel.
-    --mode async   the real AsyncVectorEnv, exactly as training runs. Gives the
-                   true episodes/hour and the coarse rollout-vs-update split.
-                   Per-call attribution inside a worker is NOT visible from
-                   here -- the workers are separate processes.
-    --mode torch   the model alone, with a stubbed engine. Runs on a machine
-                   that has no .pyd at all.
+    --mode sync      every env in this process: exact attribution, not real throughput
+    --mode async     the real AsyncVectorEnv: true episodes/hour, coarse split only
+    --mode torch     the model alone, with a stubbed engine if no .pyd is present
+    --mode boundary  the Python half of the observation boundary
 
-Run sync for attribution and async for throughput, and reconcile them. A
-breakdown that cannot reproduce the async wall clock is measuring the wrong
-thing.
+Run sync for attribution and async for throughput, and reconcile them.
 
-USAGE
     python_ai/venv/Scripts/python.exe python_ai/tools/profile_training.py --mode sync  --episodes 60
     python_ai/venv/Scripts/python.exe python_ai/tools/profile_training.py --mode async --episodes 60
     python_ai/venv/Scripts/python.exe python_ai/tools/profile_training.py --mode torch --updates 3
     python_ai/venv/Scripts/python.exe python_ai/tools/profile_training.py --mode sync --episodes 20 --cprofile
-
-It never writes a checkpoint, a TensorBoard event or a replay: `--out` is a
-scratch directory and the checkpoint save is a no-op, so a profiling run cannot
-disturb a training run that is resumed from the same weights.
 """
 import argparse
 import dataclasses
@@ -66,26 +41,21 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 
-# python_ai is a package rooted at the REPO ROOT, so a module run as a FILE
-# needs the root on sys.path before `python_ai.*` resolves. See
-# tests/test_package_layout.py, which fails if a runnable script omits this.
+# Put the repo root on sys.path for a file run; tests/test_package_layout.py
+# checks every runnable script does.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 
-# ---------------------------------------------------------------------------
-# the ledger
-# ---------------------------------------------------------------------------
+# --- the ledger ---
 class Ledger:
     """Inclusive + exclusive time and a call count, per key.
 
-    Exclusive time is what makes the breakdown honest. `_stack` holds one
-    accumulator per open span; a span that closes adds its full duration to its
-    parent's accumulator, and the parent subtracts that from its own self-time.
-    So sum(exclusive) == wall clock of the outermost span, always, and a
-    subsystem cannot be counted twice by being timed at two depths.
+    `_stack` holds one accumulator per open span; a closing span adds its
+    duration to its parent's accumulator, which the parent subtracts from its
+    own self-time. So sum(exclusive) equals the outermost span's wall clock.
     """
 
     def __init__(self):
@@ -119,10 +89,7 @@ class Ledger:
         self.count[key] += n
 
     def calibrate(self, n=20000):
-        """This instrument's own per-span cost, so it can be stated not guessed.
-
-        A profiler that adds 2 us to a call made 400,000 times an hour has moved
-        the thing it is measuring. Reported in the output rather than assumed
+        """This instrument's own per-span cost, reported rather than assumed
         negligible.
         """
         sink = Ledger()
@@ -133,12 +100,9 @@ class Ledger:
         return (time.perf_counter() - t0) / n
 
 
-# ---------------------------------------------------------------------------
-# the boundary proxy
-# ---------------------------------------------------------------------------
-# Which category each pybind method belongs to. Anything unlisted lands in
-# `<prefix>.other`, which is deliberate -- a new binding shows up as an unnamed
-# line rather than being silently folded into an existing one.
+# --- the boundary proxy ---
+# Category per pybind method. Anything unlisted lands in `<prefix>.info`, so a
+# new binding shows up as its own line.
 _OBS_METHODS = {"get_observation_for_team", "get_observation", "extract_observation"}
 _STEP_METHODS = {"step", "step_self_play", "step_self_play_fast"}
 _SNAPSHOT_METHODS = {"snapshot"}
@@ -148,14 +112,10 @@ _RESET_METHODS = {"reset", "seed"}
 class EngineProxy:
     """Times every call across the pybind boundary, and follows snapshots.
 
-    `snapshot()` returns another engine object, and a teacher rollout does all
-    of its work on that. Wrapping the returned object under a different prefix
-    is what separates "the live match stepped" from "a candidate was rolled
-    forward", which is the single most important split in this profile: the
-    former happens once per decision and the latter K+1 times.
-
-    Attribute lookups are cached, so the proxy costs one dict hit plus one
-    ledger span per call rather than building a closure each time.
+    A teacher rollout works on the object `snapshot()` returns, so that object
+    is wrapped under a different prefix, separating "the live match stepped"
+    (once per decision) from "a candidate was rolled forward" (K+1 times).
+    Attribute lookups are cached.
     """
 
     __slots__ = ("_obj", "_led", "_prefix", "_cache")
@@ -205,9 +165,7 @@ class EngineProxy:
         return timed
 
 
-# ---------------------------------------------------------------------------
-# reporting
-# ---------------------------------------------------------------------------
+# --- reporting ---
 def report(led, wall, episodes, label, extra_notes=()):
     print()
     print("=" * 86)
@@ -241,18 +199,14 @@ def report(led, wall, episodes, label, extra_notes=()):
         print(f"  * {note}")
 
 
-# ---------------------------------------------------------------------------
-# mode: sync / async -- the real trainer, bounded
-# ---------------------------------------------------------------------------
+# --- mode: sync / async: the real trainer, bounded ---
 def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
                            max_episodes, teacher_stage):
     """A Phase1Trainer subclass with timers around each phase.
 
-    Subclassed rather than patched so `trainers/train.py` is untouched, and so
-    the override points are exactly the ones BaseTrainer already declares as a
-    subclass's business. `collect_rollout` and `run_update` are NOT overridden
-    -- BaseTrainer forbids it and a test pins that -- they are wrapped from
-    outside, which times them without changing their arithmetic.
+    Subclassed so trainers/train.py is untouched. `collect_rollout` and
+    `run_update` may not be overridden (BaseTrainer forbids it), so they are
+    wrapped from outside.
     """
     import gymnasium as gym
     import torch
@@ -261,11 +215,8 @@ def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
     from python_ai.rl.config import PPOConfig
     from python_ai.trainers import train as train_mod
 
-    # PPOConfig is a FROZEN dataclass -- deliberately, so a trainer cannot
-    # mutate its own hyperparameters mid-run. `replace` is the supported way to
-    # build a variant, and it re-runs __post_init__, so an update_timestep that
-    # is not divisible by bptt_chunk fails HERE rather than silently truncating
-    # a BPTT chunk later.
+    # PPOConfig is frozen; `replace` re-runs __post_init__, so a bad
+    # update_timestep fails here.
     cfg = dataclasses.replace(PPOConfig(), num_envs=num_envs,
                               update_timestep=update_timestep)
 
@@ -275,8 +226,8 @@ def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
                 {"opponent": train_mod.PHASE1_OPPONENT,
                  "teacher_stage": teacher_stage})
             if mode == "sync":
-                # Only meaningful in-process: in async mode the worker lives in
-                # another process and its ledger would never come back.
+                # Only in-process: an async worker's ledger would never come
+                # back.
                 env.game = EngineProxy(env.game, led, "live")
             return env
         return _init
@@ -284,13 +235,9 @@ def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
     class ProfiledTrainer(train_mod.Phase1Trainer):
         """Phase1Trainer with timers, a scratch checkpoint and a bounded run.
 
-        The redirect below MUST happen in __init__, not as a class attribute:
-        `Phase1Trainer.__init__` assigns `self.weight_path` from CLASH_WEIGHTS
-        (defaulting to the real `model_weights.pth`), and an INSTANCE attribute
-        beats a subclass's class attribute. Setting it as a class attribute
-        looks correct, is silently overridden, and would point a profiling run
-        at the live checkpoint -- which is exactly the accident this redirect
-        exists to prevent.
+        The redirect must happen in __init__: Phase1Trainer.__init__ sets
+        `self.weight_path` as an instance attribute, which would override a
+        class attribute here and point the profiler at the live checkpoint.
         """
 
         def __init__(self, cfg):
@@ -304,9 +251,8 @@ def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
             return gym.vector.AsyncVectorEnv([_make() for _ in range(num_envs)])
 
         def load_checkpoint(self):
-            # Profile the loop from a cold net. Resuming would make the run
-            # depend on which checkpoint happens to be on disk, and the
-            # per-step cost does not depend on the weights.
+            # Profile from a cold net; the per-step cost does not depend on the
+            # weights.
             return False
 
         def save_checkpoint(self, verbose=True):
@@ -328,9 +274,6 @@ def build_profiled_trainer(led, mode, out_dir, num_envs, update_timestep,
             with led.span("overhead.periodic"):
                 super().periodic(stats)
 
-    # PHASE1_ENTROPY is already what Phase1Trainer.__init__ hands to its
-    # EntropyController; re-assigning it here would be a no-op that reads like
-    # configuration.
     return ProfiledTrainer(cfg), torch
 
 
@@ -338,7 +281,7 @@ def instrument_trainer(trainer, led, torch_mod, mode):
     """Wrap the phases from outside, so no override changes the arithmetic."""
     net = trainer.net
 
-    # -- the two top-level phases -------------------------------------------
+    # The two top-level phases.
     raw_collect = trainer.collect_rollout
     raw_update = trainer.run_update
 
@@ -353,11 +296,8 @@ def instrument_trainer(trainer, led, torch_mod, mode):
     trainer.collect_rollout = collect
     trainer.run_update = update
 
-    # -- the vector env -----------------------------------------------------
-    # In sync mode this is the parent of every `live.*` and `rollout.*` span,
-    # so its exclusive time is gym's own vector plumbing. In async mode it is
-    # opaque: the workers are other processes, and their internals never
-    # appear, which is exactly why sync mode exists.
+    # The vector env. In sync mode its exclusive time is gym's own plumbing; in
+    # async mode the workers' internals are invisible.
     envs = trainer.envs
     raw_step, raw_reset = envs.step, envs.reset
 
@@ -371,7 +311,7 @@ def instrument_trainer(trainer, led, torch_mod, mode):
 
     envs.step, envs.reset = env_step, env_reset
 
-    # -- the model ----------------------------------------------------------
+    # The model.
     for name, key in (("extract_features", "torch.fwd.trunk"),
                       ("step_lstm_and_card", "torch.fwd.lstm_card"),
                       ("placement_given_card", "torch.fwd.placement"),
@@ -392,7 +332,7 @@ def instrument_trainer(trainer, led, torch_mod, mode):
             return raw_upd(*a, **k)
     trainer.updater.update = upd
 
-    # -- the advisor coverage target, which is numpy work per step ----------
+    # The advisor coverage target: numpy work per step.
     raw_cov = trainer._draw_coverage
 
     def cov(*a, **k):
@@ -418,9 +358,8 @@ def run_loop_mode(args, led):
     trainer.setup()
     instrument_trainer(trainer, led, torch_mod, args.mode)
 
-    # setup() is env construction + a reset of 8 envs; it is real startup cost
-    # but it is amortized over a whole run, so it is excluded from the wall
-    # clock the breakdown is a percentage of.
+    # setup() is startup cost amortised over a run, so it is excluded from the
+    # wall clock.
     led.incl.clear()
     led.excl.clear()
     led.count.clear()
@@ -457,19 +396,13 @@ def run_loop_mode(args, led):
     return wall, trainer.episodes_completed
 
 
-# ---------------------------------------------------------------------------
-# mode: torch -- the model alone, on a box with no engine
-# ---------------------------------------------------------------------------
+# --- mode: torch: the model alone, on a box with no engine ---
 _CONST_RE = r"static\s+constexpr\s+(?:int|float)\s+{}\s*=\s*([0-9.]+)"
 
 
 def _engine_constants_from_header():
-    """Read the constants off ClashEnv.h rather than restating them.
-
-    CLAUDE.md's standing rule: do not keep a second copy of an engine constant
-    in Python. A stub cannot ask the bindings, so it asks the header the
-    bindings are generated from, and fails loudly if a name has moved rather
-    than falling back to a literal that would go stale silently.
+    """Read the constants off ClashEnv.h, since a stub cannot ask the bindings. A
+    missing name raises rather than falling back to a literal.
     """
     path = os.path.join(_ROOT, "include", "core", "ClashEnv.h")
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -492,10 +425,8 @@ def _engine_constants_from_header():
 def install_engine_stub():
     """A constants-only `clash_royale_env`, for --mode torch with no .pyd.
 
-    Enough for `models/net.py` to build a real MicroRoyaleNet, and nothing more.
-    It CANNOT simulate: any mode that needs engine dynamics must run against the
-    real .pyd. This exists so the model half of the profile is measurable on a
-    machine that cannot build one.
+    Enough for models/net.py to build a real MicroRoyaleNet; it cannot simulate
+    anything.
     """
     import types
 
@@ -515,7 +446,7 @@ def install_engine_stub():
         def __init__(self, *a, **k):
             pass
 
-        # River band [15.5, 17.5) -> the last whole own-half row is 15.
+        # River band [15.5, 17.5): the last whole own-half row is 15.
         def get_own_half_max_y(self):
             return 15.0
 
@@ -532,8 +463,8 @@ def install_engine_stub():
             return [0.0] * self.observation_size()
 
         def is_valid_placement(self, card_id, x, y, team=0):
-            # Shape-faithful, not rule-faithful: troops own half, spells the whole board.
-            # Only the COST of building the mask table is being measured here.
+            # Shape-faithful, not rule-faithful: only the cost of building the
+            # mask table is measured.
             info = mod.get_card_info(card_id)
             if info["is_spell"]:
                 return 0.0 <= x <= self.get_max_placement_x() and 0.0 <= y < self.BOARD_HEIGHT
@@ -556,13 +487,11 @@ def install_engine_stub():
 
 
 def run_torch_mode(args, led):
-    """Forward + backward at the shapes the real loop uses, nothing else.
+    """Forward + backward at the shapes the real loop uses.
 
-    Deliberately NOT a synthetic microbenchmark of conv layers: it builds the
-    real MicroRoyaleNet, at the real batch (`num_envs`) for the rollout forward
-    and the real BPTT chunk for the update, because the interesting cost here
-    is the manual LSTM loop and the 33x-more-expensive convolutional placement
-    head, and both are shape-sensitive.
+    The real MicroRoyaleNet at the rollout batch (`num_envs`) and the real BPTT
+    chunk, since the manual LSTM loop and the convolutional placement head are
+    both shape-sensitive.
     """
     stubbed = False
     try:
@@ -595,7 +524,7 @@ def run_torch_mode(args, led):
     hx = torch.zeros(B, net.LSTM_HIDDEN if hasattr(net, "LSTM_HIDDEN") else 256)
     cx = torch.zeros_like(hx)
 
-    # -- rollout-shaped forward (batch = num_envs, one step) ----------------
+    # Rollout-shaped forward (batch = num_envs, one step).
     warm = 5
     steps = args.updates * cfg.update_timestep if args.updates else 200
     steps = min(steps, args.torch_steps)
@@ -616,11 +545,8 @@ def run_torch_mode(args, led):
                 Categorical(logits=pl).sample()
     led.enabled = True
 
-    # -- update-shaped forward+backward (one BPTT chunk) --------------------
-    # Shapes mirror rl/ppo.py exactly, because the cost here is shape-driven:
-    # the trunk runs on a FLAT (L*B) batch, only the LSTMCell is looped, and
-    # `forward_sequence` exists precisely because that difference was worth
-    # 1.82x. A benchmark at the wrong shape would measure a different network.
+    # Update-shaped forward+backward (one BPTT chunk), mirroring rl/ppo.py: the
+    # trunk runs on a flat (L*B) batch and only the LSTMCell is looped.
     L = cfg.bptt_chunk
     segments = (cfg.update_timestep // cfg.bptt_chunk) * cfg.num_envs
     Bm = max(1, segments // cfg.num_minibatches)
@@ -683,32 +609,18 @@ def run_torch_mode(args, led):
 
 
 def run_boundary_mode(args, led):
-    """The Python HALF of the C++/Python boundary, measurable with no engine.
+    """The Python half of the C++/Python boundary, measurable with no engine.
 
-    `src/bindings.cpp` includes <pybind11/stl.h> and returns std::vector<float>
-    by value, with no py::array opt-in. That caster builds a PYTHON LIST: one
-    PyFloat object per element, 13,606 of them, per observation. `gym_wrapper`
-    then calls np.asarray(..., dtype=np.float32) on that list, which parses all
-    13,606 objects back into a contiguous buffer.
+    `src/bindings.cpp` returns std::vector<float> through pybind11/stl.h, which
+    builds a Python list of one PyFloat per element; gym_wrapper then parses it
+    back with np.asarray. This measures:
 
-    Neither half is visible to a Python timer as anything but one fused call, so
-    this measures what CAN be isolated here:
-
-        list -> numpy       exactly what gym_wrapper.step does today
+        list -> numpy       what gym_wrapper.step does today
         buffer -> numpy     what a py::array_t binding would cost instead
 
-    The pybind half -- building the list of 13,606 PyFloat objects -- is NOT
-    measurable without the compiled module, and the Python analogue reported
-    below is NOT a bound on it in either direction: a list comprehension over a
-    numpy array creates a numpy scalar per element before converting, which is
-    strictly more work than pybind's PyFloat_FromDouble loop, while the
-    interpreter overhead per iteration is work pybind does not pay at all. It is
-    reported as an ORDER-OF-MAGNITUDE ANALOGUE and labelled as one.
-
-    The authoritative figure for the pybind half is the one measured on the real
-    module: CLAUDE.md records 0.611 ms to marshal 13,606 floats against a
-    0.0023 ms memcpy floor. Use that; this mode exists to measure the half that
-    lives in gym_wrapper.py, which that figure does not cover.
+    The pybind half (building the list) needs the compiled module. The Python
+    analogue printed below is an order-of-magnitude analogue, not a bound in
+    either direction.
     """
     import numpy as np
 
@@ -775,7 +687,6 @@ def _tensors(out):
     return acc
 
 
-# ---------------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--mode",
@@ -788,8 +699,7 @@ def main():
                    default=int(os.environ.get("CLASH_NUM_ENVS", 8)))
     p.add_argument("--update-timestep", type=int, default=500)
     p.add_argument("--teacher-stage", type=int, default=5,
-                   help="TEACHER_STAGES rung. 5 is the expensive one: horizon "
-                        "100, max_combos 4, reactive rollouts ON.")
+                   help="TEACHER_STAGES rung; higher rungs cost more per decision")
     p.add_argument("--boundary-reps", type=int, default=300)
     p.add_argument("--torch-steps", type=int, default=200)
     p.add_argument("--torch-bwd", type=int, default=20)

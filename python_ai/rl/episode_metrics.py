@@ -1,19 +1,8 @@
 """Per-episode bookkeeping: the rolling windows both pipelines report from.
 
-Nine `deque`s with hand-picked maxlens, declared identically in two files and
-appended to from inside a nested loop. Collected here so the windows and the
-statistics computed from them cannot drift apart, and so "what does
-Win_Rate_100 actually count" has one answer.
-
-WINDOW SIZES ARE NOT ARBITRARY:
-
-  100 outcomes  the curriculum gate's resolution. A 100-episode win rate has a
-                sampling band of roughly +/-0.1, which can look like "learning
-                then forgetting" when it is only noise.
-  500 outcomes  the same rate over a window narrow enough to show a real trend
-                change instead of that band.
-   50 episodes  everything continuous (reward, shaping sum, length, building
-                HP), where the quantity is smooth and 50 is enough.
+  100 outcomes  the curriculum gate's resolution (a +/-0.1 sampling band)
+  500 outcomes  narrow enough bands to show a real trend
+   50 episodes  continuous quantities (reward, shaping, length, building HP)
 """
 from collections import deque
 
@@ -23,11 +12,8 @@ WIN, LOSS, DRAW = 1, -1, 0
 
 
 def outcome_of(raw_reward):
-    """+1 / -1 / 0 from the RAW (unshaped) engine reward.
-
-    The 0.5 thresholds are how a timeout is told apart from a decisive result:
-    the engine pays +/-1 for a king kill and ~0 for a timeout, and the wrappers
-    never set `truncated` for a natural end.
+    """+1 / -1 / 0 from the raw engine reward: +/-1 for a decisive result, ~0 for
+    a timeout.
     """
     if raw_reward > 0.5:
         return WIN
@@ -53,13 +39,11 @@ class EpisodeMetrics:
         self.ep_shaping = np.zeros(num_envs)
         self.ep_steps = np.zeros(num_envs, dtype=np.int64)
 
-    # -- per-step -----------------------------------------------------------
     def accumulate(self, shaped_rewards, shaping):
         self.ep_reward += shaped_rewards
         self.ep_shaping += shaping
         self.ep_steps += 1
 
-    # -- per-episode --------------------------------------------------------
     def finish_episode(self, i, raw_reward, ally_hp_end, enemy_hp_end):
         """Close out env `i`'s episode and return its outcome (+1/-1/0)."""
         self.rewards.append(self.ep_reward[i])
@@ -76,16 +60,13 @@ class EpisodeMetrics:
     def reset_env(self, i):
         """Clear env `i`'s accumulators without recording an outcome.
 
-        Pipeline 2 needs this for SCENARIO episodes, which are deliberately kept
-        out of the matchup histories: an injected threat is a handicap, and
-        averaging it into the headline W/L/D would make the win rate a mix of
-        two different games.
+        Pipeline 2 uses it for scenario episodes, which start handicapped and
+        are kept out of the headline win rate.
         """
         self.ep_reward[i] = 0
         self.ep_shaping[i] = 0
         self.ep_steps[i] = 0
 
-    # -- read-out -----------------------------------------------------------
     def counts(self):
         outcomes = np.array(self.outcomes)
         wins = int((outcomes == WIN).sum())
@@ -94,8 +75,8 @@ class EpisodeMetrics:
         return wins, losses, draws, len(outcomes)
 
     def summary(self):
-        """The numbers both console lines print. Empty windows give NaN rather
-        than 0, so "no data yet" cannot be mistaken for "measured zero"."""
+        """The numbers both console lines print. Empty windows give NaN, not 0.
+        """
         wins, losses, draws, n = self.counts()
         decided = wins + losses
         long_ = np.array(self.outcomes_long)
@@ -108,15 +89,8 @@ class EpisodeMetrics:
             "loss_rate": losses / n if n else float("nan"),
             "draw_rate": draws / n if n else float("nan"),
             "decided": decided,
-            # NaN, not 0.0 and not None: an undefined rate must read the same
-            # way everywhere in this dict, or a caller has to branch on three
-            # conventions to ask one question. 0.0 was the actively misleading
-            # one -- an agent that DRAWS EVERY GAME has no decided games, and
-            # reporting that as a 0.00 decisive win rate is indistinguishable
-            # from losing every decided game, which is a different diagnosis
-            # with a different fix. Draw-everything is precisely the timeout
-            # pathology DRAW_PENALTY exists to fight, so this misreported at
-            # the one moment it mattered most.
+            # NaN when nothing was decided: an agent that draws every game must
+            # not read as one that loses every decided game.
             "decisive_win_rate": wins / decided if decided else float("nan"),
             "decisive_win_rate_long": (wins_long / decided_long
                                        if decided_long else float("nan")),

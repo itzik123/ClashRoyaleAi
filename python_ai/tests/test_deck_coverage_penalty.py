@@ -1,27 +1,11 @@
 """The deck-coverage penalty: a floor under P(play card | card in hand).
 
-WHY THE ENTROPY CONTROLLER CANNOT DO THIS JOB
----------------------------------------------
-`EntropyController` measures entropy over the four hand SLOTS plus no-op, per
-decision, normalised by the reachable arms. Across the 2026-08-28 phase-1 run it
-held `target_card = 0.35` essentially perfectly -- 0.339 to 0.350 over 24,000
-episodes, never approaching its 0.5 ceiling -- while the policy used five of its
-eight cards. A policy that no-ops on ~81% of steps and spreads the remainder
-over five cards sits at that target indefinitely, because per-decision slot
-entropy is blind to the marginal distribution over the DECK.
-
-Measured on the final checkpoint (ep 32,484), P(play card | card in hand):
-
-    Skeletons   0.3429      Hog Rider   0.0704      The Log    0.0091
-    Ice Spirit  0.3247      Musketeer   0.0662      Cannon     0.0053
-    Ice Golem   0.1868                              Fireball   0.0011
-
-The five live cards and the three dead ones are separated by a factor of ~7,
-with nothing in between. `DECK_COVERAGE_FLOOR = 0.02` sits in that gap: it is
-3.3x below the weakest live card and 2.2x above the strongest dead one, so the
-term is EXACTLY ZERO for a healthy deck and only ever acts on a frozen head.
-That is why the floor is a hinge and not a target -- it must not push a policy
-toward uniform card use, only refuse to let a card reach zero.
+The entropy controller measures per-decision slot entropy, which is blind to
+the marginal over the deck: a policy that mostly no-ops and spreads its plays
+over five cards meets its target indefinitely. `DECK_COVERAGE_FLOOR` sits in
+the gap between the live cards and the dead ones, so the term is exactly zero
+for a healthy deck: a hinge, not a target, refusing to let a card reach zero
+without pushing toward uniform use.
 """
 import copy
 
@@ -36,7 +20,7 @@ def _logits_with(probs):
 
 
 def test_a_healthy_deck_costs_exactly_zero():
-    """The term must be free when every card clears the floor."""
+    """Free when every card clears the floor."""
     logits = _logits_with([0.10, 0.10, 0.10, 0.10, 0.60])
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -46,7 +30,7 @@ def test_a_healthy_deck_costs_exactly_zero():
 
 
 def test_a_starved_card_costs_its_log_shortfall():
-    """The shortfall is measured in LOG space -- see the module docstring."""
+    """The shortfall is measured in log space."""
     import math
     logits = _logits_with([0.005, 0.30, 0.30, 0.30, 0.095])
     hand = torch.tensor([[10, 20, 30, 40]])
@@ -56,26 +40,17 @@ def test_a_starved_card_costs_its_log_shortfall():
 
     assert n == 4
     assert abs(min_p - 0.005) < 1e-6
-    # mean over the 4 cards of relu(log(floor) - log(p)): only card 10 is short.
+    # Mean over the 4 cards of relu(log(floor) - log(p)): only card 10 is
+    # short.
     assert abs(pen.item() - math.log(0.02 / 0.005) / 4) < 1e-5
 
 
 def test_the_push_does_not_weaken_as_the_card_gets_deader():
-    """THE REGRESSION THIS FORM EXISTS FOR.
+    """The push must not weaken as the card gets deader.
 
-    The first implementation hinged on the probability directly, so the
-    gradient carried a softmax `p*(1-p)` factor and went to ZERO as p did. At
-    Fireball's measured p = 0.0011 that gradient was 0.00027 -- 17x weaker than
-    at p = 0.019, i.e. weakest exactly where the card was deadest.
-
-    Measured live on the ep-32,484 checkpoint over three paired 18-minute arms,
-    that produced a clean null: MinCardProb moved -0.0007 at coef 0, +0.0018 at
-    coef 2 and +0.0004 at coef 8. Non-monotone in the coefficient and inside the
-    run-to-run noise -- 4x the coefficient did not help, because no coefficient
-    can fix a term whose push shrinks as the problem worsens.
-
-    A log hinge's gradient is (1 - p), which is ~1 for any dead card. This test
-    pins the SHAPE: the push must not fall off as p -> 0.
+    A hinge on the probability itself carries a softmax p*(1-p) factor and
+    vanishes as p -> 0, weakest exactly where the card is deadest. A log
+    hinge's gradient is (1 - p), ~1 for any dead card. This pins the shape.
     """
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -91,19 +66,14 @@ def test_the_push_does_not_weaken_as_the_card_gets_deader():
         grads.append(-raw.grad[0, 0].item())
 
     assert all(g > 0 for g in grads), "every starved card must be pushed up"
-    # The deadest card must be pushed AT LEAST as hard as the nearly-recovered
-    # one. Under the old linear hinge this ratio was 0.059 (17x weaker).
+    # The deadest card is pushed at least as hard as the nearly recovered one.
     assert grads[0] / grads[-1] > 0.9, (
         f"push weakens as the card dies: {grads[0]:.5f} at p=0.0011 vs "
         f"{grads[-1]:.5f} at p=0.015")
 
 
 def test_it_pushes_the_starved_card_UP_and_leaves_healthy_cards_alone():
-    """The property that matters: gradient descent on this raises the floor.
-
-    A penalty that merely had the right value could still be flat, or could
-    push every card toward uniform. This pins the direction per card.
-    """
+    """Gradient descent raises the starved card and not the healthy ones."""
     raw = torch.tensor([[-6.0, 0.0, 0.0, 0.0, 1.0]], requires_grad=True)
     hand = torch.tensor([[10, 20, 30, 40]])
     decision = torch.ones(1)
@@ -119,10 +89,7 @@ def test_it_pushes_the_starved_card_UP_and_leaves_healthy_cards_alone():
 
 
 def test_the_no_op_arm_is_never_floored():
-    """No-op is not a deck card. Flooring it would force the agent to play.
-
-    The hand tensor has one entry per card slot; the final logit column is the
-    no-op arm and must be excluded from the coverage set entirely.
+    """The no-op is not a deck card; flooring it would force the agent to play.
     """
     logits = _logits_with([0.33, 0.33, 0.33, 0.005, 0.005])
     hand = torch.tensor([[10, 20, 30, 40]])
@@ -146,7 +113,7 @@ def test_padded_rows_are_excluded():
 
 
 def test_empty_hand_slots_are_skipped_without_nan():
-    """-1 marks an empty slot (net.hand_card_ids' own convention)."""
+    """-1 marks an empty slot (net.hand_card_ids' convention)."""
     logits = _logits_with([0.25, 0.25, 0.25, 0.20, 0.05])
     hand = torch.tensor([[10, 20, -1, -1]])
     decision = torch.ones(1)
@@ -157,12 +124,7 @@ def test_empty_hand_slots_are_skipped_without_nan():
 
 
 def test_no_decision_rows_yields_a_finite_zero():
-    """A minibatch of pure padding must contribute nothing, not NaN.
-
-    `rl/ppo.py` already carries a NaN-from-fully-masked-rows regression; this
-    term must not reintroduce one on the degenerate batches
-    test_rl_ppo_degenerate_batches.py covers.
-    """
+    """A minibatch of pure padding contributes a finite zero, not NaN."""
     logits = _logits_with([0.20, 0.20, 0.20, 0.20, 0.20])
     hand = torch.tensor([[10, 20, 30, 40]])
 
@@ -173,9 +135,7 @@ def test_no_decision_rows_yields_a_finite_zero():
     assert min_p == 0.0
 
 
-# --------------------------------------------------------------------------
-# Integration: the term must reach the PPO update and be reported.
-# --------------------------------------------------------------------------
+# --- integration: the term reaches the PPO update and is reported ---
 import numpy as np
 import pytest
 import torch.optim as optim
@@ -194,7 +154,7 @@ TINY = PPOConfig(num_envs=2, update_timestep=4, bptt_chunk=2,
 
 @pytest.fixture(scope="module")
 def rollout():
-    """A tiny but REAL rollout -- same construction as test_rl_ppo.py's."""
+    """A tiny but real rollout, built as in test_rl_ppo.py."""
     torch.manual_seed(11)
     net = MicroRoyaleNet(num_ability_slots=0)
     deck = list(DEFAULT_DECK)
@@ -202,10 +162,9 @@ def rollout():
             for _ in range(TINY.num_envs)]
     for e in envs:
         e.reset()
-        # A REAL THREAT on our half. The term is threat-gated, so on the empty
-        # board this fixture used to build it correctly measures nothing and
-        # reports NaN -- which is the gate working, not a failure. An enemy Hog
-        # (3151 HP) clears tactics.DECK_COVERAGE_THREAT_HP = 400 comfortably.
+        # A real threat on our half: the term is threat-gated, so on an empty
+        # board it measures nothing and reports NaN. An enemy Hog clears
+        # tactics.DECK_COVERAGE_THREAT_HP comfortably.
         e.inject_enemy(15, 14.5, 14.0)
         e.step(clash_royale_env.ClashRoyaleEnv.HAND_SIZE, 0.0, 0.0, 1)
     buf = RolloutBuffer(CORE_FIELDS)
@@ -250,10 +209,8 @@ def _run(net, batch, **kwargs):
 
 
 def test_the_update_reports_deck_coverage(rollout):
-    """Without a reported number, a dead card is invisible again.
-
-    Requires a THREATENED board: the term is gated, so on a quiet one it
-    measures nothing by design and reports NaN. See the fixture.
+    """Without a reported number a dead card is invisible. Needs a threatened
+    board (see the fixture).
     """
     net, batch = rollout
     stats = _run(copy.deepcopy(net), batch)
@@ -264,11 +221,8 @@ def test_the_update_reports_deck_coverage(rollout):
 
 
 def test_the_penalty_never_reaches_the_ppo_ratio(rollout):
-    """Same rule the advisor coverage term lives under.
-
-    The term is a REGULARIZER. If it touched `new_logprobs` the importance
-    ratio would no longer be the ratio of the policies that produced the data,
-    and the update would silently stop being PPO.
+    """A regulariser must not touch `new_logprobs`, or the ratio no longer
+    compares the policies that produced the data.
     """
     net, batch = rollout
     off = _run(copy.deepcopy(net), batch, deck_coverage_coef=0.0)

@@ -1,15 +1,11 @@
-"""Build a FULL training checkpoint for one arm of a controlled A/B.
+"""Build a full training checkpoint for one arm of a controlled A/B.
 
-THE TRAP THIS EXISTS TO AVOID, and it has already cost this project one
-inconclusive experiment. Seeding a bare `{"model": state_dict}` takes
-`train.py`'s legacy-checkpoint path, which resets `episodes_completed` to 0.
-`placement_entropy_target(0)` then returns ENTROPY_TARGET_PLACEMENT_START = 0.65
-against a converged policy measuring ~0.11, so the controller spends the whole
-run inflating the policy toward a target meant for a fresh net -- and BOTH arms
-end near-uniform, which is indistinguishable from "the treatment did nothing".
-
-So every arm resumes through the FULL path: model + optimizer + curriculum +
-a real episode count. Usage:
+A bare `{"model": state_dict}` takes train.py's legacy path, which resets
+`episodes_completed` to 0; the placement entropy target for episode 0 is meant
+for a fresh net, so the controller inflates a converged policy toward uniform
+in both arms, indistinguishable from "the treatment did nothing". Every arm
+therefore resumes through the full path: model + optimizer + curriculum + a
+real episode count.
 
     python setup_ab_arm.py --src model_weights_hires.pth --dst _runs/x/model_weights.pth
 """
@@ -22,9 +18,7 @@ import torch
 
 from python_ai.rl.checkpointing import atomic_save
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -34,30 +28,15 @@ import python_ai  # noqa: E402,F401
 def _widen_optimizer(opt_state, old_model, new_model):
     """Carry Adam moments across a checkpoint that gained parameters.
 
-    THE FAILURE THIS FIXES, caught by smoke-testing pipeline 2 before the long
-    run rather than at hour 0 of it:
+    torch matches optimizer state to parameters by positional index, and
+    train_selfplay.py loads it unconditionally, so a size mismatch is fatal on
+    resume. Dropping the state would discard the moments of every unchanged
+    parameter, so indices are remapped by name. New parameters can land in the
+    middle of the ordering, where a naive "keep, then append" remap would hand
+    one module's moments to another.
 
-        ValueError: loaded state dict contains a parameter group that doesn't
-        match the size of optimizer's group
-
-    `place_hires` added 6 parameters, so the shipping checkpoint's optimizer
-    describes 26 and the current net has 32. torch matches optimizer state to
-    parameters by POSITIONAL INDEX, and train_selfplay.py -- unlike train.py --
-    loads it unconditionally, so this is fatal on resume.
-
-    Dropping the state would work and is wrong: it discards Adam's second
-    moments for the trunk, LSTM and critic, none of which changed, and those
-    are what keep a warm resume stable. So the indices are remapped by NAME.
-
-    The new parameters land at positions 22-27, in the MIDDLE of the ordering,
-    not appended -- so a naive "keep 0..25, append 26..31" remap would silently
-    hand the trunk's moments to the placement head. That is the kind of error
-    that produces a run which trains, looks healthy, and is subtly wrong.
-
-    Old ordering is reconstructed as "current order minus the new names", valid
-    because nothing else moved in the module registration order; the count
-    assertion below is what makes that assumption load-bearing rather than
-    hoped-for.
+    The old ordering is "current order minus the new names", valid only if
+    nothing else moved; the count check below enforces that.
     """
     if not opt_state or "param_groups" not in opt_state:
         return opt_state
@@ -84,9 +63,8 @@ def _widen_optimizer(opt_state, old_model, new_model):
 
     out = dict(opt_state)
     out["state"] = state
-    # Every parameter listed, new ones with no state -- Adam initializes
-    # exp_avg/exp_avg_sq lazily on first step, so an absent entry is correct
-    # and is exactly what a fresh parameter should get.
+    # New parameters get no state: Adam initialises it lazily on the first
+    # step.
     out["param_groups"] = [dict(group, params=list(range(len(new_names))))]
     print(f"  optimizer: remapped {len(state)} moment entries by name, "
           f"{len(new_names) - len(state)} fresh")
@@ -102,8 +80,7 @@ def main():
                     help="episode count the arm resumes AT. Drives the placement "
                          "entropy target -- the whole reason this script exists.")
     ap.add_argument("--stage", type=int, default=5,
-                    help="curriculum stage; 5 is the final 1.5x-opponent stage, "
-                         "which is the regime prove_placement measures in")
+                    help="curriculum rung, an index into the current table")
     ap.add_argument("--base", default=None,
                     help="a FULL checkpoint to inherit training state from "
                          "(optimizer moments, league roster, entropy "
@@ -119,26 +96,17 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(args.dst)), exist_ok=True)
 
-    # No optimizer MOMENTS are carried over, but a real, empty-state Adam
-    # state_dict is: torch's load_state_dict reads `param_groups` and raises
-    # KeyError on a bare {}, and train.py's full-resume path is gated on the
-    # "optimizer" key being present -- omitting it drops the arm onto the legacy
-    # path and straight into the entropy-target trap this file exists to avoid.
-    #
-    # Moments are dropped deliberately. Adam's second moments belong to the
-    # parameters that produced them, and model_weights_hires.pth was written by
-    # a different optimizer (distillation, placement pathway only) than the one
-    # PPO is about to run. Both arms get the same fresh start, which is what the
-    # comparison requires. lr must match train.py's own 3e-4, since
-    # load_state_dict overwrites the hyperparameters the trainer just set.
+    # A real, empty-state Adam state_dict, without moments: torch's
+    # load_state_dict raises on a bare {}, and train.py's full-resume path
+    # requires the "optimizer" key. Moments are not carried because they belong
+    # to whichever optimizer produced these weights; both arms get the same
+    # fresh start. lr must match train.py's 3e-4, since load_state_dict
+    # overwrites it.
     if args.base:
-        # Inherit a real training life and swap only the weights. Safe here
-        # BECAUSE the weights differ from the base only in the placement
-        # pathway -- verified tensor by tensor: of 27 shared tensors, 18 are
-        # bit-identical and the 9 that changed are card_id_embed, place_ctx and
-        # place_up. The trunk, LSTM, critic and aux head are untouched, so the
-        # inherited Adam moments still belong to the parameters that produced
-        # them. Do NOT use --base across a change that moves the trunk.
+        # Inherit a real training life and swap only the weights. Safe only
+        # when the weights differ from the base in the placement pathway alone,
+        # so the inherited moments still belong to their parameters; never
+        # across a change that moves the trunk.
         base = args.base if os.path.isabs(args.base) else os.path.join(here, args.base)
         ckpt = torch.load(base, map_location="cpu", weights_only=False)
         prev = ckpt["model"]
@@ -164,9 +132,8 @@ def main():
         "model": model,
         "optimizer": fresh_opt,
         "curriculum_stage": args.stage,
-        # STAMP THE TABLE, or load_state_dict reads this index as a legacy
-        # six-rung one and remaps it by horizon: --stage 5 silently became
-        # rung 10, the top of the ladder (audit 04 C4).
+        # Stamp the table, or load_state_dict reads this index as a legacy
+        # six-rung one and remaps it by horizon.
         "teacher_table_size": len(CURRICULUM_STAGES),
         "stage_start_episode": args.episodes,
         "episodes_completed": args.episodes,

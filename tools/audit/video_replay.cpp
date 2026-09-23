@@ -1,10 +1,7 @@
-// Replays one observed push inside the engine, for comparison against video.
-//
-// Places a card at the tile position read off a recording and prints its
-// trajectory tick by tick, so the engine's movement can be diffed against what
-// the real game actually did from the same start. Positions only -- HP is not
-// comparable, because the recording is a levelled match and this engine has no
-// card levels at all.
+// Replays one observed push inside the engine, for comparison against video:
+// places a card at the tile position read off a recording and prints its
+// trajectory tick by tick. Positions only; HP is not comparable, since
+// recordings are levelled and the engine has no card levels.
 
 #include "GameManager.h"
 #include "CardRegistry.h"

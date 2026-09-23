@@ -1,13 +1,7 @@
-// Per-card sight-range coverage audit.
-//
-// CardStats::sightRange defaults to 5.5 ("the main standard for most cards")
-// and 63 registry entries override it. This prints, for EVERY registered card,
-// the sight range the engine actually hands the spawned entity -- read off the
-// live CombatEntity, not parsed out of the registry source, so a card whose
-// stats look right and whose entity gets something else is visible.
-//
-// Also checks the invariant test_sight_range.cpp pins: effective sight must be
-// >= effective attack range, or a unit can attack what it cannot see.
+// Per-card sight-range audit. Prints, for every registered card, the sight
+// range read off the live spawned entity rather than the registry source, so a
+// card whose entity gets a different value is visible. Also checks
+// test_sight_range.cpp's invariant: a unit must see whatever it can attack.
 
 #include "GameManager.h"
 #include "CardRegistry.h"

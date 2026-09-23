@@ -1,10 +1,8 @@
-"""Phase 2's per-opponent PFSP estimates survive a resume (TODO 00.8).
+"""Phase 2's per-opponent PFSP estimates survive a resume.
 
-They lived only in worker memory, so every resume reset every opponent to the
-0.5 prior and PFSP -- which weights by (1 - winrate)^2 -- sampled a mastered
-snapshot as often as the one the agent still loses to, until each of 8 workers
-re-met each of ~100 opponents about 1/PFSP_EMA_ALPHA = 12 times. Phase 1 had
-fixed the same failure for its deck pool; this is that pattern, one level up.
+Otherwise every resume resets each opponent to the 0.5 prior and PFSP samples a
+mastered snapshot as often as one the agent still loses to, until every worker
+re-meets every opponent. Phase 1 does the same for its deck pool.
 """
 import pytest
 
@@ -21,8 +19,9 @@ def env():
 
 
 def test_a_seeded_estimate_survives_the_pool_refresh(env):
-    """`refresh_pfsp_pool` fills MISSING entries with the prior; it must not
-    overwrite what a resume just restored."""
+    """`refresh_pfsp_pool` fills missing entries with the prior; it must not
+    overwrite what a resume restored.
+    """
     env.set_pfsp_stats({"snap_a.pth": 0.83}, {"snap_a.pth": 40})
     env.refresh_pfsp_pool(["snap_a.pth", "snap_b.pth"])
     stats, counts = env.get_pfsp_stats()
@@ -39,7 +38,7 @@ def test_the_merge_is_count_weighted_and_ignores_the_prior():
     ]
     stats, counts = Phase2Trainer.merge_pfsp(per_worker)
     assert stats["a"] == pytest.approx((0.9 * 30 + 0.6 * 10) / 40)
-    assert stats["b"] == pytest.approx(0.2)         # NOT (0.5 + 0.2) / 2
+    assert stats["b"] == pytest.approx(0.2)         # not (0.5 + 0.2) / 2
     assert "c" not in stats
     assert counts == {"a": 40, "b": 20}
 
@@ -87,7 +86,7 @@ def test_a_resume_seeds_every_worker_with_an_equal_share():
 
 
 def test_an_older_checkpoint_seeds_nothing():
-    """The CONTROL: no stored estimates -> the prior, exactly as before."""
+    """Control: no stored estimates means the prior, as before."""
     envs = _FakeEnvs([])
     _bare_trainer(envs)._seed_pfsp({"episodes_completed": 5})
     assert envs.calls == []
@@ -103,8 +102,9 @@ def test_a_worker_that_cannot_answer_does_not_break_the_checkpoint():
 
 @pytest.mark.slow
 def test_a_finished_match_is_counted_against_its_opponent():
-    """The live path: a real match against a pool member ends, the EMA moves AND
-    the count rises -- the count is what weights the merge."""
+    """The live path: a finished match moves the EMA and raises the count, which
+    weights the merge.
+    """
     e = selfplay_env.MicroRoyaleSelfPlayEnv({"scenarios_enabled": False,
                                              "scenario_seed": 3})
     try:

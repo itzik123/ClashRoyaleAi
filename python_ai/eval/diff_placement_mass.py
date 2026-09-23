@@ -1,21 +1,15 @@
-"""WHERE did a card's placement mass move between two checkpoints?
+"""Where did a card's placement mass move between two checkpoints?
 
-`place_q` says a card's aim got worse. It does not say where the probability
-went, and "worse" has several shapes that call for different responses: mass
-sliding onto a systematically bad region, mass spreading out (losing sharpness),
-or mass staying put while the BOARDS changed underneath it.
+`place_q` says a card's aim got worse, not how: mass sliding onto a bad region,
+spreading out, or staying put while the boards changed. This scores two
+checkpoints on the same frozen bank as probe_card_discrimination and reports,
+for the high-opportunity states:
 
-This scores two checkpoints on the SAME frozen bank -- the one
-probe_card_discrimination already uses, so the states and the catch maps are
-identical -- and reports, for the high-opportunity states only:
-
-  * expected catch as a share of the best cell        (this is place_q)
-  * the placement distribution's entropy              (sharpness)
+  * expected catch as a share of the best cell        (place_q)
+  * placement entropy                                 (sharpness)
   * mean row / column of the placement mass           (where it sits)
-  * the modal cell and how often it repeats           (the collapse detector
-                                                       CLAUDE.md prescribes)
+  * the modal cell and how often it repeats           (collapse detector)
 
-Usage:
     ... -m python_ai.eval.diff_placement_mass --bank <bank.npz> \\
         --a stage_checkpoints/stage5_ep00041173.pth --b model_weights_phase7.pth \\
         --card "The Log"

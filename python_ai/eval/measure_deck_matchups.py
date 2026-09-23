@@ -1,52 +1,18 @@
-"""Per-opponent-deck matchup measurement. Read-only; never touches a live run.
+"""Per-opponent-deck win rate and card opportunity. Read-only; safe beside a live
+run.
 
-THE QUESTION
-------------
-The 2026-08-29 deck autopsy established that three of `DEFAULT_DECK`'s eight
-cards sit at P(play | in hand) <= 0.009 and that the card head is RIGHT to price
-them there: forced through `env.step` (which charges the elixir, unlike
-`inject`), a Cannon at the policy's own cell was worth +185 tower HP over the
-policy's own action -- better in 6 of 14 states. A coin flip.
+Asks whether the rarely played cards are a property of the agent or of the
+opponent distribution. Cannon, Fireball and The Log answer threats a 2.6 mirror
+barely produces (a tank, a medium-HP cluster, a ground swarm), so if the
+verdict belongs to the opponent distribution, these numbers move across decks.
 
-Every one of those measurements held the OPPONENT'S DECK fixed at the 2.6 mirror.
-This harness varies it, because the three dead cards are precisely 2.6's answers
-to threats a 2.6 mirror does not produce:
+  win / loss / draw      winnability: random decks can beat a cycle deck by tens of points here, so a pool must be screened
+  fb_catch / log_catch   opportunity: the best enemy value a Fireball / Log aimed anywhere could catch, per decision (an upper bound with perfect information)
+  threat_hp              enemy troop HP on our half, the Cannon's value driver (`tactics.threat_level`)
+  take-up                what the policy did with the opportunity
 
-    Cannon    a tank walking at your tower       mirror offers: one Hog
-    Fireball  a medium-HP cluster                mirror offers: one Musketeer
-    The Log   a ground swarm / bait              mirror offers: 1-elixir Skeletons
-
-If the dead-card verdict is a property of the AGENT, these numbers barely move
-across decks. If it is a property of the OPPONENT DISTRIBUTION we chose, they
-move a lot, and the fix is the deck pool rather than any pressure on the policy.
-
-WHAT IS REPORTED, AND WHY BOTH HALVES ARE NEEDED
-------------------------------------------------
-  win / loss / draw      the WINNABILITY gate. `gym_wrapper`'s own comment
-                         records that random registry decks beat a cycle deck
-                         "by tens of win-rate points" in this engine, so a deck
-                         pool has to be screened or it recreates the zero-
-                         gradient state the curriculum pivot exists to avoid.
-
-  fb_catch / log_catch   OPPORTUNITY: the best enemy value a Fireball / Log
-                         aimed anywhere could catch, per decision. This is the
-                         instrument CLAUDE.md already uses for the Fireball
-                         question ("median ONE unit" in the mirror), read here
-                         as an upper bound with perfect information -- it says
-                         what the BOARD offers, independent of whether this
-                         policy could find it.
-
-  threat_hp              enemy troop HP on our half: the Cannon's value driver,
-                         via `tactics.threat_level`, the same definition the
-                         solvency gate and the deck-coverage gate already use.
-
-  take-up                what the policy actually DID with the opportunity.
-
-Opportunity and take-up must be read as a PAIR. Opportunity up with take-up flat
-is an environment that now rewards the card and a policy that has not noticed --
-which is a training target. Opportunity flat is the mirror hypothesis refuted.
-
-Usage:
+Read opportunity and take-up as a pair: opportunity up with take-up flat is a
+training target; opportunity flat refutes the mirror hypothesis.
 
     python_ai/venv/Scripts/python.exe -m python_ai.eval.measure_deck_matchups \\
         --weights model_weights_phase5.pth --episodes 24 --stage 3
@@ -74,16 +40,10 @@ from python_ai.models.net import MicroRoyaleNet  # noqa: E402
 from python_ai.models.policy_io import load_state_dict_flexible  # noqa: E402
 from python_ai.opponents import deck_pool  # noqa: E402
 
-#: The Log's corridor, from CardRegistry via CLAUDE.md's rolling-spell block:
-#: 3.9 wide x 10.1 long, swept forward from the cast point. A disc of the same
-#: AREA would be the wrong shape -- the whole point of the 2026-08-28 change is
-#: that the Log is a narrow moving rectangle, not the 7.8-wide circle it was.
+#: The Log's corridor: 3.9 wide x 10.1 long, swept forward from the cast point.
 LOG_WIDTH = 3.9        # CardRegistry.h: The Log's roll width  (not bound)
 LOG_RANGE = 10.1       # CardRegistry.h: The Log's roll range  (not bound)
-#: The Log's damage, for the overkill cap -- MEASURED, not restated. This was a
-#: literal 240.0 labelled "CardRegistry.h" while the registry says 269, so every
-#: Log-opportunity figure measured with it capped each body 11% low. Numbers
-#: recorded before 2026-09-23 (CLAUDE.md's 145 / 273 / 427) used the old cap.
+#: The Log's damage for the overkill cap, measured on first use.
 LOG_DAMAGE = None
 
 
@@ -98,18 +58,14 @@ def _log_damage():
 
 
 def log_catch_map(obs):
-    """(34,18) map of enemy value a Log cast at each cell would sweep.
+    """(34, 18) map of enemy value a Log cast at each cell would sweep.
 
-    Deliberately NOT `spell_catch_map` with a fudged radius: the corridor is
-    3.9 x 10.1 and forward-only, so a disc gets both the lateral reach and the
-    longitudinal reach wrong in opposite directions. Same damage-cap convention
-    as `spell_catch_map` (overkill is wasted), for the same reason.
+    Not `spell_catch_map` with a fudged radius: the corridor is 3.9 x 10.1 and
+    forward-only, so a disc gets both reaches wrong. Overkill is capped as in
+    `spell_catch_map`.
 
-    Computed as a SEPARABLE box filter rather than the obvious per-cell double
-    loop, because a rectangle is separable and the loop version was the
-    dominant cost of this whole harness: ~200 Python-level iterations per
-    occupied enemy cell per decision, against ~5,000 decisions per deck.
-    `_log_catch_map_reference` keeps the loop as the test oracle.
+    A separable box filter, since the per-cell loop dominated this harness's
+    runtime. `_log_catch_map_reference` keeps the loop as the test oracle.
     """
     hp = tactics.enemy_hp_map(obs)
     count = np.maximum(1.0, tactics.spatial(obs)[tactics.CH_ENEMY_COUNT]
@@ -117,14 +73,14 @@ def log_catch_map(obs):
     effective = np.minimum(hp, _log_damage() * count).astype(np.float64)
 
     # Lateral: a cast at column ax catches column x when |ax - x| <= 1.95, i.e.
-    # dx in {-1, 0, +1} on the integer grid.
+    # dx in {-1, 0, +1}.
     half_w = int(LOG_WIDTH / 2.0)          # 1
     lat = np.zeros_like(effective)
     for dx in range(-half_w, half_w + 1):
         lat += np.roll(effective, dx, axis=1) * _col_valid(dx)
 
-    # Longitudinal: a cast at row ay sweeps FORWARD to ay + LOG_RANGE, so it
-    # catches rows [ay, ay + reach]. A forward window sum is one cumsum.
+    # Longitudinal: a cast at row ay sweeps forward to ay + LOG_RANGE, catching
+    # rows [ay, ay + reach]; one cumsum.
     reach = int(LOG_RANGE)                 # 10
     csum = np.cumsum(lat, axis=0)
     padded = np.vstack([csum, np.repeat(csum[-1:], reach + 1, axis=0)])
@@ -133,7 +89,7 @@ def log_catch_map(obs):
 
 
 def _col_valid(dx):
-    """Column mask killing the wrap `np.roll` introduces at the board edge."""
+    """Column mask removing the wrap `np.roll` introduces at the board edge."""
     m = np.ones((1, tactics.BOARD_W))
     if dx > 0:
         m[0, :dx] = 0.0
@@ -145,12 +101,9 @@ def _col_valid(dx):
 def _log_catch_map_reference(obs):
     """The literal double loop `log_catch_map` replaces. Test oracle only.
 
-    The row bound is `ceil(y - LOG_RANGE)` and NOT `int(y - LOG_RANGE)`. A cast
-    at row `ay` reaches `ay + 10.1`, so it catches row y exactly when
-    `ay >= y - 10.1`, and on the integer grid that is a CEILING. `int()`
-    truncates toward zero, which admits one row too many and quietly makes the
-    Log 11.1 tiles long instead of 10.1 -- the same half-tile convention error
-    that put the arena off-centre, one axis over.
+    The row bound is `ceil(y - LOG_RANGE)`: a cast at row ay catches row y
+    exactly when ay >= y - 10.1. `int()` would truncate toward zero and make
+    the Log a row longer.
     """
     hp = tactics.enemy_hp_map(obs)
     count = np.maximum(1.0, tactics.spatial(obs)[tactics.CH_ENEMY_COUNT]
@@ -201,10 +154,7 @@ def run_deck(net, deck, *, episodes, stage, greedy, seed0, max_decisions=400):
     steps = 0
 
     for ep_i in range(episodes):
-        # Seeded so every deck arm sees the SAME sequence of opening hands.
-        # Unpaired win-rate comparisons at this n are dominated by the opening
-        # shuffle otherwise -- CLAUDE.md's own note that ~1,568 episodes/arm are
-        # needed to resolve 5 points UNPAIRED is the reason this is not optional.
+        # Seeded so every deck sees the same sequence of opening hands.
         env.game.seed(seed0 + ep_i)
         obs, _ = env.reset()
         hx = torch.zeros(1, MicroRoyaleNet.LSTM_HIDDEN)
@@ -225,7 +175,7 @@ def run_deck(net, deck, *, episodes, stage, greedy, seed0, max_decisions=400):
                         else Categorical(logits=place).sample())
             x, y = net.cell_to_xy(cell)
 
-            # --- OPPORTUNITY, read off the same observation the decision saw.
+            # Opportunity, read off the observation the decision saw.
             o = np.asarray(obs, dtype=np.float32)
             fb.append(float(tactics.spell_catch_map(o).max()))
             lg.append(float(log_catch_map(o).max()))
@@ -251,8 +201,7 @@ def run_deck(net, deck, *, episodes, stage, greedy, seed0, max_decisions=400):
             if term or trunc:
                 break
 
-        # Outcome from the engine's own crown count, never from the shaped
-        # reward -- the reward carries shaping terms and a draw penalty.
+        # Outcome from the engine's crown count, never the shaped reward.
         a0 = env.game.get_towers_alive(0)
         a1 = env.game.get_towers_alive(1)
         if a0 > a1:

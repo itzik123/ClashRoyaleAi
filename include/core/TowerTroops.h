@@ -3,14 +3,9 @@
 #include "RoyalChefBuffEffect.h"
 #include <memory>
 
-// The 4 selectable Tower Troops (real game: pick one, it replaces BOTH of
-// your Princess Towers for the whole match) -- see GameManager's
-// addTower overload and reset(). None reproduces this engine's original
-// hardcoded stats exactly (2534hp/90dmg/8-tick cooldown/7.5 range) and
-// stays the default, so no existing deck/test/training run is affected
-// unless a tower troop is explicitly selected -- the sourced "Tower
-// Princess" troop specifically is a real, separate, stronger option
-// (~26% more hp), not a silent buff to today's baseline.
+// The four selectable Tower Troops; one replaces both Princess Towers for the
+// match (GameManager::addTower, reset). None is the default and keeps the
+// engine's original stats (2534 hp / 90 dmg / 8-tick cooldown / 7.5 range).
 enum class TowerTroopType {
     None,
     TowerPrincess,
@@ -19,62 +14,37 @@ enum class TowerTroopType {
     RoyalChef
 };
 
-// Symbol stays 'P' for every variant (see GameManager::addTower's own
-// comment on why) -- only name/combat stats vary. CardStats's core combat
-// fields are set directly (public members) rather than through troop()/
-// building() -- those helpers are private to CardRegistry, and a Tower
-// isn't a CardRegistry-registered card anyway (built directly by
-// GameManager, same as King/Princess Towers always have been).
+// Symbol stays 'P' for every variant (see GameManager::addTower). Fields are
+// set directly because towers are built by GameManager, not registered cards.
 inline CardStats towerTroopStats(TowerTroopType type) {
     CardStats stats;
     stats.spawnOffsets = { {0.0f, 0.0f} };
-    // Sourced sight range (7.5 tiles) for the Princess Tower applies
-    // uniformly to all 4 variants -- every one of them already uses the
-    // same 7.5 attackRange above, and no source distinguishes a
-    // different sight range per Tower Troop.
+    // The Princess Tower's sourced sight range, applied to every variant.
     stats.sightRange = 7.5f;
-    // Every tower defends against air (Tower's own constructor already sets
-    // this) -- but GameManager::addTower's CardStats overload applies this
-    // struct via CardFactories::applyCardMetadata AFTER construction, which
-    // unconditionally overwrites targetsAir from here, silently reverting
-    // the constructor's true back to CardStats's own default (false) unless
-    // set explicitly on every variant below. Confirmed missing: a flying
-    // troop parked in range took zero damage from a Princess Tower's fire.
+    // Must be set explicitly: applyCardMetadata runs after the Tower
+    // constructor and overwrites targetsAir with this struct's value.
     stats.targetsAir = true;
 
     switch (type) {
         case TowerTroopType::TowerPrincess:
-            // Confirmed (level 11): 3204hp/153dmg/437dps. This engine's
-            // integer-tick cooldown can't hit 437 dps exactly at 153
-            // damage (would need a fractional-tick hit speed) -- 4 ticks
-            // (0.4s, ~382dps) is the closest whole-tick approximation.
+            // Level 11: 3204 hp / 153 dmg / 437 dps. A whole-tick cooldown
+            // cannot hit 437 dps at 153 damage; 4 ticks (~382 dps) is closest.
             stats.hp = 3204; stats.attackRange = 7.5f; stats.damage = 153; stats.attackCooldown = 4;
             break;
         case TowerTroopType::Cannoneer:
-            // Confirmed (level 11): 3052hp/109dmg/0.8s hit speed, no splash.
+            // Level 11: 3052 hp / 109 dmg / 0.8 s, no splash.
             stats.hp = 3052; stats.attackRange = 7.5f; stats.damage = 109; stats.attackCooldown = 8;
             break;
         case TowerTroopType::DaggerDuchess:
-            // Confirmed (Liquipedia): 2298hp, 7.5 range, 0.5s hit speed,
-            // 89 dmg/dagger, 8 max daggers. "Throws low damage daggers
-            // until fully charged, then throws all of her daggers at one
-            // target for high damage" maps onto the burst-on-Nth-attack
-            // primitive (added for Musketeer/Dagger Duchess-shape
-            // evolutions) rather than a bespoke magazine-and-reload
-            // system -- exact damage-per-dagger-vs-burst split isn't
-            // fully resolved by sourced data (secondary sources
-            // disagreed), so the burst multiplier (8x) is an engine-
-            // internal approximation, not an independently sourced number.
+            // Liquipedia: 2298 hp, range 7.5, 0.5 s, 89 per dagger, 8 daggers.
+            // Modelled as a burst on the 8th attack; the 8x multiplier is an
+            // approximation, since sources disagree on the split.
             stats.hp = 2298; stats.attackRange = 7.5f; stats.damage = 89; stats.attackCooldown = 5;
             stats.withBurstAttack(8, 8.0f);
             break;
         case TowerTroopType::RoyalChef:
-            // Own combat stats not confirmed by sourced data -- reuses
-            // Tower Princess's combat numbers as a reasonable baseline
-            // (every Tower Troop still has SOME basic attack; only his
-            // support ability is distinctly documented). "Feeds" an ally
-            // every ~21-35s (28s used here, the midpoint) -- see
-            // RoyalChefBuffEffect for the "+1 level" approximation.
+            // Combat stats unsourced, so Tower Princess's are reused. Feeds an
+            // ally every ~21-35 s (28 s here); see RoyalChefBuffEffect.
             stats.hp = 3204; stats.attackRange = 7.5f; stats.damage = 153; stats.attackCooldown = 4;
             stats.withPeriodicEffect(280, std::make_shared<RoyalChefBuffEffect>(6.0f, 1.10f));
             break;

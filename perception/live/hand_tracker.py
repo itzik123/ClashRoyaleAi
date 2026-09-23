@@ -1,46 +1,25 @@
 """Our hand, deduced from the cycle rather than read off the screen.
 
-WHY THE SCREEN IS NOT THE SOURCE
---------------------------------
-Hand identity is 744 of the observation's 13,606 floats, and read per frame it
-is not usable. Measured over one real match (935 in-game frames, 22 plays):
+Read per frame, hand identity churns far faster than the game allows: most slot
+changes have no elixir drop behind them, most real plays produce no change, and
+cards "return" before an 8-card cycle permits.
 
-    slot changes with no elixir drop      64 / 73   (88%) invented
-    real plays that produced a change      9 / 22   (41%) seen
-    cards returning before an 8-card cycle allows
-                                          47 / 74   (64%) impossible
-    median unchanged run                  0.8 s, where a real hand holds ~9.3 s
-
-So the reading churns about 11x faster than the game permits.
-
-WHAT IS RELIABLE INSTEAD
-------------------------
-The engine's cycle is a strict 8-slot FIFO (`track/cycle.py` documents it from
-PlayerState.h), which gives an exact identity:
+The engine's cycle is a strict 8-slot FIFO (`track/cycle.py`), so the play
+history alone determines the hand:
 
     queue == the last four cards played, in order
     hand  == the other four
 
-So the PLAY HISTORY alone determines the hand. And plays are the thing we read
-well: the elixir ledger recovered 27 cards against an affordable ceiling of 28.
+and plays are what we read well (the elixir ledger). Cost narrows identity a
+long way, and intersecting with the four cards believed to be in hand usually
+leaves exactly one.
 
-Cost narrows identity a long way on this deck -- 5 is only Giant, 3 is one of
-three, 4 one of four -- and intersecting with the four cards the tracker
-believes are in hand usually leaves exactly one.
-
-THE DETECTOR IS A TIE-BREAKER, NOT A SOURCE
--------------------------------------------
-Two of its properties survive the churn and are worth using. It never reports a
-card outside our deck (0 / 3,740) and never duplicates one (0 / 935 frames). And
-its MODE over a window converges on the truth -- 70 distinct hands read raw,
-27 at a 25-frame window, against a true ~23 -- so its errors are noise around
-the right answer rather than a bias.
-
-Hence: the mode over a wide window seeds the tracker and detects desync; the
-per-frame reading only breaks ties between candidates of equal cost. Note this
-deliberately does NOT use `CycleTracker.observe_hand` on every frame -- that
-method overwrites the model with the observation, which is right when vision is
-the better signal and exactly backwards here.
+The detector is a tie-breaker, not a source. It never reports an off-deck card
+or a duplicate, and its mode over a window converges on the truth, so its
+errors are noise around the right answer. The mode over a wide window seeds the
+tracker and detects desync; the per-frame reading only breaks ties between
+equal-cost candidates. `CycleTracker.observe_hand` is not used per frame: it
+overwrites the model with the observation, which is backwards here.
 """
 from __future__ import annotations
 
@@ -50,14 +29,13 @@ from dataclasses import dataclass, field
 from contracts import UNKNOWN_CARD_SIM_ID
 from track.cycle import QUEUE_SIZE, advance
 
-# Wide enough that the mode has converged (measured: 25 frames reaches 27
-# distinct hands against a true ~23) while still under the ~9 s a real hand
+# Wide enough for the mode to converge while staying under the ~9 s a real hand
 # holds between plays.
 CONSENSUS_WINDOW = 25
 
-# Sustained disagreement before the tracker yields to the screen. One frame is
-# noise; this many consecutive consensus reads that contradict the model means
-# the model is wrong, most likely from a missed play.
+# Sustained disagreement before the tracker yields to the screen: this many
+# consecutive contradicting consensus reads means the model is wrong, most
+# likely from a missed play.
 DESYNC_PATIENCE = 3
 
 
@@ -80,14 +58,9 @@ class HandTracker:
     _since_play: int = 10_000
 
     def reset(self) -> None:
-        """Forget everything, for the start of a new match.
-
-        The FIFO is only meaningful within one match: a new battle deals a
-        fresh opening hand, so carrying the previous match's queue over means
-        every play advances a cycle that describes a game that already ended.
-        Re-seeding costs one consensus window; not re-seeding is wrong for the
-        whole match and self-corrects only through the desync path, which is
-        deliberately slow.
+        """Forget everything, for a new match. A new battle deals a fresh opening
+        hand, so the previous FIFO no longer applies. Re-seeding costs one
+        consensus window; not re-seeding is wrong all match.
         """
         self.hand = []
         self.queue = deque(maxlen=QUEUE_SIZE)
@@ -131,9 +104,9 @@ class HandTracker:
         candidates = [c for c in self.hand
                       if abs(self.costs.get(c, -1) - cost) < 1e-6]
         if not candidates:
-            # The ledger is surer that SOMETHING was played than we are about
-            # what is in hand, so record the desync rather than dropping the
-            # play -- dropping it would leave the FIFO permanently behind.
+            # The ledger is surer that something was played than we are about
+            # the hand: record the desync rather than drop the play, which
+            # would leave the FIFO permanently behind.
             self.desyncs += 1
             return
         if len(candidates) > 1:
@@ -153,16 +126,11 @@ class HandTracker:
     def _check_desync(self) -> None:
         """Yield to the screen only on sustained, consistent disagreement.
 
-        THE CONSENSUS LAGS, AND THAT IS NOT A DISAGREEMENT. A mode over
-        CONSENSUS_WINDOW frames still describes the PREVIOUS hand for about
-        half a window after a play, so checking during that period reports a
-        desync every single time a card is played -- measured, it fired 44
-        times against 20 real plays and pinned confidence at zero, because the
-        tracker kept being overwritten with a hand the game had already left.
-
-        So the check is suppressed until the window can have caught up. This is
-        the difference between the model being wrong and the evidence being
-        stale.
+        A mode over CONSENSUS_WINDOW frames still describes the previous hand
+        for about half a window after a play, so checking then reports a desync
+        on every play and keeps overwriting the tracker with a hand the game
+        has left. The check waits until the window can have caught up: stale
+        evidence is not a wrong model.
         """
         self._since_play += 1
         if self._since_play < CONSENSUS_WINDOW:

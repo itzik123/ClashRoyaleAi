@@ -1,10 +1,9 @@
 """Tests for live/actuator.py.
 
-This is the module that can place a real card in a real match, and a mistake in
-it is invisible downstream: a tap on the wrong tile produces a perfectly valid
-GameState next frame, showing a unit somewhere nobody intended. So the geometry
-is checked against ClashRoyaleBuildABot's own mapping -- the one upstream runs
-against the real game -- rather than against numbers re-derived here.
+This module can place a real card in a real match, and a wrong tile is
+invisible downstream. So the geometry is checked against CRBAB's own mapping,
+the one upstream runs against the real game, rather than against numbers
+re-derived here.
 """
 from __future__ import annotations
 
@@ -34,24 +33,16 @@ from clashroyalebuildabot.constants import (  # noqa: E402
     TILE_WIDTH,
 )
 
-# Upstream's mapping, transcribed VERBATIM from `Bot._get_tile_centre` and
-# `Bot._get_card_centre` (clashroyalebuildabot/bot/bot.py) before that module
-# was deleted in the 2026-08-24 cleanup. `bot.py` was ~250 lines of live-play
-# loop of which these two pure formulas were the only part this project ever
-# used, and importing it dragged PyQt6, `keyboard` and the ADB Emulator into a
-# sensor whose requirements.txt states it never opens a window.
+# Upstream's mapping, transcribed verbatim from `Bot._get_tile_centre` and
+# `Bot._get_card_centre` (clashroyalebuildabot/bot/bot.py, since deleted:
+# importing it pulled PyQt6, `keyboard` and the ADB emulator into a sensor that
+# never opens a window).
 #
-# This is a deliberate SECOND COPY, and the case CLAUDE.md's no-second-copies
-# rule explicitly allows: a cross-check needs two independent expressions of
-# the mapping, so deriving this side from live/actuator.py is exactly the
-# circularity that would make the test vacuous ("never validate a mask against
-# the predicate that generated it").
-#
-# It reads the SAME constants, deliberately. A legitimate re-fit of the tile
-# grid (tools/fit_tile_grid.py, which exists because upstream's defaults are
-# ~10% off on this emulator) moves both sides together and raises no false
-# alarm; only a drift in the ARITHMETIC fails these, which is the bug class
-# being guarded against.
+# A deliberate second copy: a cross-check needs two independent expressions of
+# the mapping, and deriving this side from live/actuator.py would make the test
+# vacuous. It reads the same constants, so a legitimate grid re-fit
+# (tools/fit_tile_grid.py) moves both sides together; only a drift in the
+# arithmetic fails.
 def _upstream_tile_centre(tile_x, tile_y):
     x = TILE_INIT_X + (tile_x + 0.5) * TILE_WIDTH
     y = DISPLAY_HEIGHT - TILE_INIT_Y - (tile_y + 0.5) * TILE_HEIGHT
@@ -72,10 +63,8 @@ def _upstream_card_centre(card_n):
 @pytest.mark.parametrize("tile_y", [0, 5, 15, 16, 31])
 def test_tile_centre_matches_crbabs_own(tile_x, tile_y):
     """Agreement with the mapping upstream ships against the real game.
-
-    Not a tautology: live/actuator.py expresses the mapping independently of
-    the reference above. A drift between the two would put every placement in
-    the wrong square.
+    live/actuator.py expresses it independently of the reference above; a drift
+    would put every placement in the wrong square.
     """
     mine = tile_centre(tile_x, tile_y)
     theirs = _upstream_tile_centre(tile_x, tile_y)
@@ -90,9 +79,10 @@ def test_card_centre_matches_crbabs_own(slot):
 
 
 def test_engine_and_detector_frames_differ_by_exactly_the_row_offset():
-    """The policy emits ENGINE coordinates (18x34); the screen mapping is in
-    DETECTOR coordinates (18x32). Conflating them shifts every placement by a
-    row -- the bug class this project has already paid for once."""
+    """The policy emits engine coordinates (18x34); the screen mapping is in
+    detector coordinates (18x32). Conflating them shifts every placement by a
+    row.
+    """
     for tile_x in (0, 9, 17):
         for engine_y in (TILE_Y_OFFSET, 10, 32):
             assert (engine_tile_centre(tile_x, engine_y)
@@ -100,8 +90,9 @@ def test_engine_and_detector_frames_differ_by_exactly_the_row_offset():
 
 
 def test_engine_frame_is_not_the_identity():
-    """Guards against someone 'simplifying' the offset away. If these ever
-    coincide, the conversion has been lost."""
+    """Guards against "simplifying" the offset away: if these coincide, the
+    conversion is lost.
+    """
     assert engine_tile_centre(9, 10) != tile_centre(9, 10)
 
 
@@ -112,8 +103,7 @@ def test_a_bad_hand_slot_raises_rather_than_tapping_somewhere():
 
 
 def test_dry_run_is_the_default():
-    """Acting must be asked for. A forgotten flag should mean the loop
-    watches, not that it plays cards in a live match."""
+    """Acting must be asked for: a forgotten flag means the loop watches."""
     assert AdbActuator().dry_run is True
 
 
@@ -126,9 +116,10 @@ def test_dry_run_records_intent_without_calling_adb():
 
 
 def test_play_taps_the_card_before_the_tile():
-    """Order is the placement protocol, not a preference: Clash Royale selects
-    a card and then targets. Reversed, the first tap lands on the arena with no
-    card held and the second selects a card that is never placed."""
+    """Order is the placement protocol: select, then target. Reversed, the first
+    tap lands on the arena with no card held and the second selects a card
+    never placed.
+    """
     actuator = AdbActuator(dry_run=True)
     actuator.play(1, 4, 20)
     assert actuator.taps[0] == card_centre(1)
@@ -136,8 +127,9 @@ def test_play_taps_the_card_before_the_tile():
 
 
 def test_taps_land_inside_the_android_display():
-    """720x1280 is what `input tap` addresses. A coordinate outside it is
-    silently swallowed by Android rather than reported."""
+    """720x1280 is what `input tap` addresses; Android silently swallows a
+    coordinate outside it.
+    """
     for tile_x in range(18):
         for tile_y in range(32):
             p = tile_centre(tile_x, tile_y)
@@ -150,18 +142,18 @@ def test_taps_land_inside_the_android_display():
 
 def test_the_hand_row_is_below_the_arena():
     """A card tap must not land on the board, or it would place rather than
-    select."""
+    select.
+    """
     lowest_board_row = tile_centre(9, 0).y
     assert all(card_centre(s).y > lowest_board_row for s in range(4))
 
 
-# --- asynchrony -------------------------------------------------------------
+# --- asynchrony ---
 
 def test_play_does_not_block_the_caller(monkeypatch, tmp_path):
-    """The reason this class was rewritten. A tap costs ~410 ms on-device and a
-    placement is two of them, so acting inline dragged the decision loop from
-    1.0 Hz to ~0.6 Hz exactly when the agent was most active -- feeding a
-    recurrent policy intervals it was never trained on.
+    """A tap costs ~410 ms and a placement is two, so inline acting dragged the
+    decision loop from 1.0 Hz to ~0.6 Hz when the agent was busiest, feeding a
+    recurrent policy intervals it never trained on.
     """
     import time
 
@@ -180,8 +172,8 @@ def test_play_does_not_block_the_caller(monkeypatch, tmp_path):
 
 
 def test_a_placement_is_sent_as_one_unit(monkeypatch, tmp_path):
-    """Both taps in one shell command. Interleaving two placements' taps would
-    pair a card-select with the wrong tile tap."""
+    """Both taps in one shell command, so two placements' taps cannot interleave.
+    """
     sent = []
     fake_adb = tmp_path / "adb.exe"
     fake_adb.write_text("")
@@ -200,10 +192,9 @@ def test_a_placement_is_sent_as_one_unit(monkeypatch, tmp_path):
 
 
 def test_a_placement_arriving_mid_tap_is_dropped_not_queued(monkeypatch, tmp_path):
-    """Depth one, and full means drop. A queued placement would land seconds
-    after the board it was chosen for, by which point it is not a late move but
-    a different one. Blocking instead would put the latency straight back on
-    the decision thread."""
+    """Depth one, and full means drop: a queued placement would land seconds after
+    its board, and blocking would put the latency back on the decision thread.
+    """
     import threading
     import time
 
@@ -214,7 +205,7 @@ def test_a_placement_arriving_mid_tap_is_dropped_not_queued(monkeypatch, tmp_pat
     monkeypatch.setattr(actuator, "_shell", lambda s: release.wait(2.0))
     try:
         actuator.play(0, 9, 8)
-        time.sleep(0.1)                 # worker picks the first one up
+        time.sleep(0.1)                 # worker picks up the first
         actuator.play(1, 9, 8)          # in flight -> queued
         actuator.play(2, 9, 8)          # queue full -> dropped
         assert actuator.dropped >= 1
@@ -224,8 +215,9 @@ def test_a_placement_arriving_mid_tap_is_dropped_not_queued(monkeypatch, tmp_pat
 
 
 def test_a_failed_tap_does_not_kill_the_worker(monkeypatch, tmp_path):
-    """A dead worker looks exactly like an agent that is still acting, while
-    nothing reaches the game."""
+    """A dead worker looks like an agent still acting while nothing reaches the
+    game.
+    """
     calls = {"n": 0}
 
     def flaky(script):
@@ -249,8 +241,9 @@ def test_a_failed_tap_does_not_kill_the_worker(monkeypatch, tmp_path):
 
 
 def test_dry_run_starts_no_worker_and_sends_nothing():
-    """Dry run must stay fully synchronous: it is what the tests and the replay
-    path assert against, and a thread would make `taps` racy."""
+    """Dry run stays synchronous: tests and the replay path assert against `taps`,
+    and a thread would make it racy.
+    """
     actuator = AdbActuator(dry_run=True)
     actuator.play(0, 9, 8)
     assert actuator._worker is None
@@ -275,12 +268,13 @@ def test_taps_are_recorded_at_intent_not_at_send(monkeypatch, tmp_path):
         actuator.close()
 
 
-# --- raw evdev touch ---------------------------------------------------------
+# --- raw evdev touch ---
 
 def test_the_panel_is_landscape_and_the_app_is_rotated_onto_it():
-    """`wm size` reports 1280x720 while the app renders 720x1280. The touch
-    device's axes are the PANEL's, and assuming the app's frame sent a tap
-    meant for the top-right hamburger to the top-left profile banner."""
+    """`wm size` reports 1280x720 while the app renders 720x1280; the touch
+    device's axes are the panel's, and assuming the app's frame sent a
+    top-right tap to the top-left.
+    """
     from live.actuator import RawTouch
 
     assert RawTouch(1280, 720).rotated is True
@@ -288,8 +282,9 @@ def test_the_panel_is_landscape_and_the_app_is_rotated_onto_it():
 
 
 def test_raw_coordinates_match_the_two_verified_live_taps():
-    """Both of these were confirmed against real buttons: (655,135) opened the
-    hamburger menu, (430,418) opened the Training Camp dialog."""
+    """Both confirmed against real buttons: (655,135) opened the hamburger menu,
+    (430,418) the Training Camp dialog.
+    """
     from live.actuator import RawTouch
 
     raw = RawTouch(1280, 720)
@@ -313,9 +308,9 @@ def test_raw_coordinates_stay_inside_the_axis_range():
 
 
 def test_a_placement_holds_each_contact_and_releases_it():
-    """A contact needs duration. Press and release in one write is a
-    zero-length touch: it dismissed a menu instead of pressing the button
-    under it."""
+    """A contact needs duration: press and release in one write is a zero-length
+    touch that dismissed a menu instead of pressing the button under it.
+    """
     from live.actuator import RawTouch, Tap
 
     script = RawTouch(1280, 720).placement_script(Tap(100, 200), Tap(300, 400))
@@ -324,7 +319,8 @@ def test_a_placement_holds_each_contact_and_releases_it():
 
 
 def test_raw_touch_is_one_round_trip_for_the_whole_placement(monkeypatch, tmp_path):
-    """The holds and the gap run on-device, inside a trip being made anyway."""
+    """The holds and the gap run on-device, inside a trip already being made.
+    """
     sent = []
     fake_adb = tmp_path / "adb.exe"
     fake_adb.write_text("")
@@ -341,9 +337,9 @@ def test_raw_touch_is_one_round_trip_for_the_whole_placement(monkeypatch, tmp_pa
 
 
 def test_it_falls_back_to_input_tap_without_the_device(tmp_path):
-    """The device path, axis ranges and rotation are all properties of this
-    emulator; being wrong about them taps the wrong place rather than
-    failing."""
+    """Device path, axis ranges and rotation are properties of this emulator;
+    being wrong taps the wrong place rather than failing.
+    """
     fake_adb = tmp_path / "adb.exe"
     fake_adb.write_text("")
     actuator = AdbActuator(dry_run=False, adb=fake_adb, raw_touch=False)

@@ -1,7 +1,5 @@
-"""The identity solver must be SOUND (truth always survives) before it is useful.
-
-An unsound solver is worse than the 33.8% templates it replaces: a confidently
-wrong label poisons a demonstration dataset silently.
+"""The identity solver must be sound (the truth always survives) before it is
+useful: a confidently wrong label poisons a demonstration dataset silently.
 """
 from collections import deque
 
@@ -48,11 +46,9 @@ def test_unique_cost_resolves_exactly():
 
 
 def test_cannot_beat_the_cost_class_floor():
-    """Documents the solver's real limit: cost cannot separate equal-cost cards.
-
-    3! * 4! * 1! = 144 relabellings are indistinguishable from (slot, cost)
-    alone, no matter how many plays are observed. This test exists so that a
-    future claim of 'logic solves identity' has to argue with a number.
+    """The solver's real limit: cost cannot separate equal-cost cards. 3! * 4! *
+    1! = 144 relabellings are indistinguishable from (slot, cost) alone,
+    however many plays are observed.
     """
     order = [10, 1, 41, 25, 7, 2, 6, 5]
     plays, _ = _simulate(order, [i % HAND_SIZE for i in range(60)])

@@ -17,26 +17,20 @@
 #include <stdexcept>
 #include <vector>
 
-// Board::deepCopy() and the Entity::snapshot() mechanism under it -- the
-// prerequisite for decision-time search (CLAUDE.md open problem #2): roll
-// candidate actions forward on a copied board, score them, keep the best.
+// Board::deepCopy() and Entity::snapshot(), the basis of decision-time search:
+// roll candidate actions forward on a copy, score them, keep the best.
 //
-// The failure mode this file exists to catch is SILENT. A copy that shares
-// entities with the live board produces wrong simulated futures, and those
-// futures would then be distilled back into the policy as if they were expert
-// labels. Nothing crashes and no metric moves. So the tests below are mostly
-// not "does deepCopy work" but "does it fail the way it must when it's wrong"
-// -- see the two negative cases at the bottom, which reproduce the actual
-// cross-board corruption and then show deepCopy closing it.
+// The failure mode is silent: a copy sharing entities with the live board
+// produces wrong futures, which search would distill into the policy as expert
+// labels. So most tests here check that it fails as it must when wrong; the
+// negative cases at the end reproduce the cross-board corruption and show
+// deepCopy closing it.
 
 namespace {
 
 // The board-level half of GameManager::step(), in the same order (commit ->
-// update -> commit -> resolveCollisions -> cleanDeadEntities). Deliberately
-// mirrors that function rather than calling it: deepCopy is a Board operation,
-// and a Board can be stepped without a GameManager wrapped around it. The
-// elixir/PlayerState/MatchRules parts of step() are GameManager's own members,
-// not this board's, and are out of scope for a Board-level copy.
+// update -> commit -> resolveCollisions -> cleanDeadEntities). A Board can be
+// stepped without a GameManager.
 void tickBoard(Board& board, int tick) {
     board.currentTick = tick;
     board.commitPendingEntities(tick);
@@ -50,9 +44,8 @@ void tickBoard(Board& board, int tick) {
     board.cleanDeadEntities(tick);
 }
 
-// Everything about one entity that a rollout could observe. Compared field by
-// field rather than via the observation encoder so a divergence points at the
-// entity that drifted instead of at a 13606-long float vector.
+// Everything a rollout could observe about one entity, compared field by field
+// so a divergence names the entity.
 struct EntityRow {
     int id;
     int hp;
@@ -60,10 +53,8 @@ struct EntityRow {
     int cardId;
     float x;
     float y;
-    // -1 for everything that is not a Projectile. Included because a
-    // projectile's target is the one piece of per-entity state that a naive
-    // copy gets wrong, so leaving it out would hide exactly the bug this file
-    // is about.
+    // -1 except for a Projectile, whose target is the one per-entity state a
+    // naive copy gets wrong.
     int projectileTargetId;
 
     bool operator==(const EntityRow& other) const {
@@ -73,10 +64,8 @@ struct EntityRow {
     }
 };
 
-// Without this Catch2 prints a row of "{?}" on failure, which tells you a
-// divergence happened but not where. Since the whole point of these tests is
-// to localise a silent corruption, the diff has to name the entity that
-// drifted and the field that did it.
+// Without this Catch2 prints "{?}"; the diff must name the entity and field
+// that drifted.
 std::ostream& operator<<(std::ostream& os, const EntityRow& row) {
     os << "{id=" << row.id << " hp=" << row.hp << " team=" << row.team
         << " card=" << row.cardId
@@ -85,11 +74,9 @@ std::ostream& operator<<(std::ostream& os, const EntityRow& row) {
     return os << "}";
 }
 
-// NOT sorted by id: the vector order is itself load-bearing state. Board::
-// resolveCollisions walks activeEntities as an ordered i<j double loop, so two
-// boards holding the same entities in a different order resolve overlaps
-// differently and drift apart within a few ticks. Comparing in order catches
-// that; sorting first would hide it.
+// Not sorted by id: the order is state. resolveCollisions walks activeEntities
+// as an ordered i<j loop, so two boards with the same entities in a different
+// order drift apart.
 std::vector<EntityRow> describe(const Board& board) {
     std::vector<EntityRow> rows;
     rows.reserve(board.getEntities().size());
@@ -103,9 +90,8 @@ std::vector<EntityRow> describe(const Board& board) {
     return rows;
 }
 
-// Counts events instead of accumulating damage totals -- enough to prove the
-// copied board's bus is disconnected, without depending on any real
-// collector's schema.
+// Counts events, enough to prove the copy's bus is disconnected without
+// depending on a collector's schema.
 class CountingStatsObserver : public IStatsObserver {
 public:
     int damageEvents = 0;
@@ -124,11 +110,8 @@ void spawnCard(Board& board, int cardId, float x, float y, int team) {
     board.commitPendingEntities();
 }
 
-// Four towers a side at their real coordinates (GameManager::reset's own
-// layout), built directly rather than through GameManager so the fixture
-// carries no RNG: GameManager's constructor seeds from std::random_device and
-// shuffles both opening hands, which a divergence test should not have to
-// reason about.
+// Towers at their real coordinates, built directly rather than through
+// GameManager, so the fixture involves no RNG.
 void addTowers(Board& board) {
     auto tower = [&](float x, float y, int hp, int team, float range, int damage, int cooldown, char symbol) {
         auto t = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, range, damage, cooldown, symbol);
@@ -151,22 +134,14 @@ bool boardHasProjectileInFlight(const Board& board) {
     return false;
 }
 
-// Ticks the fixture advances before handing the board over. Tests resume well
-// past this so their own tick numbers never overlap the warmup's.
+// Ticks the fixture advances; tests resume past this.
 constexpr int WARMUP_TICKS = 60;
 constexpr int FIRST_TEST_TICK = 200;
 
-// A genuine mid-game position: both sides' towers up, DEFAULT_DECK cards
-// pushing on both lanes, stepped far enough that troops have crossed, towers
-// have acquired targets and projectiles are in flight. Everything after this
-// is measured against a board that is actually doing something -- a snapshot
-// of an empty board would pass every test here while proving nothing.
-//
-// The warmup runs on past WARMUP_TICKS until a projectile actually exists
-// rather than assuming one does at a fixed tick: whether a shot happens to be
-// mid-air on tick 60 depends on attack cooldowns lining up, and a fixture that
-// silently stopped containing projectiles would quietly retire the only tests
-// that cover the aliasing bug.
+// A genuine mid-game position: troops across the river, towers engaged,
+// projectiles in flight. The warm-up runs until a projectile exists rather than
+// assuming one at a fixed tick, so the aliasing tests cannot quietly lose their
+// subject.
 Board buildMidGameBoard() {
     Board board;
     addTowers(board);
@@ -191,7 +166,7 @@ Board buildMidGameBoard() {
 
 } // namespace
 
-// ---------------- Entity::snapshot() contract ----------------
+// --- Entity::snapshot() contract ---
 
 TEST_CASE("snapshot preserves id and hp where clone deliberately does not", "[board][deepcopy][snapshot]") {
     MeleeTroop original(42, 3.0f, 4.0f, 777, 0, 0.5f, 1.2f, 120, 12, 'K');
@@ -202,30 +177,25 @@ TEST_CASE("snapshot preserves id and hp where clone deliberately does not", "[bo
     REQUIRE(snap->position.x == Catch::Approx(3.0f));
     REQUIRE(snap->position.y == Catch::Approx(4.0f));
 
-    // The reason snapshot() had to be added at all rather than reusing
-    // clone(): clone implements the Clone CARD (fresh id, 1 hp), which would
-    // silently hand a search a board full of 1-hp units.
+    // Why snapshot() exists beside clone(): clone implements the Clone card
+    // (fresh id, 1 hp).
     auto cloned = original.clone(99);
     REQUIRE(cloned->id == 99);
     REQUIRE(cloned->hp == 1);
 }
 
 TEST_CASE("snapshot on a concrete type that forgot to override it throws", "[board][deepcopy][snapshot]") {
-    // DummyEntity (tests/entities/test_helpers.h) is a concrete Entity with no
-    // snapshot() override -- exactly the shape of a future entity type someone
-    // adds without knowing about deepCopy. The base must fail loudly and by
-    // name, because the alternative default (nullptr, as clone() uses) would
-    // let Board::deepCopy quietly drop it from every rollout.
+    // DummyEntity has no snapshot() override, the shape of a future entity type
+    // added without knowing about deepCopy. The base must throw by name; a
+    // nullptr default would drop it from every rollout.
     DummyEntity orphan(7, 1.0f, 1.0f, 100, 0);
     REQUIRE_THROWS_AS(orphan.snapshot(), std::logic_error);
 }
 
 TEST_CASE("snapshot does not slice derived types back to their bases", "[board][deepcopy][snapshot]") {
-    // Tower -> Building and RangedBuildingTargeter -> BuildingTargeter are the
-    // two places where inheriting the base's snapshot() would compile fine and
-    // silently downgrade the entity: a sliced Tower stops answering isTower(),
-    // which is what makes towers always-visible fallback targets in
-    // CombatEntity::findTarget.
+    // Tower -> Building and RangedBuildingTargeter -> BuildingTargeter:
+    // inheriting the base snapshot() would compile and slice the entity; a
+    // sliced Tower stops answering isTower().
     Tower tower(1, 9.0f, 2.5f, 4008, 0, 7.0f, 90, 10, 'R');
     auto towerSnap = tower.snapshot();
     REQUIRE(std::dynamic_pointer_cast<Tower>(towerSnap) != nullptr);
@@ -236,8 +206,7 @@ TEST_CASE("snapshot does not slice derived types back to their bases", "[board][
     auto rangedSnap = ranged.snapshot();
     REQUIRE(std::dynamic_pointer_cast<RangedBuildingTargeter>(rangedSnap) != nullptr);
 
-    // Every remaining concrete type, so "all 8 are covered" is asserted rather
-    // than assumed. Each must return its own type and must not throw.
+    // Every remaining concrete type returns its own type without throwing.
     RangedTroop rangedTroop(3, 5.0f, 5.0f, 340, 0, 0.05f, 6.0f, 100, 10, 'A');
     BuildingTargeter buildingTargeter(4, 5.0f, 5.0f, 800, 0, 0.06f, 1.2f, 100, 16, 'H');
     Building building(5, 9.0f, 8.0f, 824, 0, 'C', 5.5f, 83, 8, 300);
@@ -252,7 +221,7 @@ TEST_CASE("snapshot does not slice derived types back to their bases", "[board][
     REQUIRE(std::dynamic_pointer_cast<Projectile>(projectile.snapshot()) != nullptr);
 }
 
-// ---------------- Board::deepCopy() structure ----------------
+// --- Board::deepCopy() structure ---
 
 TEST_CASE("deepCopy duplicates entities instead of sharing them", "[board][deepcopy]") {
     Board original;
@@ -262,8 +231,8 @@ TEST_CASE("deepCopy duplicates entities instead of sharing them", "[board][deepc
     Board copy = original.deepCopy();
     REQUIRE(copy.getEntities().size() == 1);
 
-    // Same values, different objects. The second REQUIRE is the whole point:
-    // a plain `Board b = a;` passes the first and fails this one.
+    // Same values, different objects; a plain `Board b = a;` fails the second
+    // REQUIRE.
     REQUIRE(copy.getEntities()[0]->id == troop->id);
     REQUIRE(copy.getEntities()[0]->hp == troop->hp);
     REQUIRE(copy.getEntities()[0].get() != troop.get());
@@ -280,9 +249,8 @@ TEST_CASE("deepCopy carries idCounter so the copy cannot reissue live ids", "[bo
     int nextInOriginal = original.allocateId();
 
     Board copy = original.deepCopy();
-    // A copy that restarted its counter would hand the next projectile spawned
-    // during a rollout an id an existing entity already holds, and every
-    // id-keyed lookup would then join on the wrong entity.
+    // A restarted counter would reuse ids during a rollout, and id-keyed
+    // lookups would join the wrong entity.
     REQUIRE(copy.allocateId() == nextInOriginal + 1);
 }
 
@@ -290,9 +258,8 @@ TEST_CASE("deepCopy carries pending entities, not just committed ones", "[board]
     Board original;
     auto committed = std::make_shared<MeleeTroop>(1, 5.0f, 5.0f, 500, 0, 0.05f, 1.2f, 100, 12, 'K');
     spawn(original, committed);
-    // A card played this tick lives in pendingEntities until the next commit.
-    // Dropping those would make a snapshot taken mid-tick lose the very
-    // placement a search is trying to evaluate.
+    // A card played this tick lives in pendingEntities until the next commit; a
+    // snapshot must keep it.
     auto pending = std::make_shared<MeleeTroop>(2, 6.0f, 6.0f, 400, 0, 0.05f, 1.2f, 100, 12, 'K');
     original.addEntity(pending);
 
@@ -319,29 +286,25 @@ TEST_CASE("deepCopy does not carry the stats subscriber list", "[board][deepcopy
     Board copy = original.deepCopy();
     for (int tick = 1; tick <= 6; ++tick) tickBoard(copy, tick);
 
-    // StatsEventBus holds shared_ptr to STATEFUL collectors (running damage
-    // totals, kill attribution, match outcome), and those feed the reward
-    // shaping. Copying the subscriber list would post every hypothetical hit
-    // in every rollout into the real match's statistics -- a search silently
-    // rewriting the returns it is being scored against. Same failure shape as
-    // the Projectile alias below, one level up.
+    // The bus holds stateful collectors that feed the reward; a copied
+    // subscriber list would post every rollout's hits into the live statistics.
     REQUIRE(observer->damageEvents == 0);
     REQUIRE(observer->spawnEvents == 0);
     REQUIRE(observer->deathEvents == 0);
 
-    // ...and the original's own bus is still connected, so this is a copy
-    // property and not a broken fixture.
+    // ...and the original's bus is still connected: a copy property, not a
+    // broken fixture.
     original.statsEvents.notifyDamageDealt({ 0, 0, 0, 1, 0, 1, 10, 0 });
     REQUIRE(observer->damageEvents == 1);
 }
 
-// ---------------- The acceptance test: zero divergence ----------------
+// --- the acceptance test: zero divergence ---
 
 TEST_CASE("a deep-copied mid-game board and its original stay bit-identical for 120 ticks",
     "[board][deepcopy][divergence]") {
     Board original = buildMidGameBoard();
 
-    // The fixture has to be a real fight or this test proves nothing.
+    // The fixture must be a real fight.
     REQUIRE(original.getEntities().size() > 8);
     REQUIRE(boardHasProjectileInFlight(original));
     std::vector<EntityRow> atCopyTime = describe(original);
@@ -349,10 +312,8 @@ TEST_CASE("a deep-copied mid-game board and its original stay bit-identical for 
     Board copy = original.deepCopy();
     REQUIRE(describe(copy) == atCopyTime);
 
-    // Stepped with identical inputs: the engine's only RNG is the opening-hand
-    // shuffle and HeuristicOpponent, neither of which is in play here, so
-    // combat is fully deterministic and "close enough" is not the bar --
-    // every field must match exactly, every tick.
+    // Identical inputs and no RNG in play, so every field must match exactly,
+    // every tick.
     for (int tick = FIRST_TEST_TICK; tick < FIRST_TEST_TICK + 120; ++tick) {
         tickBoard(original, tick);
         tickBoard(copy, tick);
@@ -364,9 +325,7 @@ TEST_CASE("a deep-copied mid-game board and its original stay bit-identical for 
         REQUIRE(copyRows == originalRows);
     }
 
-    // The board genuinely moved over those 120 ticks -- otherwise the loop
-    // above compared two boards that were merely sitting still, which would
-    // pass whether or not deepCopy did anything.
+    // The board genuinely moved, or two idle boards would trivially match.
     REQUIRE(describe(original) != atCopyTime);
 }
 
@@ -378,32 +337,27 @@ TEST_CASE("stepping a deep copy leaves the original board completely untouched",
     Board copy = original.deepCopy();
     for (int tick = FIRST_TEST_TICK; tick < FIRST_TEST_TICK + 120; ++tick) tickBoard(copy, tick);
 
-    // The property search actually depends on: rolling a candidate forward
-    // must not advance, damage or disturb the live game in any way.
+    // Rolling a candidate forward must not disturb the live game.
     REQUIRE(describe(original) == before);
-    // ...and the copy really did move on, so the assertion above is not
-    // passing because nothing happened anywhere.
+    // ...and the copy really moved on.
     REQUIRE(describe(copy) != before);
 }
 
-// ---------------- Negative cases: the corruption deepCopy prevents ----------------
+// --- negative cases: the corruption deepCopy prevents ---
 
 TEST_CASE("a snapshot-only copy lets a projectile in flight damage the ORIGINAL board",
     "[board][deepcopy][projectile][negative]") {
-    // The deliberate negative case. This reproduces what deepCopy would do if
-    // it stopped after snapshot() and skipped the remap pass -- i.e. it proves
-    // the remap is load-bearing rather than decorative, and it is written to
-    // FAIL if someone deletes Projectile::remapSnapshotReferences and
-    // "simplifies" deepCopy into a plain snapshot loop.
+    // Reproduces deepCopy without the remap pass, proving the remap is
+    // load-bearing; written to fail if remapSnapshotReferences is removed.
     Board original;
     auto victim = std::make_shared<MeleeTroop>(1, 5.0f, 12.0f, 5000, 1, 0.0f, 1.0f, 50, 10, 'M');
     spawn(original, victim);
-    // Constructed directly, with no shooter on the board and a stationary
-    // victim, so the only thing that can change any hp is this one shot.
+    // No shooter and a stationary victim, so only this one shot can change any
+    // hp.
     auto shot = std::make_shared<Projectile>(2, 5.0f, 9.0f, 0, victim, 1.5f, 250);
     spawn(original, shot);
 
-    // A naive copy: every entity duplicated, nothing remapped.
+    // A naive copy: everything duplicated, nothing remapped.
     Board naive;
     for (const auto& e : original.getEntities()) naive.addEntity(e->snapshot());
     naive.commitPendingEntities();
@@ -413,14 +367,12 @@ TEST_CASE("a snapshot-only copy lets a projectile in flight damage the ORIGINAL 
     REQUIRE(naiveVictim->id == 1);
     REQUIRE(naiveVictim.get() != victim.get()); // genuinely a different object
 
-    // Step ONLY the naive copy. The original is never stepped.
+    // Step only the naive copy.
     for (int tick = 1; tick <= 6; ++tick) tickBoard(naive, tick);
 
-    // ...and yet the original's troop is the one that bled. The copy's
-    // projectile carried a weak_ptr straight back into the live board, homed
-    // on an entity belonging to another simulation, and dealt real damage to
-    // it. Being a weak_ptr, nothing leaks and nothing crashes -- the symptom
-    // is wrong numbers in a game nobody was stepping.
+    // ...and the original's troop is the one that bled: the copy's projectile
+    // held a weak_ptr into the live board and damaged it. Nothing crashes; the
+    // numbers are just wrong.
     REQUIRE(victim->hp == 4750);
     REQUIRE(naiveVictim->hp == 5000); // the copy's own troop was never hit
 }
@@ -437,9 +389,8 @@ TEST_CASE("deepCopy remaps a projectile in flight onto the copy's own target",
     auto copyVictim = copy.getEntities()[0];
     REQUIRE(copyVictim.get() != victim.get());
 
-    // The target id is IDENTICAL either way -- snapshot() preserves ids on
-    // purpose -- so the id alone can never tell a remapped projectile from an
-    // aliased one. Only where the damage lands can.
+    // The target id is identical either way (snapshot preserves ids); only
+    // where the damage lands tells them apart.
     auto copyShot = std::dynamic_pointer_cast<Projectile>(copy.getEntities()[1]);
     REQUIRE(copyShot != nullptr);
     REQUIRE(copyShot->getTargetId() == 1);
@@ -452,10 +403,8 @@ TEST_CASE("deepCopy remaps a projectile in flight onto the copy's own target",
 
 TEST_CASE("deepCopy clears a projectile whose target is not in the copied board",
     "[board][deepcopy][projectile]") {
-    // The edge the remap must not fall through: a target the map has no row
-    // for. Leaving the weak_ptr as-is would be a live cross-board write, so it
-    // is cleared instead -- costing one projectile that was about to die
-    // anyway (update() sets hp = 0 the moment its target cannot be locked).
+    // A target missing from the map: the pointer is cleared rather than left
+    // crossing boards, costing a projectile that was about to die anyway.
     Board original;
     auto offBoardVictim = std::make_shared<MeleeTroop>(99, 5.0f, 12.0f, 5000, 1, 0.0f, 1.0f, 50, 10, 'M');
     auto shot = std::make_shared<Projectile>(2, 5.0f, 9.0f, 0, offBoardVictim, 1.5f, 250);
@@ -473,10 +422,8 @@ TEST_CASE("deepCopy clears a projectile whose target is not in the copied board"
 
 TEST_CASE("a deep copy taken mid-fight can be stepped repeatedly from the same position",
     "[board][deepcopy][divergence]") {
-    // What search actually does: take one position and try several candidate
-    // futures from it. Each branch must start from the same state and none may
-    // contaminate another, which is a stronger requirement than a single copy
-    // being correct.
+    // Search tries several futures from one position: each branch starts from
+    // the same state and none contaminates another.
     Board position = buildMidGameBoard();
     std::vector<EntityRow> start = describe(position);
 
@@ -490,9 +437,8 @@ TEST_CASE("a deep copy taken mid-fight can be stepped repeatedly from the same p
         if (branch == 0) {
             firstBranchResult = describe(rollout);
         } else {
-            // Deterministic engine, identical inputs: every branch must land
-            // on exactly the same result. A difference here means an earlier
-            // branch left state behind somewhere.
+            // Deterministic engine, identical inputs: every branch lands on the
+            // same result.
             REQUIRE(describe(rollout) == firstBranchResult);
         }
         REQUIRE(describe(position) == start); // the shared position never moves

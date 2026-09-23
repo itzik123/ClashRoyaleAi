@@ -1,33 +1,15 @@
 """Did the solvency term stop the bot bankrupting itself before it defends?
 
-THE STATISTIC UNDER TEST
-------------------------
-Measured on `model_weights_dist_e3.pth` before any change (40 greedy episodes,
-1.5x opponent elixir):
+The endpoint is the share of decisions below 3 elixir, the cheapest card in the
+deck: below it the action space is empty.
 
-    below 3 elixir, all decisions                65.3%
-    below 3 elixir, during a BIG push (>8)       60.8%
-    mean elixir                                   2.53
-    plays/episode                                 29.1
-    elixir spent/episode  (income is ~98)        ~105
+The statistical unit is the episode: decisions within a match are heavily
+correlated (elixir integrates the episode's own spending), so CIs bootstrap
+over episodes. The arms cannot be paired, since each net must steer its own
+trajectory; a per-episode rate is used as the primary endpoint because win rate
+needs far more episodes.
 
-3.0 is the cost of the cheapest card in DEFAULT_DECK, so below it the action
-space is empty and P(play) is 0.0% by arithmetic rather than by choice. That is
-the number this term exists to move.
-
-STATISTICAL UNIT IS THE EPISODE, NOT THE DECISION. A net produces ~280
-decisions per episode and they are heavily correlated within a match (elixir is
-an integral of that episode's own spending), so pooling decisions would give an
-absurdly tight interval around a number whose real variance is between-episode.
-CIs here bootstrap over episodes.
-
-Unlike prove_placement.py this comparison CANNOT be paired: each net steers its
-own trajectory, which is the entire point -- we are asking whether it manages
-its elixir differently, so it must be allowed to. That costs power, which is why
-the primary endpoint is a per-episode rate (low variance) rather than win rate
-(needs ~1,568 episodes per arm to resolve 5 points).
-
-    python_ai/venv/Scripts/python.exe python_ai/prove_solvency.py \
+    python_ai/venv/Scripts/python.exe python_ai/eval/prove_solvency.py \
         --nets seed=A.pth coverage=B.pth solvency=D.pth --episodes 30
 """
 import argparse
@@ -37,9 +19,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -52,14 +32,6 @@ from python_ai.eval import stats  # noqa: E402
 from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.search.search import outcome_score  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
-
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
 
 CE = E.ClashRoyaleEnv
 CHEAPEST = 3.0
@@ -103,25 +75,18 @@ def run_episode(net, deck, opp_elixir, max_steps=400):
 
 
 def _threat_elixir(obs):
-    """Enemy HP on our half, converted to the elixir scale of the original
-    diagnosis so the ">8 elixir" bucket keeps its meaning.
+    """Enemy HP on our half, converted to elixir so the ">8 elixir" bucket stays
+    comparable.
 
-    That diagnosis summed the elixir COST of enemy troops past the river, which
-    needs the per-tick entity list. Here only the observation is available, so
-    HP is divided by DECK_HP_PER_ELIXIR. The conversion is a constant and is
-    applied identically to every arm, so it cannot favour one of them -- it only
-    has to keep the bucket boundary comparable to the pre-change number.
+    The conversion is one constant applied to every arm, so it cannot favour
+    any of them.
     """
     return float(tactics.threat_map(obs).sum()) / DECK_HP_PER_ELIXIR
 
 
-# Mean HP per elixir over DEFAULT_DECK's troops, from CardRegistry.h
-# (Valkyrie 1907/4, Archers 2x304/3, Minions 3x230/3, Cannon 824/3,
-#  Giant 3968/5, Musketeer 721/4, Mini PEKKA 1390/4):
+# Mean HP per elixir over the deck's troops, from CardRegistry.h:
 #   (1907+608+690+824+3968+721+1390) / (4+3+3+3+5+4+4) = 10108/26
-# Hardcoded with this derivation because pybind's get_card_info exposes no
-# hitpoints field -- the fallback CLAUDE.md prescribes when a value is not
-# derivable from the bindings.
+# Hardcoded because get_card_info exposes no hitpoints.
 DECK_HP_PER_ELIXIR = 10108.0 / 26.0
 
 
@@ -142,12 +107,12 @@ def summarize(name, eps):
 
 
 def boot_ci(x, rng, n=10000):
-    """(mean, lo, hi). See `eval/stats.py` for why this is one function now."""
+    """(mean, lo, hi); see eval/stats.py."""
     return stats.bootstrap_ci(x, rng=rng, n=n)
 
 
 def boot_diff(a, b, rng, n=10000):
-    """(delta, lo, hi, p) for arms that are NOT paired. See `eval/stats.py`."""
+    """(delta, lo, hi, p) for unpaired arms; see eval/stats.py."""
     return stats.unpaired_bootstrap_diff(a, b, rng=rng, n=n)
 
 

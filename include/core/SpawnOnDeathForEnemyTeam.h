@@ -3,10 +3,8 @@
 #include "CardStats.h"
 #include "CardFactories.h"
 
-// Spawns a data-driven child troop for the OPPOSING team when this entity
-// dies (Mother Witch's Cursed Hog: a unit she cursed spawns a Hog fighting
-// FOR Mother Witch, i.e. against the cursed unit's own team). Otherwise
-// identical to SpawnOnDeath, which spawns on the dying entity's own team.
+// SpawnOnDeath for the OPPOSING team (Mother Witch's Cursed Hog fights for her,
+// against the cursed unit's team).
 class SpawnOnDeathForEnemyTeam : public IDeathEffect {
     CardStats childStats;
 

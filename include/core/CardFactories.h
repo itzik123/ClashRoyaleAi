@@ -9,9 +9,7 @@
 #include "AreaSpell.h"
 #include <stdexcept>
 
-// One factory function per Archetype (see CardStats.h). Each knows how to
-// build exactly one shape of entity/entities from data -- nothing here is
-// specific to any single card.
+// One factory per Archetype (CardStats.h). Nothing here is specific to a card.
 namespace CardFactories {
 
 inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
@@ -20,19 +18,13 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
     }
 }
 
-// Every entity a card produces carries that card's display name (e.g. all
-// three Barbarians are each named "Barbarians"), whatever on-hit/death
-// effect the card carries, its ground/air properties, and its damage-ramp /
-// target-split configuration (both no-ops unless a card opts in).
+// Copies a card's per-entity configuration onto each entity it produces.
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
     entity->cardId = stats.id;
-    // Deploy time -- see CardStats.h's DEPLOY_TIME_TICKS for what it is and
-    // why. Set here rather than in each factory because this is the one hook
-    // every troop and building archetype already funnels through, and the one
-    // that spells (spawnSpell) and deploy effects (spawnDeployEffect)
-    // deliberately do NOT: a spell has its own spellDelayTicks and must not be
-    // delayed twice.
+    // Deploy time (CardStats.h, DEPLOY_TIME_TICKS). Set here because every
+    // troop and building passes through; spells and deploy effects do not,
+    // since a spell has its own delay.
     entity->deployTicksRemaining = DEPLOY_TIME_TICKS;
     entity->isFlying = stats.isFlying;
     entity->targetsAir = stats.targetsAir;
@@ -59,7 +51,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->revealTicksAfterAttack = stats.revealTicksAfterAttack;
     entity->periodicEffect = stats.periodicEffect;
     entity->periodicIntervalTicks = stats.periodicIntervalTicks;
-    entity->periodicTicksUntilNext = stats.periodicIntervalTicks; // first fire after one full interval, not immediately
+    entity->periodicTicksUntilNext = stats.periodicIntervalTicks; // first fire after one full interval
     entity->auraRadius = stats.auraRadius;
     entity->auraMaxTargets = stats.auraMaxTargets;
     entity->auraEveryNAttacks = stats.auraEveryNAttacks;
@@ -95,11 +87,8 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->abilityCooldownTicks = stats.abilityCooldownTicks;
     entity->abilityEffect = stats.abilityEffect;
     entity->abilityUsesRemaining = stats.abilityUsesLimit;
-    // Post-spawn ability lockout (Hero Mega Minion's Wounding Warp) -- seeds
-    // abilityCooldownRemaining directly rather than adding a separate
-    // "ticks since spawn" field, same opt-in-seam idiom as X-Bow's deploy
-    // delay. 0 (the default) leaves abilityCooldownRemaining at its own
-    // already-0 default, ready immediately like every Champion/other Hero.
+    // A post-spawn ability lockout (Hero Mega Minion) seeds the cooldown
+    // directly.
     if (stats.initialAbilityCooldownTicks > 0) entity->abilityCooldownRemaining = stats.initialAbilityCooldownTicks;
     entity->soulCollectionRadius = stats.soulCollectionRadius;
     entity->maxSouls = stats.maxSouls;
@@ -118,41 +107,30 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->onHitPullDamage = stats.onHitPullDamage;
     entity->selfHasteDurationTicks = stats.selfHasteDurationTicks;
     entity->selfHasteCooldownMultiplier = stats.selfHasteCooldownMultiplier;
-    // abilityCooldownRemaining/soulCount/temporaryInvisibilityTicksRemaining/
-    // temporaryHitSpeedMultiplier are intentionally NOT copied from stats --
-    // pure runtime state (defaults to 0/1.0, ready/empty/inactive
-    // immediately at deploy), same idiom as chargeProgress/ticksOnTarget
-    // never being sourced from CardStats either.
+    // Runtime state (ability cooldown, souls, invisibility, hit-speed
+    // multiplier) is not copied from stats.
     applyOnHit(entity, stats);
     if (stats.initialCooldownTicks > 0) entity->seedCooldown(stats.initialCooldownTicks);
     if (stats.passiveDamageReduction < 1.0f) entity->applyCurse(stats.passiveDamageReduction, 999999);
 }
 
-// A flying card ignores the river as a consequence of being airborne, even
-// if its data entry never explicitly set ignoresRiver -- the two flags stay
-// independently settable (Hog Rider ignores the river via a move ability,
-// not by flying) but flying always implies it.
+// Flying implies ignoring the river; ignoresRiver alone also covers ground
+// units that jump it (Hog Rider).
 inline bool shouldIgnoreRiver(const CardStats& stats) {
     return stats.ignoresRiver || stats.isFlying;
 }
 
-// The footprint GameManager::isValidPlacement should keep clear of an
-// existing building, matched to what the archetype will actually spawn
-// with: a DefensiveBuilding gets Building's own fixed collision radius,
-// every troop-shaped archetype gets the same implicit radius Board uses
-// once it's on the field (resolvePositionAgainstBuildings). Real Clash
-// Royale forbids placing anything on top of a building outright; this is
-// this engine's continuous-space approximation of that rule.
+// The footprint isValidPlacement keeps clear of existing buildings: Building's
+// collision radius for a building, the implicit troop radius otherwise. The
+// real game forbids placing on a building outright.
 inline float placementRadius(Archetype archetype) {
     return archetype == Archetype::DefensiveBuilding
         ? Building::COLLISION_RADIUS
         : Entity::IMPLICIT_TROOP_RADIUS;
 }
 
-// Fires a card's one-time deploy burst (e.g. Electro Wizard's spawn zap) at
-// the card's placement point -- once per card played, not once per squad
-// member, so squads call this after their spawn loop rather than inside it.
-// A no-op for the overwhelming majority of cards, which never set it.
+// A card's one-time deploy burst (e.g. Electro Wizard's zap) at the placement
+// point, once per card rather than per squad member. Most cards set none.
 inline void spawnDeployEffect(const CardStats& stats, float x, float y, int team, Board& board) {
     if (stats.spawnEffectRadius <= 0.0f) return;
     auto effect = std::make_shared<AreaSpell>(
@@ -190,10 +168,7 @@ inline void spawnRangedSquad(const CardStats& stats, float x, float y, int team,
 }
 
 inline void spawnMeleeBuildingTargeter(const CardStats& stats, float x, float y, int team, Board& board) {
-    // Loops over spawnOffsets like the squad factories, even though every
-    // currently-registered card here is a single unit (the default offset
-    // is just {0,0}) -- needed for Golemites, which come in twos, without
-    // this archetype needing its own bespoke multi-unit variant.
+    // Loops over spawnOffsets for multi-unit children such as Golemites.
     for (const auto& offset : stats.spawnOffsets) {
         auto troop = std::make_shared<BuildingTargeter>(
             board.allocateId(), x + offset.x, y + offset.y, stats.hp, team,
@@ -234,11 +209,9 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
         stats.spellTieredDamage, stats.spellTierSingleDamage, stats.spellTierFewDamage, stats.spellTierManyDamage);
     spell->name = stats.name;
     spell->cardId = stats.id;
-    // Rolling spells (The Log, Barbarian Barrel) are configured here rather
-    // than through the constructor above, whose parameter list is already 20
-    // wide and shared with five non-rolling call sites. configureRoll also
-    // latches the roll ORIGIN from the spell's spawn position, so it must run
-    // after construction and before the first update -- which is exactly here.
+    // Rolling spells (The Log, Barbarian Barrel) are configured after
+    // construction: configureRoll latches the roll origin from the spawn
+    // position, so it must run before the first update.
     if (stats.spellRollRange > 0.0f) {
         spell->configureRoll(stats.spellRollRange, stats.spellRollWidth,
                              stats.spellRollSpeed, stats.spellRollKnockback);
@@ -257,8 +230,8 @@ inline void spawn(const CardStats& stats, float x, float y, int team, Board& boa
         default: throw std::logic_error("CardFactories::spawn: unhandled archetype");
     }
     // Compound cards (Goblin Giant, Ram Rider, Goblin Machine, Goblin Gang,
-    // Rascals): spawn the second, independently-targeting unit right after
-    // the primary one, at the same deploy point.
+    // Rascals): the second, independently targeting unit spawns at the same
+    // point.
     if (stats.secondaryUnit) {
         spawn(*stats.secondaryUnit, x, y, team, board);
     }

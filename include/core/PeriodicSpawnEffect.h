@@ -3,11 +3,8 @@
 #include "CardStats.h"
 #include "CardFactories.h"
 
-// Spawns a data-driven child troop at this entity's own position every
-// time its periodic timer fires (e.g. Witch's Skeletons, Furnace's Fire
-// Spirits) -- same reasoning and reuse of CardFactories::spawn as
-// SpawnOnDeath, just triggered on a repeating timer instead of once on
-// death.
+// Spawns a child troop at this entity's position on each timer fire (Witch's
+// Skeletons, Furnace's Fire Spirits).
 class PeriodicSpawnEffect : public IPeriodicEffect {
     CardStats childStats;
 

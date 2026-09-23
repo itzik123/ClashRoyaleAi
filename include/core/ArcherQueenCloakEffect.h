@@ -3,12 +3,9 @@
 #include "CombatEntity.h"
 #include "Board.h"
 
-// Archer Queen's "Cloaking Cape": untargetable + a big attack-speed boost
-// for a fixed duration -- see CombatEntity::temporaryInvisibilityTicksRemaining/
-// temporaryHitSpeedMultiplier. The real card's accompanying movement-speed
-// drop isn't modeled -- speed lives on Troop, a layer above CombatEntity,
-// same documented gap as Rage's own movement-speed component elsewhere in
-// this codebase.
+// Archer Queen's "Cloaking Cape": untargetable plus an attack-speed boost for a
+// fixed duration. The real card's movement slowdown is not modelled (speed
+// lives on Troop).
 class ArcherQueenCloakEffect : public IAbilityEffect {
     int durationTicks;
     float hitSpeedMultiplier;

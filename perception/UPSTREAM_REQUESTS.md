@@ -260,7 +260,7 @@ would have been decision-making instead.)
 
 **And the board shows it.** Best-case Fireball catch, computed as an upper
 bound -- perfect information, the best of all 612 placement centres, 2.5-tile
-radius from `CardRegistry.h:837`:
+radius from Fireball's `CardRegistry.h` entry:
 
 ```
 enemy units on board   mean 3.62   median 3   max 9
@@ -775,7 +775,7 @@ placed beside it, 50 s, against the same board without the card:
 | **Rascals** | **0** | 0 / 2 |
 | **Goblin Hut** | **0** | 0 / 1 |
 
-Engine targeting itself is correct (`CombatEntity.h:1161`, `!entity->isFlying ||
+Engine targeting itself is correct (`CombatEntity.h`'s target filter, `!entity->isFlying ||
 targetsAir`): Knight, Skeletons, Ice Golem, Hog Rider and Cannon all deal 0 to a
 held Balloon and Musketeer deals 1085. Only these three helpers' DATA is wrong.
 

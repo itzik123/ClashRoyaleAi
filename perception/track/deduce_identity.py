@@ -1,40 +1,30 @@
 """Recover card identity by deduction instead of recognition.
 
-The icon templates read our own hand correctly only 33.8% of the time (README
-stage 2, 328 in-match plays over 8 recordings) and over-predict Giant at 35%
-against a 12.5% prior. That is far too noisy to label a demonstration dataset.
+The icon templates read our own hand too unreliably to label a demonstration
+dataset. But identity is deducible:
 
-But identity does not have to be *recognised*. Three facts make it deducible:
+  * the deck is known and fixed: 8 cards;
+  * the cycle is a strict FIFO (track/cycle.py): a played card goes to the
+    back and the front fills the vacated slot;
+  * each play's cost is observable to ~0.99 confidence from the elixir ledger,
+    a hard constraint on which card it was.
 
-  * the deck is known and fixed -- 8 specific cards, no levels, no surprises
-  * the cycle is strict FIFO: playing a card sends it to the back of an
-    8-slot rotation and draws the front into the vacated hand slot
-    (see track/cycle.py, which reproduces the engine exactly, 0 desyncs)
-  * each play's COST is observable to ~0.99 confidence from the elixir ledger,
-    which is a *hard* constraint on which card it could have been
+So the unknown is one permutation of the 8 cards over 4 hand slots and 4 queue
+positions: 8! = 40,320 candidates. Replay the observed (slot, cost) sequence
+against each and keep those that never contradict it.
 
-So the unknown is one permutation: which of the 8 cards started in each of the
-4 hand slots and the 4 queue positions. 8! = 40,320 candidates, which is
-nothing. Replay the observed (slot, cost) sequence against every candidate and
-keep the ones that never contradict it.
-
-WHAT THIS CANNOT DO, stated up front: cost alone cannot separate cards that
-cost the same. In DEFAULT_DECK the classes are {Archers, Minions, Cannon} at 3,
-{Valkyrie, Fireball, Musketeer, Mini P.E.K.K.A} at 4, and {Giant} at 5, so pure
-cost logic can at best narrow to 3!*4!*1! = 144 permutations -- one cost
-pattern, every internal relabelling of it. Breaking that last tie needs a
-second evidence channel (`observe` below takes optional per-play identity
-likelihoods, e.g. the 33.8% templates, which compound because the cycle ties
-every sighting of the same physical card together).
+Cost cannot separate cards of equal cost. In the Giant deck ({Archers, Minions,
+Cannon} at 3, {Valkyrie, Fireball, Musketeer, Mini P.E.K.K.A} at 4, {Giant} at
+5) cost logic narrows at best to 3!*4!*1! = 144 permutations. Breaking that tie
+needs a second channel: `deduce` takes optional per-play identity likelihoods,
+which compound because the cycle ties every sighting of one physical card
+together.
 """
 from __future__ import annotations
 
 from collections import deque
 from itertools import permutations
 
-# HAND_SIZE/QUEUE_SIZE were redefined here until 2026-08-24, three lines below
-# a docstring insisting costs come "from the engine registry, never a second
-# hardcoded copy". Same rule, same file, opposite practice.
 from track.cycle import HAND_SIZE, QUEUE_SIZE, advance
 
 
@@ -43,7 +33,7 @@ class IdentityContradiction(RuntimeError):
 
 
 def _costs_from_bindings(deck):
-    """Costs from the engine registry, never a second hardcoded copy."""
+    """Costs from the engine registry."""
     import clash_royale_env  # noqa: PLC0415 -- optional, see deduce()'s `costs`
     return {c: float(clash_royale_env.get_card_info(c)["cost"]) for c in deck}
 
@@ -65,7 +55,7 @@ def _replay(order, plays, costs):
             return None
         played.append(card)
         # `slot` is passed explicitly: a permutation may repeat an id, and
-        # hand.index() would then resolve to the wrong slot.
+        # hand.index() would find the wrong slot.
         advance(hand, queue, card, index=slot)
     return played
 
@@ -75,16 +65,15 @@ def deduce(deck, plays, costs=None, hand_priors=None):
 
     deck   : the 8 card ids, order irrelevant
     plays  : [(slot_index, cost_or_None), ...] in chronological order.
-             slot_index comes from readers.hand.infer_play_from_hand_change,
-             which is a set-difference on consecutive hand reads and so is
-             reliable even when the icon IDENTITY is not; cost comes from the
-             elixir ledger. A None cost contributes no constraint.
+             slot_index comes from readers.hand.infer_play_from_hand_change, a
+             set-difference on consecutive hand reads, reliable even when icon
+             identity is not; cost comes from the elixir ledger. A None cost
+             adds no constraint.
     costs  : {card_id: cost}; derived from the bindings when omitted.
     hand_priors : optional [{card_id: log-likelihood}, ...] parallel to
-             `plays`, for a soft second channel such as the icon templates.
-             Candidates are ranked by the total, but never eliminated by it --
-             a 33.8%-accurate reader must not be allowed to contradict the
-             elixir ledger.
+    `plays`,
+             a soft second channel such as the icon templates. Ranks candidates,
+             never eliminates them: a noisy reader must not contradict the ledger.
 
     Returns a dict with:
       n_candidates  surviving permutations

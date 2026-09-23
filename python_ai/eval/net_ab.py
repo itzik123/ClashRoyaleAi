@@ -1,24 +1,12 @@
-"""Paired win-rate comparison of TWO NETS on bit-identical openings.
+"""Paired win-rate comparison of two nets on bit-identical openings.
 
-    python_ai/venv/Scripts/python.exe python_ai/net_ab.py \
+    python_ai/venv/Scripts/python.exe python_ai/eval/net_ab.py \
         --a model_weights_selfplay.pth --b model_weights_cured.pth --n 200
 
-WHY THIS EXISTS. `hybrid_ab.py` compares POLICIES built on one net; nothing
-compared two different nets. That gap matters here: the per-card ablation showed
-the tactical override has become redundant, which is what a cured placement head
-should do -- but the same run's raw win rate (0.507) sat below the figure
-recorded for the v1.2.0 net (0.584), measured in a different harness on
-different openings. Those two numbers are not comparable, and shipping a
-checkpoint on the strength of an incomparable number is exactly the mistake this
-project's docs keep warning about.
-
-`env.snapshot()` gives both nets a bit-identical opening -- same shuffled hand,
-same opponent -- so the comparison is paired and needs far fewer episodes than
-an unpaired one (the unpaired requirement is ~1,568 per arm to resolve 5 points;
-the control's own variance across runs of one net is 0.570-0.775).
-
-Greedy on both sides, no search, no tactical override, no solvency gate: this
-measures THE NETWORK, and any layer added to one arm would confound it.
+`env.snapshot()` gives both nets the same opening (hand, opponent), so far
+fewer episodes are needed than unpaired (~1,568 per arm to resolve 5 points).
+Greedy on both sides, with no search, override or gate: this measures the
+network alone.
 """
 import argparse
 import os
@@ -27,9 +15,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -40,14 +26,6 @@ from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval.match_outcome import score_from_towers  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
-
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
 
 CE = E.ClashRoyaleEnv
 
@@ -69,9 +47,8 @@ def play(net, env, max_steps=400):
         obs = r.observation
         if r.done:
             break
-    # Tower COUNT alone used to decide this, which called every equal-count
-    # finish a draw and ignored TimeoutRules' weakest-tower tie-break entirely.
-    # See match_outcome.py.
+    # Scored by TimeoutRules, including the weakest-tower tie-break; see
+    # match_outcome.py.
     return score_from_towers(env, 0)
 
 
@@ -116,8 +93,8 @@ def main():
     lo, hi = np.percentile(boot, [2.5, 97.5])
     better = int((d > 0).sum())
     worse = int((d < 0).sum())
-    # Exact sign test on discordant pairs only -- ties carry no information
-    # about which net is better and including them would dilute the test.
+    # Exact sign test on discordant pairs; ties say nothing about which net is
+    # better.
     from math import comb
     n_disc = better + worse
     if n_disc:

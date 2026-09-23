@@ -1,9 +1,6 @@
-"""Cycle, deck discovery and opponent elixir, against real replay data.
-
-The replay fixture is a genuine match: real hands, real cycling, real elixir.
-That makes it a much stronger test than synthetic sequences for anything that
-models the FIFO, because it exercises the engine's actual behaviour rather
-than my reading of it.
+"""Cycle, deck discovery and opponent elixir, against real replay data: real
+hands, real cycling, real elixir, which exercises the engine's behaviour rather
+than a reading of it.
 """
 
 from __future__ import annotations
@@ -17,16 +14,14 @@ from track.opp_deck import OpponentDeckTracker
 from track.opp_elixir import OpponentElixirTracker
 
 
-# -- cycle ---------------------------------------------------------------
+# --- cycle ---
 
 
 def test_cycle_reproduces_the_engines_fifo_exactly(replay):
-    """Replay our real plays and predict the hand after each one.
-
-    The engine's rule is in PlayerState::playCard: the played card goes to
-    the back of the queue and the front fills the slot it vacated. If this
-    tracker implements it correctly, its predicted hand must match the
-    replay's logged hand after every single play.
+    """Replay our real plays and predict the hand after each:
+    PlayerState::playCard sends the played card to the back of the queue and
+    the front fills the vacated slot, so the predicted hand must match the
+    logged hand after every play.
     """
     if not replay.has_action_labels:
         pytest.skip("replay has no action labels")
@@ -55,11 +50,8 @@ def test_cycle_reproduces_the_engines_fifo_exactly(replay):
 
 
 def test_queue_is_the_last_four_plays():
-    """The identity opponent tracking depends on.
-
-    The queue is exactly four long and only grows at the back, so it is
-    always the last four cards played -- which is what makes the opponent's
-    hand derivable from their play history alone.
+    """The identity opponent tracking depends on: the queue is four long and grows
+    only at the back, so it is always the last four cards played.
     """
     deck = (0, 1, 2, 3, 4, 5, 6, 7)
     tracker = CycleTracker()
@@ -93,15 +85,15 @@ def test_next_card_is_unknown_until_the_order_is():
     tracker = CycleTracker()
     tracker.set_deck((0, 1, 2, 3, 4, 5, 6, 7))
     tracker.seed_hand((0, 1, 2, 3))
-    # Membership of the queue is known, its ORDER is not, and nothing on
-    # screen reveals it -- so next_card must not pretend otherwise.
+    # The queue's membership is known and its order is not, so next_card must
+    # not pretend otherwise.
     assert tracker.next_card == UNKNOWN_CARD_SIM_ID
     for card in (0, 1, 2, 3):
         tracker.on_play(card)
     assert tracker.next_card == 0
 
 
-# -- opponent deck -------------------------------------------------------
+# --- opponent deck ---
 
 
 def test_opponent_deck_is_discovered_from_plays(replay):
@@ -115,11 +107,9 @@ def test_opponent_deck_is_discovered_from_plays(replay):
 
 
 def test_cycle_wrap_proves_a_missed_placement():
-    """A repeat before all eight are known is arithmetic proof of a miss.
-
-    The FIFO guarantees every card is played once before any is played
-    twice. So a repeat means the cycle wrapped, and anything still unseen at
-    that moment was missed -- no ground truth needed.
+    """A repeat before all eight are known proves a miss: the FIFO plays every
+    card once before any twice, so anything still unseen when the cycle wraps
+    was missed.
     """
     tracker = OpponentDeckTracker()
     for tick, card in enumerate([10, 11, 12, 13, 14, 15]):
@@ -140,7 +130,7 @@ def test_unmapped_opponent_card_is_counted_separately():
     assert "opp_deck_has_unmapped_card" in tracker.flags()
 
 
-# -- opponent elixir -----------------------------------------------------
+# --- opponent elixir ---
 
 
 def test_opponent_elixir_regenerates_at_the_real_rate():
@@ -151,11 +141,8 @@ def test_opponent_elixir_regenerates_at_the_real_rate():
 
 
 def test_opponent_elixir_uses_the_real_rate_not_the_simulators():
-    """Explicitly pinned, because the difference is small and consequential.
-
-    At the simulator's rate the balance would be ~1.3 elixir low by three
-    minutes, which would fire the negative-balance alarm constantly on
-    perfectly good input. See timebase.py.
+    """At the simulator's rate the balance would be ~1.3 elixir low by three
+    minutes, firing the negative-balance alarm on good input. See timebase.py.
     """
     tracker = OpponentElixirTracker()
     tracker.advance_to(1800)  # 180 s
@@ -166,7 +153,7 @@ def test_opponent_elixir_uses_the_real_rate_not_the_simulators():
 
 
 def test_negative_balance_is_recorded_before_clamping():
-    """The single most valuable signal in the pipeline must not be clamped away."""
+    """The most valuable signal in the pipeline must not be clamped away."""
     tracker = OpponentElixirTracker()
     tracker.on_play(4.0, tick=0)
     tracker.on_play(4.0, tick=1)  # 5 - 8 = -3: impossible without a missed play
@@ -193,7 +180,7 @@ def test_phase_multiplier_scales_regeneration():
     single.advance_to(280, Phase.SINGLE)
     double = OpponentElixirTracker()
     double.advance_to(280, Phase.DOUBLE)
-    # Both cap at 10, so compare over a short window instead.
+    # Both cap at 10, so compare over a short window.
     a, b = OpponentElixirTracker(), OpponentElixirTracker()
     a.advance_to(28, Phase.SINGLE)
     b.advance_to(28, Phase.DOUBLE)
@@ -208,11 +195,9 @@ def test_elixir_cannot_run_backwards():
 
 
 def test_opponent_elixir_stays_non_negative_on_a_real_match(replay):
-    """On a clean input stream the balance must never go negative.
-
-    This is the acceptance criterion for stage 4 stated as a test. The
-    opponent's plays here are reconstructed from the replay, so the stream is
-    as complete as the fixture allows.
+    """On a clean input stream the balance must never go negative: stage 4's
+    acceptance criterion as a test. The opponent's plays are reconstructed from
+    the replay, as complete as the fixture allows.
     """
     deck = replay.starting_deck(1)
     costs = {cid: float(replay.card_meta.get(cid, {}).get("cost", 0)) for cid in deck}

@@ -1,9 +1,6 @@
-// Per-card behavioural audit of DEFAULT_DECK.
-//
-// Measures what each of the eight cards actually DOES in this engine, so the
-// Catch2 suite can then pin the numbers rather than assert guesses. Every
-// figure printed here is read from the engine, not from the registry -- the
-// point is to catch a card whose stats look right and whose behaviour is not.
+// Per-card behavioural audit of DEFAULT_DECK: what each card actually does,
+// read from the engine rather than the registry, so the Catch2 suite pins
+// measured numbers.
 
 #include "GameManager.h"
 #include "CardRegistry.h"
@@ -146,15 +143,10 @@ void defence() {
     }
 }
 
-// ---- 4. air interaction ----
-//
-// Attribution matters here and the first version of this got it wrong: it
-// reported that The Log, the Hog Rider, the Cannon and the Skeletons all "hit
-// air", which is impossible. The Minions were flying at our own towers and it
-// was the TOWERS killing them -- the same trap CLAUDE.md records for
-// get_troop_damage_dealt, which counts our own towers' shooting. Every number
-// below is therefore a DIFFERENCE against a control run with no card played at
-// all, so only damage the card itself is responsible for shows up.
+// --- 4. air interaction ---
+// Every number is a difference against a control run with no card played,
+// because Minions fly at our own towers and the towers' damage would otherwise
+// be credited to the card.
 void air() {
     std::cout << "\n=== AIR: can the card damage flying Minions? ===\n";
     std::cout << "measured as a DIFFERENCE against a no-card control, so our own\n";
@@ -162,17 +154,10 @@ void air() {
 
     auto minionHpAfter = [](int cardId) {
         Env env;
-        // Dead centre of the board, on the river line: 11.2 tiles from all
-        // four Princess Towers, which is outside even the corrected effective
-        // range of 9.4. And a SHORT window, because Minions fly toward our own
-        // towers and get shot the moment they arrive.
-        //
-        // Two earlier versions of this probe were saturated -- the control
-        // itself ended with the Minions at 0 hp, so every card differenced to
-        // exactly 0 and the whole table read "cannot touch air", including for
-        // the Musketeer, which certainly can. The control HP is printed for
-        // that reason: if it is not the full 690 this probe is measuring the
-        // towers again and its output means nothing.
+        // The centre of the board on the river line, 11.2 tiles from every
+        // Princess Tower (beyond their 9.4 reach), and a short window before
+        // the Minions reach a tower. The control HP is printed: if it is not
+        // the full 690, the probe is measuring the towers again.
         env.spawn(MINIONS, 9.0f, 16.5f, 1);
         if (cardId >= 0) env.spawn(cardId, 9.0f, 15.5f, 0);
         env.step(35);
@@ -195,11 +180,9 @@ void air() {
     }
 }
 
-// ---- 7. who is actually doing the defending ----
-//
-// The sight fix changed how much damage a lone attacker gets through, and the
-// honest question is WHICH tower changed. Read straight off MatchStatistics by
-// the reserved tower cardIds, so it is attribution rather than inference.
+// --- 7. who is doing the defending ---
+// Read off MatchStatistics by the reserved tower cardIds: attribution, not
+// inference.
 void defenders() {
     std::cout << "\n=== DEFENSIVE DAMAGE ATTRIBUTION (lone attacker at the bridge) ===\n";
     std::cout << std::left << std::setw(14) << "attacker" << std::setw(12) << "byKing"
@@ -239,14 +222,10 @@ void deploy() {
     }
 }
 
-// ---- 6. the sight/attack dead band ----
-//
-// findTarget gates non-tower candidates on `dist <= sightRange`, a RAW centre
-// distance. Attacks are gated on effectiveRangeTo = attackRange + own radius +
-// target radius. A Princess Tower has attackRange == sightRange == 7.5, so
-// against a troop (radius 0.4) sitting beside a 1.5-radius tower those two
-// gates disagree by 1.9 tiles. Anything that parks inside that band can hit the
-// tower while the tower cannot see it.
+// --- 6. the sight/attack band ---
+// Sight is centre-to-centre while attacks use effectiveRangeTo (attack range
+// plus both radii). For a Princess Tower against a troop the two differ by 1.9
+// tiles; a unit inside that band could hit a tower that cannot see it.
 void deadBand() {
     std::cout << "\n=== SIGHT vs ATTACK DEAD BAND (lone unit vs one Princess Tower) ===\n";
     std::cout << "unit placed at a fixed distance south of the enemy tower at (4, 27)\n\n";

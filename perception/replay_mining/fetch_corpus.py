@@ -1,8 +1,6 @@
-"""Cache the fast_hog_2.6 corpus locally.
-
-221 episodes, ~1.3 GB compressed. Deliberately NOT committed: it is third-party
-data with no declared licence on the source repository, and the extracted prior
-(~254 KB) is the artefact this project actually needs.
+"""Cache the fast_hog_2.6 corpus locally: 221 episodes, ~1.3 GB compressed. Not
+committed: third-party data with no declared licence, and the extracted prior
+(~254 KB) is the artifact this project needs.
 """
 from __future__ import annotations
 

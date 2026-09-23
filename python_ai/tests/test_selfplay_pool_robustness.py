@@ -1,28 +1,10 @@
 """A corrupt PFSP pool entry must not take the whole run down.
 
-`_sample_pfsp_opponent` runs on EVERY reset and samples uniformly-at-random
-from the pool, so a single unreadable checkpoint crashes phase 2 at an
-unpredictable point -- typically hours in, and with a traceback that names
-torch.load rather than the pool.
-
-The pool has been written non-atomically for this project's entire history
-(`atomic_save` only landed 2026-08-26), so a truncated entry left by an OOM
-kill, a full disk or a SIGKILL can already be sitting in
-`historical_checkpoints/` today. Fixing the writer does not clean up what the
-old writer left.
-
-BOTH failure directions matter, and they pull opposite ways:
-
-  * crashing on one bad file wastes a run over an opponent that could simply
-    have been skipped;
-  * silently swallowing load errors is worse, because an architecture change
-    makes EVERY checkpoint unloadable at once, the pool empties to just the
-    scripted bots, and the league quietly stops being self-play at all.
-    CLAUDE.md already records that exact shape for an empty pool: "silent, and
-    it degrades the opponent distribution rather than crashing."
-
-So: skip the individual entry, say so loudly, and never let the pool empty
-without saying so.
+`_sample_pfsp_opponent` runs on every reset, so one unreadable checkpoint would
+crash phase 2 hours in. But silently swallowing load errors is worse: after an
+architecture change every checkpoint fails at once and the league quietly
+becomes the scripted bots. So: skip the entry, say so loudly, and never let the
+pool empty silently.
 """
 import numpy as np
 import pytest
@@ -72,8 +54,9 @@ def test_skipping_a_corrupt_entry_is_reported(tmp_path, capsys):
 
 
 def test_an_entirely_unreadable_pool_raises_rather_than_going_quiet(tmp_path):
-    """Every entry failing is an ARCHITECTURE problem, not a bad file. Quietly
-    continuing turns the league into four scripted bots and reports nothing."""
+    """Every entry failing is an architecture problem, not a bad file; quietly
+    continuing turns the league into four scripted bots.
+    """
     env = _env()
     pool = [_corrupt_checkpoint(tmp_path / f"bad{i}.pth") for i in range(3)]
     env.refresh_pfsp_pool(pool)
@@ -91,7 +74,7 @@ def test_a_healthy_pool_is_untouched(tmp_path):
 
 
 def test_an_empty_pool_is_still_a_no_op(tmp_path):
-    """Startup, before any snapshot exists. Must not raise."""
+    """Startup, before any snapshot exists: must not raise."""
     env = _env()
     env.refresh_pfsp_pool([])
     env._sample_pfsp_opponent()

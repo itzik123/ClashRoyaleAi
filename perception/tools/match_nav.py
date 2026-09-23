@@ -1,28 +1,17 @@
 """Get the game into a Training Camp match, from wherever it currently is.
 
-THE single navigation path. A narrower `enter_training_camp.py` did the
-lobby -> Training Camp hop until 2026-08-24, but it assumed it started in the
-lobby with the menu closed and never answered the "Do you want to start a
-training match?" confirmation -- both of which break the moment a script runs
-unattended, since a probe that outlasts a match comes back to
-`bypass_end_of_game`, not to the lobby. It also kept its OWN copy of the
-Training Camp coordinate, so a UI move would have had to be found twice.
+The single navigation path: a state machine over the screens the detector
+recognises, with an overall deadline, so an unattended experiment can say "put
+me in a match" and get one or a clean failure. It starts from any screen (a
+probe that outlasts a match returns to `bypass_end_of_game`, not the lobby) and
+answers the "start a training match?" confirmation.
 
-This is a state machine over the screens the detector already recognises, with
-an overall deadline, so an automated experiment can say "put me in a match"
-and get one or a clean failure.
+It never taps the lobby's own click point: `Screens.LOBBY.click_xy` (360, 1000)
+is the BATTLE button, which queues a ladder match. The lobby is left via the
+hamburger menu.
 
-WHY IT NEVER TAPS THE LOBBY'S OWN CLICK POINT
----------------------------------------------
-`Screens.LOBBY.click_xy` is (360, 1000): the BATTLE button, which queues a
-LADDER match and puts trophies on a debugging run. The lobby is left via the
-hamburger menu instead.
-
-CAPTURE IS VIA adb, NOT THE WINDOW
-----------------------------------
-Grabbing the BlueStacks window through WGC needs it visible and unoccluded.
-`adb exec-out screencap` does not, so this keeps working while the desktop is
-doing something else -- which is the whole point of an unattended loop.
+Capture is via adb, not the window: WGC needs the BlueStacks window visible,
+`adb exec-out screencap` does not.
 """
 from __future__ import annotations
 
@@ -51,14 +40,13 @@ def _to_display(x: int, y: int) -> tuple[int, int]:
 HAMBURGER = _to_display(494, 91)
 TRAINING_CAMP = _to_display(322, 308)
 
-# "Do you want to start a training match?" -> OK. Located by eye on a 720x1280
-# screencap of the dialog and confirmed by the match starting; the dialog is
-# fixed-size and centred, so this does not move.
+# "Do you want to start a training match?" -> OK. Located on a 720x1280
+# screencap; the dialog is fixed-size and centred.
 CONFIRM_OK = (486, 738)
 
 
-#: PNG signature. `raw` is scanned for this rather than assumed to start with
-#: it -- see decode_screencap.
+#: PNG signature. `raw` is scanned for it rather than assumed to start with
+#: it; see decode_screencap.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
@@ -66,24 +54,13 @@ def decode_screencap(raw: bytes, returncode: int = 0,
                      stderr: bytes = b"") -> Image.Image:
     """Turn `adb exec-out screencap -p` stdout into an image.
 
-    THE BANNER GOES TO STDOUT, NOT STDERR. On the first invocation after the
-    adb daemon is down, HD-Adb.exe prepends
-
-        * daemon not running. starting it now on port 5037 *
-        * daemon started successfully *
-
-    to STDOUT -- 85 bytes ahead of the PNG, with stderr empty and the exit code
-    0. Handing that to PIL raises `UnidentifiedImageError: cannot identify
-    image file`, which reads like a corrupt capture or a broken emulator and is
-    neither. Measured 2026-08-16: warm stdout 1,262,367 bytes starting at the
-    magic; cold stdout 1,263,969 bytes with the magic at offset 85.
-
-    It only bites the FIRST adb call of a session, so it is invisible to anyone
-    who ran `adb devices` first -- which is why it survived: every interactive
-    debugging session warms the daemon before reaching this code.
-
-    Seeking the magic rather than stripping known banner text keeps this robust
-    to whatever else a future adb build decides to announce.
+    On the first call after the adb daemon was down, HD-Adb.exe prepends its
+    "daemon not running. starting it now" banner to stdout (85 bytes ahead of
+    the PNG, stderr empty, exit code 0), and PIL raises
+    `UnidentifiedImageError`, which reads like a corrupt capture. It bites only
+    the first call of a session, so anyone who ran `adb devices` first never
+    sees it. Seeking the magic rather than stripping known banner text survives
+    whatever a future adb announces.
     """
     if returncode != 0:
         raise RuntimeError(
@@ -104,17 +81,11 @@ _daemon_warmed = False
 def _warm_daemon(adb: Path, serial: str | None) -> None:
     """Start the adb daemon on its own, before any call whose stdout we parse.
 
-    Two problems, one fix. The daemon-start banner contaminates the first
-    call's STDOUT (decode_screencap handles that defensively), and a cold start
-    plus device enumeration was measured at well over 60 s -- long enough that
-    folding it into the capture turns a slow start into a TimeoutExpired
-    mid-navigation. `start-server` is idempotent and costs nothing warm, so
-    paying it once up front makes every subsequent capture fast AND clean.
-
-    Deliberately not raising on failure: `decode_screencap` produces the better
-    message ("Is the emulator running and authorised?") with the actual bytes
-    in hand, and duplicating the diagnosis here would give two different errors
-    for one cause.
+    The start banner contaminates the first call's stdout, and a cold start
+    plus device enumeration can take over 60 s, which folded into a capture
+    becomes a mid-navigation TimeoutExpired. `start-server` is idempotent and
+    free when warm. Does not raise: `decode_screencap` gives the better
+    diagnosis with the bytes in hand.
     """
     global _daemon_warmed
     if _daemon_warmed:
@@ -125,7 +96,7 @@ def _warm_daemon(adb: Path, serial: str | None) -> None:
     try:
         subprocess.run(cmd + ["start-server"], capture_output=True, timeout=120)
     except (subprocess.TimeoutExpired, OSError):
-        pass          # let the capture below produce the real diagnosis
+        pass          # the capture below produces the real diagnosis
     _daemon_warmed = True
 
 
@@ -134,9 +105,8 @@ def screencap(adb: Path = ADB, serial: str | None = None) -> Image.Image:
     cmd = [str(adb)]
     if serial:
         cmd += ["-s", serial]
-    # 60 s rather than 30: even behind _warm_daemon, the first capture after
-    # the emulator itself has just booted is slow, and the old 30 s was not
-    # measured against that case.
+    # 60 s: the first capture after the emulator boots is slow even with a warm
+    # daemon.
     p = subprocess.run(cmd + ["exec-out", "screencap", "-p"],
                        capture_output=True, timeout=60)
     return decode_screencap(p.stdout, p.returncode, p.stderr)
@@ -151,7 +121,7 @@ def tap(x: int, y: int, adb: Path = ADB, serial: str | None = None) -> None:
 
 
 def read_screen(detector, adb: Path = ADB, serial: str | None = None):
-    """(screen name, State). Uses the live pipeline's own detector."""
+    """(screen name, State), using the live pipeline's own detector."""
     from clashroyalebuildabot.constants import (  # noqa: PLC0415
         SCREENSHOT_HEIGHT,
         SCREENSHOT_WIDTH,
@@ -166,9 +136,8 @@ def read_screen(detector, adb: Path = ADB, serial: str | None = None):
 
 def ensure_in_match(detector, adb: Path = ADB, serial: str | None = None,
                     timeout_s: float = 180.0, verbose: bool = True):
-    """Block until a Training Camp match is running. Returns the in-game State.
-
-    Idempotent: called while already in a match it reads one frame and returns.
+    """Block until a Training Camp match is running; returns the in-game State.
+    Idempotent: in a match it reads one frame and returns.
     """
     deadline = time.monotonic() + timeout_s
     last = None
@@ -192,14 +161,14 @@ def ensure_in_match(detector, adb: Path = ADB, serial: str | None = None,
             time.sleep(1.5)
             tap(*TRAINING_CAMP, adb=adb, serial=serial)
             time.sleep(1.5)
-            # The confirmation only appears sometimes (it is suppressed once
-            # per session in some versions), so this tap is unconditional and
-            # harmless: on the loading screen it lands on empty background.
+            # The confirmation appears only sometimes, so this tap is
+            # unconditional; on the loading screen it lands on empty
+            # background.
             tap(*CONFIRM_OK, adb=adb, serial=serial)
             time.sleep(6.0)
             continue
-        # unknown: a transition, a loading screen, or a dialog we do not model.
-        # Waiting is right -- tapping blindly is how a script buys a chest.
+        # Unknown: a transition, a loading screen or an unmodelled dialog.
+        # Wait; tapping blindly is how a script buys a chest.
         time.sleep(1.5)
     raise TimeoutError(f"could not reach a match within {timeout_s:.0f}s "
                        f"(last screen: {last})")

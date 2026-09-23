@@ -6,11 +6,9 @@
 #include <string>
 #include <cmath>
 
-// The arena is symmetric about the CELL-INDEX centre (WIDTH-1)/2 = 8.5, which is
-// the x-analogue of ClashEnv::extractObservationForTeam's y -> 33 - y. Every pair
-// below must mirror onto the other under 17 - x, or one lane is playable
-// differently from the other -- a class of bug this repo has paid for twice (the
-// river's own off-centre position, and the team-1 observation row shift).
+// The arena is symmetric about the cell-index centre (WIDTH-1)/2 = 8.5, the
+// x-analogue of the observation's y -> 33 - y. Every pair below must mirror
+// under 17 - x, or one lane plays differently from the other.
 
 TEST_CASE("ArenaLayout is mirror-symmetric about the board centre", "[arena][geometry]") {
     REQUIRE(ArenaLayout::CENTER_X == Catch::Approx(8.5f));
@@ -23,14 +21,13 @@ TEST_CASE("ArenaLayout is mirror-symmetric about the board centre", "[arena][geo
     REQUIRE(ArenaLayout::mirrorY(ArenaLayout::princessY(0)) == Catch::Approx(ArenaLayout::princessY(1)));
 }
 
-// The player's own map of the river row:
+// The real river row:
 //
 //     column  012345678901234567
 //             WWBBWWWWWWWWWWBBWW      (W water, B bridge)
 //
-// Bridges occupy columns 2-3 and 14-15, so each CENTRE sits on the seam between
-// its two tiles. Centring on a TILE instead is what made clampToBoard's
-// +/-BRIDGE_HALF_WIDTH corridor three columns wide instead of two.
+// Bridges occupy columns 2-3 and 14-15, so each centre sits on the seam between
+// its tiles.
 TEST_CASE("bridges are two tiles wide, centred on the seam", "[arena][geometry]") {
     REQUIRE(ArenaLayout::LEFT_BRIDGE_X == Catch::Approx(2.5f));
     REQUIRE(ArenaLayout::RIGHT_BRIDGE_X == Catch::Approx(14.5f));
@@ -46,9 +43,8 @@ TEST_CASE("bridges are two tiles wide, centred on the seam", "[arena][geometry]"
     }
 }
 
-// GameManager must not carry its own copy of these numbers. Asserted by PROPERTY
-// (every King on centre, every Princess on its lane column) rather than by index,
-// so it does not also pin the order entities happen to be spawned in.
+// GameManager must not keep its own copy. Asserted by property (every King on
+// centre, every Princess on its lane column), not by spawn order.
 TEST_CASE("GameManager spawns its towers exactly where ArenaLayout says", "[arena][geometry]") {
     GameManager game({ 0,1,2,3,4,5,6,7 }, { 0,1,2,3,4,5,6,7 });
     int kingsSeen = 0, princessSeen = 0;
@@ -71,10 +67,7 @@ TEST_CASE("GameManager spawns its towers exactly where ArenaLayout says", "[aren
     REQUIRE(princessSeen == 4);
 }
 
-// Board's own bridge members must come from ArenaLayout, not a second literal.
-// HeuristicOpponent kept its own copy (3.5/13.5) and it had ALREADY gone stale
-// against Board's 4.0/14.0 before the arena was corrected -- exactly the failure
-// CLAUDE.md's no-second-copies rule exists for.
+// Board's bridge members come from ArenaLayout, not a second literal.
 TEST_CASE("Board's bridges are ArenaLayout's bridges", "[arena][geometry]") {
     Board board;
     REQUIRE(board.getLeftBridge().x == Catch::Approx(ArenaLayout::LEFT_BRIDGE_X));
@@ -83,20 +76,17 @@ TEST_CASE("Board's bridges are ArenaLayout's bridges", "[arena][geometry]") {
     REQUIRE(board.getRightBridge().y == Catch::Approx(ArenaLayout::BRIDGE_Y));
 }
 
-// Each Princess Tower is 3 wide (Tower::getCollisionRadius 1.5) and its lane's
-// bridge is 2 wide, so the bridge covers the tower's two OUTER columns and the
-// tower centre sits half a tile INBOARD of the bridge centre. LanePath relies on
-// this: a unit crossing at 2.5 has to curve half a tile inward to reach 3.0.
+// A Princess Tower is 3 wide and its bridge 2 wide, so the bridge covers the
+// tower's two outer columns and the tower centre sits half a tile inboard.
+// LanePath relies on this.
 TEST_CASE("each bridge sits half a tile outboard of its own Princess Tower",
           "[arena][geometry]") {
     REQUIRE(ArenaLayout::LEFT_LANE_X - ArenaLayout::LEFT_BRIDGE_X == Catch::Approx(0.5f));
     REQUIRE(ArenaLayout::RIGHT_BRIDGE_X - ArenaLayout::RIGHT_LANE_X == Catch::Approx(0.5f));
 }
 
-// Lane selection is nearest-bridge, the same rule Board::getNextWaypoint already
-// uses to choose a crossing -- so a unit's lane objective and the bridge it is
-// routed over agree by construction and it can never be sent to one bridge while
-// aiming at the other lane's tower.
+// Lane selection is nearest-bridge, as in Board::getNextWaypoint, so a unit's
+// lane objective and its crossing agree.
 TEST_CASE("lane selection splits at the board centre and matches the bridges",
           "[arena][geometry]") {
     REQUIRE(ArenaLayout::isLeftLane(0.0f));
@@ -110,24 +100,10 @@ TEST_CASE("lane selection splits at the board centre and matches the bridges",
     REQUIRE(ArenaLayout::laneXFor(16.0f) == Catch::Approx(ArenaLayout::RIGHT_LANE_X));
 }
 
-// ---------------- the observation must describe the PHYSICS ----------------
-//
-// Observation channel 8 is the river/bridge mask: the only thing telling the
-// network where it can cross. It was painted from a hardcoded
-// `(x >= 3 && x <= 4) || (x >= 13 && x <= 14)` while the physics used
-// Board's leftBridge/rightBridge, and when the arena was corrected on
-// 2026-08-21 only the physics moved.
-//
-// The result was not a small offset. Of the four real bridge columns the
-// network was told TWO were water (2 and 15), and it was told two water
-// columns were bridge (4 and 13) -- so the agent's map of where it could cross
-// was half wrong in BOTH directions, on every observation of every tick of
-// every episode. Every C++ test still passed, because nothing compared this
-// channel against the rule it is supposed to describe.
-//
-// These cases compare it against MOVEMENT, not against a literal. A test that
-// pinned the expected columns would have to be hand-edited on the next arena
-// change and would go stale exactly the way the encoder did.
+// --- the observation must describe the physics ---
+// Channel 8 is the river/bridge mask, the network's only map of where it can
+// cross. These compare it against movement, not a literal, so they cannot go
+// stale on the next arena change.
 
 TEST_CASE("the river mask marks a column passable iff a unit can actually stand there",
           "[arena][observation][regression]") {
@@ -143,9 +119,8 @@ TEST_CASE("the river mask marks a column passable iff a unit can actually stand 
     for (int team = 0; team < 2; ++team) {
         std::vector<float> obs = env.getObservationForTeam(team);
         for (int x = 0; x < W; ++x) {
-            // Ground truth: can a non-river-ignoring unit hold this position
-            // inside the river band? That is clampToBoard's own rule, i.e. the
-            // physics the mask is meant to advertise.
+            // Ground truth: can a river-respecting unit hold this position
+            // inside the river band (clampToBoard's rule)?
             Vector2D probe{ static_cast<float>(x), midRiver };
             const bool passable = std::abs(board.clampToBoard(probe, false).y - midRiver) < 1e-4f;
             const float marked = obs[8 * plane + riverRow * W + x];
@@ -174,8 +149,8 @@ TEST_CASE("both teams see the bridge mask on the same row and columns",
     }
 }
 
-// Board::isOnBridge is the shared definition. Pin that it selects exactly the
-// player's river row, so a future edit to either caller cannot quietly widen it.
+// Board::isOnBridge is the shared definition; it must select exactly the real
+// river row.
 TEST_CASE("isOnBridge reproduces the real river row WWBBWWWWWWWWWWBBWW",
           "[arena][geometry]") {
     Board board;

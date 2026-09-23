@@ -1,27 +1,21 @@
 """Stage 5's deliverable: how far the estimator drifts from ground truth.
 
-Replays a match through SimDriver and plots predicted tower HP against actual
-tower HP over time.
+Replays a match through SimDriver and plots predicted against actual tower HP
+over time.
 
-  --replay  Ground truth comes from a simulator replay JSON. There is no
-            vision in the loop at all, so any divergence is attributable to
-            the BRIDGE alone -- injection semantics, tick alignment, cycle
-            reconstruction. This is the control experiment, and it has to be
-            near-zero before a vision number means anything.
+  --replay  Ground truth from a simulator replay JSON. No vision in the loop, so
+            any divergence belongs to the bridge (injection semantics, tick
+            alignment, cycle reconstruction). The control: it must be near zero
+            before a vision number means anything.
   --all     Every replay in python_ai/replays, reported together.
   --json    Write the per-tick series out instead of only summarising.
 
-NOT IMPLEMENTED: a video mode. The intent is that ground truth would come from
-`readers/towers.py` reading HP bars off the screen, folding every vision error
-into the number. This file described it as one of "two input modes" until
-2026-08-24, but no such flag is defined and `readers.towers` is not imported
-here -- it needs the calibration that `readers/towers.py` raises
-`TowerCalibrationMissing` for. Stated as pending so the gap is visible rather
-than looking like a mode someone forgot how to invoke.
+Not implemented: a video mode, taking ground truth from `readers/towers.py` so
+every vision error folds into the number. It needs the calibration
+`readers/towers.py` raises `TowerCalibrationMissing` for.
 
-No target is asserted. The instruction was to measure and report, and a
-threshold invented before the first measurement would be a number pulled from
-nowhere that later gets treated as a requirement.
+No target is asserted: a threshold invented before the first measurement would
+later be treated as a requirement.
 """
 
 from __future__ import annotations
@@ -57,10 +51,9 @@ def _observed_tower_hp(tick, geom) -> dict[str, int]:
         "opp_princess_left": (1, *geom.opp_princess_left),
         "opp_princess_right": (1, *geom.opp_princess_right),
     }
-    # A destroyed tower is absent from the entity list entirely, which is 0 HP
-    # -- not missing data. Defaulting to 0 keeps the curve defined all the way
-    # to the end of the match instead of silently dropping the samples that
-    # matter most.
+    # A destroyed tower is absent from the entity list, which is 0 HP, not
+    # missing data; defaulting to 0 keeps the curve defined to the end of the
+    # match.
     return {name: by_pos.get(key, 0) for name, key in lookup.items()}
 
 
@@ -100,8 +93,8 @@ def run_replay(path: Path, verbose: bool = True) -> dict:
             incoming,
         ))
     for p in replay.infer_opponent_placements(deck=tuple(deck1)):
-        # Opponent y arrives raw from the replay and PlacementEvent is
-        # defined in mirrored (ClashEnv) convention -- see contracts.py.
+        # Opponent y arrives raw from the replay, and PlacementEvent is in
+        # mirrored convention (contracts.py).
         mirrored_y = (replay.board_height - 1) - p.y
         events.append((
             PlacementEvent(

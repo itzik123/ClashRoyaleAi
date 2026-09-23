@@ -1,11 +1,4 @@
-"""The placement-gradient coverage hole, and the fix for it.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""The placement-gradient coverage hole, and the fix for it."""
 import os
 import sys
 
@@ -48,42 +41,19 @@ from python_ai.tests.helpers import (  # noqa: E402
 )
 
 
-# ==========================================================================
-# the placement-gradient coverage hole
-# (was test_placement_coverage.py)
-# ==========================================================================
-# Pins the placement-gradient coverage hole and the fix for it.
-#
-# Run (the .pyd is Python 3.11 only):
-#
-#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_placement_coverage.py -q
-#
-# WHY THESE TESTS EXIST
-# ---------------------
-# `card_id_embed` is `nn.Linear(num_card_ids, 16, bias=False)`, so column c of its
-# weight belongs to card id c ALONE. `placement_given_card` selects only the
-# chosen slot's embedding, and nothing else downstream of the LSTM consumes the
-# others -- the card head reads `hx`, not the embeddings.
-#
-# That makes the coverage hole mechanically visible rather than merely plausible:
-# the gradient of the loss with respect to an unchosen card's embedding column is
-# EXACTLY zero, in exact arithmetic, not just small. `test_unchosen_card_gets_no_
-# gradient` asserts the defect, and `test_coverage_pass_restores_gradient` asserts
-# the fix removes it. The first test is what fails on the old code path.
-#
-# This is the whole root cause of the (11,0) placement collapse; see
-# PLACEMENT_COLLAPSE.md for the behavioural measurements.
+# `card_id_embed` is `nn.Linear(num_card_ids, 16, bias=False)`, so column c
+# belongs to card c alone. `placement_given_card` uses only the chosen slot's
+# embedding and the card head reads `hx`, so an unchosen card's embedding
+# column gets exactly zero gradient, which freezes an unplayed card's placement
+# map. The coverage pass restores it.
 
 
 
 
 
 def test_unchosen_card_gets_no_gradient():
-    """THE DEFECT. Scoring only the chosen card starves every other card.
-
-    Slot 0 is chosen everywhere; the assertion is that slot 1's card gets an
-    exactly-zero gradient. That is what freezes an unplayed card's placement map
-    at a constant cell forever.
+    """The defect: with slot 0 chosen everywhere, slot 1's card gets exactly zero
+    gradient.
     """
     net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = chunk_fixture()
     chosen = torch.zeros(L, B, dtype=torch.long)
@@ -92,7 +62,8 @@ def test_unchosen_card_gets_no_gradient():
         feats_seq, embeds_seq, spatial_seq, obs_seq, card_mask, chosen, resets, hidden)
     assert extra is None, "no coverage pass was requested"
 
-    # The pre-fix loss: card log-prob + placement of the CHOSEN card only.
+    # The loss without coverage: card log-prob + placement of the chosen card
+    # only.
     loss = (Categorical(logits=cl).entropy().mean()
             + Categorical(logits=pl).entropy().mean() + values.mean())
     net.zero_grad(set_to_none=True)
@@ -103,14 +74,14 @@ def test_unchosen_card_gets_no_gradient():
     chosen_id, other_id = hand[0], hand[1]
     assert chosen_id != other_id
     assert g[:, chosen_id].abs().sum().item() > 0.0, "the chosen card must receive gradient"
-    # Exactly zero, not merely small -- this is a structural disconnection.
+    # Exactly zero, not small: a structural disconnection.
     assert g[:, other_id].abs().sum().item() == 0.0, (
         "an unchosen card received placement gradient; the coverage hole this "
         "test pins has changed shape")
 
 
 def test_coverage_pass_restores_gradient():
-    """THE FIX. The coverage term reaches the card the actor loss cannot."""
+    """The fix: the coverage term reaches the card the actor loss cannot."""
     net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = chunk_fixture()
     chosen = torch.zeros(L, B, dtype=torch.long)
     cover = torch.ones(L, B, dtype=torch.long)      # always slot 1
@@ -132,11 +103,8 @@ def test_coverage_pass_restores_gradient():
 
 
 def test_coverage_does_not_change_the_ppo_ratio():
-    """The regularizer must not touch the quantity PPO is clipping.
-
-    If the coverage pass altered the chosen action's log-prob, it would corrupt
-    the ratio silently -- the exact failure mode CLAUDE.md records for masks
-    that drift between rollout and update.
+    """The regulariser must not touch the chosen action's log-prob, which PPO
+    clips on.
     """
     net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = chunk_fixture()
     chosen = torch.zeros(L, B, dtype=torch.long)
@@ -154,7 +122,7 @@ def test_coverage_does_not_change_the_ppo_ratio():
 
 
 def test_coverage_slots_are_affordable_or_the_noop_fallback():
-    """The sampler must never propose a slot the affordability mask forbids."""
+    """The sampler never proposes a slot the affordability mask forbids."""
     torch.manual_seed(1)
     hand_size = 4
     mask = torch.zeros(5, 3, hand_size + 1, dtype=torch.bool)
@@ -167,18 +135,15 @@ def test_coverage_slots_are_affordable_or_the_noop_fallback():
     assert int(idx[0, 0]) == 2
     assert all(int(idx[1, b]) == 1 for b in range(3))
     assert int(idx[2, 1]) == 0
-    # Rows with nothing affordable fall back to the no-op slot, which is always
-    # a legal index into card_embeds (hand_size == the no-op column).
+    # Rows with nothing affordable fall back to the no-op slot, always a legal
+    # index into card_embeds.
     assert int(idx[0, 1]) == hand_size
     assert idx.max().item() <= hand_size
 
 
 def test_slot_weights_reweight_without_ever_removing_a_candidate():
-    """The weighted draw must RE-RANK affordable slots, never mask one out.
-
-    A row whose affordable slots all carry weight 0 would otherwise look
-    identical to a row with nothing affordable, and silently fall through to
-    the no-op -- losing coverage exactly where it was meant to be added.
+    """Weights re-rank affordable slots and never remove one; all-zero weights
+    must not fall through to the no-op.
     """
     torch.manual_seed(5)
     hand_size = 4
@@ -194,8 +159,8 @@ def test_slot_weights_reweight_without_ever_removing_a_candidate():
     assert 0.75 < share3 < 0.92, f"5:1 weighting should give ~5/6, got {share3}"
     assert float((idx == 0).float().mean()) > 0.05, "the light slot got starved"
 
-    # All-zero weights on the affordable slots: must fall back to the plain
-    # affordable mask rather than to the no-op.
+    # All-zero weights on the affordable slots fall back to the plain
+    # affordable mask.
     zero = torch.zeros(200, 2, hand_size)
     idx0 = placement_coverage_slots(mask, hand_size, slot_weights=zero)
     assert set(idx0.view(-1).tolist()) <= {0, 3}, (
@@ -203,7 +168,7 @@ def test_slot_weights_reweight_without_ever_removing_a_candidate():
 
 
 def test_sampler_reaches_every_affordable_card():
-    """Uniform over affordable slots -- otherwise coverage is itself biased."""
+    """Uniform over affordable slots, or coverage is itself biased."""
     torch.manual_seed(2)
     hand_size = 4
     mask = torch.zeros(400, 4, hand_size + 1, dtype=torch.bool)

@@ -215,9 +215,7 @@ TEST_CASE("A spell without knockback configured (0.0f, the default) never reposi
 
 TEST_CASE("Tornado's pull damages a building but never drags it out of position", "[area_spell][knockback][building]") {
     Board board;
-    // Real-game rule: Tornado has damaged buildings since a 2020 balance
-    // update, but has never been able to displace them -- buildings are
-    // stationary regardless of which spell's knockback hits them.
+    // Buildings take a pull's damage but are never moved, as in the real game.
     auto building = std::make_shared<Building>(1, 8.0f, 5.0f, 1000, 1, 'B', 5.0f, 10, 10); // dist 3.0 from (5,5)
     spawn(board, building);
 
@@ -350,13 +348,10 @@ TEST_CASE("tieredDamage applies the many-targets tier for 5+ entities caught", "
     }
 }
 
-// ============================================================================
-// Rolling sweep -- The Log, Barbarian Barrel (2026-08-28)
-// ============================================================================
-// These two are dynamic bodies sweeping a rectangular corridor, not static
-// circles. The cases below pin the four things that can each go silently
-// wrong: the corridor's WIDTH (a full width, not a radius), its REACH measured
-// to a target's surface, the once-per-roll damage rule, and the lateral throw.
+// --- rolling sweep: The Log, Barbarian Barrel ---
+// Dynamic bodies sweeping a rectangular corridor. These pin the corridor's
+// width (full, not a radius), its reach measured to a target's surface, the
+// once-per-roll damage rule, and the lateral throw.
 
 static AreaSpell makeRoller(int id, float x, float y, int team, int damage,
                             float range, float width, float speed, float knock) {
@@ -373,8 +368,8 @@ TEST_CASE("a rolling spell advances along its team's attack direction", "[area_s
     team0.update(board);
     team1.update(board);
 
-    // Team 0 defends the low-y half and therefore rolls toward +y; team 1 the
-    // mirror. Derived from the team, never passed in -- a spell has no aim.
+    // Team 0 rolls toward +y, team 1 toward -y; derived from the team, since a
+    // spell has no aim.
     REQUIRE(team0.position.y == Catch::Approx(11.0f));
     REQUIRE(team1.position.y == Catch::Approx(19.0f));
 }
@@ -390,9 +385,8 @@ TEST_CASE("a rolling spell sweeps everything along its corridor, once each", "[a
 
     for (int i = 0; i < 8; ++i) log.update(board);
 
-    // Both were in the corridor and both were rolled over exactly ONCE, even
-    // though the log spent several ticks on top of each. A per-tick reapply
-    // would read 1000 - 200*n here.
+    // Both were rolled over exactly once despite spending several ticks under
+    // the log; a per-tick reapply would read 1000 - 200*n.
     REQUIRE(nearTarget->hp == 800);
     REQUIRE(farTarget->hp == 800);
     REQUIRE_FALSE(log.isAlive());
@@ -400,8 +394,8 @@ TEST_CASE("a rolling spell sweeps everything along its corridor, once each", "[a
 
 TEST_CASE("the corridor width is a FULL width, not a radius", "[area_spell][roll]") {
     Board board;
-    // The Log's 3.9 is a width, so its half-width is 1.95. A DummyEntity has
-    // no collision radius of its own and so borrows IMPLICIT_TROOP_RADIUS.
+    // The Log's 3.9 is a width (half-width 1.95). A DummyEntity borrows
+    // IMPLICIT_TROOP_RADIUS.
     const float halfWidth = 3.9f / 2.0f;
     const float r = Entity::IMPLICIT_TROOP_RADIUS;
 
@@ -414,7 +408,7 @@ TEST_CASE("the corridor width is a FULL width, not a radius", "[area_spell][roll
     for (int i = 0; i < 8; ++i) log.update(board);
 
     REQUIRE(inside->hp == 800);
-    // Read as a radius, 3.9 would make the corridor 7.8 wide and catch this.
+    // Read as a radius, 3.9 would catch this.
     REQUIRE(outside->hp == 1000);
 }
 
@@ -431,15 +425,13 @@ TEST_CASE("a rolling spell stops at its range and reaches no further", "[area_sp
     REQUIRE(within->hp == 800);
     REQUIRE(beyond->hp == 1000);
     REQUIRE_FALSE(log.isAlive());
-    // It travelled exactly its range, not one tick's worth further.
+    // It travelled exactly its range.
     REQUIRE(log.position.y == Catch::Approx(15.0f));
 }
 
 TEST_CASE("The Log's 10.1 range reaches a Princess Tower from the bridge", "[area_spell][roll][bridge]") {
-    // The interaction the number exists for. Asserted against ArenaLayout
-    // rather than a hardcoded 9.0, so moving the arena moves this test with it
-    // instead of silently invalidating it -- the failure mode CLAUDE.md
-    // records for every other copy of this geometry.
+    // The interaction the range exists for, asserted against ArenaLayout rather
+    // than a hardcoded 9.0.
     const float bridgeY = ArenaLayout::BRIDGE_Y;
     const float towerY = ArenaLayout::princessY(1);
     const float towerRadius = 1.5f;
@@ -461,9 +453,8 @@ TEST_CASE("The Log's 10.1 range reaches a Princess Tower from the bridge", "[are
 }
 
 TEST_CASE("The Log throws edge-caught units SIDEWAYS and centred ones FORWARD", "[area_spell][roll][knockback]") {
-    // The tactical point of the card: it splits a group apart rather than
-    // shunting it back as one block. A radial pushAway from the log's centre
-    // cannot express this, which is why pushAlong exists.
+    // The card's tactical point: it splits a group rather than shunting it back
+    // as one block, which a radial pushAway cannot do.
     Board board;
     const float halfWidth = 3.9f / 2.0f;
     auto centre = std::make_shared<DummyEntity>(1, 9.0f, 14.0f, 1000, 1);
@@ -476,12 +467,11 @@ TEST_CASE("The Log throws edge-caught units SIDEWAYS and centred ones FORWARD", 
     AreaSpell log = makeRoller(4, 9.0f, 10.0f, 0, 100, 8.0f, 3.9f, 1.0f, 1.0f);
     for (int i = 0; i < 8; ++i) log.update(board);
 
-    // Dead centre: thrown straight along the roll, no lateral drift at all.
+    // Dead centre: thrown straight along the roll.
     REQUIRE(centre->position.x == Catch::Approx(9.0f));
     REQUIRE(centre->position.y == Catch::Approx(15.0f));
 
-    // At the edges: thrown purely sideways, AWAY from the axis and in
-    // OPPOSITE directions -- which is what separates a group.
+    // At the edges: thrown sideways, away from the axis in opposite directions.
     REQUIRE(leftEdge->position.x == Catch::Approx(9.0f - halfWidth - 1.0f));
     REQUIRE(leftEdge->position.y == Catch::Approx(14.0f));
     REQUIRE(rightEdge->position.x == Catch::Approx(9.0f + halfWidth + 1.0f));
@@ -492,8 +482,7 @@ TEST_CASE("The Log throws edge-caught units SIDEWAYS and centred ones FORWARD", 
 }
 
 TEST_CASE("a rolling spell never moves a building, only damages it", "[area_spell][roll][knockback]") {
-    // exemptFromForcedMovement, enforced inside pushAlong exactly as it is for
-    // pushAway/pullToward -- a Log must not shove a Cannon out of its lane.
+    // pushAlong's building guard: a Log must not shove a Cannon.
     Board board;
     auto cannon = std::make_shared<Building>(1, 10.0f, 14.0f, 824, 1, 'C', 5.5f, 60, 10);
     spawn(board, cannon);
@@ -531,11 +520,9 @@ TEST_CASE("a rolling spell ignores what is behind its spawn point", "[area_spell
 }
 
 TEST_CASE("the registry gives The Log and Barbarian Barrel their real corridors", "[area_spell][roll][registry]") {
-    // The registration itself, so a future edit that drops withRollingSweep
-    // turns these back into static circles LOUDLY rather than silently.
-    // Asserted on CardDefinition rather than CardStats because that is the
-    // struct GameLogger's cardMeta block is built from -- so this also pins
-    // the shape the replay hands web/viewer.html, which cannot derive it.
+    // Pins the registration, so dropping withRollingSweep fails loudly. On
+    // CardDefinition, which GameLogger's cardMeta is built from, so this also
+    // pins what the viewer is given.
     const auto& registry = CardRegistry::getInstance();
 
     const CardDefinition* log = registry.getCard(33);
@@ -550,7 +537,7 @@ TEST_CASE("the registry gives The Log and Barbarian Barrel their real corridors"
     REQUIRE(barrel->rollWidth == Catch::Approx(2.6f));
     REQUIRE(barrel->rollRange == Catch::Approx(4.5f));
 
-    // Every non-rolling spell must stay at zero, or the viewer would draw a
+    // Every non-rolling spell stays at zero, or the viewer would draw a
     // rectangle for a Fireball.
     const CardDefinition* fireball = registry.getCard(7);
     REQUIRE(fireball != nullptr);

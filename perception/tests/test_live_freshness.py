@@ -1,12 +1,9 @@
 """Tests for the freshness wait in live/mvp_loop.py.
 
-The decision loop samples at 1 Hz on a phase unrelated to the producer's, so
-the board it acts on has usually been sitting finished for part of a producer
-period. That residual ages the world model without buying anything, and it is
-the only part of the end-to-end latency that costs nothing to remove.
-
-Waiting is not free though -- the action lands later in wall time -- so most of
-what matters here is when the wait must DECLINE.
+The loop samples at 1 Hz on a phase unrelated to the producer's, so the board
+in hand has usually sat finished for part of a period, the one part of
+end-to-end latency that is free to remove. Waiting delays the action, so most
+of what matters is when the wait must decline.
 """
 from __future__ import annotations
 
@@ -58,8 +55,9 @@ def test_declines_when_the_period_is_not_yet_known():
 
 
 def test_declines_when_the_board_just_arrived():
-    """The next board is a whole period away. Waiting would trade a lot of
-    delay for a board that is already as fresh as it gets."""
+    """The next board is a whole period away; waiting would cost a lot of delay
+    for no fresher board.
+    """
     snap = snapshot(1, sat_s=0.01)
     worker = FakeWorker(period=0.5, snap=snap)
     started = time.perf_counter()
@@ -70,8 +68,9 @@ def test_declines_when_the_board_just_arrived():
 
 
 def test_declines_when_the_next_board_is_further_off_than_the_cap():
-    """A long wait is a worse trade than a stale board: the cadence jitter and
-    the delayed action cost more than the freshness is worth."""
+    """A long wait is a worse trade than a stale board: cadence jitter and a
+    delayed action cost more than the freshness is worth.
+    """
     snap = snapshot(1, sat_s=0.05)
     worker = FakeWorker(period=FRESHNESS_WAIT_CAP_S + 0.4, snap=snap)
     got, waited = wait_for_fresher(worker, snap)
@@ -80,8 +79,9 @@ def test_declines_when_the_next_board_is_further_off_than_the_cap():
 
 
 def test_waits_and_takes_the_fresher_board():
-    """The case it exists for: the board in hand is stale, the next is
-    imminent, so holding briefly buys a much newer world model."""
+    """The case it exists for: the board in hand is stale and the next is
+    imminent.
+    """
     stale = snapshot(1, sat_s=0.18)
     fresh = snapshot(2, sat_s=0.0)
     worker = FakeWorker(period=0.25, snap=stale, next_snap=fresh,
@@ -92,8 +92,9 @@ def test_waits_and_takes_the_fresher_board():
 
 
 def test_a_board_that_never_arrives_does_not_block_past_the_cap():
-    """A stalled producer must not hold the decision loop open. The cap is what
-    bounds the cadence damage when the prediction is wrong."""
+    """A stalled producer must not hold the loop open; the cap bounds the damage
+    when the prediction is wrong.
+    """
     stale = snapshot(1, sat_s=0.20)
     worker = FakeWorker(period=0.25, snap=stale)      # nothing ever arrives
     started = time.perf_counter()
@@ -105,8 +106,8 @@ def test_a_board_that_never_arrives_does_not_block_past_the_cap():
 
 
 def test_it_never_returns_an_older_board():
-    """Whatever it returns must be at least as fresh as what it was given --
-    the whole point is reducing the gap, never widening it."""
+    """The result is at least as fresh as the input: the gap only ever shrinks.
+    """
     stale = snapshot(5, sat_s=0.20)
     fresh = snapshot(6, sat_s=0.0)
     worker = FakeWorker(period=0.25, snap=stale, next_snap=fresh,

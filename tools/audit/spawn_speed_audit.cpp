@@ -1,26 +1,13 @@
-// Do SPAWNED units carry a real speed tier?
+// Do spawned units carry a real speed tier? Spawns each parent, fires its death
+// and periodic effects, and reads Troop::getSpeed() off whatever reaches the
+// board.
 //
-// The 2026-08-24 speed rework put every playable card on one of the five real
-// tiers and round-tripped "109 / 109 match". 109 is the count of RESOLVABLE
-// TROOPS -- cards with an official row. The child CardStats that death effects
-// and periodic effects spawn (Golemites, Lava Pups, a Tombstone's Skeletons,
-// a Barbarian Barrel's Barbarians) are not playable cards and have no row of
-// their own, so whether they were in that 109 is exactly the question this
-// instrument answers by measurement instead of by reading the diff.
+// Two checks, and the second is the one that matters: "is this speed near some
+// tier" passes a unit sitting on the wrong tier; "does a spawned unit agree
+// with the playable card of the same name" needs no external source and finds
+// it.
 //
-// It spawns each parent, fires its death effect, and reports what actually
-// reached the board -- reading Troop::getSpeed(), the value movement uses.
-//
-// TWO CHECKS, and the second is the one that matters. The first version of this
-// tool only asked "is this speed near SOME tier", which is far weaker than it
-// looks: a unit that should be MEDIUM but sits on SLOW passes it, because SLOW
-// is a tier. That is exactly how a Goblin at 2.000 tiles/s hid while its own
-// playable card sits at VERY_FAST (2.651). The second check asks whether a
-// SPAWNED unit agrees with THE PLAYABLE CARD OF THE SAME NAME -- pure internal
-// consistency, needing no external source, and it is what actually finds these.
-//
-// NOT a test: a measurement harness, standalone against the header-only engine
-// (tools/audit/build.ps1 spawn_speed_audit).
+// A measurement harness, not a test (tools/audit/build.ps1 spawn_speed_audit).
 
 #include "Board.h"
 #include "CardRegistry.h"
@@ -143,15 +130,12 @@ int main() {
     std::printf("A unit below VERY_SLOW is moving slower than ANY card in the real\n"
                 "game, whose published table bottoms out at 30 tiles/min.\n\n");
 
-    // ---- the check that actually matters --------------------------------
-    // A spawned unit and a playable card sharing a NAME are the same unit.
-    // Where they disagree on speed the registry contradicts itself, and one of
-    // the two is on a real tier -- no external source needed to call it.
-    //
-    // Compound cards are excluded BY NAME: Goblin Machine, Goblinstein, Ram
-    // Rider and Rascals each register a secondary unit under the parent's name
-    // that is deliberately a DIFFERENT creature (different archetype, range and
-    // hp), not a copy of it.
+    // --- the check that matters ---
+    // A spawned unit and a playable card sharing a name are the same unit; a
+    // speed disagreement means the registry contradicts itself. Compound cards
+    // (Goblin Machine, Goblinstein, Ram Rider, Rascals) are excluded by name:
+    // their secondary unit shares the parent's name but is a different
+    // creature.
     std::printf("SPAWNED vs PLAYABLE, same name:\n");
     std::printf("%-20s %-11s %-11s %s\n", "unit", "played", "spawned", "spawned is");
     std::printf("%s\n", std::string(66, '-').c_str());

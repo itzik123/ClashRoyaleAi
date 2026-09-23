@@ -3,35 +3,21 @@
 #include <vector>
 #include <cmath>
 
-// OPPONENT CARD-CYCLE OBSERVATION (UPSTREAM_REQUESTS.md item 24, 2026-08-27).
-//
-// The encoder gave the agent the opponent's cumulative elixir SPEND and nothing
-// else about what they had played -- a scalar sum of costs, which is precisely
-// the summary that destroys cycle information. Two NUM_CARD_IDS-wide blocks now
-// carry what a human watching the screen already knows:
+// Opponent card-cycle observation (perception/UPSTREAM_REQUESTS.md item 24):
+// two NUM_CARD_IDS-wide blocks carrying what the opponent has played.
 //
 //   seen[c]     1.0 once the opponent has played card c this match
 //   recency[c]  exp(-(now - lastPlayed[c]) / CYCLE_RECENCY_TAU_TICKS)
 //
-// These tests pin the four things that can go wrong SILENTLY, in the sense this
-// project keeps being bitten by -- each of them would leave a
-// plausible-looking observation that is simply describing the wrong thing:
-//
-//   1. the blocks landing at the wrong offset (every downstream index shifts)
-//   2. reading the OWN cycle instead of the opponent's (trains on information
-//      the agent already has, leaves the gap unfilled, and looks identical in
-//      any aggregate statistic)
-//   3. plays made through a path other than the one hooked (the heuristic
-//      opponent reaches playCard directly, not through ClashEnv::step)
-//   4. a snapshot losing the cycle, so every search candidate believes the
-//      opponent has played nothing all match
+// These pin the four silent failures: the blocks at the wrong offset; reading
+// the own cycle instead of the opponent's; plays made through a path other than
+// the hooked one (the heuristic opponent calls playCard directly); and a
+// snapshot losing the cycle.
 
 namespace {
 
-// Where the first cycle block starts. Derived the same way the encoder builds
-// it -- spatial, then elixir, costs, one-hots, extra scalars -- rather than
-// hardcoded, so a change to any earlier section moves this with it instead of
-// silently pointing at the wrong floats.
+// Where the first cycle block starts, derived the way the encoder builds it, so
+// earlier changes move it too.
 constexpr int cycleBase() {
     return ClashEnv::BOARD_WIDTH * ClashEnv::BOARD_HEIGHT * ClashEnv::NUM_CHANNELS
          + 1
@@ -47,27 +33,23 @@ float recencyOf(const std::vector<float>& obs, int cardId) {
     return obs[cycleBase() + ClashEnv::NUM_CARD_IDS + cardId];
 }
 
-// The 2.6 Hog Cycle -- DEFAULT_DECK, so these ids are real registered cards.
+// The 2.6 Hog Cycle (DEFAULT_DECK): real registered cards.
 const std::vector<int> DECK = { 15, 6, 25, 40, 24, 72, 33, 7 };
 
 
-// Plays `cardId` as team 1 through the SAME path a live match uses --
-// stepSelfPlay -> GameManager::playCard -- rather than through inject(), which
-// deliberately bypasses playCard and therefore records no cycle. Pinning the
-// hand first is what makes the play deterministic: the opening hand is dealt
-// by an unseeded shuffle, so slot 0 is otherwise an unknown card.
+// Plays `cardId` as team 1 through the path a live match uses (stepSelfPlay ->
+// GameManager::playCard), not inject(), which records no cycle. The hand is
+// pinned first, since the opening hand is random.
 bool playAsOpponent(ClashEnv& env, int cardId) {
     std::vector<int> hand = { cardId, DECK[1], DECK[2], DECK[3] };
     if (!env.setHandForTeam(1, hand)) return false;
     env.setElixirForTeam(1, 10.0f);
-    // TEAM 1'S Y IS IN TEAM 1'S OWN MIRRORED FRAME, not board coordinates:
-    // runSelfPlayTicks converts it as `realY1 = (BOARD_HEIGHT - 1) - targetY1`,
-    // which is what lets one network drive either side. So y=8 here lands at
-    // board y=25 -- inside team 1's own half. Passing the board coordinate 25
-    // directly maps to board y=8, which is team 0's half, and the play is
-    // correctly REFUSED; that is what these tests did on first run.
+    // Team 1's y is in its own mirrored frame: runSelfPlayTicks converts
+    // `realY1 = (BOARD_HEIGHT - 1) - targetY1`, so y=8 lands at board y=25, in
+    // team 1's half. Board y=25 passed directly would land in team 0's half and
+    // be refused.
     const float ownHalfY = 8.0f;
-    // cardIndex 4 == the no-op arm for team 0; team 1 plays slot 0.
+    // cardIndex 4 is team 0's no-op; team 1 plays slot 0.
     env.stepSelfPlay(4, 0.0f, 0.0f, 0, 9.0f, ownHalfY, 1);
     return env.getObservationForTeam(0)[cycleBase() + cardId] > 0.5f;
 }
@@ -80,9 +62,8 @@ TEST_CASE("the observation carries two card-cycle blocks after the extra scalars
     std::vector<float> obs = env.getObservationForTeam(0);
 
     REQUIRE(static_cast<int>(obs.size()) == env.observationSize());
-    // The blocks are the LAST thing in the vector, so the base plus both
-    // blocks must land exactly on the end. This is what fails if anything is
-    // ever inserted rather than appended.
+    // The blocks are last, so the base plus both blocks ends exactly at the
+    // vector's end; this fails if anything is inserted rather than appended.
     REQUIRE(cycleBase() + ClashEnv::CYCLE_BLOCK_SIZE == env.observationSize());
     REQUIRE(ClashEnv::CYCLE_BLOCK_SIZE
             == ClashEnv::NUM_CYCLE_BLOCKS * ClashEnv::NUM_CARD_IDS);
@@ -103,13 +84,12 @@ TEST_CASE("an opponent play shows up in the observing team's cycle blocks", "[cy
     ClashEnv env(DECK, DECK, 3600);
     env.reset();
 
-    // Play as team 1 through the same choke point every real play uses.
+    // Play as team 1 through the choke point every real play uses.
     const int card = DECK[0];
     REQUIRE(playAsOpponent(env, card));
 
-    // stepSelfPlay advances the clock AFTER the play lands, so "now" is a
-    // tick or two past it. Pin the clock to the recorded play tick to make the
-    // zero-age case exact rather than approximately-one.
+    // stepSelfPlay advances the clock after the play, so pin the clock to the
+    // recorded play tick to make the zero-age case exact.
     const int playedAt = env.getLastPlayedTick(1, card);
     REQUIRE(playedAt >= 0);
     env.setCurrentTick(playedAt);
@@ -118,10 +98,8 @@ TEST_CASE("an opponent play shows up in the observing team's cycle blocks", "[cy
     REQUIRE(seenOf(team0, card) == 1.0f);
     REQUIRE(recencyOf(team0, card) == Catch::Approx(1.0f));
 
-    // ...and it must NOT appear in team 1's own view. Team 1 played it, so for
-    // team 1 this is own-cycle information, which these blocks deliberately do
-    // not carry. Getting this backwards is the failure that would look correct
-    // in every aggregate metric.
+    // ...and not in team 1's own view: its own cycle is not what these blocks
+    // carry. Getting this backwards would look correct in every aggregate.
     std::vector<float> team1 = env.getObservationForTeam(1);
     REQUIRE(seenOf(team1, card) == 0.0f);
     REQUIRE(recencyOf(team1, card) == 0.0f);
@@ -133,13 +111,11 @@ TEST_CASE("recency decays with the documented time constant", "[cycle]") {
     const int card = DECK[0];
     REQUIRE(playAsOpponent(env, card));
 
-    // Measured from the RECORDED play tick, not from "now" -- stepSelfPlay
-    // has already advanced the clock past it, and starting the interval in the
-    // wrong place is how a decay test ends up asserting against its own
-    // rounding.
+    // Measured from the recorded play tick, not "now", which stepSelfPlay has
+    // already advanced.
     const int playedAt = env.getLastPlayedTick(1, card);
     REQUIRE(playedAt >= 0);
-    // One full TAU later the channel must read exp(-1) ~ 0.3679.
+    // One TAU later: exp(-1) ~ 0.3679.
     env.setCurrentTick(playedAt + static_cast<int>(ClashEnv::CYCLE_RECENCY_TAU_TICKS));
     std::vector<float> obs = env.getObservationForTeam(0);
 
@@ -148,11 +124,8 @@ TEST_CASE("recency decays with the documented time constant", "[cycle]") {
 }
 
 TEST_CASE("seen and recency answer different questions", "[cycle]") {
-    // The reason there are TWO blocks rather than one. A card played long ago
-    // reads seen=1, recency~0; a card never played reads seen=0, recency=0.
-    // A single channel could not tell "they have it and it is nearly back"
-    // from "they have never shown it", which is the distinction the whole
-    // feature exists for.
+    // Why there are two blocks: played long ago reads seen=1, recency~0; never
+    // played reads 0, 0. One channel could not tell those apart.
     ClashEnv env(DECK, DECK, 3600);
     env.reset();
     const int played = DECK[0];
@@ -167,14 +140,13 @@ TEST_CASE("seen and recency answer different questions", "[cycle]") {
     REQUIRE(recencyOf(obs, played) < 0.01f);     // long gone
     REQUIRE(seenOf(obs, never) == 0.0f);
     REQUIRE(recencyOf(obs, never) == 0.0f);
-    // The pair is what distinguishes them, not either channel alone.
+    // The pair distinguishes them, not either channel alone.
     REQUIRE(seenOf(obs, played) != seenOf(obs, never));
 }
 
 TEST_CASE("a rewound clock cannot push recency above 1", "[cycle]") {
-    // set_current_tick() lets a state estimator move the clock BACKWARDS, and
-    // a negative age would make exp(-age/TAU) exceed 1.0 and break the [0,1]
-    // contract every other channel keeps.
+    // set_current_tick() can move the clock backwards; a negative age would
+    // push exp() above 1.0.
     ClashEnv env(DECK, DECK, 3600);
     env.reset();
     env.setCurrentTick(500);
@@ -188,20 +160,15 @@ TEST_CASE("a rewound clock cannot push recency above 1", "[cycle]") {
 }
 
 TEST_CASE("a snapshot inherits the cycle it is searching from", "[cycle]") {
-    // Decision-time search rolls a snapshot forward. If the cycle did not ride
-    // along, every candidate would be scored against an opponent who had
-    // apparently played nothing all match -- a wrong answer that looks like a
-    // working search, which is this project's most-repeated failure shape.
+    // The cycle rides along with a snapshot, or every search candidate faces an
+    // opponent who has played nothing.
     ClashEnv env(DECK, DECK, 3600);
     env.reset();
     const int card = DECK[0];
     REQUIRE(playAsOpponent(env, card));
 
-    // Asserted as EQUALITY WITH THE ORIGINAL rather than against a literal.
-    // The property under test is "the snapshot inherited the cycle", and that
-    // holds whatever the current tick happens to be -- pinning a literal here
-    // instead just re-tests the decay formula, and gets 0.99501 rather than
-    // 1.0 because stepSelfPlay advances the clock one tick past the play.
+    // Equality with the original, not a literal: the property is inheritance,
+    // whatever the tick.
     ClashEnv copy = env.snapshot();
     std::vector<float> before = env.getObservationForTeam(0);
     std::vector<float> obs = copy.getObservationForTeam(0);
@@ -210,9 +177,8 @@ TEST_CASE("a snapshot inherits the cycle it is searching from", "[cycle]") {
     REQUIRE(recencyOf(obs, card) == recencyOf(before, card));
     REQUIRE(copy.getLastPlayedTick(1, card) == env.getLastPlayedTick(1, card));
 
-    // ...and the snapshot must be INDEPENDENT: a play inside the rollout must
-    // not appear in the live match's cycle. Sharing that state would let a
-    // search write its hypotheticals back into the position it is searching.
+    // ...and the snapshot is independent: a play inside the rollout must not
+    // reach the live match's cycle.
     const int other = DECK[1];
     copy.notePlayedCard(1, other);
     REQUIRE(copy.getLastPlayedTick(1, other) >= 0);

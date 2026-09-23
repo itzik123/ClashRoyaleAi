@@ -1,24 +1,9 @@
-"""Search's rollout opponent, and why it needed to become a parameter.
+"""Search's rollout opponent is a parameter.
 
-WHAT WAS WRONG. `search_action` rolled candidates forward with `sim.step(...)`,
-and the raw engine's `step` drives the C++ HeuristicOpponent. So search
-optimised against the heuristic while phase 1's real opponent is the
-UtilityTeacher, which forward-simulates. Measured 2026-09-06 on the ep-111k
-policy, paired and seeded, greedy control constant at 0.844:
-
-    horizon  4   greedy 0.844   search 0.531   -0.313
-    horizon  8   greedy 0.844   search 0.312   -0.531
-    horizon 12   greedy 0.844   search 0.375   -0.469
-
-Every positive search result in this repo -- the +0.319, the +0.4025 horizon
-sweep -- was measured against that same heuristic, which is why they held then
-and do not now. The regime moved; the search did not.
-
-NOTE THE DOCSTRING THAT MISLED. `SearchCfg` says "a candidate rollout assumes
-BOTH SIDES NO-OP". Only OUR side no-ops; the opponent has always acted. The
-first diagnosis of this bug was built on that sentence and was wrong until the
-board was actually inspected -- 2 enemy bodies and 1302 tower HP inside a
-rollout that was supposed to be empty.
+Rolling candidates forward with the raw engine's `step` drives the C++
+HeuristicOpponent, so without a model search optimises against the heuristic
+rather than phase 1's UtilityTeacher. During a rollout only our side no-ops;
+the opponent always acts.
 """
 import os
 import sys
@@ -62,9 +47,9 @@ class _RecordingOpponent:
 
 
 def test_the_rollout_asks_the_opponent_model_once_per_step():
-    """The model has to actually drive the rollout. A parameter that is accepted
-    and then ignored is the failure this test exists for -- it would leave the
-    heuristic in place while every report said otherwise."""
+    """The model must actually drive the rollout; a parameter accepted and then
+    ignored would leave the heuristic in place.
+    """
     env = _warm_env()
     opp = _RecordingOpponent()
     S.rollout(env.snapshot(), NOOP, 0.0, 0.0, horizon=5, opponent=opp)
@@ -72,8 +57,9 @@ def test_the_rollout_asks_the_opponent_model_once_per_step():
 
 
 def test_without_a_model_the_rollout_keeps_the_old_behaviour():
-    """The C++ heuristic path is preserved exactly, so every earlier result
-    stays reproducible and this change is additive."""
+    """The C++ heuristic path is preserved exactly, so earlier results stay
+    reproducible.
+    """
     env = _warm_env()
     a = S.rollout(env.snapshot(), NOOP, 0.0, 0.0, horizon=6, opponent=None)
     b = S.rollout(env.snapshot(), NOOP, 0.0, 0.0, horizon=6, opponent=None)
@@ -83,9 +69,9 @@ def test_without_a_model_the_rollout_keeps_the_old_behaviour():
 
 
 def test_a_passive_model_and_the_heuristic_diverge():
-    """The point of the parameter: a rollout with a do-nothing opponent must
-    reach a DIFFERENT board than one driven by the heuristic. If these agreed,
-    the opponent would not be being modelled at all."""
+    """A do-nothing opponent must reach a different board than the heuristic, or
+    the opponent is not being modelled.
+    """
     env = _warm_env()
     passive = S.rollout(env.snapshot(), NOOP, 0.0, 0.0, horizon=12,
                         opponent=_RecordingOpponent())
@@ -98,9 +84,9 @@ def test_a_passive_model_and_the_heuristic_diverge():
 
 
 def test_the_teacher_is_usable_as_the_model_and_actually_plays():
-    """The real case. A UtilityTeacher must be droppable in as the opponent and
-    must spend elixir doing it -- an opponent model that never plays is the
-    passive rollout with extra cost."""
+    """A UtilityTeacher can be dropped in and actually spends elixir; a model that
+    never plays is the passive rollout at extra cost.
+    """
     from python_ai.opponents.teacher import UtilityTeacher
 
     env = _warm_env(ticks=60)
@@ -110,8 +96,8 @@ def test_the_teacher_is_usable_as_the_model_and_actually_plays():
     sim = env.snapshot()
     before = sim.get_elixir_for_team(1)
     S.rollout(sim, NOOP, 0.0, 0.0, horizon=20, opponent=teacher)
-    # Elixir is not a perfect play detector on its own (income accrues), so
-    # require that the bar did not simply run up untouched.
+    # Elixir is not a perfect play detector (income accrues): require that the
+    # bar did not simply run up untouched.
     after = sim.get_elixir_for_team(1)
     assert after < before + 20 * 10 * 0.035, (
         f"team 1 elixir went {before:.2f} -> {after:.2f}, i.e. it banked its "

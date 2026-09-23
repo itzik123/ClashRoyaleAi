@@ -1,35 +1,21 @@
 """Record a live match to lossless frames, for offline fitting.
 
-WHY NOT JUST RUN THE LIVE LOOP
-------------------------------
-The live loop is detector-bound: ~640 ms of its ~917 ms goes to the YOLO pass,
-so it can only reach ~1.5 fps. A card placement is an instant, and correlating
-it against the elixir bar's drop needs better time resolution than that. Pure
-capture runs at the window's own ~13 fps because it does no inference at all,
-so this records frames only and every analysis is run offline afterwards --
-where the detector can take as long as it likes and can be re-run whenever the
-logic changes, without asking for another match.
+The live loop is detector-bound (~1.5 fps), too coarse to correlate a placement
+with the elixir bar's drop. Pure capture runs at the window's own rate, and
+every analysis runs offline, where the detector can take as long as it likes
+and be re-run without another match.
 
-WHY PNG AND NOT VIDEO
----------------------
-Two reasons, both load-bearing:
+PNG, not video:
 
-  * LOSSLESS. The badge and HP readers key on exact colours -- ally fill
-    (111,208,252) against its track (63,79,112), and hue bands only ~20 wide
-    separating the two teams. JPEG or an inter-frame codec moves those values,
-    and the thresholds were calibrated on unmodified pixels.
-  * HONEST TIMESTAMPS. Live capture is variable-rate by nature; WGC delivers on
-    window updates. Writing it into a video at a nominal fps would bake in a
-    constant-rate fiction, and `capture/video.py` exists precisely because
-    variable-rate files produce timestamps that drift during fights -- which is
-    exactly when placements happen. Each frame's real capture time is written
-    to the manifest instead.
+  * Lossless. The badge and HP readers key on exact colours (ally fill
+    (111,208,252) against its track (63,79,112); team hue bands ~20 wide),
+    which lossy codecs move.
+  * Honest timestamps. Live capture is variable-rate (WGC delivers on window
+    updates); a video at nominal fps would bake in a constant-rate fiction.
+    Each frame's real capture time goes in the manifest.
 
-STOPPING
---------
-Either bound: `--seconds`, or by creating the file named in the manifest as
-`stop_file`. The stop file exists so a recording can be ended cleanly from
-another process without a signal, since this usually runs in the background.
+Stops at `--seconds`, or when the manifest's `stop_file` is created, so a
+background recording can be ended cleanly from another process.
 """
 from __future__ import annotations
 
@@ -48,24 +34,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from capture.window import WindowSource  # noqa: E402
 
-# Measured on a 549x976 frame: compression 0 costs 68 ms, 1 costs 177, 3 costs
-# 247, 6 costs 552. At 10 fps the budget is 100 ms, so anything above 0 has to
-# be overlapped -- and even 0 leaves only 32 ms for everything else on one
-# thread. Encoding therefore runs on workers and 1 is affordable.
+# PNG compression on a 549x976 frame: level 0 costs 68 ms, 1 costs 177, 3 costs
+# 247, 6 costs 552. At 10 fps the budget is 100 ms, so encoding runs on workers
+# and level 1 is affordable.
 PNG_COMPRESSION = 1
 
-# cv2.imwrite releases the GIL, so these genuinely run in parallel. Three at
-# 177 ms sustains ~17 fps against a 10 fps target, leaving headroom for the
-# emulator, which is also on this machine.
+# cv2.imwrite releases the GIL, so these run in parallel: three at 177 ms
+# sustain ~17 fps against a 10 fps target, leaving room for the emulator on the
+# same machine.
 WRITER_THREADS = 3
 
-# Bounded so a slow disk applies backpressure instead of growing a queue that
-# ends as an out-of-memory kill halfway through the match.
+# Bounded, so a slow disk applies backpressure instead of growing a queue into
+# an out-of-memory kill.
 QUEUE_DEPTH = 48
 
-# Refuse to start without room for the whole recording plus a margin. Filling
-# the system disk mid-match loses the match AND is a nasty thing to do to a
-# machine that has a training run on it.
+# Refuse to start without room for the whole recording plus a margin: filling
+# the system disk mid-match loses the match and endangers a training run on the
+# same machine.
 BYTES_PER_FRAME_ESTIMATE = 700_000
 DISK_MARGIN_BYTES = 2 << 30      # 2 GiB
 
@@ -134,13 +119,12 @@ def main() -> int:
             if now < next_due:
                 time.sleep(min(0.005, next_due - now))
                 continue
-            # Anchored to the frame actually taken, so a stall cannot make the
-            # sampler emit a catch-up burst.
+            # Anchored to the frame actually taken, so a stall cannot cause a
+            # catch-up burst.
             next_due = now + interval
 
-            # read_new, not read: polling can outrun the window's paint rate,
-            # and a duplicated surface would enter the manifest as two
-            # observations of one instant.
+            # read_new, not read: a duplicated surface would enter the manifest
+            # as two observations of one instant.
             frame = source.read_new(timeout_s=1.0)
             if frame is None:
                 stalled += 1
@@ -150,8 +134,7 @@ def main() -> int:
                 work.put_nowait((args.out / name, frame.image))
             except queue.Full:
                 # Recorded as a gap rather than blocked on: a stalled sampler
-                # would skew every timestamp after it, and the manifest has to
-                # stay an honest record of when frames were actually taken.
+                # would skew every later timestamp.
                 dropped += 1
                 continue
             rows.append({"file": name, "index": frame.index,

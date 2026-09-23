@@ -1,36 +1,23 @@
-"""Is the dead-card deadlock CAUSAL, or is the policy right to decline them?
+"""Are the rarely played cards a deadlock, or is the policy right to decline them?
 
-THE QUESTION
-------------
-Cannon / Fireball / Giant are played on ~2% of plays and their placement head
-returns one fixed cell -- (11,0), our own back row -- in 54-91% of states. Two
-readings fit that:
+Two readings fit a card that is rarely played and whose placement head returns
+one fixed cell:
 
-  (a) VALUATION. The cards are genuinely bad in this matchup, the policy learned
-      that correctly, and the frozen head is a harmless consequence of a card
-      that never gets sampled.
-  (b) DEADLOCK. The head froze first (it gets zero gradient once the card stops
-      being chosen -- see rl/ppo.py's `mb_placed`), which MAKES the card
-      worthless, which keeps it unplayed, which keeps the head frozen.
+  (a) valuation: the card is bad in this matchup and the frozen head is a harmless consequence;
+  (b) deadlock: the head froze first (no gradient once the card stops being chosen, see `mb_placed` in rl/ppo.py), which makes the card worthless, which keeps it unplayed.
 
-These predict opposite things, so one experiment separates them. Three arms,
-each pair handed a bit-identical opening by `env.snapshot()`:
+Three arms on bit-identical openings via `env.snapshot()`:
 
-  A  control   -- greedy policy, untouched
-  B  advisor   -- force the dead cards in, placed where `tactics` says
-  C  own-cell  -- force the dead cards in at the POLICY'S OWN chosen cell
+  A  control   greedy policy, untouched
+  B  advisor   force the cards in, placed where `tactics` says
+  C  own-cell  force the cards in at the policy's own chosen cell
 
-C is the control that makes B interpretable, and CLAUDE.md demands it: a
-forced-placement A/B that omits it cannot tell "the card is good" from "this
-particular cell is good". Under (a) both B and C lose to A. Under (b) B beats
-both A and C, and C is no better than A.
+C separates "the card is good" from "this cell is good". Under (a) B and C both
+lose to A; under (b) B beats A and C, and C is no better than A.
 
-Thresholds are set A PRIORI from card stats, never tuned on the outcome:
-Fireball fires when the advisor sees at least a 3-cost squad's worth of HP
-(Minions are 3x230=690), the Cannon goes down when at least a Musketeer's worth
-(721) is approaching. Tuning these on win rate would be optional stopping.
+Thresholds come from card stats, never tuned on the outcome.
 
-    python_ai/venv/Scripts/python.exe python_ai/tactical_ab.py --n 200
+    python_ai/venv/Scripts/python.exe python_ai/eval/tactical_ab.py --n 200
 """
 import argparse
 import os
@@ -39,9 +26,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -59,10 +44,8 @@ SKIP = 10
 
 FIREBALL_MIN_CATCH = 690.0   # a 3-cost Minions squad: 3 x 230 HP
 CANNON_MIN_THREAT = 721.0    # one Musketeer
-# Elixir that must REMAIN after an override plays. The ungated first run of this
-# experiment forced ~27 extra elixir of cards per episode into an agent already
-# spending ~105 against ~98 of income, and both forced arms lost -- it was
-# measuring bankruptcy, not placement. See tactics.TacticalOverride.
+# Elixir that must remain after an override. Without it the forced arms measure
+# bankruptcy, not placement; see tactics.TacticalOverride.
 RESERVE = 4.0
 
 
@@ -102,9 +85,8 @@ def play(net, env, device, mode):
                 if mode == "advisor":
                     x, y = nx, ny
                 else:
-                    # own-cell control: same card, same moment, but the cell the
-                    # POLICY's own frozen head would have chosen. Isolates the
-                    # placement from the decision to play at all.
+                    # Same card and moment, at the cell the policy's own head
+                    # would choose.
                     p = net.placement_given_card(
                         hx2, embeds, torch.tensor([slot], device=device), t, sp)
                     c = int(p.argmax(-1).item())
@@ -157,7 +139,7 @@ def main():
     for m in ["advisor", "owncell"]:
         b = np.array(scores[m])
         d = b - a
-        # paired: only discordant pairs carry information
+        # Paired: only discordant pairs carry information.
         better = int((d > 0).sum())
         worse = int((d < 0).sum())
         se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else 0.0

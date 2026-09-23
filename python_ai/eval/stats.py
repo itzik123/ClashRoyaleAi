@@ -1,39 +1,24 @@
-"""The statistics every measurement harness in this project needs, once.
+"""Paired bootstrap CIs and exact sign tests, shared by every measurement harness.
 
-Four near-identical implementations of "paired bootstrap CI plus an exact sign
-test" existed here -- `prove_environment.paired`, `prove_placement.paired_report`,
-`prove_solvency.boot_ci`/`boot_diff`, `expert_iteration.report_paired` -- with
-the same 10,000 resamples and the same `math.comb` sign test written out four
-times. For measurement code that is worse than ordinary duplication: this is the
-part of the tree whose whole job is to be trustworthy, and four copies means
-four chances for one of them to quietly use a different tail, a different
-confidence level, or a one-sided test.
+The two answer different questions and can disagree: the CI is about the
+average size of an effect, the sign test about how often it points the same way
+(with no distributional assumption). One arm can win more pairs while the other
+wins bigger ones.
 
-WHY BOOTSTRAP AND SIGN TEST TOGETHER, AND WHY BOTH ARE REPORTED. They answer
-different questions and this project has had them disagree -- the Fireball
-result at ep 78,270 had the bootstrap CI exclude zero while the exact sign test
-did not (223 better / 252 worse, p = 0.199), because the advisor won more pairs
-while the net won bigger ones. The CI is about the average SIZE of the effect;
-the sign test is about how often it points the same way, and it makes no
-distributional assumption at all.
-
-Bootstrap rather than a t-test because these scores are heavily zero-inflated --
-most cells catch nothing -- so normality is a bad assumption.
+Bootstrap rather than a t-test because these scores are heavily zero-inflated.
 """
 from dataclasses import dataclass
 from math import comb
 
 import numpy as np
 
-#: Resamples. 10,000 is what every number in CLAUDE.md was measured with;
-#: changing it would make new CIs not directly comparable to recorded ones.
+#: Resamples. Recorded CIs were measured with 10,000; keep it for
+#: comparability.
 N_RESAMPLES = 10000
 
 
 def _rng(rng):
-    # Seeded by default so a harness re-run reproduces its own CI. An unseeded
-    # default would make two runs of the same measurement disagree in the third
-    # decimal for no reason anyone could trace.
+    # Seeded by default so a harness re-run reproduces its own CI.
     return np.random.default_rng(0) if rng is None else rng
 
 
@@ -51,14 +36,9 @@ def bootstrap_ci(values, rng=None, n=N_RESAMPLES, alpha=0.05):
 def unpaired_bootstrap_diff(a, b, rng=None, n=N_RESAMPLES, alpha=0.05):
     """(mean(b) - mean(a), lo, hi, p), resampling the two samples independently.
 
-    `p` is the two-sided bootstrap p: how often the resampled difference crosses
-    zero.
-
-    For arms that are NOT paired. Prefer `paired()` whenever the two arms saw
-    the same states -- `env.snapshot()` makes pairing available almost
-    everywhere here, and CLAUDE.md records it being worth roughly an order of
-    magnitude in the sample size needed to resolve a few win-rate points
-    (~1,568 episodes per arm unpaired).
+    `p` is the two-sided bootstrap p. For unpaired arms only: prefer `paired()`
+    whenever both arms saw the same states, which `env.snapshot()` makes
+    possible almost everywhere.
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -76,9 +56,8 @@ def unpaired_bootstrap_diff(a, b, rng=None, n=N_RESAMPLES, alpha=0.05):
 def sign_test(diffs):
     """(better, worse, tied, two-sided exact p) over discordant pairs.
 
-    Exact binomial on the discordant pairs only -- ties carry no directional
-    information and are excluded from the test while still being reported, so a
-    result that is mostly ties cannot look decisive.
+    Ties carry no directional information: excluded from the test but still
+    reported, so a result that is mostly ties cannot look decisive.
     """
     d = np.asarray(diffs, dtype=np.float64)
     better = int((d > 0).sum())
@@ -114,9 +93,8 @@ class PairedResult:
     def agrees(self):
         """True when the CI and the sign test point the same way.
 
-        When they DISAGREE, believe the sign test: it assumes nothing about the
-        distribution, and the disagreement itself is informative -- it means one
-        arm wins more pairs while the other wins bigger ones.
+        When they disagree, trust the sign test; the disagreement means one arm
+        wins more pairs while the other wins bigger ones.
         """
         return self.ci_excludes_zero == (self.p < 0.05)
 
@@ -163,22 +141,13 @@ def report_paired(name, a, b, label_a="a", label_b="b", rng=None):
 
 
 def report_paired_winrate(diffs, a_scores, b_scores, label_a, label_b):
-    """The WIN-RATE report: normal-approximation CI, exact McNemar, and power.
+    """The win-rate report: normal-approximation CI, exact McNemar, and power.
 
-    Deliberately NOT the bootstrap above, and the difference is not an
-    oversight. A win-rate delta over paired trials is a mean of values in
-    {-1, -0.5, 0, +0.5, +1}, where the normal approximation is well behaved and
-    the closed-form SE is what makes the POWER line below computable at all --
-    and that line is the one that stopped this project over-reading a marginal
-    result. Every delta quoted in CLAUDE.md for expert iteration was produced by
-    exactly this arithmetic; changing it would make new numbers incomparable
-    with recorded ones.
-
-    The power line exists because of a specific mistake: an exploratory n=200
-    arm gave +0.105 at p=0.044 and it was NOISE -- a confirmatory run at 4x the
-    power collapsed it to +0.016. Printing the smallest resolvable effect next
-    to the observed one makes "this is inside the noise floor" visible at the
-    moment of reading rather than three days later.
+    Not the bootstrap: a paired win-rate delta is a mean of values in {-1,
+    -0.5, 0, +0.5, +1}, where the normal approximation behaves and its
+    closed-form SE makes the power line computable. That line prints the
+    smallest resolvable effect next to the observed one, so a result inside the
+    noise floor is visible as such.
     """
     import math
 

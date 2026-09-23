@@ -1,21 +1,14 @@
-"""Phase 3: prove every component of the training loop before a long run uses it.
+"""Pre-flight: prove every component of the training loop before a long run uses
+it.
 
-    python_ai/venv/Scripts/python.exe python_ai/validate_pipeline.py --full
+    python_ai/venv/Scripts/python.exe python_ai/tools/validate_pipeline.py
 
-Each check prints PASS/FAIL and the number it decided on. Nothing here asserts a
-property that is merely plausible -- every threshold is either an engine
-constant, a documented measurement, or a statistical null with its own sample
-size. A check that cannot fail is not a check.
+Each check prints PASS/FAIL and the number it decided on. Every threshold is an
+engine constant, a documented measurement, or a statistical null with its own
+sample size; a check that cannot fail is not a check.
 
-WHAT THIS DOES NOT DO
----------------------
-It does not touch the emulator, by instruction and by design: the live loop is
-gated on perception fidelity, and an unattended multi-day run cannot depend on
-an unstable BlueStacks window. Everything below runs against the C++ simulator.
-
-It also does not modify anything. It is safe to run against a live training
-directory, and it deliberately builds its own environments rather than
-borrowing the trainer's.
+Runs against the C++ simulator only, never the emulator, and modifies nothing:
+safe beside a live training directory.
 """
 import argparse
 import os
@@ -27,9 +20,7 @@ from collections import Counter
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -51,26 +42,11 @@ from python_ai.engine_constants import BOARD_W  # noqa: E402
 
 
 def cells_the_engine_refuses(env, card_id, target, team=0):
-    """Cells carrying finite target mass that the ENGINE will not accept.
+    """Cells carrying finite target mass that the engine will not accept.
 
-    THE CHECK THIS REPLACES COULD NOT FAIL, on any board, ever.
-
-    It asked whether `target_logits_for`'s output was finite anywhere outside
-    the `legal` table it had just been handed. But `advisor_target._standardize`
-    builds that vector as `np.full(N_CELLS, -inf)` and only ever writes cells
-    that are IN `legal` -- so `isfinite(t[~legal]).any()` is False for every
-    possible input. The gate reported "0 violations over N targets" for
-    thousands of targets and would have reported exactly that with the legality
-    table completely wrong.
-
-    CLAUDE.md lists this trap by name, from a previous occurrence: "Never
-    validate a mask against the predicate that generated it... The check was
-    circular and could not fail."
-
-    The engine is the independent oracle, and it is the one worth asking.
-    `legal` comes from the NET's own `_placement_legal` table, and whether THAT
-    agrees with what the engine will actually accept is the real question --
-    exactly the disagreement that put placements off the board once before.
+    The engine is the independent oracle. `legal` comes from the net's own
+    `_placement_legal` table; checking the target against that same table could
+    never fail, because the target is built only on its cells.
 
     Returns a list of (cell, x, y); empty is clean.
     """
@@ -100,23 +76,21 @@ def banner(title):
     print(f"\n{'=' * 74}\n{title}\n{'=' * 74}", flush=True)
 
 
-# ---------------------------------------------------------------- 1. PFSP --
+# --- 1. PFSP ---
 def validate_pfsp(trials=200000):
-    """The sampler must match max(floor, (1-winrate)^2), normalized.
+    """The sampler must match max(floor, (1-winrate)^2), normalised.
 
-    Checked by Monte Carlo against the closed form rather than by reading the
-    code, because the property that matters is the DISTRIBUTION the trainer
-    actually draws from -- and the floors are the part most easily broken by an
-    edit elsewhere. PFSP_MIN_WEIGHT exists so no opponent ever leaves rotation;
-    a silent zero there is catastrophic and invisible in every training metric.
+    Checked by Monte Carlo against the closed form, since what matters is the
+    distribution actually drawn from, and a silent zero floor would drop an
+    opponent from rotation invisibly.
     """
     banner("1. PFSP opponent routing")
     pool = ([f"hist_{i}.pth" for i in range(40)]
             + ["scripted:Rusher", "scripted:Defender", "scripted:Cycler",
                "scripted:Counter"]
             + ["builtin:heuristic@1.00", "builtin:heuristic@1.50"])
-    # A trainee that crushes most of the pool -- the regime where the floors
-    # are load-bearing and a missing floor would show as a starved opponent.
+    # A trainee that crushes most of the pool: the regime where the floors
+    # matter.
     stats = {p: 0.98 for p in pool}
     stats["hist_0.pth"] = 0.10
     stats["scripted:Defender"] = 0.99
@@ -137,9 +111,8 @@ def validate_pfsp(trials=200000):
     draws = rng.choice(len(pool), size=trials, p=expect)
     got = np.bincount(draws, minlength=len(pool)) / trials
 
-    # Chi-square against the spec. Not a tolerance pulled from the air: with
-    # 200k draws the sampling error on each cell is ~0.1%, so a real routing
-    # bug is orders of magnitude outside it.
+    # Chi-square against the spec; with 200k draws a routing bug is orders of
+    # magnitude outside sampling error.
     chi = float(np.sum((got - expect) ** 2 / np.maximum(expect, 1e-12)) * trials)
     dof = len(pool) - 1
     check("sampler matches (1-winrate)^2 spec",
@@ -150,8 +123,8 @@ def validate_pfsp(trials=200000):
           f"min share {expect.min():.5f} over {len(pool)} members")
 
     d_share = sum(expect[pool.index(p)] for p in scripted_opponents.DEFENSIVE_SCRIPTED_OPPONENTS)
-    # The measured reason this floor exists: at 0.20 the two defensive bots got
-    # ~7.7% combined in a ~98-member pool, which is statistically invisible.
+    # Without the floor, the two defensive bots are a statistically invisible
+    # share of a large pool.
     check("defensive scripted bots keep a real share",
           d_share > 0.15, f"combined {d_share:.1%} (floor {scripted_opponents.DEFENSIVE_SCRIPTED_MIN_WEIGHT})")
 
@@ -161,14 +134,10 @@ def validate_pfsp(trials=200000):
           weak > mastered, f"{weak:.4f} vs {mastered:.4f}")
 
 
-# ----------------------------------------------------- 2. scenario injection --
+# --- 2. scenario injection ---
 def validate_scenarios(n=4000):
-    """Every scenario must produce a board that is genuinely threatening.
-
-    The point of injection is that "defend or lose the tower in ~40 ticks" is
-    rare and its causal link is buried in a long GAE trace. A scenario that
-    spawns nothing near our side would train the reflex on a board where the
-    reflex is not needed, which is worse than not injecting at all.
+    """Every scenario must produce a genuinely threatening board; one that spawns
+    nothing near our side trains the defence reflex where it is not needed.
     """
     banner("2. Scenario injection")
     rng = np.random.default_rng(1)
@@ -189,44 +158,29 @@ def validate_scenarios(n=4000):
 
     check("every scenario spawns on the board with a real card",
           bad_spawn == 0, f"{bad_spawn} bad spawns in {n} scenarios")
-    # Label deliberately count-free: the predicate is derived from
-    # len(scenarios.SCENARIOS), so a hardcoded number in the NAME goes stale the moment
-    # a scenario is added or removed and then reads as a failure when the check
-    # is actually passing. It said "all five" while printing 4/4 on the run that
-    # removed giant_commit.
+    # Count-free label: the predicate derives from len(scenarios.SCENARIOS).
     check("every registered scenario is reachable",
           len(names) == len(scenarios.SCENARIOS),
           f"{len(names)}/{len(scenarios.SCENARIOS)}: {dict(names)}")
     check("defensive scenarios are a real fraction",
           0.2 < defensive / n < 0.8, f"{defensive / n:.1%} defensive")
 
-    # Now the part that actually matters: play each scenario into the engine and
-    # check the board it produces against that scenario's OWN contract.
+    # Play each scenario into the engine and check the board against its own
+    # contract:
     #
-    # These are three different contracts and an earlier version of this check
-    # collapsed them into one, then failed 15/32 against correct code:
+    #   bridge_push*          spawns at the river, not yet across, so threat_level (our half only) is legitimately 0; a push must be approaching (threat_lane)
+    #   fireball_swarm        spawns inside our half, so it must register on threat_level
+    #   fireball_tower_value  spawns at the enemy tower and is not defensive: nothing may threaten us, or ScenDef inflates for doing nothing
     #
-    #   bridge_push*        spawns AT the river, so by construction it has not
-    #                       crossed yet -- threat_level counts our half ONLY and
-    #                       is legitimately 0. What must hold is that a push is
-    #                       APPROACHING, which is what threat_lane reads.
-    #   fireball_swarm      spawns at y=12, already inside our half, so this one
-    #                       really must register on threat_level.
-    #   fireball_tower_value  spawns at the ENEMY tower and is deliberately NOT
-    #                       defensive. Its contract is the opposite: nothing may
-    #                       threaten us, because scoring it as a defense would
-    #                       inflate ScenDef toward 1.0 for doing nothing.
-    #
-    # Committed with the same single no-op tick the trainer uses -- inject_enemy
-    # only QUEUES units, and a different warmup here would measure a different
-    # board than training sees.
+    # Committed with the same single no-op tick the trainer uses, since
+    # inject_enemy only queues units.
     noop_w = CE.HAND_SIZE
     seen = Counter()
     bad = []
     for _ in range(120):
         sc = scenarios.sample_scenario(rng)
         if not sc["spawns"]:
-            continue                       # giant_commit spawns nothing by design
+            continue                       # a scenario may spawn nothing by design
         env = CE(DECK, DECK, 3600)
         env.reset()
         for card_id, x, y in sc["spawns"]:
@@ -255,15 +209,14 @@ def validate_scenarios(n=4000):
                    f"{len(bad)} violations" + (f": {bad[:3]}" if bad else ""))
 
 
-# -------------------------------------------------- 3. advisor targeting -----
+# --- 3. advisor targeting ---
 def validate_advisor(episodes=40):
     """The advisor target at scale, on states the policy actually visits.
 
-    Three separate claims, because they fail independently:
-      * legality  -- a target may never put mass on a cell the engine refuses
-      * the gate  -- it must DECLINE on quiet boards, or it teaches a constant
-      * value     -- the advisor's cell must beat a random legal cell by the
-                     ENGINE's own scoring, or it is not a target worth chasing
+    Three claims that fail independently:
+      * legality: no mass on a cell the engine refuses
+      * the gate: it must decline on quiet boards, or it teaches a constant
+      * value: reported, not asserted (see below)
     """
     banner("3. Advisor targeting (engine-scored)")
     net = MicroRoyaleNet(num_ability_slots=0)
@@ -297,19 +250,16 @@ def validate_advisor(episodes=40):
                 if t is None:
                     continue
                 spoke += 1
-                # Legality is checked against the ENGINE, on the same subsample
-                # cadence as the value probe below -- see
-                # cells_the_engine_refuses for why the previous in-loop check
-                # could not fail. Sub-sampled because it costs one pybind call
-                # per finite cell (~half the board) per card, which every state
-                # would not survive.
+                # Legality against the engine (see cells_the_engine_refuses),
+                # subsampled: one pybind call per finite cell per card is too
+                # slow for every state.
                 if _t % 40 == 0:
                     checked += 1
                     if cells_the_engine_refuses(env, cid, t):
                         illegal += 1
 
-            # Engine-scored, on a subsample: injection costs no elixir, so the
-            # rest of the match is untouched and the two arms see one state.
+            # Engine-scored on a subsample: injection is free, so both arms see
+            # one state.
             if _t % 40 == 0:
                 lc = np.flatnonzero(legal[tactics.CANNON_ID])
                 lf = np.flatnonzero(legal[tactics.FIREBALL_ID])
@@ -337,38 +287,22 @@ def validate_advisor(episodes=40):
     check("no target puts mass on a cell the ENGINE refuses", illegal == 0,
           f"{illegal} violations over {checked} engine-checked targets "
           f"({spoke} targets / {n_states} states)")
-    # A denominator of zero would make the line above pass for the worst
-    # possible reason, so it is asserted rather than assumed.
+    # A zero denominator would pass the line above vacuously.
     check("the engine legality probe actually ran", checked > 0,
           f"{checked} targets checked against the engine")
     check("the gate declines on an empty board", quiet_spoke == 0,
           f"{quiet_spoke}/{quiet_states} quiet states produced a target")
-    # Denominator is state x CARD, not state: three cards are queried per state,
-    # so dividing by states alone reported 276% of states, which is not a rate.
+    # Denominator is state x card: three cards are queried per state.
     opportunities = max(1, n_states * len(AT.ADVISOR_CARDS))
     check("the advisor speaks often enough to train on",
           spoke / opportunities > 0.15,
           f"{spoke / opportunities:.1%} of state x card opportunities "
           f"({spoke} targets over {n_states} states)")
 
-    # --- VALUE is reported, NOT asserted, and that is deliberate -------------
-    # An earlier version of this check FAILED on the Cannon (advisor -16.8 HP vs
-    # random 117.2, n=28) and the failure was the harness, not the advisor.
-    # Two reasons, both disqualifying:
-    #
-    #   * n=28. CLAUDE.md's own recurring lesson is that this project's control
-    #     arms swing wider than its treatments; a 28-sample verdict on a
-    #     zero-inflated score is noise with a sign attached.
-    #   * The states come from a NO-OP-ONLY rollout, because this function walks
-    #     the board without a policy. Nobody ever defends, so by the time the
-    #     Cannon is scored the board is already lost and one building anywhere
-    #     changes little. That is not the distribution the advisor is used on.
-    #
-    # The advisor-vs-random claim is established properly by prove_placement.py
-    # -- states drawn by a real reference policy, gated on `threat > 0`, paired
-    # bootstrap CI and an exact sign test, n = 894 (Cannon) and 1937 (Fireball).
-    # Re-deciding it here on 28 samples would add noise, not information, so
-    # this prints the numbers and leaves the verdict to the harness built for it.
+    # Value is reported, not asserted. These states come from a no-op-only
+    # rollout where nobody defends, not the distribution the advisor is used
+    # on, and the sample is small. prove_placement.py establishes the
+    # advisor-vs-random claim properly.
     for label, adv, rnd, unit in (("Cannon", adv_c, rnd_c, "HP"),
                                   ("Fireball", adv_f, rnd_f, "elixir")):
         if not adv:
@@ -379,14 +313,10 @@ def validate_advisor(episodes=40):
               f"-- UNDERPOWERED, see prove_placement.py", flush=True)
 
 
-# ----------------------------------------------------- 4. search mechanics ---
+# --- 4. search mechanics ---
 def validate_search(iters=400):
-    """Snapshot/step/scoring costs, against the numbers the design rests on.
-
-    CLAUDE.md's case for decision-time search is that the ENGINE is ~150x
-    cheaper than the network that scores it (0.34 ms per 20-tick rollout vs
-    50.51 ms per forward). If that ratio ever inverts, the whole "simulation is
-    free, scoring is the budget" argument goes with it.
+    """Snapshot/step/scoring costs, against what the search design rests on: the
+    engine must stay far cheaper than the network that scores it.
     """
     banner("4. Decision-time search mechanics")
     env = CE(DECK, DECK, 3600)
@@ -422,8 +352,8 @@ def validate_search(iters=400):
     check("K=12 sweep at a 2s horizon is far below one net forward",
           k12 < fwd_ms, f"sweep {k12:.2f} ms vs one forward {fwd_ms:.2f} ms")
 
-    # The aliasing hazards the snapshot design exists to avoid. Both are silent
-    # failures -- wrong numbers, not crashes -- so they need explicit checks.
+    # The snapshot's aliasing hazards; both are silent wrong numbers, not
+    # crashes.
     a = env.snapshot()
     before_live = env.get_troop_damage_dealt(0)
     for _ in range(20):
@@ -436,9 +366,9 @@ def validate_search(iters=400):
           f"snapshot {a.get_troop_damage_dealt(0)} vs live {before_live}")
 
 
-# ------------------------------------------------- 5. the spell-value anneal --
+# --- 5. the spell-value anneal ---
 def validate_spell_anneal():
-    """The bug fixed today, pinned end to end rather than by unit test alone."""
+    """The spell-value anneal, pinned end to end."""
     banner("5. Spell-value shaping anneal")
     w0 = shaping.spell_value_weight(0)
     wmid = shaping.spell_value_weight(weights.SPELL_VALUE_ANNEAL_EPISODES // 2)
@@ -453,9 +383,8 @@ def validate_spell_anneal():
         "team1_building_damage", "team0_tower_damage", "team1_tower_damage",
         "team0_elixir_spent", "team1_elixir_spent", "spell_in_hand",
         "spell_value_killed", "spell_elixir_spent")}
-    # A FIXTURE 4-cost spell, whatever the training deck holds: this check pins
-    # the anneal's wiring, not the deck (a spell-less deck zeroes the term, and
-    # would make "responds to the weight" fail for a reason that is not a bug).
+    # A fixture 4-cost spell whatever the deck holds: this checks the anneal's
+    # wiring, and a spell-less deck would zero the term.
     base["spell_damage"] = np.array([689.0], dtype=np.float32)
     base["spell_cost"] = np.array([4.0], dtype=np.float32)
     base["team0_elixir_current"] = np.array([7.0], dtype=np.float32)
@@ -473,20 +402,14 @@ def validate_spell_anneal():
           f"shaping {hot:.5f} at w={w0} vs {cold:.5f} at w={wend}")
 
 
-# --------------------------------------------------------- 6. the side null --
+# --- 6. the side null ---
 def validate_side_null(net_path, episodes=300):
-    """A policy against a BIT-EXACT copy of itself must score ~0.50 as team 0.
+    """A policy against a bit-exact copy of itself must score ~0.50 as team 0.
 
-    The single most valuable diagnostic this project has. It is the only one
-    that catches an observation-shaped fault: on 2026-07-31 it read 0.598 while
-    win rate, reward, entropy, aux MAE and explained variance all looked
-    healthy, because the trainee is always team 0 and every opponent was
-    playing blind.
-
-    Worth re-running after ANY change to the observation, the board, or
-    stepSelfPlay. Today's changes touch none of those, so this is a regression
-    check -- which is exactly when a cheap, high-sensitivity test earns its
-    place.
+    The only diagnostic that catches an observation-shaped fault: the trainee
+    is always team 0, so a blind opponent looks healthy in every training
+    metric. Re-run after any change to the observation, the board or
+    stepSelfPlay.
     """
     banner("6. Side null (policy vs a bit-exact copy of itself)")
     dev = torch.device("cpu")
@@ -495,12 +418,8 @@ def validate_side_null(net_path, episodes=300):
         a = load_net(net_path, dev, verbose=False)
         b = load_net(net_path, dev, verbose=False)
     else:
-        # NO CHECKPOINT IS NOT A REASON TO SKIP THIS. It used to FAIL with
-        # "missing", and the checkpoint it wanted was deleted on 2026-08-19, so
-        # the one side-asymmetry detector this project has was unrunnable for
-        # weeks. A seeded random-init net against a bit-exact copy of itself is
-        # a SHARPER subject: an untrained policy has no side-specific skill, so
-        # any deviation from 0.50 is structural.
+        # Without a checkpoint, use a seeded random-init net: it has no
+        # side-specific skill, so any deviation from 0.50 is structural.
         from python_ai.deck import DEFAULT_DECK
         from python_ai.envs.gym_wrapper import DEFAULT_DECK_ABILITY_SLOTS
         from python_ai.models.net import MicroRoyaleNet
@@ -517,9 +436,8 @@ def validate_side_null(net_path, episodes=300):
     def act(net_, team, env, hid):
         """Greedy (card, cell) for one team, and the advanced hidden state.
 
-        ONE LSTM step per team per environment step. Stepping it once per query
-        would run the policy at double clock and match neither side's training
-        conditions -- the trap prove_placement.step_net documents.
+        One LSTM step per team per environment step (see
+        prove_placement.step_net).
         """
         obs = torch.tensor(
             np.asarray(env.get_observation_for_team(team),
@@ -540,22 +458,15 @@ def validate_side_null(net_path, episodes=300):
         ha = (torch.zeros(1, 256), torch.zeros(1, 256))
         hb = (torch.zeros(1, 256), torch.zeros(1, 256))
         for _t in range(400):
-            # Both teams decide from the SAME board state, then the engine
-            # applies both in one call. Deciding for team 0, stepping, and only
-            # then deciding for team 1 would give team 1 a fresher board -- a
-            # side asymmetry manufactured by the harness, in a test whose whole
-            # purpose is detecting side asymmetry.
+            # Both teams decide from the same board, then the engine applies
+            # both; deciding sequentially would hand team 1 a fresher board.
             g0, x0, y0, ha = act(a, 0, env, ha)
             g1, x1, y1, hb = act(b, 1, env, hb)
             r = env.step_self_play(g0, x0, y0, g1, x1, y1, 10)
             if r.done:
                 break
-        # TimeoutRules' full verdict, not tower count alone. Count-only scoring
-        # dumped every equal-count finish into `draws`, and a draw contributes
-        # exactly 0.5 to the score either way -- so a genuine side advantage
-        # that showed up as "team 0 usually ends with a healthier weakest
-        # tower" was absorbed instead of detected, in the one test whose whole
-        # purpose is detecting side asymmetry. Strictly more sensitive.
+        # TimeoutRules' full verdict: count-only scoring turns equal-count
+        # finishes into draws and hides a weakest-tower advantage.
         s = match_outcome.score_from_towers(env, 0)
         if s > 0.5:
             wins += 1
@@ -568,29 +479,19 @@ def validate_side_null(net_path, episodes=300):
     score = (wins + 0.5 * draws) / episodes
     se = (0.25 / episodes) ** 0.5
     z = (score - 0.5) / se
-    # +-3 sigma. The 2026-07-31 fault sat at z = +3.90, so this window catches
-    # a real side asymmetry while tolerating ordinary sampling noise.
+    # +-3 sigma: catches a real side asymmetry while tolerating sampling noise.
     check("team 0 has no side advantage against itself", abs(z) < 3.0,
           f"score {score:.3f} over {episodes} eps, z = {z:+.2f}")
 
 
-# --------------------------------------------------------- 7. the C++ suite --
-#: Where to look for ClashRoyaleTests.exe, in preference order. `build_python`
-#: is the LIVE directory -- it is what both the .pyd and the Catch2 suite are
-#: built from (CLAUDE.md's toolchain box). The other two are leftovers that at
-#: least one machine still carries.
-#:
-#: This used to walk `build_test` ONLY, and on 2026-08-20 that directory held a
-#: binary 18 h older than the engine it claimed to cover: the gate reported a
-#: green "546 test cases / 5,316 assertions" and PASSED, while the current
-#: binary reports 582 / 5,737 with one [!shouldfail] case. It was measuring the
-#: pre-audit engine. A green suite is not evidence it was the RIGHT suite, so
-#: the binary's IDENTITY is now checked alongside its exit code.
+# --- 7. the C++ suite ---
+# Where to look for ClashRoyaleTests.exe, in preference order. `build_python`
+# is the live directory the .pyd and the suite are built from. A green run of a
+# stale binary proves nothing, so the binary's identity is checked alongside
+# its exit code.
 CPP_BUILD_DIRS = ("build_python", "build", "build_test")
 
-#: Source trees whose newest mtime the test binary must post-date. A binary
-#: older than the code it links is the stale-glob trap wearing another costume,
-#: and it fails silently in the direction of false confidence.
+#: Source trees whose content the test binary must post-date.
 CPP_SOURCE_DIRS = ("include", "src", "tests")
 
 
@@ -605,13 +506,12 @@ def _newest_source_mtime():
 
 
 def _sources_changed_since(built, root=None):
-    """Engine sources whose CONTENT changed after `built` (a POSIX mtime).
+    """Engine sources whose content changed after `built` (a POSIX mtime).
 
-    MTIME ALONE CRIES WOLF. On 2026-09-15 tooling rewrote six headers byte for
-    byte; `git status` was clean, the .pyd was verified current behaviourally,
-    and this gate still FAILED. A file therefore counts only if it is newer than
-    the build AND either differs from HEAD (an uncommitted edit) or was last
-    committed after the build. Falls back to mtime when git is unavailable.
+    Mtime alone gives false alarms (tooling can rewrite a file byte for byte),
+    so a file counts only if it is newer than the build and either differs from
+    HEAD, is untracked, or was last committed after the build. Falls back to
+    mtime when git is unavailable.
     """
     root = root or python_ai.REPO_ROOT
     changed = []

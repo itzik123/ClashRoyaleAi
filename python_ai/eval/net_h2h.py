@@ -1,27 +1,13 @@
-"""Head-to-head self-play between two nets, with the sides SWAPPED.
+"""Head-to-head between two nets, with the sides swapped.
 
-    python_ai/venv/Scripts/python.exe python_ai/net_h2h.py \
+    python_ai/venv/Scripts/python.exe python_ai/eval/net_h2h.py \
         --a model_weights_selfplay.pth --b model_weights_cured.pth --n 150
 
-WHY THIS EXISTS, and it is a disambiguation not a victory lap. `net_ab.py`
-measured the cured net 11 points BELOW v1.2.0 against the C++ HeuristicOpponent.
-But the cured net spent 13,961 episodes in a PFSP league whose members are all
-neural, so "worse against the heuristic" has two very different explanations:
-
-    degradation    the net is simply weaker, and the heuristic reveals it
-    specialization the net got better at the opponents it actually trained
-                   against, and the heuristic is out-of-distribution
-
-Only a neural opponent separates those. If B beats A head-to-head while losing
-to the heuristic, it is specialization; if B loses both, it is degradation.
-
-SIDES ARE SWAPPED and each pairing played twice, because a policy beating a
-bit-exact copy of itself measured 0.598 once purely by side assignment (the
-2026-07-31 observation bug). It reads 0.530 today, which is small but not zero,
-and a one-sided head-to-head would fold it straight into the result.
-
-`stepSelfPlay` deliberately never calls `opponentTurn()`, so the C++ heuristic
-does not run here at all -- this is purely net vs net.
+Separates degradation from specialization when a league-trained net scores
+worse against the C++ heuristic: if B beats A head-to-head while losing to the
+heuristic, it specialized; if it loses both, it degraded. Each pairing is
+played from both sides, since side assignment alone can bias a one-sided
+result. stepSelfPlay never runs the heuristic, so this is purely net vs net.
 """
 import argparse
 import os
@@ -30,9 +16,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -43,14 +27,6 @@ from python_ai.models.policy_io import load_net  # noqa: E402
 from python_ai.envs.gym_wrapper import DEFAULT_DECK  # noqa: E402
 from python_ai.eval.match_outcome import score_from_towers  # noqa: E402
 from python_ai.engine_constants import BOARD_W  # noqa: E402
-
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks and
-# this project has now found eight times. If the grid ever changes, the net
-# decodes correctly and these scripts silently feed the engine transposed
-# coordinates.
 
 CE = E.ClashRoyaleEnv
 
@@ -73,15 +49,14 @@ def duel(net0, net1, env, max_steps=400):
     h0 = (torch.zeros(1, 256), torch.zeros(1, 256))
     h1 = (torch.zeros(1, 256), torch.zeros(1, 256))
     for _ in range(max_steps):
-        # Both decide from the SAME board, then the engine applies both.
+        # Both decide from the same board, then the engine applies both.
         g0, x0, y0, h0 = act(net0, env, 0, h0)
         g1, x1, y1, h1 = act(net1, env, 1, h1)
         r = env.step_self_play(g0, x0, y0, g1, x1, y1, 10)
         if r.done:
             break
-    # Tower COUNT alone used to decide this, which called every equal-count
-    # finish a draw and ignored TimeoutRules' weakest-tower tie-break entirely.
-    # See match_outcome.py.
+    # Scored by TimeoutRules, including the weakest-tower tie-break; see
+    # match_outcome.py.
     return score_from_towers(env, 0)
 
 
@@ -109,7 +84,7 @@ def main():
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), 3600)
         root.reset()
         base = root.snapshot()
-        # B on team 0, then B on team 1, from the SAME opening.
+        # B on team 0, then B on team 1, from the same opening.
         b_as_0 = duel(B, A, base.snapshot())
         a_as_0 = duel(A, B, base.snapshot())
         scores.append(0.5 * (b_as_0 + (1.0 - a_as_0)))

@@ -1,11 +1,4 @@
-"""The spell-value anneal and the advisor-targeted coverage term.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""The spell-value anneal and the advisor-targeted coverage term."""
 import os
 import sys
 
@@ -48,76 +41,53 @@ from python_ai.tests.helpers import (  # noqa: E402
 )
 
 
-# ==========================================================================
-# The spell-value anneal, and the advisor-targeted coverage term
-# ==========================================================================
-# Two changes made 2026-08-14, both GAMEPLAY-AFFECTING.
-#
-# 1. `spell_value_weight` was dead code: both trainers called
-#    `compute_shaping(...)` without `w_spell`, so the Fireball-value weight sat
-#    at W_SPELL_VALUE_START for the whole of training and the anneal its own
-#    comment block describes never ran. It is wired in now.
-#
-# 2. The placement COVERAGE term was pure entropy -- "be spread out" -- and a
-#    distilled placement map is exactly what that flattens. Coverage now
-#    carries the advisor's own score map as a TARGET wherever the advisor has
-#    something to say, and falls back to the entropy bonus where it does not.
+# --- the spell-value anneal and the advisor-targeted coverage term ---
+# Coverage carries the advisor's score map as a TARGET where the advisor has
+# something to say, and falls back to the entropy bonus where it does not.
 
 from python_ai.advisors import advisor_target as AT  # noqa: E402
 from python_ai.rewards import shaping as train_shaping  # noqa: E402
 from python_ai.rewards import weights as train_weights  # noqa: E402
 from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 
-#: The discount these arithmetic tests are written against. Deliberately a
-#: FIXED fixture value and NOT `PPOConfig.gamma`: these cases assert exact
-#: numbers out of `gamma*Phi(s') - Phi(s)`, so reading the live config would
-#: make their expected values move every time someone tunes the discount --
-#: a test that changes its own answer cannot pin anything. The separate
-#: question of whether the TRAINER passes its real gamma is pinned by
-#: tests/test_rl_config.py and tests/test_reward_horizon_invariant.py.
+#: A fixed fixture value, not PPOConfig.gamma: these cases assert exact numbers
+#: out of gamma*Phi(s') - Phi(s). Whether the trainer passes its real gamma is
+#: pinned in test_rl_config.py and test_reward_horizon_invariant.py.
 SHAPING_TEST_GAMMA = 0.99
 
 
 
 def test_spell_value_weight_anneals_from_start_to_final():
-    """The schedule the docstring always claimed, now actually reachable."""
+    """The schedule runs from START to FINAL."""
     assert train_shaping.spell_value_weight(0) == pytest.approx(train_weights.W_SPELL_VALUE_START)
     end = train_weights.SPELL_VALUE_ANNEAL_EPISODES
     assert train_shaping.spell_value_weight(end) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
     assert train_shaping.spell_value_weight(end * 10) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
-    # Monotone in between, and strictly decreasing end to end.
+    # Monotone in between, strictly decreasing end to end.
     xs = [train_shaping.spell_value_weight(int(end * f)) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
     assert all(a >= b for a, b in zip(xs, xs[1:])), xs
     assert xs[0] > xs[-1]
 
 
 def test_spell_value_weight_respects_the_start_offset():
-    """Why the offset exists: a warm-start resumes PAST the anneal horizon.
-
-    `model_weights_selfplay.pth` is at episode 64,309 against a 40,000-episode
-    horizon, so a faithful wiring pins the weight at FINAL for the whole of any
-    resumed run -- correct by the schedule, but it means the anneal can never be
-    observed, and Phase 4 has to prove it happens. The offset slides the
-    schedule onto the run that is actually being performed. With the default
-    offset of 0 the behaviour is exactly the original intent.
+    """The offset slides the schedule onto the run being performed, so a
+    warm-start resumed past the horizon still sees the anneal. Offset 0 is the
+    plain schedule.
     """
     end = train_weights.SPELL_VALUE_ANNEAL_EPISODES
     w = train_shaping.spell_value_weight
     assert w(1000, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_START)
     assert w(1000 + end, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_FINAL)
-    # Before the offset the term is still at full strength, never extrapolated
-    # past START.
+    # Before the offset the term is at full strength, never extrapolated past
+    # START.
     assert w(0, start=1000) == pytest.approx(train_weights.W_SPELL_VALUE_START)
 
 
 
 
 def test_compute_shaping_actually_responds_to_w_spell():
-    """The regression that let the dead code hide.
-
-    Nothing detected `w_spell` being unreachable because no test ever varied
-    it. This one does: a two-for-one Fireball must be worth strictly more at
-    weight START than at weight 0.
+    """A two-for-one Fireball must be worth strictly more at weight START than at
+    0; nothing else varies `w_spell`.
     """
     cur, prev = shaping_stats(fireball_killed=8.0)
     hot = train_shaping.compute_shaping(cur, prev, SHAPING_TEST_GAMMA, w_spell=train_weights.W_SPELL_VALUE_START)
@@ -143,12 +113,8 @@ def _clump_obs(card=41, x=6.0, y=12.0):
 
 
 def test_advisor_has_nothing_to_say_on_an_empty_board(net, fresh_obs):
-    """THE GATE, and the reason this is not just distillation-in-the-loop.
-
-    With no threat the advisor still returns a cell -- the defensive pocket for
-    a building, an arbitrary tie-broken lane for the Giant. Training on those
-    teaches a CONSTANT, which is the exact failure this workstream exists to
-    undo. `target_logits_for` must decline instead.
+    """The gate: with no threat the advisor still returns a cell, and training on
+    it teaches a constant. `target_logits_for` must decline instead.
     """
     _env, obs = fresh_obs
     obs = np.asarray(obs, dtype=np.float32)
@@ -160,10 +126,9 @@ def test_advisor_has_nothing_to_say_on_an_empty_board(net, fresh_obs):
 def test_advisor_target_never_puts_mass_on_an_illegal_cell(net):
     """-inf on every illegal cell, for every card.
 
-    A finite floor would leave real probability mass on a cell the engine
-    refuses. The converse does NOT hold and must not be asserted: a "cell"-kind
-    rule (the Giant) is a delta, so it is legitimately -inf on legal cells too.
-    Only the map-backed kinds are finite across the legal set.
+    The converse is not asserted: a "cell"-kind rule is a delta, legitimately
+    -inf on legal cells too. Only map-backed kinds are finite across the legal
+    set.
     """
     obs = _clump_obs()
     spoke = 0
@@ -171,11 +136,8 @@ def test_advisor_target_never_puts_mass_on_an_illegal_cell(net):
         legal = net._placement_legal[cid].numpy().astype(bool)
         t = AT.target_logits_for(obs, cid, legal)
         if t is None:
-            # A gated rule declining to speak is the DESIGNED behaviour, not a
-            # failure: the win condition refuses to commit into an active push,
-            # and _clump_obs() is exactly that board. Asserting `is not None`
-            # for every card would forbid the gate this file elsewhere calls
-            # load-bearing.
+            # A gated rule declining is designed behaviour: the win condition
+            # refuses to commit into an active push, which is this board.
             continue
         spoke += 1
         assert t.shape == (net.placement_cells,)
@@ -183,13 +145,12 @@ def test_advisor_target_never_puts_mass_on_an_illegal_cell(net):
         assert np.isfinite(t).any(), cid
         if kind in ("building", "spell"):
             assert np.all(np.isfinite(t[legal])), cid
-    # ...but "every rule declined" would pass vacuously, so require that the
-    # board still produced at least one target.
+    # "Every rule declined" would pass vacuously.
     assert spoke > 0, "no advisor spoke on a board with a live threat"
 
 
 def test_advisor_spell_target_peaks_where_the_advisor_aims(net):
-    """The distilled surface and the played cell must be the same object."""
+    """The distilled surface and the played cell must agree."""
     obs = _clump_obs()
     legal = net._placement_legal[tactics.FIREBALL_ID].numpy().astype(bool)
     t = AT.target_logits_for(obs, tactics.FIREBALL_ID, legal)
@@ -200,25 +161,16 @@ def test_advisor_spell_target_peaks_where_the_advisor_aims(net):
 
 
 def _hog_commit_obs():
-    """A quiet board where the win-condition gate OPENS.
+    """A quiet board where the win-condition gate opens: our half clear, us
+    solvent past the Cannon reserve, the opponent not banked.
 
-    Needs all three conditions at once: our half clear, us solvent past the
-    Cannon reserve, and the opponent not banked. Those cannot be arranged by
-    STEPPING -- idling to 9 elixir also banks the opponent to 10 and closes the
-    third condition -- so the elixir scalar is written directly on a fresh
-    board, which keeps time (and therefore the opponent's estimate) at its
-    opening value.
-
-    Deliberately not env.set_elixir_for_team: that binding exists only in the
-    current build, and python_ai/ holds the stale .pyd whenever the post-build
-    copy was blocked by a running trainer.
+    Stepping cannot arrange it (idling to 9 elixir also banks the opponent), so
+    the elixir scalar is written directly on a fresh board.
     """
     env = E.ClashRoyaleEnv(gym_wrapper.DEFAULT_DECK, gym_wrapper.DEFAULT_DECK, 3600)
     env.reset()
-    # One enemy, deep on THEIR half. Needed because the rule declines when the
-    # board is completely empty -- with no enemy anywhere the "weaker lane" is
-    # undefined and the tiebreak would emit a fixed cell. Placed at y=25 so it
-    # is visible to the lane read without counting as a threat on our half.
+    # One enemy deep on their half: with an empty board the "weaker lane" is
+    # undefined and the rule declines.
     env.inject(6, 13.0, 25.0, 1)
     env.step_self_play(4, 0.0, 0.0, 4, 0.0, 0.0, 1)   # inject lands on the tick
     obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32).copy()
@@ -227,11 +179,8 @@ def _hog_commit_obs():
 
 
 def test_advisor_wincon_target_is_a_delta_and_its_kl_is_cross_entropy(net):
-    """The Hog rule yields a CELL, not a surface, so its target is a delta.
-
-    Encoding it as a delta keeps one code path for every card: masked_kl
-    against a delta is exactly cross-entropy to that cell, so the trainers need
-    no separate hard-label branch.
+    """The Hog rule yields a cell, so its target is a delta; masked_kl against a
+    delta is exactly cross-entropy, so the trainers need no hard-label branch.
     """
     obs = _hog_commit_obs()
     legal = net._placement_legal[tactics.HOG_ID].numpy().astype(bool)
@@ -250,13 +199,9 @@ def test_advisor_wincon_target_is_a_delta_and_its_kl_is_cross_entropy(net):
 
 
 def test_advisor_standardization_matches_the_offline_harness(net):
-    """One definition of "score map -> target logits", provable, not asserted.
-
-    `advisor_target._standardize` is a numpy re-implementation of
-    `prove_hires.soft_target_logits` rather than an import of it, deliberately:
-    importing the offline harness would pull `expert_iteration` into the
-    trainers' rollout path. That is exactly the second-copy drift CLAUDE.md
-    forbids, so it is pinned here instead of trusted.
+    """`advisor_target._standardize` re-implements
+    `prove_hires.soft_target_logits` rather than importing it (that would pull
+    expert_iteration into the rollout path), so the two are pinned equal here.
     """
     from python_ai.eval.prove_hires import soft_target_logits
 
@@ -272,13 +217,9 @@ def test_advisor_standardization_matches_the_offline_harness(net):
 
 
 def test_cannon_target_stays_broader_than_the_spell_target(net):
-    """The Cannon's argmax is row-major noise off a tie plateau (handoff 2.3).
-
-    So its target must keep the plateau's mass spread rather than committing to
-    one arbitrary cell. Measured there: temperature cannot push the Cannon
-    target below ~66% of maximum entropy while Fireball reaches ~41%. This pins
-    the ORDERING, which is a property of the two surfaces rather than of the
-    temperature.
+    """The Cannon's argmax is noise off a tie plateau, so its target must stay
+    broader than Fireball's. This pins the ordering, a property of the surfaces
+    rather than of the temperature.
     """
     obs = _clump_obs(card=2, x=9.0, y=13.0)      # a Giant: one big body, real threat
     ents = {}
@@ -296,7 +237,7 @@ def test_cannon_target_stays_broader_than_the_spell_target(net):
 # --- the coverage loss itself ----------------------------------------------
 
 def test_elementwise_kl_averages_to_the_scalar_one():
-    """masked_kl_elementwise must be masked_kl without the mean, exactly."""
+    """masked_kl_elementwise is masked_kl without the mean."""
     torch.manual_seed(3)
     new = torch.randn(7, 40)
     tgt = torch.randn(7, 40)
@@ -315,10 +256,8 @@ def _coverage_fixture(n=6, cells=612):
 
 
 def test_with_no_advisor_target_coverage_is_exactly_the_old_entropy_bonus():
-    """The fallback path must be the term it replaces, to the bit.
-
-    Whatever else changes, a state the advisor declines has to behave the way
-    v1.2.0 behaved, or the control arm of the A/B is not a control.
+    """A state the advisor declines must get exactly the entropy bonus it
+    replaced, or the A/B's control arm is not a control.
     """
     logits, targets, decision = _coverage_fixture()
     has = torch.zeros(len(decision))
@@ -332,8 +271,9 @@ def test_with_no_advisor_target_coverage_is_exactly_the_old_entropy_bonus():
 
 
 def test_a_row_gets_the_target_or_the_entropy_bonus_but_never_both():
-    """THE RESOLUTION. Entropy flattens, KL concentrates; one row cannot want
-    both. Rows split cleanly, and each denominator counts only its own rows."""
+    """Entropy flattens and KL concentrates, so a row gets one or the other, and
+    each denominator counts only its own rows.
+    """
     logits, targets, decision = _coverage_fixture(n=4)
     has = torch.tensor([1.0, 1.0, 0.0, 0.0])
     _, ent_frac, kl, n = AT.coverage_terms(
@@ -349,11 +289,8 @@ def test_a_row_gets_the_target_or_the_entropy_bonus_but_never_both():
 
 
 def test_the_advisor_term_never_reaches_the_chosen_action(fixture_net=None):
-    """Same property the entropy coverage term has, and for the same reason.
-
-    The coverage pass scores a card that was AFFORDABLE, not the one that was
-    CHOSEN, so nothing it does may reach the chosen action's log-prob or the
-    critic. If it did, it would silently corrupt the quantity PPO clips.
+    """The coverage pass scores an affordable card, not the chosen one, so it must
+    not reach the chosen action's log-prob or the critic.
     """
     net, obs_seq, feats_seq, embeds_seq, spatial_seq, card_mask, resets, hidden, hand = chunk_fixture()
     chosen = torch.zeros(L, B, dtype=torch.long)
@@ -377,13 +314,8 @@ def test_the_advisor_term_never_reaches_the_chosen_action(fixture_net=None):
 
 
 def test_one_step_of_the_advisor_term_moves_the_head_toward_the_advisor():
-    """The end-to-end claim: this term is a TARGET, not just noise.
-
-    Optimizing the coverage loss alone must reduce the distance between the
-    head's argmax cell and the advisor's own cell. Entropy cannot do this by
-    construction -- it is a marginal objective with no opinion about which cell
-    is right in which state -- so this is the property that separates the fix
-    from the measured-insufficient version it replaces.
+    """Optimizing the coverage loss alone moves the head's argmax toward the
+    advisor's cell; entropy, a marginal objective, cannot.
     """
     from python_ai.models.net import MicroRoyaleNet
 
@@ -393,12 +325,8 @@ def test_one_step_of_the_advisor_term_moves_the_head_toward_the_advisor():
     legal_table = AT.build_legal_table(n)
     cid = tactics.FIREBALL_ID
 
-    # The opening hand is drawn by an unseeded mt19937 the engine will not let
-    # us set (CLAUDE.md, "Driving the simulator from outside is awkward"), so
-    # Fireball is in only ~half of the 4-slot hands and which states survive is
-    # not reproducible. Draw until there are enough rather than over-generating
-    # a fixed list and hoping -- the fixed-list version passed alone and failed
-    # inside the full suite, because the global RNG position differs.
+    # The opening hand is unseeded, so Fireball is in only about half the
+    # hands; draw until there are enough rather than relying on a fixed list.
     kept = []
     for i in range(60):
         o = _clump_obs(x=float(3 + (i % 13)), y=12.0)
@@ -446,9 +374,8 @@ def test_one_step_of_the_advisor_term_moves_the_head_toward_the_advisor():
 
     print(f"\n  advisor-target pull: mean cell distance {before:.2f} -> {after:.2f} "
           f"({rows} states)")
-    # A fresh head's map is near-uniform, so `before` is a long way out; the
-    # <= 1.0 branch only exists so a lucky init cannot fail a test about
-    # LEARNING. Board diagonal is 34 tiles, so 1.0 is already at the target.
+    # The <= 1.0 branch keeps a lucky init from failing a test about learning;
+    # 1.0 is already at the target.
     if before <= 1.0:
         assert after <= before, f"the target pushed the head away ({before} -> {after})"
     else:

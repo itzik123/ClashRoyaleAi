@@ -1,11 +1,4 @@
-"""tactics.py -- the deterministic advisor and the solvency gate.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""tactics.py: the deterministic advisor and the solvency gate."""
 import os
 import sys
 
@@ -44,29 +37,17 @@ from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 
 
-# ==========================================================================
-# tactics.py -- the deterministic advisor and the solvency gate
-# (was test_tactics.py)
-# ==========================================================================
-# Tests for the deterministic tactical advisor.
-#
-#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_tactics.py -q
-#
-# The advisor's accuracy against the engine is measured separately (see
-# PLACEMENT_COLLAPSE.md); these pin the properties that must hold exactly --
-# engine constants, legality, and the solvency gate whose absence lost the first
-# version of the A/B.
+# The advisor's accuracy against the engine is measured separately
+# (PLACEMENT_COLLAPSE.md); these pin what must hold exactly: engine constants,
+# legality, and the solvency gate.
 
 
 
 
 
 def test_normalizers_match_header():
-    """The two ClashEnv.h constants pybind does not expose.
-
-    If either changes in the header this test is the only thing that catches it,
-    because nothing else in Python re-derives them -- exactly the second-copy
-    drift CLAUDE.md forbids, made detectable where it cannot be avoided.
+    """The two ClashEnv.h constants pybind does not expose; this is the only thing
+    that catches the Python copies drifting.
     """
     import re
     header = os.path.join(python_ai.REPO_ROOT,
@@ -83,18 +64,9 @@ def test_normalizers_match_header():
 
 
 def test_board_geometry_constants_match_their_headers():
-    """The BOARD-geometry constants Python copies because nothing exposes them.
-
-    No binding reads back the river band or the bridge positions -- ClashEnv
-    exposes get_own_half_max_y() and nothing else -- so tactics.py keeps its own
-    copies. This test is the only thing standing between those copies and the
-    next geometry change.
-
-    That change is not hypothetical. CLAUDE.md records the river moving on
-    2026-07-29 ([16,18) -> [15.5,17.5)) and the towers on 2026-07-30, and BOTH
-    times a stale Python copy survived the edit: models/net.py's '18*16=288' comment
-    and calibrate.py scoring bridges against y=17.0. This pins the remaining
-    copies to the headers they came from.
+    """Board-geometry constants, against their sources: the river band and
+    own-half buffer from the headers (not exposed), the bridges and towers
+    against the live bindings.
     """
     import re
     root = python_ai.REPO_ROOT
@@ -113,26 +85,17 @@ def test_board_geometry_constants_match_their_headers():
     assert m, "OWN_HALF_RIVER_BUFFER not found in GameManager.h -- renamed?"
     buffer = float(m.group(1))
 
-    # tactics.RIVER_Y is the river's START edge. It must equal what the engine
-    # reports live, via getOwnHalfMaxY() = riverStart - buffer.
+    # tactics.RIVER_Y is the river's start edge; it must equal what the engine
+    # reports via getOwnHalfMaxY() = riverStart - buffer.
     assert river_start == tactics.RIVER_Y, (
         f"Board.h riverY_start={river_start} but tactics.RIVER_Y={tactics.RIVER_Y}")
     assert CE(list(gym_wrapper.DEFAULT_DECK), list(gym_wrapper.DEFAULT_DECK),
               100).get_own_half_max_y() == river_start - buffer
 
-    # ---- bridges and towers: compared against the BINDINGS, not scraped ----
-    #
-    # This block used to regex GameManager.h's addTower() calls and Board.h's
-    # leftBridge/rightBridge initialisers, because "nothing exposes entity
-    # positions through the bindings, so these are the last hand-typed geometry
-    # in the module". That stopped being true on 2026-08-21: ArenaLayout.h is
-    # bound, tactics.py derives from it, and the initialisers no longer contain a
-    # numeric literal to scrape -- the regex found zero matches and this test
-    # failed for the best possible reason, the copy it guarded being deleted.
-    #
-    # Comparing against the live bindings is strictly stronger anyway. Header
-    # scraping only ever proved the SOURCE agreed with Python; it could not see a
-    # stale .pyd sitting between them, which is a failure this repo has had twice.
+    # --- bridges and towers, against the bindings ---
+    # ArenaLayout.h is bound and tactics.py derives from it. Comparing against
+    # the live bindings also catches a stale .pyd, which header scraping
+    # cannot.
     import clash_royale_env as _E
 
     assert tuple(tactics.BRIDGE_XS) == (int(_E.ARENA_LEFT_BRIDGE_X),
@@ -149,9 +112,8 @@ def test_board_geometry_constants_match_their_headers():
         f"engine Princesses at x={_E.ARENA_LEFT_LANE_X}/{_E.ARENA_RIGHT_LANE_X}, "
         f"y={_E.arena_princess_y(0)} but tactics.OWN_PRINCESS={tactics.OWN_PRINCESS}")
 
-    # The arena must stay mirror-symmetric. One lane playing differently from the
-    # other is the failure this geometry exists to prevent, and it is invisible
-    # in any single-value check.
+    # The arena must stay mirror-symmetric; a lane asymmetry is invisible in
+    # any single-value check.
     mirror = (_E.ARENA_WIDTH - 1)
     assert mirror - _E.ARENA_LEFT_LANE_X == _E.ARENA_RIGHT_LANE_X
     assert mirror - _E.ARENA_LEFT_BRIDGE_X == _E.ARENA_RIGHT_BRIDGE_X
@@ -170,7 +132,7 @@ def test_own_elixir_matches_engine(fresh_obs):
 
 
 def test_empty_board_has_no_spell_target(fresh_obs):
-    """No enemies -> nothing to catch. The map must be flat zero, not noise."""
+    """No enemies, nothing to catch: the map is flat zero, not noise."""
     _env, obs = fresh_obs
     assert tactics.enemy_hp_map(obs).sum() == 0.0
     assert tactics.spell_catch_map(obs).max() == 0.0
@@ -179,7 +141,7 @@ def test_empty_board_has_no_spell_target(fresh_obs):
 
 
 def test_spell_finds_an_injected_clump():
-    """An injected squad must be found, and found where it actually is."""
+    """An injected squad is found where it actually is."""
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
     env.reset()
@@ -192,7 +154,7 @@ def test_spell_finds_an_injected_clump():
 
 
 def test_spell_respects_the_legality_mask(net, fresh_obs):
-    """The advisor must never propose a cell the engine will silently refuse."""
+    """The advisor never proposes a cell the engine would silently refuse."""
     _env, obs = fresh_obs
     legal = net._placement_legal[tactics.FIREBALL_ID].numpy().astype(bool)
     x, y, _ = tactics.best_spell_cell(obs, legal=legal)
@@ -234,11 +196,8 @@ def test_advance_conserves_mass_and_moves_the_right_way():
 
 
 def test_override_is_solvency_gated(net):
-    """The gate that the ungated A/B proved necessary.
-
-    With elixir below cost+reserve the override MUST decline, even when the
-    tactical opportunity is real -- otherwise it bankrupts an agent that already
-    sits under 3 elixir 65% of the time.
+    """Below cost + reserve the override must decline, even on a real opportunity,
+    or it bankrupts the agent.
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
@@ -262,26 +221,19 @@ def test_override_is_solvency_gated(net):
     out = ov(rich, hand, [True] * 5, default)
     if tactics.FIREBALL_ID in hand or tactics.CANNON_ID in hand:
         assert out != default or True   # firing is opportunity-dependent
-    # whatever it returns must be a legal slot
+    # Whatever it returns must be a legal slot.
     assert 0 <= out[0] <= 4
 
 
 def test_override_rate_limits_the_cannon(net):
-    """One Cannon per lifetime; stacking them is how the naive version bankrupted."""
+    """One Cannon per lifetime: stacking them bankrupts."""
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
     env.reset()
-    # The hand is DEALT, not drawn from a shuffle. This used to read whatever
-    # `reset()` happened to deal and `pytest.skip` when the Cannon was absent,
-    # so the assertions below silently did not run on a fair fraction of
-    # invocations -- a coverage hole that moved run to run and was visible only
-    # as the suite's skip count drifting between 2 and 3.
-    #
-    # An ASSERT rather than a skip on the result, deliberately: if
-    # `set_hand_for_team` ever stops working, this test must fail loudly
-    # instead of quietly excusing itself, which is the failure mode being
-    # removed. Card index 4 is the no-op, so the `step` below does not cycle
-    # the hand back out.
+    # The hand is dealt, not drawn, so the assertions always run. An assert
+    # rather than a skip: if set_hand_for_team stops working this must fail
+    # loudly. Card index 4 is the no-op, so the step below does not cycle the
+    # hand.
     env.set_hand_for_team(
         0, [tactics.CANNON_ID] + [c for c in deck if c != tactics.CANNON_ID][:3])
     env.inject_enemy(2, 9.0, 17.0)
@@ -303,17 +255,13 @@ def test_override_rate_limits_the_cannon(net):
 
 
 def test_giant_goes_to_a_bridge_on_the_weaker_lane(net):
-    """The measured rule: bridge, away from the enemy's mass.
-
-    Scored at 535.6 enemy tower damage against 3.3 for the policy's own cell
-    over 913 states, so the geometry here is load-bearing rather than cosmetic.
-    """
+    """Bridge, away from the enemy's mass; the geometry is load-bearing."""
     deck = list(gym_wrapper.DEFAULT_DECK)
     legal = net._placement_legal[tactics.GIANT_ID].numpy().astype(bool)
 
     env = CE(deck, deck, 3600)
     env.reset()
-    env.inject_enemy(2, 14.0, 20.0)          # enemy mass on the RIGHT
+    env.inject_enemy(2, 14.0, 20.0)          # enemy mass on the right
     env.step(4, 0.0, 0.0, 1)
     x, y, _ = tactics.best_giant_cell(env.get_observation_for_team(0), legal=legal)
     assert y == tactics.BRIDGE_ROW
@@ -321,7 +269,7 @@ def test_giant_goes_to_a_bridge_on_the_weaker_lane(net):
 
     env2 = CE(deck, deck, 3600)
     env2.reset()
-    env2.inject_enemy(2, 3.0, 20.0)          # enemy mass on the LEFT
+    env2.inject_enemy(2, 3.0, 20.0)          # enemy mass on the left
     env2.step(4, 0.0, 0.0, 1)
     x2, _, _ = tactics.best_giant_cell(env2.get_observation_for_team(0), legal=legal)
     assert x2 == tactics.BRIDGE_XS[1]
@@ -337,11 +285,8 @@ def test_giant_cell_is_always_legal(net):
 
 
 def test_gate_reserve_shrinks_to_what_the_opponent_can_punish():
-    """The fix for the gate being anti-offense.
-
-    A flat reserve blocks exactly the spends that build a push, and measurably
-    cost 4,645 tower damage dealt per episode. Against a broke opponent there is
-    nothing to hold back for, so the reserve must collapse.
+    """A flat reserve blocks exactly the spends that build a push. Against a broke
+    opponent there is nothing to hold back for, so the reserve collapses.
     """
     g = tactics.SolvencyGate(reserve=4.0)
     assert g.effective_reserve(None) == 4.0
@@ -366,7 +311,7 @@ def test_gate_blocks_when_broke_and_opens_under_threat(net, fresh_obs):
 
 
 def test_gate_opens_completely_under_a_real_push(net):
-    """Under threat the policy must be free to spend to zero as before."""
+    """Under threat the policy may spend to zero."""
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
     env.reset()
@@ -380,7 +325,8 @@ def test_gate_opens_completely_under_a_real_push(net):
 
 
 def test_gate_never_masks_the_noop():
-    """An all-illegal row would make Categorical return cell 0 and tap blind."""
+    """An all-illegal row would make Categorical return cell 0 and tap blind.
+    """
     g = tactics.SolvencyGate(reserve=99.0)         # absurd reserve: blocks all cards
     obs = np.zeros(tactics.SPATIAL + 1, dtype=np.float32)
     m = g.mask(obs, [3.0, 4.0, 4.0, 5.0])
@@ -389,11 +335,9 @@ def test_gate_never_masks_the_noop():
 
 
 def test_building_score_map_is_the_surface_best_building_cell_ranks():
-    """The map that gets DISTILLED and the cell that gets PLAYED must agree.
-
-    They are two entry points to one `_building_score`; this pins that they
-    stay that way, since a drifting copy would train the head toward a surface
-    whose argmax is not the cell the advisor actually plays.
+    """The distilled map and the played cell come from one `_building_score` and
+    must agree, or the head trains toward a surface whose argmax is not what
+    the advisor plays.
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
@@ -409,13 +353,10 @@ def test_building_score_map_is_the_surface_best_building_cell_ranks():
 
 
 def test_the_building_target_is_a_plateau_not_a_point():
-    """WHY the Cannon's exact cell is a bad supervision target, as a number.
-
-    Coverage is scattered as flat discs, so many cells tie EXACTLY at the top
-    and `argmax` returns whichever comes first in row-major order. The advisor
-    is indifferent among them; a head fitted to the argmax is being asked to
-    learn that tie-break, which carries no value and moves discontinuously with
-    the board. Measured here rather than asserted in a comment.
+    """Why the Cannon's exact cell is a poor supervision target: coverage is
+    scattered as flat discs, so many cells tie exactly at the top and argmax
+    picks by row-major order, a tie-break with no value that moves
+    discontinuously with the board.
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)

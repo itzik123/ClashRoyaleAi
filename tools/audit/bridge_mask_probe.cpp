@@ -1,6 +1,6 @@
-// Sensitivity check: would the new regression test have caught the encoder bug?
-// Prints the river row as the PHYSICS sees it against the row the old hardcoded
-// encoder painted, and counts the columns where a network would have been lied to.
+// Sensitivity check for the encoder's river row: prints the row as the physics
+// sees it against the old hardcoded encoder row, and counts the columns where
+// the network would have been told the wrong thing.
 #include <cstdio>
 #include <string>
 #include "ArenaLayout.h"
@@ -11,7 +11,8 @@ int main() {
     std::string physics, oldEncoder;
     for (int x = 0; x < ArenaLayout::WIDTH; ++x) {
         physics += board.isOnBridge(static_cast<float>(x)) ? 'B' : 'W';
-        // The literal that was in ClashEnv.h until 2026-08-21.
+        // The hardcoded columns the encoder used before it read
+        // Board::isOnBridge.
         oldEncoder += ((x >= 3 && x <= 4) || (x >= 13 && x <= 14)) ? 'B' : 'W';
     }
     std::printf("column        012345678901234567\n");

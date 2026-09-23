@@ -1,17 +1,11 @@
-// Full-match soak test for navigation stalls.
+// Full-match soak test for navigation stalls. Unlike bridge_audit.cpp's
+// clean-room sweeps, this plays whole randomized matches with both sides
+// spending, so units meet, collide, die, retarget and crowd the bridges as in
+// training, and it reports any unit that stops moving with nothing to fight.
 //
-// The sweeps in bridge_audit.cpp are clean-room: one or two units on an
-// otherwise empty board. This one plays whole randomized matches with both
-// sides spending elixir, so units meet, collide, die, retarget and crowd the
-// bridges the way they do in training. It watches EVERY unit EVERY tick and
-// reports any that stops moving while it has nothing to fight.
-//
-// A stall is: alive, past deploy time, and stationary for STALL_TICKS
-// consecutive ticks DURING EVERY ONE OF WHICH nothing was inside its own
-// effective attack reach. A unit standing still to hit a tower or trade with a
-// troop is legitimate, and the per-tick form is what separates the two -- see
-// the comment on the reach computation below for the three ways this detector
-// got that wrong before it got it right.
+// A stall: alive, past deploy time, and stationary for STALL_TICKS consecutive
+// ticks during every one of which nothing was inside its own effective attack
+// reach.
 
 #include "GameManager.h"
 #include "CardRegistry.h"
@@ -55,10 +49,9 @@ const std::vector<int>& defaultDeck() {
 
 } // namespace
 
-// Deterministic re-run of one seeded match, tracing a single entity tick by
-// tick. The soak's own dump is a single frame; this shows the frames around
-// it, which is what distinguishes "never moved" from "stopped for a reason
-// that has since gone away".
+// Deterministic re-run of one seeded match, tracing one entity tick by tick:
+// the frames around the dump distinguish "never moved" from "stopped for a
+// reason that has gone away".
 int trace(int m, int entityId, int fromTick, int toTick) {
     GameManager game(defaultDeck(), defaultDeck());
     game.seed(static_cast<unsigned>(1000 + m));
@@ -156,8 +149,8 @@ int main(int argc, char** argv) {
 
             game.step();
 
-            // Snapshot the living, so proximity is evaluated against the same
-            // instant the positions come from.
+            // Snapshot the living, so proximity is evaluated at the same
+            // instant as the positions.
             std::vector<std::shared_ptr<Entity>> living;
             for (const auto& e : game.getBoard().getEntities()) {
                 if (e->isAlive()) living.push_back(e);
@@ -165,9 +158,8 @@ int main(int argc, char** argv) {
 
             for (const auto& e : living) {
                 if (e->isTower()) continue;
-                // Troop, not CombatEntity: buildings are CombatEntities too and
-                // are SUPPOSED to stand still, so casting to the moving subtype
-                // is the filter -- no engine accessor needed for it.
+                // Troop, not CombatEntity: buildings are supposed to stand
+                // still.
                 auto troop = std::dynamic_pointer_cast<Troop>(e);
                 if (!troop) continue;                    // buildings, spells, projectiles
                 if (troop->deployTicksRemaining > 0) continue;
@@ -177,24 +169,15 @@ int main(int argc, char** argv) {
                 Watch& w = watch[e->id];
                 w.hist.push_back(e->position);
                 if (w.hist.size() > 70) w.hist.erase(w.hist.begin());
-                // An explicit flag, not a sentinel position: the old guard
-                // tested w.last == (0,0) AND moved == 0, which can never both
-                // hold, so the first sighting fell through and was compared
-                // against the origin.
+                // An explicit first-sighting flag.
                 if (!w.seen) { w.seen = true; w.last = e->position; continue; }
                 float moved = w.last.distanceTo(e->position);
 
-                // Is anything within this unit's own effective reach RIGHT NOW?
-                // Mirrors CombatEntity::effectiveRangeTo exactly.
-                //
-                // Evaluated EVERY tick and folded into the stall counter, not
-                // checked once when the counter trips. That was the third and
-                // final error in this detector: a Musketeer that legitimately
-                // stood and shot an Ice Golem for 53 ticks got flagged because
-                // the Golem died on the very tick the counter crossed its
-                // threshold, so the end-of-window snapshot saw an empty board.
-                // A stall means "stationary while it had nothing to shoot for
-                // the whole window", and only a per-tick test can say that.
+                // Is anything within this unit's effective reach right now?
+                // Mirrors CombatEntity::effectiveRangeTo. Evaluated every tick
+                // and folded into the counter: a unit that shot a target which
+                // died on the tick the counter tripped would otherwise be
+                // flagged.
                 float nearestSlack = 1e9f;
                 float nearestDist = 1e9f;
                 std::string nearestWhat = "nothing";
@@ -257,10 +240,10 @@ int main(int argc, char** argv) {
                         if (o->team == e->team || !o->isTower()) continue;
                         Vector2D wp = game.getBoard().getNextWaypoint(e->position, o->position);
                         float dist = e->position.distanceTo(wp);
-                        // Reproduce Troop::moveTowards exactly, then ask
-                        // collision resolution what it does to the result.
-                        // This is what discriminates "never tried to move"
-                        // from "moved and was pushed straight back".
+                        // Reproduce Troop::moveTowards, then ask collision
+                        // resolution what it does to the result: separates
+                        // "never tried to move" from "moved and was pushed
+                        // back".
                         Vector2D stepped{
                             e->position.x + (wp.x - e->position.x) / dist * troop->getSpeed(),
                             e->position.y + (wp.y - e->position.y) / dist * troop->getSpeed() };

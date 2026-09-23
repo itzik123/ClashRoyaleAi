@@ -1,25 +1,13 @@
 """FrameSource backed by a video file. Build and test everything against this.
 
-VARIABLE FRAME RATE IS CHECKED, NOT ASSUMED
--------------------------------------------
-Phone screen recorders almost always produce VFR: the encoder drops frames
-whenever the scene is static and the container stores a per-frame timestamp
-instead of a fixed interval. The file still reports a nominal fps, and
-OpenCV still hands it over, and everything looks fine.
+Screen recorders often produce variable frame rate: frames are dropped when the
+scene is static, while the file still reports a nominal fps. Under VFR frame
+index is not proportional to time, and the error grows exactly when the screen
+is busy, i.e. during fights, when placements happen.
 
-It is not fine. With VFR, frame index is not proportional to elapsed time, so
-every index-derived tick is wrong by an amount that varies with how busy the
-screen was -- which correlates with exactly the moments that matter, since
-placements are when the screen gets busy. The resulting clock error is not
-noise, it is a bias that grows during fights.
-
-So `probe_timing()` measures it: sample presentation timestamps across the
-file and check the inter-frame deltas are actually constant. `fps` raises on
-a VFR file unless the caller explicitly opts in by supplying `assume_fps`,
-which forces the caller to have made the decision.
-
-The check uses the decoder's own timestamps rather than shelling out to
-ffprobe so there is no external binary dependency.
+So `probe_timing()` checks that inter-frame presentation deltas are constant,
+and `fps` raises on a VFR file unless the caller opts in with `assume_fps`. The
+decoder's own timestamps are used, so there is no ffprobe dependency.
 """
 
 from __future__ import annotations
@@ -45,16 +33,13 @@ class VideoSource(FrameSource):
     path:
         Video file.
     assume_fps:
-        Override the CFR check and force this rate. Use only when you know
-        the file is VFR and have decided the error is acceptable; it is
-        recorded in `timing_override` so downstream reports can say so.
+        Override the CFR check and force this rate, for a known-VFR file whose
+        error is acceptable. Recorded in `timing_override` so reports can say so.
     max_timing_jitter:
-        Fraction of the nominal frame interval that inter-frame deltas may
-        vary by before the source is called VFR. The default 0.15 is loose
-        enough to tolerate millisecond-resolution timestamp quantisation on a
-        30fps file (a 33.33ms interval stored as integer ms alternates
-        33/34ms, which is 2% jitter) and tight enough to catch a recorder
-        that is genuinely dropping frames.
+        Fraction of the nominal frame interval inter-frame deltas may vary by
+        before the source is called VFR. 0.15 tolerates millisecond timestamp
+        quantisation (a 33.33 ms interval stored as 33/34 ms is 2% jitter) and
+        still catches a recorder that drops frames.
     """
 
     def __init__(
@@ -84,19 +69,15 @@ class VideoSource(FrameSource):
         self.timing_override = assume_fps
         self._timing: dict | None = None
 
-    # -- timing ----------------------------------------------------------
+    # --- timing ---
 
     def probe_timing(self, samples: int = 240) -> dict:
-        """Measure whether this file is really constant frame rate.
+        """Measure whether this file really is constant frame rate, from the
+        presentation-time deltas of the first `samples` frames.
 
-        Reads the first `samples` frames sequentially and looks at the
-        distribution of presentation-time deltas. Sequential rather than
-        seeking: seeking in a long-GOP H.264 file snaps to keyframes, so
-        seek-derived timestamps would measure the keyframe interval instead
-        of the frame interval and call every file VFR.
-
-        Restores the read position afterwards, so this is safe to call before
-        iterating.
+        Sequential rather than seeking: seeking in a long-GOP H.264 file snaps
+        to keyframes, which would measure the keyframe interval and call every
+        file VFR. Restores the read position, so it is safe before iterating.
         """
         if self._timing is not None:
             return self._timing
@@ -136,31 +117,21 @@ class VideoSource(FrameSource):
             return result
 
         median = float(np.median(positive))
-        # Median absolute deviation, not standard deviation: a single dropped
-        # frame produces one huge delta, and a mean-based statistic would let
-        # that one outlier swamp the measurement in either direction.
+        # Median absolute deviation: one dropped frame is one huge delta, which
+        # would swamp a mean-based statistic.
         jitter = float(np.median(np.abs(positive - median)) / median) if median > 0 else float("inf")
 
-        # RATE COMES FROM THE TOTAL SPAN, NOT THE MEDIAN DELTA.
-        #
-        # Decoders report presentation time quantised to whole milliseconds,
-        # so a true 33.333ms interval arrives as an alternating 33/33/34
-        # pattern. Its MEDIAN is 33, which reads as 30.303 fps -- 1% fast, and
-        # consistently so. On a 176-second match that is a 1.8-second error at
-        # the end, or 18 simulator ticks, applied to every placement. Measured
-        # directly on this batch: median gives 30.303, span gives 29.999.
-        #
-        # The span estimator divides one quantisation error by the whole
-        # sample instead of by a single interval, so it is accurate to about
-        # 0.01% over a few hundred frames. Jitter still comes from the deltas,
-        # which is what they are actually good for.
+        # Rate from the total span, not the median delta. Timestamps are
+        # quantised to whole milliseconds, so a 33.333 ms interval arrives as
+        # 33/33/34 and its median reads 30.303 fps, 1% fast: 1.8 s (18 ticks)
+        # by the end of a 176 s match. The span divides one quantisation error
+        # by the whole sample. Jitter still comes from the deltas.
         span_per_frame = float((array[-1] - array[0]) / (len(array) - 1))
         measured = 1000.0 / span_per_frame if span_per_frame > 0 else float("nan")
 
         # Prefer the container's declared rate when the measurement confirms
-        # it. The declared value is the exact number the encoder intended
-        # (30.0, or 30000/1001 for NTSC); the measurement is an estimate of
-        # the same thing. Agreement means the estimate has nothing to add.
+        # it: it is the exact number the encoder intended (30.0, or
+        # 30000/1001).
         nominal = self._nominal_fps
         if nominal > 0 and abs(measured - nominal) / nominal < 0.005:
             measured = nominal
@@ -197,9 +168,8 @@ class VideoSource(FrameSource):
                 f"-crf 16 {self.path.stem}_cfr.mp4\n"
                 "or pass assume_fps=<rate> to override deliberately."
             )
-        # The measured rate, not the container's nominal one. They usually
-        # agree; when they do not, the measurement is what the frames
-        # actually do.
+        # The measured rate, not the container's nominal one, when they
+        # disagree: the measurement is what the frames do.
         return timing["measured_fps"]
 
     @property
@@ -210,26 +180,17 @@ class VideoSource(FrameSource):
     def frame_count(self) -> int:
         return self._frame_count
 
-    # -- iteration -------------------------------------------------------
+    # --- iteration ---
 
     def _stamp(self, index: int) -> float:
         """Presentation time of frame `index`, in milliseconds.
 
-        Derived from the index and the frame rate, NOT read per-frame from
-        the decoder -- and that is a correctness fix, not an optimisation.
-
-        CAP_PROP_POS_MSEC is not reliably positioned relative to read(): with
-        some backends it reports the time BEFORE the pending frame, with
-        others AFTER the one just returned, and at least one (observed here,
-        mp4v on Windows) reports 0.0 for both of the first two frames. Any of
-        those silently shifts the entire timeline by a frame, which then
-        shifts every placement tick by the same amount.
-
-        Deriving from the index is exact precisely BECAUSE `fps` refuses to
-        return a value until probe_timing() has confirmed the source is
-        constant-rate. On a CFR source index * interval is the definition of
-        presentation time; on a VFR source there is no fps to derive from and
-        the property raises instead.
+        Derived from index and frame rate rather than read per frame:
+        CAP_PROP_POS_MSEC is positioned inconsistently relative to read()
+        across backends (before the pending frame, after the returned one, or
+        0.0 for the first two frames with mp4v on Windows), shifting the whole
+        timeline by a frame. The derivation is exact because `fps` returns only
+        after probe_timing() has confirmed constant rate.
         """
         return index * 1000.0 / self.fps
 
@@ -245,21 +206,12 @@ class VideoSource(FrameSource):
             index += 1
 
     def sample_every(self, target_fps: float) -> Iterator[Frame]:
-        """Decimate without decoding the frames being thrown away.
+        """Decimate without decoding the discarded frames.
 
-        Overrides FrameSource.sample_every, which is correct but reads every
-        frame in full. Decoding is by far the dominant cost, and at a 6fps
-        detection rate on 30fps source that is 80% of the work wasted.
-
-        grab() advances the decoder and hands back nothing; retrieve() does
-        the colour conversion and copy. Splitting them makes decimation cost
-        roughly the skip ratio instead of nothing. Measured on this batch:
-        8 recordings, ~59,000 frames, 4fps sampling -- minutes down to
-        seconds.
-
-        Stepping by index rather than by presentation time is safe HERE, and
-        only here, because `fps` has already refused to return a value unless
-        probe_timing() confirmed the source is constant rate.
+        Overrides FrameSource.sample_every, which decodes every frame. grab()
+        advances the decoder without the colour conversion and copy that
+        retrieve() does, so decimation costs roughly the skip ratio. Stepping
+        by index is safe here only because `fps` has confirmed constant rate.
         """
         if target_fps <= 0:
             raise ValueError(f"sample_every: non-positive target_fps {target_fps!r}")
@@ -280,11 +232,9 @@ class VideoSource(FrameSource):
             index += 1
 
     def read_frame_at(self, index: int) -> Frame:
-        """Random access, for calibration and tests.
-
-        Not on the FrameSource interface on purpose: a live source cannot
-        support it, and code written against random access silently stops
-        working the day it is pointed at a window instead of a file.
+        """Random access, for calibration and tests. Not on the FrameSource
+        interface: a live source cannot support it, and code relying on it
+        would break when pointed at a window.
         """
         self._capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, image = self._capture.read()

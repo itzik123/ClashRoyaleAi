@@ -1,11 +1,8 @@
-"""Per-card MODAL SHARE of placements, logged every update.
+"""Per-card modal share of placements: the conditional-collapse detector.
 
-CLAUDE.md is explicit that this -- not `Entropy/Placement_ByCard_Min` -- is the
-conditional-collapse detector: measured 2026-08-14, the lowest-entropy card was
-the HEALTHIEST (most played, modal share 19%) while a card at 91% modal share
-had higher entropy. "Count how often each card's argmax cell repeats across
-states, not how peaked the distribution is." Audit 08 found no modal-share
-scalar logged anywhere, so the run about to start had no working detector.
+How often a card's argmax cell repeats across states, not how peaked its
+distribution is; entropy can flag the healthiest card and clear a collapsed
+one.
 """
 import numpy as np
 import pytest
@@ -26,7 +23,8 @@ def test_a_card_spread_evenly_reads_low():
 
 
 def test_a_card_with_too_few_plays_is_not_reported():
-    """A card played three times reads 33%+ by construction -- noise, not collapse."""
+    """A card played three times reads 33%+ by construction: noise, not collapse.
+    """
     w = ModalShareWindow(window_updates=5, min_plays=10)
     w.add_update(card_ids=[15, 15, 15], cells=[1, 2, 3])
     assert 15 not in w.shares()

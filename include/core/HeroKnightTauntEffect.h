@@ -3,10 +3,8 @@
 #include "CombatEntity.h"
 #include "Board.h"
 
-// Hero Knight's "Triumphant Taunt": gains a shield (expiring after a fixed
-// duration even if never fully depleted by damage -- see
-// CombatEntity::shieldExpiresTicksRemaining) and forces every enemy within
-// tauntRadius to attack him for the same duration -- see applyTauntNearby.
+// Hero Knight's "Triumphant Taunt": a shield that expires after the duration,
+// and every enemy within tauntRadius is forced to attack him for as long.
 class HeroKnightTauntEffect : public IAbilityEffect {
     int shieldAmount;
     int durationTicks;

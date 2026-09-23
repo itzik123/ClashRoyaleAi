@@ -1,18 +1,7 @@
-"""The teacher answers a flying building-targeter with something that can hit it.
+"""The teacher answers a flying building-targeter with a card that can hit it.
 
-TODO 00.5: the teacher had no air concept. A Balloon ignores every troop on the
-board, so a ground-only card dropped under it is an elixir gift -- and the
-rung-0 rules gate picked Skeletons and Ice Golem against a lone Balloon more often
-than Musketeer or Ice Spirit. Measured, rung-0 teacher holding the 2.6 deck, 36
-seeds paired by seed, 40 s of a lone push:
-
-    Balloon     1481 -> 1131 tower HP lost   9 seeds better / 2 worse / 25 tied
-    Lava Hound   877 ->  807                 17 / 7 / 12
-    Hog Rider    810 ->  810  -- the ground CONTROL, bit-identical
-
-Pooled over both air pushes, 26 better / 9 worse (sign test p ~ 0.006).
-
-The measurement is the evidence; these pin the MECHANISM on real engine boards.
+A Balloon ignores every troop, so a ground-only card dropped under it is an
+elixir gift. These pin the mechanism on real engine boards.
 """
 import numpy as np
 import pytest
@@ -28,7 +17,7 @@ DECK = [15, 6, 25, 40, 24, 72, 33, 7]      # the 2.6 deck: two anti-air troops
 
 
 def _board(*units):
-    """Team 0's observation of ENEMY units [(name, x, y)] placed on its half."""
+    """Team 0's observation of enemy units [(name, x, y)] on its half."""
     env = E.ClashRoyaleEnv(list(DECK), list(DECK), 3600)
     env.seed(1)
     for name, x, y in units:
@@ -51,14 +40,14 @@ def test_ground_only_cards_are_recognised(name):
 
 def test_the_air_siege_map_sees_a_balloon_and_nothing_a_ground_unit_can_answer():
     assert tactics.air_siege_map(_board(("Balloon", 9.0, 11.0))).sum() > 0.0
-    # A flyer that chases troops, and a building-targeter that walks: neither is
-    # the case only anti-air can answer.
+    # A flyer that chases troops, and a walking building-targeter: neither
+    # needs anti-air specifically.
     assert tactics.air_siege_map(_board(("Minions", 9.0, 11.0))).sum() == 0.0
     assert tactics.air_siege_map(_board(("Hog Rider", 9.0, 11.0))).sum() == 0.0
 
 
 def _gate(obs, *names):
-    """Drive the REAL rung-0 gate; return the card it plays, or None."""
+    """Drive the real rung-0 gate; return the card it plays, or None."""
     teacher = T.UtilityTeacher(list(DECK), team=0)
     cands = [T.Candidate.single(i, ID[n], 8.0, 10.0,
                                 role=teacher.roles.get(ID[n], "melee"))
@@ -84,8 +73,9 @@ def test_a_ground_card_still_answers_the_ground_half_of_a_mixed_push():
 
 
 def test_with_no_air_threat_the_gate_decides_exactly_as_before():
-    """The CONTROL: a lone Hog. Both cards score the old 3.0 and the first in
-    the list wins, as it always did."""
+    """Control: a lone Hog. Both cards score the old 3.0 and the first listed
+    wins.
+    """
     obs = _board(("Hog Rider", 9.0, 11.0))
     assert _gate(obs, "Skeletons", "Musketeer") == "Skeletons"
     assert _gate(obs, "Musketeer", "Skeletons") == "Musketeer"

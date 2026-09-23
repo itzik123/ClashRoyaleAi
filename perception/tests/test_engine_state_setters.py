@@ -1,30 +1,18 @@
-"""The state-estimator WRITE interface, from the side that consumes it.
+"""The state-estimator write interface, from the side that consumes it.
 
-WHY THESE LIVE HERE AND NOT IN THE C++ SUITE
---------------------------------------------
-`tests/core/test_state_setters.cpp` pins the engine BEHAVIOUR -- the clamps,
-the refusals, the King's wake latch. It cannot see the pybind surface at all,
-and the binding is where this interface is actually used: a renamed keyword, a
-dropped default, or a parameter silently reordered would leave the whole C++
-suite green while every caller in `perception/` broke.
+`tests/core/test_state_setters.cpp` pins the engine behaviour (clamps,
+refusals, the King's wake latch) but cannot see the pybind surface, where a
+renamed keyword, dropped default or reordered parameter would break every
+caller here with the C++ suite green.
 
-That gap is not hypothetical here. CLAUDE.md records `python_ai/`'s `.pyd`
-going stale twice and hiding `set_elixir_for_team` / `set_hand_for_team` for
-days, with the C++ suite passing throughout.
+The live loop rebuilds a mirror `ClashRoyaleEnv` from what perception sees and
+hands it to `UtilityTeacher`, which rolls each candidate forward on
+`env.snapshot()`. Anything the mirror cannot be told, every candidate is scored
+against wrongly (UPSTREAM_REQUESTS.md item 22).
 
-WHAT THIS INTERFACE IS FOR
---------------------------
-The live loop rebuilds a mirror `ClashRoyaleEnv` from what perception can see
-and hands it to `UtilityTeacher`, which ranks candidates by rolling each one
-forward on `env.snapshot()`. Everything the mirror cannot be told is something
-every candidate is then scored against wrongly -- see
-`perception/UPSTREAM_REQUESTS.md` item 22.
-
-EVERY CASE BELOW CARRIES AN INTERNAL CONTROL, deliberately. A setter that did
-nothing at all would satisfy a naive "it refused an illegal value" assertion,
-and an ignored `hp=` would satisfy a naive "it clamped to full" one. Both of
-those were written, both passed against a do-nothing stub, and both had to be
-strengthened before they could fail.
+Every case carries an internal control: a setter that does nothing satisfies a
+naive "it refused an illegal value", and an ignored `hp=` satisfies a naive "it
+clamped to full".
 """
 from __future__ import annotations
 
@@ -32,17 +20,13 @@ import pytest
 
 DECK = [15, 6, 25, 40, 24, 72, 33, 7]  # 2.6 Hog Cycle, DEFAULT_DECK
 
-# Any card index outside [0, 4) skips the play branch in stepSelfPlay, which is
-# how "advance time and do nothing" is expressed. Same sentinel forecast.py
-# uses; named here rather than repeated as a bare 9.
+# Any card index outside [0, 4) skips stepSelfPlay's play branch: "advance time
+# and do nothing".
 NO_OP_CARD = 9
 
-# CardStats.h's DEPLOY_TIME_TICKS. NOT derivable from Python -- it is not
-# bound -- so this follows perception/geometry.py's documented fallback:
-# hardcoded, with the header that owns it named. It is also a deliberate
-# tripwire, the same way test_clash_env.cpp pins the observation size as a
-# literal: deploy time is gameplay-affecting, so it changing at all should
-# fail something, and updating this line is the acknowledgement.
+# CardStats.h's DEPLOY_TIME_TICKS, not bound, so hardcoded with its header
+# named. Also a tripwire: deploy time is gameplay-affecting, and updating this
+# line acknowledges a change.
 DEPLOY_TIME_TICKS = 10
 
 
@@ -67,9 +51,7 @@ def _ticks_until_tower_damage(env, limit=300):
     return None
 
 
-# --------------------------------------------------------------------------
-# The binding surface itself
-# --------------------------------------------------------------------------
+# --- the binding surface ---
 
 def test_every_item_22_binding_is_reachable_by_its_documented_name(engine):
     for name in ("set_tower_hp", "destroy_tower", "get_tower_hp",
@@ -78,12 +60,8 @@ def test_every_item_22_binding_is_reachable_by_its_documented_name(engine):
 
 
 def test_inject_still_accepts_its_original_four_argument_form(engine):
-    """The back-compat guarantee item 22 was designed around.
-
-    Every existing caller -- forecast.py, the prove_* harnesses, the audit
-    tools -- passes four arguments. If the new parameters were not optional,
-    or defaulted to anything other than today's behaviour, this interface
-    would be a breaking change wearing an additive one's clothes.
+    """Back-compat: existing callers pass four arguments, so the new parameters
+    must be optional and default to the old behaviour.
     """
     a, b = _env(engine, seed=11), _env(engine, seed=11)
     a.inject(15, 9.0, 20.0, 1)
@@ -93,17 +71,13 @@ def test_inject_still_accepts_its_original_four_argument_form(engine):
     assert a.get_observation_for_team(0) == b.get_observation_for_team(0)
 
 
-# --------------------------------------------------------------------------
-# Tower HP -- the fraction workflow perception will actually use
-# --------------------------------------------------------------------------
+# --- tower HP, the fraction workflow perception uses ---
 
 def test_tower_max_hp_distinguishes_the_king_from_a_princess(engine):
-    """A single shared ceiling would silently over-heal one of them.
-
-    This is also what makes the fraction workflow expressible at all: the
-    caller multiplies its measured fraction by THIS tower's maximum, so the
-    level mismatch between this engine (level 9) and a real account (often
-    level 4-5) never has to be represented on the engine side.
+    """A single shared ceiling would silently over-heal one of them. Per-tower
+    maxima are also what make the fraction workflow expressible: the caller
+    multiplies its fraction by this tower's maximum, so the engine (level 9)
+    never represents a real account's level.
     """
     env = _env(engine)
     env.reset()
@@ -124,10 +98,8 @@ def test_a_measured_fraction_round_trips_through_set_tower_hp(engine):
 
 
 def test_set_tower_hp_refuses_zero_without_becoming_an_inert_setter(engine):
-    """Refusal, with the control that makes the refusal meaningful.
-
-    Without the positive write first, a setter that did nothing at all would
-    pass this -- which is exactly the state the case exists to exclude.
+    """Refusal, with the positive write first as its control: otherwise a setter
+    that did nothing would pass.
     """
     env = _env(engine)
     env.reset()
@@ -148,30 +120,21 @@ def test_destroy_tower_is_the_only_way_to_take_a_tower_down(engine):
     assert env.destroy_tower(1, 1) is True
     assert env.get_towers_alive(1) == 2
 
-    # Idempotent, and says so rather than silently succeeding -- a caller
-    # re-sending a stale reading can tell the difference.
+    # Idempotent, and says so, so a caller re-sending a stale reading can tell.
     assert env.destroy_tower(1, 1) is False
     assert env.get_towers_alive(1) == 2
     assert env.get_towers_alive(0) == 3
 
 
-# --------------------------------------------------------------------------
-# Unit HP and deploy state on inject
-# --------------------------------------------------------------------------
+# --- unit HP and deploy state on inject ---
 
 def test_injected_hp_changes_what_the_unit_can_actually_do(engine):
-    """Scored by the engine rather than read back, because that is the claim.
+    """Scored by the engine rather than read back, because the claim is that the
+    rollout differs: a wounded Hog dies to the towers before arriving, a full
+    one takes a Princess Tower down.
 
-    A wounded Hog dies to the towers before it arrives; a full one takes a
-    Princess Tower down. Reading `hp` back would only prove a field was
-    written -- this proves the rollout the teacher scores actually differs.
-
-    Scored as a MONOTONE LADDER rather than at one hand-picked hp. The single
-    point this used to test (400 hp) stopped separating the two arms on
-    2026-08-24 when the Hog went 1.6 -> 2.0 tiles/s: it now outruns the towers
-    and lands a hit it previously died before reaching. A ladder states the
-    property that is actually being claimed -- more health buys more damage --
-    so the next speed change moves the threshold instead of inverting the test.
+    Scored as a monotone ladder rather than at one hand-picked hp, so a speed
+    change moves the threshold instead of inverting the test.
     """
     def damage_at(hp):
         env = _env(engine, seed=3)
@@ -181,24 +144,22 @@ def test_injected_hp_changes_what_the_unit_can_actually_do(engine):
 
     ladder = [damage_at(hp) for hp in (150.0, 400.0, 700.0, 1200.0)]
 
-    # a full-health Hog reaches the tower...
+    # A full-health Hog reaches the tower...
     assert damage_at(-1.0) > 0
-    # ...and one wounded far enough dies on the way, which is the claim that
-    # injected hp reaches the simulation at all rather than being ignored.
+    # ...and one wounded far enough dies on the way: injected hp reaches the
+    # simulation.
     assert ladder[0] == 0
-    # strictly increasing across the ladder: no plateau, so this cannot pass
-    # against a setter that quietly clamps every value to full health.
+    # Strictly increasing across the ladder, so a setter that clamps every
+    # value to full cannot pass.
     assert ladder == sorted(ladder), ladder
     assert ladder[-1] > ladder[0]
     assert len(set(ladder)) > 2, f"hp barely moves the outcome: {ladder}"
 
 
 def test_injected_hp_is_clamped_to_the_cards_own_full_health(engine):
-    """With the control that separates clamping from ignoring.
-
-    "Clamped to full" and "the parameter was ignored" produce the SAME number,
-    and ignoring it is the pre-item-22 behaviour -- so the below-maximum write
-    has to be checked in the same case.
+    """With the control that separates clamping from ignoring: "clamped to full"
+    and "parameter ignored" give the same number, so a below-maximum write is
+    checked in the same case.
     """
     env = _env(engine)
     env.reset()
@@ -213,24 +174,20 @@ def test_injected_hp_is_clamped_to_the_cards_own_full_health(engine):
     baseline.inject(15, 9.0, 20.0, 1, -1.0, 0)
     baseline.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, 140)
 
-    # Control: 500 hp really did land, so the parameter is read.
+    # Control: 500 hp landed, so the parameter is read.
     assert lowered.get_tower_damage_dealt(1) != baseline.get_tower_damage_dealt(1)
     # ...and an impossible value is capped at the card's own health.
     assert over.get_tower_damage_dealt(1) == baseline.get_tower_damage_dealt(1)
 
 
 def test_deploy_ticks_zero_recovers_exactly_the_deploy_second(engine):
-    """The fourth gap, and the one nobody had written down.
+    """inject -> spawnEntity -> applyCardMetadata sets deployTicksRemaining
+    unconditionally, so a mirror rebuilt from perception would hand every unit
+    a fresh deploy second, including one walking for six.
 
-    inject -> spawnEntity -> applyCardMetadata sets deployTicksRemaining
-    unconditionally, so a mirror rebuilt from perception handed EVERY unit a
-    fresh deploy second -- including one that had been walking for six. Every
-    rollout then believed it had an extra second before anything could act.
-
-    Measured on ARRIVAL rather than on damage dealt: over a long enough window
-    the Hog deals its full damage either way, so a total-damage probe
-    SATURATES and reports no difference at all. That probe was written first
-    and measured exactly nothing.
+    Measured on arrival rather than damage dealt: over a long window the Hog
+    deals its full damage either way, so a total-damage probe saturates and
+    reports no difference.
     """
     default_arrival = _ticks_until_tower_damage(_deployed(engine, -1))
     deployed_arrival = _ticks_until_tower_damage(_deployed(engine, 0))
@@ -249,26 +206,19 @@ def _deployed(engine, deploy_ticks):
 def test_the_deploy_subsidy_is_worth_a_whole_hog_hit_mid_push(engine):
     """Why the second matters, in the units the teacher is scored in.
 
-    THE WINDOW IS DERIVED, NOT WRITTEN DOWN, and that is the whole lesson of
-    this test's history. It used a hardcoded 110 ticks, picked when the Hog
-    moved at 1.6 tiles/s. The 2026-08-24 speed rework took it to 2.0, both arms
-    landed the same number of hits inside 110 ticks, and the assertion became
-    `1268 > 1268` -- a working fix reported as inert, which is exactly the
-    saturating-control failure the sibling test above was written to avoid.
-
-    The damage difference is not monotone in the window: it oscillates between
-    zero and one hit with the Hog's attack cooldown, so ANY fixed tick count is
-    one balance change away from landing in a trough. Anchoring on the arrival
-    times removes the choice -- one tick before the un-deployed Hog arrives,
-    the deployed one has landed exactly one hit and the other none.
+    The window is derived from the two arrival times, not written down: the
+    damage difference oscillates between zero and one hit with the Hog's attack
+    cooldown, so any fixed tick count is one balance change from a trough. One
+    tick before the un-deployed Hog arrives, the deployed one has landed
+    exactly one hit and the other none.
     """
     default_arrival = _ticks_until_tower_damage(_deployed(engine, -1))
     deployed_arrival = _ticks_until_tower_damage(_deployed(engine, 0))
     assert default_arrival is not None and deployed_arrival is not None
     assert deployed_arrival < default_arrival
 
-    # One hit's worth, read off the engine rather than restated: get_card_info
-    # does not expose damage, so the alternative would be a second copy of 317.
+    # One hit's worth, read off the engine: get_card_info does not expose
+    # damage.
     probe = _deployed(engine, 0)
     probe.step_self_play(NO_OP_CARD, 0, 0, NO_OP_CARD, 0, 0, deployed_arrival)
     one_hit = probe.get_tower_damage_dealt(1)
@@ -286,9 +236,7 @@ def test_the_deploy_subsidy_is_worth_a_whole_hog_hit_mid_push(engine):
     assert results[0] - results[-1] == one_hit
 
 
-# --------------------------------------------------------------------------
-# The match clock
-# --------------------------------------------------------------------------
+# --- the match clock ---
 
 def test_set_current_tick_moves_the_observations_elapsed_time_scalar(engine):
     env = _env(engine, max_ticks=1000)
@@ -298,7 +246,7 @@ def test_set_current_tick_moves_the_observations_elapsed_time_scalar(engine):
 
     env.set_current_tick(500)
 
-    # Both teams: the scalar is elapsed time, which is not mirrored.
+    # Both teams: elapsed time is not mirrored.
     assert env.get_observation_for_team(0)[idx] == pytest.approx(0.5)
     assert env.get_observation_for_team(1)[idx] == pytest.approx(0.5)
 
@@ -316,12 +264,9 @@ def test_set_current_tick_clamps_into_a_range_the_match_can_reach(engine):
 
 
 def test_the_injected_state_survives_into_the_snapshot_a_rollout_runs_on(engine):
-    """The property the whole interface depends on.
-
-    `UtilityTeacher.rollout_stats` scores every candidate on `env.snapshot()`.
-    Anything the mirror was told that does not reach the snapshot is something
-    every candidate is scored without -- i.e. the fresh board this item exists
-    to replace, reintroduced one level down.
+    """The property the interface depends on: `UtilityTeacher.rollout_stats`
+    scores every candidate on `env.snapshot()`, so anything told to the mirror
+    must reach the snapshot.
     """
     env = _env(engine, max_ticks=1000)
     env.reset()

@@ -2,53 +2,30 @@
 
     perception/.venv/Scripts/python.exe perception/tools/bench_hand.py
 
-THREE MEASUREMENTS, BECAUSE ONE WOULD BE MISLEADING
----------------------------------------------------
-1. **Accuracy against hand labels.** 120 slot crops sampled with a fixed seed
-   from `assets/live/match_practice_01`, labelled BLIND -- the crops were
-   shuffled and shown with numeric ids only, so neither classifier's opinion
-   was visible while labelling. This is the only absolute accuracy figure
-   here; everything else is a constraint check.
+Three measurements, since any one alone misleads:
 
-   **It is reported per STRATUM, and that is not decoration.** The first
-   version of this label set sampled only slots carrying a magenta cost
-   badge, which excluded every unaffordable card and every empty slot -- 20%
-   of in-match slots, and precisely the population `DeckHandDetector`'s
-   presence rule was wrong about. It scored 100.0% while reporting `blank`
-   for one slot in seven. A sample drawn through the same predicate the
-   classifier gates on cannot test that gate.
+1. Accuracy against blind hand labels: 120 slot crops sampled with a fixed seed
+   from `assets/live/match_practice_01`, shuffled and shown by id only while
+   labelling. Reported per stratum: a sample drawn through the badge predicate
+   the classifier gates on (skipping unaffordable and empty slots) cannot test
+   that gate.
 
-2. **The game's own structural invariants**, which need no labels at all:
-   no off-deck card, no duplicate within a hand, and no early return (a card
-   that leaves the hand cannot come back until four OTHERS are played). The
-   third is the strongest, and the only one that catches a classifier which is
-   *stably* wrong rather than noisy. Same instrument as `audit_hand_id.py`,
-   imported rather than reimplemented.
+2. The game's structural invariants, needing no labels: no off-deck card, no
+   duplicate in a hand, and no early return (a card that leaves the hand cannot
+   return until four others are played). The last catches a classifier that is
+   stably wrong rather than noisy. Same instrument as `audit_hand_id.py`,
+   imported.
 
-3. **Latency**, INTERLEAVED, with an identical-arms control that must read
-   ~1.00. This box thermally throttles -- CLAUDE.md records a 3x absolute
-   drift within one session -- so a sequential "arm A then arm B" comparison
-   measures the machine warming up. Arms alternate, start order rotates, and
-   a third arm identical to the first bounds the noise floor. A control
-   outside 0.90-1.10 invalidates the run and says so.
+3. Latency, interleaved and order-rotated, with an identical-arms control that
+   must read ~1.00: this box throttles thermally, so a sequential A-then-B
+   comparison measures the machine warming up. A control outside 0.90-1.10
+   invalidates the run.
 
-WHAT THE POOL-SIZE HYPOTHESIS PREDICTED, AND WHY IT IS NOT TESTED HERE
-----------------------------------------------------------------------
-The proposal this benchmark was written to evaluate was to shrink the
-template pool from "the whole card database" to the eight cards of our deck.
-`CardDetector` already does that -- it loads only the cards it is handed,
-plus five `blank` entries -- so there is no 115-template arm to compare
-against; it does not exist in the code. The off-deck column below is what
-that restriction already buys, and it is already near zero for BOTH arms.
-
-WHAT THE ERROR ACTUALLY IS
---------------------------
-Stable within-deck confusion, not fabrication. Both arms report `blank`
-correctly on 100% of genuinely empty slots; the incumbent simply reads
-Musketeer as Mini P.E.K.K.A most of the time (46.2% correct on that card),
-and a consistently-wrong card produces a hand history the 8-card FIFO rules
-out -- which is why the invariant in section 2 moves so much further than the
-accuracy in section 1.
+`CardDetector` already restricts its pool to the deck (eight cards plus five
+`blank` entries), so pool size is not an arm here. The remaining error is
+stable within-deck confusion, not fabrication: both arms read genuinely empty
+slots as `blank`, and a consistently misread card produces a hand history the
+FIFO rules out, which is why the invariants move further than accuracy.
 """
 
 from __future__ import annotations
@@ -79,9 +56,9 @@ from tools.audit_hand_id import audit, report  # noqa: E402
 
 ASSETS = _ROOT / "tests" / "assets" / "hand"
 
-#: The two benchmarked recordings. A pool, a frame dump and a label set are one
-#: unit -- they are all a specific deck, and mixing them across decks measures
-#: what an unseen card least mismatches.
+#: The two benchmarked recordings. A pool, a frame dump and a label set are
+#: one unit, a specific deck; mixing them across decks measures what an unseen
+#: card least mismatches.
 SUITES = {
     "giant": {
         "frames": _ROOT / "assets" / "live" / "match_practice_01",
@@ -97,18 +74,15 @@ SUITES = {
         "fps": 3.0,
         # No measured hold time for this deck. 2.6 Hog Cycle averages 2.625
         # elixir a card against the Giant deck's 4.1, so it cycles far faster
-        # by design and the Giant figure would flag a correct reading.
+        # and the Giant figure would flag a correct reading.
         "hold_s": None,
     },
 }
 
 
 def deck_from_pool(pool_dir):
-    """The deck a pool was built for, read off the pool.
-
-    Derived rather than listed so a benchmark cannot be run with a deck that
-    disagrees with its own templates -- which would silently measure the
-    refusal path instead of the classifier.
+    """The deck a pool was built for, read off the pool, so a benchmark cannot run
+    a deck that disagrees with its own templates.
     """
     names = set(load_pool(pool_dir))
     return [c for c in vars(Cards).values()
@@ -121,12 +95,8 @@ def _load(path: Path) -> Image.Image:
 
 
 def build_arms(pool_dir: Path, deck=None):
-    """Fresh detector per arm. CardDetector MUTATES the list it is handed.
-
-    `CardDetector.__init__` does `self.cards = cards` with no copy and then
-    `self.cards.extend([BLANK] * 5)`, so constructing two of them from one
-    list gives the second thirteen cards and the third eighteen. Every arm
-    therefore gets its own `list(deck)`.
+    """Fresh detector per arm: `CardDetector.__init__` keeps the list it is handed
+    and extends it with five BLANKs, so each arm gets its own `list(deck)`.
     """
     deck = list(deck if deck is not None else deck_from_pool(pool_dir))
     return {
@@ -208,14 +178,10 @@ def score_invariants(arms, frames_dir: Path, stride: int, fps: float,
 
 def score_latency(arms, pool_dir: Path, frames_dir: Path,
                   n_frames: int, repeats: int):
-    """Interleaved, order-rotated, with an identical-arms control.
-
-    The control is a SECOND, independently constructed copy of arm 1. Two
-    identical arms must read the same time; CLAUDE.md records that they do
-    not when anything else is loading the box, and that a fixed arm order
-    alone is not enough either -- with two identical arms the second read 6.8%
-    slower every round, because it inherits the cache the first just evicted.
-    Hence rotation as well as interleaving.
+    """Interleaved, order-rotated, with an identical-arms control: a second,
+    independently constructed copy of arm 1. With a fixed order, the second of
+    two identical arms reads slower every round because it inherits the cache
+    the first evicted.
     """
     paths = sorted(frames_dir.glob("f*.png"))
     step = max(1, len(paths) // n_frames)
@@ -225,11 +191,8 @@ def score_latency(arms, pool_dir: Path, frames_dir: Path,
     control_name = names[0] + "  [CONTROL, 2nd copy of arm 1]"
     lanes = {**arms, control_name: build_arms(pool_dir)[names[0]]}
 
-    # WARM-UP, DISCARDED. The first pass over any lane pays page faults, lazy
-    # numpy/scipy imports and a cold cache, and it lands on whichever lane
-    # happens to go first. Measured without it, the identical-arms control
-    # read 1.426 -- a 43% "difference" between two copies of the same code,
-    # which would have been reported as a real regression.
+    # Warm-up, discarded: the first pass pays page faults, lazy imports and a
+    # cold cache, and lands on whichever lane goes first.
     for det in lanes.values():
         for image in images[:8]:
             det.run(image)

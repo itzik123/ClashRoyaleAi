@@ -1,27 +1,16 @@
-"""The trainee's deck. ONE definition, settable without editing code.
+"""The trainee's deck, set with CLASH_DECK:
 
     CLASH_DECK="hog rider,musketeer,cannon,ice golem,skeletons,ice spirit,the log,fireball"
     CLASH_DECK="15,6,25,40,24,72,33,7"
     CLASH_DECK="evo:archers,knight,..."        # an Evolution, explicitly
 
-Names are matched ignoring case, dots and spaces, over the PLAYABLE ids, so
-"pekka" is P.E.K.K.A. and "minipekka" is Mini PEKKA. Evolutions reuse their base
-card's name verbatim (ids 1 and 128 are both "Archers"), so a bare name always
-means the base card and an Evolution needs `evo:`.
+Names match ignoring case, dots and spaces, over the playable ids. Evolutions
+reuse their base card's name, so a bare name means the base card and an
+Evolution needs `evo:`.
 
-WHY A MODULE. The deck used to be a literal in `envs/gym_wrapper.py`: changing
-it meant editing a read-only-by-policy file, nothing validated the result, and
-the run's log did not record which deck produced it. A deck the engine refuses
-(a Champion outside slots 1-2) surfaced as a ValueError deep inside module
-import. `parse_deck` fails at parse time, with the engine's own reason.
-
-This module is a LEAF -- it imports the engine and nothing else from python_ai
--- so any layer may import it without creating a cycle. What a deck must satisfy
-beyond legality (a win condition, advisor coverage, ...) is
-`envs.deck_contract.validate_deck`, which needs heavier machinery.
-
-Every AsyncVectorEnv worker and the phase-2 subprocess inherit the environment,
-so they parse the same deck.
+A leaf: it imports only the engine, so any layer may use it. Checks beyond
+legality (a win condition, advisor coverage) are in
+`envs.deck_contract.validate_deck`.
 """
 import os
 import re
@@ -58,9 +47,9 @@ def _lookup(token):
 
 
 def parse_deck(spec):
-    """A deck spec (see module docstring) -> list of 8 card ids, validated.
+    """A deck spec -> list of 8 validated card ids; empty means SHIPPED_DECK.
 
-    None or empty returns SHIPPED_DECK. Raises ValueError naming the problem.
+    Raises ValueError naming the problem.
     """
     if spec is None or not str(spec).strip():
         return list(SHIPPED_DECK)

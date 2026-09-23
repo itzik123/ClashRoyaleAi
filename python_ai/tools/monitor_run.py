@@ -1,42 +1,20 @@
 """Health daemon for an unattended training run.
 
-    python_ai/venv/Scripts/python.exe python_ai/monitor_run.py --dir _runs/main --once
+    python_ai/venv/Scripts/python.exe python_ai/tools/monitor_run.py --dir _runs/main --once
 
-Prints one line per check, and exits non-zero if anything is ALARM. Designed to
-be run on a timer against a live run directory: it reads the TensorBoard event
-file and the checkpoint, never the trainer's memory, so it cannot perturb the
-run it is watching.
+Prints one line per check and exits non-zero on any ALARM. Reads the
+TensorBoard event file and a copy of the checkpoint, never the trainer's
+memory, so it cannot perturb the run.
 
-WHAT IT WATCHES, AND WHY EACH ONE
----------------------------------
-Every alarm below corresponds to a failure this project has actually had, or to
-one the current changes newly make possible.
-
-* NaN / inf in any loss           -- a dead run that keeps printing
-* parameter norm                  -- weight collapse or blow-up; the norm is
-                                     read from the checkpoint, so it also
-                                     confirms checkpoints are still being
-                                     written at all
-* RSS of the trainer process      -- memory leak on a 20h run. The advisor
-                                     target buffer is ~9.8 MB per rollout and
-                                     is .clear()ed each update; if that ever
-                                     stops, this is what catches it
-* Shaping/SpellValueWeight        -- the anneal wired in 2026-08-14. It was
-                                     dead code for the whole life of the term,
-                                     so "it is scheduled" is not evidence
-* entropy vs its target           -- the controller fighting rather than
-                                     tracking
-* Advisor/KL with Advisor/Rows    -- NEVER read KL alone: it falls when the
-                                     head learns the surface AND when the
-                                     advisor simply stops speaking
-* per-card MODAL SHARE + top-1 p  -- the placement collapse detector. CLAUDE.md
-                                     is explicit that per-card ENTROPY is the
-                                     wrong statistic (Mini PEKKA has the lowest
-                                     entropy in the deck and is the healthiest
-                                     card) and that modal share alone
-                                     degenerates on a near-uniform map. The two
-                                     together are the diagnostic: a good head is
-                                     sharp but MOVES its mode with the board.
+  * NaN / inf in any loss          a dead run that keeps printing
+  * win rate, floor alarm, ladder  a run that has stopped winning (every other check reads healthy on it)
+  * ratio self-check               rollout and update disagreeing about the policy
+  * parameter norm                 weight collapse or blow-up; also confirms checkpoints are being written
+  * RSS of python processes        memory leaks on a long run
+  * Shaping/SpellValueWeight       that the anneal actually moves
+  * entropy vs its target          the controller fighting rather than tracking
+  * Advisor/KL with Advisor/Rows   never KL alone: it also falls when the advisor stops speaking
+  * per-card modal share + top-1 p the placement collapse detector; a good head is sharp but moves its mode with the board
 """
 import argparse
 import glob
@@ -48,21 +26,12 @@ import time
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
 import python_ai  # noqa: E402,F401
 from python_ai.engine_constants import BOARD_W  # noqa: E402
-
-# BOARD_W, not a literal 18. MicroRoyaleNet.cell_to_xy -- the canonical
-# flat-cell decoder the placement head itself uses -- derives this from the
-# engine (`self.board_width`); every harness that retyped it as 18 is a
-# second copy of a board constant, the defect class CLAUDE.md tracks. If the
-# grid ever changes, the net decodes correctly and these scripts silently
-# feed the engine transposed coordinates.
 
 ALARM, WARN, OK = "ALARM", "warn", "ok"
 
@@ -112,10 +81,8 @@ def _trainer_rss_mb():
 def check_placement(ckpt_path, episodes, opp_elixir):
     """Per-card modal share + top-1 probability over greedy play.
 
-    This is the check the whole workstream exists for, and it is deliberately
-    behavioural rather than a weight statistic: the failure being watched for is
-    "the head returns one cell regardless of the board", which is invisible in
-    any norm and provably invisible in aggregate entropy.
+    Behavioural, because "the head returns one cell regardless of the board" is
+    invisible in any norm and in aggregate entropy.
     """
     import clash_royale_env as E
     from python_ai.envs import gym_wrapper
@@ -126,9 +93,7 @@ def check_placement(ckpt_path, episodes, opp_elixir):
     dev = torch.device("cpu")
     net = load_net(ckpt_path, dev, verbose=False)
     deck = list(gym_wrapper.DEFAULT_DECK)
-    # EVERY card of the trainee's deck. This watched Cannon, Fireball and Giant
-    # -- a Giant is not in the deck, so a third of the collapse detector watched
-    # nothing -- and it has to follow CLASH_DECK anyway.
+    # Every card of the trainee's deck.
     watch = {int(c): E.get_card_info(int(c))["name"] for c in deck}
     cells = {c: [] for c in watch}
     top1 = {c: [] for c in watch}
@@ -196,7 +161,7 @@ def main():
     if not sc:
         say(ALARM, "tensorboard", "no event file -- is the run writing at all?")
 
-    # --- liveness + NaN ----------------------------------------------------
+    # --- liveness + NaN ---
     for tag in ("Loss/Actor", "Loss/Critic", "Loss/Entropy"):
         v = _last(sc.get(tag, []), 5)
         if v is None:
@@ -210,12 +175,9 @@ def main():
     if steps:
         say(OK, "episodes", f"latest update at episode {steps[-1]}")
 
-    # --- IS THE AGENT WINNING ANYTHING ----------------------------------------
-    # Added 2026-09-15 (audit 08). Every other check here is a NaN test, a norm
-    # or memory, and all of them read healthy on a run that has lost 4,000
-    # straight games. A from-scratch run starts at rung 0, where the curriculum
-    # has no valve of its own, so this is the only automated place a dead run
-    # can become visible.
+    # --- is the agent winning anything ---
+    # Every other check here reads healthy on a run that has lost thousands of
+    # straight games, and rung 0 has no curriculum valve of its own.
     wr = sc.get("Training/Win_Rate_100", [])
     stage = _last(sc.get("Training/Curriculum_Stage", []), 1)
     if wr:
@@ -264,7 +226,7 @@ def main():
     if dmin is not None:
         say(OK, "worst deck", f"win rate {dmin:.2f}")
 
-    # --- the spell anneal, the thing that was dead code --------------------
+    # --- the spell anneal ---
     w = sc.get("Shaping/SpellValueWeight", [])
     if len(w) >= 2:
         first, last = w[0][1], w[-1][1]
@@ -275,16 +237,15 @@ def main():
     elif w:
         say(OK, "spell weight", f"{w[-1][1]:.5f} (one sample)")
 
-    # --- advisor: KL and Rows, always together -----------------------------
+    # --- advisor: KL and Rows, always together ---
     kl, rows_ = sc.get("Advisor/KL", []), sc.get("Advisor/Rows", [])
     coef = _last(sc.get("Advisor/Coef", []), 1)
     if kl and rows_:
         k0, k1 = _last(kl[:5], 5), _last(kl, 5)
         r0, r1 = _last(rows_[:5], 5), _last(rows_, 5)
         if coef is not None and coef <= 0.0:
-            # Zero rows is the CORRECT state for a control arm -- the term is
-            # switched off, so no advisor call is made at rollout time either.
-            # Alarming here would cry wolf on every ablation.
+            # Zero rows is correct for a control arm with the term switched
+            # off.
             say(OK, "advisor", f"disabled (coef 0) -- {r1:.1f} rows, as expected")
         elif r1 is not None and r1 < 1.0:
             say(ALARM, "advisor", f"target rows collapsed to {r1:.1f} at "
@@ -292,7 +253,7 @@ def main():
         else:
             say(OK, "advisor", f"KL {k0:.3f} -> {k1:.3f}   rows {r0:.1f} -> {r1:.1f}")
 
-    # --- entropy controller ------------------------------------------------
+    # --- entropy controller ---
     meas = _last(sc.get("Entropy/Placement_Measured", []), 5)
     targ = _last(sc.get("Entropy/Placement_Target", []), 5)
     if meas is not None and targ is not None:
@@ -303,13 +264,12 @@ def main():
     if cov is not None:
         say(OK, "coverage entropy", f"{cov:.3f} of max (fallback rows)")
 
-    # --- weights + memory --------------------------------------------------
+    # --- weights + memory ---
     ck = os.path.join(run_dir, args.ckpt)
     if os.path.exists(ck):
         age_min = (time.time() - os.path.getmtime(ck)) / 60.0
-        # Load a COPY. On Windows the trainer's checkpoint replace fails while
-        # any handle has the file open, and this check used to be that handle
-        # (audit 08, gap 4).
+        # Load a copy: on Windows the trainer's checkpoint replace fails while
+        # any handle holds the file.
         import shutil
         import tempfile
         tmp_ck = os.path.join(tempfile.gettempdir(), f"monitor_{os.getpid()}.pth")
@@ -337,7 +297,7 @@ def main():
         say(ALARM if rss > args.rss_limit_mb else OK, "memory",
             f"{rss:.0f} MB across all python processes")
 
-    # --- the placement collapse detector ------------------------------------
+    # --- the placement collapse detector ---
     if not args.skip_placement and os.path.exists(ck):
         t0 = time.time()
         for name, modal, p1, n in check_placement(
@@ -345,11 +305,9 @@ def main():
             if n == 0:
                 say(WARN, f"placement {name}", "never in hand")
                 continue
-            # Both halves matter. A high modal share at a top-1 near uniform
-            # (1/612 = 0.0016) is a DISSOLVED head reporting a meaningless
-            # mode; a high modal share at a high top-1 is a genuinely frozen
-            # cell. Only the second is the collapse this run is trying to cure,
-            # and neither is visible in aggregate entropy.
+            # High modal share at a near-uniform top-1 (1/612) is a dissolved
+            # head with a meaningless mode; at a high top-1 it is a frozen
+            # cell, the collapse being watched for.
             level = ALARM if (modal > 0.60 and p1 > 0.20) else (
                 WARN if modal > 0.60 or p1 < 0.005 else OK)
             say(level, f"placement {name}",

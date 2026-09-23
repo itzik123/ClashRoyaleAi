@@ -1,47 +1,12 @@
-"""REACTIVE ROLLOUTS: the rollout opponent answers instead of standing still.
+"""Reactive rollouts: the rollout opponent answers an attacking candidate instead
+of standing still.
 
-WHY THIS FILE EXISTS
---------------------
-`rollout_stats` rolled every candidate forward with BOTH SIDES NO-OPING, so the
-scorer was structurally blind to the cost of being answered. Measured against a
-ground-truth opponent (a full stage-5 UtilityTeacher playing the other side),
-over 150 naked bridge pushes:
-
-    tower damage dealt   no-op rollout predicts 587.5   truth 139.5   bias +448.0
-    elixir lost          no-op rollout predicts   0.09  truth   2.84
-    says PLAY            no-op rollout  90.7%           truth   7.3%
-
-i.e. 125 false GO and 0 false HOLD -- the error was entirely one-directional and
-entirely in favour of attacking.
-
-WHAT THE FIX IS AND IS NOT. It does NOT make the teacher pick better plays:
-`P(same | truth plays)` is pinned at 28.3% for every responder tried, at every
-margin, including the blind one. What it does is stop the teacher COMMITTING to
-attacks that a real opponent would punish -- false GO 27 -> 4 across all
-decisions. That alone is worth the win rate.
-
-WHY THE COUNTER IS OPEN-LOOP. Four responders were measured as paired
-teacher-vs-teacher win rate, 150 seeded openings each, sides swapped, control
-`noop vs noop == 0.5000` exactly:
-
-    scripted (open-loop)  0.91x cost   +0.1583  [+0.1033, +0.2117]  p=1.9e-07
-    reflex, stride 50     1.95x        +0.2050  [+0.1500, +0.2567]  p=3.3e-11
-    reflex, stride 30     2.63x        +0.2450  [+0.1933, +0.2933]  p=1.4e-15
-    reflex, stride 10     5.50x        +0.2217  [+0.1667, +0.2733]  p=4.4e-12
-
-All four beat the control decisively. But paired ARM vs ARM on the same
-openings, all six comparisons are NULL (p from 0.0857 to 0.832) -- the arms are
-indistinguishable from each other, because ~60 of 150 openings tie. So the
-decision collapsed to cost, and the cheapest arm won. The open-loop responder
-reads NO observation inside the rollout and is measurably slightly FASTER than
-the no-op control, because the counter shortens matches.
-
-Note the non-monotonicity in that table, since it is the reason a "more is
-better" reading was rejected: stride 10 costs 2.1x stride 30 and scores BELOW
-it. Deciding every tick makes the rollout opponent an unrealistically good
-defender -- it was observed dumping four cards onto a single Hog -- which
-over-penalises attacking. Same shape as the neural search measuring horizon 20
-worse than 12.
+A no-op rollout is blind to the cost of being answered, and its error runs
+entirely in favour of attacking. The fix does not make the teacher pick better
+plays; it stops it committing to pushes a real opponent would punish. The
+counter is open-loop (it reads no observation inside the rollout): every
+responder tried beat the no-op control and none beat another, so the cheapest
+was kept.
 """
 import os
 import sys
@@ -96,13 +61,11 @@ def _bridge_push(env, team):
 
 
 def test_the_rollout_opponent_spends_elixir_answering_an_attacking_candidate():
-    """THE core behaviour. With reactive rollouts the opponent is no longer a
-    statue: a candidate that walks a win condition to the bridge is answered
-    inside the rollout, and the answer costs the opponent elixir.
-
-    Asserted on the OPPONENT'S OWN SPEND rather than on damage, because damage
-    is confounded by our own towers shooting -- the trap CLAUDE.md records for
-    `get_troop_damage_dealt`."""
+    """With reactive rollouts, a win condition walked to the bridge is answered
+    inside the rollout and the answer costs the opponent elixir. Asserted on
+    the opponent's spend, since damage is confounded by our own towers
+    shooting.
+    """
     env = _env()
     env.set_elixir_for_team(0, 10.0)
     env.set_elixir_for_team(1, 10.0)
@@ -118,13 +81,8 @@ def test_the_rollout_opponent_spends_elixir_answering_an_attacking_candidate():
 
 
 def test_a_card_played_in_our_own_half_draws_no_counter():
-    """Only an ATTACKING placement is a threat the opponent must spend on.
-
-    Charging a counter against a defensive placement would price defence as if
-    it were an attack, which inverts the whole point: the measured value of
-    this feature is suppressing naked ATTACKS, and an always-answering
-    responder scored BELOW a less frequent one (+0.2217 vs +0.2450) precisely
-    because over-answering over-penalises.
+    """Only an attacking placement draws a counter; answering defence would price
+    it as an attack.
     """
     t = _teacher(team=0, reactive=True)
     own_half = T.Candidate.single(0, DECK[4], 9.0, 3.0, "melee")
@@ -136,13 +94,8 @@ def test_a_card_played_in_our_own_half_draws_no_counter():
 
 
 def test_reactive_rollout_False_is_the_old_no_op_rollout_exactly():
-    """The one-line off switch, in the shape `max_combos = 0` already has.
-
-    A feature that changes what every phase-1 opponent does needs a way to be
-    turned off without editing source -- both so an A/B can hold everything
-    else byte-identical, and so a training run that misbehaves can be reverted
-    without a rebuild. Asserted as the NEGATION of the core behaviour: with the
-    switch off the rollout opponent spends nothing, because it never acts.
+    """The off switch: with it off the rollout opponent never acts, so it spends
+    nothing.
     """
     env = _env()
     env.set_elixir_for_team(0, 10.0)
@@ -161,16 +114,10 @@ def test_reactive_rollout_False_is_the_old_no_op_rollout_exactly():
 
 @pytest.mark.parametrize("team", [0, 1])
 def test_the_counter_is_placed_in_the_opponents_own_frame_for_either_side(team):
-    """One class plays both sides, and the counter has to mirror with it.
-
-    THE FRAME TRAP, which this project has paid for twice: `step_self_play`
-    mirrors team 1's y itself, but `is_valid_placement` takes ABSOLUTE y for
-    BOTH teams. Get it wrong and every counter is silently refused -- the
-    symptom is not a crash but a rollout opponent that never answers, i.e. the
-    feature quietly reverting to the no-op behaviour it exists to replace.
-
-    Asserted on the opponent actually SPENDING, because that is the thing a
-    rejected placement fails to do.
+    """One class plays both sides, and the counter must mirror with it:
+    `step_self_play` mirrors team 1's y, `is_valid_placement` takes absolute y.
+    Wrong frames make every counter silently refused, so this asserts the
+    opponent actually spends.
     """
     env = _env()
     env.set_elixir_for_team(0, 10.0)
@@ -188,12 +135,8 @@ def test_the_counter_is_placed_in_the_opponents_own_frame_for_either_side(team):
 
 
 def test_the_noop_still_scores_exactly_zero():
-    """REGRESSION GUARD on the invariant the whole scorer rests on.
-
-    The no-op baseline is what makes every other score MARGINAL. Reactive
-    rollouts change what the baseline rollout contains -- the opponent now acts
-    in candidate rollouts -- so it is worth re-pinning that the no-op itself
-    still scores exactly 0.0 and the bot can still hold elixir.
+    """The no-op must still score exactly 0.0 now that the opponent acts in
+    candidate rollouts.
     """
     env = _env()
     t = _teacher(team=0, reactive=True)
@@ -204,12 +147,9 @@ def test_the_noop_still_scores_exactly_zero():
 
 
 def test_the_reacting_rollout_still_does_not_touch_the_live_match():
-    """REGRESSION GUARD, and reactive rollouts raise the stakes on it.
-
-    The rollout opponent now PLACES CARDS. If `snapshot()` ever stopped
-    deep-copying the stats collectors, those hypothetical placements would post
-    into the real match's statistics -- which feed the reward shaping, so the
-    teacher would corrupt the returns its own student is scored against.
+    """The rollout opponent places cards, so snapshot() must keep deep-copying the
+    stats collectors or the teacher corrupts the returns its student is scored
+    against.
     """
     env = _env()
     before = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
@@ -224,12 +164,8 @@ def test_the_reacting_rollout_still_does_not_touch_the_live_match():
 
 
 def test_the_counter_never_plays_a_card_the_opponent_cannot_afford():
-    """The counter is filtered through the opponent's REAL elixir.
-
-    A rollout in which the opponent answers for free would be a different and
-    worse bias than the one being fixed: it would make every attack look
-    punished, which is the over-answering failure the stride sweep measured
-    (+0.2217 at stride 10 against +0.2450 at stride 30).
+    """The counter is filtered through the opponent's real elixir; a free answer
+    would make every attack look punished.
     """
     env = _env()
     env.set_elixir_for_team(0, 10.0)
@@ -245,32 +181,11 @@ def test_the_counter_never_plays_a_card_the_opponent_cannot_afford():
 
 
 def test_reactivity_is_a_competence_axis_and_the_short_rungs_do_without_it():
-    """Responder fidelity ramps with the ladder, like every other axis here.
-
-    THE COLD-START ARGUMENT. In phase 1 the teacher models TEAM 0, which is the
-    RL agent, and at episode 0 that agent cannot defend at all. A rollout that
-    assumes a competent answer would price every attack as punished against an
-    opponent who would not punish it -- the same shape as `play_margin = 3.0`
-    freezing the bot against a PASSIVE opponent (14 plays across 6 matches,
-    elixir pinned at 9.56), which is the zero-gradient environment the whole
-    2026-08-19 curriculum pivot exists to remove.
-
-    THE LADDER WAS FIRST WRITTEN AS [F, F, T, T, T, T] ON THAT ARGUMENT ALONE
-    AND THAT WAS WRONG -- the cold-start reasoning is sound but it is not the
-    binding constraint. See
-    `test_the_counter_does_not_fire_when_the_rollout_is_too_short_to_see_the_payoff`:
-    the counter is charged at +10 ticks while a Hog needs ~130 to arrive, so
-    every rung below `COUNTER_MIN_HORIZON_TICKS` prices attacks below their
-    true value and 3 of 20 openings froze at horizon 30. Only stage 5 clears
-    the gate, and stage 5 is also the only rung the +0.1500 was measured at.
-
-    So the honest ladder is "on where it was measured, off everywhere else",
-    which happens to also satisfy the cold-start argument rather than resting
-    on it.
+    """Reactivity is on only at the top rung, the one rung whose horizon clears
+    COUNTER_MIN_HORIZON_TICKS (see the too-short test below). That also keeps
+    it off at cold start, when the modelled agent cannot defend at all.
     """
-    # Stated as a PROPERTY rather than a literal list: the table went 6 rungs
-    # -> 11 on 2026-09-03 and a hardcoded list would have to be re-typed on
-    # every such change, which is how a guard quietly stops guarding.
+    # A property, not a literal list, so it survives the table changing length.
     reactive = [cfg["reactive"] for cfg in T.TEACHER_STAGES]
     top = len(T.TEACHER_STAGES) - 1
     assert reactive[top] is True, "the top rung is where +0.1500 was measured"
@@ -286,18 +201,9 @@ def test_reactivity_is_a_competence_axis_and_the_short_rungs_do_without_it():
 
 
 def test_a_naked_bridge_push_scores_LOWER_when_the_opponent_answers():
-    """THE MECHANISM, pinned as a differential rather than an absolute.
-
-    This is what the whole feature buys, and it is narrower than it sounds. It
-    does NOT make the teacher pick better plays -- measured, `P(same | truth
-    plays)` is 28.3% with the responder and 28.3% without. What it does is stop
-    the teacher committing to a push a real opponent would punish. Over 150
-    such pushes the no-op rollout said PLAY on 90.7% where the ground truth
-    said 7.3%.
-
-    A differential on ONE candidate in ONE state, because an absolute
-    threshold here would be pinning a number that legitimately moves with the
-    board, the deck and the profile.
+    """A naked push must score lower when the opponent answers. A differential on
+    one candidate, since an absolute threshold would move with the board, deck
+    and profile.
     """
     env = _env()
     env.set_elixir_for_team(0, 10.0)
@@ -319,29 +225,10 @@ def test_a_naked_bridge_push_scores_LOWER_when_the_opponent_answers():
 
 
 def test_the_counter_does_not_fire_when_the_rollout_is_too_short_to_see_the_payoff():
-    """THE ASYMMETRY THAT MAKES A SHORT REACTIVE ROLLOUT WORSE THAN A BLIND ONE.
-
-    The counter's COST lands at +10 ticks. The attack's PAYOFF needs ~130 --
-    a Hog has ~12 tiles to cross at Fast speed. So a rollout shorter than the
-    crossing charges the answer in full and credits none of the push, which is
-    a systematic anti-attack bias that gets worse the shorter the horizon.
-
-    Measured against a PASSIVE opponent (which is what an episode-0 agent is),
-    20 seeded openings, share of decisions that landed a card:
-
-        horizon   OFF     ON      froze (<5 plays in 120 decisions)
-           30    12.2%   9.8%     3/20
-           50    11.6%  10.1%     3/20
-           70    12.5%  11.3%     1/20
-          100    11.8%  12.3%     0/20
-
-    The +0.1500 win rate was measured at horizon 100, where the bias is gone.
-    Turning it on at 30 would ship a regression into the exact regime the
-    2026-08-19 curriculum pivot exists to prevent -- a teacher that freezes
-    against a weak opponent, i.e. a zero-gradient environment.
-
-    Same argument, and the same shape, as COMBO_MIN_HORIZON_TICKS: do not
-    simulate half an interaction and score it as if it were whole.
+    """The counter's cost lands at +10 ticks while a Hog's payoff needs ~130, so a
+    rollout shorter than the crossing charges the answer and credits none of
+    the push: an anti-attack bias that freezes the teacher against a passive
+    opponent. Same argument as COMBO_MIN_HORIZON_TICKS.
     """
     push = T.Candidate.single(0, HOG, 2.0, float(tactics.BRIDGE_ROW), "wincon")
 
@@ -360,10 +247,8 @@ def test_the_counter_does_not_fire_when_the_rollout_is_too_short_to_see_the_payo
 
 
 def test_the_ladder_only_enables_reacting_where_it_was_measured():
-    """`reactive` must not be on at a rung whose horizon the gate rejects.
-
-    Otherwise the config claims a behaviour the code silently declines to
-    perform -- the stage table would be documentation that is not true.
+    """`reactive` must not be on at a rung whose horizon the gate rejects, or the
+    table claims a behaviour the code declines to perform.
     """
     for i, cfg in enumerate(T.TEACHER_STAGES):
         if cfg["reactive"]:

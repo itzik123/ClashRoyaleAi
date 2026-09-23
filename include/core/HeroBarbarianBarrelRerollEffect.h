@@ -5,15 +5,10 @@
 #include "Board.h"
 #include <cmath>
 
-// Hero Barbarian Barrel's "Rowdy Reroll": the Barbarian re-enters his
-// barrel and rolls forward again, dealing the same roll damage a second
-// time along the path -- halved against any Crown Tower hit (same
-// dynamic_cast<Tower*> idiom GoldenKnightDashEffect already uses). Reuses
-// applyLineSplashDamage's own line-hit-test geometry (project onto the
-// line, clamp to [0,range], measure perpendicular distance) inline rather
-// than modifying that shared free function for one card's Tower-specific
-// discount. Gated to fire ONCE per deployment via the registration's own
-// usesLimit=1.
+// Hero Barbarian Barrel's "Rowdy Reroll": rolls forward again, dealing roll
+// damage along the path, halved against Crown Towers. The line test is inlined
+// rather than adding a tower discount to applyLineSplashDamage. Once per deploy
+// via usesLimit=1.
 class HeroBarbarianBarrelRerollEffect : public IAbilityEffect {
     float rollDistance;
     float halfWidth;

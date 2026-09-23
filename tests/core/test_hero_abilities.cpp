@@ -16,10 +16,9 @@
 #include "TargetingHelpers.h"
 #include "Tower.h"
 
-// ---------------- registry wiring: one sanity check per Hero ----------------
-// Stage 1 pilot pair -- both use zero new engine primitives, proving the
-// generalized isHero/championSlots path end-to-end (see CardStats::isHero's
-// own comment) before later stages introduce genuinely new mechanics.
+// --- registry wiring: one sanity check per Hero ---
+// The pilot pair uses no new primitives, proving the isHero / championSlots
+// path end to end.
 
 TEST_CASE("Hero Mini P.E.K.K.A. (170) is registered with base Mini PEKKA's stats and a one-use ability",
         "[card_registry][hero]") {
@@ -27,7 +26,7 @@ TEST_CASE("Hero Mini P.E.K.K.A. (170) is registered with base Mini PEKKA's stats
     const CardDefinition* def = CardRegistry::getInstance().getCard(170);
     REQUIRE(def != nullptr);
     REQUIRE(def->isHero);
-    REQUIRE_FALSE(def->isChampion); // Heroes are NOT Champions -- additive flag, not a rename
+    REQUIRE_FALSE(def->isChampion); // Heroes are not Champions: an additive flag
     def->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
@@ -35,9 +34,9 @@ TEST_CASE("Hero Mini P.E.K.K.A. (170) is registered with base Mini PEKKA's stats
     REQUIRE(hero != nullptr);
     REQUIRE(hero->isHero);
     REQUIRE_FALSE(hero->isChampion);
-    REQUIRE(hero->hp == 1390); // base Mini PEKKA's own hp, copied verbatim -- see CardRegistry.h id 5
+    REQUIRE(hero->hp == 1390); // base Mini PEKKA hp (id 5)
     REQUIRE(hero->abilityElixirCost == Catch::Approx(1.0f));
-    REQUIRE(hero->abilityCooldownTicks == 0); // no repeating cooldown -- one-use, see abilityUsesRemaining
+    REQUIRE(hero->abilityCooldownTicks == 0); // one use, no repeating cooldown
     REQUIRE(hero->abilityUsesRemaining == 1);
 }
 
@@ -53,11 +52,11 @@ TEST_CASE("Hero Musketeer (168) is registered with base Musketeer's stats and a 
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 721); // base Musketeer's own hp, copied verbatim -- see CardRegistry.h id 6
+    REQUIRE(hero->hp == 721); // base Musketeer hp (id 6)
     REQUIRE(hero->sightRange == Catch::Approx(6.0f));
     REQUIRE(hero->abilityElixirCost == Catch::Approx(3.0f));
     REQUIRE(hero->abilityCooldownTicks == 220);
-    REQUIRE(hero->abilityUsesRemaining == -1); // unlimited activations, gated only by cooldown/elixir
+    REQUIRE(hero->abilityUsesRemaining == -1); // unlimited, gated by cooldown and elixir
 }
 
 // ---------------- HeroMiniPekkaBoostEffect ----------------
@@ -79,9 +78,8 @@ TEST_CASE("HeroMiniPekkaBoostEffect grants a one-time hp+damage boost", "[hero_m
 TEST_CASE("Hero Musketeer's turret stats self-destruct after their fixed lifetime, not before",
         "[hero_musketeer]") {
     Board board;
-    // Mirrors CardRegistry::heroMusketeerTurretStats() (private to that
-    // class) -- only the fixed-lifetime-via-withHpTransform(1.0f,...)
-    // mechanism is under test here, not the exact registered stat values.
+    // Mirrors CardRegistry::heroMusketeerTurretStats() (private); only the
+    // fixed-lifetime mechanism is under test.
     CardStats turretStats = CardStats();
     turretStats.name = "Trusty Turret";
     turretStats.archetype = Archetype::DefensiveBuilding;
@@ -101,7 +99,7 @@ TEST_CASE("Hero Musketeer's turret stats self-destruct after their fixed lifetim
     for (int i = 0; i < 99; ++i) turret->update(board); // 99 ticks in: not yet expired
     REQUIRE(turret->isAlive());
 
-    turret->update(board); // the 100th tick: transform threshold reached, self-destructs
+    turret->update(board); // the 100th tick: threshold reached, self-destructs
     REQUIRE_FALSE(turret->isAlive());
 }
 
@@ -128,10 +126,10 @@ TEST_CASE("validateDeckSlots accepts two Heroes, one per special slot", "[card_r
 
 TEST_CASE("activateChampionAbility fires for a Hero (not just a Champion) deployed in slot 1", "[game_manager][hero]") {
     GameManager game({ 1, 168, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 }); // Hero Musketeer -> slot 1
-    game.playerAI.hand[1] = 168; // force into hand -- opening hand is randomized
+    game.playerAI.hand[1] = 168; // force into hand: the opening hand is random
     game.playerAI.elixir = 100.0f;
     game.playCard(0, 168, 9.0f, 10.0f);
-    game.step(); // commits the pending entity so findChampionInSlot can see it
+    game.step(); // commit, so findChampionInSlot can see it
 
     REQUIRE(game.isChampionAbilityReady(0, 1));
     REQUIRE(game.activateChampionAbility(0, 1));
@@ -146,7 +144,7 @@ TEST_CASE("A Hero's one-use ability (usesLimit=1) can't be reactivated once spen
     game.step();
 
     REQUIRE(game.activateChampionAbility(0, 1));
-    REQUIRE_FALSE(game.activateChampionAbility(0, 1)); // usesRemaining exhausted, no cooldown to wait out
+    REQUIRE_FALSE(game.activateChampionAbility(0, 1)); // uses exhausted, no cooldown to wait out
 }
 
 // ---------------- Hero Knight (166): taunt + expiring shield ----------------
@@ -163,7 +161,7 @@ TEST_CASE("Hero Knight (166) is registered with base Knight's stats and the Taun
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 1766); // base Knight's own hp, copied verbatim -- see CardRegistry.h id 0
+    REQUIRE(hero->hp == 1766); // base Knight hp (id 0)
     REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
     REQUIRE(hero->abilityCooldownTicks == 250);
 }
@@ -172,9 +170,8 @@ TEST_CASE("HeroKnightTauntEffect forces nearby enemies to retarget and grants an
         "[hero_knight]") {
     Board board;
     auto knight = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1766, 0, 1.2f, 202, 12);
-    // applyTauntNearby only forces entities it can dynamic_pointer_cast to
-    // CombatEntity -- a plain DummyEntity (: Entity, not : CombatEntity)
-    // would never pick up forcedTargetEntityId at all.
+    // applyTauntNearby only affects CombatEntities; a DummyEntity would never
+    // be taunted.
     auto enemy = std::make_shared<StationaryCombatant>(2, 6.0f, 5.0f, 10000, 1, 1.0f, 100, 10); // dist 1.0, within radius 6.5
     spawn(board, knight);
     spawn(board, enemy);
@@ -192,11 +189,11 @@ TEST_CASE("A taunted CombatEntity's update() locks onto the taunter regardless o
         "[hero_knight]") {
     Board board;
     auto knight = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 1766, 0, 1.2f, 202, 12);
-    // Wide attack range so both potential targets are already in range this
-    // same tick -- isolates the assertion to targeting, not movement/chase.
+    // Wide range, so both potential targets are in range this tick: the
+    // assertion is about targeting, not movement.
     auto tauntedAttacker = std::make_shared<StationaryCombatant>(2, 6.0f, 5.0f, 1000, 1, 5.0f, 100, 10);
-    // Closer than the Knight -- what tauntedAttacker's own ordinary
-    // findTarget() would pick if the taunt weren't overriding it.
+    // Closer than the Knight: what ordinary findTarget() would pick without the
+    // taunt.
     auto trueDecoy = std::make_shared<DummyEntity>(3, 6.5f, 5.0f, 1000, 0);
     spawn(board, knight);
     spawn(board, tauntedAttacker);
@@ -241,7 +238,7 @@ TEST_CASE("Hero Wizard (167) is registered with base Wizard's stats and the Fier
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 755); // base Wizard's own hp, copied verbatim -- see CardRegistry.h id 11
+    REQUIRE(hero->hp == 755); // base Wizard hp (id 11)
     REQUIRE(hero->splashRadius == Catch::Approx(1.5f));
     REQUIRE(hero->abilityElixirCost == Catch::Approx(1.0f));
     REQUIRE(hero->abilityCooldownTicks == 200);
@@ -271,8 +268,8 @@ TEST_CASE("A landed attack during the flight window pulses damage/pull centered 
     Board board;
     auto wizard = std::make_shared<StationaryCombatant>(1, 0.0f, 0.0f, 755, 0, 10.0f, 281, 14); // wide range: lands a hit this tick
     auto target = std::make_shared<StationaryCombatant>(2, 5.0f, 0.0f, 10000, 1, 1.0f, 100, 10);
-    // Bystander near the TARGET (not near the caster) -- proves the pulse
-    // is centered on target->position, unlike onHitPullRadius's self-centered pull.
+    // Bystander near the target, not the caster: the pulse is centred on the
+    // target.
     auto bystander = std::make_shared<StationaryCombatant>(3, 5.5f, 0.0f, 10000, 1, 1.0f, 100, 10);
     spawn(board, wizard);
     spawn(board, target);
@@ -281,9 +278,9 @@ TEST_CASE("A landed attack during the flight window pulses damage/pull centered 
     HeroWizardFieryFlightEffect effect(50, 4.0f, 20, 0.5f);
     effect.apply(board, *wizard);
 
-    wizard->update(board); // lands the attack (currentCooldown starts at 0) -- fires the pulse too
+    wizard->update(board); // lands the attack and fires the pulse
 
-    REQUIRE(bystander->hp < 10000); // caught by the pulse's splash damage, despite never being wizard's own attack target
+    REQUIRE(bystander->hp < 10000); // caught by the pulse, though not the wizard's target
 }
 
 // ---------------- findHpExtremeEnemy ----------------
@@ -335,7 +332,7 @@ TEST_CASE("Hero Giant (169) is registered with base Giant's stats and the Heroic
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 3968); // base Giant's own hp, copied verbatim -- see CardRegistry.h id 2
+    REQUIRE(hero->hp == 3968); // base Giant hp (id 2)
     REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
     REQUIRE(hero->abilityCooldownTicks == 140);
 }
@@ -351,9 +348,7 @@ TEST_CASE("HeroGiantHurlEffect throws the highest-HP enemy in range across the l
     HeroGiantHurlEffect effect(3.0f, 20);
     effect.apply(board, *giant);
 
-    // Board width isn't asserted directly here (board geometry is a
-    // separate concern) -- only that the victim's X actually flipped
-    // (mirrored) and it's now stunned (fully frozen).
+    // Only that the victim's x mirrored and it is fully frozen.
     REQUIRE(victim->position.x != Catch::Approx(6.0f));
     REQUIRE(victim->freezeTicks == 20);
     REQUIRE(victim->freezeSlow == Catch::Approx(0.0f));
@@ -372,11 +367,11 @@ TEST_CASE("Hero Mega Minion (173) is registered with base Mega Minion's stats, a
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 837); // base Mega Minion's own hp, copied verbatim -- see CardRegistry.h id 43
+    REQUIRE(hero->hp == 837); // base Mega Minion hp (id 43)
     REQUIRE(hero->isFlying);
     REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
     REQUIRE(hero->abilityUsesRemaining == 1);
-    REQUIRE(hero->abilityCooldownRemaining == 15); // post-spawn lockout, seeded via CardFactories::applyCardMetadata
+    REQUIRE(hero->abilityCooldownRemaining == 15); // post-spawn lockout, seeded by applyCardMetadata
 }
 
 TEST_CASE("HeroMegaMinionWarpEffect teleports to the lowest-HP enemy anywhere and deals bonus damage",
@@ -410,7 +405,7 @@ TEST_CASE("Hero Magic Archer (171) is registered with base Magic Archer's stats 
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 529); // base Magic Archer's own hp, copied verbatim -- see CardRegistry.h id 63
+    REQUIRE(hero->hp == 529); // base Magic Archer hp (id 63)
     REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
     REQUIRE(hero->abilityCooldownTicks == 250);
     REQUIRE(hero->maxSplitTargets == 1); // not yet activated
@@ -483,7 +478,7 @@ TEST_CASE("Hero Ice Golem (175) is registered with base Ice Golem's stats and th
 
     auto hero = std::dynamic_pointer_cast<CombatEntity>(board.getEntities()[0]);
     REQUIRE(hero != nullptr);
-    REQUIRE(hero->hp == 1315); // base Ice Golem's own hp, copied verbatim -- see CardRegistry.h id 40
+    REQUIRE(hero->hp == 1315); // base Ice Golem hp (id 40)
     REQUIRE(hero->abilityElixirCost == Catch::Approx(2.0f));
     REQUIRE(hero->abilityCooldownTicks == 170);
 }
@@ -550,7 +545,7 @@ TEST_CASE("AreaSpell's spellTowerDamageMultiplier only discounts Tower targets, 
     board.commitPendingEntities();
 
     spell->update(board);
-    REQUIRE(troop1->hp == 1000 - 100); // full damage -- the discount only ever applies to isTower() targets
+    REQUIRE(troop1->hp == 1000 - 100); // full damage: the discount applies only to towers
 }
 
 // ---------------- Hero Barbarian Barrel (174) ----------------
@@ -560,20 +555,12 @@ TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Her
     Board board;
     const CardDefinition* def = CardRegistry::getInstance().getCard(174);
     REQUIRE(def != nullptr);
-    REQUIRE(def->isHero); // deck-slot-legality flag, even though the spell entity itself carries no ability
+    REQUIRE(def->isHero); // deck-slot legality flag; the spell itself has no ability
     def->spawnEntity(5.0f, 5.0f, 0, board);
     board.commitPendingEntities();
 
-    // The spell itself has delayTicks=8 (see the base Barbarian Barrel's
-    // own registration) -- its spawnOnDetonate (the Barbarian) only fires
-    // partway through AreaSpell::update(), not at construction, so this
-    // needs to be driven forward before the Barbarian exists at all.
-    //
-    // 20 ticks, not 9, since 2026-08-28: the Barrel ROLLS now, and drops its
-    // Barbarian where it STOPS rather than where it was thrown. That is 8
-    // delay ticks plus 4.5 tiles at 0.5 tiles/tick = 9 more, so 17 is the real
-    // floor and 20 leaves margin. The old 9 was exactly "delay, then detonate
-    // on the next tick", which is no longer what this card does.
+    // The Barbarian spawns where the barrel stops rolling: 8 delay ticks plus
+    // 4.5 tiles at 0.5 tiles/tick, so 17 ticks at minimum; 20 leaves margin.
     std::shared_ptr<AreaSpell> spell;
     for (const auto& e : board.getEntities()) {
         spell = std::dynamic_pointer_cast<AreaSpell>(e);
@@ -590,17 +577,15 @@ TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Her
     }
     REQUIRE(barbarian != nullptr);
     REQUIRE(barbarian->isHero);
-    REQUIRE(barbarian->hp == 691); // base Barbarian's own hp, copied verbatim -- see barbarianBarrelBarbarianStats
+    REQUIRE(barbarian->hp == 691); // base Barbarian hp (barbarianBarrelBarbarianStats)
     REQUIRE(barbarian->abilityElixirCost == Catch::Approx(1.0f));
     REQUIRE(barbarian->abilityUsesRemaining == 1);
 }
 
-// ---------------- Hero Goblins (172) -- post-death squad reactivation ----------------
-// Unlike every other Hero, Hero Goblins has no alive-path ability at all --
-// "Banner Brigade" only becomes activatable once the whole 4-unit squad is
-// dead, within a window, via GameManager::isPostDeathAbilityReady/
-// activateChampionAbility's post-death branch (see PlayerState::
-// ChampionSlotState::lastSquadWipeTick, GameManager::syncChampionCooldowns).
+// --- Hero Goblins (172): post-death squad reactivation ---
+// No alive-path ability: "Banner Brigade" becomes available only within a
+// window after the whole squad dies (GameManager::isPostDeathAbilityReady,
+// PlayerState::ChampionSlotState::lastSquadWipeTick).
 
 TEST_CASE("Hero Goblins (172) is registered with base Goblins' stats and no alive-path ability",
         "[card_registry][hero]") {
@@ -621,9 +606,9 @@ TEST_CASE("Hero Goblins (172) is registered with base Goblins' stats and no aliv
         auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
         if (!ce) continue;
         squadCount++;
-        REQUIRE(ce->hp == 202); // base Goblins' own hp, copied verbatim -- see CardRegistry.h id 4
+        REQUIRE(ce->hp == 202); // base Goblins hp (id 4)
         REQUIRE(ce->isHero); // deck-slot-legality flag
-        REQUIRE(ce->abilityEffect == nullptr); // no alive-path ability -- reactivation only, post-death
+        REQUIRE(ce->abilityEffect == nullptr); // no alive-path ability
     }
     REQUIRE(squadCount == 4); // 4-unit squad, same offsets as base Goblins
 }
@@ -638,7 +623,7 @@ TEST_CASE("Hero Goblins' Banner Brigade is unavailable while any squad member is
     REQUIRE_FALSE(game.isChampionAbilityReady(0, 1));
     REQUIRE_FALSE(game.activateChampionAbility(0, 1));
 
-    // Kill 3 of the 4 -- one survivor is enough to keep the ability locked.
+    // Kill 3 of 4: one survivor keeps the ability locked.
     int killed = 0;
     for (const auto& e : game.getBoard().getEntities()) {
         auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
@@ -673,18 +658,16 @@ TEST_CASE("Hero Goblins' Banner Brigade activates within the window after the la
     REQUIRE(game.getElixirAI() == Catch::Approx(elixirBefore - 1.0f));
     game.step(); // commits the freshly-spawned squad
 
-    // The reactivated squad spawns via a sentinel internal cardId (-48, see
-    // CardRegistry.h's Hero Goblins registration), never the Hero's own
-    // deck id (172) -- distinguishing it from a (nonexistent, here) live
-    // remnant of the original squad.
+    // The reactivated squad spawns with the internal id -48, never the Hero's
+    // deck id (172).
     int freshCount = 0;
     for (const auto& e : game.getBoard().getEntities()) {
         auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
         if (!ce || ce->cardId != -48) continue;
         REQUIRE(ce->isAlive());
         REQUIRE(ce->hp == 202);
-        // Reactivated squad is plain (non-Hero) Goblins -- no ability at
-        // all, so a second Banner Brigade can never chain off of it.
+        // The reactivated squad is plain Goblins, so it cannot chain another
+        // Banner Brigade.
         REQUIRE_FALSE(ce->isHero);
         freshCount++;
     }
@@ -696,17 +679,13 @@ TEST_CASE("Hero Goblins' Banner Brigade reactivates the squad at the last-known 
     GameManager game({ 1, 172, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
     game.playerAI.hand[1] = 172;
     game.playCard(0, 172, 9.0f, 10.0f);
-    // The squad must actually MOVE before it dies, or this test cannot tell a
-    // death position from a deploy point -- and since 2026-08-19 the first 10
-    // ticks are deploy time, during which it deliberately does not move.
+    // The squad must move before it dies, or death position and deploy point
+    // coincide; the first 10 ticks are deploy time.
     for (int i = 0; i < DEPLOY_TIME_TICKS + 1; ++i) game.step();
 
-    // Death position capture uses whichever squad member the internal scan
-    // happens to observe last (see syncChampionCooldowns), which isn't
-    // necessarily any particular one of the 4 -- each carries its own
-    // +-0.5-tile squad offset from the group's shared center, so this
-    // compares against the CENTROID of all 4 (the group's actual shared
-    // position) rather than any single member's own offset position.
+    // The death position comes from whichever member the scan sees last, each
+    // carrying its own +-0.5 offset, so compare against the centroid of all
+    // four.
     Vector2D centroidBefore{ 0.0f, 0.0f };
     int countBefore = 0;
     for (const auto& e : game.getBoard().getEntities()) {
@@ -721,8 +700,8 @@ TEST_CASE("Hero Goblins' Banner Brigade reactivates the squad at the last-known 
     REQUIRE(countBefore == 4);
     centroidBefore.x /= countBefore;
     centroidBefore.y /= countBefore;
-    // Confirms this scenario actually exercises movement, not a no-op --
-    // otherwise this test couldn't distinguish death position from deploy.
+    // Confirms the squad moved, or death and deploy positions could not be told
+    // apart.
     REQUIRE_FALSE((centroidBefore.x == Catch::Approx(9.0f) && centroidBefore.y == Catch::Approx(10.0f)));
     game.step(); // wipe detected this tick, position captured off this same array
 
@@ -742,13 +721,9 @@ TEST_CASE("Hero Goblins' Banner Brigade reactivates the squad at the last-known 
     REQUIRE(countAfter == 4);
     centroidAfter.x /= countAfter;
     centroidAfter.y /= countAfter;
-    // Reactivated near the death position, not the original (9.0, 10.0)
-    // deploy point -- syncChampionCooldowns' scan intentionally captures
-    // whichever single squad member it happens to observe last, not a true
-    // centroid (a documented approximation, same category as this file's
-    // other engine-internal constants), so this tolerance covers that
-    // member's own +-0.5-tile squad offset in both axes (up to the full
-    // diagonal, ~1.41 tiles) rather than asserting exact centroid equality.
+    // Reactivated near the death position, not the (9.0, 10.0) deploy point.
+    // The scan captures one member, not the centroid, so the tolerance covers a
+    // member's +-0.5 offset on both axes (up to ~1.41 diagonally).
     REQUIRE(std::abs(centroidAfter.x - centroidBefore.x) < 2.0f);
     REQUIRE(std::abs(centroidAfter.y - centroidBefore.y) < 2.0f);
 }
@@ -767,7 +742,7 @@ TEST_CASE("Hero Goblins' Banner Brigade is unavailable once the reactivation win
     game.step(); // wipe detected this tick
 
     game.playerAI.elixir = 10.0f;
-    for (int i = 0; i < 71; ++i) { // window is 70 ticks -- this overshoots it
+    for (int i = 0; i < 71; ++i) { // the window is 70 ticks: this overshoots it
         game.step();
         game.playerAI.elixir = 10.0f;
     }
@@ -792,12 +767,9 @@ TEST_CASE("Hero Goblins' Banner Brigade cannot chain a second reactivation off t
     REQUIRE(game.activateChampionAbility(0, 1));
     game.step(); // commits the reactivated (plain, non-Hero) squad
 
-    // Kill the reactivated squad too -- its cardId (-48, the internal
-    // sentinel, see CardRegistry.h) doesn't match deck slot 1's own id
-    // (172), so syncChampionCooldowns' squad-wipe scan (keyed on
-    // deckConfig[slot]) never observes this death at all, and
-    // lastSquadWipeTick (already consumed to -1 by the first activation)
-    // stays exactly there.
+    // Kill the reactivated squad too: its id (-48) does not match deck slot 1's
+    // (172), so the wipe scan never sees this death and lastSquadWipeTick stays
+    // consumed.
     for (const auto& e : game.getBoard().getEntities()) {
         auto ce = std::dynamic_pointer_cast<CombatEntity>(e);
         if (ce && ce->isAlive() && ce->cardId == -48) ce->takeDamage(ce->hp);
@@ -824,27 +796,16 @@ TEST_CASE("HeroBarbarianBarrelRerollEffect rolls forward, damages enemies in the
 
     REQUIRE(barbarian->position.y == Catch::Approx(8.0f)); // 5 + 3, forward toward the enemy half
     REQUIRE(enemyTroop->hp == 1000 - 233); // full roll damage
-    REQUIRE(enemyTower->hp == 5000 - 116); // 233 / 2 = 116 (integer division), halved vs Towers
+    REQUIRE(enemyTower->hp == 5000 - 116); // 233 / 2 = 116: halved against towers
 }
 
 
-// ============================================================================
-// Ability-effect defects found in the 2026-08-26 C++ audit.
-// ============================================================================
+// --- ability-effect defects ---
 
 TEST_CASE("Hero Giant's Hurl cannot throw a building across the arena",
           "[hero][hero_giant][regression]") {
-    // findHpExtremeEnemy's own comment says it selects an "enemy TROOP" and it
-    // excluded Towers -- but not deployed Buildings. A Cannon is the
-    // highest-HP thing in a 3-tile radius far more often than a troop is, and
-    // HeroGiantHurlEffect then wrote victim->position.x directly, bypassing
-    // exemptFromForcedMovement entirely.
-    //
-    // Entity.h states the rule plainly: pull/push are "a no-op on a Building
-    // regardless of which mechanic is calling -- buildings are stationary,
-    // full stop... Enforced here, once, rather than at every individual call
-    // site, so nothing can reintroduce this bug by forgetting a per-site
-    // check." A raw position write is exactly that forgotten check.
+    // Hero Giant's hurl must never move a deployed building: findHpExtremeEnemy
+    // excludes buildings, and pull/push/mirror refuse to move one.
     Board board;
     const CardDefinition* cannon = CardRegistry::getInstance().getCard(25);
     REQUIRE(cannon != nullptr);
@@ -869,8 +830,8 @@ TEST_CASE("Hero Giant's Hurl cannot throw a building across the arena",
 }
 
 TEST_CASE("Hero Giant's Hurl still throws an actual troop", "[hero][hero_giant]") {
-    // The control for the case above: excluding buildings must not disarm the
-    // ability against the thing it is for.
+    // The control: excluding buildings must not disarm the ability against
+    // troops.
     Board board;
     auto victim = std::make_shared<MeleeTroop>(1, 6.0f, 5.0f, 3000, 1, 0.1f, 1.0f, 10, 10, 'v');
     spawn(board, victim);

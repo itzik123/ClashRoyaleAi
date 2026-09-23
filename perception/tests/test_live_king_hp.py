@@ -1,12 +1,9 @@
 """Tests for live/king_hp.py and live/board_filter.py.
 
-Synthetic frames rather than recorded ones: the King bar is a flat-coloured
-rectangle at a fixed place, so it can be drawn exactly, and a synthetic frame
-lets the "no bar at all" case be tested, which no recording can guarantee.
-
-The colour values here are the ones MEASURED off real frames, quoted in
-live/king_hp.py -- not invented. If the game re-skins its HP bars these tests
-fail, which is the point.
+Synthetic frames: the King bar is a flat-coloured rectangle at a fixed place,
+and only a synthetic frame guarantees the "no bar" case. The colours are the
+ones measured off real frames and quoted in live/king_hp.py, so a re-skin of
+the HP bars fails these.
 """
 from __future__ import annotations
 
@@ -39,16 +36,15 @@ def _draw_bar(frame, ally: bool, filled_columns: int, numeral: bool = False):
     if filled_columns:
         frame[y:y + KING_BAR_HEIGHT, KING_BAR_X0:KING_BAR_X0 + filled_columns] = fill
     if numeral:
-        # The game draws the HP number ON the bar, starting at its left edge --
-        # this is what made a fill-based presence test report a dying King as
-        # full. See live/king_hp.py.
+        # The HP number is drawn on the bar from its left edge, which is what
+        # made a fill-based presence test report a dying King as full.
         frame[y + 1:y + KING_BAR_HEIGHT - 1, KING_BAR_X0:KING_BAR_X0 + 8] = NUMERAL_WHITE
     return frame
 
 
 @pytest.mark.parametrize("ally", [True, False])
 def test_no_bar_means_full_not_destroyed(ally):
-    """The inverse of the Princess convention, and the whole reason this exists."""
+    """The inverse of the Princess convention: an absent bar means full."""
     result = read_king_hp(_frame(), ally=ally)
     assert result.bar_present is False
     assert result.fraction == 1.0
@@ -65,11 +61,9 @@ def test_fill_fraction_tracks_filled_columns(ally, columns):
 
 @pytest.mark.parametrize("ally", [True, False])
 def test_bar_with_no_resolvable_fill_is_low_not_full(ally):
-    """The measured failure: a King at ~8% whose fill is hidden by the numeral.
-
-    Reading it as 1.0 would tell the agent it is safe while it is one hit from
-    losing, so the requirement is only that it comes out near zero -- the exact
-    value is not resolvable from the pixels.
+    """A King at ~8% whose fill is hidden by the numeral. Reading it as 1.0 would
+    tell the agent it is safe one hit from losing; the requirement is only that
+    it comes out near zero.
     """
     frame = _draw_bar(_frame(), ally=ally, filled_columns=0, numeral=True)
     result = read_king_hp(frame, ally=ally)
@@ -90,7 +84,7 @@ def test_rejects_a_frame_of_the_wrong_size():
         read_king_hp(np.zeros((10, 10, 3), dtype=np.uint8), ally=True)
 
 
-# --- board_filter ------------------------------------------------------
+# --- board_filter ---
 
 
 class _Pos:
@@ -112,11 +106,7 @@ def test_on_board_bounds():
 
 
 def test_filter_drops_the_measured_phantom_positions():
-    """(19,5) and (-2,13) are the two player avatar icons, read as Knights.
-
-    Measured over 71 in-game ladder frames: 102 of 328 detections, all
-    `knight`, all at these two tiles.
-    """
+    """(19,5) and (-2,13) are the two player avatar icons, read as Knights."""
     units = [_Unit(19, 5), _Unit(-2, 13), _Unit(9, 16), _Unit(3, 20)]
     kept, report = filter_units(units)
     assert [(u.position.tile_x, u.position.tile_y) for u in kept] == [(9, 16), (3, 20)]

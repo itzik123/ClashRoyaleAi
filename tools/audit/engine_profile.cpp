@@ -1,41 +1,19 @@
-// Engine-side cost breakdown for the training loop.
+// Engine-side cost breakdown for the training loop. A measurement harness built
+// standalone (tools/audit/build.ps1, or build.sh under wsl g++).
 //
-// NOT a test: a measurement harness, built standalone against the header-only
-// engine so it cannot perturb the generated solution that the .pyd and the
-// Catch2 suite build from (tools/audit/build.ps1, or build.sh under wsl g++).
+// From Python a step times three fused things: (a) the physics tick,
+// GameManager::step(); (b) building the observation,
+// extractObservationForTeam(); (c) copying it across pybind. This measures (a)
+// and (b) with no interpreter, so the Python profiler's numbers minus these
+// give (c).
 //
-// WHY THIS EXISTS SEPARATELY FROM THE PYTHON PROFILER. From Python you can time
-// env.step_self_play(...) and env.get_observation_for_team(t), but you CANNOT
-// separate the three things fused inside them:
-//
-//     (a) the physics tick          GameManager::step()
-//     (b) building the observation  ClashEnv::extractObservationForTeam()
-//     (c) copying it across pybind  std::vector<float> -> Python list of floats
-//
-// Every Python timing is (a)+(b)+(c) together. This instrument measures (a) and
-// (b) with no interpreter in the process at all, so the Python profiler's
-// numbers MINUS these give (c) by subtraction. That is the only way to answer
-// "is the boundary the bottleneck, or is the engine simply slow?" with data
-// instead of with an opinion.
-//
-// WHAT "DISCARDED OBSERVATION" MEANS HERE, precisely, because the obvious
-// reading overstates it. `stepSelfPlay` returns BOTH teams' observations, and
-// `src/bindings.cpp` exposes them with `def_readonly`, which converts a
-// std::vector<float> to a Python list ON ATTRIBUTE ACCESS -- not when the call
-// returns. `gym_wrapper.step` reads `.observation0` and never touches
-// `.observation1`, and `teacher.execute_steps` discards the result object
-// entirely. So for those the C++ CONSTRUCTION is paid in full and the pybind
-// MARSHALLING is not paid at all.
-//
-// Everything this file measures is therefore C++-side construction cost, with
-// no interpreter involved. Do not quote these numbers as boundary-crossing
-// costs; the boundary is what profile_training.py --mode boundary measures.
+// pybind's def_readonly converts a vector to a Python list on attribute access,
+// so an observation that is returned but never read costs its C++ construction
+// and no marshalling. Everything here is construction cost; the boundary is
+// what profile_training.py --mode boundary measures.
 
-// Everything reports the MINIMUM of N repeats with the median alongside. The
-// cost being measured is deterministic and the noise on it is strictly additive
-// (scheduler preemption, cache eviction by other processes), so the minimum is
-// the least contaminated estimate of the true cost -- and a wide min/median gap
-// then flags a noisy box instead of hiding inside an average.
+// Reports the minimum of N repeats with the median beside it: deterministic
+// cost, additive noise.
 
 #include "ClashEnv.h"
 #include "GameManager.h"
@@ -52,10 +30,10 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// python_ai/envs/gym_wrapper.py DEFAULT_DECK -- the 2.6 Hog Cycle.
+// DEFAULT_DECK, the 2.6 Hog Cycle.
 const std::vector<int> DEFAULT_DECK = {15, 6, 25, 40, 24, 72, 33, 7};
 
-// One decision == one skip_frames block. python_ai/envs/gym_wrapper.py step().
+// One decision is one skip_frames block, as in gym_wrapper's step().
 constexpr int SKIP_FRAMES = 10;
 
 struct Sample {
@@ -96,9 +74,8 @@ int liveEntities(const GameManager& g) {
     return n;
 }
 
-// Drive a match forward to a realistic mid-fight entity count. An empty board is
-// the one state where the observation loop is free AND the physics loop has
-// nothing to integrate, so measuring there would flatter every number here.
+// Drive a match to a realistic mid-fight entity count; an empty board would
+// flatter every number.
 void warmUp(ClashEnv& env, int decisions) {
     for (int d = 0; d < decisions; ++d) {
         float x = (d % 2 == 0) ? 2.5f : 14.5f;
@@ -195,11 +172,9 @@ int main(int argc, char** argv) {
                     100.0 * (2 * obsMs) / s.minMs);
     }
 
-    // The residual above is INFERRED. Measure it directly, so the decomposition
-    // rests on a number rather than on a subtraction. GameLogger defaults to
-    // enabled(true) and ClashEnv::snapshot deliberately default-constructs its
-    // logger, so a rollout logs a full TickSnapshot per tick and then destroys
-    // the whole thing unread.
+    // Measure the logger directly rather than inferring it from a residual: it
+    // is enabled by default, and a snapshot's logger records every tick of a
+    // rollout and then discards it.
     header("GameLogger::logTick -- measured directly, not by subtraction");
     {
         GameManager g(DEFAULT_DECK, DEFAULT_DECK);
@@ -240,11 +215,9 @@ int main(int argc, char** argv) {
                     (sOn.minMs - sOff.minMs) / physics10Ms);
     }
 
-    // Subtracting measured parts from stepSelfPlay leaves a residual, and a
-    // residual is not an explanation. Sweep skipFrames instead: the SLOPE is
-    // everything that runs per tick (physics + logTick + calculateReward +
-    // isGameOver) and the INTERCEPT is everything paid once per call --
-    // which is dominated by the TWO observation vectors it returns.
+    // A residual is not an explanation. Sweep skipFrames: the slope is the
+    // per-tick cost (physics, logTick, calculateReward, isGameOver) and the
+    // intercept the per-call cost, dominated by the two observations returned.
     header("skipFrames SWEEP -- separates per-tick cost from per-call cost");
     {
         double x1 = 0.0, x10 = 0.0;
@@ -287,13 +260,10 @@ int main(int argc, char** argv) {
         row("ClashEnv::snapshot()", summarize(ms), "deep copy, empty logger");
     }
 
-    // --------------------------------------------------------------------
-    // ONE TEACHER CANDIDATE, exactly as UtilityTeacher.rollout_stats shapes it:
-    //   snapshot -> execute_steps(horizon) in 10-tick chunks -> stats
-    //            -> ONE observation, for positional_advantage
-    // Every chunk is a stepSelfPlay, so every chunk builds TWO observations
-    // that rollout_stats never looks at.
-    // --------------------------------------------------------------------
+    // --- one teacher candidate, shaped like UtilityTeacher.rollout_stats ---
+    // snapshot -> execute_steps(horizon) in 10-tick chunks -> stats -> one
+    // observation. With stepSelfPlay every chunk builds two observations the
+    // rollout never reads.
     header("ONE TEACHER CANDIDATE ROLLOUT (teacher.rollout_stats shape)");
     {
         const int horizons[] = {30, 50, 70, 100};
@@ -327,16 +297,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --------------------------------------------------------------------
-    // THE SIZE OF THE PRIZE, measured rather than inferred.
-    //
-    // A rollout needs the simulation and ONE observation at the end. It does
-    // not need the 20 that stepSelfPlay builds along the way. This drives the
-    // same 100 ticks through GameManager directly -- the layer underneath,
-    // which has no observation in its step at all -- so the difference against
-    // the block above is what an observation-free step would actually save.
-    // Same physics, same entity population, same snapshot depth.
-    // --------------------------------------------------------------------
+    // --- what an observation-free step saves ---
+    // The same 100 ticks through GameManager directly, which builds no
+    // observation: the difference against the block above. Same physics,
+    // population and snapshot depth.
     header("WHAT A ROLLOUT COSTS WITHOUT THE DISCARDED OBSERVATIONS");
     {
         GameManager g(DEFAULT_DECK, DEFAULT_DECK);

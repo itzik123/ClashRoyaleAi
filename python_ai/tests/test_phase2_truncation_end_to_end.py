@@ -1,20 +1,9 @@
-"""Pipeline 2's rollout, end to end, with the truncation-bootstrap fields live.
+"""Pipeline 2's rollout end to end, with the truncation-bootstrap fields live.
 
-THE GAP THIS FILLS. Before this file, `Phase2Trainer` was covered only by
-assertions about its DECLARED attributes -- `uses_truncation_bootstrap is True`,
-`draw_on_terminated_only is True` -- and by checkpoint-key checks. Nothing ever
-ran a phase-2 rollout or update, so the three fields those flags switch on
-(`boot_nonterminal`, `trunc_flag`, `trunc_boot`) had never travelled the whole
-path: collect_rollout -> buffer.stack -> compute_gae -> PPOUpdater.update.
-
-That is also the one path the live smoke run could not reach, because phase 1
-returns early from `_truncation_bootstrap` -- so these fields were, in the
-literal sense, untested wiring on both axes at once.
-
-`compute_gae` and `_truncation_bootstrap` each have good unit tests. What was
-missing is that they AGREE about tensor shapes, dtypes and row alignment when a
-real vector env produces them, which is exactly the class of defect unit tests
-on the pieces cannot see.
+`compute_gae` and `_truncation_bootstrap` have unit tests; this checks they
+agree on shapes, dtypes and row alignment when a real vector env produces the
+fields, along collect_rollout -> buffer.stack -> compute_gae ->
+PPOUpdater.update.
 """
 import numpy as np
 import pytest
@@ -25,12 +14,9 @@ from python_ai.rl.buffer import (
 )
 from python_ai.rl.config import PPOConfig
 
-#: update_timestep MUST exceed the longest scenario window, or no truncation
-#: can occur inside a rollout and every test that needs one silently SKIPS --
-#: which is the failure mode this whole file exists to remove. Scenario
-#: `max_steps` values in envs/scenarios.py run 12..25, so 30 guarantees at
-#: least one window expires. A first draft used 4 and skipped the negative
-#: control without saying anything useful.
+#: update_timestep must exceed the longest scenario window (envs/scenarios.py
+#: `max_steps` run 12..25), or no truncation occurs and the tests that need one
+#: silently skip.
 TINY = PPOConfig(num_envs=2, update_timestep=30, bptt_chunk=15,
                  num_minibatches=1, ppo_epochs=1,
                  save_every_episodes=10 ** 9,
@@ -39,10 +25,9 @@ TINY = PPOConfig(num_envs=2, update_timestep=30, bptt_chunk=15,
 
 @pytest.fixture
 def phase2(tmp_path, monkeypatch):
-    """A Phase2Trainer wired entirely into tmp_path, with a seeded pool.
-
-    Pipeline 2 refuses to start without pipeline 1's output, so a bootstrap
-    checkpoint is minted first.
+    """A Phase2Trainer wired entirely into tmp_path, with a seeded pool. Pipeline
+    2 refuses to start without pipeline 1's output, so a bootstrap checkpoint
+    is minted first.
     """
     import gymnasium as gym
 
@@ -62,18 +47,16 @@ def phase2(tmp_path, monkeypatch):
     from python_ai.rl.checkpointing import save_historical_snapshot
     from python_ai.trainers import league
 
-    # Injection probability is a MODULE CONSTANT read at reset
-    # (selfplay_env.py: `self.scenario_rng.random() < SCENARIO_INJECTION_PROB`),
-    # NOT an env_config key -- passing "scenario_prob" in the config is silently
-    # ignored, which cost this file one debugging round. Forced to 1.0 so every
-    # reset injects and a window is guaranteed to expire inside the rollout.
+    # Injection probability is a module constant read at reset, not an
+    # env_config key. Forced to 1.0 so a window is guaranteed to expire inside
+    # the rollout.
     monkeypatch.setattr(scenarios, "SCENARIO_INJECTION_PROB", 1.0)
 
     pool = tmp_path / "hc"
     pool.mkdir()
     monkeypatch.setattr(base_trainer, "HISTORICAL_CHECKPOINT_DIR", str(pool))
-    # league resolves the pool through its OWN module-level import, so patching
-    # base_trainer's alone would leave discovery pointed at the real pool.
+    # league resolves the pool through its own module-level import, so it is
+    # patched too.
     monkeypatch.setattr(league, "HISTORICAL_CHECKPOINT_DIR", str(pool))
 
     boot = tmp_path / "model_weights.pth"
@@ -83,9 +66,8 @@ def phase2(tmp_path, monkeypatch):
     monkeypatch.setattr(train_selfplay, "WEIGHT_PATH",
                         str(tmp_path / "sp.pth"))
 
-    # One eligible opponent. A PIPELINE-1 snapshot deliberately: pipeline 2's
-    # own are gated by MIN_OPPONENT_AGE_EPISODES against a trainee sitting at
-    # episode 0, so none would ever qualify here.
+    # One eligible opponent, from pipeline 1: pipeline 2's own snapshots are
+    # age-gated against a trainee at episode 0.
     save_historical_snapshot(MicroRoyaleNet(num_ability_slots=0), 1,
                              "pipeline1", directory=str(pool))
 
@@ -96,10 +78,8 @@ def phase2(tmp_path, monkeypatch):
             self.log_dir = str(tmp_path / "runs")
 
         def build_envs(self):
-            # SyncVectorEnv: spawned workers re-import the test module under
-            # pytest, and the trainer only ever calls reset/step/call. In-process
-            # also means the SCENARIO_INJECTION_PROB patch above is visible to
-            # the envs, which it would not be across a spawn.
+            # SyncVectorEnv: spawned workers would re-import the test module,
+            # and in-process envs see the SCENARIO_INJECTION_PROB patch.
             def make():
                 return selfplay_env.MicroRoyaleSelfPlayEnv(
                     {"scenarios_enabled": True})
@@ -113,7 +93,7 @@ def phase2(tmp_path, monkeypatch):
 
 
 def test_the_truncation_fields_are_declared_in_the_buffer(phase2):
-    """The flag must actually widen the field set, not just read True."""
+    """The flag actually widens the field set."""
     for name in TRUNCATION_FIELDS:
         assert name in phase2.buffer, f"{name} missing from the phase-2 buffer"
     for name in CORE_FIELDS:
@@ -121,8 +101,9 @@ def test_the_truncation_fields_are_declared_in_the_buffer(phase2):
 
 
 def test_a_phase2_rollout_stacks_with_consistent_shapes(phase2):
-    """The wiring test proper: every declared field must arrive, at the right
-    shape and dtype, for the WHOLE rollout."""
+    """Every declared field arrives, at the right shape and dtype, for the whole
+    rollout.
+    """
     phase2.collect_rollout()
     batch = phase2.buffer.stack()
 
@@ -141,13 +122,9 @@ def test_a_phase2_rollout_stacks_with_consistent_shapes(phase2):
 
 
 def test_a_truncation_ACTUALLY_OCCURS_in_this_configuration(phase2):
-    """The guard that keeps the rest of this file honest.
-
-    Several tests below are meaningful only on a rollout that contains a
-    truncation, and a `skip` when none happens looks identical to success. With
-    scenario_prob=1.0 and update_timestep past the longest window, at least one
-    MUST fire -- so if this fails, the others' skips are hiding a broken
-    mechanism rather than an unlucky draw.
+    """Keeps the rest of this file honest: with injection at 1.0 and the rollout
+    past the longest window, a truncation must occur, so a skip below cannot
+    hide a broken mechanism.
     """
     phase2.collect_rollout()
     batch = phase2.buffer.stack()
@@ -160,9 +137,9 @@ def test_a_truncation_ACTUALLY_OCCURS_in_this_configuration(phase2):
 
 
 def test_the_bootstrap_flags_are_mutually_consistent(phase2):
-    """`trunc_flag` marks a truncation; a truncation is NOT a terminal, so
-    `boot_nonterminal` must be 1 wherever the flag is set. Getting this pair
-    inconsistent is how a truncation silently becomes 'the world ends here'."""
+    """A truncation is not a terminal, so `boot_nonterminal` is 1 wherever
+    `trunc_flag` is set.
+    """
     phase2.collect_rollout()
     batch = phase2.buffer.stack()
 
@@ -179,9 +156,9 @@ def test_the_bootstrap_flags_are_mutually_consistent(phase2):
 
 
 def test_trunc_boot_is_zero_wherever_the_flag_is_not_set(phase2):
-    """A captured V(final_obs) on a non-truncated row would be read by
-    compute_gae only if the flag were set, but a stray value there means the
-    two are being written from different conditions."""
+    """A stray V(final) on a non-truncated row means the two fields are written
+    from different conditions.
+    """
     phase2.collect_rollout()
     batch = phase2.buffer.stack()
     quiet = batch["trunc_flag"] <= 0.5
@@ -190,7 +167,7 @@ def test_trunc_boot_is_zero_wherever_the_flag_is_not_set(phase2):
 
 
 def test_a_full_phase2_update_runs_and_reports_finite_diagnostics(phase2):
-    """The whole point: rollout -> GAE (truncation form) -> PPO update."""
+    """Rollout -> GAE (truncation form) -> PPO update."""
     phase2.collect_rollout()
     stats = phase2.run_update()
 
@@ -212,11 +189,8 @@ def test_the_update_actually_moves_the_weights(phase2):
 
 
 def test_gae_consumes_the_truncation_fields_rather_than_ignoring_them(phase2):
-    """Negative control on the plumbing.
-
-    Perturbing `trunc_boot` on rows the flag marks must change the advantages.
-    If it does not, the fields are being carried but never read -- which is
-    exactly what 'declared but untested wiring' looks like.
+    """Negative control: perturbing `trunc_boot` on flagged rows must change the
+    advantages, or the fields are carried but never read.
     """
     from python_ai.rl import gae as gae_mod
 
@@ -247,14 +221,14 @@ def test_gae_consumes_the_truncation_fields_rather_than_ignoring_them(phase2):
 
 
 def test_a_scenario_truncation_is_not_charged_the_draw_penalty(phase2):
-    """`draw_on_terminated_only` exists so a successful defence that merely ran
-    out its focused window is not punished as a stalled game. Pins the flag's
-    behaviour, not just its value."""
+    """`draw_on_terminated_only`: a defence that ran out its window is not charged
+    as a stalled game.
+    """
     assert phase2.draw_on_terminated_only is True
     phase2.collect_rollout()
     batch = phase2.buffer.stack()
-    # A truncated-but-not-terminated row must not carry a large negative reward
-    # of DRAW_PENALTY's magnitude purely from the cutoff.
+    # A truncated-but-not-terminated row must not carry DRAW_PENALTY from the
+    # cutoff.
     from python_ai.rewards.weights import DRAW_PENALTY
     trunc_only = (batch["trunc_flag"] > 0.5)
     if trunc_only.any():

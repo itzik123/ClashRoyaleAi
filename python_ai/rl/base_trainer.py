@@ -1,12 +1,6 @@
-"""The recurrent-PPO training loop, once, for both pipelines.
+"""The recurrent-PPO training loop, shared by both pipelines.
 
-WHAT WAS ACTUALLY DUPLICATED. `train.train_ppo()` and
-`train_selfplay.train_selfplay_ppo()` were 1,620 and 1,565 lines respectively,
-and the overlap was not incidental -- it was the whole algorithm: the same
-hyperparameters, the same seventeen-key stats extraction, the same rollout with
-the same three masks, the same GAE, the same 250-line minibatch update, the same
-entropy controller, the same replay recorder, the same checkpoint cadence. The
-differences fit on one screen:
+The base class owns the loop; a subclass supplies what differs:
 
     aspect                 pipeline 1              pipeline 2
     -------------------    --------------------    -----------------------
@@ -17,19 +11,10 @@ differences fit on one screen:
     entropy config         PHASE1_ENTROPY          PHASE2_ENTROPY
     periodic work          replay, handoff         replay, eval, exploiter
 
-So this class owns the loop and the subclass owns the differences. That is a
-template method, and the reason it is the right shape here rather than
-composition-by-callback is that the loop's ORDER is itself load-bearing in
-several places (the phase gate must be evaluated before the stage gate; the
-hidden state must be captured before the LSTM advances; the coverage slot must
-be drawn on the observation the action is taken from), and a template makes that
-order live in exactly one place.
-
-WHAT A SUBCLASS MUST NOT DO. It must not touch the rollout's arithmetic. Every
-hook below is called either before the forward pass or after the transition is
-already stored, so no override can change what enters the PPO objective. That is
-deliberate: an override that could silently alter the ratio is the failure this
-refactor exists to make impossible.
+A template method because the loop's order is load-bearing (hidden state
+captured before the LSTM advances, the coverage slot drawn on the observation
+acted on). Every hook runs before the forward pass or after the transition is
+stored, so no override can change what enters the PPO objective.
 """
 import os
 import time
@@ -73,11 +58,8 @@ from python_ai.rl.seeding import engine_seeds, seed_everything, worker_seeds
 
 @dataclass
 class StepContext:
-    """Everything a per-step hook could need, gathered once.
-
-    Passed to `on_step` and `on_episode_end` so a subclass never has to reach
-    back into the loop's locals -- and so adding a diagnostic to one pipeline
-    cannot accidentally change the other's control flow.
+    """Everything a per-step hook could need, gathered once, so a subclass never
+    reaches into the loop's locals.
     """
     step: int
     obs_tensor: torch.Tensor
@@ -103,23 +85,20 @@ def _trainee_deck():
 class BaseTrainer:
     """Recurrent PPO with truncated BPTT. Subclass and fill in the opponent."""
 
-    # -- what a subclass declares -------------------------------------------
-    #: Live checkpoint (optimizer + training state). Resumed from.
-    #: Both are ANCHORED, not cwd-relative -- `log_dir` especially, because
-    #: `setup_writer` shutil.rmtree's it on a non-resume start.
+    # Live checkpoint and TensorBoard directory. Anchored, not cwd-relative:
+    # `setup` deletes `log_dir` on a non-resume start.
     weight_path: str = weights_path("model_weights.pth")
     log_dir: str = run_path("runs/clash_royale")
-    #: Embedded in historical snapshot filenames; pipeline 2's age gate reads it.
+    #: Embedded in historical snapshot filenames; pipeline 2's age gate reads
+    #: it.
     pipeline_name: str = "pipeline1"
     #: Console/replay prefix.
     replay_prefix: str = "replay"
     #: True where a scenario window can truncate an episode without ending the
-    #: game -- then the critic must bootstrap V(final_obs), never 0.
+    #: game; the critic must then bootstrap V(final_obs), never 0.
     uses_truncation_bootstrap: bool = False
-    #: DRAW_PENALTY punishes a real game that timed out. Pipeline 2 keys it on
-    #: `terminateds` alone, so a scenario-window truncation (truncated=True,
-    #: reward ~0) is not mistaken for a draw and a SUCCESSFUL defence that ran
-    #: out its focused window is not spuriously penalized.
+    #: Pipeline 2 keys DRAW_PENALTY on `terminateds` alone, so a scenario
+    #: window that runs out is not penalized as a draw.
     draw_on_terminated_only: bool = False
 
     def __init__(self, cfg=None, entropy_cfg=None):
@@ -142,9 +121,6 @@ class BaseTrainer:
         self._prev_dones = None
         self._prev2_dones = None
 
-    # ======================================================================
-    # subclass surface
-    # ======================================================================
     def _default_entropy(self):
         from python_ai.rl.config import PHASE1_ENTROPY
         return PHASE1_ENTROPY
@@ -157,8 +133,9 @@ class BaseTrainer:
         return None
 
     def ability_engine_slots(self):
-        """Engine slot (deck index 1 or 2) driven by each Champion head, in
-        order -- see rl/abilities.py for why a head is not "the Nth slot"."""
+        """Engine slot (deck index 1 or 2) driven by each Champion head, in order;
+        see rl/abilities.py.
+        """
         from python_ai.deck import DEFAULT_DECK
         from python_ai.rl.abilities import ability_engine_slots
         return ability_engine_slots(DEFAULT_DECK)
@@ -167,14 +144,10 @@ class BaseTrainer:
         return len(self.ability_engine_slots())
 
     def load_checkpoint(self):
-        """Restore weights + training state. Returns True on a FULL resume.
+        """Restore weights and training state. Returns True on a full resume.
 
-        A full resume is what gates the TensorBoard log wipe: a
-        file-exists-but-incompatible load, or a legacy weights-only checkpoint,
-        both still restart `episodes_completed` at 0 and therefore need a clean
-        log directory just like a from-scratch run -- otherwise the new run's
-        scalars interleave with the old run's at the same episode numbers and
-        both graphs become unreadable.
+        Anything less restarts `episodes_completed` at 0 and so needs a clean
+        log directory, or the new run's scalars interleave with the old run's.
         """
         return False
 
@@ -184,7 +157,8 @@ class BaseTrainer:
 
     def anneal_episodes_done(self):
         """The clock the placement-entropy anneal runs on. Pipeline 2 subtracts
-        its last stall re-boost, which is what makes the re-boost do anything."""
+        its last stall re-boost.
+        """
         return self.episodes_completed
 
     def on_step(self, ctx):
@@ -202,38 +176,22 @@ class BaseTrainer:
     def on_finish(self):
         """Final save/handoff."""
 
-    # ======================================================================
-    # the loop
-    # ======================================================================
     def setup(self):
         cfg = self.cfg
-        # ANCHORED, not cwd-relative -- the same rule weights_path/run_path
-        # already apply to checkpoints and TensorBoard runs, and which
-        # run_path's own docstring already claims covers `replays/`. Left
-        # relative, which directory the run was launched from silently decided
-        # where its replays landed: a stale replays/replay_ep1000.json sits at
-        # the repo root while python_ai/replays/ never existed. That matters
-        # beyond tidiness -- replays/*.json is the input to the placement PHASE
-        # histogram, the only cheap detector for the ConvTranspose2d
-        # checkerboard artifact, and a detector aimed at a directory the run
-        # did not write to reports a clean board forever.
+        # Anchored: replays/*.json feed the placement-phase histogram, and a
+        # detector aimed at a directory the run did not write to reports a
+        # clean board forever.
         os.makedirs(run_path("replays"), exist_ok=True)
         os.makedirs(HISTORICAL_CHECKPOINT_DIR, exist_ok=True)
 
-        # FIRST, before anything stochastic happens. Network initialisation is
-        # the single biggest random input to a run -- two A/B arms that start
-        # from different weights are not comparable -- and `build_envs` draws
-        # its per-worker seeds from this too. A no-op when cfg.seed is None,
-        # which is the default; see rl/seeding.py.
+        # Before anything stochastic. A no-op when cfg.seed is None; see
+        # rl/seeding.py.
         if seed_everything(cfg.seed) is not None:
             print(f"Deterministic run: seed={cfg.seed} "
                   "(torch, numpy, stdlib random, and per-worker env seeds)")
 
-        # THE DECK CONTRACT, first line of the log. The deck became a CLASH_DECK
-        # setting on 2026-09-15; the pre-launch audit found four mechanisms that
-        # silently switch off under a different deck, and this is where a run
-        # says which ones its deck turns off. strict: a Champion deck cannot be
-        # trained (no ability sampling) and should not get as far as the envs.
+        # Report what the deck turns on and off, and refuse a deck that cannot
+        # be trained, before any env is built.
         from python_ai.deck import DEFAULT_DECK
         from python_ai.envs.deck_contract import print_report, validate_deck
         print_report(validate_deck(DEFAULT_DECK, strict=False))
@@ -244,22 +202,19 @@ class BaseTrainer:
         self.net = MicroRoyaleNet(
             num_ability_slots=self.num_ability_slots()).to(self.device)
         self.optimizer = optim.Adam(self.net.parameters(), lr=cfg.lr)
-        # Champion abilities are sampled, buffered and scored since 2026-09-16
-        # (rl/abilities.py). With a Champion-less deck there are no heads, no
-        # buffer fields and no extra terms: that path is unchanged.
+        # Champion abilities (rl/abilities.py). A Champion-less deck gets no
+        # heads, fields or terms.
         self._ability_slots = self.ability_engine_slots()
         self._ability_ready = torch.zeros(
             (cfg.num_envs, len(self._ability_slots)), dtype=torch.bool)
 
-        # Built BEFORE the resume: `restore_common` refills the outcome window
-        # from the checkpoint, and a metrics object created afterwards would
-        # silently discard it -- which is the curriculum gate's entire input.
+        # Built before the resume, which refills its outcome window, the
+        # curriculum gate's input.
         self.metrics = EpisodeMetrics(cfg.num_envs)
 
-        #: When this LINEAGE began -- a fresh phase 1. A resume overwrites it from
-        #: the checkpoint; phase 2 inherits it from the phase-1 checkpoint it
-        #: bootstraps from. Used to keep a previous run's snapshots out of the
-        #: PFSP pool (league.discover_historical_checkpoints(since=...)).
+        #: When this lineage (a fresh phase 1) began. Restored on resume and
+        #: inherited by phase 2; keeps a previous run's snapshots out of the
+        #: PFSP pool.
         self.lineage_started_at = time.time()
         self.full_resume = self.load_checkpoint()
         if not self.full_resume and os.path.exists(self.log_dir):
@@ -278,25 +233,16 @@ class BaseTrainer:
                               if advisor_target.enabled() else {})
         self.updater = PPOUpdater(self.net, self.optimizer, cfg)
 
-        # SEEDED reset, because this is the ONLY route to the engine's own RNG.
-        # `seed_everything` above covers torch/numpy/random and `build_envs`
-        # seeds each worker's SCENARIO generator, but the opening-hand shuffle
-        # lives in C++ and MicroRoyaleEnv seeds it exclusively from
-        # `reset(seed=...)`. A bare `reset()` left it on OS entropy, so a run
-        # with cfg.seed set reproduced its weights and its minibatch
-        # permutation while dealing different hands every time -- and announced
-        # itself deterministic anyway. Gymnasium's contract is that a seed
-        # passed once is used for that reset and the stream continues from
-        # there, which is exactly what makes the whole run reproducible rather
-        # than only its first episode.
+        # Seeded reset: the only route to the engine's own RNG (the
+        # opening-hand shuffle). Gymnasium uses the seed for this reset and
+        # continues the stream, so the whole run is reproducible.
         _engine_seeds = engine_seeds(self.cfg.seed, self.cfg.num_envs)
         self._obs, _ = self.envs.reset(
             seed=_engine_seeds if self.cfg.seed is not None else None)
         self._prev_stats = None
         self._prev_dones = np.zeros(cfg.num_envs, dtype=bool)
-        #: dones from TWO steps ago: the envs whose PREVIOUS step was the
-        #: phantom post-autoreset step, i.e. which are on their first real step
-        #: now. See engine_stats.reseat_prev_stats.
+        #: Dones from two steps ago: envs whose previous step was the phantom
+        #: post-autoreset step. See engine_stats.reseat_prev_stats.
         self._prev2_dones = np.zeros(cfg.num_envs, dtype=bool)
         self._hx = torch.zeros(cfg.num_envs, LSTM_HIDDEN).to(self.device)
         self._cx = torch.zeros(cfg.num_envs, LSTM_HIDDEN).to(self.device)
@@ -316,9 +262,8 @@ class BaseTrainer:
                 self._hx, self._cx = self._hx.detach(), self._cx.detach()
                 self.periodic(stats)
         except KeyboardInterrupt:
-            # Ctrl-C used to lose everything since the last periodic save --
-            # up to CLASH_SAVE_EVERY episodes (audit 08, gap 6). The rollout in
-            # flight is discarded; the network as of the last update is kept.
+            # Keep the network as of the last update; the rollout in flight is
+            # discarded.
             print(">>> Interrupted -- saving the checkpoint before exiting.")
             self.buffer.clear()
             self.save_checkpoint()
@@ -327,40 +272,25 @@ class BaseTrainer:
         if self.writer is not None:
             self.writer.close()
 
-    # -- rollout ------------------------------------------------------------
     def collect_rollout(self):
         cfg, net = self.cfg, self.net
         for step in range(cfg.update_timestep):
             obs_tensor = torch.tensor(self._obs, dtype=torch.float32).to(self.device)
 
-            # Affordability mask, derived purely from obs_tensor -- which is
-            # exactly what the buffer stores, so the update recomputes a
-            # bit-identical mask instead of trusting a stored one.
+            # Derived from obs_tensor, which the buffer stores, so the update
+            # recomputes it bit-identically.
             card_mask = net.affordability_mask(obs_tensor)
             cov = self._draw_coverage(obs_tensor, card_mask)
 
-            # Captured BEFORE step_lstm_and_card advances (hx, cx) -- this is
-            # the state a BPTT chunk starting here must resume from.
+            # Captured before step_lstm_and_card advances (hx, cx): a BPTT
+            # chunk starting here resumes from it.
             hx_in, cx_in = self._hx, self._cx
 
             with torch.no_grad():
-                # Autoregressive placement: the card must actually be SAMPLED
-                # before placement can be conditioned on it, so this cannot be a
-                # single net(...) call.
-                # `_hires` rather than the three-value wrapper, and the map is
-                # THREADED into placement_given_card below. The wrapper computes
-                # `cnn_trunk[:2](spatial_obs)` and discards it, and
-                # `placement_given_card(hires_map=None)` then rebuilds it from
-                # the same obs -- so the trunk's first conv, Conv2d(21->16) at
-                # the full 34x18 board before any pooling, ran TWICE per step on
-                # bit-identical input. `forward_sequence` already threads this
-                # through for exactly this reason in the UPDATE path; the
-                # rollout was the half nobody threaded.
-                #
-                # Measured, 500 steps x 8 envs, network portion, best of 3:
-                # 6.505s -> 2.103s, 67.7% saved. Bit-identical by construction
-                # (same module, same input, no RNG between the two calls) --
-                # pinned in tests/test_rollout_no_redundant_conv.py.
+                # The card is sampled before placement is conditioned on it.
+                # The hi-res map is threaded into placement_given_card so the
+                # trunk's first conv runs once per step
+                # (tests/test_rollout_no_redundant_conv.py).
                 features, card_embeds, spatial_map, hires_map = \
                     net.extract_features_hires(obs_tensor)
                 card_logits, ab1_logits, ab2_logits, state_value, (self._hx, self._cx) = \
@@ -374,8 +304,8 @@ class BaseTrainer:
                 placement_cell = placement_dist.sample()
                 total_logprob = (card_dist.log_prob(card_idx)
                                  + placement_dist.log_prob(placement_cell))
-                # Champion abilities: part of the JOINT action, sampled under
-                # the readiness the engine reported with THIS observation.
+                # Champion abilities are part of the joint action, sampled
+                # under the readiness reported with this observation.
                 ability_ready = self._ability_ready.to(self.device)
                 ability_logits = [l for l in (ab1_logits, ab2_logits) if l is not None]
                 ability_actions, ability_logprob, _ = ability_mod.sample(
@@ -389,8 +319,8 @@ class BaseTrainer:
                 "target_x": target_x.cpu().numpy().reshape(cfg.num_envs, 1),
                 "target_y": target_y.cpu().numpy().reshape(cfg.num_envs, 1),
             }
-            # Both keys always present (AsyncVectorEnv's Dict space requires it);
-            # zeros for a Champion-less deck, exactly as before.
+            # Both keys always present, as AsyncVectorEnv's Dict space
+            # requires.
             action.update(ability_mod.action_dict(
                 ability_actions, self._ability_slots, cfg.num_envs))
 
@@ -398,29 +328,23 @@ class BaseTrainer:
                 self.envs.step(action)
             dones = terminateds | truncateds
             stats = extract_engine_stats(infos, cfg.num_envs)
-            # Readiness for the NEXT decision. A missing key (a phantom
-            # autoreset step) reads not-ready, which can never fabricate a legal
-            # activation.
+            # Readiness for the next decision. A missing key (phantom step)
+            # reads not-ready.
             next_ability_ready = ability_mod.ready_from_infos(
                 infos, cfg.num_envs, self._ability_slots)
 
             boot = self._truncation_bootstrap(dones, raw_rewards, next_obs,
                                               truncateds)
 
-            # A draw is an episode that ENDED with a near-zero raw reward.
+            # A draw is an episode that ended with a near-zero raw reward.
             draw_source = terminateds if self.draw_on_terminated_only else dones
             is_draw = draw_source & (np.abs(raw_rewards) < 0.5)
             draw_penalty = DRAW_PENALTY * is_draw.astype(np.float32)
 
-            # gamma passed explicitly: the tower term is potential-based
-            # (gamma*Phi(s') - Phi(s)) and its policy-invariance guarantee only
-            # holds if this is the SAME gamma GAE uses below. w_spell likewise
-            # -- omitting it silently pinned the Fireball-value term at its
-            # START weight forever instead of annealing it to zero.
-            # The first REAL step of a new episode must not be shaped against
-            # the phantom step's fabricated defaults: Phi_solvency(elixir=0) is
-            # -0.1, so it paid +0.084 on every episode's first step (audit 03,
-            # R1). `prev_for_shaping` substitutes that env's own current row.
+            # Shaping uses the config's gamma (the potential terms are
+            # policy-invariant only with the GAE gamma) and the annealed spell
+            # weight. The first real step of an episode is shaped against its
+            # own row, not the phantom step's zero defaults.
             prev_for_shaping = reseat_prev_stats(stats, self._prev_stats,
                                                  self._prev2_dones)
             shaping = compute_shaping(
@@ -432,13 +356,10 @@ class BaseTrainer:
             shaped_rewards = raw_rewards + shaping - draw_penalty + flawless
             self.metrics.accumulate(shaped_rewards, shaping)
 
-            # `valid` marks envs whose PREVIOUS step ended the episode. Under
-            # gymnasium's NEXT_STEP autoreset such envs do not execute the
-            # sampled action at all -- the worker just resets and returns a
-            # fresh obs with reward 0 -- so this step is not a real transition:
-            # excluded from the loss, and treated as a trajectory break so GAE
-            # cannot bootstrap through it and the LSTM state entering the new
-            # episode starts clean instead of carrying the dead board.
+            # Under NEXT_STEP autoreset, an env whose previous step ended the
+            # episode does not execute this action: it resets and returns
+            # reward 0. Not a real transition, so it is excluded from the loss
+            # and treated as a trajectory break for GAE and the LSTM state.
             valid = torch.tensor(1.0 - self._prev_dones,
                                  dtype=torch.float32).to(self.device)
             mask = torch.tensor(1.0 - dones,
@@ -448,9 +369,8 @@ class BaseTrainer:
                 "obs": obs_tensor,
                 "card_actions": card_idx,
                 "placement_actions": placement_cell,
-                # A row is a DECISION if the card head had a real choice OR a
-                # Champion ability could be activated. For a Champion-less deck
-                # the second term is all-False and this is unchanged.
+                # A decision if the card head had a real choice or a Champion
+                # ability was ready.
                 "decision": ((card_mask.sum(dim=1) > 1)
                              | ability_ready.any(dim=1)).float() * valid,
                 "hx_in": hx_in,
@@ -461,9 +381,8 @@ class BaseTrainer:
                                         dtype=torch.float32).to(self.device),
                 "masks": mask,
                 "valid": valid,
-                # Raw per-step stream (-1 = they played nothing). Converted
-                # into a NEXT-card label inside the update, where the whole
-                # (T, N) block and the episode boundaries are available.
+                # Raw per-step stream (-1 = nothing played), turned into
+                # next-card labels inside the update.
                 "aux_opp_played": torch.tensor(
                     opponent_played_card(infos, cfg.num_envs)).to(self.device),
                 "coverage_slot": cov["slot"],
@@ -505,12 +424,10 @@ class BaseTrainer:
             self._prev_dones = dones
 
     def _draw_coverage(self, obs_tensor, card_mask):
-        """One AFFORDABLE hand slot per env, plus the advisor's surface for it.
+        """One affordable hand slot per env, plus the advisor's surface for it.
 
-        Drawn HERE, in the rollout, and buffered -- not resampled inside the PPO
-        epoch loop where it used to live. An advisor target is a function of the
-        OBSERVATION, so it can only be computed while that observation is the
-        live one, and a fresh draw in the update would pair one card's logits
+        Drawn in the rollout because the advisor target is a function of the
+        live observation; drawing it in the update would pair one card's logits
         with another card's target.
         """
         net = self.net
@@ -533,32 +450,14 @@ class BaseTrainer:
         return out
 
     def _truncation_bootstrap(self, dones, raw_rewards, next_obs, truncateds):
-        """V(final_obs) for episodes that stopped while the game CONTINUED.
+        """V(final_obs) for episodes that stopped while the game continued.
 
-        A TRUNCATION is a scenario window running out on a live match: no king
-        died, the world goes on, and bootstrapping 0 there would teach the
-        critic a biased "the world ends here" value for a state the world does
-        not end in. A TERMINAL is any real ending -- a king dying, or the clock
-        running out -- and gets value 0.
-
-        READ FROM `truncateds`, NOT FROM THE REWARD'S MAGNITUDE. This used to
-        classify with `dones & (abs(raw_rewards) > 0.5)`, a heuristic standing
-        in for a signal the caller already had: `selfplay_env` sets
-        `truncated=True` in exactly one place, a scenario window expiring while
-        the game is not over, so that flag IS the distinction.
-
-        The heuristic got one case wrong, and `TimeoutRules` is what kept it
-        narrow: a timed-out match is DECIDED on surviving towers, then on the
-        weakest tower's HP, so it almost always pays +/-1 and was correctly
-        called terminal. An EXACT TIE pays ~0, and was therefore treated as a
-        truncation -- charging DRAW_PENALTY for the draw AND crediting
-        gamma*V(final_obs) as though play continued. A draw is an ending; that
-        credit partly refunded the very penalty that exists to stop a timeout
-        being the safe option.
-
-        Using the flag also drops a silent dependency on the reward SCALE. If
-        the sparse reward ever stopped being +/-1, the old rule would
-        misclassify every episode at once and nothing would report it.
+        A truncation is a scenario window expiring on a live match;
+        bootstrapping 0 there would teach the critic that the world ends. Any
+        real ending, including a timeout, is terminal. Read from `truncateds`,
+        which selfplay_env sets only for an expiring scenario window, not
+        inferred from the reward: an exact-tie timeout pays ~0 and must still
+        be terminal.
         """
         n = self.cfg.num_envs
         zero = torch.zeros(n, dtype=torch.float32, device=self.device)
@@ -568,10 +467,8 @@ class BaseTrainer:
         is_terminal = dones & ~needs_boot
         boot_value = zero
         if needs_boot.any():
-            # next_obs at a done step is the episode's TRUE final observation
-            # (gymnasium next-step autoreset), and (hx, cx) here is the state
-            # that would process it -- post this step's forward, pre the
-            # done-mask reset -- so this is exactly V(final_obs).
+            # next_obs at a done step is the episode's true final observation,
+            # and (hx, cx) is the state that would process it.
             with torch.no_grad():
                 feats, _, _ = self.net.extract_features(
                     torch.tensor(next_obs, dtype=torch.float32).to(self.device))
@@ -588,19 +485,13 @@ class BaseTrainer:
             "value": boot_value,
         }
 
-    # -- update -------------------------------------------------------------
     def run_update(self):
         cfg, net = self.cfg, self.net
-        # `drain`, not `stack`: torch.stack has already copied every field into
-        # the batch, so the per-step lists are dead weight from here on --
-        # ~218 MB of observations at the production shape, held across the PPO
-        # update, which is ~87% of the cycle. run()'s later clear() stays and is
-        # simply a no-op. See RolloutBuffer.drain.
+        # `drain` releases the per-step lists (~218 MB of observations) before
+        # the update.
         batch = self.buffer.drain()
 
-        # Bootstrap value for the state right after the last stored step. Value
-        # depends only on hx and never needs a card or a placement, so this
-        # skips past card_logits entirely.
+        # Value depends only on hx, so no card or placement is needed.
         with torch.no_grad():
             next_obs_t = torch.tensor(self._obs, dtype=torch.float32).to(self.device)
             feats, _, _ = net.extract_features(next_obs_t)
@@ -614,29 +505,12 @@ class BaseTrainer:
             boot_nonterminal=batch.get("boot_nonterminal"),
             trunc_flag=batch.get("trunc_flag"),
             trunc_boot=batch.get("trunc_boot"))
-        # Critic targets are the RAW returns; only advantages are normalized.
+        # Critic targets are the raw returns; only advantages are normalized.
         returns = advantages + batch["values"]
-        # Masked by `decision`, NOT by `valid` -- the normalized advantages have
-        # exactly one consumer, `mb_adv` in the actor loss, and that term is
-        # masked by `mb_decision`. So the rows that set the mean and std must be
-        # the rows the loss actually reads, which is the rule rl/ppo.py's module
-        # docstring already states for the actor and the entropy terms.
-        #
-        # `valid` is a strict SUPERSET: it also carries every FORCED step (fewer
-        # than two affordable arms), whose advantages are perfectly real but are
-        # multiplied by zero in the actor. Letting them set the constants left
-        # the actor's own rows off-centre -- measured over three consecutive
-        # rollouts at a 308-episode checkpoint, where decision covered 73.7-75.1%
-        # of rows: centring error -0.0312 / -0.0820 / -0.0073 of a unit std, and
-        # a scale error of 0.9757x / 0.9492x / 1.0041x.
-        #
-        # That is not the harmless baseline shift it would be in vanilla policy
-        # gradient. PPO's clip is asymmetric in sign(A), so shifting the
-        # advantages changes WHICH samples clip and in which direction.
-        #
-        # The phantom post-autoreset rows this mask used to exist for are still
-        # excluded, and strictly so: `decision` is built as
-        # `(card_mask.sum(1) > 1) * valid`, so valid==0 implies decision==0.
+        # Normalize over `decision` rows, the only rows the actor loss reads.
+        # Forced steps would shift the mean and std, and PPO's clip is
+        # asymmetric in sign(A), so an off-centre advantage changes which
+        # samples clip. `decision` already excludes phantom rows.
         adv_norm = gae_mod.normalize(advantages, mask=batch["decision"])
         self._note_placements(batch)
 
@@ -644,14 +518,9 @@ class BaseTrainer:
             keep = batch["valid"] > 0.5
             r, v = returns[keep], batch["values"][keep]
             self._explained_variance = float(gae_mod.explained_variance(r, v))
-            # Scaled to THIS batch's own return spread, never tighter than
-            # eps_clip -- see PPOConfig.vf_clip_std_frac.
-            #
-            # `safe_std`, not `r.std()`: the unbiased estimator returns NaN on
-            # fewer than two rows, and `clamp(min=)` PROPAGATES NaN instead of
-            # flooring it, so this line looked floored while feeding NaN to the
-            # critic loss and costing the whole update. Same guard, same
-            # reasoning, as gae.normalize.
+            # Scaled to this batch's return spread, never tighter than
+            # eps_clip. `safe_std` because std() is NaN on fewer than two rows
+            # and clamp propagates NaN.
             vf_clip_range = max(cfg.vf_clip_std_frac * gae_mod.safe_std(r),
                                 cfg.eps_clip)
         self._vf_clip_range = vf_clip_range
@@ -661,14 +530,15 @@ class BaseTrainer:
             ent_coef_card=self.entropy.coef_card,
             ent_coef_placement=self.entropy.coef_placement,
             coverage_coef=PLACEMENT_COVERAGE_COEF,
-            # The next-card aux loss is ramped in; see PPOConfig.aux_warmup_episodes.
+            # The next-card aux loss is ramped in; see
+            # PPOConfig.aux_warmup_episodes.
             aux_scale=aux_warmup_scale(self.episodes_completed,
                                        cfg.aux_warmup_episodes))
 
     def _note_placements(self, batch):
-        """Feed this rollout's REAL placements (card id, cell) to the modal-share
-        window. Rows that placed nothing -- the no-op, a phantom autoreset step,
-        a forced step -- are dropped."""
+        """Feed this rollout's real placements (card id, cell) to the modal-share
+        window; no-op, phantom and forced rows are dropped.
+        """
         from python_ai.rl.placement_stats import ModalShareWindow
         if getattr(self, "_modal_share", None) is None:
             self._modal_share = ModalShareWindow()
@@ -687,10 +557,8 @@ class BaseTrainer:
     def log_update(self, stats):
         """TensorBoard series shared by both pipelines, plus the controller step."""
         w, ep = self.writer, self.episodes_completed
-        # MODAL SHARE per card -- the conditional-collapse detector CLAUDE.md
-        # names as the right one (not ByCard_Min). Not logged anywhere until
-        # 2026-09-15 (audit 08). Above ~0.6 at a sharp head, a card is being
-        # placed on one cell regardless of the board.
+        # Modal share per card, the conditional-collapse detector. Above ~0.6
+        # on a sharp head, a card goes to one cell regardless of the board.
         shares = getattr(self, "_modal_share", None)
         shares = shares.shares() if shares is not None else {}
         if shares:
@@ -703,7 +571,7 @@ class BaseTrainer:
         w.add_scalar("Loss/Entropy", stats.entropy, ep)
         w.add_scalar("Loss/Total", stats.total_loss, ep)
         w.add_scalar("Loss/Clip_Fraction", stats.clip_frac, ep)
-        # The recurrent-PPO self-check, every update: must read ~0 (float noise).
+        # Recurrent-PPO self-check; must read ~0.
         w.add_scalar("Loss/Ratio_Dev_First_Minibatch", stats.ratio_dev_first, ep)
         if stats.ent_ability == stats.ent_ability:          # not nan
             w.add_scalar("Policy/Entropy_Ability", stats.ent_ability, ep)
@@ -713,30 +581,16 @@ class BaseTrainer:
         w.add_scalar("Loss/Entropy_Placement", stats.ent_placement, ep)
         w.add_scalar("Policy/Entropy_Card_Frac", stats.ent_card, ep)
         w.add_scalar("Policy/Entropy_Placement_Frac", stats.ent_placement, ep)
-        # Reported in ELIXIR UNITS so it is directly interpretable: MAE is "how
-        # many elixir off is our estimate of what the opponent is holding". An
-        # always-guess-the-mean baseline sits near 1.35; anything meaningfully
-        # below that means the recurrent state genuinely learned to count.
-        # Cross-entropy in nats and top-1 accuracy over the LABELLED steps.
-        # Read them against ln(reachable classes): the opponent holds 4 of 8
-        # cards, so a policy with no cycle knowledge cannot beat ~ln(8)=2.08
-        # / 0.125 by much, and beating it is the whole point of the head.
+        # Read against the no-cycle-knowledge baseline: ~ln(8) = 2.08 CE and
+        # 0.125 accuracy.
         w.add_scalar("Aux/NextCard_CE", stats.aux_ce, ep)
         w.add_scalar("Aux/NextCard_Acc", stats.aux_acc, ep)
-        # The same label read off the DETACHED ScalarEncoder cycle branch. Read
-        # against the same ln(8)=2.08 / 0.125, but the meaningful reference is
-        # the measured ceiling for a 24-dim branch, ~0.55 accuracy: this series
-        # is the fast, high-SNR indicator that the 2026-08-28 detach is doing
-        # its job, because it answers off 24 dims with no recurrence involved.
-        # Aux/NextCard_Acc is the SLOW one -- it needs the LSTM to have
-        # integrated the play history, and it is the one that was stuck at the
-        # 0.22 marginal.
+        # The same label off the detached cycle branch. Fast to move (24 dims,
+        # no recurrence); the branch's ceiling is ~0.55 accuracy.
         w.add_scalar("Aux/CycleId_CE", stats.cycle_id_ce, ep)
         w.add_scalar("Aux/CycleId_Acc", stats.cycle_id_acc, ep)
-        # Non-finite minibatches whose optimizer step was dropped. MUST be 0.
-        # Printed as well as logged, because the whole point of the guard is
-        # that the run now SURVIVES a numerical fault -- which means nothing
-        # else in the console would ever tell you one happened.
+        # Must be 0. Printed too, since the guard lets the run survive and
+        # nothing else would say a fault happened.
         w.add_scalar("Loss/NonFinite_Skips", stats.nonfinite_skips, ep)
         if stats.nonfinite_skips:
             print(f"  [WARN] {stats.nonfinite_skips} non-finite minibatch "
@@ -748,9 +602,8 @@ class BaseTrainer:
         target_placement = self.entropy.update(
             stats.ent_card, stats.ent_placement, self.anneal_episodes_done())
         if self.entropy.frozen_updates > frozen_before:
-            # The controller could not read this update and held its
-            # coefficients. Reported because a HELD controller and a controller
-            # that is simply satisfied look identical in the coefficient trace.
+            # A held controller and a satisfied one look identical in the
+            # coefficient trace.
             print("  [WARN] entropy controller froze this update: the measured "
                   "entropy was not finite (no minibatch survived). Coefficients "
                   "held.", flush=True)
@@ -759,31 +612,24 @@ class BaseTrainer:
         w.add_scalar("Policy/Entropy_Coef_Card", self.entropy.coef_card, ep)
         w.add_scalar("Policy/Entropy_Coef_Placement",
                      self.entropy.coef_placement, ep)
-        # The annealed target NEXT TO the measured value, so "is the controller
-        # fighting the policy" stays answerable at a glance -- that comparison is
-        # what diagnosed the fixed-target pathology in the first place.
+        # Target next to measured: shows whether the controller is fighting the
+        # policy.
         w.add_scalar("Entropy/Placement_Target", target_placement, ep)
         w.add_scalar("Entropy/Placement_Measured", stats.ent_placement, ep)
-        # Affordable-but-unchosen cards. Read NEXT TO Placement_Measured:
-        # Measured falling while Coverage stays up is a policy sharpening on the
-        # cards it plays; BOTH falling is the freeze this term exists to
-        # prevent, and it is the shape that produced the (11,0) collapse.
+        # Affordable-but-unchosen cards. Measured falling with Coverage steady
+        # is sharpening; both falling is the freeze this term prevents.
         w.add_scalar("Entropy/Placement_Coverage", stats.coverage_entropy, ep)
         if stats.ent_placement_noop == stats.ent_placement_noop:  # not NaN
             w.add_scalar("Entropy/Placement_Measured_NoOp",
                          stats.ent_placement_noop, ep)
         w.add_scalar("Advisor/KL", stats.advisor_kl, ep)
         w.add_scalar("Advisor/Rows", stats.advisor_rows, ep)
-        # Deck/MinCardProb is the series the 2026-08-28 run needed and did
-        # not have: it sat near 0.001 for 30,000 episodes while
-        # Policy/Entropy_Card_Frac held its 0.35 target exactly. Watch the
-        # MIN, not the penalty -- the penalty is 0.0 both when the deck is
-        # healthy and when the floor is switched off.
+        # Watch the min, not the penalty: the penalty is 0.0 both on a healthy
+        # deck and with the floor switched off.
         w.add_scalar("Deck/Coverage_Penalty", stats.deck_coverage, ep)
         w.add_scalar("Deck/MinCardProb", stats.deck_min_card_prob, ep)
         w.add_scalar("Advisor/Coef", advisor_target.ADVISOR_COVERAGE_COEF, ep)
-        # Proof that the spell-value anneal actually runs -- it was dead code
-        # for a whole training era and no test varied its argument.
+        # Shows the spell-value anneal is actually running.
         w.add_scalar("Shaping/SpellValueWeight",
                      spell_value_weight(self.episodes_completed), ep)
         self._log_per_card(stats)
@@ -797,9 +643,9 @@ class BaseTrainer:
     def _log_per_card(self, stats):
         """H(placement | card), and the minimum over cards.
 
-        THE conditional-collapse detector. A card near 0 here is placing at a
-        fixed point regardless of the board -- but read it next to modal share,
-        because the most-played card legitimately has the lowest entropy.
+        A card near 0 places at a fixed point regardless of the board; read it
+        next to modal share, since the most-played card legitimately has the
+        lowest entropy.
         """
         from python_ai.engine_constants import card_name
         per_card = stats.per_card_placement_entropy
@@ -818,7 +664,6 @@ class BaseTrainer:
             line += f"  | no-op arm {stats.ent_placement_noop:.3f}"
         print(line)
 
-    # -- periodic work ------------------------------------------------------
     def periodic(self, stats):
         cfg = self.cfg
         if self.episodes_completed - self._last_save_ep >= cfg.save_every_episodes:
@@ -837,8 +682,9 @@ class BaseTrainer:
                 self._last_replay_ep = self.episodes_completed
 
     def on_historical_snapshot(self, path):
-        """Pipeline 2 refreshes its PFSP pool here so the new snapshot enters
-        rotation immediately instead of waiting for the next refresh."""
+        """Pipeline 2 refreshes its PFSP pool here so the snapshot enters rotation
+        at once.
+        """
 
     def record_replay(self):
         from python_ai.rl.replay import record_greedy_replay
@@ -859,12 +705,9 @@ class BaseTrainer:
             "optimizer": self.optimizer.state_dict(),
             "episodes_completed": self.episodes_completed,
             "outcome_history": list(self.metrics.outcomes),
-            # Which deck produced these weights. Not implied by the code any
-            # more: CLASH_DECK sets it (python_ai/deck.py).
+            # Which deck produced these weights (CLASH_DECK).
             "deck": list(_trainee_deck()),
-            # Every CLASH_* setting in force -- read at import, so a resume is
-            # configured by whatever the relaunching shell holds. See
-            # checkpointing.clash_settings.
+            # Every CLASH_* setting in force; see checkpointing.clash_settings.
             "clash_settings": clash_settings(),
             "lineage_started_at": float(getattr(self, "lineage_started_at", 0.0)),
         }
@@ -877,11 +720,10 @@ class BaseTrainer:
 
     @staticmethod
     def _report_settings_drift(saved):
-        """Say, loudly, which CLASH_* settings differ from the checkpoint's.
+        """Warn about CLASH_* settings that differ from the checkpoint's.
 
-        A WARNING and not an error, like the deck check above: the runbook's
-        resume path must survive, and a deliberate change (a new CLASH_LOGDIR)
-        is legitimate. What it must not be is SILENT -- TODO 00.9.
+        A warning, not an error: a deliberate change is legitimate, but it must
+        not be silent.
         """
         if saved is None:
             print(">>> [SETTINGS] checkpoint predates the CLASH_* stamp; the "
@@ -903,9 +745,8 @@ class BaseTrainer:
     def restore_common(self, checkpoint):
         """Model + optimizer + the state every pipeline keeps.
 
-        The optimizer is restored ONLY on a clean model load. A warm-started
-        architecture change leaves some parameters freshly initialized, and Adam
-        moments recorded for a different tensor are worse than none.
+        The optimizer is restored only on a clean model load: Adam moments for
+        a different tensor are worse than none.
         """
         clean = load_state_dict_flexible(
             self.net, checkpoint["model"],
@@ -923,8 +764,7 @@ class BaseTrainer:
                   f"weights load, but card embeddings, placement habits and every "
                   f"win rate belong to the old deck.")
         self._report_settings_drift(checkpoint.get("clash_settings"))
-        # Legacy checkpoints predate the stamp: 0.0 disables the lineage filter
-        # rather than excluding that run's own older snapshots.
+        # Legacy checkpoints lack the stamp; 0.0 disables the lineage filter.
         self.lineage_started_at = float(checkpoint.get("lineage_started_at", 0.0))
         self.episodes_completed = checkpoint["episodes_completed"]
         self.entropy.load_state_dict(checkpoint)

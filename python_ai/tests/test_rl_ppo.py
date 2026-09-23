@@ -1,13 +1,9 @@
-"""PPOUpdater: the masking rules and the entropy normalization, on real tensors.
+"""PPOUpdater: masking rules and entropy normalisation, on real tensors.
 
-This is the ~250 lines that were duplicated verbatim between the two trainers.
-The tests here pin the properties whose violation was measured and cost real
-training time, not the arithmetic in general:
-
-  * the coverage term must never reach the PPO ratio
-  * entropy must be normalized by the REACHABLE arm count
-  * placement entropy must be measured on PLACEMENTS, not on affordability
-  * the actor is normalized by decision steps, the critic by all real steps
+  * the coverage term never reaches the PPO ratio
+  * entropy is normalised by the reachable arm count
+  * placement entropy is measured on placements, not on affordability
+  * the actor is normalised by decision steps, the critic by all real steps
 """
 import copy
 import math
@@ -28,11 +24,8 @@ TINY = PPOConfig(num_envs=2, update_timestep=4, bptt_chunk=2,
 
 @pytest.fixture(scope="module")
 def rollout():
-    """A tiny but REAL rollout: real observations, real masks, real hidden states.
-
-    Built from the engine rather than random tensors, so the affordability mask
-    has the structure the normalization tests depend on (most steps leave two
-    legal card arms).
+    """A tiny but real rollout (real observations, masks and hidden states), so
+    the affordability mask has the structure the normalisation tests depend on.
     """
     import clash_royale_env
     from python_ai.envs.gym_wrapper import DEFAULT_DECK
@@ -101,10 +94,9 @@ def test_an_update_runs_and_reports_every_diagnostic(rollout):
 
 
 def test_entropy_fractions_are_bounded_by_one(rollout):
-    """THE invariant the 2026-08-16 fix installed: dividing by log(REACHABLE
-    arms) means a uniform distribution reads exactly 1.0 at any number of arms.
-    Under the old log(total-arms) divisor a uniform 2-arm row read 0.431, and
-    the controller treated near-maximum randomness as roughly correct."""
+    """Dividing by log(reachable arms) means a uniform distribution reads exactly
+    1.0 at any arm count.
+    """
     net, batch = rollout
     stats = _run(net, batch)
     assert 0.0 <= stats.ent_card <= 1.0 + 1e-6, stats.ent_card
@@ -112,9 +104,9 @@ def test_entropy_fractions_are_bounded_by_one(rollout):
 
 
 def test_a_fresh_net_reads_near_uniform_on_both_heads(rollout):
-    """An untrained policy IS near-uniform over its legal arms, so both
-    fractions must sit near 1.0. Reading ~0.4 here would mean the normalizer is
-    the broken one again."""
+    """An untrained policy is near-uniform over its legal arms, so both fractions
+    sit near 1.0.
+    """
     net, batch = rollout
     stats = _run(net, batch)
     assert stats.ent_card > 0.85, stats.ent_card
@@ -122,9 +114,9 @@ def test_a_fresh_net_reads_near_uniform_on_both_heads(rollout):
 
 
 def test_the_coverage_term_never_reaches_the_chosen_actions_gradient(rollout):
-    """The coverage pass scores an AFFORDABLE card, not the CHOSEN one. If it
-    reached `new_logprobs` it would silently corrupt the quantity PPO clips, and
-    the update would stop being a valid PPO step."""
+    """The coverage pass scores an affordable card, not the chosen one; reaching
+    `new_logprobs` would corrupt the quantity PPO clips.
+    """
     import inspect
 
     from python_ai.rl import ppo
@@ -132,14 +124,14 @@ def test_the_coverage_term_never_reaches_the_chosen_actions_gradient(rollout):
     body = src[src.index("cov_delta"):]
     assert "new_logprobs" not in body, (
         "the coverage term must not be able to touch the PPO ratio")
-    # ...and the ratio itself is built only from the stored actions.
+    # ...and the ratio is built only from the stored actions.
     ratio_line = src[src.index("ratios = "):src.index("surr1")]
     assert "cf_pl_seq" not in ratio_line and "cov" not in ratio_line
 
 
 def test_zeroing_the_coverage_coefficient_changes_only_the_coverage_term(rollout):
-    """A regularizer with coefficient 0 must be inert, which is what makes the
-    A/B that justified it a controlled comparison."""
+    """With coefficient 0 the regulariser is inert, so an A/B on it is controlled.
+    """
     net, batch = rollout
     torch.manual_seed(3)
     np.random.seed(3)
@@ -148,11 +140,10 @@ def test_zeroing_the_coverage_coefficient_changes_only_the_coverage_term(rollout
 
 
 def test_placement_entropy_is_measured_on_placements_not_on_affordability(rollout):
-    """The 2026-08-11 defect. `decision` means "a card was AFFORDABLE"; the
-    placement head is also sampled on steps where the policy chose the no-op and
-    the sampled cell never reaches the board. Averaging those in let the head
-    earn the bonus for free -- measured 0.462 reported = 0.850 on no-op steps
-    against 0.090 on real placements, against a 0.25 target."""
+    """`decision` means "a card was affordable", but the placement head is also
+    sampled on no-op steps whose cell never reaches the board; those must not
+    earn the entropy bonus.
+    """
     import inspect
 
     from python_ai.rl import ppo
@@ -162,29 +153,25 @@ def test_placement_entropy_is_measured_on_placements_not_on_affordability(rollou
 
 
 def test_the_actor_uses_decision_steps_and_the_critic_uses_all_valid_steps(rollout):
-    """On a forced step the masked distribution is a point mass: log-prob 0,
-    ratio 1, entropy 0. It contributes nothing to the actor but WOULD inflate
-    the denominator, shrinking the effective step by the ~3.7x
-    all-steps/decision-steps ratio. The critic still needs every real state."""
+    """A forced step (point mass: log-prob 0, ratio 1, entropy 0) contributes
+    nothing to the actor but would inflate its denominator; the critic still
+    needs every real state.
+    """
     import inspect
 
     from python_ai.rl import ppo
     src = inspect.getsource(ppo.PPOUpdater.update)
     assert "* mb_decision).sum() / n_decision" in src           # actor
     assert "(critic_loss_per_elem * mb_valid).sum() / n_valid" in src
-    # The auxiliary head is denominated over its OWN labelled rows since the
-    # 2026-08-28 next-card swap. `mb_aux_has` is strictly narrower than
-    # `mb_valid` -- it already carries `valid` and additionally drops steps
-    # with no future opponent play -- so the property this line pins (the aux
-    # term is averaged over the rows it is actually defined on, never over the
-    # whole minibatch) is unchanged; only the mask got tighter.
+    # The aux head is averaged over its own labelled rows, `mb_aux_has`, which
+    # is `valid` minus steps with no future opponent play.
     assert "(aux_ce_all * mb_aux_has).sum() / n_aux" in src
 
 
 def test_the_affordability_mask_is_RECOMPUTED_not_read_from_the_buffer(rollout):
-    """Deriving it from the stored observation makes it bit-identical to the
-    sampling-time mask by construction. A stored mask could drift, and drift
-    corrupts the ratio silently."""
+    """Recomputed from the stored observation, the mask is bit-identical to the
+    sampling-time one; a stored mask could drift and corrupt the ratio.
+    """
     import inspect
 
     from python_ai.rl import ppo
@@ -193,9 +180,9 @@ def test_the_affordability_mask_is_RECOMPUTED_not_read_from_the_buffer(rollout):
 
 
 def test_per_card_entropy_is_collected_for_the_cards_actually_played(rollout):
-    """THE conditional-collapse detector. The aggregate provably cannot see a
-    per-card collapse: a mixture of eight sharp, well-separated modes has high
-    entropy even when every component is a delta."""
+    """The conditional-collapse detector: an aggregate cannot see a per-card
+    collapse, since a mixture of sharp, separated modes has high entropy.
+    """
     net, batch = rollout
     stats = _run(net, batch, )
     for cid, value in stats.per_card_placement_entropy.items():
@@ -217,35 +204,23 @@ def test_collect_per_card_can_be_switched_off(rollout):
 
 
 def test_the_optimizer_actually_moves_the_weights(rollout):
-    """The cheapest possible check that the update is wired at all -- an
-    extraction that silently dropped `optimizer.step()` would pass every
-    property test above."""
+    """An extraction that dropped `optimizer.step()` would pass every property
+    test above.
+    """
     net, batch = rollout
     before = net.card_head.weight.detach().clone()
     _run(net, batch)
     assert not torch.equal(before, net.card_head.weight.detach())
 
 
-# --------------------------------------------------------------------------
-# The normalization invariant itself, computed directly.
-#
-# The tests above that read source text are STRUCTURAL PINS -- they assert the
-# extracted updater still composes the terms the way the measured version did.
-# This one is behavioural, and it is the property whose violation cost this
-# project seven separate incidents.
-# --------------------------------------------------------------------------
+# --- the normalisation invariant, computed directly ---
+# The source-text tests above are structural pins; this one is behavioural.
 
 @pytest.mark.parametrize("n_legal", [2, 3, 4, 5, 8, 208, 242, 612])
 def test_a_uniform_distribution_over_n_legal_arms_reads_exactly_one(n_legal):
-    """`H / log(n_legal)` = 1.0 for a uniform masked distribution, at ANY n.
-
-    Under the divisor this replaced -- log(TOTAL arms) -- a uniform 2-arm row
-    read log(2)/log(5) = 0.431. Measured on model_weights_cured.pth, 54.1% of
-    decision steps leave exactly two legal card arms, so the controller was
-    reading 0.431 against a 0.35 target on the majority of decisions and
-    concluding a literal coin flip was roughly correct. Downstream: elixir spent
-    on sight, mean elixir 2.25/10, nothing affordable on 73.9% of steps, and
-    P(play) flat against threat (0.1008 -> 0.1016).
+    """`H / log(n_legal)` = 1.0 for a uniform masked distribution at any n. Under
+    log(total arms) a uniform 2-arm row read 0.431, and most decisions leave
+    two legal arms.
     """
     total_arms = 612
     logits = torch.full((1, total_arms), -float("inf"))
@@ -257,8 +232,9 @@ def test_a_uniform_distribution_over_n_legal_arms_reads_exactly_one(n_legal):
 
 
 def test_a_collapsed_distribution_reads_zero_however_many_arms_are_legal():
-    """The other end of the scale: a point mass is 0.0, so "0" always means
-    "this head returns one cell regardless of the board"."""
+    """A point mass reads 0.0, so "0" always means one cell regardless of the
+    board.
+    """
     for n_legal in (2, 5, 612):
         logits = torch.full((1, 612), -float("inf"))
         logits[0, :n_legal] = -50.0
@@ -270,9 +246,9 @@ def test_a_collapsed_distribution_reads_zero_however_many_arms_are_legal():
 
 
 def test_the_reachable_count_comes_from_the_MASK_not_from_the_head_size():
-    """`torch.isfinite` on the masked logits is how the placement head recovers
-    its own legal-cell count without any extra plumbing: a spell sees 588 cells,
-    a plain troop 242, the Cannon 208."""
+    """`torch.isfinite` on the masked logits gives the head its own legal-cell
+    count: a spell 588 cells, a plain troop 242, the Cannon 208.
+    """
     logits = torch.full((3, 612), -float("inf"))
     logits[0, :588] = 0.0
     logits[1, :242] = 0.0
@@ -280,28 +256,16 @@ def test_the_reachable_count_comes_from_the_MASK_not_from_the_head_size():
     assert list(torch.isfinite(logits).sum(-1)) == [588, 242, 208]
 
 
-# --- non-finite gradient containment -------------------------------------
-#
-# A single non-finite value anywhere in the loss turns EVERY parameter to NaN
-# in one optimizer step, and the damage is PERMANENT: Adam's moment estimates
-# are poisoned with it, so a subsequent clean batch cannot recover. Measured
-# 2026-08-26 -- 100% of parameters NaN after one bad step, still 100% NaN after
-# a clean one.
-#
-# That is the worst failure this loop can have. Training continues, every
-# metric reads NaN, and the periodic checkpoint OVERWRITES the last good
-# weights with the poisoned ones -- so a multi-hour run is lost silently and
-# unrecoverably. The guard is one comparison per minibatch.
+# --- non-finite gradient containment ---
+# One non-finite value in the loss turns every parameter to NaN in one step,
+# permanently (Adam's moments carry it), and the periodic checkpoint then
+# overwrites the last good weights. The guard is one comparison per minibatch.
 
 def _run_with_adv(net, batch, adv):
-    """An update over a caller-supplied advantage tensor, on a PRIVATE COPY of
-    the net.
-
-    The copy is not hygiene, it is a prerequisite: the whole point of these
-    tests is that a poisoned net stays poisoned, so sharing the module-scoped
-    fixture would let the first test here corrupt every test after it. Copying
-    keeps the stored log-probs exactly matched to the weights, so the PPO ratio
-    is still exactly 1.0 and a "clean" batch really is clean.
+    """An update over a caller-supplied advantage tensor, on a private copy of the
+    net: a poisoned net stays poisoned, so sharing the fixture would corrupt
+    later tests. The copy keeps the stored log-probs matched to the weights, so
+    the ratio is exactly 1.0.
     """
     victim = copy.deepcopy(net)
     optimizer = optim.Adam(victim.parameters(), lr=1e-4)
@@ -314,11 +278,9 @@ def _run_with_adv(net, batch, adv):
 
 
 def test_one_nan_advantage_cannot_poison_the_whole_network(rollout):
-    """ONE bad element must not take out all 1.88M parameters.
-
-    The realistic sources are an exploding PPO ratio (exp of a large log-prob
-    difference overflows to inf), a NaN out of `gae.normalize` when the batch
-    has a degenerate spread, or a non-finite reward reaching GAE.
+    """One bad element must not take out every parameter. Realistic sources: an
+    exploding PPO ratio, a NaN from a degenerate normalisation, a non-finite
+    reward.
     """
     net, batch = rollout
     T, N = batch["rewards"].shape
@@ -333,10 +295,7 @@ def test_one_nan_advantage_cannot_poison_the_whole_network(rollout):
 
 
 def test_an_all_nan_update_leaves_the_weights_bit_identical(rollout):
-    """A fully corrupt batch must be a NO-OP, not a partial write.
-
-    Skipping the step is the only safe response: there is no meaningful
-    gradient direction in a non-finite batch, so the correct step size is zero.
+    """A fully corrupt batch is a no-op: there is no gradient direction in it.
     """
     net, batch = rollout
     before = {n: p.detach().clone() for n, p in net.named_parameters()}
@@ -349,9 +308,9 @@ def test_an_all_nan_update_leaves_the_weights_bit_identical(rollout):
 
 
 def test_a_skipped_update_is_reported_not_silent(rollout):
-    """A silent skip is its own hazard: a run whose updates are all being
-    dropped looks exactly like a run that is learning nothing. The count has to
-    reach the caller so `log_update` can surface it."""
+    """Skips must be reported: a run dropping every update looks like one learning
+    nothing.
+    """
     net, batch = rollout
     T, N = batch["rewards"].shape
     _, stats = _run_with_adv(net, batch, torch.full((T, N), float("nan")))
@@ -360,8 +319,7 @@ def test_a_skipped_update_is_reported_not_silent(rollout):
 
 
 def test_a_clean_batch_still_updates_and_reports_no_skips(rollout):
-    """The guard must not fire on healthy data -- otherwise it silently
-    converts the whole run into the no-learning failure it exists to prevent."""
+    """The guard must not fire on healthy data."""
     net, batch = rollout
     before = {n: p.detach().clone() for n, p in net.named_parameters()}
 
@@ -375,16 +333,10 @@ def test_a_clean_batch_still_updates_and_reports_no_skips(rollout):
 
 
 def test_a_batch_that_does_not_match_the_config_is_refused_by_name(rollout):
-    """`_segments` builds its gather indices from `cfg.update_timestep` and
-    `cfg.num_envs`, NOT from the batch it was handed. A batch of the wrong
-    length therefore fails deep inside an advanced-indexing expression, as an
-    IndexError about a tensor nobody named -- or, if the batch is LONGER,
-    succeeds while silently training on a prefix of it.
-
-    The rollout loop cannot currently desync (it adds exactly update_timestep
-    rows, then updates, then clears), so this is a contract check on the
-    boundary rather than a live bug: a subclass overriding `collect_rollout`,
-    or a config edited between resume and rollout, is what it is here for.
+    """`_segments` builds its indices from the config, not the batch, so a
+    wrong-length batch would fail as an anonymous IndexError or, if longer,
+    silently train on a prefix. A boundary contract for subclasses and edited
+    configs.
     """
     net, batch = rollout
     short = {k: (v[:-1] if hasattr(v, "shape") and v.shape[:1] == (TINY.update_timestep,)

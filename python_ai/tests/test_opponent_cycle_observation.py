@@ -1,20 +1,11 @@
 """The opponent card-cycle blocks, from the Python side.
 
-`tests/core/test_card_cycle_observation.cpp` pins the ENGINE's behaviour. This
-file pins the part the C++ suite structurally cannot see: that
-`MicroRoyaleNet` sizes its scalar input from the engine rather than from a
-literal, and that every Python consumer of the observation tail still points at
-the tail after two NUM_CARD_IDS-wide blocks were appended behind it.
-
-THAT SECOND HALF IS THE DANGEROUS ONE, and it is why this file exists rather
-than a single size assertion. Five call sites computed the tail's offset
-BACKWARDS, as `observation_size() - NUM_EXTRA_SCALARS`, which was correct only
-while the extra scalars were the last thing in the vector. After item 24 they
-are not. Nothing would have raised: `enemy_tower_hp` would simply have started
-reading card-recency floats, and it feeds `compute_shaping`'s tower potential,
-so the reward itself would have gone quietly wrong. That is the exact failure
-`UPSTREAM_REQUESTS.md` item 25 predicted, and the reason the fix is one bound
-offset rather than five corrected subtractions.
+`tests/core/test_card_cycle_observation.cpp` pins the engine. This pins what
+the C++ suite cannot see: `MicroRoyaleNet` sizes its scalar input from the
+engine, and every consumer of the observation tail still reads the tail now
+that the cycle blocks sit behind it. A tail offset counted back from the end
+would silently read card-recency floats, and `enemy_tower_hp` feeds the
+reward's tower potential.
 """
 import numpy as np
 import pytest
@@ -41,8 +32,7 @@ def _obs(e, team=0):
 
 
 def test_the_engine_exposes_the_cycle_block_geometry():
-    """Bound, not restated. A Python-side `2 * 185` would be the seventh
-    instance of the copy this project keeps being bitten by."""
+    """Bound, not restated."""
     assert _E.NUM_CYCLE_BLOCKS == 2
     assert _E.CYCLE_BLOCK_SIZE == _E.NUM_CYCLE_BLOCKS * _E.NUM_CARD_IDS
     assert _E.CYCLE_RECENCY_TAU_TICKS > 0
@@ -58,27 +48,22 @@ def test_observation_size_grew_by_exactly_the_cycle_blocks(env):
 
 
 def test_the_network_sizes_its_scalar_input_from_the_engine():
-    """`MicroRoyaleNet` must absorb the new block automatically. If it did not,
-    the first forward pass after a rebuild would fail on a shape mismatch --
-    loudly, which is the good case -- or, worse, a stale checkpoint would load
-    and quietly feed 370 floats of card cycle into weights fitted without it."""
+    """The net absorbs the new block automatically, rather than failing on shape
+    or (worse) loading a stale checkpoint that feeds cycle floats into weights
+    fitted without them.
+    """
     net = MicroRoyaleNet(num_ability_slots=0)
     assert net.cycle_block_size == _E.CYCLE_BLOCK_SIZE
     assert net.spatial_size + net.scalar_size == CE(DECK, DECK, 100).observation_size()
-    # The blocks sit AFTER the extra scalars, so the pre-existing offset into
-    # the tail is unmoved -- that is the property that let this be an append
-    # rather than a migration.
+    # The blocks sit after the extra scalars, so the offset into the tail is
+    # unmoved.
     assert net.cycle_start == net.extra_start + net.num_extra_scalars
 
 
 def test_the_tower_hp_scalars_still_read_as_tower_hp(env):
-    """THE REGRESSION THAT WOULD HAVE BEEN SILENT.
-
-    On a fresh board every tower is at full HP, so the six tower scalars are
-    strictly positive and the three own-tower values sum to the known total.
-    Card-recency floats on a fresh board are all ZERO, so a backward offset
-    that slid into the cycle blocks fails this immediately -- which is the
-    whole point of asserting on a property the wrong region cannot have.
+    """The regression that would have been silent. On a fresh board the tower
+    scalars are strictly positive while the card-recency floats are all zero,
+    so an offset that slid into the cycle blocks fails immediately.
     """
     obs = _obs(env)
     start = EC.EXTRA_SCALARS_START
@@ -100,10 +85,9 @@ def test_a_fresh_board_has_an_entirely_empty_cycle(env):
 
 
 def test_a_noted_play_appears_in_the_opponents_view_only():
-    """`note_played_card` is the estimator-facing recorder. It must land in the
-    OTHER team's observation, never in the player's own -- the agent already
-    sees its own hand, and getting this backwards would fill the channel with
-    information that was never missing while leaving the gap open."""
+    """`note_played_card` lands in the other team's observation, never the
+    player's own (the agent already sees its own hand).
+    """
     e = CE(DECK, DECK, 3600)
     e.reset()
     card = DECK[0]
@@ -135,8 +119,7 @@ def test_recency_decays_and_seen_does_not():
 
 
 def test_every_cycle_value_stays_in_the_unit_interval():
-    """Every other channel keeps [0, 1]; these must too, or the scalar MLP sees
-    an input on a different scale from everything beside it."""
+    """Every other channel is in [0, 1]; these must be too."""
     e = CE(DECK, DECK, 3600)
     e.reset()
     for i, card in enumerate(DECK):

@@ -1,47 +1,20 @@
-"""Head-to-head self-play between two nets, EITHER SIDE optionally using
-decision-time search, with the sides swapped.
+"""Head-to-head between two nets, either side optionally using decision-time
+search, with the sides swapped.
 
-    python_ai/venv/Scripts/python.exe python_ai/net_h2h_search.py \
+    python_ai/venv/Scripts/python.exe python_ai/eval/net_h2h_search.py \
         --a model_weights_selfplay.pth --b model_weights_cured.pth \
         --b-search --n 150
 
-WHY THIS EXISTS. `net_h2h.py` duels two nets greedy-vs-greedy and measured the
-cured net at 0.6125 against v1.2.0. But the shipping configuration is not the
-greedy policy -- decision-time search is worth +0.183 against the C++ heuristic
-(measured 2026-08-15, n=60 paired, CI [+0.032, +0.334]), and the question that
-decides whether we ship is whether the DEPLOYABLE agent beats the DEPLOYED
-baseline. That is cured+search vs v1.2.0-greedy, which nothing measured before.
+`--b-search` alone compares the deployable agent (net + search) against a
+greedy baseline; omitting it reproduces net_h2h.py's greedy-vs-greedy number as
+a control.
 
-Run it both ways: `--b-search` alone gives the ship-vs-ship comparison, and
-omitting it reproduces net_h2h.py's greedy-vs-greedy number as a control, so
-the search contribution is visible rather than confounded with the weights.
+Inside a candidate rollout the opponent no-ops. Feeding it the opponent's real
+move would leak information both sides decide without; the no-op is the same
+approximation for every candidate, so the ranking is fair.
 
-TWO THINGS THE ROLLOUT DOES DELIBERATELY:
-
-  * The OPPONENT NO-OPS inside a candidate rollout. `step_self_play` needs an
-    action for both sides, and the honest options are "no-op" or "feed it the
-    opponent's real move". The second is an information leak -- both sides
-    genuinely decide from the same board simultaneously, so knowing their
-    current move is knowledge the engine does not grant. No-op is an
-    approximation, but it is the SAME approximation for every candidate, so the
-    ranking it produces is fair.
-
-  * TERMINAL POSITIONS ARE SCORED FROM SURVIVING TOWERS, not from
-    `result.reward`. A finished game has no meaningful critic estimate, and
-    this file does not depend on `step_self_play`'s reward convention matching
-    `step`'s.
-
-    Both the leaf value and the final duel verdict now go through
-    `match_outcome`, which applies TimeoutRules' FULL rule -- tower count,
-    then weakest surviving tower, then draw. They previously used tower count
-    alone and called every equal-count finish a draw, which is not what the
-    engine decides and which biased this file's own ship/no-ship number.
-    Because the leaf value feeds candidate ranking, search behaviour changes
-    across that fix: A/B figures measured before it are not comparable.
-
-SIDES ARE SWAPPED and each pairing is played twice, for the reason net_h2h.py
-records: a policy beating a bit-exact copy of itself measured 0.598 once purely
-by side assignment, and reads 0.530 today.
+Terminal positions are scored by match_outcome (TimeoutRules), never from
+`result.reward`, and the same function gives the duel's verdict.
 """
 import argparse
 import os
@@ -50,9 +23,7 @@ import sys
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -75,11 +46,10 @@ class Cfg:
 
 
 def _terminal_value(sim, team):
-    """+1 / 0 / -1 from surviving towers, from `team`'s point of view.
+    """+1 / 0 / -1 by TimeoutRules, from `team`'s point of view.
 
-    Delegates to match_outcome so the leaf value and the duel verdict can never
-    disagree about what a win is -- see this module's docstring for why the old
-    tower-count-only version was wrong and what it invalidates.
+    Shared with the duel verdict, so the two cannot disagree about what a win
+    is.
     """
     return terminal_value(sim, team)
 
@@ -197,7 +167,7 @@ def main():
         root = CE(list(DEFAULT_DECK), list(DEFAULT_DECK), args.max_ticks)
         root.reset()
         base = root.snapshot()
-        # B on team 0, then B on team 1, from the SAME opening.
+        # B on team 0, then B on team 1, from the same opening.
         b0, d1, s1_ = duel(B, A, base.snapshot(), args.b_search, args.a_search, cfg)
         a0, d2, s2_ = duel(A, B, base.snapshot(), args.a_search, args.b_search, cfg)
         dev_b += d1[0] + d2[1]

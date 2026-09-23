@@ -6,13 +6,9 @@
 #include "Board.h"
 #include <cmath>
 
-// Skeleton King's "Soul Summoning": spawns baseSkeletons + however many
-// souls he's collected (see CombatEntity::soulCount/soulCollectionRadius),
-// scattered in a ring of spawnRadius around him, then consumes the souls.
-// The real card spawns them in a sequence of 0.25s waves; this engine
-// spawns the whole batch in one tick instead (same "collapse a multi-tick
-// unfolding into one instant" simplification already used for Golden
-// Knight's dash chain above).
+// Skeleton King's "Soul Summoning": spawns baseSkeletons plus his collected
+// souls in a ring, then consumes the souls. The real card spawns in 0.25 s
+// waves; here the whole batch lands in one tick.
 class SkeletonKingSoulSummonEffect : public IAbilityEffect {
     CardStats skeletonStats;
     int baseSkeletons;

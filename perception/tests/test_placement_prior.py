@@ -1,30 +1,26 @@
 """Guards for the extracted human placement prior.
 
-The prior is served into training as target logits, so a silently wrong one
-would teach the placement head confidently incorrect cells. The checks that
-matter are the ones that fail when the COORDINATE FRAME is wrong, because that
-is the failure this corpus invites: their arena is 32 rows to our 34, their y
-runs the opposite way, and their ego is our team 0.
-
-A flipped frame would put the Fireball on our own half and the Hog behind our
-king, and both of those are asserted here.
+The prior is served into training as target logits, so a wrong one teaches
+confidently incorrect cells. The checks that matter fail when the coordinate
+frame is wrong, which this corpus invites: their arena is 32 rows to our 34,
+their y runs the other way, and their ego is our team 0. A flipped frame would
+put the Fireball on our own half and the Hog behind our King; both are
+asserted.
 """
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-# Import the package FIRST: its __init__ is what puts the unpackaged .pyd on
-# sys.path, so `clash_royale_env` is not importable before it.
+# Import the package first: its __init__ puts the unpackaged .pyd on sys.path.
 from perception.replay_mining import prior as P
 from perception.replay_mining.extract_prior import (BOARD_H, BOARD_W, N_CELLS,
                                                     cell_from_xy, geometry_stamp)
 
 import clash_royale_env as E  # noqa: E402
 
-# The artifact lives with its CONSUMER: python_ai serves it during training
-# and must not import perception (the dependency runs the other way).
-# perception is the producer, so this test reaches across to what it made.
+# The artifact lives with its consumer: python_ai serves it and must not import
+# perception, so the test reaches across to what perception made.
 ARTIFACT = (Path(__file__).resolve().parents[2] / "python_ai" / "advisors"
             / "data" / "hog26_placement_prior.npz")
 
@@ -63,11 +59,9 @@ def _surface(art, masks, card_id):
 
 
 def test_geometry_stamp_matches_the_live_engine(art):
-    """A prior built against a different arena must be REFUSED, not reused.
-
-    Same contract `bc_pretrain.load_dataset` enforces for observation_size.
-    CLAUDE.md records the arena moving twice; a stale prior would keep serving
-    plausible cells for a board that no longer exists.
+    """A prior built against a different arena is refused, not reused (the
+    contract `bc_pretrain.load_dataset` enforces for observation_size): a stale
+    prior would keep serving plausible cells for a board that no longer exists.
     """
     keys = [str(k) for k in art["geometry_keys"]]
     vals = dict(zip(keys, [float(v) for v in art["geometry_vals"]]))
@@ -86,8 +80,9 @@ def test_no_probability_mass_on_illegal_cells(art, masks):
 
 
 def test_fireball_goes_to_the_ENEMY_half(art, masks):
-    """The sharpest frame check available: a spell is the only card allowed
-    across the river, so a flipped y axis shows up here and nowhere else."""
+    """The sharpest frame check: a spell is the only card allowed across the
+    river, so a flipped y axis shows up here.
+    """
     g = _surface(art, masks, FIREBALL)
     enemy = float(g[int(E.ARENA_BRIDGE_Y + 1.0):].sum())
     assert enemy > 0.5, f"Fireball mass on the enemy half is only {enemy:.3f}"
@@ -108,11 +103,7 @@ def test_cannon_is_a_defensive_building_on_our_own_half(art, masks):
 
 
 def test_cell_from_xy_rejects_out_of_board_rather_than_truncating():
-    """int(-0.87) == 0 silently relocates a deep placement to the back row.
-
-    Measured: before this guard that artifact alone made (8, 0) the Musketeer's
-    modal cell with 7.6% of its mass.
-    """
+    """int(-0.87) == 0 silently relocates a deep placement to the back row."""
     assert cell_from_xy(-0.87, 5.0) is None
     assert cell_from_xy(5.0, -0.87) is None
     assert cell_from_xy(float(BOARD_W), 5.0) is None
@@ -120,16 +111,12 @@ def test_cell_from_xy_rejects_out_of_board_rather_than_truncating():
 
 
 def test_blur_matches_a_reference_convolution_in_the_INTERIOR():
-    """The matmul blur replaced a per-row convolution for speed, so it must be
-    the same operator where the two share a convention -- which is everywhere
-    except the boundary.
-
-    They differ AT the boundary on purpose. The matmul renormalises each output
-    row, so a cell near the wall averages only over real cells; the reference
-    pads by replicating the edge value, which duplicates mass that is not there.
-    For a surface that is about to become a probability distribution the
-    renormalising convention is the correct one, so the interior is what is
-    pinned and the edges are asserted separately below.
+    """The matmul blur replaced a per-row convolution for speed and must match it
+    wherever they share a convention: everywhere but the boundary. The matmul
+    renormalises each output row, so a cell near the wall averages only real
+    cells, while the reference replicates the edge value and duplicates mass.
+    For a surface becoming a probability distribution, renormalising is
+    correct, so the interior is pinned here and the edges below.
     """
     rng = np.random.default_rng(0)
     flat = rng.random(N_CELLS)
@@ -152,8 +139,8 @@ def test_blur_is_a_weighted_average_and_invents_nothing():
     flat = rng.random(N_CELLS)
     out = P._blur(flat, 1.0)
     assert (out >= 0).all()
-    # A weighted average cannot leave the range of its inputs -- in particular
-    # it cannot manufacture mass at the wall, which is the edge bug above.
+    # A weighted average cannot leave the range of its inputs, so it cannot
+    # manufacture mass at the wall.
     assert out.min() >= flat.min() - 1e-9
     assert out.max() <= flat.max() + 1e-9
 
@@ -170,7 +157,8 @@ def test_blur_spreads_a_delta_without_moving_it():
 
 
 def test_served_key_is_the_measured_one():
-    """`evaluate_prior` found conditioning does not beat the marginal. If this
-    changes, it must change with a new measurement attached."""
+    """`evaluate_prior` found conditioning does not beat the marginal; changing
+    that needs a new measurement.
+    """
     assert P.SERVE_KEY == "marginal"
     assert P.BLUR_SIGMA == 1.0

@@ -5,15 +5,10 @@
 #include "CardFactories.h"
 #include "Board.h"
 
-// Hero Magic Archer's "Triple Threat": dashes back toward his own side
-// (same team-relative direction idiom as BossBanditGetawayGrenadeEffect's
-// own teleport), spawns a stationary decoy at the position he just left,
-// and gains a temporary multi-shot window -- see
-// CombatEntity::temporarySplitTargetsTicksRemaining/maxSplitTargets for how
-// that's modeled (approximated via the existing Electro Wizard split-target
-// machinery, not genuinely independent projectiles). The real ~1s wind-up
-// delay before the dash is collapsed into an instant resolution, same
-// documented simplification as GoldenKnightDashEffect/HeroGiantHurlEffect.
+// Hero Magic Archer's "Triple Threat": dashes back toward his own side, leaves
+// a stationary decoy where he stood, and gains a temporary multi-shot window
+// (approximated with the Electro Wizard split-target machinery). The wind-up
+// resolves instantly.
 class HeroMagicArcherTripleThreatEffect : public IAbilityEffect {
     float dashDistance;
     CardStats decoyStats;

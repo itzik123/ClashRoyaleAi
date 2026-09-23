@@ -1,28 +1,15 @@
-"""The match clock, read by digit template matching. Not Tesseract.
+"""The match clock, read by digit template matching.
 
-The clock is a fixed-position, fixed-font, four-glyph string over an alphabet
-of eleven symbols (0-9 and the colon). A general OCR engine is built for
-arbitrary text in arbitrary fonts and pays for that generality with a
-segmentation stage, a language model, and tens of milliseconds per call --
-all of it wasted here, and all of it capable of failing in ways a fixed
-template simply cannot.
+The clock is a fixed-position, fixed-font, four-glyph string over eleven
+symbols (0-9 and the colon). Nearest-neighbour over eleven templates is a
+handful of array operations, gives a confidence for free (the margin between
+best and second-best), and cannot produce a character outside the alphabet; a
+general OCR engine pays tens of milliseconds for generality this does not need.
 
-Nearest-neighbour over eleven cropped templates is a handful of array
-operations, gives a usable confidence for free (the margin between the best
-and second-best match), and cannot hallucinate a character outside the
-alphabet.
-
-TEMPLATES ARE BUILT FROM THE RECORDING, NOT SHIPPED
----------------------------------------------------
-The glyphs are extracted once from a frame of the actual capture, at the
-actual resolution, and cached in the calibration profile's directory.
-Shipping pre-rendered templates would mean shipping an assumption about the
-font's rasterisation at one specific scale, and any mismatch shows up as
-systematically low match scores rather than as an obvious failure.
-
-Until they exist, `read` raises. The clock reading is what the entire
-timeline's resync depends on, so a guess here would corrupt every timestamp
-downstream, not just this one field.
+Templates are extracted from the capture itself at its own resolution and
+cached in the calibration profile's directory; shipped templates would carry a
+rasterisation assumption that fails as quietly low scores. Until they exist
+`read` raises: the timeline's resync depends on this reading.
 """
 
 from __future__ import annotations
@@ -36,16 +23,14 @@ import numpy as np
 
 DIGIT_ALPHABET = "0123456789"
 
-# Below this normalised-correlation score the best match is not trusted. A
-# correct glyph against its own template scores well above 0.9; genuine
-# confusions (8 vs 6, 3 vs 8) still score high, which is why the MARGIN below
-# matters more than the absolute score.
+# Below this normalised correlation the best match is not trusted. Genuine
+# confusions (8 vs 6, 3 vs 8) also score high, so the margin below matters
+# more.
 MIN_TEMPLATE_SCORE = 0.60
 
-# Required gap between best and second-best. This is the real discriminator:
-# a partially occluded or motion-blurred digit matches several templates
-# almost equally well, and that ambiguity is exactly what should lower
-# confidence rather than being resolved arbitrarily.
+# Required gap between best and second-best: the real discriminator. An
+# occluded or blurred digit matches several templates almost equally, which
+# should lower confidence rather than be resolved arbitrarily.
 MIN_TEMPLATE_MARGIN = 0.05
 
 
@@ -61,36 +46,26 @@ class ClockReading:
     per_digit_confidence: tuple[float, ...]
 
 
-# Canonical glyph size (height, width) every crop is normalised to before
-# matching. See normalise_glyph.
+# Canonical glyph size (height, width) every crop is normalised to. See
+# normalise_glyph.
 GLYPH_SHAPE = (26, 18)
 
 
 def normalise_glyph(cell: np.ndarray, shape: tuple[int, int] = GLYPH_SHAPE) -> np.ndarray:
     """Tightly crop a digit to its own ink and rescale to a canonical box.
 
-    NOT cosmetic -- without it the templates are unusable, and the way they
-    fail is instructive. The clock's three cells have different widths and the
-    glyph sits at a different offset inside each, so pooling crops of the same
-    digit from different cells averages several misaligned copies of it. The
-    first version of this reader did exactly that and scored 24.7% on a
-    recording where the correct answer was known for every frame.
+    The clock's cells differ in width and the glyph sits at a different offset
+    in each, so pooling raw crops of one digit averages misaligned copies.
+    Cropping to the ink's bounding box removes cell width, position and stroke
+    scale at once.
 
-    Cropping to the ink's bounding box removes cell width, glyph position and
-    stroke scale in one step, so a "5" from the minutes cell and a "5" from
-    the seconds cell become the same picture.
+    Aspect ratio is preserved: a "1" is about a third the width of a "0", and
+    stretching it to a fixed width makes it match 3, 7 and 9 almost as well as
+    itself. The glyph is scaled by height and centre-padded.
 
-    ASPECT RATIO IS PRESERVED, and that is not a detail. A "1" is about a
-    third the width of a "0" at the same height, and that proportion is the
-    single most reliable thing distinguishing it. Rescaling the bounding box
-    to a fixed width stretches the 1 into a fat bar that matches 3, 7 and 9
-    almost as well as itself -- measured here as a persistent 1->3 confusion
-    that survived two other fixes. So the glyph is scaled by HEIGHT and then
-    centre-padded to the canonical width, leaving the 1 narrow.
-
-    Otsu rather than a fixed threshold: the clock sits on a wooden banner
-    whose brightness varies with the arena skin, while the digits are always
-    the brightest thing in the cell.
+    Otsu rather than a fixed threshold: the wooden banner's brightness varies
+    with the arena skin, while the digits are always the brightest thing in the
+    cell.
     """
     if cell.size == 0:
         return np.zeros(shape, np.uint8)
@@ -178,9 +153,8 @@ class DigitTemplates:
         margin = best_score - runner_up
 
         if best_score < MIN_TEMPLATE_SCORE or margin < MIN_TEMPLATE_MARGIN:
-            # Reported, not resolved. A low-margin digit is genuinely
-            # ambiguous and MatchClock rejects implausible corrections on
-            # exactly this basis -- see its resync().
+            # Reported, not resolved: MatchClock rejects implausible
+            # corrections on exactly this basis (see its resync()).
             return best, max(0.0, min(1.0, margin / MIN_TEMPLATE_MARGIN)) * 0.5
         return best, min(1.0, 0.5 + margin)
 
@@ -205,9 +179,8 @@ class ClockReader:
         x, y, w, h = self.roi
         patch = cv2.cvtColor(frame[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
 
-        # M:SS -- three digit cells, with the colon's column skipped rather
-        # than classified. The colon never changes, so matching it would only
-        # ever add a way to fail.
+        # M:SS: three digit cells, the colon's column skipped rather than
+        # classified.
         cells = _split_mss_cells(patch)
         digits, confidences = [], []
         for cell in cells:
@@ -218,10 +191,8 @@ class ClockReader:
         text = f"{digits[0]}:{digits[1]}{digits[2]}"
         seconds = int(digits[0]) * 60 + int(digits[1]) * 10 + int(digits[2])
 
-        # A seconds field above 59 is arithmetically impossible, so it is
-        # proof of a misread rather than a surprising value -- worth
-        # collapsing confidence for even when the per-digit margins looked
-        # fine.
+        # A seconds field above 59 is proof of a misread, so confidence
+        # collapses even if the per-digit margins looked fine.
         tens = int(digits[1])
         plausible = tens <= 5
         confidence = min(confidences) * (1.0 if plausible else 0.0)
@@ -235,27 +206,16 @@ class ClockReader:
 
 
 # Fallback proportional split, used only when ink segmentation cannot find
-# three digits. Kept because a reading with low confidence is more useful
-# than an exception on one bad frame.
+# three digits: a low-confidence reading beats an exception on one bad frame.
 _FALLBACK_BOUNDS = [(0.00, 0.28), (0.38, 0.66), (0.68, 1.00)]
 
 
 def _split_mss_cells(patch: np.ndarray) -> list[np.ndarray]:
     """Split an M:SS patch into its three digit cells, by ink.
 
-    Segmented from the digits' own column projection rather than at fixed
-    fractions of the ROI. The fixed-fraction version is the obvious approach
-    -- the layout IS fixed -- but it was measurably wrong: it clipped strokes
-    and let neighbouring digits bleed across cell edges, and scored 50% on a
-    recording where every frame's answer was known.
-
-    The problem is that digit glyphs are not equal width. A "1" is half the
-    width of a "0", so the gaps between digits move as the clock counts down,
-    and no single set of boundaries is right for every value. Ink segmentation
-    tracks that automatically.
-
-    The colon is discarded by size: it is two small dots, far narrower than
-    any digit, so filtering runs by width removes it without matching it.
+    Fixed fractions of the ROI clip strokes and let digits bleed across edges,
+    because glyphs are not equal width and the gaps move as the clock counts
+    down. Column-projection segmentation tracks that.
     """
     h, w = patch.shape
     _score, ink = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -274,16 +234,10 @@ def _split_mss_cells(patch: np.ndarray) -> list[np.ndarray]:
     if start is not None:
         runs.append((start, w))
 
-    # The colon is separated by HEIGHT, not width. Width alone does not work:
-    # a "1" is barely wider than the colon, so any width threshold that keeps
-    # the 1 also keeps the colon -- which then makes four runs, fails the
-    # "exactly three" test, and silently falls back to fixed boundaries for
-    # every frame. That is what happened here, and the visible symptom was a
-    # single corrupted template: the "1" cell caught the colon alongside it,
-    # so the "1" glyph trained as a blend and was thereafter confused with 3.
-    #
-    # A digit spans most of the ROI's height; the colon is two dots in the
-    # middle third. That separates them cleanly regardless of glyph width.
+    # The colon is separated by height, not width: a "1" is barely wider than
+    # the colon, so a width threshold keeping the 1 keeps the colon too, making
+    # four runs and silently falling back to fixed boundaries. A digit spans
+    # most of the ROI's height; the colon is two dots in the middle third.
     digits = []
     for a, b in runs:
         column_ink = np.where((ink[:, a:b] > 0).any(axis=1))[0]

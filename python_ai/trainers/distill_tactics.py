@@ -1,46 +1,16 @@
-"""Teach the placement head the dead cards' geometry from the advisor.
+"""Distil the advisor's cells into the placement head for cards the policy stopped
+playing.
 
-WHY THE ENTROPY COVERAGE TERM WAS NOT ENOUGH -- MEASURED, NEGATIVE
-------------------------------------------------------------------
-`PLACEMENT_COVERAGE_COEF` restores a gradient to cards the policy never plays,
-and a 3-arm run (80 PPO updates, matched episodes, byte-identical code) shows it
-does exactly what it says and that this is not sufficient:
+The entropy coverage term alone flattens such a card's map without making it
+depend on the board, and the argmax of a flat map is an arbitrary constant.
+This supplies a target from `tactics.py` instead.
 
-    Cannon, ep~64800    modal cell   modal share   top-1 p   engine-scored
-    seed                  (11,0)        88.7%       0.920      135.9 HP
-    control (coef 0)      (11,0)        55.4%       0.550      116.4 HP
-    treatment (coef .02)   (6,0)        79.4%       0.051      182.0 HP
-    random legal cell        --            --          --      394.7 HP
+Everything outside the placement pathway is frozen (the critic scores search
+and must not move), and cards that still work are anchored to their current
+distribution with a KL term, since the placement layers are shared across
+cards.
 
-Top-1 probability 0.051 for Cannon and 0.006 for Fireball is a near-UNIFORM
-distribution (uniform is 1/612 = 0.0016). Entropy went up exactly as designed --
-and the head still returns one fixed cell, because **argmax of a flat map is an
-arbitrary constant**. The lock moved from (11,0) to (6,0); it did not break.
-
-The lesson is that entropy is a MARGINAL objective. It says "be spread out", not
-"depend on the board", and a card with no other gradient has nothing telling it
-WHICH cell is right in WHICH state. Closing a coverage hole needs a target, not
-just noise.
-
-WHAT THIS DOES
---------------
-Supplies that target from `tactics.py`, whose cells are measured against the
-engine's own accounting rather than assumed good, and distils it into the
-placement head for the dead cards only.
-
-Two properties make this safe rather than a blunt overwrite:
-
-* Everything except the placement pathway is FROZEN. That follows the recipe
-  expert_iteration.py already established on this codebase -- frozen beat full
-  fine-tuning there (+0.1027 vs +0.1415 lift but zero critic drift and a sharper
-  selectivity ratio), and the critic must not move because it is the scorer that
-  decision-time search depends on.
-* The cards that are ALIVE are anchored to their own current distribution with a
-  KL term. `place_ctx` and `place_up` are shared across every card, so training
-  Cannon and Fireball alone would silently drag the five working cards with them.
-  The anchor is what makes this a targeted repair instead of a trade.
-
-    python_ai/venv/Scripts/python.exe python_ai/distill_tactics.py \
+    python_ai/venv/Scripts/python.exe python_ai/trainers/distill_tactics.py \
         --net model_weights_selfplay.pth --out model_weights_tactical.pth
 """
 import argparse
@@ -57,9 +27,8 @@ from python_ai.rl.checkpointing import atomic_save
 from python_ai.rl.optim_step import clip_and_step
 import torch.nn.functional as F
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path; importing the package also
+# makes `clash_royale_env` importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -72,7 +41,7 @@ from python_ai.models.policy_io import load_net  # noqa: E402
 
 CE = E.ClashRoyaleEnv
 CANNON, FIREBALL = tactics.CANNON_ID, tactics.FIREBALL_ID
-# The cards measured dead: never played, placement head a constant function.
+# The cards measured dead: never played, with a constant placement head.
 TARGET_CARDS = (CANNON, FIREBALL)
 
 
@@ -80,17 +49,10 @@ TARGET_CARDS = (CANNON, FIREBALL)
 def collect(net, episodes, opp_elixir, device, want_maps=False):
     """Play with `net` and record (obs, per-card advisor cell) at each step.
 
-    States come from the net's OWN trajectory on purpose: that is the
-    distribution the placement head will be queried on in play, so it is the one
-    it should be correct on.
-
-    With `want_maps`, also returns the advisor's full per-cell SCORE MAP for
-    each card (illegal cells -inf), which is the target a distribution-valued
-    distillation needs. The argmax alone throws away the margin -- it cannot
-    say whether the runner-up was equally good or a blunder -- and for the
-    Cannon it is actively misleading, because `building_score_map` is built
-    from flat discs whose top is a large exact-tie plateau resolved by
-    row-major order (see that function, and prove_hires.py).
+    States come from the net's own trajectory: the distribution the head is
+    queried on in play. `want_maps` also returns the advisor's full per-cell
+    score map (illegal cells -inf), since the argmax discards the margin and,
+    for the Cannon, is an arbitrary pick within a plateau.
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     legal = {c: net._placement_legal[c].numpy().astype(bool) for c in TARGET_CARDS}
@@ -109,29 +71,23 @@ def collect(net, episodes, opp_elixir, device, want_maps=False):
 
             cx_, cy_, cover = tactics.best_building_cell(o, legal=legal[CANNON])
             fx_, fy_, catch = tactics.best_spell_cell(o, legal=legal[FIREBALL])
-            # Only keep states where the advisor has something to say. With an
-            # empty board its "target" is a default pocket/arbitrary cell, and
-            # training on those would teach a constant -- the exact failure this
-            # module exists to undo.
+            # Keep only states where the advisor has something to say; on an
+            # empty board its target is a default, which would teach a
+            # constant.
             feats, embeds, sp = net.extract_features(t)
             mask = net.affordability_mask(t)
             logits, _, _, _, (hx, cx) = net.step_lstm_and_card(feats, (hx, cx), mask)
 
-            # Recorded AFTER the LSTM step, which is the state
-            # placement_given_card is actually called with at inference. Training
-            # on a zero hidden state instead would fit the head under a context
-            # it never sees in play.
+            # Recorded after the LSTM step: the hidden state
+            # placement_given_card sees at inference.
             if cover > 0.0 or catch > 0.0:
                 obs_rows.append(o)
                 hx_rows.append(hx[0].detach().cpu().numpy().copy())
                 targets[CANNON].append(int(cy_) * tactics.BOARD_W + int(cx_))
                 targets[FIREBALL].append(int(fy_) * tactics.BOARD_W + int(fx_))
                 if want_maps:
-                    # Same masking the advisor itself applies, so the surface
-                    # being distilled and the cell being played come from one
-                    # set of legal cells. -inf (not -1) on illegal: the target
-                    # is consumed as logits, and a finite floor would leave
-                    # real probability mass on a cell the engine refuses.
+                    # The advisor's own legality masking; -inf, not a finite
+                    # floor, since the target is used as logits.
                     cm = tactics.building_score_map(o, legal=legal[CANNON])
                     fm = tactics.spell_catch_map(o).reshape(-1).copy()
                     fm[~legal[FIREBALL].reshape(-1)] = -np.inf
@@ -155,15 +111,10 @@ def collect(net, episodes, opp_elixir, device, want_maps=False):
 
 
 def masked_kl(new_logits, old_logits):
-    """KL(old || new) over the LEGAL cells only.
+    """KL(old || new) over the legal cells only.
 
-    `placement_mask` fills illegal cells with -inf, and torch's kl_div then
-    evaluates 0 * (-inf - -inf) = 0 * nan = nan at every one of them, which
-    poisons the whole loss -- observed as `loss nan` from the first batch, with
-    the freeze verified intact, so the defect was arithmetic and not the model.
-    Zeroing the non-finite terms is correct rather than a patch: those cells
-    carry no probability mass in either distribution, so their true
-    contribution to the divergence is exactly zero.
+    Illegal cells are -inf in both, where kl_div computes 0 * nan; their true
+    contribution is zero.
     """
     ln = F.log_softmax(new_logits, -1)
     lo = F.log_softmax(old_logits, -1)
@@ -196,10 +147,8 @@ def main():
                         "default: seeding by default would change what "
                         "every existing invocation does.")
     args = ap.parse_args()
-    # Applied BEFORE any data is loaded or any net is built: the
-    # per-epoch shuffle below runs on the GLOBAL RNG, and the net's
-    # initialisation is itself a draw. Seeding after either would leave
-    # the run half-reproducible, which is worse than not at all.
+    # Before any data is loaded or net built: the shuffle and the
+    # initialisation both draw from the global RNG.
     seed_everything(args.seed)
 
     here = python_ai.PACKAGE_DIR
@@ -215,9 +164,8 @@ def main():
     obs, hxs, targets = collect(net, args.episodes, args.opp_elixir, dev)
     print(f"collected {len(obs)} states\n")
 
-    # Only the placement pathway trains. card_id_embed is included because it is
-    # the per-card parameter the coverage hole starves -- see
-    # test_python_ai.py.
+    # Only the placement pathway trains, plus card_id_embed, the per-card
+    # parameter an unplayed card never updates.
     trainable = []
     for name, p in net.named_parameters():
         train_it = name.startswith(("place_ctx", "place_up", "card_id_embed"))
@@ -246,7 +194,7 @@ def main():
                 f2, e2, s2 = frozen.extract_features(ob)
 
             loss = torch.zeros((), device=dev)
-            # --- the repair: dead cards learn the advisor's geometry --------
+            # --- the repair: dead cards learn the advisor's geometry ---
             for cid in TARGET_CARDS:
                 slot = slot_of(net, ob, cid)
                 m = slot >= 0
@@ -259,7 +207,7 @@ def main():
                 hit[cid] += int((logits.argmax(-1) == tgt).sum())
                 cnt[cid] += int(m.sum())
 
-            # --- the guard: alive cards stay where they are -----------------
+            # --- the guard: live cards stay where they are ---
             if args.anchor > 0:
                 anchor = torch.zeros((), device=dev)
                 for s in deck_slots:
@@ -267,8 +215,7 @@ def main():
                     new = net.placement_given_card(hx, embeds, si, ob, sp)
                     with torch.no_grad():
                         old = frozen.placement_given_card(hx, e2, si, ob, s2)
-                    # Skip the slots currently holding a target card: those are
-                    # supposed to move.
+                    # Slots holding a target card are supposed to move.
                     keep = torch.ones(B, dtype=torch.bool, device=dev)
                     for cid in TARGET_CARDS:
                         keep &= slot_of(net, ob, cid) != s
@@ -289,8 +236,7 @@ def main():
     atomic_save({"model": net.state_dict()}, out)
     print(f"\nsaved {out}")
 
-    # Verify the freeze actually held -- the same check expert_iteration.py
-    # makes, because a silently-drifting critic degrades every future search.
+    # Verify the freeze held: a drifting critic degrades every future search.
     with torch.no_grad():
         ob = torch.tensor(obs[:64], device=dev)
         hx = torch.tensor(hxs[:64], device=dev)

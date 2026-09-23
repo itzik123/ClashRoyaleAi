@@ -1,48 +1,21 @@
-"""Tower HP as the ABSOLUTE number printed above each bar.
+"""Tower HP as the absolute number printed above each bar.
 
-WHY THIS EXISTS
----------------
-`live/adapter.py` already argues for it and the live runs proved the point:
-CRBAB's bar reader returns a FRACTION by colour-matching, and `_calculate_hp`
-returns 0.0 both when the bar reads empty and when it cannot match the colours
-at all. Measured on one Training Camp trial, over 77 consecutive frames:
+CRBAB's bar reader returns a fraction by colour-matching, and `_calculate_hp`
+returns 0.0 both for an empty bar and for one it cannot match, so it cannot
+tell a live tower from an unreadable one. The numeral is absolute HP, needing
+no tower-level table (maxima vary by account: 1750 at level 4, 1890 at level 5,
+the engine's level-9 2534), and a failed read reports low confidence rather
+than 0.
 
-    both of OUR princess towers          0.00 for all 77 frames (towers alive)
-    the tower a Fireball actually hit    1.00 -> 0.00 -> 0.62 -> 0.67 -> 1.00
+The numeral's box is derived from CRBAB's own bar bbox (`NUMERAL_OFFSET`,
+applied after scaling into the native frame), so a tower's position has one
+definition. It must be read at native resolution: in the 368x652 detector frame
+the glyphs are ~6 px tall, at the 549x976 capture ~14 px.
 
-None of that second sequence was the Fireball. A reader that cannot tell a
-live tower from an unreadable one is unusable as a clock, and it is what
-blocked measuring the real game's spell delay.
-
-The numeral has none of those problems. It is absolute HP, so no tower-level
-table is needed -- maxima vary by account (measured 1750 at level 4, 1890 at
-level 5, against the engine's level-9 2534), which makes a fraction wrong by
-~30% and by a different factor per player. And "unreadable" is distinguishable
-from "low", because a failed match reports low confidence rather than 0.
-
-WHERE THE NUMERAL IS
---------------------
-Derived from CRBAB's own bar bbox rather than calibrated separately, so there
-is ONE definition of where a tower is and this cannot drift away from it. The
-numeral sits directly ABOVE the bar: `NUMERAL_OFFSET` is applied to the bar
-box after scaling it from detector space into the native frame.
-
-It must be read at NATIVE resolution. In the 368x652 detector frame the whole
-bar is 40x10 px and the glyphs inside it are ~6 px tall -- unreadable. At the
-549x976 capture the same digits are ~14 px, which is comfortably above what
-`normalise_glyph` needs.
-
-SEGMENTATION IS BY INK, AND THE DIGIT COUNT VARIES
---------------------------------------------------
-Same lesson `readers/clock.py` already paid for: fixed fractional splits clip
-strokes and let neighbours bleed across boundaries, because glyph widths
-differ -- a "1" is about a third the width of a "0". Column-projection
-segmentation tracks that automatically.
-
-Unlike the clock there is no colon to reject, but there IS a variable digit
-count: a tower reads 2446 at full health and 887 after damage, and the count
-changes mid-match as it drops through 1000. So this returns however many
-digits it finds instead of asserting three.
+Segmentation is by column projection, as in `readers/clock.py`, since glyph
+widths differ (a "1" is a third the width of a "0"). The digit count varies: a
+tower drops through 1000 mid-match, so this returns however many digits it
+finds.
 """
 from __future__ import annotations
 
@@ -53,26 +26,18 @@ import numpy as np
 
 from readers.clock import DigitTemplates, normalise_glyph
 
-# Applied to the bar's bbox once it is in NATIVE pixels: (left, top, right,
-# bottom) deltas, where `top`/`bottom` are relative to the bar's TOP edge.
-#
-# The bottom edge stops ABOVE the bar, and that is load-bearing rather than
-# tidy. A first version ended at bar_top + 2, which included two pixels of the
-# bar itself -- and the bar is a saturated pink stripe spanning the full ROI
-# width. Otsu then put the bar and the digits on the same side of the
-# threshold, so the column projection saw one unbroken run and segmentation
-# returned a SINGLE cell for "2030". The digits were plainly legible in the
-# crop; it was the bar underneath them that destroyed the projection.
+# (left, top, right, bottom) deltas applied to the bar's bbox in native pixels,
+# `top`/`bottom` relative to the bar's top edge. The bottom stops above the
+# bar: the bar is a saturated pink stripe across the ROI, and including even
+# two rows of it joined every column of the projection into one run.
 NUMERAL_OFFSET = (-6, -19, 6, -3)
 
-# Below this a reading is reported as not measured rather than guessed. A
-# tower whose HP is unknown must stay distinguishable from one that is nearly
-# dead: extra scalars 3-8 are tower HP, and a live tower reported as empty
-# tells the policy a lane is already lost.
+# Below this a reading is reported as not measured: a tower of unknown HP must
+# stay distinguishable from a nearly dead one, since a live tower reported
+# empty tells the policy a lane is lost.
 MIN_DIGIT_CONFIDENCE = 0.35
 
-# A plausible Princess/King HP. Anything outside it is a misread, not a tower:
-# the lowest real tower is well above 100 and the highest King is under 10000.
+# A plausible Princess/King HP; anything outside is a misread.
 HP_RANGE = (1, 9999)
 
 
@@ -95,11 +60,8 @@ class TowerNumeralReading:
 
 
 def numeral_roi(bar_bbox, native_size, detector_size) -> tuple[int, int, int, int]:
-    """The numeral's box in native pixels, from CRBAB's bar box.
-
-    Derived rather than calibrated so the tower's position has one definition.
-    A separate calibration entry would be a second copy of the same fact and
-    would drift from it the first time the detector's layout moved.
+    """The numeral's box in native pixels, derived from CRBAB's bar box so the
+    tower's position has one definition.
     """
     nw, nh = native_size
     dw, dh = detector_size
@@ -113,22 +75,14 @@ def numeral_roi(bar_bbox, native_size, detector_size) -> tuple[int, int, int, in
 
 
 def ink_channel(patch: np.ndarray) -> np.ndarray:
-    """Per-pixel MINIMUM across colour channels, not luminance.
+    """Per-pixel minimum across colour channels, not luminance.
 
-    The single most important line in this module, and it was found by the
-    reader failing on a crop where the digits were plainly legible by eye.
-
-    The numerals are near-white on ARENA GRASS. In luminance the grass reads
-    ~169 and the digits ~230 -- both bright, both on the same side of Otsu, so
-    the column projection saw one unbroken blob and "2030" segmented into a
-    single cell. Converting to grey throws away exactly the information that
-    separates them.
-
-    The minimum channel does not: grass is a saturated green, so its blue is
-    low (~90), while a near-white glyph is high in every channel (~220). Any
-    saturated background -- grass, the pink HP bar, a blue tower roof -- drops
-    out for the same reason, which is why this is more robust than picking one
-    channel that happens to work on grass.
+    The numerals are near-white on grass. In luminance grass (~169) and digits
+    (~230) are both bright and land on the same side of Otsu, merging the
+    digits into one blob. The minimum channel separates them: grass is
+    saturated green with low blue (~90), a near-white glyph is high in every
+    channel (~220). Any saturated background (grass, the pink bar, a blue roof)
+    drops out the same way.
     """
     if patch.ndim == 3:
         return patch.min(axis=2).astype(np.uint8)
@@ -138,14 +92,10 @@ def ink_channel(patch: np.ndarray) -> np.ndarray:
 def split_digits(patch: np.ndarray, min_height_frac: float = 0.45) -> list[np.ndarray]:
     """Split a numeral patch into digit cells by column projection.
 
-    Returns however many it finds. The digit COUNT is not fixed here: a tower
-    reads 2446 at full health and 887 after damage, and asserting a count
-    would fail on exactly the frames where damage is what is being measured.
-
-    Runs shorter than `min_height_frac` of the patch are dropped. That removes
-    the bar's own edge and any stray highlight without needing a width rule,
-    which is what `clock.py` found necessary to stop a narrow "1" being
-    filtered out alongside the noise.
+    Returns however many it finds; asserting a count would fail on exactly the
+    damaged frames being measured. Runs shorter than `min_height_frac` of the
+    patch are dropped, removing the bar's edge and stray highlights without a
+    width rule (which would also drop a narrow "1").
     """
     patch = ink_channel(patch)
     if patch.size == 0:
@@ -183,9 +133,9 @@ class TowerNumeralReader:
         self.templates = templates
 
     def read(self, native_frame, bar_bbox, detector_size) -> TowerNumeralReading:
-        # The RGB frame is passed through to split_digits, which needs the
-        # colour to separate near-white glyphs from saturated backgrounds --
-        # see ink_channel. Converting here would destroy that.
+        # The RGB frame is passed through: split_digits needs colour to
+        # separate near-white glyphs from saturated backgrounds (see
+        # ink_channel).
         gray = native_frame
         nh, nw = gray.shape[:2]
         x1, y1, x2, y2 = numeral_roi(bar_bbox, (nw, nh), detector_size)
@@ -208,17 +158,13 @@ class TowerNumeralReader:
             return TowerNumeralReading(None, text, worst)
         value = int(text)
         if not (HP_RANGE[0] <= value <= HP_RANGE[1]):
-            # A number outside any real tower's range is a segmentation
-            # failure that happened to produce digits -- reporting it would be
-            # worse than reporting nothing, because it looks measured.
+            # A number outside any real tower's range is a segmentation failure
+            # that happened to produce digits; reporting it would look
+            # measured.
             return TowerNumeralReading(None, text, worst)
         return TowerNumeralReading(value, text, worst)
 
 
 def normalise_for_templates(cell: np.ndarray, shape) -> np.ndarray:
-    """Exposed so a template builder and the reader normalise identically.
-
-    They must: templates cropped one way and matched another is the failure
-    `clock.py` scored 24.7% on.
-    """
+    """Exposed so a template builder and the reader normalise identically."""
     return normalise_glyph(cell, shape)

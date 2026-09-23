@@ -2,10 +2,8 @@
 #include "DeathEffect.h"
 #include "Board.h"
 
-// Grants elixir to the OPPOSING team when this entity dies (Elixir Golem's
-// split chain: the Golem and each Golemite/Blob tier hands the attacker's
-// side a bit of free elixir on death). Mirrors ElixirGrantEffect's use of
-// Board::pendingElixirGrant, just crediting 1-team instead of team.
+// Grants elixir to the OPPOSING team on death (Elixir Golem and each of its
+// split tiers), via Board::pendingElixirGrant.
 class EnemyElixirGrantOnDeath : public IDeathEffect {
     float amount;
 

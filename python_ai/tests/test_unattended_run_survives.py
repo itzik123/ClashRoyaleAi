@@ -1,20 +1,10 @@
-"""A multi-day UNATTENDED run must survive the things that happen to one.
+"""A multi-day unattended run must survive what happens to one:
 
-Audit 08 (2026-09-15) traced crash, resume and handoff end to end and found the
-core resume sound -- weights, Adam, episode count, entropy, rung, phase all come
-back exactly -- and these gaps around it, each confirmed:
-
-  * a checkpoint replace fails with PermissionError on Windows whenever ANY
-    handle has the file open (monitor_run.py opens it on every check), and the
-    trainer dies;
-  * there is exactly one copy of the training state and no backup;
-  * the plateau/regression tracker resets on every resume, delaying the plateau
-    exit by up to ~2,000 episodes per crash;
-  * phase 2 ignores CLASH_WEIGHTS / CLASH_LOGDIR, so a redirected phase 1 hands
-    off to a child that crashes at startup or trains the wrong network -- and
-    nothing notices the child die;
-  * phase 2 builds its opponent pool from EVERY snapshot in
-    historical_checkpoints/, which today holds 51 from the previous lineage.
+  * a checkpoint replace fails with PermissionError on Windows while any handle holds the file;
+  * one copy of the training state, no backup;
+  * the plateau tracker must survive a resume;
+  * phase 2 must follow CLASH_WEIGHTS / CLASH_LOGDIR, and a child that dies at startup must be noticed;
+  * phase 2's opponent pool is this lineage's snapshots only.
 """
 import os
 import time
@@ -26,7 +16,7 @@ from python_ai.rl import checkpointing as CK
 from python_ai.rl.curriculum import CurriculumManager
 
 
-# --- checkpoint writes -------------------------------------------------------
+# --- checkpoint writes ---
 
 def test_a_save_survives_a_transient_permission_error(tmp_path, monkeypatch):
     real = os.replace
@@ -53,7 +43,7 @@ def test_a_save_keeps_the_previous_generation(tmp_path):
     assert torch.load(str(path) + ".prev")["gen"] == 1
 
 
-# --- curriculum tracking survives a resume ----------------------------------------
+# --- curriculum tracking survives a resume ---
 
 def _mgr():
     return CurriculumManager(entry_win_rate=0.60, min_stage_for_phase2=8,
@@ -77,7 +67,7 @@ def test_the_plateau_tracker_is_restored_not_reset():
     assert len(n.rung_history) == 300
 
 
-# --- phase 2 follows phase 1's redirection -------------------------------------------
+# --- phase 2 follows phase 1's redirection ---
 
 def test_phase2_bootstraps_from_the_checkpoint_phase1_actually_wrote(tmp_path, monkeypatch):
     from python_ai.trainers import train_selfplay as TS
@@ -116,7 +106,7 @@ def test_a_phase2_child_that_dies_at_startup_is_reported(tmp_path, monkeypatch):
         T.launch_pipeline2(log_dir=str(tmp_path), wait_seconds=0.01)
 
 
-# --- the opponent pool is this lineage's ------------------------------------------------
+# --- the opponent pool is this lineage's ---
 
 def test_snapshots_from_a_previous_lineage_are_not_opponents(tmp_path):
     from python_ai.trainers import league

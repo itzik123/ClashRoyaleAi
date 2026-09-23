@@ -1,28 +1,7 @@
-"""Replay destinations are anchored, not cwd-relative.
+"""Replay destinations are anchored on the repo root, not the cwd.
 
-Checkpoints and TensorBoard runs were anchored on 2026-08-25 because "which
-directory you launched from" silently decided whether a multi-day run resumed
-or started fresh. `replays/` was left behind by that pass -- and
-`checkpointing.run_path`'s own docstring already CLAIMS to cover it:
-
-    "A run-artifact destination (TensorBoard runs, snapshot pools), anchored on
-     the repository root, which is where `runs/`, `replays/` and
-     `historical_checkpoints/` already sit."
-
-`run_path` was even already imported into base_trainer.py. It simply was not
-used for the two `replays/` strings, so the documentation and the code
-disagreed, silently and in the direction that scatters artifacts.
-
-Observed: `historical_checkpoints/` and `runs/` sit at the repo root as
-`run_path` says, `python_ai/replays/` does not exist at all, and a stale
-`replays/replay_ep1000.json` sits at the repo root -- i.e. written by a run
-launched from there. A smoke run launched from a scratch directory created
-`replays/` in the scratch directory instead.
-
-This matters beyond tidiness: `replays/*.json` is the input to the placement
-PHASE histogram, the only cheap detector for the ConvTranspose2d checkerboard
-artifact. A detector pointed at a directory the run did not write to reports a
-clean board forever.
+`replays/*.json` feeds the placement phase histogram; a detector pointed at a
+directory the run did not write to reports a clean board forever.
 """
 import os
 
@@ -41,10 +20,8 @@ def test_run_path_anchors_on_the_repo_root_not_the_cwd(tmp_path, monkeypatch):
 
 
 def test_base_trainer_builds_its_replay_paths_through_run_path():
-    """A source-level check, because the alternative is running a full replay.
-
-    Greps for a bare relative "replays/" literal, which is exactly what the two
-    sites used to hold.
+    """Source-level check (the alternative is running a full replay): no bare
+    relative "replays" literal outside run_path.
     """
     src_path = os.path.join(python_ai.PACKAGE_DIR, "rl", "base_trainer.py")
     with open(src_path, encoding="utf-8") as fh:
@@ -67,8 +44,9 @@ def test_base_trainer_builds_its_replay_paths_through_run_path():
 
 @pytest.mark.slow
 def test_a_replay_lands_at_the_anchor_regardless_of_cwd(tmp_path, monkeypatch):
-    """The behavioural proof: run the recorder from an unrelated cwd and check
-    the file appears at the ANCHOR, not under the cwd."""
+    """Behavioural proof: record from an unrelated cwd and the file appears at the
+    anchor.
+    """
     import gymnasium as gym
 
     from python_ai.envs import gym_wrapper
@@ -81,8 +59,8 @@ def test_a_replay_lands_at_the_anchor_regardless_of_cwd(tmp_path, monkeypatch):
     anchor.mkdir()
     cwd.mkdir()
 
-    # Re-anchor the whole repo-root-relative family into tmp_path, so the test
-    # never writes into the real repository.
+    # Re-anchor the repo-root-relative family into tmp_path, so nothing is
+    # written to the real repo.
     monkeypatch.setattr(python_ai, "REPO_ROOT", str(anchor))
     monkeypatch.setattr(base_trainer, "run_path",
                         lambda name: os.path.join(str(anchor),

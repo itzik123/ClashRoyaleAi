@@ -1,9 +1,4 @@
-"""The phase-1 curriculum state machine.
-
-Its ORDER is the load-bearing part and was previously untestable: everything
-lived inside `train_ppo()`, so the suite parsed `train.py` with `ast` to recover
-CURRICULUM_STAGES and could not exercise a single transition.
-"""
+"""The phase-1 curriculum state machine; its order is the load-bearing part."""
 import pytest
 
 from python_ai.rl.curriculum import (
@@ -33,7 +28,7 @@ def manager(**kwargs):
     return CurriculumManager(**defaults)
 
 
-# --------------------------------------------------------------- the stages --
+# --- the stages ---
 def test_stages_are_competence_not_economy():
     assert len(CURRICULUM_STAGES) == 11
     for s in CURRICULUM_STAGES:
@@ -46,43 +41,42 @@ def test_stages_are_competence_not_economy():
 
 
 def test_the_gate_was_lowered_WITH_the_ladder_and_not_alone():
-    """The 0.80 -> 0.65 drop and the 6 -> 11 rung split are ONE change.
-
-    Either alone is a regression: keeping 0.80 across eleven rungs makes the
-    ladder strictly harder to climb than the six-rung version it replaced,
-    and lowering the gate without splitting the rungs just promotes faster
-    into the same cliff. Pinned together so neither can be reverted alone.
+    """The lower gate and the finer ladder are one change: 0.80 across eleven
+    rungs is harder than the six-rung ladder it replaced, and a lower gate
+    without the split just promotes faster into the same cliff.
     """
     assert len(CURRICULUM_STAGES) >= 11
     assert STAGE_WIN_RATE_GATE < 0.80
-    # Still a WINNING margin, not a participation trophy: a gate at or below
-    # 0.50 would advance an agent that is losing the matchup.
+    # Still a winning margin: at or below 0.50 it would advance an agent losing
+    # the matchup.
     assert STAGE_WIN_RATE_GATE > 0.50
 
 
 def test_stage_count_matches_the_teacher_ladder():
-    """Drift here would index past the end of TEACHER_STAGES -- or, worse,
-    silently stop one rung short of the top."""
+    """Drift would index past the end of TEACHER_STAGES, or stop a rung short of
+    the top.
+    """
     from python_ai.opponents.teacher import TEACHER_STAGES
     assert len(CURRICULUM_STAGES) == len(TEACHER_STAGES)
 
 
-# ------------------------------------------------------------- the win rate --
+# --- the win rate ---
 def test_a_partial_window_yields_no_win_rate():
-    """The gates must not fire on 12 episodes. Returning None rather than a
-    small-sample rate is what makes that structural."""
+    """The gates must not fire on a partial window; None makes that structural.
+    """
     assert window_win_rate(_window(12)) is None
     assert window_win_rate(_full_window(1.0)) == 1.0
 
 
 def test_the_gate_reads_RAW_win_rate_not_decisive():
-    """40 win / 13 loss / 47 draw reads as 75% DECISIVE while only winning 40%
-    of games -- a high draw rate would otherwise let a mediocre bot advance."""
+    """40 win / 13 loss / 47 draw is 75% decisive but a 40% win rate; a high draw
+    rate must not advance a mediocre bot.
+    """
     w = _window(40, 13, 47)
     assert window_win_rate(w) == pytest.approx(0.40)
 
 
-# ------------------------------------------------------------- transitions --
+# --- transitions ---
 def test_the_stage_gate_needs_a_full_window_at_or_above_threshold():
     m = manager()
     below = round((STAGE_WIN_RATE_GATE - 0.05) * OUTCOME_WINDOW) / OUTCOME_WINDOW
@@ -118,16 +112,9 @@ def test_the_phase_gate_requires_the_minimum_stage():
 
 
 def test_the_phase_gate_must_be_evaluated_BEFORE_the_stage_gate():
-    """THE ORDERING, and it is load-bearing.
-
-    The stage gate clears the outcome window when it fires. If it ran first, a
-    window satisfying BOTH gates would always be consumed by the stage advance
-    and the phase transition could never see it -- reaching phase 2 would then
-    need an extra full window at the harder stage, which is exactly the
-    behaviour the ordering exists to remove.
-
-    Simulated here by running them in the WRONG order and showing the phase
-    transition is starved.
+    """The phase gate runs before the stage gate. The stage gate clears the
+    window, so run first it would consume a window satisfying both and starve
+    the phase transition. Shown here by running them in the wrong order.
     """
     m = manager()
     m.stage = 4
@@ -137,7 +124,7 @@ def test_the_phase_gate_must_be_evaluated_BEFORE_the_stage_gate():
     assert m.maybe_enter_random_phase(w, 100) is None
     assert m.phase == "mirror"
 
-    # ...and in the RIGHT order the phase transition happens.
+    # ...and in the right order the phase transition happens.
     m2 = manager()
     m2.stage = 4
     w2 = _full_window(0.90)
@@ -146,8 +133,9 @@ def test_the_phase_gate_must_be_evaluated_BEFORE_the_stage_gate():
 
 
 def test_the_stage_ladder_is_inert_during_the_random_phase():
-    """Unguarded, this block would keep escalating `stage` during phase 2 and
-    fight the per-deck ladder for control of the opponent."""
+    """During the random phase the mirror ladder must not escalate and fight the
+    per-deck ladder.
+    """
     m = manager()
     m.phase = "random_opponent"
     m.stage = 2
@@ -155,7 +143,7 @@ def test_the_stage_ladder_is_inert_during_the_random_phase():
     assert m.stage == 2
 
 
-# ------------------------------------------------------- the per-deck ladder --
+# --- the per-deck ladder ---
 def test_a_deck_advances_its_own_ladder_from_zero():
     m = manager()
     m.phase = "random_opponent"
@@ -174,8 +162,8 @@ def test_a_mastered_deck_rotates():
 
 
 def test_the_safety_valve_rotates_a_deck_that_never_converges():
-    """A pathological draw could otherwise stall the whole phase budget on ONE
-    deck -- the precise opposite of what the phase is for."""
+    """A pathological draw must not stall the whole phase budget on one deck.
+    """
     m = manager(max_episodes_per_deck=50)
     m.phase = "random_opponent"
     m.deck_episode_start = 0
@@ -184,8 +172,7 @@ def test_the_safety_valve_rotates_a_deck_that_never_converges():
 
 
 def test_the_budget_is_measured_from_when_the_PHASE_started():
-    """Not from episode 0: how much random-deck exposure is enough has nothing
-    to do with how many episodes the mirror curriculum happened to take."""
+    """The budget counts from the phase start, not episode 0."""
     m = manager(random_opponent_budget=500)
     assert not m.budget_exhausted(10_000)         # still in the mirror phase
     m.phase = "random_opponent"
@@ -194,7 +181,7 @@ def test_the_budget_is_measured_from_when_the_PHASE_started():
     assert m.budget_exhausted(10_500)
 
 
-# ------------------------------------------------------------------ resume --
+# --- resume ---
 def test_teacher_stage_resolves_the_ladder_that_actually_applies():
     m = manager()
     m.stage = 3
@@ -224,12 +211,10 @@ def test_a_legacy_checkpoint_without_the_phase_key_resumes_into_mirror():
 
 
 def test_a_pre_2026_09_03_stage_is_remapped_by_HORIZON_not_by_index():
-    """A saved stage indexes the teacher table that was LIVE when it was saved.
-
-    The table went 6 rungs -> 11, so reading an old index against the new table
-    is a silent demotion: old stage 3 is 5 s of lookahead and new rung 3 is 2 s.
-    The absence of the `teacher_table_size` stamp is what identifies an old
-    checkpoint, so the remap runs exactly once and never on its own output.
+    """A saved stage indexes the table live when it was saved; the 6 -> 11 rung
+    change would silently demote an old index (old stage 3 is 5 s, new rung 3
+    is 2 s). A missing `teacher_table_size` stamp identifies an old checkpoint,
+    so the remap runs exactly once.
     """
     from python_ai.opponents.teacher import TEACHER_STAGES
 
@@ -239,7 +224,7 @@ def test_a_pre_2026_09_03_stage_is_remapped_by_HORIZON_not_by_index():
         assert TEACHER_STAGES[m.stage]["horizon_ticks"] == horizon, (
             f"legacy stage {legacy} must resume at the SAME lookahead")
 
-    # And a checkpoint that already carries the stamp is left alone.
+    # A checkpoint that carries the stamp is left alone.
     m = manager()
     m.load_state_dict({"curriculum_stage": 3, "stage_start_episode": 0,
                        "teacher_table_size": len(CURRICULUM_STAGES)})
@@ -247,8 +232,9 @@ def test_a_pre_2026_09_03_stage_is_remapped_by_HORIZON_not_by_index():
 
 
 def test_random_phase_start_falls_back_to_the_deck_start_not_to_zero():
-    """Defaulting to 0 would make the elapsed budget look like the full episode
-    count and hand off to pipeline 2 immediately on resume."""
+    """A 0 default would make the elapsed budget the full episode count and hand
+    off to pipeline 2 on resume.
+    """
     m = manager()
     m.load_state_dict({"curriculum_stage": 5, "stage_start_episode": 0,
                        "phase": "random_opponent",
@@ -257,29 +243,12 @@ def test_random_phase_start_falls_back_to_the_deck_start_not_to_zero():
     assert not m.budget_exhausted(31_000)
 
 
-# ------------------------------------------------- the stall / demotion valve --
-#
-# THE LADDER WAS STRICTLY ONE-WAY. `maybe_advance_stage` only ever increments,
-# and nothing anywhere reduced `stage`. A run promoted past its competence had
-# no way back, which is the "teacher too strong -> agent learns nothing" dead
-# end this project has already hit once: CLAUDE.md records 0-for-2000+ episodes
-# with zero improvement.
-#
-# And promotion IS optimistic, measured 2026-08-26. The gate reads "raw win
-# rate >= 0.80 over a full 100-episode window", but it is re-tested on EVERY
-# episode, so it is an optional-stopping test over hundreds of overlapping
-# windows. An agent whose TRUE skill is 0.70 has a 1.6% chance of clearing any
-# single window and a 91.6% chance of clearing at least one within 3000
-# episodes. The effective gate is ~0.70, not 0.80, and it compounds over five
-# rungs.
-#
-# The asymmetry is the tell that this was an oversight rather than a choice:
-# the random-deck ladder one phase over ALREADY has a safety valve
-# (`max_episodes_per_deck`), for exactly this failure. The mirror ladder had
-# none.
-#
-# The valve is deliberately PATIENT and set far below any healthy win rate, so
-# in a run that is merely finding a stage hard it never fires at all.
+# --- the stall / demotion valve ---
+# Promotion is optimistic: the gate is re-tested every episode over overlapping
+# windows, an optional-stopping test whose effective threshold sits below its
+# nominal one. A run promoted past its competence needs a way back. The valve
+# is patient and set far below any healthy win rate, so a merely hard stage
+# never trips it.
 
 def test_a_dead_run_steps_back_down_a_rung():
     m = manager()
@@ -290,8 +259,9 @@ def test_a_dead_run_steps_back_down_a_rung():
 
 
 def test_a_hard_new_stage_is_given_time_before_demoting():
-    """A stage the agent has only just entered is SUPPOSED to be hard. Reacting
-    inside one window would demote every genuine step up the ladder."""
+    """A stage just entered is supposed to be hard; reacting within one window
+    would demote every real step up.
+    """
     m = manager()
     m.stage = 3
     m.stage_start_episode = 4900
@@ -307,8 +277,9 @@ def test_a_healthy_run_is_never_demoted():
 
 
 def test_stage_zero_has_nowhere_to_fall_to():
-    """Losing at stage 0 means the TEACHER is not the problem. Demoting below
-    the bottom rung would be an index error dressed as a curriculum."""
+    """Losing at stage 0 means the teacher is not the problem; there is nowhere to
+    demote to.
+    """
     m = manager()
     m.stage = 0
     m.stage_start_episode = 0
@@ -317,7 +288,7 @@ def test_stage_zero_has_nowhere_to_fall_to():
 
 
 def test_a_partial_window_never_demotes():
-    """Same rule the promotion gate follows: no verdict on an unfilled window."""
+    """No verdict on an unfilled window, as for promotion."""
     m = manager()
     m.stage = 2
     m.stage_start_episode = 0
@@ -325,8 +296,9 @@ def test_a_partial_window_never_demotes():
 
 
 def test_the_random_phase_uses_its_own_valve_not_this_one():
-    """`step_random_deck_curriculum` already rotates a deck it cannot beat.
-    Two valves on one ladder would fight each other for the stage."""
+    """`step_random_deck_curriculum` already rotates a deck it cannot beat; two
+    valves on one ladder would fight.
+    """
     m = manager()
     m.phase = "random_opponent"
     m.stage = 3
@@ -335,8 +307,9 @@ def test_the_random_phase_uses_its_own_valve_not_this_one():
 
 
 def test_demoting_clears_the_window_and_restarts_the_entropy_clock():
-    """Same bookkeeping as an advance: the demoted stage must be judged on
-    fresh episodes, and exploration should re-boost for the changed opponent."""
+    """The demoted stage is judged on fresh episodes, and exploration re-boosts
+    for the changed opponent.
+    """
     m = manager()
     m.stage = 4
     m.stage_start_episode = 0
@@ -347,9 +320,9 @@ def test_demoting_clears_the_window_and_restarts_the_entropy_clock():
 
 
 def test_demotions_are_counted_and_survive_a_checkpoint_roundtrip():
-    """A run that has demoted is a run whose ladder position is not evidence of
-    competence. That has to survive a resume, or the next session reads the
-    stage number at face value."""
+    """A demoted run's rung is not evidence of competence, and that must survive a
+    resume.
+    """
     m = manager()
     m.stage = 2
     m.stage_start_episode = 0

@@ -5,16 +5,11 @@
 #include "Board.h"
 #include <memory>
 
-// Golden Knight's "Dashing Dash": instantly chain-dashes from enemy to
-// enemy within dashRange of his CURRENT position each hop (not his
-// starting position), dealing dashDamage each time, up to maxDashes total,
-// stopping early if no enemy is in range or the last one hit was a Crown
-// Tower. Real dashes are invulnerable and spread over ~1s; this engine
-// resolves the whole chain synchronously within one tick instead (a
-// documented timing simplification, same category as this engine's other
-// "collapse a multi-tick real-game animation into one instant" choices --
-// e.g. Spirit troops detonating on launch, not arrival) -- since nothing
-// else acts in between hops, the invulnerability is trivially true anyway.
+// Golden Knight's "Dashing Dash": chain-dashes to the nearest enemy within
+// dashRange of his CURRENT position, dealing dashDamage each hop, up to
+// maxDashes, stopping early with no target or after hitting a Crown Tower. The
+// real ~1 s invulnerable chain resolves within one tick; nothing else acts in
+// between.
 class GoldenKnightDashEffect : public IAbilityEffect {
     int dashDamage;
     float dashRange;
@@ -25,7 +20,7 @@ class GoldenKnightDashEffect : public IAbilityEffect {
         float minDist = dashRange;
         for (const auto& e : board.getEntities()) {
             if (e->team == self.team || !e->isAlive() || !e->isTargetable()) continue;
-            if (e->isFlying) continue; // Golden Knight is ground-only
+            if (e->isFlying) continue; // ground-only
             float d = self.position.distanceTo(e->position);
             if (d <= minDist) { minDist = d; closest = e; }
         }
@@ -41,10 +36,8 @@ public:
             auto target = findNearestEnemy(board, self);
             if (!target) break;
 
-            // Closes to melee adjacency (1.0 tile), not exactly onto the
-            // target's own position -- pullToward's own clamp (never
-            // overshoots past the destination) keeps this safe even when
-            // already closer than that.
+            // Closes to melee adjacency (1.0 tile); pullToward never
+            // overshoots, even when already closer.
             float dist = self.position.distanceTo(target->position);
             pullToward(self, target->position, dist - 1.0f);
             target->takeDamage(dashDamage);
@@ -52,7 +45,7 @@ public:
                 { self.id, self.team, self.cardId, target->id, target->cardId, target->team,
                   dashDamage, board.currentTick, target->isTower() });
 
-            if (dynamic_cast<Tower*>(target.get()) != nullptr) break; // stops after hitting a Crown Tower
+            if (dynamic_cast<Tower*>(target.get()) != nullptr) break; // stops after a Crown Tower
         }
     }
 };

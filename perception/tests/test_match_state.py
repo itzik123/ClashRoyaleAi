@@ -15,8 +15,8 @@ def feed(state: MatchState, screens):
 
 
 def test_starts_closed():
-    # The loop may be started on the lobby, and a gate that defaults open
-    # would let one frame of garbage through before the first update.
+    # The loop may start on the lobby; a gate defaulting open would let one
+    # frame of garbage through.
     assert MatchState().in_match is False
 
 
@@ -33,9 +33,8 @@ def test_a_single_in_game_blip_in_the_lobby_does_not_open_the_gate():
 
 
 def test_a_dropped_frame_mid_match_does_not_end_the_match():
-    # THE EXPENSIVE FAILURE: on_match_end resets the elixir ledger, so ending
-    # early is not recoverable -- the rest of the match is played against a
-    # ledger that thinks nothing has been spent.
+    # The expensive failure: on_match_end resets the elixir ledger, so ending
+    # early is unrecoverable.
     state = MatchState(enter_hold=2, exit_hold=6)
     feed(state, ["in_game"] * 3)
     assert state.in_match is True
@@ -53,8 +52,8 @@ def test_sustained_exit_closes_the_gate():
 def test_disagreement_must_be_consecutive_not_cumulative():
     state = MatchState(enter_hold=2, exit_hold=3)
     feed(state, ["in_game"] * 3)
-    # Two lobby frames, then agreement, then two more: five disagreements in
-    # total but never three in a row.
+    # Two lobby frames, agreement, then two more: five disagreements, never
+    # three in a row.
     feed(state, ["lobby", "lobby", "in_game", "lobby", "lobby"])
     assert state.in_match is True
 

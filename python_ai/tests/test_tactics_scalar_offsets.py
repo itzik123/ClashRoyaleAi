@@ -1,18 +1,10 @@
-"""tactics.py must locate the extra scalars by FORWARD offset.
+"""tactics.py locates the extra scalars by forward offset.
 
-CLAUDE.md's rule, written after the cycle blocks were appended on 2026-08-27:
-locate a section of the observation by a forward offset, never by subtracting
-from the end. The layout only ever grows by appending, so a backward offset is
-correct until the next append and then fails SILENTLY.
-
-tactics.py carried the bug until 2026-08-29 as `obs[-9]` / `obs[-7]`, which by
-then pointed into the card-recency block: `elapsed_ticks` measured 0.0 at
-engine tick 300. The sweep that fixed five other call sites searched for
-`observation_size() - NUM_EXTRA_SCALARS` and could not match a negative index.
-
-These cases pin the BEHAVIOUR (the clock tracks the engine) and the STRUCTURE
-(the read lands inside the extra-scalar block). The structural one is what
-catches a reintroduction before it can be measured wrong.
+The observation grows only by appending, so an offset counted back from the end
+is right until the next append and then silently wrong. These pin the behaviour
+(the clock tracks the engine) and the structure (every read lands inside the
+extra-scalar block); the structural check catches a reintroduction before it is
+measured wrong.
 """
 import numpy as np
 import pytest
@@ -38,8 +30,7 @@ def test_scalar_offsets_are_forward_and_inside_the_extra_scalar_block():
     for name in ("IDX_ELAPSED", "IDX_OWN_SPEND", "IDX_OPP_SPEND"):
         idx = getattr(tactics, name)
         assert start <= idx < end, f"{name}={idx} outside [{start}, {end})"
-        # ...and specifically NOT in the cycle blocks appended behind them,
-        # which is exactly where the negative indices had drifted to.
+        # ...and not in the cycle blocks appended behind them.
         assert idx < CE.CYCLE_START, f"{name} reads the opponent-cycle block"
 
 
@@ -53,10 +44,8 @@ def test_elapsed_ticks_tracks_the_engine_clock(steps):
 
 
 def test_elapsed_ticks_is_not_pinned_at_zero():
-    """The exact symptom of the bug: a clock that never advances.
-
-    Worth its own case because `test_elapsed_ticks_tracks_the_engine_clock`
-    would also pass on a board where no time had passed.
+    """The exact symptom of the old bug, a clock that never advances; the test
+    above would also pass on a board where no time had passed.
     """
     env = _env()
     for _ in range(50):
@@ -66,11 +55,9 @@ def test_elapsed_ticks_is_not_pinned_at_zero():
 
 
 def test_opp_spend_index_reads_the_OPPONENT_not_us():
-    """Read the mirrored team-1 frame: our spend must appear at IDX_OPP_SPEND.
-
-    Distinguishing own from opponent spend is the half a forward-offset fix can
-    still get wrong, and `opp_elixir_estimate` -- and through it hog_advice's
-    gate -- depends on which one it is.
+    """In the mirrored team-1 frame, our spend must appear at IDX_OPP_SPEND.
+    `opp_elixir_estimate`, and through it hog_advice's gate, depends on telling
+    own from opponent spend.
     """
     env = _env()
     for _ in range(60):

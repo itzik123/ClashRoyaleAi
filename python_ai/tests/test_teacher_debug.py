@@ -1,9 +1,7 @@
-"""The teacher's rollout capture: action-identity, and the recorded schema.
+"""The teacher's rollout capture: action identity, and the recorded schema.
 
-The first test is the load-bearing one. `UtilityTeacher` is phase 1's opponent,
-so a debug hook that perturbed its play would silently invalidate every win rate
-measured against it. This is the same guarantee `test_teacher_combos.py` pins
-for `max_combos = 0`.
+The first test is load-bearing: a debug hook that perturbed phase 1's opponent
+would silently invalidate every win rate measured against it.
 """
 import json
 import os
@@ -28,12 +26,9 @@ DECK = list(DEFAULT_DECK)
 def _play(make_team1, seed, stage, n=60):
     """One match; returns team 1's action stream and the teacher that played it.
 
-    BOTH teachers are seeded, and that is not optional plumbing.
-    `UtilityTeacher.__init__` defaults `seed=None` -> `default_rng(None)`, i.e.
-    OS entropy, and `reset()` then REDRAWS `profile` and `lane_bias` from it on
-    purpose ("a FULLY deterministic opponent is memorizable"). Two unseeded arms
-    therefore run different scoring weights and diverge for reasons that have
-    nothing to do with what is being tested.
+    Both teachers are seeded: an unseeded teacher redraws its profile and lane
+    bias from OS entropy on reset(), so two arms would diverge for reasons
+    unrelated to the test.
     """
     env = CE(DECK, DECK, 3600)
     env.seed(seed)
@@ -57,8 +52,8 @@ def _play(make_team1, seed, stage, n=60):
     return acts, t1
 
 
-# Stage 5 is the shipped rung. Stage 3 is included because its epsilon is 0.10,
-# so it exercises the exploration branch the capture code must leave alone.
+# Stage 3's non-zero epsilon exercises the exploration branch the capture must
+# leave alone.
 @pytest.mark.parametrize("stage", [5, 3])
 def test_capture_is_action_identical_to_the_plain_teacher(stage):
     seed = 23
@@ -73,17 +68,15 @@ def test_capture_is_action_identical_to_the_plain_teacher(stage):
 
 
 def test_the_harness_itself_is_deterministic():
-    """Control. Without this, a passing identity test proves nothing: two plain
-    arms that disagreed would mean the comparison, not the capture, is broken.
-    """
+    """Control: without it, a passing identity test proves nothing."""
     a, _ = _play(lambda: UtilityTeacher(DECK, team=1, seed=77), 77, 5)
     b, _ = _play(lambda: UtilityTeacher(DECK, team=1, seed=77), 77, 5)
     assert a == b
 
 
 def test_capture_is_off_unless_a_capturing_teacher_is_built():
-    """The plain teacher must carry no capture state at all, so the training
-    loop cannot accidentally pay for it."""
+    """The plain teacher carries no capture state, so training cannot pay for it.
+    """
     t = UtilityTeacher(DECK, team=1, seed=1)
     assert not hasattr(t, "debug_records")
     assert not hasattr(t, "top_k")
@@ -98,8 +91,8 @@ def test_records_have_the_schema_the_viewer_reads():
         assert r["kind"] in ("rollout", "rules_only", "epsilon", "no_candidates")
         assert isinstance(r["candidates"], list)
         assert isinstance(r["held"], bool)
-        # top_k bounds the EXPENSIVE half: only that many candidates may carry a
-        # predicted board, however many were scored.
+        # top_k bounds the expensive half: at most that many candidates carry a
+        # predicted board.
         assert sum(1 for c in r["candidates"] if "final" in c) <= 4
         for c in r["candidates"]:
             assert set(c) >= {"steps", "kind", "score", "margin", "rejected"}
@@ -113,7 +106,7 @@ def test_records_have_the_schema_the_viewer_reads():
     # A rollout decision always has the no-op comparator its scores are defined
     # against.
     assert all(r["baseline"] is not None for r in rollouts)
-    # Ranked descending, so index 0 is the best-scoring candidate.
+    # Ranked descending: index 0 is the best-scoring candidate.
     for r in rollouts:
         scores = [c["score"] for c in r["candidates"]]
         assert scores == sorted(scores, reverse=True)
@@ -125,18 +118,19 @@ def test_chosen_index_points_at_the_action_that_was_played():
         if r["kind"] != "rollout":
             continue
         if r["chosenIndex"] >= 0:
-            # Something was played, so it must have beaten its own margin.
+            # Something was played, so it beat its own margin.
             c = r["candidates"][r["chosenIndex"]]
             assert not c["rejected"]
             assert not r["held"]
         elif r["candidates"]:
-            # Nothing chosen: either it held, or every candidate was rejected.
+            # Nothing chosen: it held, or every candidate was rejected.
             assert r["held"] or all(c["rejected"] for c in r["candidates"])
 
 
 def test_attach_writes_one_indexed_block_not_a_copy_per_tick(tmp_path):
-    """The size property that matters: a record carries several predicted
-    boards, so stamping it onto every tick of its window multiplies the file."""
+    """A record carries several predicted boards, so stamping it onto every tick
+    would multiply the file size.
+    """
     replay = tmp_path / "r.json"
     replay.write_text(json.dumps({
         "boardWidth": 18, "boardHeight": 34, "totalTicks": 30,
@@ -165,8 +159,9 @@ def test_attach_tolerates_no_records(tmp_path):
 
 
 def test_capturing_like_preserves_the_live_opponent_not_a_fresh_one():
-    """`reset()` redraws profile and lane bias from the RNG, so rebuilding a
-    teacher from its constructor arguments alone yields a DIFFERENT opponent."""
+    """`reset()` redraws profile and lane bias, so rebuilding a teacher from its
+    constructor arguments yields a different opponent.
+    """
     t = UtilityTeacher(DECK, team=1, seed=31)
     t.set_stage(5)
     t.reset()
@@ -182,8 +177,9 @@ def test_capturing_like_preserves_the_live_opponent_not_a_fresh_one():
 
 
 def test_attach_debug_capture_returns_none_without_a_teacher():
-    """An env whose opponent is the C++ heuristic has no candidate rollouts, and
-    asking for capture there must be a no-op rather than an error."""
+    """With the C++ heuristic as opponent there is nothing to capture: a no-op,
+    not an error.
+    """
 
     class NoTeacherEnv:
         teacher = None

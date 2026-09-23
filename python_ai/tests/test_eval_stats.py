@@ -1,10 +1,7 @@
-"""eval/stats.py -- the measurement code, which has to be the most trustworthy.
+"""eval/stats.py: the measurement code, which has to be the most trustworthy.
 
-Four harnesses each carried their own copy of paired-bootstrap CI plus an exact
-sign test. These tests exist because a statistics helper is exactly the kind of
-code that "looks right" and is not: a one-sided test, a 90% interval, or a sign
-test that counts ties as agreement would all read plausibly and would all
-silently inflate every result in CLAUDE.md.
+A one-sided test, a 90% interval, or a sign test that counts ties as agreement
+would all read plausibly and silently inflate every result.
 """
 import numpy as np
 import pytest
@@ -12,18 +9,19 @@ import pytest
 from python_ai.eval import stats
 
 
-# ------------------------------------------------------------- sign test --
+# --- sign test ---
 def test_the_sign_test_is_TWO_sided():
-    """One-sided would halve every p in the project's history."""
+    """One-sided would halve every p."""
     better, worse, tied, p = stats.sign_test([1, 1, 1, 1, 1, -1])
     assert (better, worse, tied) == (5, 1, 0)
-    # Two-sided exact binomial on 6 trials with k<=1: 2 * (1 + 6) / 64.
+    # Two-sided exact binomial on 6 trials with k <= 1: 2 * (1 + 6) / 64.
     assert p == pytest.approx(2 * 7 / 64)
 
 
 def test_ties_are_reported_but_excluded_from_the_test():
-    """Ties carry no directional information. Counting them as agreement would
-    make a result that is mostly ties look decisive."""
+    """Ties carry no directional information; counting them as agreement would
+    make a mostly tied result look decisive.
+    """
     better, worse, tied, p = stats.sign_test([1, -1, 0, 0, 0, 0])
     assert (better, worse, tied) == (1, 1, 4)
     assert p == 1.0
@@ -38,7 +36,7 @@ def test_a_unanimous_result_is_the_smallest_p_the_sample_allows():
     assert p == pytest.approx(2 / 2 ** 10)
 
 
-# ------------------------------------------------------------- bootstrap --
+# --- bootstrap ---
 def test_the_ci_brackets_the_mean():
     rng = np.random.default_rng(0)
     x = rng.normal(5.0, 1.0, 400)
@@ -57,8 +55,9 @@ def test_the_ci_is_95_percent_by_default_and_narrows_with_n():
 
 
 def test_the_default_rng_is_SEEDED_so_a_rerun_reproduces_its_own_ci():
-    """An unseeded default would make two runs of the same measurement disagree
-    in the third decimal for no reason anyone could trace."""
+    """An unseeded default would make two runs of one measurement disagree for no
+    traceable reason.
+    """
     x = np.arange(50, dtype=float)
     assert stats.bootstrap_ci(x) == stats.bootstrap_ci(x)
 
@@ -68,7 +67,7 @@ def test_an_empty_sample_yields_nan_not_a_crash():
     assert np.isnan(mean) and np.isnan(lo) and np.isnan(hi)
 
 
-# ---------------------------------------------------------------- paired --
+# --- paired ---
 def test_delta_is_b_minus_a():
     r = stats.paired([1.0, 1.0, 1.0], [3.0, 3.0, 3.0])
     assert r.delta == pytest.approx(2.0)
@@ -76,8 +75,9 @@ def test_delta_is_b_minus_a():
 
 
 def test_mismatched_arms_are_refused():
-    """Two arms of different lengths are not paired, and silently truncating
-    them would compare state i of one run against state i of another."""
+    """Arms of different lengths are not paired; silently truncating would compare
+    state i of one run against state i of another.
+    """
     with pytest.raises(ValueError, match="same length"):
         stats.paired([1.0, 2.0], [1.0])
 
@@ -97,15 +97,12 @@ def test_no_effect_includes_zero():
 
 
 def test_the_two_verdicts_can_disagree_and_that_is_reported_not_hidden():
-    """The Fireball result at ep 78,270: the bootstrap CI excluded zero while
-    the exact sign test did not (223 better / 252 worse, p = 0.199), because
-    the advisor won more PAIRS while the net won bigger ones. `agrees` exists so
-    that situation is legible rather than resolved by whichever test was
+    """One arm can win more pairs while the other wins bigger ones; `agrees` makes
+    that disagreement visible instead of resolved by whichever test was
     reported.
     """
-    # The exact shape of that result: one arm wins slightly MORE PAIRS, the
-    # other wins by far more each time. The sign test sees a coin flip; the
-    # bootstrap sees a large positive mean.
+    # One arm wins slightly more pairs, the other by far more each time: the
+    # sign test sees a coin flip, the bootstrap a large positive mean.
     diffs = np.array([-1.0] * 26 + [50.0] * 24)
     r = stats.paired_from_diffs(diffs)
     assert r.better < r.worse, "the losing side must win more pairs"
@@ -126,7 +123,7 @@ def test_report_paired_handles_an_empty_comparison(capsys):
     assert "no paired states" in capsys.readouterr().out
 
 
-# -------------------------------------------------------------- unpaired --
+# --- unpaired ---
 def test_the_unpaired_diff_returns_a_bootstrap_p_as_well():
     rng = np.random.default_rng(9)
     a = rng.normal(0.0, 1.0, 200)
@@ -138,8 +135,9 @@ def test_the_unpaired_diff_returns_a_bootstrap_p_as_well():
 
 
 def test_pairing_is_worth_far_more_power_than_the_same_n_unpaired():
-    """The reason `env.snapshot()` exists and the reason CLAUDE.md records
-    ~1,568 episodes per arm being needed WITHOUT it."""
+    """Why `env.snapshot()` pairing matters: shared per-state variation swamps an
+    unpaired comparison.
+    """
     rng = np.random.default_rng(4)
     common = rng.normal(0.0, 10.0, 120)     # the shared per-state variation
     a = common + rng.normal(0.0, 0.1, 120)
@@ -151,10 +149,10 @@ def test_pairing_is_worth_far_more_power_than_the_same_n_unpaired():
     assert (hi - lo) > (paired.hi - paired.lo) * 5
 
 
-# --------------------------------------------------------- win-rate report --
+# --- win-rate report ---
 def test_the_win_rate_report_prints_the_power_line(capsys):
-    """The line that stopped an exploratory +0.105 at p=0.044 being believed --
-    a confirmatory run at 4x the power collapsed it to +0.016."""
+    """The power line shows when an observed effect is inside the noise floor.
+    """
     rng = np.random.default_rng(6)
     a = rng.integers(0, 2, 200).astype(float)
     b = a.copy()
@@ -173,30 +171,20 @@ def test_the_win_rate_report_survives_a_zero_trial_call(capsys):
 
 
 def test_the_resample_count_is_the_one_every_recorded_ci_used():
-    """Changing it would make new CIs not directly comparable with the numbers
-    in CLAUDE.md."""
+    """Changing it would make new CIs not directly comparable with recorded ones.
+    """
     assert stats.N_RESAMPLES == 10000
 
 
-# --- the fifth copy -------------------------------------------------------
-#
-# `eval/stats.py` exists because "four harnesses each had their own copy" of
-# the paired bootstrap. `prove_hog.py` was a fifth that the consolidation
-# missed, and it was the one that mattered most: it hand-rolled
-#
-#     boot = np.array([np.mean(np.random.choice(d, len(d))) for _ in range(5000)])
-#
-# on the UNSEEDED global RNG, so its 95% CI -- the number the script's own
-# verdict branches on ("BETTER than chance" / "WORSE than chance") -- moved
-# between two runs of the identical measurement. `stats._rng` is seeded by
-# default for exactly this reason: "An unseeded default would make two runs of
-# the same measurement disagree in the third decimal for no reason anyone could
-# trace." Near a boundary the disagreement is not in the third decimal, it is
-# in the conclusion.
+# --- no hand-rolled copies ---
+# A harness resampling with the unseeded global RNG produces a CI that moves
+# between runs of an identical measurement, and near a boundary that changes
+# the verdict.
 
 def test_no_eval_harness_hand_rolls_its_own_bootstrap():
-    """The drift guard. A harness resampling with the global RNG is both a
-    second copy of a consolidated function and an irreproducible statistic."""
+    """The drift guard: a harness resampling with the global RNG is a second copy
+    of a shared function and an irreproducible statistic.
+    """
     import pathlib
     import re
     root = pathlib.Path(__file__).resolve().parents[1]
@@ -213,8 +201,7 @@ def test_no_eval_harness_hand_rolls_its_own_bootstrap():
 
 
 def test_the_shared_bootstrap_is_reproducible_by_default():
-    """The property the harnesses are being routed to. Two calls with no
-    explicit rng must agree exactly, or consolidating them buys nothing."""
+    """Two calls with no explicit rng must agree exactly."""
     import numpy as np
     from python_ai.eval.stats import bootstrap_ci
     d = np.linspace(-3.0, 5.0, 64)
@@ -222,7 +209,7 @@ def test_the_shared_bootstrap_is_reproducible_by_default():
 
 
 def test_an_explicit_rng_still_overrides_the_default_seed():
-    """A caller that WANTS independent resamples must still be able to say so."""
+    """A caller that wants independent resamples can still say so."""
     import numpy as np
     from python_ai.eval.stats import bootstrap_ci
     d = np.linspace(-3.0, 5.0, 64)

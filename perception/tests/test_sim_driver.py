@@ -1,31 +1,15 @@
 """Bridge correctness, isolated from vision and from fixture noise.
 
-THE CONTROL EXPERIMENT
-----------------------
-test_zero_error_events_reproduce_truth_exactly builds its own ground truth
-rather than using a training replay, and the reason is worth stating because
-it was learned the hard way.
+The control, test_zero_error_events_reproduce_truth_exactly, builds its own
+ground truth rather than using a training replay. A replay labels only the
+learner's plays; the heuristic opponent's must be reconstructed from entities
+appearing, which adds ±1 tick (an entity is visible the tick after its play)
+and ±0.5 tile (a squad's aim point is its centroid). Combat is chaotically
+sensitive to placement, so that input cannot distinguish "the bridge is wrong"
+from "the input was approximate".
 
-A training replay looks like ideal test input -- it has labelled placements
-(train.py stamps actionCardId/actionX/actionY on every tick). But it only
-labels the LEARNER's plays. The built-in heuristic opponent's plays are
-logged nowhere at all, so they have to be reconstructed from entities
-appearing on the board, which introduces:
-
-  * ±1 tick, because an entity is visible the tick AFTER it was played;
-  * ±0.5 tile, because a multi-unit card's aim point has to be recovered as
-    the centroid of its squad.
-
-Feeding those approximations back in produced up to 530 HP/tower of
-divergence and, in one run, killed a King Tower ~200 ticks before the real
-match ended. That is not a bridge defect -- it is combat being chaotically
-sensitive to placement, which is exactly the sensitivity the divergence
-metric exists to expose. But it makes a replay useless as a CONTROL, because
-it cannot distinguish "the bridge is wrong" from "the input was approximate".
-
-So the control generates a truth trajectory with exact events, feeds those
-same exact events through SimDriver, and requires the divergence to be
-identically zero. Any non-zero result is unambiguously the bridge's fault.
+So the control generates a truth trajectory with exact events, feeds the same
+events through SimDriver, and requires divergence to be identically zero.
 """
 
 from __future__ import annotations
@@ -39,22 +23,19 @@ from contracts import UNKNOWN_CARD_SIM_ID, EventSource, PlacementEvent
 
 DECK = [15, 25, 6, 1, 0, 41, 7, 10]
 
-# Own-half tile rows only. GameManager::isValidPlacement rejects a non-spell
-# above getOwnHalfMaxY() == 15.0 (river re-centred on 16.5, see geometry.py's
-# own docstring), so 15 is the last legal row.
+# Own-half tile rows only: isValidPlacement rejects a non-spell above
+# getOwnHalfMaxY() == 15.0.
 OWN_ROWS = (5, 8, 11, 14)
-# Opponent placements are injected raw, but the events carry mirrored y (see
-# contracts.PlacementEvent), so these are in the mirrored frame too.
+# Opponent placements are injected raw, but events carry mirrored y
+# (contracts.PlacementEvent), so these are in the mirrored frame.
 OPP_ROWS = (5, 8, 11, 14)
 
 
 def _build_truth(engine, seed: int, n_events: int = 14):
-    """Run a match with scripted plays, recording EXACT events.
-
-    Own plays go through step_self_play by hand index, so they are always
-    legal by construction and the card id is known exactly. Opponent plays go
-    through inject_enemy, the same primitive the bridge uses, so the control
-    isolates the bridge's bookkeeping rather than re-testing the engine.
+    """Run a match with scripted plays, recording exact events. Own plays go
+    through step_self_play by hand index, so they are legal by construction
+    with known ids; opponent plays go through inject_enemy, the bridge's own
+    primitive, so the control tests the bridge's bookkeeping, not the engine.
     """
     rng = random.Random(seed)
     env = engine.ClashRoyaleEnv(DECK, DECK, 3600)
@@ -121,17 +102,8 @@ def _tower_hp_from_env(env, engine):
     def read(ch, x, y):
         return int(round(obs[ch * plane + int(y) * W + int(x)] * mx))
 
-    # Tower cells, DERIVED from the engine rather than written down again.
-    #
-    # These were hardcoded at the post-2026-07-30 positions (King 9.0, left
-    # Princess 4.0) and silently became reads of EMPTY CELLS when the arena was
-    # corrected on 2026-08-21 -- every tower came back 0, and because the
-    # comparison is against driver.tower_hp() (which derives from geometry.py,
-    # and was correct), the failure looked like a bridge divergence defect
-    # rather than a stale constant in the test's own helper.
-    #
-    # geometry.py is the perception-side single source for this, and it now
-    # reads ArenaLayout.h through the bindings.
+    # Tower cells from geometry.py, which reads ArenaLayout.h through the
+    # bindings.
     from perception.geometry import (
         OWN_KING, OWN_PRINCESS_LEFT, OWN_PRINCESS_RIGHT,
         OPP_KING, OPP_PRINCESS_LEFT, OPP_PRINCESS_RIGHT,
@@ -172,10 +144,9 @@ def test_zero_error_events_reproduce_truth_exactly(engine, seed):
 
 @pytest.mark.parametrize("seed", [1, 7, 23])
 def test_candidate_pool_identifies_the_real_cycle(engine, seed):
-    """The pool collapses to our actual cycle within a few plays.
-
-    This is the property that makes own-side injection possible at all
-    without an engine change -- see sim_driver.py's docstring.
+    """The pool collapses to our actual cycle within a few plays: what makes
+    own-side injection possible without an engine change (sim_driver.py's
+    docstring).
     """
     truth_env, opening_hand, events, _ = _build_truth(engine, seed)
 
@@ -186,9 +157,8 @@ def test_candidate_pool_identifies_the_real_cycle(engine, seed):
     for event, incoming in events:
         driver.apply(event, incoming_card=incoming)
 
-    # APPLIED plays, not attempted. A play the engine refuses deals no card,
-    # so it reveals nothing about the queue and cannot count toward pinning
-    # it down -- see SimDriver.cycle_identified.
+    # Applied plays, not attempted: a refused play deals no card and reveals
+    # nothing about the queue (SimDriver.cycle_identified).
     applied = driver.report.own_plays_applied
     if applied >= 4:
         assert driver.cycle_identified, (
@@ -198,9 +168,8 @@ def test_candidate_pool_identifies_the_real_cycle(engine, seed):
         assert driver.report.cycle_identified_after is not None
         assert driver.report.cycle_identified_after <= driver.report.own_plays_attempted
 
-    # Hand MEMBERSHIP must match the truth env. Not slot order -- see
-    # SimDriver._cycle_agreed for why arrangement is a free permutation that
-    # nothing observable depends on.
+    # Hand membership must match the truth env, not slot order
+    # (SimDriver._cycle_agreed).
     assert set(driver.primary.get_hand()) == set(truth_env.get_hand())
 
 
@@ -228,18 +197,16 @@ def test_unmapped_card_is_reported_not_injected(engine):
 
 
 def test_opponent_y_is_unmirrored_before_injection(engine):
-    """A team-1 event's tile_y is in ClashEnv (mirrored) convention.
-
-    Getting this backwards puts every opponent card in their own back rows
-    instead of near the river -- plausible-looking and completely wrong. The
-    check is that a card placed just past the river on their side actually
-    damages OUR tower, which can only happen if it spawned near the river.
+    """A team-1 event's tile_y is in mirrored convention. Backwards, every
+    opponent card lands in their own back rows. The check: a card placed just
+    past the river on their side damages our tower, which requires it to spawn
+    near the river.
     """
     driver = SimDriver(my_deck=DECK, opp_deck=DECK)
     driver.start()
 
-    # Mirrored y=14 is raw y=19: their side, just past the river, in the
-    # right-hand lane. A Hog Rider from there reaches our tower quickly.
+    # Mirrored y=14 is raw y=19: their side, just past the river, right lane. A
+    # Hog Rider from there reaches our tower quickly.
     driver.apply(PlacementEvent(
         tick=1, wall_time_ms=0.0, card_sim_id=15, card_real_name="Hog Rider",
         team=1, tile_x=14, tile_y=14, confidence=1.0,
@@ -261,12 +228,7 @@ def test_events_must_arrive_in_tick_order(engine):
 
 
 def test_divergence_excludes_king_towers(engine):
-    """King HP is excluded because the engine's King has no activation.
-
-    Tower.h gives the King no dormancy condition at all -- it fires from tick
-    0, while the real King is inert until activated. Including it would add a
-    systematic error to every measurement and bury the signal.
-    """
+    """King HP is excluded from divergence (see SimDriver.divergence)."""
     driver = SimDriver(my_deck=DECK, opp_deck=DECK)
     driver.start()
     predicted = driver.tower_hp()

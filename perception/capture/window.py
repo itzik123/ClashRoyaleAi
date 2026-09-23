@@ -1,68 +1,25 @@
 """Live frames from the emulator window, via Windows.Graphics.Capture.
 
-WHY NOT ADB, MEASURED
----------------------
-`adb exec-out screencap` is the obvious way to get native-resolution frames and
-it is far too slow to be in a control loop:
+Not ADB: `adb exec-out screencap` takes 1.4-4.9 s per frame, against a capture
+budget of ~200 ms (the policy acts once per second and the detector costs ~800
+ms). Not a screen-region grab: `Graphics.CopyFromScreen` reads the composited
+desktop and returns whatever window is on top. WGC reads the window's own
+surface, so covering the emulator changes nothing; tested against BlueStacks,
+which renders through D3D, where PrintWindow tends to return black. A minimized
+window is not repainted, so no frames arrive.
 
-    screencap -p (PNG)   2243 - 4886 ms   (10 samples)
-    screencap    (raw)   1414 - 1885 ms   (6 samples)
+The captured surface is the whole emulator window: title bar, a toolbar down
+the right, and the portrait game pillarboxed against black. Every frame is
+cropped to the game rect, found from the frame rather than hardcoded, since the
+window can move or resize; the detector must never see the chrome.
 
-The policy acts once per second and the detector alone costs ~800 ms of that,
-so the capture budget is ~200 ms. ADB misses it by an order of magnitude.
+WGC returns physical pixels: at 125% display scaling the surface is 1920x1020
+while `GetWindowRect` reports 1536x816. Never size anything from GetWindowRect.
 
-WHY NOT A SCREEN-REGION GRAB
-----------------------------
-`Graphics.CopyFromScreen` reads the composited desktop, so it returns whatever
-is on TOP of the emulator -- verified, it came back with an unrelated window
-covering BlueStacks. That would make the machine unusable during a run and
-would let any notification popup corrupt a frame.
-
-Windows.Graphics.Capture reads the window's own surface instead. Measured
-against BlueStacks while it was fully covered: frames arrive with content,
-1920x1020, mean 85 ms between them. BlueStacks renders through D3D, which is
-exactly the case where PrintWindow tends to return black, so this was tested
-rather than assumed.
-
-COVERED IS FINE; MINIMIZED IS NOT. WGC captures a window's own surface, so
-other windows on top of it change nothing -- that is the property this was
-chosen for. A minimized window is a different thing entirely: it is not being
-repainted, so there is no surface to read and no frames arrive at all. An
-earlier version of this docstring said the window "does NOT need to be
-visible", which conflated the two and is wrong.
-
-THE BUFFER IS NOT THE GAME
---------------------------
-The captured surface is the whole emulator window: a title bar on top, a
-toolbar strip down the right, and the portrait game pillarboxed in the middle
-against black. The detector must never see the chrome -- it already invents
-Knights from the two player avatars inside the arena (see board_filter.py), and
-a toolbar full of icons is more of the same. So every frame is cropped to the
-game rect, found per-frame rather than hardcoded, because the window can be
-moved or resized under us.
-
-DPI IS WHY THE BUFFER IS BIGGER THAN THE WINDOW
------------------------------------------------
-`GetWindowRect` reported 1536x816 while the captured surface is 1920x1020: the
-display runs at 125%, and WGC hands back PHYSICAL pixels. That is 1.25x more
-detail than the logical window rect suggests, and it is the reason the game
-area comes out at 0.76 of native 720x1280 rather than the 0.64 the logical
-rect implies. Never size anything from GetWindowRect here.
-
-RESOLUTION LOSS IS NOT THE PROBLEM IT LOOKS LIKE
-------------------------------------------------
-The game renders at ~549x976 on this display against the 720x1280 that every
-constant in unit_hp.py was fitted on. Measured by re-scoring the HP reader
-against its 60 hand labels at each scale, the cost is inside the noise:
-
-    scale 1.000 (720x1280)   precision 0.98   recall 0.56   F1 0.72
-    scale 0.850              0.98   0.65   0.78
-    scale 0.750              0.98   0.53   0.69
-    scale 0.637              0.97   0.50   0.66
-
-0.85 and 0.55 both score ABOVE native, so the spread is sampling noise on ~15
-weighted positives, not a resolution effect. Downscaling preserves the
-fill/track ratio, which is the only thing an HP fraction reads.
+The game renders at ~549x976 here, against the 720x1280 unit_hp.py was fitted
+on. Re-scoring the HP reader against its 60 hand labels at 1.0, 0.85, 0.75 and
+0.637 scale moved F1 within sampling noise (0.66-0.78, non-monotonic):
+downscaling preserves the fill/track ratio an HP fraction reads.
 """
 from __future__ import annotations
 
@@ -74,32 +31,26 @@ import numpy as np
 
 from capture.source import Frame, FrameSource
 
-# A pillarbox pixel is not merely dark, it is black. The threshold is above
-# pure black only to absorb compression noise on the surface.
+# A pillarbox pixel is black; the threshold only absorbs compression noise.
 LETTERBOX_MAX = 24
 
-# The emulator preserves the Android panel's aspect, so the game rect's HEIGHT
-# is derived from its measured WIDTH rather than detected. Detecting it fails:
-# the title bar spans the game's own columns and is not black, so a row scan
-# runs straight through it.
+# The emulator preserves the panel's aspect, so the game rect's height is
+# derived from its measured width. Detecting it fails: the title bar spans the
+# game's columns and is not black.
 NATIVE_WIDTH, NATIVE_HEIGHT = 720, 1280
 
-# Refuse to run below this rather than silently deliver a stale board. One
-# decision per second is the policy's cadence, and a control loop fed frames
-# slower than it acts is making decisions about the past.
+# Refuse to run below this rather than deliver a stale board: a loop fed frames
+# slower than it acts is deciding about the past.
 DEFAULT_MIN_FPS = 2.0
 
-# Rows are subsampled when scanning for the pillarbox. The bars are uniform
-# black over hundreds of rows, so every 4th row decides the same columns for a
-# quarter of the work -- and this scan runs on the hot path.
+# Rows subsampled when scanning for the pillarbox: the bars are uniform over
+# hundreds of rows, and this scan is on the hot path.
 RECT_ROW_STEP = 4
 
-# How often to re-derive the game rect even when the surface size has not
-# changed. Measured at 75 ms on a 1920x1020 buffer, which is far too expensive
-# per frame -- it was 74.7 of the 85 ms `read()` cost, and 29% of a recorder
-# frame. A resize changes the surface shape and is caught immediately; this
-# interval only covers a letterbox change at constant size, which needs the
-# Android app itself to change aspect.
+# How often to re-derive the game rect at unchanged surface size. Deriving it
+# costs ~75 ms on a 1920x1020 buffer, far too much per frame. A resize changes
+# the surface shape and is caught immediately; this only covers the app itself
+# changing aspect.
 RECT_REVALIDATE_S = 5.0
 
 
@@ -110,11 +61,10 @@ class GameRectError(RuntimeError):
 def find_game_rect(buffer: np.ndarray) -> tuple[int, int, int, int]:
     """(x, y, w, h) of the pillarboxed game inside a full window capture.
 
-    The width comes from the widest run of non-black columns in a band across
-    the MIDDLE of the surface -- middle, because the title bar and the toolbar
-    both span the full width and would join every run into one. The height then
-    follows from the Android aspect and is anchored to the bottom of the
-    surface, since the chrome is on top.
+    The width is the widest run of non-black columns in a band across the
+    middle of the surface, where the title bar and toolbar do not join every
+    run into one. The height follows from the Android aspect, anchored to the
+    bottom, since the chrome is on top.
     """
     if buffer.ndim != 3 or buffer.shape[2] < 3:
         raise GameRectError(f"expected an HxWx3 image, got {buffer.shape}")
@@ -148,12 +98,9 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
 
 
 class WindowSource(FrameSource):
-    """Live frames from a named window, cropped to the game area.
-
-    Capture runs on its own thread and keeps only the LATEST frame. A control
-    loop wants the current board, never a backlog: queueing frames would mean
-    that after any hitch the agent acts on a board that has already changed,
-    which is worse than skipping the hitch entirely.
+    """Live frames from a named window, cropped to the game area. Capture runs on
+    its own thread and keeps only the latest frame: after a hitch the agent
+    should act on the current board, not a backlog.
     """
 
     def __init__(self, window_name: str = "BlueStacks App Player", *,
@@ -177,10 +124,9 @@ class WindowSource(FrameSource):
         self._rect: tuple[int, int, int, int] | None = None
         self._rect_shape: tuple[int, ...] | None = None
         self._rect_at = 0.0
-        # Counts CAPTURED surfaces, not reads. WGC delivers on window updates,
-        # so a caller polling faster than that will otherwise be handed the
-        # same surface twice -- which reads downstream as two observations of
-        # one instant, and as "nothing changed" to anything diffing frames.
+        # Counts captured surfaces, not reads. WGC delivers on window updates,
+        # so a faster poller would get the same surface twice, which reads
+        # downstream as two observations of one instant.
         self._seq = 0
         self._last_seq = -1
 
@@ -191,7 +137,8 @@ class WindowSource(FrameSource):
         def on_frame_arrived(frame, control):          # noqa: ANN001
             now = time.perf_counter()
             with self._lock:
-                # BGRA surface; drop alpha. Copy because the buffer is reused.
+                # BGRA surface; drop alpha. Copied because the buffer is
+                # reused.
                 self._latest = (now, frame.frame_buffer[:, :, :3].copy())
                 self._seq += 1
                 self._stamps.append(now)
@@ -220,18 +167,13 @@ class WindowSource(FrameSource):
             "MINIMIZED window has no surface being repainted and delivers "
             "nothing. Restore it and try again.")
 
-    # -- FrameSource ---------------------------------------------------------
+    # --- FrameSource ---
 
     @property
     def fps(self) -> float:
-        """ACHIEVED rate, not a nominal one.
-
-        The ABC tells a source to raise rather than guess when it is not
-        constant-rate, and live capture never is -- WGC delivers on window
-        updates. Reporting the measured rate is not a guess, and nothing
-        downstream depends on it for timing: every Frame carries its own
-        `wall_time_ms` taken at capture, so time conversion is exact whatever
-        this says. It exists to be checked against `min_fps`.
+        """Achieved rate, not a nominal one. Live capture is never constant-rate,
+        but nothing depends on this for timing: every Frame carries its own
+        capture-time `wall_time_ms`. It exists to be checked against `min_fps`.
         """
         with self._lock:
             stamps = list(self._stamps)
@@ -264,10 +206,9 @@ class WindowSource(FrameSource):
             self._index += 1
 
     def read(self) -> Frame:
-        """The current board, once. For a control loop that paces itself.
-
-        May return the same surface twice if called faster than the window
-        updates -- use `read_new` when duplicates would be misread as evidence.
+        """The current board, once, for a loop that paces itself. May return the
+        same surface twice; use `read_new` when duplicates would be misread as
+        evidence.
         """
         stamp, image = self._grab()
         with self._lock:
@@ -278,12 +219,9 @@ class WindowSource(FrameSource):
         return frame
 
     def read_new(self, timeout_s: float = 1.0) -> Frame | None:
-        """The next surface the window actually painted, or None on timeout.
-
-        A recorder wants this rather than `read`: a duplicated frame is two
-        entries in the timeline for one instant, which biases any rate measured
-        from it and makes a frame-difference test report "no change" for a
-        moment that was never observed twice.
+        """The next surface the window actually painted, or None on timeout. For a
+        recorder: a duplicate is two timeline entries for one instant, biasing
+        any measured rate.
         """
         deadline = time.perf_counter() + timeout_s
         while time.perf_counter() < deadline:
@@ -302,7 +240,7 @@ class WindowSource(FrameSource):
                 pass
         self._closed = True
 
-    # -- internals -----------------------------------------------------------
+    # --- internals ---
 
     def _grab(self) -> tuple[float, np.ndarray]:
         with self._lock:
@@ -313,12 +251,9 @@ class WindowSource(FrameSource):
         return stamp, np.ascontiguousarray(buffer[y:y + h, x:x + w])
 
     def _game_rect(self, buffer: np.ndarray) -> tuple[int, int, int, int]:
-        """The cached game rect, re-derived only when it can have changed.
-
-        Deriving it costs ~75 ms on a 1920x1020 surface, which dominated
-        everything else on the hot path. It is a property of the window
-        geometry, not of the frame, so it is cached against the surface shape
-        (a resize changes that) with a slow revalidation behind it.
+        """The cached game rect, re-derived only when it can have changed: cached
+        against the surface shape (a resize changes it), with a slow
+        revalidation behind it.
         """
         now = time.perf_counter()
         if (self._rect is None

@@ -8,9 +8,8 @@
 #include <vector>
 #include <algorithm>
 
-// Framework pilot: Wall Breakers Evolution (id 123, base id 83). Proves the
-// evolution-slot machinery end to end before the remaining 40 evolutions
-// are batched in -- see CardRegistry.h's "=== Evolutions ===" section.
+// Wall Breakers Evolution (id 123, base 83): the evolution-slot machinery end
+// to end.
 
 TEST_CASE("PlayerState::playCard resolves an Evolution slot: 2 un-evolved cycles, "
           "then 1 evolved, repeating for the rest of the match", "[player_state][evolution]") {
@@ -18,36 +17,34 @@ TEST_CASE("PlayerState::playCard resolves an Evolution slot: 2 un-evolved cycles
     player.initializeDeck({ 123, 1, 2, 3, 4, 5, 6, 7 }); // Wall Breakers Evolution in hand slot 0
     player.elixir = 100.0f; // never the limiting factor here
 
-    // Real cycling (playing the other 7 slots first) isn't needed to unit
-    // test PlayerState's own resolution logic -- re-seeding hand[0] to 123
-    // between calls simulates "this slot cycled back to the same card"
-    // without needing 8 real plays per lap.
+    // Re-seeding hand[0] to 123 between plays simulates the slot cycling back,
+    // without eight real plays per lap.
     auto r1 = player.playCard(0);
     REQUIRE(r1.cardId == 123);
     REQUIRE_FALSE(r1.useEvolvedForm);
 
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto r2 = player.playCard(0);
     REQUIRE_FALSE(r2.useEvolvedForm); // 2nd un-evolved cycle
 
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto r3 = player.playCard(0);
     REQUIRE(r3.useEvolvedForm); // 3rd play: evolved
 
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto r4 = player.playCard(0);
     REQUIRE_FALSE(r4.useEvolvedForm); // NOT a one-time charge -- back to un-evolved
 
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto r5 = player.playCard(0);
     REQUIRE_FALSE(r5.useEvolvedForm);
 
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto r6 = player.playCard(0);
     REQUIRE(r6.useEvolvedForm); // evolves again, confirming the repeat
 }
@@ -69,10 +66,10 @@ TEST_CASE("initializeDeck resets Evolution progress -- no cross-match state leak
 
     player.playCard(0);
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     player.playCard(0);
     player.hand[0] = 123;
-    player.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    player.handCooldownTicks[0] = 0; // skip the cycle-in delay
     auto evolved = player.playCard(0);
     REQUIRE(evolved.useEvolvedForm); // fully cycled once
 
@@ -84,23 +81,22 @@ TEST_CASE("initializeDeck resets Evolution progress -- no cross-match state leak
 TEST_CASE("GameManager::playCard spawns the evolved entity only on an evolved play", "[game_manager][evolution]") {
     GameManager game({ 123, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[0] = 123; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 123; // force into hand: the opening hand is random
 
     game.playCard(0, 123, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
-    // The evolved spawn carries a deathEffect (Runners); the un-evolved
-    // spawn does not -- kill everything and count how many total entities
-    // this deploy round produced (2 base Wall Breakers each play, plus 2
-    // Runners once, only from the evolved play's death).
+    // The evolved spawn carries a death effect (Runners) and the un-evolved one
+    // does not: kill everything and count what each play produced (2 Wall
+    // Breakers per play, plus 2 Runners from the evolved play only).
     int wallBreakerCount = 0;
     for (const auto& e : game.getBoard().getEntities()) {
         if (e->name == "Wall Breakers") { wallBreakerCount++; e->takeDamage(e->hp); }
@@ -121,16 +117,16 @@ TEST_CASE("Inferno Dragon Evolution's evolved spawn carries the ramp grace perio
         "[game_manager][evolution][inferno_dragon]") {
     GameManager game({ 163, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[0] = 163; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 163; // force into hand: the opening hand is random
 
     game.playCard(0, 163, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 163;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 163, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 163;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 163, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
@@ -149,9 +145,7 @@ TEST_CASE("Inferno Dragon Evolution's evolved spawn carries the ramp grace perio
     REQUIRE(evolvedDragon->rampGracePeriodTicks == 90); // 9s at this engine's 10-ticks/second rate
     REQUIRE(evolvedDragon->rampStage4Tick == 200); // 20s
     REQUIRE(evolvedDragon->rampStage4Fraction == Catch::Approx(2.0f));
-    // Base ramp schedule (3-stage 35/120/422) is untouched -- "Identical
-    // Stats" per the sourced evolution table, only the charge-up behavior
-    // itself differs.
+    // The base 3-stage ramp is unchanged; only the charge-up behaviour differs.
     REQUIRE(evolvedDragon->rampMidTick == 15);
     REQUIRE(evolvedDragon->rampFullTick == 30);
 }
@@ -160,16 +154,16 @@ TEST_CASE("Minion Horde Evolution's Dark Guard turns a member untargetable after
         "[game_manager][evolution][minion_horde]") {
     GameManager game({ 149, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[0] = 149; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 149; // force into hand: the opening hand is random
 
     game.playCard(0, 149, 9.0f, 10.0f); // 1st play: un-evolved
     game.step();
     game.playerAI.hand[0] = 149;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 149, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 149;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 149, 9.0f, 10.0f); // 3rd play: evolved
     game.step();
 
@@ -191,7 +185,7 @@ TEST_CASE("Skeleton Army Evolution's evolved play deploys 16 skeletons (+1, the 
         "[game_manager][evolution][skeleton_army]") {
     GameManager game({ 133, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[0] = 133; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 133; // force into hand: the opening hand is random
 
     game.playCard(0, 133, 9.0f, 10.0f); // 1st play: un-evolved (15)
     game.step();
@@ -202,11 +196,11 @@ TEST_CASE("Skeleton Army Evolution's evolved play deploys 16 skeletons (+1, the 
     REQUIRE(unevolvedCount == 15);
 
     game.playerAI.hand[0] = 133;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 133, 9.0f, 10.0f); // 2nd play: un-evolved
     game.step();
     game.playerAI.hand[0] = 133;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 133, 9.0f, 10.0f); // 3rd play: evolved (16)
     game.step();
 
@@ -221,24 +215,22 @@ TEST_CASE("Wall Breakers Evolution's death effect both explodes (moderate AoE) a
         "[game_manager][evolution][wall_breakers]") {
     GameManager game({ 123, 1, 2, 3, 4, 5, 6, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 });
     game.playerAI.elixir = 100.0f;
-    game.playerAI.hand[0] = 123; // force into hand -- opening hand is now randomized
+    game.playerAI.hand[0] = 123; // force into hand: the opening hand is random
 
     game.playCard(0, 123, 9.0f, 10.0f); // 1st: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 2nd: un-evolved
     game.step();
     game.playerAI.hand[0] = 123;
-    game.playerAI.handCooldownTicks[0] = 0; // immediately playable, not still on the previous play's cycle-in delay
+    game.playerAI.handCooldownTicks[0] = 0; // skip the cycle-in delay
     game.playCard(0, 123, 9.0f, 10.0f); // 3rd: evolved
     game.step();
 
-    // Only the evolved play's 2 copies carry a deathEffect at all (the
-    // un-evolved copies from the first 2 plays don't) -- board iteration
-    // order isn't guaranteed to put the 3rd play's entities first, so
-    // this is the reliable way to grab one of the evolved copies
-    // specifically, not just "any Wall Breakers".
+    // Only the evolved play's two copies carry a death effect, and board order
+    // does not guarantee which play comes first, so this is how to pick an
+    // evolved copy.
     std::shared_ptr<CombatEntity> evolvedWallBreaker;
     for (const auto& e : game.getBoard().getEntities()) {
         if (e->name != "Wall Breakers") continue;
@@ -247,10 +239,9 @@ TEST_CASE("Wall Breakers Evolution's death effect both explodes (moderate AoE) a
     }
     REQUIRE(evolvedWallBreaker != nullptr);
 
-    // A bystander right next to it, well within the new 1.5-tile death
-    // explosion but far enough that it was never hit by anything else this
-    // test does -- confirms AreaDamageOnDeath actually fires now, not just
-    // the pre-existing Runner spawn.
+    // A bystander inside the 1.5-tile death explosion and out of reach of
+    // everything else, so the explosion itself is what is tested, not just the
+    // Runner spawn.
     auto bystander = std::make_shared<DummyEntity>(9999, evolvedWallBreaker->position.x + 0.5f,
         evolvedWallBreaker->position.y, 100000, 1);
     game.getBoard().addEntity(bystander);

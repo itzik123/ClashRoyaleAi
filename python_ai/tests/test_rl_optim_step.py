@@ -1,28 +1,10 @@
 """One guarded optimizer step, used by every loop that takes one.
 
-A single non-finite gradient turns EVERY parameter to NaN in one step, and
-permanently: `clip_grad_norm_` scales by `max_norm/(nan+eps)`, which is itself
-nan, so it multiplies the poison THROUGH the clip, and Adam's moment estimates
-carry it forward so no later clean batch recovers. Measured 2026-08-26: 32 of
-32 parameter tensors, still NaN after a clean step.
-
-THERE ARE FIVE OPTIMIZER LOOPS IN THIS PACKAGE, not one:
-
-    rl/ppo.py                  the main PPO update, both pipelines
-    trainers/exploiter.py      the league exploiter's own compact PPO loop
-    trainers/bc_pretrain.py    behaviour cloning
-    trainers/distill_tactics.py    advisor -> placement head
-    trainers/expert_distill.py     search -> student
-
-and every one of them wrote the same unguarded `clip_grad_norm_` then `step()`.
-The exploiter is the one that reaches beyond its own process: it snapshots into
-the SHARED PFSP pool, so a poisoned burst injects an opponent whose logits are
-all NaN, and `Categorical` raises on it -- crashing the MAIN run on whichever
-reset samples it.
-
-Guarding four more copies by hand would be a fifth copy of the same decision.
-The guard lives in one function, and the static test at the bottom is what
-stops a sixth loop being written without it.
+A single non-finite gradient turns every parameter to NaN permanently:
+`clip_grad_norm_` multiplies the NaN through the clip, and Adam's moments carry
+it forward. The exploiter's loop also snapshots into the shared PFSP pool, so a
+poisoned burst would crash the main run. The guard lives in one function, and
+the static test at the bottom stops a new loop from skipping it.
 """
 import copy
 
@@ -69,9 +51,9 @@ def test_an_inf_gradient_does_not_step():
 
 
 def test_the_dropped_gradient_is_cleared_not_left_to_accumulate():
-    """A skipped step must not leave its poison in `.grad` for the NEXT
-    backward to add to -- that would make one bad batch poison the following
-    good one instead."""
+    """A skipped step must clear its poisoned `.grad`, or the next backward adds
+    to it.
+    """
     from python_ai.rl.optim_step import clip_and_step
     net, opt = _net_and_opt()
     opt.zero_grad()
@@ -89,9 +71,9 @@ def test_the_dropped_gradient_is_cleared_not_left_to_accumulate():
 
 
 def test_a_generator_of_parameters_is_accepted_once():
-    """`net.parameters()` is a GENERATOR. Clipping consumes it, so a naive
-    implementation that iterates it a second time silently sees nothing --
-    which would make the guard a no-op that still reports success."""
+    """`net.parameters()` is a generator; clipping consumes it, so iterating it a
+    second time would silently see nothing.
+    """
     from python_ai.rl.optim_step import clip_and_step
     net, opt = _net_and_opt()
     before = net.weight.detach().clone()
@@ -102,9 +84,8 @@ def test_a_generator_of_parameters_is_accepted_once():
 
 
 def test_no_optimizer_loop_in_the_package_steps_unguarded():
-    """The drift guard. A sixth loop written with a bare
-    `clip_grad_norm_(...)` / `optimizer.step()` pair reintroduces the whole
-    failure, silently, in a file nobody thought to re-audit.
+    """The drift guard: a new loop with a bare `clip_grad_norm_` /
+    `optimizer.step()` pair reintroduces the whole failure.
     """
     import pathlib
     import re
@@ -114,10 +95,9 @@ def test_no_optimizer_loop_in_the_package_steps_unguarded():
         rel = path.relative_to(root).as_posix()
         if rel.startswith(("tests/", "venv/", "archive")):
             continue
-        # `optim_step.py` IS the guard -- its own step is the one being routed
-        # to. `profile_training.py` deliberately times a raw `opt.step()`
-        # inside a named span on synthetic loss; guarding it would change what
-        # it measures, which is the whole point of the file.
+        # `optim_step.py` is the guard itself. `profile_training.py` times a
+        # raw `opt.step()` on a synthetic loss; guarding it would change what
+        # it measures.
         if rel in ("rl/optim_step.py", "tools/profile_training.py"):
             continue
         lines = path.read_text(encoding="utf-8").splitlines()

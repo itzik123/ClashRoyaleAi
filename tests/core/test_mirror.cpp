@@ -5,10 +5,8 @@
 
 TEST_CASE("Mirror fails to play when nothing has been played yet", "[game_manager][mirror]") {
     GameManager game({ 164, 1, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    // Mirror is now GUARANTEED excluded from the real opening hand (see
-    // PlayerState::initializeDeck's rng overload) -- force it in directly so
-    // this fails for the reason the test actually cares about (nothing
-    // played yet), not just "card not in hand".
+    // Mirror can never be in the opening hand, so force it in, so this fails
+    // for the intended reason (nothing played yet).
     game.playerAI.hand[0] = 164;
     game.playerAI.elixir = 10.0f;
 
@@ -17,15 +15,9 @@ TEST_CASE("Mirror fails to play when nothing has been played yet", "[game_manage
 
 TEST_CASE("Mirror replays the last card played, at +1 elixir cost", "[game_manager][mirror]") {
     GameManager game({ 0, 164, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 }); // Knight (cost 3), then Mirror
-    // Fully pin hand/deckQueue to the deterministic deck[0..3]/deck[4..7]
-    // partition -- opening hand is now randomized (see PlayerState::
-    // initializeDeck's rng overload), and Mirror is additionally guaranteed
-    // excluded from it entirely. A partial single-slot force (hand[1]=164)
-    // isn't enough here: Mirror could still be left sitting in deckQueue
-    // from the random shuffle too, and Knight's OWN play draws from
-    // deckQueue.front() -- if that residual Mirror got drawn into hand[0]
-    // it would collide with the forced hand[1] copy and get found first by
-    // GameManager::playCard's hand scan.
+    // Pin hand and queue to deck[0..3] / deck[4..7]. Forcing one slot is not
+    // enough: a Mirror left in the queue could be drawn by the Knight's play
+    // and found first by playCard's hand scan.
     game.playerAI.hand = { 0, 164, 2, 3 };
     game.playerAI.deckQueue = { 4, 5, 6, 7 };
     game.playerAI.elixir = 10.0f;
@@ -48,8 +40,7 @@ TEST_CASE("Mirror replays the last card played, at +1 elixir cost", "[game_manag
 TEST_CASE("Mirror fails when unaffordable (mirrored cost + 1), without deducting anything",
         "[game_manager][mirror]") {
     GameManager game({ 0, 164, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    // Fully pin hand/deckQueue -- see the previous test's own comment on why
-    // a partial single-slot force isn't enough.
+    // Pin hand and queue, as above.
     game.playerAI.hand = { 0, 164, 2, 3 };
     game.playerAI.deckQueue = { 4, 5, 6, 7 };
     game.playerAI.elixir = 10.0f;
@@ -62,13 +53,10 @@ TEST_CASE("Mirror fails when unaffordable (mirrored cost + 1), without deducting
 
 TEST_CASE("A second Mirror replays what was played before the FIRST Mirror, not the Mirror itself",
         "[game_manager][mirror]") {
-    // Deck: Knight (0), Mirror (164) in the first two slots; the queue
-    // cycles Mirror back into hand slot 1 by the time we need to play it
-    // again -- simpler to just re-seed hand[1] directly, same technique
-    // already used for the Evolution cycling tests.
+    // Re-seed hand[1] rather than cycle Mirror back for real, as the Evolution
+    // tests do.
     GameManager game({ 0, 164, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 });
-    // Fully pin hand/deckQueue -- see the first Mirror test's own comment on
-    // why a partial single-slot force isn't enough.
+    // Pin hand and queue, as above.
     game.playerAI.hand = { 0, 164, 2, 3 };
     game.playerAI.deckQueue = { 4, 5, 6, 7 };
     game.playerAI.elixir = 100.0f;
@@ -77,7 +65,7 @@ TEST_CASE("A second Mirror replays what was played before the FIRST Mirror, not 
     REQUIRE(game.playCard(0, 164, 9.0f, 10.0f)); // 1st Mirror -> mirrors Knight
 
     game.playerAI.hand[1] = 164; // simulate Mirror having cycled back to this slot
-    game.playerAI.handCooldownTicks[1] = 0; // ...immediately playable, not still on the 1st Mirror's cycle-in delay
+    game.playerAI.handCooldownTicks[1] = 0; // skip the cycle-in delay
     REQUIRE(game.playCard(0, 164, 9.0f, 10.0f)); // 2nd Mirror -> should ALSO mirror Knight, not the 1st Mirror
 
     game.step();
@@ -93,26 +81,20 @@ TEST_CASE("A second Mirror replays what was played before the FIRST Mirror, not 
 TEST_CASE("Mirror respects the mirrored card's own placement rules (a spell may target the enemy half)",
         "[game_manager][mirror]") {
     GameManager game({ 7, 164, 2, 3, 4, 5, 6, 7 }, { 0,1,2,3,4,5,6,7 }); // Fireball (id 7, a spell), then Mirror
-    // Fully pin hand/deckQueue -- see the first Mirror test's own comment on
-    // why a partial single-slot force isn't enough.
+    // Pin hand and queue, as above.
     game.playerAI.hand = { 7, 164, 2, 3 };
     game.playerAI.deckQueue = { 4, 5, 6, 7 };
     game.playerAI.elixir = 100.0f;
 
     REQUIRE(game.playCard(0, 7, 9.0f, 10.0f)); // Fireball, own half
 
-    // Mirroring a spell onto the ENEMY half must succeed -- spells aren't
-    // restricted to the caster's own side the way troops are.
+    // A mirrored spell may land on the enemy half.
     REQUIRE(game.playCard(0, 164, 9.0f, 25.0f));
 }
 
-// ---------------- Mirror + Champion/Hero ----------------
-// Real-game fidelity: Mirror CAN duplicate a Champion/Hero (previously
-// blocked outright in this engine -- corrected per direct game-design
-// feedback). The ability always belongs to whichever instance of that
-// slot's troop was deployed most recently, whether the deployment came
-// from the original card or from Mirror (see GameManager::playCard's
-// tracking hook, which resolves off the spawned entity's own cardId).
+// --- Mirror + Champion / Hero ---
+// Mirror can duplicate a Champion or Hero; the ability belongs to the newest
+// instance, however deployed (tracked off the spawned entity's cardId).
 
 TEST_CASE("Mirror can duplicate a Champion, and the ability targets whichever instance was deployed last",
         "[game_manager][mirror][champion]") {
@@ -141,9 +123,7 @@ TEST_CASE("Mirror can duplicate a Champion, and the ability targets whichever in
     }
     REQUIRE(mightyMinerCount == 2); // original + Mirror's copy
 
-    // Tracking now points at the MIRRORED copy, not the original --
-    // "the ability belongs to whoever was created last" applies
-    // uniformly, Mirror included.
+    // Tracking now points at the mirrored copy.
     int trackedId = game.playerAI.championSlots[1].trackedEntityId;
     REQUIRE(trackedId != originalId);
 
@@ -176,21 +156,15 @@ TEST_CASE("Mirror can duplicate a Hero, and the mirrored copy has its own indepe
     REQUIRE(game.playCard(0, 164, 9.0f, 10.0f)); // Mirror duplicates the Hero
     game.step();
 
-    // Tracking now points at the mirrored copy, which carries its OWN
-    // fresh one-use ability -- independent of the original's already-
-    // spent use.
+    // The mirrored copy carries its own fresh one-use ability.
     REQUIRE(game.isChampionAbilityReady(0, 1));
     REQUIRE(game.activateChampionAbility(0, 1));
     REQUIRE_FALSE(game.isChampionAbilityReady(0, 1)); // now the mirrored copy is spent too
 }
 
-// ---------------- Mirror + Evolution ----------------
-// Real-game fidelity: mirroring an Evolution-slot card always plays its
-// BASE (non-evolved) form, and does not count toward that Evolution's own
-// cycle progress -- confirmed as already-correct engine behavior
-// (PlayerState::playCard resolves useEvolvedForm/evolutionState off
-// Mirror's OWN hand slot/cardId, never the mirrored card's), just
-// previously untested.
+// --- Mirror + Evolution ---
+// Mirroring an Evolution plays its base form and does not advance its cycle
+// (PlayerState::playCard resolves off Mirror's own slot and id).
 
 TEST_CASE("Mirror plays the base (non-evolved) form when mirroring an Evolution, without consuming its cycle",
         "[game_manager][mirror][evolution]") {
@@ -211,9 +185,7 @@ TEST_CASE("Mirror plays the base (non-evolved) form when mirroring an Evolution,
 
     REQUIRE(it->second.cyclesUntilEvolved == 1); // untouched by the Mirror play
 
-    // The mirrored copy is the BASE form -- no evolved-only deathEffect
-    // (Runner spawn). Kill every Wall Breakers unit from both plays and
-    // confirm no Runner appears.
+    // The mirrored copy is the base form: no Runner-spawning death effect.
     int wallBreakerCount = 0;
     for (const auto& e : game.getBoard().getEntities()) {
         if (e->name == "Wall Breakers") { wallBreakerCount++; e->takeDamage(e->hp); }

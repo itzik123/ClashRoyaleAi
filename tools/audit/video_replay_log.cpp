@@ -1,13 +1,7 @@
-// Records the observed push as a REAL replay file, for web/viewer.html.
-//
-// Uses ClashEnv rather than a bare GameManager because the logger lives there
-// and is driven from inside step/stepSelfPlay -- so the replay is produced by
-// the same code path a training episode uses, not by a second hand-rolled
-// writer that could describe the match differently.
-//
-// stepSelfPlay (not step) so the C++ HeuristicOpponent never plays: the point
-// is to watch ONE injected push cross an otherwise empty board, matching what
-// the recording shows.
+// Records the observed push as a real replay file for web/viewer.html, through
+// ClashEnv, the same path a training episode uses. stepSelfPlay rather than
+// step, so the HeuristicOpponent never plays and one push crosses an empty
+// board, as in the recording.
 
 #include "ClashEnv.h"
 #include <iostream>
@@ -31,15 +25,14 @@ int main(int argc, char** argv) {
 
     std::vector<int> deck = { 2, 1, 25, 40, 24, 72, 33, 7 };
     ClashEnv env(deck, deck, 3600);
-    env.seed(4242);            // item 7: the opening shuffle is seedable now
+    env.seed(4242);            // a reproducible opening
     env.reset();
 
     for (auto& p : place)
         env.inject((int)p[0], p[1], p[2], (int)p[3]);
 
-    // inject() QUEUES a spawn -- nothing is on the board, or in any
-    // observation, until one tick is stepped. Documented in CLAUDE.md and
-    // measured (0.0 enemy mass immediately after inject, 0.399 after a tick).
+    // inject() queues a spawn: nothing is on the board until one tick is
+    // stepped.
     for (int t = 0; t < ticks; t++) {
         env.stepSelfPlay(-1, 0.0f, 0.0f, -1, 0.0f, 0.0f, 1);
         if (env.isGameOver()) break;

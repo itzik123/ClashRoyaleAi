@@ -1,55 +1,36 @@
 """Did the card we tapped actually reach the board?
 
-WHY THE ELIXIR BAR IS THE WRONG ORACLE
---------------------------------------
-`ElixirLedger` answers "did a drop appear that our pending costs explain". It is
-the only oracle the live loop had, and it conflates at least three different
-events (handoff.md section 3):
+`ElixirLedger` answers "did a drop appear that our pending costs explain",
+which conflates three events: the game refused the tap, the tap never arrived,
+or the ledger could not reconcile the elixir trace. The third is real: it
+matches drops by subset-sum over pending costs against an integer bar, with the
+opponent also spending.
 
-    the game refused the tap
-    the tap never arrived
-    the ledger could not reconcile the elixir trace
-
-The third is not hypothetical. `_confirm` matches drops by subset-sum over
-pending costs of 3/4/5 against an INTEGER bar reading, with an opponent also
-spending, so it is entirely capable of failing to reconcile a play that landed
-perfectly. A run reporting "17 issued plays never confirmed" tells you nothing
-about which of the three happened, and the fix for each is different.
-
-WHAT THIS USES INSTEAD
-----------------------
-Two oracles that do not share the ledger's assumption, both read off the same
-`GameState` the loop already has:
+This uses two oracles that do not share the ledger's assumption, both read off
+the `GameState` the loop already has:
 
     unit    an own-team unit of the type this card spawns appeared that was
             not there when we issued the tap
-    hand    the card sitting in the tapped slot changed, because a played card
-            is replaced by the next one in the cycle
+    hand    the card in the tapped slot changed (a played card is replaced by
+            the next in the cycle)
 
-Neither is perfect alone -- `unit` cannot see a spell (Fireball spawns no board
-presence at all) and `hand` depends on the weakest reader in the pipeline -- but
-they fail for unrelated reasons, so the 2x2 against the ledger separates
-"the game refused it" from "the ledger lost track of it":
+`unit` cannot see a spell and `hand` depends on the weakest reader, but they
+fail for unrelated reasons, so the 2x2 against the ledger separates a refusal
+from a lost metric:
 
     |                  | ledger confirmed | ledger rejected      |
     |------------------|------------------|----------------------|
     | unit appeared    | healthy          | LEDGER METRIC BUG    |
     | no unit          | impossible-ish   | THE GAME REFUSED IT  |
 
-Only the bottom-right cell is a placement problem. Everything issued that lands
-there is written to the log with its card, tile and the exact pixel tapped --
-that list is the ground truth the real legality rule has to be fitted to, and
-it is the thing `is_valid_placement` structurally cannot provide.
+Only the bottom-right cell is a placement problem. Everything landing there is
+logged with its card, tile and the exact pixel tapped: ground truth for the
+real legality rule, which `is_valid_placement` cannot provide.
 
-COUNTS, NOT POSITIONS
----------------------
-Matching a new unit by tile would be the obvious thing and is wrong: every unit
-on the board moves between two observations a second apart, so position matching
-reports movers as new. `tools/probe_placement.py` already made that mistake and
-named a Musketeer that had merely walked. This counts units of the expected TYPE
-and asks whether the count rose -- which is also what makes Minions (three
-bodies) and Archers (two) representable, where a boolean "did something appear"
-would not be.
+Counts, not positions: every unit moves between two observations a second
+apart, so matching by tile reports movers as new. Counting units of the
+expected type and asking whether the count rose also handles multi-body cards
+(Minions, Archers).
 """
 from __future__ import annotations
 
@@ -60,22 +41,16 @@ from pathlib import Path
 
 from contracts import UNKNOWN_CARD_SIM_ID
 
-# How long an issued placement is watched before its verdict is final.
-#
-# The tap costs ~900 ms to reach the game and the board that results is seen
-# ~700 ms after that, so a legitimate confirmation lands ~1.6 s late -- the same
-# figure PLAY_CONFIRM_WINDOW_S is derived from. 3.5 s leaves room for a slow
-# producer frame while staying short enough that two placements of the same card
-# do not overlap at the 1 Hz the loop decides at.
+# How long an issued placement is watched before its verdict is final. A
+# legitimate confirmation lands ~1.6 s late (~900 ms tap, ~700 ms until the
+# board is seen); 3.5 s allows a slow producer frame while keeping two
+# placements of the same card from overlapping at 1 Hz.
 CONFIRM_WINDOW_S = 3.5
 
 
 def expected_unit_names(card_name: str) -> frozenset[str]:
-    """Detector unit classes this CARD puts on the board. Empty for a spell.
-
-    From CRBAB's own card->units table rather than a second hand-written map,
-    for the reason `unit_to_card` gives: a hand-typed copy goes stale silently
-    the first time upstream retrains the detector.
+    """Detector unit classes this card puts on the board; empty for a spell. From
+    CRBAB's own card->units table, which follows upstream retraining.
     """
     import dataclasses  # noqa: PLC0415
 
@@ -117,10 +92,10 @@ class Issued:
 
     @property
     def unit_confirmed(self) -> bool:
-        """A spell is never unit-confirmable, so it reports None-ish via
-        `is_spell` and must be excluded from the 2x2 rather than counted as a
-        failure -- counting it would manufacture a 'the game refused it' every
-        time the agent played Fireball."""
+        """A spell is never unit-confirmable, so it reports via `is_spell` and is
+        excluded from the 2x2; counting it would score every Fireball as "the
+        game refused it".
+        """
         return self.best_delta >= 1
 
     def as_row(self) -> dict:
@@ -171,16 +146,11 @@ class PlacementConfirmer:
     def observe(self, gs, now: float) -> None:
         """Fold one perceived board into every still-open placement.
 
-        EVIDENCE IS ALLOCATED, NOT SHARED. Two placements of the same card can
-        be in flight at once (the hand cycles fast enough to play Minions twice
-        inside one 3.5 s window), and both would see the same single body
-        appear and both would call themselves confirmed. That biases the
-        measurement towards "it landed" -- the exact direction that would hide
-        the refusals this module exists to count.
-
-        So within one observation the surplus is handed out in issue order and
-        each record consumes one body. A second placement then needs a SECOND
-        body before it may claim anything.
+        Evidence is allocated, not shared. Two placements of the same card can
+        be in flight at once, and both would see the same new body and call
+        themselves confirmed, biasing the measurement toward "it landed", the
+        direction that hides refusals. Within one observation the surplus goes
+        out in issue order, one body per record.
         """
         claimed: Counter = Counter()
         still_open = []
@@ -210,7 +180,8 @@ class PlacementConfirmer:
         self._open = []
 
     def apply_ledger(self, confirmed_tags, rejected_tags) -> None:
-        """Attach the ledger's own verdict, keyed by the seq we tagged it with."""
+        """Attach the ledger's own verdict, keyed by the seq we tagged it with.
+        """
         confirmed, rejected = set(confirmed_tags), set(rejected_tags)
         for rec in self.issued:
             if rec.seq in confirmed:
@@ -218,14 +189,11 @@ class PlacementConfirmer:
             elif rec.seq in rejected:
                 rec.ledger_confirmed = False
 
-    # -- reporting -----------------------------------------------------------
+    # --- reporting ---
 
     def cross_tab(self) -> dict:
-        """The 2x2 that separates a refused placement from a lost metric.
-
-        Spells are excluded: they spawn no board presence, so `unit` cannot
-        speak for them and including them would score every Fireball as
-        "the game refused it".
+        """The 2x2 that separates a refused placement from a lost metric. Spells
+        are excluded: they spawn no board presence.
         """
         cells = Counter()
         for rec in self.issued:
@@ -240,12 +208,10 @@ class PlacementConfirmer:
         }
 
     def refused(self) -> list[Issued]:
-        """Placements with NO evidence they ever reached the board.
-
-        Requires both independent oracles to be silent. A card that spawned no
-        unit but whose hand slot cycled was played -- the detector simply missed
-        the body -- and calling that a refusal is how a dataset of "what the game
-        rejects" fills up with detector misses instead.
+        """Placements with no evidence they reached the board: both oracles
+        silent. A card that spawned no detected unit but whose slot cycled was
+        played, and calling it a refusal would fill the "what the game rejects"
+        dataset with detector misses.
         """
         return [r for r in self.issued
                 if not r.is_spell and not r.unit_confirmed and not r.hand_changed]
@@ -297,7 +263,7 @@ class PlacementConfirmer:
             for rec in self.issued:
                 fh.write(json.dumps(rec.as_row()) + "\n")
 
-    # -- internals -----------------------------------------------------------
+    # --- internals ---
 
     @staticmethod
     def _count(gs, expect: frozenset[str]) -> int:
@@ -308,13 +274,10 @@ class PlacementConfirmer:
 
     @staticmethod
     def _hand_ids(gs) -> tuple[int, ...]:
-        """Hand slots as simulator card ids, exactly as `GameState` carries them.
+        """Hand slots as simulator card ids, as `GameState` carries them.
 
         An unreadable slot is UNKNOWN_CARD_SIM_ID, and the change test skips
-        those at BOTH ends: "unknown -> Giant" and "Giant -> unknown" are
-        readings of the card reader waking up and going blind, not evidence a
-        card was played. Treating them as changes would confirm placements from
-        detector noise, which is the same class of error the ledger already
-        makes and the whole point of this module is to avoid.
+        those at both ends: "unknown -> Giant" and "Giant -> unknown" are the
+        reader waking up or going blind, not a play.
         """
         return tuple(int(c) for c in getattr(gs, "my_hand", ()) or ())

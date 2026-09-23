@@ -2,11 +2,8 @@
 #include "PeriodicEffect.h"
 #include "Board.h"
 
-// Elixir Collector: instead of spawning a child troop, a periodic effect
-// that credits its own team's pending elixir grant (see
-// Board::pendingElixirGrant) -- GameManager::step() drains this into the
-// actual PlayerState each tick, since Board has no notion of PlayerState
-// to credit directly.
+// Elixir Collector: credits Board::pendingElixirGrant, which GameManager::step
+// drains into the PlayerState each tick.
 class ElixirGrantEffect : public IPeriodicEffect {
     float amount;
 

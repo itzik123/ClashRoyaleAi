@@ -1,16 +1,12 @@
-"""Paired win-rate A/B: pure neural policy vs the commander/tactical-officer hybrid.
+"""Paired win-rate A/B: pure neural policy vs the commander/tactical-officer
+hybrid.
 
-PRE-REGISTERED: n is fixed on the command line before the run and the result is
-reported whatever it says. The gate A/B at n=130 produced a 95% CI of width
-0.243 on win rate, so n=250 is chosen to bring that to roughly 0.17 -- enough to
-resolve a ~10-point effect and NOT enough for a 3-point one, which is stated up
-front rather than discovered afterwards. No extending after seeing the numbers:
-this project has already had one +0.105 at p=0.044 evaporate at 4x the power.
+Pre-registered: n is fixed on the command line and the result is reported
+whatever it says. n=250 gives a 95% CI of roughly 0.17, enough for a ~10-point
+effect and not a 3-point one. Both arms get a bit-identical opening via
+env.snapshot().
 
-Both arms are handed a bit-identical opening by env.snapshot(), so every
-difference is the policy and not the deal.
-
-    python_ai/venv/Scripts/python.exe python_ai/hybrid_ab.py --n 250
+    python_ai/venv/Scripts/python.exe python_ai/eval/hybrid_ab.py --n 250
 """
 import argparse
 import os
@@ -20,9 +16,7 @@ from math import comb
 import numpy as np
 import torch
 
-# Run as a script the repo root is not on sys.path, so `python_ai.*` cannot
-# resolve; importing the package is also what makes `clash_royale_env` (an
-# unpackaged .pyd in python_ai/) importable. See python_ai/__init__.py.
+# Run as a script, the repo root is not on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
@@ -106,15 +100,9 @@ def main():
     ap.add_argument("--ablate", action="store_true",
                     help="localise which component moves which metric")
     ap.add_argument("--per-card", action="store_true",
-                    help="run the PER-CARD override ablation. The override is "
-                         "justified only for as long as the advisor beats the "
-                         "head, and that is now a per-card question: as of "
-                         "2026-08-14 the head matches the advisor on Fireball "
-                         "(p = 0.163) while still losing badly on Cannon "
-                         "(p = 6.8e-22). Turning it off wholesale would give "
-                         "back the Cannon's contribution to the measured +11.8 "
-                         "win-rate points; leaving it on wholesale keeps a "
-                         "layer that is doing nothing for Fireball.")
+                    help="run the per-card override ablation: the override is "
+                         "worth keeping only for cards where the advisor still "
+                         "beats the placement head")
     args = ap.parse_args()
 
     here = python_ai.PACKAGE_DIR
@@ -128,9 +116,7 @@ def main():
         return HybridPolicy(net, device, **base)
 
     if args.ablate:
-        # One component at a time, so a regression can be attributed. The full
-        # hybrid lost 57% of its tower damage DEALT in smoke tests and the
-        # opponent-aware reserve did not recover it, so the cause is elsewhere.
+        # One component at a time, so a regression can be attributed.
         arms = {
             "neural": mk(),
             "gate": mk(use_gate=True),
@@ -140,16 +126,8 @@ def main():
         }
     elif args.per_card:
         from python_ai.advisors.hybrid_policy import CANNON, FIREBALL
-        # The solvency gate stays ON in every arm: it is a separate, measured
-        # component (bankruptcy 72.7% -> 41.7%) and leaving it to vary would
-        # confound the placement question this ablation exists to answer.
-        #
-        # These arms were "cannon_only" / "cannon_giant" / "all_three" until
-        # 2026-08-19. Giant left DEFAULT_DECK on 2026-08-16, so the Giant
-        # entries could never fire and the last two arms were bit-identical to
-        # the first two -- a four-arm ablation measuring two things twice. The
-        # arm that was actually missing is fireball_only, which is the half of
-        # the per-card question (--per-card's own help text) that had no arm.
+        # The solvency gate stays on in every arm, so it cannot confound the
+        # placement question.
         arms = {
             "neural": mk(use_gate=True),
             "cannon_only": mk(use_gate=True, use_advisor=True,

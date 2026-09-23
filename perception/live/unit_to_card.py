@@ -1,34 +1,20 @@
-"""Map a detected UNIT name to an engine CARD id.
+"""Map a detected unit name to an engine card id.
 
-THE MISMATCH THIS EXISTS TO CLOSE
----------------------------------
-ClashRoyaleBuildABot's detector names **units**; the engine names **cards**;
-the relation is many-to-one. Measured: 97 detector classes against 132 engine
-card names, only 70 matching by name, and `mapping/card_map.json` covering
-none of them. Two of the 27 unmapped names -- `archer` and `minion` -- are in
-our own eight-card deck, so this is not an exotic-card problem.
+CRBAB's detector names units, the engine names cards, and the relation is
+many-to-one. Many detector classes do not match an engine card by name,
+including `archer` and `minion`.
 
-DERIVED, NOT TRANSCRIBED
-------------------------
-CRBAB's own `Cards` namespace already states which units each card spawns, so
-the reverse map is generated from it at import rather than hand-typed. Typing
-97 lines by hand would go stale silently the first time upstream retrains the
-detector with a new class; generating it means a new class raises instead.
+The reverse map is generated at import from CRBAB's own `Cards` namespace
+(which lists the units each card spawns), so a new detector class raises
+instead of going silently unmapped. The only hand-authored part is
+`PREFERRED_CARD`, for units several cards spawn (a `skeleton` can come from
+Skeletons, Skeleton Army, Graveyard, Skeleton Barrel, Witch or Skeleton King).
 
-The only hand-authored part is `PREFERRED_CARD`, which resolves the cases where
-one unit is spawned by several cards -- a `skeleton` can come from Skeletons,
-Skeleton Army, Graveyard, Skeleton Barrel, Witch or Skeleton King, and nothing
-in the pixels says which. The preference is documented per entry.
-
-WHAT THIS COSTS, STATED PLAINLY
--------------------------------
-The observation gets the attributes of the *preferred* card, so a Skeleton from
-a Graveyard is described as a Skeleton from Skeletons. Since every attribute
-the observation actually carries -- hit points, damage, range, speed, air/ground
--- is a property of the UNIT and not of the card that produced it, those are
-identical either way. What differs is only the card's elixir cost, which the
-spatial channels never use. Death-spawn parents (`golemite` -> Golem,
-`lava_pup` -> Lava Hound) follow the same rule by explicit instruction.
+The cost: the observation gets the preferred card's attributes. Every attribute
+the observation carries (HP, damage, range, speed, air/ground) belongs to the
+unit, so they are identical either way; only elixir cost differs, and the
+spatial channels do not use it. Death-spawns (`golemite` -> Golem, `lava_pup`
+-> Lava Hound) follow the same rule.
 """
 from __future__ import annotations
 
@@ -40,11 +26,10 @@ import engine as _engine_build  # noqa: F401 -- see engine.py; must precede
                                 # any `import clash_royale_env` in the process
 from contracts import UNKNOWN_CARD_SIM_ID
 
-# One unit, several possible parent cards. Chosen as the card that spawns the
-# unit as its PRIMARY payload rather than as a side effect, because that is the
-# commonest source in play and therefore the lowest-error default.
+# One unit, several parent cards: the card that spawns it as its primary
+# payload, the commonest source in play.
 PREFERRED_CARD: dict[str, str] = {
-    # spawned directly by their namesake card, not by the barrel/hut/spell
+    # Spawned directly by their namesake card, not by a barrel, hut or spell.
     "barbarian": "barbarians",        # over barbarian_barrel, barbarian_hut
     "bat": "bats",                    # over night_witch
     "goblin": "goblins",              # over goblin_barrel, goblin_drill, goblin_gang
@@ -53,7 +38,7 @@ PREFERRED_CARD: dict[str, str] = {
     "minion": "minions",              # over minion_horde
     "musketeer": "musketeer",         # over three_musketeers
     "royal_recruit": "royal_recruits",  # over royal_delivery
-    # death-spawns and stage-splits -> parent card, per explicit instruction
+    # Death-spawns and stage-splits -> parent card.
     "golemite": "golem",
     "lava_pup": "lava_hound",
     "elixir_golem_large": "elixir_golem",
@@ -62,20 +47,17 @@ PREFERRED_CARD: dict[str, str] = {
     "phoenix_large": "phoenix",
     "phoenix_egg": "phoenix",
     "phoenix_small": "phoenix",
-    # champion/other side-spawns with a single sensible parent
+    # Side-spawns with a single sensible parent.
     "royal_guardian": "little_prince",
     "brawler": "goblin_cage",
     "hog": "mother_witch",            # the hog a cursed troop becomes
 }
 
 
-# Detector classes that are PROJECTILES, not board presence. The engine's
-# observation skips them outright -- ClashEnv::extractObservationForTeam does
-# `if (!entity->isTargetable()) continue;` with the comment "Projectiles and
-# pending spells are not board presence". They still get a card id, because a
-# caller may legitimately want to know a snowball is in flight, but an adapter
-# building the spatial channels must drop them or it invents an entity the
-# engine would never have placed there.
+# Detector classes that are projectiles, not board presence:
+# extractObservationForTeam skips anything not isTargetable(). They still get a
+# card id (a caller may want to know a snowball is in flight), but an adapter
+# building the spatial channels must drop them.
 PROJECTILE_CLASSES = frozenset({"giant_snowball"})
 
 
@@ -164,14 +146,11 @@ def unit_to_card_id() -> dict[str, int]:
 
 @lru_cache(maxsize=1)
 def card_name_to_id() -> dict[str, int]:
-    """CRBAB CARD name -> engine card id.
+    """CRBAB card name -> engine card id.
 
-    Deliberately separate from `unit_to_card_id`. The hand holds CARDS, the
-    board holds UNITS, and most names coincide -- which is exactly why using
-    one table for the other fails quietly rather than loudly. Fireball spawns
-    no unit at all, so a Fireball in hand resolved to nothing and the slot
-    silently became UNKNOWN_CARD_SIM_ID; the three cards in the same hand that
-    do spawn same-named units looked fine.
+    Separate from `unit_to_card_id`: the hand holds cards, the board holds
+    units, and most names coincide, which is why using one table for the other
+    fails quietly. Fireball spawns no unit, so it would resolve to nothing.
     """
     import clash_royale_env as engine  # noqa: PLC0415
 
@@ -189,12 +168,10 @@ def card_name_to_id() -> dict[str, int]:
 
 
 def hand_card_id_for(card_name: str) -> int:
-    """Engine card id for a card in hand, or UNKNOWN_CARD_SIM_ID.
-
-    Returns the sentinel rather than raising, unlike `card_id_for`: an
-    unreadable hand slot is routine (the slot is mid-animation, or the card is
-    one the engine's registry does not carry), while an unmappable unit ON THE
-    BOARD means the detector saw something the observation cannot represent.
+    """Engine card id for a card in hand, or UNKNOWN_CARD_SIM_ID. The sentinel
+    rather than an exception: an unreadable hand slot is routine, while an
+    unmappable unit on the board means the detector saw something the
+    observation cannot represent.
     """
     if not card_name or card_name == "blank":
         return UNKNOWN_CARD_SIM_ID
@@ -202,10 +179,8 @@ def hand_card_id_for(card_name: str) -> int:
 
 
 def card_id_for(unit_name: str) -> int:
-    """Engine card id for a detected unit. Raises rather than defaulting.
-
-    A wrong id is worse than a missing one: it would fill the observation's
-    attribute channels with another card's damage, range and speed, which is
+    """Engine card id for a detected unit. Raises rather than defaulting: a wrong
+    id fills the attribute channels with another card's stats,
     indistinguishable downstream from a correct reading.
     """
     try:

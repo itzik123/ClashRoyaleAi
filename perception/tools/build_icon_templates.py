@@ -5,27 +5,18 @@
     ... look at the montage, then ...
         --label Fireball,Giant,Musketeer,...    # step 2: name them, in order
 
-WHY CLUSTERING RATHER THAN A CLASSIFIER
----------------------------------------
-The hand shows one of exactly eight known cards in four fixed rectangles. That
-is not recognition, it is grouping: crop every slot from every sampled frame,
-cluster into eight, and each cluster IS a card. No labels are needed to get
-that far, and the clusters are near-perfect because the icons are identical
-pixels every time they appear -- the only variation is the affordability
-dimming, which is a brightness offset that k-means on normalised crops
+The hand shows one of eight known cards in four fixed rectangles, so this is
+grouping, not recognition: crop every slot from every sampled frame, cluster,
+and each cluster is a card. The icons are identical pixels each time;
+affordability dimming is a brightness offset that k-means on normalised crops
 ignores.
 
-The one human step is naming the eight clusters, which is a single glance at
-a montage. That is deliberate: the alternative is inferring names from card
-costs, and the costs in this deck are not unique (four cards cost 4), so it
-would have to guess. See mapping/ for why guessing is refused everywhere here.
+The one human step is naming the clusters from a montage. Inferring names from
+costs would have to guess (costs are not unique within a deck), and mapping/
+refuses to guess.
 
-WHAT THIS UNLOCKS
------------------
-Once the hand can be read, readers/hand.infer_play_from_hand_change turns
-every one of OUR placements into a labelled event for free -- the card and the
-frame it happened on, exactly, with no annotation. That is the training set
-for the opponent-side detector in stage 3, which is the last blocked stage.
+Once the hand can be read, readers/hand.infer_play_from_hand_change turns each
+of our placements into a labelled event (card and frame) for free.
 """
 
 from __future__ import annotations
@@ -54,19 +45,14 @@ from readers.hand import (  # noqa: E402
 
 
 def measure_game_rect(frames) -> tuple[int, int, int, int]:
-    """The emulator's game area inside a desktop capture, MEASURED.
+    """The emulator's game area inside a desktop capture, measured per recording.
 
-    A recording is a 1920x1080 desktop grab with the emulator somewhere in it,
-    and "somewhere" is wherever the window was on the day. `tools/calibrate.py`
-    and `tools/sim_fidelity.py` both carry (686, 40, 1236, 1012) for the July
-    batch; the 2026-09-02 recording sits at (665, 41, 1214, 1018) -- 21 px
-    left and 6 px taller. That is a fifth of a card slot, enough to clip every
-    cost badge and to make ScreenDetector report `unknown` on every frame of a
-    match in progress.
-
-    So this is measured per recording rather than inherited. The game area is
-    the one large bright block inside the black letterbox; taking the median
-    over several frames first stops a dark moment of play from moving an edge.
+    The emulator sits wherever its window was that day: the July batch at (686,
+    40, 1236, 1012), the 2026-09-02 recording at (665, 41, 1214, 1018). A fifth
+    of a card slot is enough to clip every cost badge and make ScreenDetector
+    report `unknown`. The game area is the one large bright block inside the
+    black letterbox; a median over several frames stops a dark moment from
+    moving an edge.
 
     Returns (left, top, right, bottom), the PIL crop box.
     """
@@ -92,20 +78,15 @@ def measure_game_rect(frames) -> tuple[int, int, int, int]:
 
 def collect_video_crbab(videos: list[Path], sample_fps: float = 2.0,
                         rect: tuple[int, int, int, int] | None = None):
-    """Crops from a recording, in the LIVE LOOP's 368x652 CARD_CONFIG frame.
+    """Crops from a recording, in the live loop's 368x652 CARD_CONFIG frame:
+    measure the game area, crop it out of the desktop frame, resize to 368x652,
+    take CARD_CONFIG. The same geometry as `collect_frames`, from an mp4.
 
-    `collect()` above crops with `profile.rois`, which is `readers/hand.py`'s
-    geometry and NOT what the live loop matches in -- see `collect_frames`.
-    This is the same CRBAB geometry as `collect_frames`, reached from an mp4
-    instead of a PNG dump: measure the game area, crop it out of the desktop
-    frame, resize to 368x652, then take CARD_CONFIG.
-
-    Gated on `in_game`, and filtered on the cost badge, for the two reasons
-    `collect_frames` and `has_cost_badge` document. Note the badge filter also
-    excludes UNAFFORDABLE cards, which is deliberate here: templates are built
-    from clean, full-contrast exemplars, and matching handles the dimmed
-    render at read time via contrast normalisation. That split is measured --
-    templates built this way score 100% on dimmed slots.
+    Gated on `in_game` and filtered on the cost badge (see `collect_frames` and
+    `has_cost_badge`). The badge filter also drops unaffordable cards on
+    purpose: templates come from clean full-contrast exemplars, and contrast
+    normalisation handles the dimmed render at read time (these templates score
+    100% on dimmed slots).
     """
     import cv2  # noqa: PLC0415
     from PIL import Image  # noqa: PLC0415
@@ -162,19 +143,13 @@ def collect_video_crbab(videos: list[Path], sample_fps: float = 2.0,
 
 
 def collect_frames(frames_dir: Path, stride: int = 1):
-    """Same collection, but from a dumped PNG frame directory.
+    """Same collection, from a dumped PNG frame directory.
 
-    THE GEOMETRY HERE IS CRBAB'S, NOT THE CALIBRATION PROFILE'S, AND THAT IS
-    THE WHOLE POINT. `collect()` above crops with `profile.rois`, which is the
-    frame geometry `readers/hand.py` works in. The LIVE loop
-    (`live/mvp_loop.py`) never uses that path -- it resizes to CRBAB's
-    368x652 and crops `CARD_CONFIG`. A template built in one frame and matched
-    in the other is off by a resize and a few pixels of framing, which is
-    exactly the systematic mismatch the module docstring warns about and
-    cannot be recovered by any matcher.
-
-    So templates for the live path must be cut in the live path's own
-    coordinates. That is what this collector is for.
+    The geometry is CRBAB's, not the calibration profile's. `collect()` crops
+    with `profile.rois`, the frame `readers/hand.py` works in; the live loop
+    (`live/mvp_loop.py`) resizes to 368x652 and crops `CARD_CONFIG`. A template
+    built in one frame and matched in the other is off by a resize and a few
+    pixels of framing, which no matcher recovers.
     """
     from PIL import Image  # noqa: PLC0415
     from clashroyalebuildabot.constants import (  # noqa: PLC0415
@@ -184,20 +159,10 @@ def collect_frames(frames_dir: Path, stride: int = 1):
         ScreenDetector,
     )
 
-    # GATE ON in_game, OR A REAL CARD IS SILENTLY DISPLACED.
-    #
-    # k-means is given exactly DECK_SIZE centres, so every cluster spent on
-    # something that is not a card costs a card. Measured on
-    # assets/live/match_practice_01: ungated, the out-of-match screens
-    # contribute a red "7" badge on a wooden panel that passes the magenta
-    # badge test, forms a 112-member cluster of its own, and evicts
-    # Mini P.E.K.K.A -- the rarest card in the match -- from the deck
-    # entirely. Seven cards and one junk group looks enough like success that
-    # only counting the cards in the montage catches it.
-    #
-    # This is the same failure the _has_cost_badge docstring records for the
-    # empty between-match tray, arriving by a second route: the badge test
-    # answers "is there a card here", and cannot answer "are we in a match".
+    # Gate on in_game. k-means gets exactly DECK_SIZE centres, so every cluster
+    # spent on a non-card costs a card: out-of-match screens contribute a red
+    # "7" badge on a wooden panel that passes the magenta badge test. The badge
+    # test answers "is there a card here", not "are we in a match".
     screens = ScreenDetector()
 
     paths = sorted(Path(frames_dir).glob("f*.png"))[::stride]
@@ -239,23 +204,13 @@ def collect(videos: list[Path], profile_path: Path, sample_fps: float = 1.0):
 def cluster(crops, features, out_dir: Path, k: int = DECK_SIZE):
     """Group the crops, and write one median PNG per group.
 
-    OVER-CLUSTER, THEN MERGE BY NAME. `k` defaults to DECK_SIZE, which is the
-    right answer when every card appears a similar number of times and in one
-    render state. Neither held on the 2026-09-02 recording, and k-means failed
-    in the two ways it fails when they do not:
-
-      - a cluster was spent on a RENDER STATE rather than a card -- the
-        selected/highlighted frame of a tapped card, which pulled Musketeer
-        and Skeletons crops together into one group;
-      - with only DECK_SIZE centres available, that displaced a real card:
-        Fireball and Ice Golem merged into a single cluster, and Ice Golem
-        got no template at all.
-
-    Sizes were 137 for The Log against 26 for Skeletons, and k-means splits
-    large groups before it separates small ones. Raising `k` above DECK_SIZE
-    and letting several groups carry the same name costs one extra glance at
-    the montage and removes the failure: `label` merges by name afterwards,
-    keeping the LARGEST group for each card.
+    Over-cluster, then merge by name. `k` defaults to DECK_SIZE, which works
+    when every card appears a similar number of times in one render state. When
+    they do not, k-means spends a cluster on a render state (a selected card's
+    highlight) and merges two real cards to pay for it, since it splits large
+    groups before separating small ones. A larger `k` with repeated names costs
+    one more glance at the montage; `label` merges by name, keeping the largest
+    group per card.
     """
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 60, 0.5)
     _compact, labels, _centres = cv2.kmeans(
@@ -268,8 +223,8 @@ def cluster(crops, features, out_dir: Path, k: int = DECK_SIZE):
     for j in range(k):
         members = [c for c, lab in zip(crops, labels) if lab == j]
         counts.append(len(members))
-        # Per-pixel median over the cluster: rejects the frames where a drag
-        # animation or the cursor was over the slot, without detecting them.
+        # Per-pixel median over the cluster: rejects frames where a drag
+        # animation or the cursor covered the slot, without detecting them.
         stack = np.stack([cv2.resize(m, (ICON_SHAPE[1], ICON_SHAPE[0])) for m in members])
         template = np.median(stack, axis=0).astype(np.uint8)
         cv2.imwrite(str(out_dir / f"cluster_{j}.png"), template)
@@ -295,12 +250,10 @@ def cluster(crops, features, out_dir: Path, k: int = DECK_SIZE):
 def label(names: list[str], out_dir: Path) -> None:
     """Name the groups. Repeats are allowed; the largest group per card wins.
 
-    Picking the largest rather than averaging the duplicates is deliberate. Two
-    groups carrying one card are usually that card in two RENDER states -- the
-    normal one and the selected/highlighted one -- and averaging them smears
-    the edges of both. The matcher already handles the selected state, by
+    Two groups for one card are usually its normal and selected render, and
+    averaging them smears both. The matcher handles the selected state by
     searching a vertical window (`live/deck_hand.LIFT_SEARCH`), so the template
-    should be the dominant clean render and nothing else.
+    should be the dominant clean render.
     """
     import mapping
 

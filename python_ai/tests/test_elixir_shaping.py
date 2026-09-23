@@ -1,11 +1,4 @@
-"""elixir_shaping.py -- potential-based solvency.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""elixir_shaping.py: potential-based solvency."""
 import os
 import sys
 
@@ -41,30 +34,16 @@ from python_ai.rl.coverage import (  # noqa: E402
 )
 from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 
-#: The discount these arithmetic tests are written against. Deliberately a
-#: FIXED fixture value and NOT `PPOConfig.gamma`: these cases assert exact
-#: numbers out of `gamma*Phi(s') - Phi(s)`, so reading the live config would
-#: make their expected values move every time someone tunes the discount --
-#: a test that changes its own answer cannot pin anything. The separate
-#: question of whether the TRAINER passes its real gamma is pinned by
-#: tests/test_rl_config.py and tests/test_reward_horizon_invariant.py.
+#: A fixed discount rather than PPOConfig.gamma: these tests assert exact
+#: numbers (see test_shaping.py).
 SHAPING_TEST_GAMMA = 0.99
 
 
 CE = clash_royale_env.ClashRoyaleEnv
 
 
-# ==========================================================================
-# elixir_shaping.py -- potential-based solvency
-# (was test_elixir_shaping.py)
-# ==========================================================================
-# Tests for the elixir solvency term.
-#
-#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_elixir_shaping.py -q
-#
-# The property that matters most is TELESCOPING: a potential-based term must
-# contribute ~0 to an episode's return, or it is not policy-invariant and every
-# safety argument in elixir_shaping.py's docstring evaporates.
+# The property that matters most is telescoping: a potential-based term must
+# contribute ~0 to an episode's return, or it is not policy-invariant.
 
 GAMMA = 0.99
 
@@ -74,7 +53,7 @@ def _stats(e):
 
 
 def test_potential_is_zero_at_and_above_the_reserve():
-    """No charge in the healthy band -- the agent must be free to play."""
+    """No charge in the healthy band: the agent must be free to play."""
     phi = solvency_potential([SOLVENCY_RESERVE, 5.0, 7.0, 10.0])
     assert np.allclose(phi, 0.0)
 
@@ -83,22 +62,22 @@ def test_potential_falls_linearly_to_minus_w_at_zero():
     assert solvency_potential([0.0])[0] == pytest.approx(-W_SOLVENCY)
     assert solvency_potential([SOLVENCY_RESERVE / 2])[0] == pytest.approx(-W_SOLVENCY / 2)
     # Strictly monotone below the reserve: a step function would make every
-    # broke state identical and give no reason to prefer 3.9 to 0.1.
+    # broke state identical.
     phi = solvency_potential([0.0, 1.0, 2.0, 3.0, 4.0])
     assert np.all(np.diff(phi) > 0)
 
 
 def test_spending_below_the_reserve_is_charged_immediately():
-    """The whole point: the cost lands at the spend, not seconds later."""
+    """The cost lands at the spend, not seconds later."""
     f = solvency_shaping(_stats([1.0]), _stats([5.0]), GAMMA)
     assert f[0] < 0.0
-    # 5 -> 1 crosses 3 elixir of the reserve band
+    # 5 -> 1 crosses 3 elixir of the reserve band.
     expected = GAMMA * (-W_SOLVENCY * 3.0 / 4.0) - 0.0
     assert f[0] == pytest.approx(expected, rel=1e-5)
 
 
 def test_spending_inside_the_healthy_band_is_free():
-    """9 -> 5 must cost nothing, or the term becomes a tax on acting at all."""
+    """9 -> 5 costs nothing, or the term becomes a tax on acting."""
     f = solvency_shaping(_stats([5.0]), _stats([9.0]), GAMMA)
     assert f[0] == pytest.approx(0.0)
 
@@ -109,11 +88,9 @@ def test_regenerating_back_up_pays_it_back():
 
 
 def test_telescopes_to_approximately_zero_over_an_episode():
-    """Policy-invariance in practice: the term must not add return.
-
-    A realistic trace -- saving up, dumping to zero, recovering -- repeated many
-    times. The sum must equal gamma^T*Phi(s_T) - Phi(s_0) up to the discounting,
-    NOT accumulate.
+    """A realistic trace (save up, dump to zero, recover) repeated many times: the
+    sum equals gamma^T*Phi(s_T) - Phi(s_0) up to discounting, not an
+    accumulation.
     """
     rng = np.random.default_rng(0)
     e = 5.0
@@ -128,20 +105,16 @@ def test_telescopes_to_approximately_zero_over_an_episode():
     for prev, cur in zip(trace[:-1], trace[1:]):
         total += float(solvency_shaping(_stats([cur]), _stats([prev]), GAMMA)[0])
 
-    # Undiscounted telescoping bound: |sum| <= |Phi| range, and with gamma<1 the
-    # residual is bounded by (1-gamma) * sum|Phi| which is small for a potential
-    # capped at W_SOLVENCY.
+    # With gamma < 1 the residual is bounded by (1-gamma) * sum|Phi|, small for
+    # a potential capped at W_SOLVENCY.
     assert abs(total) < 0.5 * W_SOLVENCY * len(trace) * (1 - GAMMA) + W_SOLVENCY, total
-    # And crucially it must not be a large one-sided drift.
+    # ...and it must not be a large one-sided drift.
     assert abs(total) < 0.6, f"term accumulated {total}, so it is not telescoping"
 
 
 def test_a_pure_hoarder_earns_nothing():
-    """Doing nothing must not be paid.
-
-    This is the failure mode CLAUDE.md records three times -- a term that makes
-    passivity a guaranteed-positive outcome. Sitting at full elixir keeps Phi at
-    0, so every step's shaping is exactly 0.
+    """Doing nothing must not be paid: at full elixir Phi stays 0, so every step's
+    shaping is exactly 0.
     """
     total = sum(float(solvency_shaping(_stats([10.0]), _stats([10.0]), GAMMA)[0])
                 for _ in range(300))
@@ -161,7 +134,7 @@ def test_bankruptcy_rate_matches_the_reported_statistic():
 
 
 def test_matches_compute_shaping_when_wired_in():
-    """Integration: the term must be additive and leave everything else alone."""
+    """Integration: the term is additive and leaves everything else alone."""
     from python_ai.rewards import shaping as train_shaping, weights
     if not getattr(weights, "SOLVENCY_ENABLED", False):
         pytest.skip("solvency term not wired into compute_shaping yet")
@@ -181,18 +154,13 @@ def test_matches_compute_shaping_when_wired_in():
     cur["team0_elixir_current"] = np.array([8.0, 1.0], dtype=np.float32)
 
     out = train_shaping.compute_shaping(cur, prev, SHAPING_TEST_GAMMA)
-    # env 0 stayed solvent, env 1 dropped to 1 elixir -> strictly worse
+    # env 0 stayed solvent, env 1 dropped to 1 elixir: strictly worse.
     assert out[1] < out[0]
 
 
-# --- the bankruptcy floor's justification, pinned against the engine -------
-#
-# Added 2026-08-27. `bankruptcy_rate`'s docstring justified floor=3.0 as "the
-# cost of the cheapest card in DEFAULT_DECK, so below it the action space is
-# literally empty". That was true of the Giant deck and is false of the 2.6 Hog
-# Cycle, whose cheapest card costs 1. The floor is deliberately unchanged (the
-# 65.3% baseline is quoted against it); only the claim was wrong. These pin the
-# real numbers so the comment cannot drift again.
+# --- the bankruptcy floor, against the engine ---
+# floor=3.0 is not "the cheapest card": the 2.6 deck's cheapest costs 1. The
+# floor is kept (baselines are quoted against it); these pin the real numbers.
 
 def test_the_cheapest_default_deck_card_costs_one_not_three():
     import clash_royale_env as E
@@ -209,8 +177,9 @@ def test_the_cheapest_default_deck_card_costs_one_not_three():
 
 
 def test_the_action_space_is_NOT_empty_below_the_bankruptcy_floor():
-    """The specific claim that was false: at 2.0 elixir several cards are still
-    affordable, so 'bankrupt' cannot mean 'nothing is playable'."""
+    """At 2.0 elixir several cards are still affordable, so "bankrupt" cannot mean
+    "nothing is playable".
+    """
     import numpy as np
     import torch
 
@@ -222,13 +191,13 @@ def test_the_action_space_is_NOT_empty_below_the_bankruptcy_floor():
     deck = list(DEFAULT_DECK)
     g = E.ClashRoyaleEnv(deck, deck, 20000)
     g.reset()
-    # Returns None, unlike set_hand_for_team which is documented `-> bool`.
+    # Returns None, unlike set_hand_for_team (-> bool).
     g.set_elixir_for_team(0, 2.0)
     obs = torch.tensor(
         np.asarray(g.get_observation_for_team(0), dtype=np.float32)).unsqueeze(0)
 
     mask = net.affordability_mask(obs)[0]
-    # last column is the always-legal no-op; the real cards are before it
+    # The last column is the always-legal no-op.
     playable = int(mask[:net.hand_size].sum())
     assert playable > 0, (
         "no card affordable at 2.0 elixir -- if the deck changed so that this "

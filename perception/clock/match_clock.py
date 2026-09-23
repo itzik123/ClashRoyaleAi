@@ -1,33 +1,16 @@
 """Match clock: free-running between resyncs, corrected from the screen.
 
-Reading the clock on every frame would be wasteful and, worse, fragile -- a
-single misread digit would jump the whole timeline. So the clock free-runs
-from frame timestamps (which are exact on a CFR source) and is only verified
-against the screen every few seconds. Between verifications it cannot drift
-in any meaningful sense: it IS the frame timestamps.
+Reading the clock every frame would be wasteful and fragile (one misread digit
+would jump the timeline). The clock free-runs from frame timestamps, exact on a
+CFR source, and is verified against the screen every few seconds. Resync
+catches discrete events the frame counter cannot see: the countdown ending, a
+pause, a dropped segment.
 
-What resync actually catches is not accumulated drift but discrete events the
-frame counter cannot see -- the pre-match countdown ending, a pause, a
-dropped segment in the recording. Those shift the offset between video time
-and match time, and are invisible to any amount of careful counting.
-
---------------------------------------------------------------------------
-PHASE IS NOT IMPLEMENTED, AND THAT IS DELIBERATE
---------------------------------------------------------------------------
-`phase` is part of the contract and is NOT inferred here. The brief called
-for single/double/triple/overtime, but:
-
-  * the simulator has no phase concept at all to consume it (see
-    contracts.Phase), so nothing downstream can act on it today; and
-  * the real boundaries move with balance updates, so any value hardcoded
-    now would be a guess that later gets treated as a specification.
-
-So `set_phase_schedule()` must be called with the real boundaries before
-`phase` returns anything but SINGLE, and `phase_known` reports whether that
-happened. Guessing here would be worse than useless: the one consumer that
-DOES act on phase is the opponent-elixir model, where a wrong multiplier
-silently corrupts the balance and disarms the missed-placement alarm that
-depends on it.
+`phase` is not inferred. Real boundaries move with balance updates, so
+`set_phase_schedule()` must be called with them before `phase` returns anything
+but SINGLE, and `phase_known` reports whether it was. The consumer that acts on
+phase is the opponent-elixir model, where a wrong multiplier silently corrupts
+the balance and disarms the missed-placement alarm.
 """
 
 from __future__ import annotations
@@ -37,15 +20,13 @@ from dataclasses import dataclass, field
 from contracts import ClockState, Phase
 from timebase import TICKS_PER_SECOND, seconds_to_ticks
 
-# How far the free-running clock may disagree with the screen before the
-# reading is treated as a real correction rather than quantisation noise.
-# The on-screen clock has one-second resolution, so anything under half a
-# second is unresolvable and correcting on it would just inject jitter.
+# How far the free-running clock may disagree with the screen before a reading
+# counts as a correction. The on-screen clock has one-second resolution, so
+# correcting under half a second would only inject jitter.
 RESYNC_TOLERANCE_S = 0.5
 
-# Beyond this, a single reading is more likely to be a misread digit than a
-# genuine jump, and is rejected rather than applied. A real discontinuity
-# persists, so it will be confirmed by the next reading and applied then.
+# Beyond this a single reading is more likely a misread than a jump, and is
+# rejected. A real discontinuity persists and is applied on the next reading.
 IMPLAUSIBLE_JUMP_S = 15.0
 
 
@@ -55,11 +36,9 @@ class PhaseScheduleUnknownError(NotImplementedError):
 
 @dataclass
 class PhaseSchedule:
-    """Real-game phase boundaries, in seconds elapsed from match start.
-
-    Supplied by the caller, never assumed. Regular time and overtime are
-    separate so a match that does not go to overtime never has to name an
-    overtime boundary.
+    """Real-game phase boundaries, in seconds from match start. Supplied by the
+    caller, never assumed. Regular time and overtime are separate, so a match
+    without overtime never names an overtime boundary.
     """
 
     double_elixir_at_s: float
@@ -76,16 +55,12 @@ class PhaseSchedule:
         return Phase.SINGLE
 
 
-# Standard ladder rules, supplied by the project owner on 2026-07-29:
-# 1x for the first two minutes, 2x for the last minute of regular time, then
-# overtime at 2x escalating to 3x in its final minute.
+# Standard ladder rules: 1x for the first two minutes, 2x for the last minute
+# of regular time, then overtime at 2x escalating to 3x in its final minute.
 #
-# A named constant that a caller must still pass explicitly -- NOT a default.
-# The distinction matters: balance updates move these boundaries, and the one
-# consumer that acts on phase (track/opp_elixir.py) is corrupted silently by a
-# wrong multiplier. Requiring the call keeps the assumption at the call site
-# where it can be seen, instead of buried here where it would be inherited by
-# every future recording made under different rules.
+# A named constant a caller must still pass explicitly, not a default: balance
+# updates move these boundaries, and requiring the call keeps the assumption
+# visible where it is made.
 LADDER_REGULAR_LENGTH_S = 180.0
 LADDER_SCHEDULE_KWARGS = {
     "double_elixir_at_s": 120.0,
@@ -116,7 +91,7 @@ class MatchClock:
 
     _observations: list[tuple[float, float]] = field(default_factory=list)
 
-    # -- configuration ---------------------------------------------------
+    # --- configuration ---
 
     def set_phase_schedule(self, schedule: PhaseSchedule, match_length_s: float) -> None:
         self.schedule = schedule
@@ -127,7 +102,7 @@ class MatchClock:
         self.offset_ms = wall_time_ms
         self.started = True
 
-    # -- queries ---------------------------------------------------------
+    # --- queries ---
 
     def elapsed_s(self, wall_time_ms: float) -> float:
         return max(0.0, (wall_time_ms - self.offset_ms) / 1000.0)
@@ -151,11 +126,9 @@ class MatchClock:
         return self.schedule.phase_at(self.elapsed_s(wall_time_ms))
 
     def phase_or_single(self, wall_time_ms: float) -> Phase:
-        """Phase, defaulting to SINGLE when the schedule is unknown.
-
-        For consumers that must produce a ClockState regardless. The
-        accompanying confidence drops so the guess is never mistaken for
-        knowledge.
+        """Phase, defaulting to SINGLE when the schedule is unknown, for consumers
+        that must produce a ClockState regardless. Confidence drops so the
+        guess is never mistaken for knowledge.
         """
         if self.schedule is None:
             return Phase.SINGLE
@@ -166,19 +139,17 @@ class MatchClock:
             return float("nan")
         return max(0.0, self.match_length_s - self.elapsed_s(wall_time_ms))
 
-    # -- resync ----------------------------------------------------------
+    # --- resync ---
 
     def resync(self, wall_time_ms: float, observed_remaining_s: float) -> float:
         """Correct the offset from an on-screen clock reading.
 
-        Returns the drift in milliseconds (predicted minus observed, signed:
-        positive means the free-running clock was ahead of the screen).
+        Returns the drift in milliseconds (predicted minus observed; positive
+        means the free-running clock was ahead).
 
-        Rejects implausible corrections rather than applying them. A single
-        OCR-style misread produces one wild reading and then goes away; a real
-        discontinuity persists and is applied on the next reading. Applying
-        every reading unconditionally would let one bad frame dislocate the
-        entire timeline, and everything downstream of the clock with it.
+        Rejects implausible corrections: a misread produces one wild reading
+        and goes away, while a real discontinuity persists and is applied on
+        the next reading.
         """
         if self.match_length_s is None:
             raise PhaseScheduleUnknownError(
@@ -207,14 +178,13 @@ class MatchClock:
         self.resyncs_applied += 1
         return drift_ms
 
-    # -- output ----------------------------------------------------------
+    # --- output ---
 
     def state(self, wall_time_ms: float) -> ClockState:
         tick = self.tick(wall_time_ms)
         staleness_ticks = tick - self.last_resync_tick
         # Confidence decays with time since the last screen verification and
-        # is halved outright when the phase schedule is unknown, since a
-        # ClockState carrying a guessed SINGLE must not read as certain.
+        # halves when the phase schedule is unknown.
         confidence = 1.0 / (1.0 + staleness_ticks / (30.0 * TICKS_PER_SECOND))
         if not self.phase_known:
             confidence *= 0.5

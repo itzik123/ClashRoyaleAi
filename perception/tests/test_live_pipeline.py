@@ -1,10 +1,5 @@
-"""Tests for live/pipeline.py, against a synthetic source.
-
-The worker exists to break the coupling that made the live loop 0.48 Hz: with
-perception inline, the decision RATE is pinned to the detector's LATENCY. These
-tests pin the properties that make the split safe, using a fake source and a
-fake perceive() so a slow detector can be simulated deterministically rather
-than waited for.
+"""Tests for live/pipeline.py, against a synthetic source. A fake source and a
+fake perceive() simulate a slow detector deterministically.
 """
 from __future__ import annotations
 
@@ -73,9 +68,9 @@ def test_publishes_a_snapshot():
 
 
 def test_only_the_newest_board_is_kept():
-    """No queue, on purpose. A backlog would feed the decision loop boards that
-    are already superseded -- an old board is not merely less useful, it is
-    wrong, so dropping is correct rather than a compromise."""
+    """No queue: an old board is wrong, not merely less useful, so dropping is
+    correct.
+    """
     source = FakeSource()
     w = PerceptionWorker(source, None, perceive_ok)
     w.start()
@@ -83,16 +78,17 @@ def test_only_the_newest_board_is_kept():
         assert wait_for(lambda: w.frames > 5)
         first = w.latest().index
         assert wait_for(lambda: w.latest().index > first + 3)
-        # Whatever it holds is always the most recent one produced, never a
-        # backlog entry: its index tracks the source rather than lagging.
+        # It always holds the most recent board produced; its index tracks the
+        # source rather than lagging.
         assert w.latest().index >= w.frames - 2
     finally:
         w.stop()
 
 
 def test_a_slow_detector_does_not_slow_the_reader():
-    """The whole point. Perception at ~4 Hz here; the caller reads whenever it
-    likes and never blocks on a detection."""
+    """The whole point: the caller reads whenever it likes and never blocks on a
+    detection.
+    """
     w = PerceptionWorker(FakeSource(delay=0.25), None, perceive_ok)
     w.start()
     try:
@@ -106,14 +102,10 @@ def test_a_slow_detector_does_not_slow_the_reader():
 
 
 def test_age_includes_the_detection_time():
-    """Age counts from when the board LOOKED like that, so it must already
-    include however long detection took. Starting the clock when detection
-    FINISHES would understate age by exactly the detector's latency -- which
-    is the quantity the whole split exists to expose, currently ~2.4 s.
-
-    The delay goes in `perceive`, not in the source: a slow DETECTOR is what
-    this design is built around. An earlier version of this test put it in the
-    source and so measured nothing of the sort.
+    """Age counts from when the board looked like that, so it includes detection
+    time; starting at the end of detection would understate age by exactly the
+    detector's latency. The delay goes in `perceive`, not the source: a slow
+    detector is what the design is built around.
     """
     delay = 0.3
 
@@ -146,9 +138,9 @@ def test_age_grows_while_nothing_new_arrives():
 
 
 def test_an_exception_does_not_kill_the_thread():
-    """A dead producer looks exactly like a very stale board from the decision
-    side, and the two need completely different responses -- so failures are
-    counted and the thread keeps going."""
+    """A dead producer looks like a very stale board from the decision side;
+    failures are counted and the thread keeps going.
+    """
     calls = {"n": 0}
 
     def flaky(frame):
@@ -168,8 +160,9 @@ def test_an_exception_does_not_kill_the_thread():
 
 
 def test_a_none_state_is_skipped_rather_than_published():
-    """The detector returns None for an unreadable frame. Publishing that would
-    hand the policy a GameState of None."""
+    """The detector returns None for an unreadable frame; publishing it would hand
+    the policy a GameState of None.
+    """
     w = PerceptionWorker(FakeSource(), None, lambda f: (None, None))
     w.start()
     try:
@@ -189,11 +182,10 @@ def test_stop_is_clean():
 
 
 def test_waiting_for_a_frame_is_counted_apart_from_perceiving():
-    """The producer's period is wait + work and the two have opposite fixes:
-    a starved capture and a slow detector are indistinguishable from the
-    outside, and the first live run's 2700 ms period was attributed to the
-    detector on no evidence -- offline the detector medians 130 ms."""
-    source = FakeSource(delay=0.2)          # slow to HAND OVER a frame
+    """The producer's period is wait + work, and a starved capture and a slow
+    detector look identical from outside.
+    """
+    source = FakeSource(delay=0.2)          # slow to hand over a frame
 
     def quick(frame):
         time.sleep(0.05)                    # quick to perceive one
@@ -210,14 +202,14 @@ def test_waiting_for_a_frame_is_counted_apart_from_perceiving():
     assert "9 perceive TOTAL" in report
     waits = w.stages._t["0 wait for frame"]
     works = w.stages._t["9 perceive TOTAL"]
-    # The point of the split: it attributes the cost to the right half.
+    # The split attributes the cost to the right half.
     assert np.median(waits) > np.median(works)
 
 
 def test_a_timed_out_read_is_not_recorded_as_a_wait():
-    """A timeout means NO frame arrived, which is a different fault from a slow
-    one. Averaging it in would drag the median toward the timeout and make a
-    dead capture look like a merely sluggish one."""
+    """A timeout means no frame arrived, a different fault from a slow one;
+    averaging it in would make a dead capture look sluggish.
+    """
     w = PerceptionWorker(FakeSource(limit=1), None, perceive_ok)
     w.start()
     try:
@@ -239,8 +231,7 @@ def test_stages_reports_shares_that_sum_to_the_whole():
 
 
 def test_stages_reports_the_median_not_the_mean():
-    """One descheduled frame should not define the summary -- the live run's
-    own per-frame totals ranged 1.9-9.3 s."""
+    """One descheduled frame should not define the summary."""
     s = Stages()
     for ms in (100.0, 100.0, 100.0, 9000.0):
         s.add("x", ms)
@@ -248,18 +239,19 @@ def test_stages_reports_the_median_not_the_mean():
 
 
 def test_snapshot_age_accepts_an_explicit_now():
-    """The loop passes its own timestamp so age and the decision refer to the
-    same instant."""
+    """The loop passes its own timestamp so age and the decision refer to the same
+    instant.
+    """
     snap = Snapshot(state=None, game_state=None,
                     captured_at=time.perf_counter() - 1.0, index=0,
                     detect_ms=0.0)
     assert snap.age_ms(time.perf_counter()) == pytest.approx(1000, abs=100)
 
 
-# --- producer period and the sampling residual ------------------------------
+# --- producer period and the sampling residual ---
 
 def test_period_is_none_until_it_can_be_measured():
-    """A caller that waits on a guessed period waits for nothing."""
+    """Waiting on a guessed period waits for nothing."""
     w = PerceptionWorker(FakeSource(limit=1), None, perceive_ok)
     assert w.period is None
     w.start()
@@ -287,9 +279,9 @@ def test_period_tracks_the_real_publication_rate():
 
 
 def test_period_uses_the_median_not_the_mean():
-    """Perception occasionally takes several times its usual duration. A mean
-    dragged up by one of those tells the decision loop to wait for a board that
-    is not coming."""
+    """One stall must not drag the period up and make the loop wait for a board
+    that is not coming.
+    """
     w = PerceptionWorker(FakeSource(limit=0), None, perceive_ok)
     with w._lock:
         w._publishes.extend([0.0, 0.1, 0.2, 0.3, 2.0])   # one huge stall
@@ -297,8 +289,9 @@ def test_period_uses_the_median_not_the_mean():
 
 
 def test_published_at_is_after_detection_and_age_exceeds_sat():
-    """`age` counts from capture, `sat` from publication. The difference is the
-    detection time, and the residual this whole mechanism removes is `sat`."""
+    """`age` counts from capture, `sat` from publication; the difference is
+    detection time, and `sat` is the residual this mechanism removes.
+    """
     delay = 0.2
 
     def slow(frame):
@@ -318,8 +311,8 @@ def test_published_at_is_after_detection_and_age_exceeds_sat():
 
 
 def test_an_unset_published_at_reads_as_sitting_forever():
-    """The default has to fail SAFE: a missing value must make the freshness
-    wait decline, not fire on a board it knows nothing about."""
+    """The default fails safe: a missing value makes the freshness wait decline.
+    """
     snap = Snapshot(state=None, game_state=None,
                     captured_at=time.perf_counter(), index=0, detect_ms=0.0)
     assert snap.sat_ms() > 1e6

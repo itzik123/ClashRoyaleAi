@@ -17,30 +17,15 @@ struct EntitySnapshot {
     int team;
     char symbol;
     bool isFlying;
-    // Some symbols are legitimately shared by unrelated cards with
-    // different maxHp (e.g. 'M' is both Mini PEKKA at 1390 and Monk at
-    // 2214) -- a single-char symbol alphabet ran out of room long before
-    // the card roster did. cardId is the unambiguous key into GameLogger::
-    // save()'s "cardMeta" block; symbol alone is not enough to look up
-    // correct metadata for every card. NEGATIVE for entities with no
-    // registered card of their own: towers use GameManager's
-    // TOWER_KING_ID/TOWER_PRINCESS_ID (-2/-3 -- see GameManager.h), which the
-    // viewer has separate per-corner metadata for (TOWER_DEFS), and
-    // death-spawn children get their own distinct negative ids from
-    // CardRegistry (Golemite is -1; see the "Negative ids stay clear of -1"
-    // comment there). cardMeta is built from the REGISTERED cards only, so a
-    // negative id never resolves through it -- which is what `name` is for.
+    // The unambiguous key into save()'s "cardMeta" block; symbols are shared
+    // between cards (e.g. 'M' is Mini PEKKA and Monk). Negative for entities
+    // without a registered card: towers use GameManager::TOWER_KING_ID /
+    // TOWER_PRINCESS_ID, and death-spawn children have their own negative ids.
+    // cardMeta never resolves a negative id, which is what `name` is for.
     int cardId;
-    // The entity's own display name, straight off the board.
-    //
-    // WHY THIS EXISTS RATHER THAN A LOOKUP. A death-spawn child cannot be
-    // named through cardMeta (negative id, see above), and the fallback the
-    // viewer was left with -- the single-char symbol -- is ambiguous for 36 of
-    // the registry's 90 symbols. The name is already correct on the entity
-    // (CardFactories::applyCardMetadata sets it for every troop and building),
-    // so writing it is strictly cheaper and more accurate than reconstructing
-    // it. See perception/UPSTREAM_REQUESTS.md item 20, whose original
-    // diagnosis -- "spawned entities carry no cardId" -- was wrong.
+    // The entity's display name, straight off the board. A death-spawn child
+    // cannot be named through cardMeta, and many symbols are ambiguous;
+    // applyCardMetadata already sets the name on every troop and building.
     std::string name;
 };
 
@@ -60,24 +45,14 @@ private:
     int boardHeight;
     std::vector<TickSnapshot> snapshots;
 
-    // Despite the name, this used to just wrap c in a 1-char string with no
-    // actual escaping -- harmless as long as every symbol in use was JSON-
-    // safe, until Ram Rider's own symbol turned out to be '"' (see
-    // CardRegistry.h's troop(87, "Ram Rider", ...)): writing it unescaped
-    // produces a bare `"` inside an already-open JSON string, corrupting
-    // the whole file the moment that symbol is written -- previously only
-    // when a Ram Rider entity actually appeared in a given replay's entity
-    // list, now unconditionally too via cardMeta's own per-card symbol
-    // (every registered card, every replay). Real JSON escaping fixes both.
+    // Real JSON escaping: Ram Rider's symbol is '"'.
     static std::string escapeChar(char c) {
         switch (c) {
             case '"': return "\\\"";
             case '\\': return "\\\\";
             default:
-                // Control characters (< 0x20) are also illegal bare in a
-                // JSON string; none are known to be in use as a card
-                // symbol today, but \u-escape defensively rather than
-                // assume that stays true.
+                // Control characters are illegal bare in a JSON string; none
+                // are used as symbols, but escape them anyway.
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
                     snprintf(buf, sizeof(buf), "\\u%04x", c);
@@ -87,10 +62,7 @@ private:
         }
     }
 
-    // Same rule as escapeChar, applied across a string, rather than a second
-    // copy of the escaping table. Card names are engine data and quote-free
-    // today, but so was the symbol alphabet until Ram Rider's symbol turned
-    // out to be '"' and silently corrupted every replay containing one.
+    // escapeChar applied across a string.
     static std::string escapeString(const std::string& s) {
         std::string out;
         out.reserve(s.size());
@@ -138,21 +110,11 @@ public:
         snapshots.clear();
     }
 
-    // The match verdict, from the ENGINE's own rules, written into the replay so
-    // consumers READ it instead of re-deriving one.
-    //
-    // web/viewer.html derived its own from "are both King Towers alive?" and
-    // called everything else a draw. Its comment said it "mirrors
-    // MatchRules::evaluate exactly" -- which was true, and was the bug.
-    // MatchRules answers "has a King died YET?", is called every tick, and
-    // correctly says "not over" right up to the limit. Who WON at the limit is
-    // TimeoutRules. A match ending 3-3 on towers with one Princess at 90 hp was
-    // shown as "Draw. Timeout - both King Towers still standing".
-    //
-    // Derived from this logger's own final snapshot -- it is const and holds no
-    // Board -- but through TimeoutRules::decide, so the RULE is shared rather
-    // than reimplemented here. Reimplementing it is exactly how the defect this
-    // fixes came about.
+    // The match verdict from the engine's own rules, written into the replay so
+    // consumers read it rather than re-deriving it. MatchRules only says
+    // whether a King has died; the winner at the tick limit is TimeoutRules.
+    // Computed from the final snapshot (the logger holds no Board) through
+    // TimeoutRules::decide, so the rule is shared.
     std::string resultJson() const {
         if (snapshots.empty()) return "null";
         const auto& last = snapshots.back();
@@ -165,10 +127,9 @@ public:
         for (const auto& e : last.entities) {
             if (e.hp <= 0) continue;
             if (e.team != 0 && e.team != 1) continue;
-            // Towers only: a Cannon or Tombstone is not a crown. The snapshot
-            // has no isTower(), so this keys on the reserved tower cardIds
-            // (GameManager::TOWER_KING_ID / TOWER_PRINCESS_ID) rather than on
-            // the symbol, which the renderer is free to change.
+            // Towers only: a Cannon is not a crown. The snapshot has no
+            // isTower(), so this keys on the reserved tower cardIds, not the
+            // symbol.
             if (e.cardId != GameManager::TOWER_KING_ID &&
                 e.cardId != GameManager::TOWER_PRINCESS_ID) continue;
             aliveCount[e.team]++;
@@ -212,7 +173,7 @@ public:
         file << "  \"totalTicks\": " << snapshots.size() << ",\n";
         file << "  \"result\": " << resultJson() << ",\n";
 
-        // Write card name lookup table
+        // Card name lookup table.
         file << "  \"cardNames\": {";
         const auto& allCards = CardRegistry::getInstance().getAllCards();
         bool firstCard = true;
@@ -224,17 +185,10 @@ public:
         }
         file << "},\n";
 
-        // Authoritative per-card display metadata, sourced live from
-        // CardRegistry (see CardDefinition's own comment on why) instead of
-        // a hand-maintained table on the viewer side -- every replay is
-        // self-describing and can never drift out of sync with whatever
-        // cards exist at the time it was generated, even as the roster
-        // grows. Keyed by card id (same convention as cardNames above, and
-        // some ids share a symbol -- e.g. a card's own death-spawn reusing
-        // its parent's stats -- so this can't be symbol-keyed without
-        // silently collapsing those); the viewer derives its own
-        // symbol-keyed lookup from this at load time. maxHp is 0 for
-        // spells (no persistent HP to bar-render).
+        // Per-card display metadata, read live from CardRegistry so every
+        // replay describes its own roster and the viewer keeps no table of its
+        // own. Keyed by id, since symbols are shared; the viewer builds its
+        // symbol lookup from this. maxHp is 0 for spells.
         file << "  \"cardMeta\": {";
         bool firstMeta = true;
         for (const auto& pair : allCards) {
@@ -247,13 +201,9 @@ public:
                  << ",\"isFlying\":" << (def.isFlying ? "true" : "false")
                  << ",\"isBuilding\":" << (def.isBuilding ? "true" : "false")
                  << ",\"isSpell\":" << (def.isSpell ? "true" : "false")
-                 // Rolling-sweep shape (The Log, Barbarian Barrel). 0 for
-                 // every other card, which is what the viewer tests to decide
-                 // between a circle and a swept rectangle. Emitted here rather
-                 // than left to the viewer for the reason CardDefinition's own
-                 // comment gives: the viewer cannot derive engine geometry, so
-                 // anything it is not told it is forced to hardcode and will
-                 // eventually get wrong.
+                 // Rolling-sweep shape (The Log, Barbarian Barrel); 0 for every
+                 // other card, which tells the viewer to draw a circle. Emitted
+                 // because the viewer cannot derive engine geometry.
                  << ",\"rollWidth\":" << def.rollWidth
                  << ",\"rollRange\":" << def.rollRange
                  << "}";
@@ -261,18 +211,10 @@ public:
         }
         file << "},\n";
 
-        // Elixir phase schedule, in TICKS. Emitted for exactly the reason
-        // cardMeta and rollWidth/rollRange above are: web/viewer.html is a
-        // file:// page whose ONLY input is this JSON, so anything it is not
-        // told it is structurally forced to hardcode -- and a hardcoded copy
-        // of engine geometry is a scheduled defect, not a discipline problem.
-        // That is how the viewer ended up painting four of eighteen columns as
-        // the wrong terrain after the 2026-08-21 arena re-centring. The fix
-        // for that class of bug belongs in the FORMAT.
-        //
-        // A replay written before this field existed simply lacks it, and the
-        // viewer treats an absent block as "no phases" rather than assuming
-        // the current schedule -- which is the honest reading of an old file.
+        // The elixir phase schedule in ticks, emitted for the same reason as
+        // cardMeta: the viewer's only input is this JSON, so anything it is not
+        // told it must hardcode. An old replay lacks the block, and the viewer
+        // then assumes no phases.
         file << "  \"elixirPhases\": {"
              << "\"doubleTick\":" << GameManager::DOUBLE_ELIXIR_TICK
              << ",\"tripleTick\":" << GameManager::TRIPLE_ELIXIR_TICK
@@ -296,7 +238,7 @@ public:
             file << "      \"elixirAI\": " << elixirAI.str() << ",\n";
             file << "      \"elixirOpp\": " << elixirOpp.str() << ",\n";
 
-            // Write hands
+            // Hands.
             file << "      \"aiHand\": [";
             for (size_t h = 0; h < snap.aiHand.size(); ++h) {
                 if (h > 0) file << ",";

@@ -87,12 +87,9 @@ TEST_CASE("RoyalChefBuffEffect buffs the nearest ally, not itself", "[tower_troo
 
 TEST_CASE("the Royal Chef feeds an ally once, not compounding forever",
           "[tower_troops][royal_chef][regression]") {
-    // RoyalChefBuffEffect picks the nearest ally and does `hp += hp / 10`.
-    // Nothing excluded an ally it had already fed, so the SAME long-lived tank
-    // parked beside the tower was fed every 280 ticks, compounding
-    // geometrically -- and the accompanying damage buff is applied for 999999
-    // ticks, i.e. permanently. The real card grants "+1 Level" to a troop it
-    // serves; it does not serve the same troop repeatedly.
+    // RoyalChefBuffEffect feeds the nearest ally `hp += hp / 10` with a
+    // permanent damage buff. The real card grants "+1 Level" once per troop, so
+    // a tank parked beside the tower must not be fed again and again.
     Board board;
     auto ally = std::make_shared<MeleeTroop>(1, 5.0f, 6.0f, 1000, 0, 0.1f, 1.0f, 100, 10, 'a');
     spawn(board, ally);
@@ -101,8 +98,8 @@ TEST_CASE("the Royal Chef feeds an ally once, not compounding forever",
     chef.apply(board, Vector2D{ 5.0f, 5.0f }, 0);
     const int afterFirst = ally->hp;
 
-    // Control: the first serving must actually have done something, or
-    // "did not compound" is vacuous.
+    // Control: the first serving must have done something, or "did not
+    // compound" is vacuous.
     REQUIRE(afterFirst > 1000);
     REQUIRE(ally->buffTicksRemaining > 0);
 

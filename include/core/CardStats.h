@@ -9,67 +9,34 @@
 #include <string>
 #include <vector>
 
-// The handful of ways a card actually gets built onto the board. Adding a
-// new card of an existing shape is a data row (see CardRegistry.h); adding a
-// genuinely new mechanic is a new archetype + one new factory function in
+// The shapes a card can be built as. A new card of an existing shape is a data
+// row in CardRegistry.h; a new mechanic is a new archetype plus a factory in
 // CardFactories.h.
 enum class Archetype {
-    MeleeSquad,             // one or more direct-damage troops (Knight, Goblins, Barbarians...)
-    RangedSquad,             // one or more projectile troops (Musketeer, Archers, Spear Goblins...)
+    MeleeSquad,             // direct-damage troops (Knight, Goblins, Barbarians...)
+    RangedSquad,             // projectile troops (Musketeer, Archers, Spear Goblins...)
     MeleeBuildingTargeter,   // ignores troops, melee-hits buildings (Giant, Hog Rider, Golem)
     RangedBuildingTargeter,  // ignores troops, projectile-hits buildings (Royal Giant)
     DefensiveBuilding,       // stationary, direct damage (Cannon, Tesla, ...)
-    Spell                    // one-shot area effect (Fireball, Zap, ...)
+    Spell                    // area effect (Fireball, Zap, ...)
 };
 
-// Troop movement was measured at 4-5x the real game's on 2026-08-07, against
-// 8 real recordings -- see perception/UPSTREAM_REQUESTS.md item 9 for the
-// evidence and the blast radius. Three independent measurements agreed:
-// per-card speed off real footage (3.8x-6.5x), a time-scale sweep whose
-// occupancy agreement peaks at 0.2-0.25, and the engine's own Slow:Medium
-// tier ratio (0.60 against the real 0.75).
-//
-// The `speed` literals in CardRegistry.h keep stating each card's tier in the
-// engine's ORIGINAL units, and this is the single point where they are scaled
-// into real-game tiles/tick. Applied at construction rather than in
-// Troop::update deliberately: Troop::getSpeed() feeds the observation's
-// CH_SPEED channel, so scaling at the point of movement would leave the
-// engine reporting a speed it does not actually move at.
-//
-// KNOWN RESIDUAL: a flat scale leaves the Slow tier ~20% slow (Giant 0.6
-// tiles/s against a real ~0.75), because the engine's Slow:Medium ratio is
-// 0.60 where the real game's is 0.75. Left uncorrected on purpose -- the
-// measurement bracket is too wide to justify per-tier constants, and
-// perception/tools/sim_fidelity.py can settle it after this lands.
+// Converts the registry's speed values (the engine's original units) into
+// real-game tiles/tick. Applied once, in CardRegistry's troop() and
+// SpiritEmpressForms.h, at construction rather than in Troop::update, so
+// Troop::getSpeed() (the observation's CH_SPEED) reports the speed actually
+// moved at. Derived from real recordings (perception/UPSTREAM_REQUESTS.md item
+// 9).
 inline constexpr float MOVEMENT_SPEED_SCALE = 0.2f;
 
-// SPEED TIERS (2026-08-24). The comment above says the Slow:Medium ratio was
-// left wrong on purpose because "the measurement bracket is too wide to justify
-// per-tier constants". It is no longer too wide, so the tiers are constants now.
+// Speed tiers. The real game publishes one speed per card, in tiles per minute,
+// taking only five values: 30 / 45 / 60 / 90 / 120 (Very Slow .. Very Fast). A
+// real tile is not an engine tile, so the conversion is measured, from two
+// cards tracked frame by frame (Giant, real 45 -> 0.987 engine tiles/s; Mini
+// P.E.K.K.A, real 90 -> 2.003), which agree to 1.5%.
 //
-// The real game publishes ONE speed number per card, in tiles per MINUTE, and it
-// only ever takes five values: 30 / 45 / 60 / 90 / 120 (Very Slow .. Very Fast).
-// Verified against Supercell's own exported table, which has exactly those five
-// values across 119 characters -- see perception/UPSTREAM_REQUESTS.md item 25.
-//
-// A REAL tile is not an ENGINE tile: this board's tower layout differs from the
-// real arena's, so the conversion is a measured factor and not 1/60. It is
-// pinned by two cards tracked frame by frame through perception/videos/:
-//
-//     Giant          real 45   ->  0.987 engine tiles/s   (two recordings, 2.5% apart)
-//     Mini P.E.K.K.A real 90   ->  2.003 engine tiles/s
-//
-// Those give 0.02193 and 0.02226 tiles/s per stat unit -- agreeing to 1.5%,
-// which is the check that matters: two cards, two tiers, one constant. The
-// footage also reproduces the published Fast:Slow ratio (2.03 against 2.00),
-// so the recordings and Supercell's table independently agree.
-//
-// WHY A SCALE COULD NOT HAVE DONE THIS. MOVEMENT_SPEED_SCALE is a global
-// multiplier and preserves ratios by construction. Before this, cards sharing
-// one real tier were spread across four different engine speeds -- every one of
-// Giant, Golem, P.E.K.K.A, Royal Giant and Lava Hound is Slow (45) in the real
-// game, and this engine had them at 0.4, 0.6, 0.8 and 1.0 tiles/s. No value of
-// the scale fixes that; only naming the tiers does.
+// Named tiers, because cards sharing a real tier must share an engine speed,
+// which a global scale cannot enforce.
 inline constexpr float REAL_TILES_PER_MIN_TO_ENGINE = 0.011045f;
 inline constexpr float SPEED_VERY_SLOW = 30.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
 inline constexpr float SPEED_SLOW      = 45.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
@@ -77,33 +44,13 @@ inline constexpr float SPEED_MEDIUM    = 60.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
 inline constexpr float SPEED_FAST      = 90.0f  * REAL_TILES_PER_MIN_TO_ENGINE;
 inline constexpr float SPEED_VERY_FAST = 120.0f * REAL_TILES_PER_MIN_TO_ENGINE;
 
-// DEPLOY TIME (2026-08-19). Ticks a freshly placed troop or building spends
-// inert: on the board, targetable and damageable, but unable to move, target
-// or attack. 10 ticks = 1.0 s at this engine's 10 ticks/second.
+// Ticks a freshly placed troop or building spends inert (targetable and
+// damageable, but unable to move, target or attack): 1.0 s, as in the real
+// game. Without it every defensive placement acts immediately, a systematic
+// subsidy to defence (perception/UPSTREAM_REQUESTS.md item 14).
 //
-// WHY IT WAS ADDED, and it is a REBALANCE, not only a fidelity fix. The real
-// game freezes a unit ~1 s after it lands; this engine spawned everything
-// active. That is not a symmetric omission: the defender places INTO an
-// existing threat and needs its answer to act NOW, while the attacker places
-// before contact and would have spent that second walking anyway. So a missing
-// deploy time is a systematic subsidy to DEFENCE, paid on every single
-// defensive placement.
-//
-// It was measured before being changed. At a symmetric 1.0x economy against an
-// equally strong bot, committing the win condition scored -0.330 win rate
-// (n=100 paired, p=5.7e-08) and -298.2 tower HP marginally (n=220), while the
-// defence answered a 4-elixir commitment for ~1.2 elixir. The card itself is
-// fine -- unopposed it deals 2536 tower damage -- and tightening the commit
-// timing made things WORSE, which pointed at defender tempo rather than at the
-// card, the placement or the economy. See CLAUDE.md and
-// perception/UPSTREAM_REQUESTS.md item 14.
-//
-// GAMEPLAY-AFFECTING. Every win rate earned before this is historical.
-//
-// Applied in CardFactories::applyCardMetadata, which every troop and building
-// archetype calls and which spells, deploy effects, towers and projectiles all
-// bypass -- so spells keep using their own spellDelayTicks, and towers (built
-// directly by GameManager, never through the factories) are never inert.
+// Applied in CardFactories::applyCardMetadata, which spells, deploy effects,
+// towers and projectiles bypass.
 inline constexpr int DEPLOY_TIME_TICKS = 10;
 
 struct CardStats {
@@ -112,7 +59,7 @@ struct CardStats {
     float cost = 0.0f;
     Archetype archetype = Archetype::MeleeSquad;
 
-    // Combat stats, used by every archetype except Spell.
+    // Combat stats, for every archetype but Spell.
     int hp = 0;
     float speed = 0.0f;
     float attackRange = 0.0f;
@@ -123,188 +70,135 @@ struct CardStats {
     bool isFlying = false;
     bool targetsAir = false;
 
-    // Relative spawn positions for each unit in the card. A single-unit
-    // card is just one offset of {0, 0} -- "squad of one".
+    // Spawn offsets for each unit; a single-unit card is one {0, 0}.
     std::vector<Vector2D> spawnOffsets{ Vector2D{ 0.0f, 0.0f } };
 
-    // Optional extra behavior applied on every successful attack landed by
-    // every unit this card spawns (e.g. Ice Wizard's slow, Ice Spirit's stun).
-    // NOT Ice Golem -- its slow is on the death explosion, see card id 40.
+    // Applied on every landed attack by every unit of the card (e.g. Ice
+    // Wizard's slow, Ice Spirit's stun). Not Ice Golem: its slow is on the
+    // death explosion (card 40).
     std::shared_ptr<IOnHitEffect> onHit;
 
-    // Spell archetype only. groundOnly defaults false (hits Air & Ground,
-    // matching most spells -- Fireball, Zap, Poison, Rocket, Lightning);
-    // The Log/Barbarian Barrel-style ground-control spells opt in.
+    // Spell archetype only. Ground-only control spells (The Log, Barbarian
+    // Barrel) opt in; most spells hit air and ground.
     float spellRadius = 0.0f;
     int spellDelayTicks = 0;
     bool spellGroundOnly = false;
-    // Multi-tick spells (Poison, Arrows) -- see AreaSpell::remainingHits.
-    // 1 (the default) is every other spell's normal single-shot case.
+    // Multi-hit spells (Poison, Arrows); see AreaSpell::remainingHits.
     int spellRemainingHits = 1;
     int spellTickInterval = 0;
-    // Optional on-hit effect the spell itself applies to whatever it
-    // touches, independent of its (possibly zero) direct damage -- e.g.
-    // Freeze's full stun with no damage component at all. nullptr (the
-    // default) is every other spell's normal damage-only case.
+    // An on-hit effect the spell applies to whatever it touches, independent of
+    // damage (e.g. Freeze's stun).
     std::shared_ptr<IOnHitEffect> spellOnHit;
 
-    // Rage: buffs allies in radius instead of damaging enemies -- see
-    // AreaSpell's buffsAllies mode. false (the default) is every other
-    // spell here.
+    // Rage: buffs allies instead of damaging enemies (AreaSpell's buffsAllies).
     bool spellBuffsAllies = false;
     float spellBuffMultiplier = 1.0f;
     int spellBuffDurationTicks = 0;
 
-    // Knockback/pull (Fireball, Rocket, Giant Snowball push; Tornado
-    // pulls) -- see AreaSpell's knockback field. Positive pushes away,
-    // negative pulls toward center. 0.0f (the default) is every other
-    // spell here.
+    // Positive pushes away, negative pulls toward the centre (Fireball, Rocket,
+    // Giant Snowball; Tornado).
     float spellKnockback = 0.0f;
 
-    // --- Rolling sweep (The Log, Barbarian Barrel), 2026-08-28 -------------
-    // These two are not static circles: they roll forward from where they land
-    // and sweep a RECTANGULAR corridor. See AreaSpell's rolling-sweep block for
-    // the mechanic and for why rollSpeed is stated in tiles/tick directly
-    // rather than through MOVEMENT_SPEED_SCALE.
-    //
-    // spellRollWidth is a FULL width, not a radius -- the published figures
-    // (Log 3.9, Barrel 2.6) are widths, and reading one as a radius would make
-    // the corridor twice as wide as the real card.
-    //
-    // spellRollRange == 0 (the default) means "not a roller", which is every
-    // other spell in the registry.
+    // --- rolling sweep (The Log, Barbarian Barrel) ---
+    // See AreaSpell's rolling-sweep block. spellRollWidth is a FULL width (the
+    // published Log 3.9 and Barrel 2.6 are widths). spellRollRange == 0 means
+    // not a roller.
     float spellRollRange = 0.0f;
     float spellRollWidth = 0.0f;
     float spellRollSpeed = 0.0f;
     float spellRollKnockback = 0.0f;
 
-    // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard) --
-    // see AreaSpell::spawnOnDetonate. nullptr (the default) is every
-    // spell that doesn't spawn anything.
+    // Spell-spawns-troops (Goblin Barrel, Royal Delivery, Graveyard); see
+    // AreaSpell::spawnOnDetonate.
     std::shared_ptr<IPeriodicEffect> spellSpawnEffect;
 
-    // Clone -- see AreaSpell::clonesAllies. false (the default) is every
-    // other spell here.
+    // Clone; see AreaSpell::clonesAllies.
     bool spellClonesAllies = false;
 
-    // One-time area burst applied the instant a troop-shaped card deploys,
-    // independent of its regular attacks (e.g. Electro Wizard's spawn zap).
-    // Radius 0 (the default) means no spawn effect.
+    // A one-time area burst when a troop-shaped card deploys (e.g. Electro
+    // Wizard's zap). Radius 0 means none.
     float spawnEffectRadius = 0.0f;
     int spawnEffectDamage = 0;
     std::shared_ptr<IOnHitEffect> spawnEffectOnHit;
 
-    // Fired once when a unit this card spawns dies (e.g. Golem's two
-    // Golemites). Concrete effects live in core/ (e.g. SpawnOnDeath) since
-    // they need CardFactories to know how to spawn anything.
+    // Fired once when a unit of this card dies (e.g. Golem's Golemites).
+    // Concrete effects live in core/.
     std::shared_ptr<IDeathEffect> deathEffect;
 
-    // Ramping damage (Inferno Tower) -- see CombatEntity::getCurrentDamage
-    // for the exact fraction schedule. rampFullTick == 0 (the default)
-    // means no ramping.
+    // Ramping damage (Inferno Tower); see CombatEntity::getCurrentDamage.
+    // rampFullTick == 0 means none.
     int rampMidTick = 0;
     int rampFullTick = 0;
     float rampStartFraction = 1.0f;
     float rampMidFraction = 1.0f;
-    // 4th ramp stage + reset grace period (Inferno Dragon Evolution only)
-    // -- see CombatEntity's own fields of the same name. Both default to
-    // 0 (disabled), leaving every other ramping card's behavior untouched.
+    // Fourth ramp stage and reset grace period (Inferno Dragon Evolution only).
     int rampStage4Tick = 0;
     float rampStage4Fraction = 1.0f;
     int rampGracePeriodTicks = 0;
 
-    // Split-target attacks (Electro Wizard) -- see
-    // CombatEntity::findSplitTargets/getCurrentDamage. 1 (the default)
-    // means the normal single-target case.
+    // Split-target attacks (Electro Wizard); see
+    // CombatEntity::findSplitTargets.
     int maxSplitTargets = 1;
-    // Electro Dragon's chain -- see CombatEntity::splitTargetsFullDamage.
+    // Electro Dragon's chain.
     bool splitTargetsFullDamage = false;
 
-    // Boomerang projectiles (Executioner) -- RangedSquad archetype only. See
-    // Projectile's returnsToSender. false (the default) is a normal
-    // single-hit projectile.
+    // Boomerang projectiles (Executioner), RangedSquad only.
     bool boomerang = false;
     int boomerangReturnDelayTicks = 0;
 
-    // Kamikaze (Wall Breakers, the "Spirit" troops) -- see
-    // CombatEntity::dieAfterFirstHit. false (the default) is every other
-    // card here.
+    // Kamikaze (Wall Breakers, the Spirits); see
+    // CombatEntity::dieAfterFirstHit.
     bool dieAfterFirstHit = false;
 
-    // Deploy anywhere on the board (Miner, Goblin Drill) -- see
-    // GameManager::isValidPlacement. false (the default) is every other
-    // troop/building, which must stay on this player's own half.
+    // Deploy anywhere (Miner, Goblin Drill); otherwise troops and buildings
+    // stay on their own half.
     bool deployAnywhere = false;
 
-    // Splash damage on every regular attack (Wizard, Bowler, Valkyrie, ...)
-    // -- see CombatEntity::applySplashDamage. 0.0f (the default) is every
-    // card that doesn't opt in. Unlike hp/damage/cost, splash radius isn't
-    // part of the sourced stats data (it's an engine-internal geometry
-    // choice, same category as movement speed above) -- splash-flagged
-    // cards use a single reasonable constant rather than per-card figures
-    // that were never actually sourced.
+    // Splash on every regular attack (Wizard, Bowler, Valkyrie...); see
+    // CombatEntity::applySplashDamage. Not sourced data: flagged cards share
+    // one engine constant.
     float splashRadius = 0.0f;
 
-    // Shield HP (Guards, Royal Recruits, Dark Prince, Cannon Cart) -- see
-    // CombatEntity::takeDamage. 0 (the default) is every card without one.
-    // Same "not part of the sourced data" caveat as splashRadius above.
+    // Shield hp (Guards, Royal Recruits, Dark Prince, Cannon Cart); see
+    // CombatEntity::takeDamage. Not sourced data.
     int shieldHp = 0;
 
-    // Charge/dash bonus damage (Prince, Battle Ram, Ram Rider, Royal Hogs,
-    // Bandit) -- see CombatEntity::chargeThreshold/chargeMultiplier.
-    // 0.0f threshold (the default) is every card without a charge. Same
-    // "not part of the sourced data" caveat as splashRadius above.
+    // Charge bonus (Prince, Battle Ram, Ram Rider, Royal Hogs, Bandit). Not
+    // sourced data.
     float chargeThreshold = 0.0f;
     float chargeMultiplier = 1.0f;
-    // Sticky charge (Evolved Battle Ram only) -- see
-    // CombatEntity::chargeIsSticky. false (the default) is every other
-    // charging card, unaffected.
+    // Sticky charge (Evolved Battle Ram only).
     bool chargeIsSticky = false;
 
-    // Enrage (Berserker) -- see CombatEntity::enrageMaxHp/enrageHealPerHit.
-    // 0 (the default) is every card without it. Set via withEnrage below,
-    // which reads back the `hp` field already set by troop(...).
+    // Enrage (Berserker). Set via withEnrage, which reads back `hp`.
     int enrageMaxHp = 0;
     int enrageHealPerHit = 0;
 
-    // Parry (Ronin) -- see CombatEntity::parryIntervalTicks. 0 (the
-    // default) is every card without one.
+    // Parry (Ronin).
     int parryIntervalTicks = 0;
 
-    // Hook (Fisherman) -- see CombatEntity::hookRange. 0.0f (the default)
-    // is every card without one.
+    // Hook (Fisherman).
     float hookRange = 0.0f;
 
-    // Invisibility (Royal Ghost, Suspicious Bush) -- see
-    // CombatEntity::startsInvisible/isTargetable. Also makes the card
-    // immune to splash/spell area damage while invisible, not just
-    // individual targeting (applySplashDamage/AreaSpell both gate on
-    // isTargetable() too) -- broader than the real game's "can't be
-    // individually selected, but area effects still land" rule. false
-    // (the default) is every card without it.
+    // Invisibility (Royal Ghost, Suspicious Bush). Also blocks splash and spell
+    // damage while invisible, since both gate on isTargetable(); the real game
+    // still lets area effects land.
     bool startsInvisible = false;
     int revealTicksAfterAttack = 0;
 
-    // Compound cards (Goblin Giant's carried Spear Goblins, Ram Rider's
-    // independent crossbow, Goblin Machine's rocket turret, Goblin Gang,
-    // Rascals): a second, independently-targeting unit spawned alongside
-    // the primary one, at the same deploy point -- see
-    // CardFactories::spawn, which spawns this recursively right after the
-    // primary archetype. nullptr (the default) is every single-unit card.
+    // Compound cards (Goblin Giant, Ram Rider, Goblin Machine, Goblin Gang,
+    // Rascals): a second, independently targeting unit spawned at the same
+    // point by CardFactories::spawn.
     std::shared_ptr<CardStats> secondaryUnit;
 
-    // Periodic spawning while alive (Witch, Night Witch, Furnace,
-    // Barbarian Hut, Goblin Hut, Tombstone, Goblin Drill) -- see
-    // CombatEntity::periodicEffect/periodicIntervalTicks. Fires the first
-    // time after one full interval has passed, not immediately at deploy.
-    // periodicIntervalTicks == 0 (the default) is every card without one.
+    // Periodic spawning while alive (Witch, Night Witch, Furnace, Barbarian
+    // Hut, Goblin Hut, Tombstone, Goblin Drill). First fires after one full
+    // interval.
     std::shared_ptr<IPeriodicEffect> periodicEffect;
     int periodicIntervalTicks = 0;
 
-    // Ally aura on landed attacks (Rune Giant's every-Nth-attack buff,
-    // Battle Healer's heal) -- see CombatEntity's own aura* fields.
-    // auraEveryNAttacks == 0 disables the buff aura; healAllyAmount == 0
-    // disables the heal aura -- independent opt-ins, both default off.
+    // Ally auras on landed attacks: Rune Giant's every-Nth-attack buff, Battle
+    // Healer's heal. Independent opt-ins.
     float auraRadius = 0.0f;
     int auraMaxTargets = 1000000;
     int auraEveryNAttacks = 0;
@@ -312,165 +206,115 @@ struct CardStats {
     int auraBuffDurationTicks = 0;
     int healAllyAmount = 0;
 
-    // Dash invulnerability (Bandit) -- see CombatEntity::chargeGrantsInvulnerability.
+    // Dash invulnerability (Bandit).
     bool chargeGrantsInvulnerability = false;
-    // Stun fully resets (not just slows) the attack cooldown (Sparky) --
-    // see CombatEntity::resetCooldownOnFreeze.
+    // A stun fully resets the attack cooldown (Sparky).
     bool resetCooldownOnFreeze = false;
-    // Recoil after attacking (Firecracker) -- see CombatEntity::recoilDistance.
+    // Recoil after attacking (Firecracker).
     float recoilDistance = 0.0f;
-    // Minimum attack range / blind spot (Mortar) -- see CombatEntity::minAttackRange.
+    // Minimum range / blind spot (Mortar).
     float minAttackRange = 0.0f;
-    // Sight/aggro range -- see CombatEntity::sightRange for the full
-    // explanation. 5.5 tiles (that source's own stated "main standard")
-    // is the default for every card not individually overridden below.
+    // Sight / aggro range; see CombatEntity::sightRange. 5.5 is the sourced
+    // standard for cards without their own value.
     float sightRange = 5.5f;
-    // Deploy delay before the first attack is ready (X-Bow) -- see
-    // CombatEntity::seedCooldown. 0 (the default) is every other card,
-    // ready to fire as soon as a target's in range.
+    // Deploy delay before the first attack (X-Bow); see
+    // CombatEntity::seedCooldown.
     int initialCooldownTicks = 0;
-    // HP-threshold transform (Cannon Cart) -- see
-    // CombatEntity::transformAtHpFraction/transformCheckMaxHp.
+    // HP-threshold transform (Cannon Cart).
     float transformAtHpFraction = 0.0f;
     int transformLifetimeTicks = 0;
     bool transformBecomesStationary = false;
-    // Archetype-swap transform (Goblin Demolisher) -- see
-    // CombatEntity::transformKillsSelf/transformDeathEffect. Deliberately
-    // separate from the ordinary `deathEffect` above -- see that field's
-    // own comment for why.
+    // Transform into a death effect (Goblin Demolisher); separate from
+    // `deathEffect`.
     bool transformKillsSelf = false;
     std::shared_ptr<IDeathEffect> transformDeathEffect;
 
-    // Periodic jump (Mega Knight) -- see CombatEntity::jumpMinRange/jumpMaxRange.
+    // Periodic jump (Mega Knight).
     float jumpMinRange = 0.0f;
     float jumpMaxRange = 0.0f;
     float jumpDamageMultiplier = 1.0f;
     float jumpSplashRadius = 0.0f;
 
-    // Piercing-line hit (Bowler, Magic Archer) -- see CombatEntity::lineSplash.
+    // Piercing line (Bowler, Magic Archer).
     bool lineSplash = false;
     float lineSplashRange = 0.0f;
 
-    // Range-based damage falloff (Hunter) -- NOT sourced data, see
-    // CombatEntity::rangeFalloff's own comment for why.
+    // Range-based damage falloff (Hunter). Not sourced data.
     bool rangeFalloff = false;
     float rangeFalloffMinFraction = 1.0f;
 
     // Bonus damage within a distance band (Archers' Power Shot, Executioner's
-    // Axe Smash) -- see CombatEntity's own fields of the same name.
-    // rangeBandMaxDist == 0.0f (the default) disables it.
+    // Axe Smash). rangeBandMaxDist == 0 disables it.
     float rangeBandMinDist = 0.0f;
     float rangeBandMaxDist = 0.0f;
     float rangeBandDamageMultiplier = 1.0f;
 
-    // AreaSpell-only: Vines' top-N-highest-HP targeting -- see
-    // AreaSpell::targetTopHpCount. 0 (the default) is every other spell.
+    // Spell only: Vines' top-N-highest-HP targeting.
     int spellTargetTopHpCount = 0;
-    // AreaSpell-only: Void's 3-tier target-count-based damage -- see
-    // AreaSpell::tieredDamage. false (the default) is every other spell.
+    // Spell only: Void's three-tier damage.
     bool spellTieredDamage = false;
     int spellTierSingleDamage = 0;
     int spellTierFewDamage = 0;
     int spellTierManyDamage = 0;
 
-    // Champion marker + activated ability (Mighty Miner's "Explosive
-    // Escape") -- see CombatEntity::isChampion/abilityElixirCost/
-    // abilityCooldownTicks/abilityEffect. isChampion alone changes no
-    // targeting/combat behavior -- a Champion stays whatever ordinary
-    // Archetype it already is (Mighty Miner is plain MeleeSquad, same as
-    // the regular Miner); this is purely a marker so
-    // GameManager::activateChampionAbility can find "my deployed Champion"
-    // on the board. false/0/nullptr (the defaults) are every non-Champion
-    // card.
+    // Champion marker and activated ability. The marker changes no combat
+    // behaviour; it lets GameManager::activateChampionAbility find the deployed
+    // Champion.
     bool isChampion = false;
-    // Hero marker (Clash Royale's separate "Hero" mechanic -- an ordinary
-    // troop given its own registered id + activated ability, e.g. Hero
-    // Musketeer's "Trusty Turret") -- see withHeroAbility. Kept as its own
-    // flag rather than folded into isChampion: every existing Champion-slot
-    // consumer (PlayerState::seedSlotState, GameManager::playCard's tracking
-    // hook/Mirror-block, CardRegistry::validateDeckSlots) checks
-    // `isChampion || isHero` instead, so a Hero is deck-slot- and
-    // ability-activation-compatible with a Champion without renaming any of
-    // that existing Champion-era machinery. false (the default) is every
-    // non-Hero card, including all 8 Champions.
+    // Hero marker: an ordinary troop with its own id and an activated ability
+    // (e.g. Hero Musketeer's "Trusty Turret"). A separate flag, but every
+    // Champion-slot consumer checks `isChampion || isHero`.
     bool isHero = false;
     float abilityElixirCost = 0.0f;
     int abilityCooldownTicks = 0;
     std::shared_ptr<IAbilityEffect> abilityEffect;
-    // -1 (the default) is unlimited activations -- see
-    // CombatEntity::abilityUsesRemaining. Only Boss Bandit sets this.
+    // -1 is unlimited.
     int abilityUsesLimit = -1;
-    // Post-spawn ability lockout (Hero Mega Minion's Wounding Warp: unusable
-    // for its first 1.5s) -- distinct from abilityCooldownTicks (the
-    // between-uses cooldown); this only ever affects the FIRST use. 0 (the
-    // default) means ready immediately, matching every Champion and every
-    // other Hero.
+    // Lockout before the FIRST use only (Hero Mega Minion: 1.5 s), distinct
+    // from the between-uses cooldown.
     int initialAbilityCooldownTicks = 0;
     // Post-death squad reactivation (Hero Goblins' "Banner Brigade"): once
-    // every live entity sharing this slot's own cardId+team has died,
-    // GameManager::activateChampionAbility gains a window of this many
-    // ticks to fire postDeathAbilityEffect (see PlayerState::
-    // ChampionSlotState::lastSquadWipeTick for how the window is tracked).
-    // This is a wholly separate activation path from abilityEffect above --
-    // a card with a post-death ability has NO alive-path ability at all
-    // (see CardStats::withPostDeathAbility, which deliberately doesn't set
-    // abilityEffect/abilityCooldownTicks the way withHeroAbility does --
-    // but DOES reuse abilityElixirCost above, since a card only ever uses
-    // one of the two activation paths, never both). 0 (the default,
-    // alongside postDeathAbilityEffect == nullptr) is every card without one.
+    // every live unit of this slot's card has died, activateChampionAbility has
+    // this many ticks to fire postDeathAbilityEffect (tracked in
+    // ChampionSlotState::lastSquadWipeTick). A card with this has no alive-path
+    // ability; it reuses abilityElixirCost.
     int abilityUsableAfterDeathTicks = 0;
     std::shared_ptr<IPeriodicEffect> postDeathAbilityEffect;
 
-    // Soul collection (Skeleton King) -- see CombatEntity::
-    // soulCollectionRadius/maxSouls. 0.0f/0 (the defaults) are every
-    // non-soul-collecting card.
+    // Soul collection (Skeleton King).
     float soulCollectionRadius = 0.0f;
     int maxSouls = 0;
 
-    // Hit-speed ramp (Little Prince) -- see CombatEntity::
-    // hitSpeedRampMidTick's own comment for how this differs from the
-    // damage ramp above.
+    // Hit-speed ramp (Little Prince); see CombatEntity::hitSpeedRampMidTick.
     int hitSpeedRampMidTick = 0;
     int hitSpeedRampFullTick = 0;
     float hitSpeedRampMidFraction = 1.0f;
     float hitSpeedRampFullFraction = 1.0f;
 
-    // Burst-on-Nth-attack (Dagger Duchess, some Evolutions) -- see
-    // CombatEntity::burstEveryNAttacks's own comment. 0 (the default)
-    // disables it.
+    // A burst every Nth attack (Dagger Duchess, some Evolutions).
     int burstEveryNAttacks = 0;
     float burstDamageMultiplier = 1.0f;
 
-    // Self-buff (or other self effect) on taking damage (some Evolutions,
-    // e.g. Barbarians) -- see CombatEntity::onDamageTakenEffect. nullptr
-    // (the default) is every card without one.
+    // An effect on taking damage (some Evolutions, e.g. Barbarians).
     std::shared_ptr<IOnDamageTakenEffect> onDamageTaken;
 
-    // Self-heal on landing a hit (Evolved Bats) -- see
-    // CombatEntity::healOnHitAmount. 0 (the default) disables it.
+    // Self-heal on landing a hit (Evolved Bats).
     int healOnHitAmount = 0;
     int healOnHitMaxHp = 0;
 
-    // Self-spawn on landing a hit (Evolved Skeletons) -- see
-    // CombatEntity::onHitSpawnEffect. nullptr (the default) is every
-    // card without one.
+    // Self-spawn on landing a hit (Evolved Skeletons).
     std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
 
-    // Pull nearby enemy troops on landing a hit (Evolved Valkyrie) -- see
-    // CombatEntity::onHitPullRadius/onHitPullDistance/onHitPullDamage.
-    // onHitPullRadius == 0.0f (the default) disables it.
+    // Pull nearby enemy troops on landing a hit (Evolved Valkyrie).
     float onHitPullRadius = 0.0f;
     float onHitPullDistance = 0.0f;
     int onHitPullDamage = 0;
 
-    // Self-haste on landing a hit, refreshing each hit (Evolved Barbarians'
-    // Blade Rage) -- see CombatEntity's own fields of the same name.
-    // selfHasteDurationTicks == 0 (the default) disables it.
+    // Self-haste on each landed hit (Evolved Barbarians' Blade Rage).
     int selfHasteDurationTicks = 0;
     float selfHasteCooldownMultiplier = 1.0f;
 
-    // Small fluent setters so CardRegistry's data table can stay one card
-    // per line/two, instead of spelling out every field for every card.
+    // Fluent setters, so a registry entry fits on a line or two.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
         spawnOffsets = std::move(offsets);
         return *this;
@@ -559,7 +403,7 @@ struct CardStats {
         chargeIsSticky = true;
         return *this;
     }
-    // Reads back `hp` (already set by troop(...) before this chains on).
+    // Reads back `hp`, so chain it after troop(...).
     CardStats& withEnrage(int healPerHit) {
         enrageMaxHp = hp;
         enrageHealPerHit = healPerHit;
@@ -592,7 +436,7 @@ struct CardStats {
         return *this;
     }
     CardStats& withHealAura(float radius, int amount) {
-        auraRadius = radius; // shared with the buff aura's radius; a card only ever uses one of the two auras
+        auraRadius = radius; // shared with the buff aura; a card uses one or the other
         healAllyAmount = amount;
         return *this;
     }
@@ -615,9 +459,9 @@ struct CardStats {
         spellKnockback = distance;
         return *this;
     }
-    // width is the FULL corridor width; speed is tiles per TICK; knockback is
-    // how far a swept unit is thrown, along a direction that depends on where
-    // across the corridor it was caught (see AreaSpell::updateRoll).
+    // width is the FULL corridor width; speed is tiles per tick; knockback
+    // direction depends on where across the corridor a unit is caught
+    // (AreaSpell::updateRoll).
     CardStats& withRollingSweep(float range, float width, float speed, float knockback) {
         spellRollRange = range;
         spellRollWidth = width;
@@ -661,8 +505,7 @@ struct CardStats {
         initialCooldownTicks = ticks;
         return *this;
     }
-    // Reads back `hp` (already set by troop(...)/building(...) before this
-    // chains on), same idiom as withEnrage.
+    // Reads back `hp`, like withEnrage.
     CardStats& withHpTransform(float atFraction, int lifetimeTicks, bool becomesStationary) {
         transformAtHpFraction = atFraction;
         transformLifetimeTicks = lifetimeTicks;
@@ -693,14 +536,13 @@ struct CardStats {
         jumpSplashRadius = splashRadiusOnLand;
         return *this;
     }
-    // splashRadius (see withSplash) doubles as the line's half-width.
+    // splashRadius doubles as the line's half-width.
     CardStats& withLineSplash(float range) {
         lineSplash = true;
         lineSplashRange = range;
         return *this;
     }
-    // minFraction is an invented engine constant, not sourced data -- see
-    // CombatEntity::rangeFalloff's comment.
+    // minFraction is an engine constant, not sourced data.
     CardStats& withRangeFalloff(float minFraction) {
         rangeFalloff = true;
         rangeFalloffMinFraction = minFraction;
@@ -721,10 +563,7 @@ struct CardStats {
         abilityUsesLimit = usesLimit;
         return *this;
     }
-    // Byte-identical to withChampionAbility above except it sets isHero
-    // instead of isChampion -- kept as its own setter (not a shared bool
-    // param bolted onto withChampionAbility) so every existing
-    // withChampionAbility call site is untouched.
+    // withChampionAbility, setting isHero instead.
     CardStats& withHeroAbility(float elixirCost, int cooldownTicks, std::shared_ptr<IAbilityEffect> effect,
             int usesLimit = -1) {
         isHero = true;
@@ -738,11 +577,8 @@ struct CardStats {
         initialAbilityCooldownTicks = ticks;
         return *this;
     }
-    // Post-death squad reactivation (Hero Goblins) -- see
-    // abilityUsableAfterDeathTicks/postDeathAbilityEffect's own comment for
-    // why this is a separate setter from withHeroAbility, not an overload:
-    // no abilityEffect/abilityCooldownTicks are set here, since this card
-    // has no alive-path ability at all.
+    // No abilityEffect or cooldown: a post-death card has no alive-path
+    // ability.
     CardStats& withPostDeathAbility(float elixirCost, int windowTicks, std::shared_ptr<IPeriodicEffect> effect) {
         isHero = true;
         abilityElixirCost = elixirCost;
@@ -791,16 +627,9 @@ struct CardStats {
         selfHasteCooldownMultiplier = cooldownMultiplier;
         return *this;
     }
-    // Permanent damage-taken reduction from spawn (Evolved Knight's
-    // shield) -- approximates a real mechanic that's conditional on
-    // movement state (shield only while not actively attacking) as a
-    // flat, permanent, smaller reduction instead, since this engine has
-    // no "is this entity currently mid-attack vs. approaching" signal
-    // exposed at the CardStats level. multiplier < 1.0 reduces damage
-    // taken; 1.0 (the default) is every card without one. Applied via
-    // CombatEntity::applyCurse at spawn with an effectively-infinite
-    // duration -- reuses the existing curse machinery, just seeded once
-    // instead of by a timed ability/spell.
+    // Permanent damage-taken reduction from spawn (Evolved Knight's shield),
+    // applied via applyCurse. The real shield holds only while not attacking;
+    // with no such signal here it is a smaller flat reduction. 1.0 is none.
     float passiveDamageReduction = 1.0f;
     CardStats& withPassiveDamageReduction(float multiplier) {
         passiveDamageReduction = multiplier;

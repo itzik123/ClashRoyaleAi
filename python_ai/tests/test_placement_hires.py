@@ -1,11 +1,4 @@
-"""place_hires -- the high-resolution placement branch.
-
-Split out of the old single `test_python_ai.py` on 2026-08-20. The bodies are
-unchanged -- only the shared header moved into `tests/conftest.py`, so the set of
-test node ids is the same modulo the file name.
-
-    python_ai/venv/Scripts/python.exe -m pytest python_ai/tests -q
-"""
+"""place_hires, the high-resolution placement branch."""
 import os
 import sys
 
@@ -44,61 +37,17 @@ from python_ai.trainers.distill_tactics import masked_kl  # noqa: E402
 CE = clash_royale_env.ClashRoyaleEnv
 
 
-# ==========================================================================
-# place_hires -- the high-resolution placement branch
-# (was test_placement_hires.py)
-# ==========================================================================
-# Pins the high-resolution placement branch: its safety, and its point.
+# --- place_hires ---
+# `cnn_trunk` pools twice, so the placement head reads a 9x5 map of a 34x18
+# board and the card context enters as a spatially uniform vector.
+# `place_hires` adds a parallel path from the trunk's pre-pool 16x34x18
+# activation, conditioned on the same (hx, card) context and added to the
+# coarse logits as a residual.
 #
-# Run (the .pyd is Python 3.11 only):
-#
-#     python_ai/venv/Scripts/python.exe -m pytest python_ai/test_placement_hires.py -q
-#
-# WHAT THIS BRANCH IS FOR
-# -----------------------
-# `cnn_trunk` pools twice, so the placement head reads a 9x5 map of a 34x18 board
-# and `place_up` blows it back up; one pooled cell covers ~4x4 board tiles and the
-# card context enters as a spatially UNIFORM vector. `place_hires` adds a parallel
-# path from the trunk's own PRE-pool 16x34x18 activation, at one-tile resolution,
-# conditioned on the same (hx, card) context, added to the coarse logits as a
-# residual.
-#
-# A CLAIM THIS FILE MEASURED AND HAD TO WEAKEN
-# --------------------------------------------
-# The handoff diagnosed the head as unable to EXPRESS an exact cell, from
-# `distill_tactics.py`'s signature of cross-entropy falling 180.9 -> 21.4 while
-# exact-cell argmax match never left 0.0%. Tested directly here, that is too
-# strong: on the task reduced to its essential the coarse head fits 14/14 exactly
-# (`test_both_heads_can_resolve_a_single_column_at_small_scale`), because
-# nearest-upsample followed by 3x3 convs lets a fine cell mix neighbouring pooled
-# cells, which recovers sub-block position. The branch is therefore a resolution
-# INCREASE whose value has to be measured at realistic scale (`prove_hires.py`),
-# not a repair of something provably impossible. Recorded here rather than
-# quietly dropped, because the original claim is what justified the work.
-#
-# WHY THE FINAL CONV IS ZERO-INITIALIZED
-# --------------------------------------
-# The handoff proposed concatenating into `place_up`, which changes its shape and
-# therefore **discards the trained placement head** from every checkpoint --
-# exactly the trade the 2026-08-09 checkerboard fix had to make. That cost is
-# avoidable. A zero-initialized residual branch computes the identical function at
-# init, so an existing checkpoint loads and behaves BIT-IDENTICALLY, the cards
-# that currently work keep working, and only genuinely new parameters start fresh.
-# `test_zero_init_is_bit_identical` and `test_old_checkpoint_keeps_the_placement_head`
-# are what make that claim checkable rather than asserted.
-#
-# The gradient still flows: with the last conv at zero its own gradient is
-# nonzero (it sees a live activation), so it leaves zero on the first step and the
-# layer beneath it starts learning on the second. Standard zero-conv behaviour.
-#
-# THE TEST THAT CARRIES THE ARGUMENT
-# ----------------------------------
-# `test_hires_branch_learns_exact_cells_the_coarse_head_cannot` is a controlled
-# A/B: one net, one dataset, one optimizer, one seed. The ONLY difference between
-# the arms is whether `place_hires` is trainable -- the control freezes it at its
-# zero init, which is bit-exactly the old architecture. If the coarse head could
-# express per-state exact cells, both arms would fit. It cannot, and that is the
-# whole reason this branch exists.
+# Its final conv is zero-initialized, so at init it computes the identical
+# function: an existing checkpoint loads bit-identically and keeps its trained
+# placement head. The zero conv still receives gradient, so the branch starts
+# learning immediately.
 
 def _net(seed=0):
     torch.manual_seed(seed)
@@ -106,16 +55,15 @@ def _net(seed=0):
 
 
 def _obs_batch(n=8, seed=0):
-    """`n` genuinely different real observations, from a real rollout."""
+    """`n` genuinely different real observations."""
     deck = list(gym_wrapper.DEFAULT_DECK)
     env = CE(deck, deck, 3600)
     env.reset()
     rng = np.random.default_rng(seed)
     rows = [np.asarray(env.get_observation_for_team(0), dtype=np.float32)]
     while len(rows) < n:
-        # Random legal-ish play to move the board on. The action does not
-        # matter; distinct BOARDS do, because a head that only has to fit one
-        # state can fit it with a constant and prove nothing.
+        # The action does not matter; distinct boards do, since one state can
+        # be fit by a constant.
         r = env.step(int(rng.integers(0, 5)), float(rng.integers(0, 18)),
                      float(rng.integers(0, 16)), 10)
         rows.append(np.asarray(r.observation, dtype=np.float32))
@@ -134,16 +82,11 @@ def _place(net, obs, card_idx=None, hires=None):
                                     hires_map=hires), hx, embeds, spatial
 
 
-# --------------------------------------------------------------------------
-# safety: the change must not disturb anything that already works
-# --------------------------------------------------------------------------
+# --- safety: the change must not disturb what already works ---
 
 def test_trunk_split_is_bit_identical_to_the_sequential():
-    """Running cnn_trunk in two halves must equal running it whole.
-
-    `extract_features` now takes the pre-pool activation out of the middle of
-    `cnn_trunk` instead of calling it as one Sequential. If those disagree even
-    in the last ulp, every checkpoint's features shift underneath it.
+    """Running cnn_trunk in two halves must equal running it whole, or every
+    checkpoint's features shift.
     """
     net = _net()
     obs = _obs_batch(4)
@@ -162,18 +105,15 @@ def test_hires_map_has_full_board_resolution():
 
 
 def test_zero_init_is_bit_identical():
-    """At init the branch contributes EXACTLY zero, so the head is unchanged.
-
-    Not 'approximately': the final conv's weight and bias are zeroed, so its
-    output is an exact zero tensor and the residual add is exact.
+    """At init the branch contributes exactly zero: its final conv's weight and
+    bias are zeroed.
     """
     net = _net()
     obs = _obs_batch(4)
     logits, hx, embeds, spatial = _place(net, obs)
 
-    # hx, then the cycle skip, then the chosen card's embedding -- the order
-    # `placement_given_card` builds it in (`_head_input` first, embed appended).
-    # The skip was added 2026-08-28; before it this was cat((hx, embed)).
+    # hx, the cycle skip, then the chosen card's embedding: the order
+    # `placement_given_card` builds it in.
     ctx = net.place_ctx(torch.cat(
         (hx, net.cycle_features(obs, detached=True),
          embeds[torch.arange(4), 0]), dim=-1))
@@ -185,11 +125,8 @@ def test_zero_init_is_bit_identical():
 
 
 def test_old_checkpoint_keeps_the_placement_head():
-    """An existing checkpoint must warm-start EVERYTHING it carried.
-
-    The point of the zero-init residual over the handoff's concat-into-place_up
-    is precisely this: `place_up`/`place_ctx` still shape-match, so the trained
-    placement head survives and only the new branch is fresh.
+    """An existing checkpoint warm-starts everything it carried; only the new
+    branch is fresh.
     """
     net = _net()
     old_keys = {k for k in net.state_dict() if not k.startswith(
@@ -202,19 +139,14 @@ def test_old_checkpoint_keeps_the_placement_head():
     assert clean is False           # the new keys are genuinely missing
     for k, v in old_blob.items():
         assert torch.equal(fresh.state_dict()[k], v), f"{k} was not warm-started"
-    # ...and the branch is still an exact no-op, so the loaded net behaves
-    # exactly as it did before the branch existed.
+    # ...and the branch is still an exact no-op.
     assert torch.equal(fresh.place_hires[-1].weight,
                        torch.zeros_like(fresh.place_hires[-1].weight))
 
 
 def test_recomputed_hires_equals_the_passed_one():
-    """The two ways of getting the branch its input must agree.
-
-    Hot paths hand the map in; everything else lets `placement_given_card`
-    rebuild it from `obs`. If those diverged, the rollout and the PPO update
-    would compute different logits from the same state and the ratio would
-    break silently -- the failure this codebase has already paid for twice.
+    """The map passed in and the map rebuilt from `obs` must agree, or rollout and
+    update compute different logits and the ratio breaks silently.
     """
     net = _net()
     for p in net.place_hires[-1].parameters():
@@ -226,12 +158,8 @@ def test_recomputed_hires_equals_the_passed_one():
 
 
 def test_refuses_to_guess_when_it_cannot_build_the_branch():
-    """No silent fallback to the coarse-only head.
-
-    Returning coarse logits when neither `obs` nor `hires_map` is available
-    would be a different function than the one the rollout used, which is the
-    same class of silent drift the `spatial_map is None` guard already exists
-    for.
+    """No silent fallback to the coarse-only head, which would be a different
+    function than the rollout used.
     """
     net = _net()
     obs = _obs_batch(2)
@@ -243,10 +171,7 @@ def test_refuses_to_guess_when_it_cannot_build_the_branch():
 
 
 def test_forward_sequence_matches_the_single_step_path():
-    """The batched update path and the rollout path stay equal.
-
-    Same guarantee `forward_sequence` was verified for when it was introduced;
-    the branch has to hold it too, including on the coverage pass.
+    """The batched update path matches the rollout path, coverage pass included.
     """
     net = _net()
     for p in net.place_hires[-1].parameters():
@@ -268,15 +193,12 @@ def test_forward_sequence_matches_the_single_step_path():
     assert torch.equal(place_a, place_b)
 
 
-# --------------------------------------------------------------------------
-# the point: resolution the coarse head does not have
-# --------------------------------------------------------------------------
+# --- resolution ---
 
 def _fit_exact_cells(net, obs, targets, steps=400, train_hires=True, lr=3e-3):
-    """Fit placement logits to one exact cell per state. Returns argmax match.
-
-    Only the placement pathway trains, exactly as `distill_tactics.py` does it,
-    so this measures what the HEAD can express given fixed trunk features.
+    """Fit placement logits to one exact cell per state; returns the argmax match.
+    Only the placement pathway trains, so this measures what the head can
+    express given fixed features.
     """
     trainable = []
     for name, p in net.named_parameters():
@@ -305,31 +227,17 @@ def _fit_exact_cells(net, obs, targets, steps=400, train_hires=True, lr=3e-3):
 
 
 def _enemy_column_states(columns, row=18.0):
-    """One board per column, each with a single enemy troop in that column.
-
-    Deliberately NOT random rollout states: two random boards can differ only
-    in the elixir scalar, and the placement head reads the SPATIAL map, so a
-    pair like that has one board and two labels and is unfittable by any head
-    at any resolution. Measured on the first version of this test: 8 sampled
-    states collapsed to 7 distinct spatial maps. Injecting the difference makes
-    every state distinct exactly where the head can see it.
+    """One board per column, each with a single enemy troop in that column. Random
+    states can differ only in a scalar the placement head does not read, which
+    makes them unfittable at any resolution.
     """
     deck = list(gym_wrapper.DEFAULT_DECK)
     rows = []
     for x in columns:
         env = CE(deck, deck, 3600)
         env.reset()
-        # Archers by ID, not by DECK POSITION. This used to read
-        # `gym_wrapper.DEFAULT_DECK[1]` with the comment "Archers", which is
-        # only true for one particular deck: the 2026-08-16 switch to the 2.6
-        # Hog Cycle silently made slot 1 a Musketeer, and a Musketeer is ONE
-        # body against Archers' two, so every board's spatial signature
-        # narrowed and the same head fit 12/14 instead of 14/14. The test then
-        # reported an architecture regression that had not happened.
-        #
-        # The fixture must not move when the deck moves -- this test is about
-        # what the placement head can EXPRESS, which has nothing to do with
-        # which deck is being trained.
+        # Archers by id, not by deck position: the fixture must not move when
+        # the deck does.
         env.inject(1, float(x), row, 1)                 # Archers, team 1
         env.step(4, 0.0, 0.0, 1)        # no-op tick, so the unit is on the board
         rows.append(np.asarray(env.get_observation_for_team(0), dtype=np.float32))
@@ -337,29 +245,15 @@ def _enemy_column_states(columns, row=18.0):
 
 
 def test_both_heads_can_resolve_a_single_column_at_small_scale():
-    """A MEASURED CORRECTION to the handoff's diagnosis. Read this one.
-
-    The handoff (and this file's first draft) claimed the coarse head simply
-    CANNOT express an exact cell, because one pooled cell covers ~4x4 tiles.
-    Run as a controlled A/B on the task reduced to its essential -- 14 boards
-    differing only in which column holds one enemy, answer in that column --
-    **both arms fit 14/14 exactly**. The coarse head is not blind below the
-    block: `place_up` is nearest-upsample followed by 3x3 convs, so each fine
-    cell mixes NEIGHBOURING pooled cells and sub-block position is recoverable.
-
-    So "argmax match stuck at 0.0% while CE fell 8.5x" is not, on its own,
-    evidence of inexpressibility. Whatever binds in `distill_tactics.py` binds
-    at realistic scale -- hundreds of states and a target that varies in both
-    axes and per card -- not at the level of one column. `prove_hires.py`
-    measures it there, which is the only place the question can be settled.
-
-    Kept as a regression test with the honest assertion: the branch must not
-    make a task the head could already do any harder.
+    """Both heads resolve a single column: nearest-upsample followed by 3x3 convs
+    mixes neighbouring pooled cells, so sub-block position is recoverable. The
+    branch's value is measured at realistic scale in prove_hires.py; this pins
+    only that it does not make the task harder.
     """
     columns = list(range(2, 16))
     obs = _enemy_column_states(columns)
-    # Answer in the same column, in our own half. Row 12 for every state, so
-    # the ONLY thing that has to be read off the board is the column.
+    # Answer in the same column, row 12 for every state, so only the column has
+    # to be read.
     targets = torch.tensor([12 * 18 + x for x in columns], dtype=torch.long)
 
     control = _fit_exact_cells(_net(seed=7), obs, targets, train_hires=False)
@@ -372,21 +266,13 @@ def test_both_heads_can_resolve_a_single_column_at_small_scale():
 
 
 def test_the_pooled_map_covers_the_whole_board():
-    """`ceil_mode=True` on both MaxPools is load-bearing, and its failure is
-    SILENT -- nothing raises, the network simply gets smaller.
+    """`ceil_mode=True` on both MaxPools is load-bearing, and floor-pooling fails
+    silently.
 
-    WHAT THIS DOES NOT TEST, because the obvious version of it does not work.
-    The first attempt asserted that lighting up board row 33 changes the trunk
-    output, on the theory that floor-pooling (34 -> 17 -> 8, covering input
-    rows 0..31) would discard the back row behind the King. MEASURED: with
-    ceil_mode forced off the shape drops to (32, 8, 4) and NO row is dead --
-    the convolutions spread row 33's signal into earlier rows before the pool
-    truncates, so it still reaches the trunk. That test passed either way and
-    would have been false confidence.
-
-    What actually changes is the SIZE of the map, in both dimensions, so that
-    is what is pinned -- derived from the board and the pooling arithmetic
-    rather than hardcoded as (9, 5), so it stays honest if the board changes.
+    What changes is the map's size, so that is what is pinned, derived from the
+    board rather than hardcoded. Testing that row 33 still reaches the trunk
+    does not work: the convolutions spread it into earlier rows before a
+    floor-pool truncates.
     """
     import math
 
@@ -409,17 +295,14 @@ def test_the_pooled_map_covers_the_whole_board():
         f"floor-pooling would give {floored(BOARD_H)} and silently shrink the "
         "board the network can see")
     assert out.shape[3] == pooled(BOARD_W)
-    # and the two must actually differ, or this asserts nothing at all
+    # The two must differ, or this asserts nothing.
     assert pooled(BOARD_H) != floored(BOARD_H)
 
 
 def test_every_board_row_reaches_the_trunk():
-    """A separate, weaker property: no row is wholly invisible to the CNN.
-
-    Deliberately NOT presented as the ceil_mode guard -- see above, it passes
-    with ceil_mode off. It catches a different regression: a row disconnected
-    by a stride, crop or channel-layout change, which would be a blind spot the
-    network could never learn to use.
+    """No row is wholly invisible to the CNN. Weaker than the ceil_mode guard (it
+    passes with ceil_mode off); it catches a row disconnected by a stride, crop
+    or layout change.
     """
     import torch
 

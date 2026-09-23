@@ -1,29 +1,9 @@
-"""Multi-card COMBO planning in the UtilityTeacher (TODO.md item 1).
+"""Multi-card combo planning in the UtilityTeacher.
 
-WHY THIS FILE EXISTS
---------------------
-The 2026-08-19 deploy-time change (`DEPLOY_TIME_TICKS = 10`) made the ESCORTED
-push the correct play and the NAKED push the punished one, measured on the same
-engine and the same harness:
-
-    lone win condition                       -556.3 tower HP
-    supported push (tank one decision ahead) +448.5 tower HP  [+137.3, +760.1]
-    escorting, inside a punish window        +650   tower HP  [+429, +878]
-
-`UtilityTeacher` could not make that play. `_cells_for` proposed cells for ONE
-card per decision and `score` ranked single candidates, so its entire attack
-repertoire was "send the win condition to a bridge, alone" -- exactly the play
-the new physics correctly punishes. That, and not the engine, is why
-`prove_environment.py`'s strategy arm still read attack 0.490 vs cycle 0.715.
-
-THE ONE ENGINE FACT THAT DECIDES THE DESIGN, measured 2026-08-20 and pinned
-below: `step_self_play(slot, x, y, ..., 0)` places NOTHING. Placement is
-processed inside the tick loop, so a 0-tick call spends no elixir and puts no
-unit on the board. There is therefore no such thing as a truly simultaneous
-two-card placement, and -- more importantly -- `gym_wrapper.step` hands the
-teacher exactly ONE `(slot, x, y)` per decision. So a combo is a SEQUENCE across
-consecutive decisions, which is also the shape the +448.5 measurement was taken
-at ("tank one decision ahead").
+Deploy time made the escorted push correct and the naked push punished, and a
+teacher proposing one card per decision could only play the naked push. A
+0-tick `step_self_play` places nothing and `gym_wrapper.step` takes one (slot,
+x, y) per decision, so a combo is a SEQUENCE across consecutive decisions.
 """
 import os
 import sys
@@ -48,22 +28,10 @@ HOG, MUSK, CANNON, ICE_GOLEM, SKELETONS, ICE_SPIRIT, LOG, FIREBALL = (
 PLANE = CE.BOARD_HEIGHT * CE.BOARD_WIDTH
 
 
-# --------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------
+# --- helpers ---
 def _env(ticks=40, seed=0):
-    """A staged mid-match board, SEEDED so the fixture is reproducible.
-
-    It used to call a bare `reset()`, which left team 1's hand and the whole
-    40-tick warm-up drawn from `std::random_device` -- so every invocation
-    staged a different position and any assertion about which candidate WINS
-    was a coin flip. That was invisible while the scorer was lenient and became
-    a ~1-in-3 flake the moment reactive rollouts made scores tighter.
-
-    `ClashRoyaleEnv.seed()` seeds both engine generators and re-deals (landed
-    2026-08-21), so this is now available; CLAUDE.md's claim that the opening
-    shuffle cannot be seeded is stale. Seed 0 is not cherry-picked: the staged
-    state below chooses a combo in 33 of the first 40 seeds (82%).
+    """A staged mid-match board, seeded so assertions about which candidate wins
+    are reproducible.
     """
     env = CE(DECK, DECK, 3600)
     env.seed(seed)
@@ -81,8 +49,7 @@ def _teacher(team=0, horizon=30, k_cells=2, max_combos=4):
 
 
 def _stage_hand(env, team, hand, elixir):
-    """Deal an exact hand and bar. Both setters exist in the shipped .pyd --
-    CLAUDE.md records the 2026-08-19 stale-.pyd incident that hid them."""
+    """Deal an exact hand and bar."""
     env.set_hand_for_team(team, list(hand))
     env.set_elixir_for_team(team, float(elixir))
 
@@ -97,12 +64,9 @@ def _occupied_cells(env, team=0):
     return sorted(set(zip(ys.tolist(), xs.tolist())))
 
 
-# ==========================================================================
-# the action representation
-# ==========================================================================
+# --- the action representation ---
 def test_a_candidate_carries_a_placement_SEQUENCE_not_a_single_cell():
-    """`Candidate` used to be one (slot, x, y). Everything downstream reads
-    `.slot/.x/.y`, so those stay -- they now mean THE FIRST STEP."""
+    """`.slot/.x/.y` now mean the first step of the sequence."""
     c = T.Candidate.single(1, HOG, 14.0, 15.0, "wincon")
     assert c.placements == [(1, 14.0, 15.0)]
     assert (c.slot, c.card_id, c.x, c.y) == (1, HOG, 14.0, 15.0)
@@ -129,12 +93,9 @@ def test_the_noop_is_still_an_empty_sequence_that_scores_zero():
     assert t.score(env, T.NOOP, base, obs) == 0.0
 
 
-# ==========================================================================
-# the combo generator
-# ==========================================================================
+# --- the combo generator ---
 def test_a_supported_push_is_proposed_when_tank_and_wincon_are_both_in_hand():
-    """THE combo the deploy-time change made correct: tank first, win condition
-    one decision later, same lane."""
+    """Tank first, win condition one decision later, same lane."""
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, ICE_SPIRIT], 10.0)
     t = _teacher()
@@ -146,14 +107,15 @@ def test_a_supported_push_is_proposed_when_tank_and_wincon_are_both_in_hand():
             "the TANK must land first -- a win condition in front of its own "
             "escort is the naked push the engine now punishes")
         assert c.steps[1].delay_ticks == T.COMBO_FOLLOWUP_DELAY_TICKS
-        # Same lane, and the tank at or ahead of the win condition.
+        # Same lane, the tank at or ahead of the win condition.
         assert c.steps[0].x == c.steps[1].x
         assert c.steps[0].y >= c.steps[1].y
 
 
 def test_the_tank_is_derived_from_engine_HP_not_a_hardcoded_card_id():
-    """`DEFAULT_DECK` has changed twice. A literal 40 would silently mean
-    'Ice Golem' forever -- the same failure `card_roles` exists to avoid."""
+    """The tank is read from engine HP, so a deck change cannot leave a stale
+    literal.
+    """
     hp = T.card_peak_hp(DECK)
     assert set(hp) <= set(DECK)
     assert hp[ICE_GOLEM] > hp[MUSK] > hp[ICE_SPIRIT] > hp[SKELETONS]
@@ -163,8 +125,9 @@ def test_the_tank_is_derived_from_engine_HP_not_a_hardcoded_card_id():
 
 
 def test_a_combo_is_never_proposed_when_the_PAIR_is_unaffordable():
-    """Ice Golem (2) + Hog (4) needs 6, minus the 0.35 that regenerates during
-    the one decision between them."""
+    """Ice Golem (2) + Hog (4) needs 6, minus the 0.35 that regenerates between
+    the two decisions.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, ICE_SPIRIT], 3.0)
     t = _teacher()
@@ -177,9 +140,9 @@ def test_a_combo_is_never_proposed_when_the_PAIR_is_unaffordable():
 
 
 def test_every_step_of_every_combo_is_a_legal_placement_for_either_team():
-    """The team-1 frame trap, extended to the second card. `is_valid_placement`
-    takes ABSOLUTE y for both teams while `step_self_play` mirrors team 1's --
-    getting that wrong reads as 'the teacher is weak', not as an exception."""
+    """The team-1 frame trap extended to the second card: `is_valid_placement`
+    takes absolute y, `step_self_play` mirrors team 1's.
+    """
     for team in (0, 1):
         env = _env()
         _stage_hand(env, team, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
@@ -194,9 +157,9 @@ def test_every_step_of_every_combo_is_a_legal_placement_for_either_team():
 
 
 def test_combo_width_is_capped_so_the_latency_budget_survives():
-    """Width is what search is expensive in: one engine step is 0.015 ms but
-    each extra candidate is a whole rollout. Curated combos, not the cross
-    product."""
+    """Width is what search is expensive in: each extra candidate is a whole
+    rollout. Curated combos, not the cross product.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     for cap in (0, 1, 2, 4):
@@ -206,9 +169,9 @@ def test_combo_width_is_capped_so_the_latency_budget_survives():
 
 
 def test_combos_are_off_at_horizons_too_short_to_SEE_the_second_card():
-    """The follow-up lands 10 ticks in. A rollout that stops at 10 ticks scores
-    the pair without ever simulating half of it, which is worse than not
-    proposing it -- it would charge both costs and credit only one card."""
+    """A rollout that stops before the follow-up lands would charge both costs and
+    simulate one card.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     for horizon in (0, 10):
@@ -218,8 +181,7 @@ def test_combos_are_off_at_horizons_too_short_to_SEE_the_second_card():
 
 
 def test_a_defensive_stack_is_proposed_against_a_real_push():
-    """Cannon (centre pull) plus a body to kill what it holds -- the other
-    combo family, and the one that fires far more often than the push."""
+    """Cannon (centre pull) plus a body to kill what it holds."""
     env = _env()
     _stage_hand(env, 0, [CANNON, SKELETONS, MUSK, ICE_SPIRIT], 10.0)
     for _ in range(6):
@@ -234,13 +196,11 @@ def test_a_defensive_stack_is_proposed_against_a_real_push():
         assert t.roles[c.cards[0]] == "building", "the building must land first"
 
 
-# ==========================================================================
-# forward simulation
-# ==========================================================================
+# --- forward simulation ---
 def test_a_zero_tick_step_places_nothing_which_is_why_a_combo_is_a_SEQUENCE():
-    """Pinned because the whole design rests on it. If the engine ever starts
-    honouring a 0-tick placement, a genuinely simultaneous combo becomes
-    expressible and this test is the thing that should be re-read first."""
+    """The design rests on this: if a 0-tick placement ever works, a truly
+    simultaneous combo becomes expressible.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     s = env.snapshot()
@@ -251,9 +211,9 @@ def test_a_zero_tick_step_places_nothing_which_is_why_a_combo_is_a_SEQUENCE():
 
 
 def test_the_rollout_actually_plays_BOTH_cards_of_a_combo():
-    """The failure this catches is silent and expensive: a rollout that plays
-    only the first card scores the pair's COST against one card's VALUE, so
-    every combo looks bad and the teacher quietly never learns to escort."""
+    """A rollout that plays only the first card scores the pair's cost against one
+    card's value, and the teacher silently never escorts.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -270,9 +230,8 @@ def test_the_second_card_lands_one_decision_after_the_first():
     t = _teacher(horizon=50)
     combo = next(c for c in t.candidates(env, _obs(env))
                  if c.kind == "supported_push")
-    # Two independent snapshots: `execute_steps` runs a plan forward from
-    # wherever the snapshot is, so re-running it on the same object would
-    # replay the first card.
+    # Two independent snapshots: `execute_steps` runs forward from wherever the
+    # snapshot is, so reusing one would replay the first card.
     short = env.snapshot()
     t.execute_steps(short, combo, ticks=T.COMBO_FOLLOWUP_DELAY_TICKS)
     assert short.get_elixir_spent(0) == pytest.approx(
@@ -283,10 +242,9 @@ def test_the_second_card_lands_one_decision_after_the_first():
 
 
 def test_both_cards_of_a_combo_get_their_OWN_deploy_time():
-    """`DEPLOY_TIME_TICKS = 10` is per-entity, assigned in
-    `CardFactories::applyCardMetadata`. If it were global-per-tick or shared,
-    the second card would deploy instantly and the escort would be scored
-    against physics that do not exist."""
+    """DEPLOY_TIME_TICKS is per entity (`CardFactories::applyCardMetadata`);
+    shared, the second card would deploy instantly.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     env.step_self_play(0, 14.0, 15.0, -1, 0, 0, 1)     # tank at the bridge
@@ -305,9 +263,9 @@ def test_both_cards_of_a_combo_get_their_OWN_deploy_time():
 
 
 def test_a_combo_rollout_does_not_touch_the_live_match():
-    """snapshot() deep-copies the stats collectors. Two placements is two
-    chances for a hypothetical hit to land in the REAL match's statistics --
-    and those feed the reward shaping."""
+    """snapshot() deep-copies the stats collectors; otherwise a hypothetical hit
+    lands in the real match's statistics, which feed the reward.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     before = (env.get_tower_damage_dealt(0), env.get_tower_damage_dealt(1),
@@ -321,12 +279,11 @@ def test_a_combo_rollout_does_not_touch_the_live_match():
     assert before == after
 
 
-# ==========================================================================
-# scoring
-# ==========================================================================
+# --- scoring ---
 def test_a_combo_is_charged_for_BOTH_cards():
-    """`W_COST` is the opportunity cost the no-op baseline does NOT absorb. A
-    combo that pays for one card is a bot that thinks escorting is free."""
+    """`W_COST` is the opportunity cost the no-op baseline does not absorb, so a
+    combo pays for both cards.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -336,8 +293,9 @@ def test_a_combo_is_charged_for_BOTH_cards():
 
 
 def test_the_elixir_charge_is_what_separates_a_combo_from_its_first_card():
-    """Same first card, same board, same rollout arithmetic -- the pair must
-    cost strictly more, or `w_cost` is not reaching the second step."""
+    """Same first card, same board: the pair must cost strictly more, or `w_cost`
+    is not reaching the second step.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -349,15 +307,12 @@ def test_the_elixir_charge_is_what_separates_a_combo_from_its_first_card():
     assert t.sequence_cost(combo) > t.sequence_cost(solo)
 
 
-# ==========================================================================
-# the plan: commit the first card, keep the second reachable
-# ==========================================================================
+# --- the plan: commit the first card, keep the second reachable ---
 def test_choosing_a_combo_leaves_the_follow_up_reachable_next_decision():
-    """`act()` can only return ONE placement per decision, so the second half
-    of the plan has to survive to the next one. It is re-SCORED there rather
-    than blindly executed -- by then the tank is on the board, so a solo
-    rollout of the win condition SEES the escort. Rules propose, simulation
-    ranks; that contract does not get suspended for a plan."""
+    """`act()` returns one placement per decision, so the second half of the plan
+    survives to the next one, where it is re-scored with the tank already on
+    the board.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -396,9 +351,9 @@ def test_a_pending_follow_up_is_dropped_when_it_became_unaffordable():
 
 
 def test_a_plan_is_single_use_and_cannot_survive_two_decisions():
-    """A stale plan is worse than none: the board it was scored on is gone.
-    `act` consumes whatever plan it inherited before it makes a new one, so a
-    follow-up is offered on exactly the decision it was planned for."""
+    """A plan is consumed on the decision it was planned for; a stale one was
+    scored on a board that is gone.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -412,8 +367,7 @@ def test_a_plan_is_single_use_and_cannot_survive_two_decisions():
 
 
 def test_reset_clears_a_pending_plan():
-    """A plan surviving into the next match would place a card against a board
-    that no longer exists."""
+    """A plan must not survive into the next match."""
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -426,8 +380,9 @@ def test_reset_clears_a_pending_plan():
 
 
 def test_act_still_returns_one_placement_in_the_teachers_own_frame():
-    """`gym_wrapper.step` unpacks exactly three values. The action space grew
-    INSIDE the teacher; the interface it is driven through did not."""
+    """`gym_wrapper.step` unpacks exactly three values; the action space grew
+    inside the teacher only.
+    """
     env = _env()
     t = _teacher(horizon=50)
     out = t.act(env, _obs(env))
@@ -437,16 +392,11 @@ def test_act_still_returns_one_placement_in_the_teachers_own_frame():
 
 
 def test_the_teacher_actually_executes_a_planned_pair_end_to_end():
-    """The integration nothing above covers: `act` -> `step_self_play` -> `act`
-    -> `step_self_play`, driven exactly the way `gym_wrapper` drives it, with
-    BOTH cards reaching the board.
+    """End to end, driven the way `gym_wrapper` drives it: `act` ->
+    `step_self_play` twice, both cards reaching the board.
 
-    STAGED rather than sampled from a real match, deliberately. Measured
-    2026-08-20, a combo is actually chosen roughly twice per 950 decisions of
-    teacher-vs-teacher play, because the bar reaches the pair's price on ~1.4%
-    of decisions -- so a match-driven version of this assertion would be flaky
-    for a reason that has nothing to do with the code path it is testing. The
-    RATE is measured in `eval/prove_combos.py`; this pins the MECHANISM.
+    Staged, because real matches choose a combo too rarely for a stable
+    assertion; `eval/prove_combos.py` measures the rate.
     """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
@@ -469,41 +419,15 @@ def test_the_teacher_actually_executes_a_planned_pair_end_to_end():
         first + E.get_card_info(planned)["cost"])
 
 
-# ==========================================================================
-# reachability -- the half the candidate generator alone does NOT solve
-# ==========================================================================
-# MEASURED 2026-08-20, teacher vs teacher at stage 5, ~2,400 decisions:
-#
-#     elixir mean 1.79   p90 3.30
-#     states where ANY combo was affordable            2
-#     ...and both were at the 5.00 opening bar
-#
-# So a pair priced at 5-6 elixir is not merely rare, it is UNREACHABLE. The bot
-# spends continuously (`w_pos` credits any cheap troop for standing forward),
-# and a generator that proposes a play the bot can never afford has not solved
-# the problem it was built for.
-#
-# A FLAT SAVINGS CHARGE WAS TRIED FIRST AND IS MEASURED DEAD. Charging every
-# marginal spend while a push was within six decisions of affordable moved the
-# bar from 1.79 to 1.73 across reserves of 0.0 / 1.5 / 3.0 / 5.0 -- i.e. not at
-# all, and if anything the wrong way. A per-decision charge cannot produce
-# multi-second saving when the bot has many attractive cheap plays and the
-# defence exemption keeps firing. It was removed rather than shipped, on the
-# same principle CLAUDE.md already records for back-row structure penalties:
-# a penalty cannot move a distribution with no mass to move.
-#
-# What DOES lower the price is the follow-up DELAY. The pair's cost is paid
-# across the gap, not at the plan, so 3-5 s of regeneration is worth 1.05-1.75
-# elixir -- and a longer gap is also the tactically better play, because the
-# tank needs time to get 1-2 tiles ahead of the win condition rather than the
-# half tile it manages in one second.
+# --- reachability ---
+# A 5-6 elixir pair is rarely affordable, because the teacher spends
+# continuously. A flat savings charge did not move the bar and was removed.
+# What lowers the price is the follow-up delay: the pair's cost is paid across
+# the gap, and a longer gap also lets the tank get further ahead.
 
 
 def test_the_follow_up_delay_is_SEARCHED_not_fixed():
-    """Timing is a candidate axis like placement is. One second of gap leaves
-    the tank barely half a tile ahead and forces both cards to be affordable at
-    once; three to five seconds is both cheaper and the escort shape the deploy
-    time actually rewards. The simulator picks."""
+    """The follow-up delay is a searched candidate axis, like placement."""
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=100, max_combos=12)
@@ -515,7 +439,8 @@ def test_the_follow_up_delay_is_SEARCHED_not_fixed():
 
 def test_a_gap_is_only_offered_when_the_rollout_can_SEE_past_it():
     """A combo scored on a rollout that ends before its second card charges two
-    cards and simulates one."""
+    cards and simulates one.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     for horizon in (30, 50, 100):
@@ -526,9 +451,9 @@ def test_a_gap_is_only_offered_when_the_rollout_can_SEE_past_it():
 
 
 def test_a_longer_gap_makes_a_pair_affordable_that_a_short_one_does_not():
-    """The whole reason the delay is searched. Skeletons (1) + Hog (4) needs
-    4.65 at a one-second gap and 3.95 at three seconds -- and the bar's p90 is
-    3.30, so that difference is the difference between never and sometimes."""
+    """Skeletons (1) + Hog (4) needs 4.65 at a one-second gap and 3.95 at three
+    seconds.
+    """
     env = _env()
     _stage_hand(env, 0, [SKELETONS, HOG, CANNON, MUSK], 4.1)
     t = _teacher(horizon=100, max_combos=12)
@@ -540,9 +465,9 @@ def test_a_longer_gap_makes_a_pair_affordable_that_a_short_one_does_not():
 
 
 def test_a_delayed_plan_is_held_until_its_own_decision_comes_round():
-    """A plan with a three-second gap must not fire on the next decision. The
-    follow-up is offered when it is DUE and never before -- otherwise the gap
-    that was scored is not the gap that is played."""
+    """A plan with a three-second gap fires when it is due and never before, or
+    the gap scored is not the gap played.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=100, max_combos=12)
@@ -560,10 +485,9 @@ def test_a_delayed_plan_is_held_until_its_own_decision_comes_round():
 
 
 def test_a_plan_reserves_the_elixir_its_own_follow_up_needs():
-    """The narrow reserve that replaced the flat one. It is not "save toward
-    some push"; it is "you committed to a plan two seconds ago, do not spend
-    the money it needs". Bounded by construction to the few decisions a plan is
-    live, which is why it can work where the flat charge could not."""
+    """The plan reserve: having committed to a plan, do not spend the elixir its
+    follow-up needs. It is live only for the few decisions a plan exists.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=100, max_combos=12)
@@ -591,11 +515,9 @@ def test_the_plan_reserve_never_blocks_the_plans_own_follow_up():
 
 
 def test_the_plan_reserve_never_blocks_DEFENCE():
-    """A reserve that holds elixir through an incoming push does not save
-    elixir, it loses the tower -- the same failure a FLAT solvency reserve
-    produced. The threshold is `tactics.HOG_MAX_THREAT`, reused rather than
-    restated, because it is already this project's calibrated "our half is
-    clear enough to commit" line."""
+    """The reserve never blocks defence; holding elixir through an incoming push
+    loses the tower. The threshold reuses `tactics.HOG_MAX_THREAT`.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=100, max_combos=12)
@@ -623,11 +545,10 @@ def test_the_plan_reserve_is_silent_when_the_spend_leaves_enough_anyway():
 
 
 def test_the_teacher_records_WHICH_kind_of_play_it_just_chose():
-    """Telemetry, and the reason it is on the teacher rather than recomputed by
-    the harness: `eval/prove_combos.py` has to tell "the combo did not help"
-    apart from "the combo never happened", and re-deriving the chosen kind from
-    a returned `(slot, x, y)` cannot, because a combo's first step is
-    indistinguishable from the same card played alone."""
+    """The teacher records the kind of play it chose: a combo's first step is
+    indistinguishable from the same card played alone, so
+    `eval/prove_combos.py` cannot re-derive it.
+    """
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -650,13 +571,8 @@ def test_last_kind_is_noop_when_the_teacher_holds():
 
 
 def test_a_cheap_two_body_defence_is_proposed_against_a_push():
-    """The family added because AFFORDABILITY is the binding constraint.
-
-    Measured: combos are chosen on 0.28% of decisions and the bar's p90 is
-    3.30, so every family that needs 5-6 elixir is priced out of most states.
-    Ice Spirit + Skeletons is TWO elixir and is a real 2.6 defensive pair --
-    chip and stall, then bodies. It fires in the states the expensive families
-    cannot reach, and unlike `defensive_stack` it needs no building in hand.
+    """A two-elixir defensive pair (Ice Spirit + Skeletons) for the states the
+    expensive families cannot afford, needing no building in hand.
     """
     env = _env()
     _stage_hand(env, 0, [SKELETONS, ICE_SPIRIT, HOG, MUSK], 3.0)
@@ -683,11 +599,9 @@ def test_the_cheap_defence_needs_no_building_and_no_threat_means_no_pair():
 
 
 def test_a_single_combo_family_can_be_disabled_for_an_ABLATION():
-    """`combo_families` exists because the win-rate A/B came back with two of
-    three runs pointing negative, and the only way to tell WHICH family is
-    responsible is to remove one and re-measure. Ablating by configuration
-    keeps the arms byte-identical everywhere else -- editing the family list in
-    source between runs would not."""
+    """`combo_families` allows a per-family ablation that keeps the arms
+    byte-identical everywhere else.
+    """
     env = _env()
     _stage_hand(env, 0, [SKELETONS, ICE_SPIRIT, HOG, MUSK], 4.0)
     for _ in range(6):
@@ -706,8 +620,7 @@ def test_a_single_combo_family_can_be_disabled_for_an_ABLATION():
 
 
 def test_the_family_list_matches_what_the_generator_can_actually_emit():
-    """A name in COMBO_FAMILIES that no generator emits would silently make an
-    ablation a no-op, and the ablation would read as 'that family was harmless'."""
+    """A name no generator emits would make an ablation a silent no-op."""
     assert set(T.COMBO_FAMILIES) == {
         "supported_push", "counter_push", "defensive_stack", "cheap_defence",
         "spell_then_push", "push_then_spell"}
@@ -716,13 +629,10 @@ def test_the_family_list_matches_what_the_generator_can_actually_emit():
         assert hasattr(t, f"_combo_{name}"), name
 
 
-# ==========================================================================
-# weight injection -- what a profile sweep needs
-# ==========================================================================
+# --- weight injection, for profile sweeps ---
 def test_a_profile_can_be_given_as_an_explicit_WEIGHT_SET():
-    """`PROFILES` has three named entries and a sweep needs to try weights that
-    are not among them. Passing a mapping is the minimal way in; the named form
-    keeps working unchanged because everything else in the tree uses it."""
+    """A profile can be an explicit weight mapping; the named form is unchanged.
+    """
     weights = dict(T.PROFILES["balanced"], w_pos=7.5)
     t = T.UtilityTeacher(DECK, team=0, profile=weights, horizon_ticks=50)
     t.reset()
@@ -731,11 +641,9 @@ def test_a_profile_can_be_given_as_an_explicit_WEIGHT_SET():
 
 
 def test_an_injected_weight_set_SURVIVES_reset():
-    """`reset()` re-draws the profile every match unless one was pinned, and it
-    used to re-read it out of `PROFILES` by name. A swept weight set that
-    silently reverted on the first reset would make every arm of a sweep
-    measure the same thing -- and the sweep would report a flat line and look
-    like a null result rather than a broken harness."""
+    """`reset()` re-draws the profile unless one was pinned; an injected set that
+    reverted would make every sweep arm measure the same thing.
+    """
     weights = dict(T.PROFILES["balanced"], w_pos=3.0)
     t = T.UtilityTeacher(DECK, team=1, profile=weights, horizon_ticks=50)
     for _ in range(3):
@@ -744,8 +652,7 @@ def test_an_injected_weight_set_SURVIVES_reset():
 
 
 def test_an_injected_weight_set_is_COPIED_not_aliased():
-    """Two teachers built from one dict must not share it -- a sweep builds
-    both sides of a match from the same weights."""
+    """Two teachers built from one dict must not share it."""
     weights = dict(T.PROFILES["balanced"], w_pos=9.0)
     a = T.UtilityTeacher(DECK, team=0, profile=weights)
     a.reset()
@@ -763,37 +670,22 @@ def test_the_named_profiles_still_work_exactly_as_before():
         assert t.profile == T.PROFILES[name]
 
 
-# ==========================================================================
-# play_margin -- the anti-dumping guard, finally set to a value that guards
-# ==========================================================================
+# --- play_margin: the anti-dumping guard ---
 def test_play_margin_is_the_SWEPT_value_not_the_original_placeholder():
-    """0.05 was an OFF SWITCH, and the number that says so was measured.
-
-    `play_margin`'s own docstring says it exists "so rollout noise on a dead
-    board cannot talk the bot into dumping". The marginal cheap plays it was
-    meant to stop score a MEDIAN of 1.37 (measured 2026-08-20 over the plays
-    the teacher actually chose while its win condition sat in hand and nothing
-    threatened). A 0.05 guard is 27x below the thing it guards against, which
-    is the same shape as HOG_DEFENSIVE_RESERVE's first value of 3.0 opening its
-    gate on 0 of 542 states -- a constant chosen on plausibility that turns out
-    to be a no-op.
-
-    3.0 was selected by sweep and CONFIRMED on a fresh independent run:
-    head-to-head against the shipped profile it scores 0.969 [0.917, 1.000],
-    and 4.0 scores the same 0.969 while tripling wasted income (overflow
-    4.3% -> 12.9%). So this is the knee, not the end of a monotone climb.
+    """The marginal plays the margin guards against score around 1.4, so the old
+    0.05 was an off switch. 3.0 was chosen by sweep and confirmed; 4.0 scores
+    the same while wasting more income.
     """
     t = T.UtilityTeacher(DECK, team=0)
     assert t.play_margin == 3.0
 
 
 def test_a_play_worth_less_than_the_margin_is_declined():
-    """The gate itself, independent of the value. A candidate whose marginal
-    utility is below the bar must lose to holding -- which is what makes the
-    bar an economy control rather than a tiebreak."""
+    """A candidate below the bar loses to holding, which makes the bar an economy
+    control rather than a tiebreak.
+    """
     env = _env()
-    # BELOW the overflow line, or the taper zeroes the bar and the assertion
-    # would be testing the taper instead of the gate.
+    # Below the taper start, or this would test the taper instead of the gate.
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 6.0)
     t = _teacher(horizon=30)
     t.play_margin = 1e9          # nothing can clear this
@@ -802,15 +694,13 @@ def test_a_play_worth_less_than_the_margin_is_declined():
 
 
 def test_the_margin_does_not_reach_the_rules_only_rungs():
-    """Stage 0 has horizon 0 and takes `_rules_only`, which ranks by role
-    priority and never consults `play_margin`. Worth pinning because the
-    curriculum's easiest rung must stay beatable: if raising the margin had
-    silently made stage 0 hold as well, the ladder would have lost its bottom.
+    """The rules-only rungs never consult `play_margin`, so the easiest rung stays
+    beatable.
     """
     env = _env()
     _stage_hand(env, 0, [CANNON, SKELETONS, MUSK, ICE_SPIRIT], 6.0)
-    # `_rules_only` ranks by ROLE PRIORITY against a threat, so a threat has to
-    # exist or it correctly holds and this would pass vacuously.
+    # `_rules_only` answers a threat, so one must exist or this passes
+    # vacuously.
     for _ in range(6):
         env.inject_enemy(MUSK, 9.0, 12.0)
         env.step_self_play(-1, 0, 0, -1, 0, 0, 5)
@@ -823,36 +713,15 @@ def test_the_margin_does_not_reach_the_rules_only_rungs():
 
 
 def test_the_margin_TAPERS_as_the_bar_approaches_overflow():
-    """A FIXED margin is wrong, and the measurement that shows it is the one
-    where the opponent does nothing.
-
-    Against an active opponent a high bar looks excellent -- the C++ heuristic
-    constantly creates scoreable situations, and margin 3.0 beat the shipped
-    profile 0.969 head to head. Against a PASSIVE opponent nothing scores above
-    a fixed 3.0 at all, so the bot froze: 14 plays across 6 matches, elixir
-    pinned at 9.56 (i.e. throwing away almost all income), tower damage more
-    than halved (9143 -> 4063), and it dropped a match it should win trivially.
-
-    An episode-0 agent IS passive, so a fixed high bar would hand phase 1 the
-    zero-gradient environment the whole 2026-08-19 pivot exists to avoid.
-
-    The taper has `score`'s overflow-relief SHAPE but starts at
-    MARGIN_TAPER_START, not at ELIXIR_OVERFLOW_AT.
-
-    STARTING IT AT THE OVERFLOW LINE WAS MEASURED WRONG (2026-08-28,
-    replay_ep2018.json, stage 1): it left the bar at its full height for every
-    elixir value from 0 to 9, i.e. across almost the whole operating range, so
-    the freeze this docstring describes happened anyway. The teacher lost a
-    Princess Tower at tick 159 having spent 2 elixir while its bar ran 5.0 ->
-    8.6, and its next play landed at tick 561 -- the exact tick elixir first
-    reached 9.60. Below MARGIN_TAPER_START the bar is still full; that is what
-    keeps the teacher picky when holding really is cheap.
+    """A fixed margin freezes the teacher against a passive opponent, and an
+    episode-0 agent is passive. The bar tapers from MARGIN_TAPER_START, below
+    the overflow line, so it is relieved across the range where the freeze
+    happened; below that it stays full.
     """
     t = T.UtilityTeacher(DECK, team=0)
     assert t.effective_play_margin(5.0) == pytest.approx(t.play_margin)
-    # At the OLD anchor the bar is now already partly relieved -- the point of
-    # the change. Pinned as an inequality, not a number, so retuning
-    # MARGIN_TAPER_START does not have to edit this line.
+    # At ELIXIR_OVERFLOW_AT the bar is already partly relieved; an inequality,
+    # so retuning MARGIN_TAPER_START needs no edit here.
     assert 0.0 < t.effective_play_margin(T.ELIXIR_OVERFLOW_AT) < t.play_margin
     assert t.effective_play_margin(T.MARGIN_TAPER_START) == pytest.approx(
         t.play_margin)
@@ -869,8 +738,7 @@ def test_the_taper_is_monotone_so_holding_never_gets_cheaper_as_elixir_rises():
 
 
 def test_a_teacher_at_max_elixir_will_actually_play_something():
-    """The end-to-end version: full bar, nothing threatening, and the bot must
-    not sit there. This is the state margin 3.0 froze in."""
+    """Full bar, nothing threatening: the teacher must play."""
     env = _env()
     _stage_hand(env, 0, [ICE_GOLEM, HOG, CANNON, SKELETONS], 10.0)
     t = _teacher(horizon=50)
@@ -879,16 +747,9 @@ def test_a_teacher_at_max_elixir_will_actually_play_something():
 
 
 def test_a_DUE_followup_is_not_charged_the_dumping_margin():
-    """`play_margin` stops the bot DUMPING -- spending on a marginal play when
-    holding was free. For a plan's second half, holding is NOT free: the first
-    card is already on the board and already paid for, so declining the
-    follow-up does not bank the elixir, it wastes the commitment.
-
-    The exemption is narrow and this is the part that keeps it honest: the
-    follow-up still has to be the ARGMAX over every other candidate. All it
-    skips is the "beat holding by N" floor, whose premise is false here. It
-    parallels `plan_reserve_penalty`'s exemption for the plan's own second
-    half -- the same idea applied to the other gate.
+    """A due follow-up skips the dumping margin: the first card is already paid
+    for, so holding wastes the commitment. It must still be the argmax over
+    every other candidate.
     """
     t = T.UtilityTeacher(DECK, team=0)
     follow = T.Candidate.single(1, HOG, 14.0, 15.0, "wincon", kind="followup")
@@ -898,9 +759,9 @@ def test_a_DUE_followup_is_not_charged_the_dumping_margin():
 
 
 def test_the_followup_exemption_does_not_leak_to_ordinary_plays():
-    """If it did, `play_margin` would be off for everything the moment a plan
-    existed -- and the economy control this whole session is about would be
-    silently disabled."""
+    """The exemption must not switch the margin off for everything once a plan
+    exists.
+    """
     t = T.UtilityTeacher(DECK, team=0)
     for kind in ("single", "supported_push", "counter_push", "cheap_defence"):
         c = T.Candidate.single(0, SKELETONS, 9.0, 10.0, "melee", kind=kind)

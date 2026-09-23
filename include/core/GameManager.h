@@ -14,30 +14,21 @@
 #include <string>
 #include <stdexcept>
 #include <random>
-// std::as_const, used by the non-const findTower below. It was reaching this
-// header transitively and compiled inside the Catch2 suite by luck; any
-// translation unit that does not pull <utility> in some other way failed with
-// "'as_const' is not a member of 'std'" -- tools/audit/*.cpp did, immediately.
+// std::as_const, for the non-const findTower. Included explicitly; reaching it
+// transitively broke the tools/audit builds.
 #include <utility>
-// std::array for the per-card cycle tracking below. Included EXPLICITLY rather
-// than leaned on transitively, for exactly the reason the <utility> note above
-// records: reaching a header by luck compiles until the one translation unit
-// that does not.
+// std::array, for the per-card cycle tracking.
 #include <array>
 
 class GameManager {
 public:
-    // Reserved cardId sentinels for Towers -- they're built directly here,
-    // never through CardRegistry, so they need a stable, non-clashing id of
-    // their own for stats collectors to key on instead of string-matching
-    // `name`. Negative so they can never collide with a real CardRegistry id.
+    // Reserved cardIds for towers, which are built here rather than registered.
+    // Negative, so they never collide with a registry id.
     static constexpr int TOWER_KING_ID = -2;
     static constexpr int TOWER_PRINCESS_ID = -3;
-    // Mirror's own registered CardRegistry id (see CardRegistry.h) --
-    // named here since playCard special-cases it directly.
+    // Mirror's registered id; playCard special-cases it.
     static constexpr int MIRROR_CARD_ID = 164;
-    // Spirit Empress's own registered CardRegistry id -- see
-    // SpiritEmpressForms.h and playCard's own dynamic-cost branch.
+    // Spirit Empress's registered id; see SpiritEmpressForms.h.
     static constexpr int SPIRIT_EMPRESS_CARD_ID = 165;
 
 private:
@@ -48,76 +39,33 @@ private:
     int loserTeam;
     using CycleTable = std::array<std::array<int, CARD_ID_COUNT>, 2>;
 
-    // Every entry -1, meaning "not played this match".
-    //
-    // A default `{}` would zero-fill instead, and 0 is not a neutral value
-    // here -- it is a real tick, so a table that missed its initialisation
-    // would claim BOTH sides had played EVERY card on the opening tick, and
-    // the recency channel would read 1.0 across the board. `reset()` fills
-    // this too and the constructor calls `reset()`, so today that is belt and
-    // braces; it is written this way so the invariant does not depend on that
-    // call order staying true.
+    // Every entry -1 ("not played"). A zero-filled table would claim both sides
+    // played every card on tick 0.
     static constexpr CycleTable neverPlayed() {
         CycleTable t{};
         for (auto& perTeam : t) for (auto& v : perTeam) v = -1;
         return t;
     }
 
-    // [team][cardId] -> tick that team last played that card, -1 for never.
-    // Written only in playCard(), which is the one function every real play
-    // passes through; read by ClashEnv when it builds the observation's
-    // opponent-cycle blocks. A plain value member on purpose -- snapshot()
-    // copies GameManager implicitly, so this rides along with no further work
-    // and a search rollout inherits the cycle it is searching from.
+    // [team][cardId] -> the tick that team last played that card, -1 for never.
+    // Written only in playCard, read by ClashEnv for the opponent-cycle
+    // observation. A plain value, so snapshot() copies it and a rollout
+    // inherits the cycle.
     CycleTable lastPlayedTick = neverPlayed();
     const float ELIXIR_REGEN_RATE = 0.035f;
-    // Curriculum hook: scales the opponent's elixir regen relative to the base rate.
-    // 1.0 = normal opponent, >1.0 = faster-elixir opponent for later training stages.
+    // Curriculum hook: scales the opponent's regen. 1.0 is a normal opponent.
     float oppElixirMultiplier = 1.0f;
 
-    // --- REAL-GAME ELIXIR PHASES (2026-09-02) ------------------------------
-    // Until now regen was a flat 1x for the whole match. Real Clash Royale
-    // runs three phases, and this reproduces the REAL schedule rather than a
-    // rounder one: 3:00 of regular time with double elixir from 2:00, then up
-    // to 2:00 of overtime at triple from 3:00.
-    //
-    //   0:00 - 2:00   1x   one elixir per 2.857 s
-    //   2:00 - 3:00   2x   one per 1.429 s
-    //   3:00 +        3x   one per 0.952 s
-    //
-    // Ticks, not seconds: 10 ticks = 1 s, derived in perception/timebase.py
-    // from 132 agreeing attackCooldown rows. Stated as ticks here because
-    // currentTick is what this class actually counts -- converting at the
-    // comparison site would put a second copy of the 10 somewhere it can drift.
-    //
-    // WHY THIS MATTERS, measured 2026-09-02 over 4,229 decisions of
-    // model_weights_phase4.pth at stage 3: both sides ran at a MEAN OF 2.16
-    // and 1.81 elixir with P(>= 9.0) of exactly 0.0% -- they were not
-    // husbanding elixir, they were starved of it, spending every drop the tick
-    // it arrived. Income was therefore the binding constraint on how much can
-    // be on the board at once, and the board showed it: the best POSSIBLE
-    // Fireball (perfect information, best of all 612 centres) caught a median
-    // of ONE unit, and >= 3 units only 15.5% of the time. A 4-elixir spell
-    // whose best case is one target cannot be +EV, so the policy correctly
-    // learned not to play it. See perception/UPSTREAM_REQUESTS.md item 26.
-    // The schedule itself is PUBLIC (see below the constructor) -- ClashEnv,
-    // the bindings and GameLogger all need it, and a second copy of it in any
-    // of them is the arena-geometry failure over again.
-    // How far short of the river a non-spell placement must stay on the
-    // caller's own side (Board itself only enforces the river during
-    // movement/clamping, not placement).
+    // How far short of the river a non-spell placement must stay on its own
+    // side; Board enforces the river only during movement.
     static constexpr float OWN_HALF_RIVER_BUFFER = 0.5f;
-    // Seeded once (not on every reset() -- same pattern as ClashEnv::rng),
-    // so std::shuffle draws a genuinely fresh permutation each episode
-    // instead of the same one every reset. Feeds PlayerState::initializeDeck's
-    // random-hand overload.
+    // Seeded once, not per reset(), so each episode deals a fresh opening hand.
     std::mt19937 rng;
 
     std::vector<int> aiDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
     std::vector<int> oppDeckConfig = { 0, 1, 2, 3, 4, 5, 6, 7 };
-    // Per-match config, like the deck itself -- not a step() action (see
-    // TowerTroops.h). None (the default) reproduces this engine's
-    // original hardcoded Princess Tower exactly.
+    // Per-match configuration (TowerTroops.h). None is the original Princess
+    // Tower.
     TowerTroopType aiTowerTroop = TowerTroopType::None;
     TowerTroopType oppTowerTroop = TowerTroopType::None;
 
@@ -126,54 +74,35 @@ private:
         auto tower = std::make_shared<Tower>(board.allocateId(), x, y, hp, team, attackRange, damage, attackCooldown, symbol);
         tower->name = towerName;
         tower->cardId = (symbol == 'R') ? TOWER_KING_ID : TOWER_PRINCESS_ID;
-        // This overload bypasses CardStats/applyCardMetadata entirely (raw
-        // hp/range/damage args), so sightRange needs setting directly --
-        // only ever called for the King Tower (symbol 'R'), sourced at
-        // 7.0 tiles. The Tower Troops overload below sets its own from
-        // towerTroopStats() instead.
+        // This overload skips applyCardMetadata, so sightRange is set directly.
+        // It only builds the King (sourced 7.0); Tower Troops go through the
+        // overload below.
         if (symbol == 'R') {
             tower->sightRange = 7.0f;
-            // The King starts DORMANT -- see Tower::isAwake. This is the only
-            // construction path that ever builds a King, so it is the only
-            // place the flag needs clearing; every other Tower is a Princess
-            // and stays awake.
+            // The King starts dormant (Tower::isAwake); this is the only path
+            // that builds one.
             tower->sleep();
         }
         board.addEntity(tower);
     }
 
-    // Tower Troops overload: builds a Princess Tower from a CardStats
-    // (see TowerTroops.h) instead of individual hp/range/damage/cooldown
-    // args, then reuses CardFactories::applyCardMetadata to wire whatever
-    // extra fields that troop's stats carry (Dagger Duchess's burst,
-    // Royal Chef's periodic buff) -- the same generic metadata-copy every
-    // CardRegistry-spawned entity already gets, even though Towers aren't
-    // registered in CardRegistry. Symbol stays 'P' for every variant:
-    // web/viewer.html sizes an entity's footprint by symbol, and
-    // MatchRules only checks 'R' for win conditions, so varying the
-    // symbol per troop would shrink 3 of the 4 to the wrong footprint for
-    // no benefit -- only name/stats vary.
+    // Tower Troops: builds a Princess Tower from CardStats (TowerTroops.h) and
+    // reuses applyCardMetadata for extra fields such as Dagger Duchess's burst.
+    // The symbol stays 'P': the viewer sizes footprints by symbol.
     void addTower(float x, float y, int team, const std::string& towerName, const CardStats& stats) {
         auto tower = std::make_shared<Tower>(board.allocateId(), x, y, stats.hp, team, stats.attackRange, stats.damage, stats.attackCooldown, 'P');
-        // Order matters: applyCardMetadata sets name/cardId from `stats`
-        // too (both left at their CardStats defaults, empty/-1), so the
-        // real values are assigned after, not before.
+        // After applyCardMetadata, which would otherwise overwrite name and
+        // cardId with the CardStats defaults.
         CardFactories::applyCardMetadata(tower, stats);
         tower->name = towerName;
         tower->cardId = TOWER_PRINCESS_ID;
         board.addEntity(tower);
     }
 
-    // Resolves a specific Champion slot (1 = Heroic, 2 = Wild Card -- see
-    // CardRegistry::validateDeckSlots/PlayerState::ChampionSlotState) to its
-    // currently-tracked live entity, if any. Deliberately NOT a generic
-    // "find any isChampion entity" board scan (that was the old
-    // findChampion(team), now removed) -- resolving strictly through
-    // championSlots[slot].trackedEntityId is what makes a Clone-spell
-    // duplicate permanently unable to activate an ability (it's never
-    // created via playCard, so it can never become a tracked id) and what
-    // makes "whoever was created last" the one that answers, with zero
-    // extra special-casing needed for either rule.
+    // The live entity tracked for a Champion slot (1 = Heroic, 2 = Wild Card),
+    // or nullptr. Resolving strictly through trackedEntityId is what keeps a
+    // Clone-spell copy from ever activating the ability and makes the newest
+    // deploy the one that answers.
     std::shared_ptr<CombatEntity> findChampionInSlot(int team, int slot) const {
         const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         auto it = player.championSlots.find(slot);
@@ -187,13 +116,9 @@ private:
         return nullptr;
     }
 
-    // Called once per tick (see step()) for each team: mirrors the tracked
-    // Champion's own live abilityCooldownRemaining into
-    // persistedCooldownRemaining, so that value is always fresh right up
-    // until the entity dies -- at which point it simply stops being
-    // updated, and that last-known value is what seeds a fresh redeploy of
-    // the same slot's Champion (see playCard's own tracking hook), giving
-    // "redeploying while on cooldown just continues the timer" for free.
+    // Once per tick per team: copies the tracked Champion's live cooldown into
+    // persistedCooldownRemaining. After it dies the last value stays, so a
+    // redeploy continues the timer.
     void syncChampionCooldowns(int team) {
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
@@ -211,18 +136,13 @@ private:
                 break;
             }
 
-            // Post-death squad reactivation (Hero Goblins' "Banner
-            // Brigade"): independent of the single tracked-instance scan
-            // above -- a multi-unit squad has several live entities
-            // sharing this slot's own cardId+team, only one of which is
-            // ever "tracked", so this scans for ANY of them, opening the
-            // window only once the WHOLE squad is confirmed gone. Called
-            // BEFORE board.cleanDeadEntities() (see step()'s own comment),
-            // so an entity that died THIS tick is still present here with
-            // isAlive()==false and its death position intact.
+            // Post-death squad reactivation (Hero Goblins' "Banner Brigade"):
+            // opens the window once every unit sharing the slot's cardId and
+            // team is gone. Runs before cleanDeadEntities, so units that died
+            // this tick are still present with their death position.
             const CardDefinition* slotDef = CardRegistry::getInstance().getCard(deckConfig[slot]);
             if (!slotDef || slotDef->abilityUsableAfterDeathTicks <= 0) continue;
-            bool anyFound = false; // at least one entity matching this slot's cardId+team seen THIS tick
+            bool anyFound = false; // a unit of this slot's card seen this tick
             bool anyAlive = false;
             Vector2D deathPosition = state.lastSquadWipePosition;
             for (const auto& entity : board.getEntities()) {
@@ -232,26 +152,19 @@ private:
                 deathPosition = entity->position;
             }
             if (anyAlive) {
-                state.lastSquadWipeTick = -1; // a fresh deploy invalidates any earlier, unconsumed window
+                state.lastSquadWipeTick = -1; // a fresh deploy invalidates an unconsumed window
             } else if (anyFound && state.lastSquadWipeTick < 0) {
-                // anyFound guards against re-arming the window forever: once
-                // the dead squad's own entities are erased by this same
-                // step()'s later cleanDeadEntities() call, later ticks see
-                // NO entity of this cardId+team at all (anyFound == false)
-                // -- without this guard, that "nothing found" state would
-                // be indistinguishable from "just wiped" and would keep
-                // resetting lastSquadWipeTick to the current tick forever,
-                // letting Banner Brigade be spammed indefinitely for 1
-                // elixir a pop instead of firing exactly once per real wipe.
-                state.lastSquadWipeTick = currentTick; // first tick nothing's left alive
+                // anyFound stops the window re-arming every tick after the dead
+                // squad is erased, which would let the ability fire repeatedly
+                // instead of once per wipe.
+                state.lastSquadWipeTick = currentTick; // first tick nothing is left alive
                 state.lastSquadWipePosition = deathPosition;
             }
         }
     }
 
-    // Post-death squad reactivation readiness (Hero Goblins-style) -- shared
-    // by isChampionAbilityReady/activateChampionAbility, both of which fall
-    // back to this once findChampionInSlot finds nothing alive in the slot.
+    // Post-death ability readiness, the fallback when nothing in the slot is
+    // alive.
     bool isPostDeathAbilityReady(int team, int slot) const {
         const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         auto it = player.championSlots.find(slot);
@@ -264,43 +177,38 @@ private:
     }
 
 public:
-    // --- REAL-GAME ELIXIR PHASE SCHEDULE -----------------------------------
-    // Ticks, not seconds: 10 ticks = 1 s (perception/timebase.py). See the
-    // long note beside ELIXIR_REGEN_RATE above for the measurement that
-    // motivated this and for why the phase is separate from
-    // oppElixirMultiplier.
+    // --- elixir phases ---
+    // The real schedule: 3:00 of regular time with double elixir from 2:00,
+    // then overtime at triple.
+    //
+    //   0:00 - 2:00   1x   one elixir per 2.857 s
+    //   2:00 - 3:00   2x   one per 1.429 s
+    //   3:00 +        3x   one per 0.952 s
+    //
+    // In ticks (10 ticks = 1 s, perception/timebase.py). Public because
+    // ClashEnv, the bindings and GameLogger all need it.
     static constexpr int DOUBLE_ELIXIR_TICK = 1200;   // 2:00
     static constexpr int TRIPLE_ELIXIR_TICK = 1800;   // 3:00
-    // Triple elixir and the end of regulation are the SAME instant in the real
-    // game, and MatchRules owns that instant for the match-end rules. Asserted
-    // rather than derived: the dependency only runs one way (MatchRules knows
-    // nothing about elixir), and this still fails the build if the two drift.
+    // Triple elixir and the end of regulation are one instant, which MatchRules
+    // owns. Asserted rather than derived, since MatchRules knows nothing about
+    // elixir.
     static_assert(TRIPLE_ELIXIR_TICK == MatchRules::REGULATION_END_TICK,
                   "overtime and triple elixir both begin when regulation ends");
 
-    // The largest value elixirMultiplierAtTick can return. Exists as a named
-    // constant, and is bound, because it is the NORMALISER for the observation
-    // scalar -- ClashEnv divides by it and perception/'s hand-built encoder
-    // must divide by the identical number or the live agent reads a phase the
-    // training agent never saw. A literal 3.0f in both places is precisely the
-    // second-copy hazard this codebase keeps re-learning.
+    // The largest multiplier, and the normaliser of the observation scalar;
+    // bound so perception's encoder divides by the same number.
     static constexpr float MAX_ELIXIR_MULTIPLIER = 3.0f;
 
-    // Pure function of the tick, deliberately static: ClashEnv puts this in
-    // the observation, GameLogger writes the boundaries into the replay and
-    // the viewer reads them back. Every one of those consumers would otherwise
-    // restate the schedule, which is the failure this codebase has already had
-    // six times over with the arena geometry.
+    // A pure function of the tick, static so ClashEnv, GameLogger and the
+    // viewer share one schedule.
     static constexpr float elixirMultiplierAtTick(int tick) {
         if (tick >= TRIPLE_ELIXIR_TICK) return MAX_ELIXIR_MULTIPLIER;
         if (tick >= DOUBLE_ELIXIR_TICK) return 2.0f;
         return 1.0f;
     }
 
-    // The multiplier in force right now. Note this is the SHARED phase, not
-    // oppElixirMultiplier -- the two are independent and compose (see step()):
-    // the phase is a property of the match clock and applies to both players,
-    // the curriculum multiplier is a per-opponent handicap on top of it.
+    // The shared phase for both players; oppElixirMultiplier is a separate
+    // per-opponent handicap that composes with it (see step()).
     float getElixirMultiplier() const { return elixirMultiplierAtTick(currentTick); }
 
     PlayerState playerAI;
@@ -317,16 +225,9 @@ public:
         reset();
     }
 
-    // Pin the generator that deals the OPENING HAND.
-    //
-    // This is the one that matters and it is NOT ClashEnv::rng: that member
-    // feeds HeuristicOpponent only, while reset() below deals both players'
-    // hands -- and their starting deckQueue ORDER -- from this one via
-    // PlayerState::initializeDeck. Seeding the other generator alone leaves
-    // the hand exactly as random as before, which reads as "seeding does not
-    // work" rather than "the wrong generator was seeded".
-    //
-    // Takes effect on the NEXT reset(); ClashEnv::seed calls one for you.
+    // Seeds the generator that deals the opening hands and deck order. Not
+    // ClashEnv::rng, which only feeds HeuristicOpponent. Takes effect on the
+    // next reset(); ClashEnv::seed calls one.
     void seed(unsigned int s) { rng.seed(s); }
 
     void setOpponentDeck(const std::vector<int>& deck) {
@@ -343,45 +244,13 @@ public:
     const Board& getBoard() const { return board; }
     const MatchStatistics& getStatistics() const { return stats; }
 
-    // Fully independent copy of this match, for decision-time search: step the
-    // result as far as you like and nothing about `this` changes. The board
-    // half is Board::deepCopy(); everything else here is already a value type
-    // and copies correctly on its own.
+    // A fully independent copy of the match for decision-time search. Every
+    // member is a value type and copies correctly (including rng, so two
+    // snapshots of one position roll out identically, and lastPlayedTick, so a
+    // rollout keeps the opponent's cycle), except `board` and `stats`, which
+    // hold shared_ptrs and are replaced with deep copies.
     //
-    // What rides along on the implicit copy, and why each is right:
-    //   currentTick / gameOver / loserTeam   plain scalars
-    //   oppElixirMultiplier                  plain scalar (curriculum setting)
-    //   aiDeckConfig / oppDeckConfig         vector<int>
-    //   aiTowerTroop / oppTowerTroop         enums
-    //   playerAI / playerOpponent            elixir, hand, handCooldownTicks,
-    //                                        deckQueue, evolutionState,
-    //                                        championSlots -- all values, so
-    //                                        a rollout cycles its own deck and
-    //                                        spends its own elixir
-    //   rng                                  COPIED, not reseeded: two
-    //                                        snapshots of the same position
-    //                                        must roll out identically, or a
-    //                                        search would be comparing
-    //                                        candidates across different
-    //                                        futures and scoring noise
-    //   lastPlayedTick                       std::array of ints -- a rollout
-    //                                        inherits what each side has shown
-    //                                        so far, which is exactly right:
-    //                                        the cycle is part of the position
-    //                                        being searched, and a snapshot
-    //                                        that forgot it would tell every
-    //                                        candidate the opponent had played
-    //                                        nothing all match
-    //
-    // Only `board` and `stats` need fixing up, and both for the same reason --
-    // they are the only members holding shared_ptr, so the implicit copy
-    // aliases rather than duplicates them.
-    //
-    // Implemented as copy-then-replace rather than a member-by-member
-    // constructor deliberately: a new GameManager field then joins the
-    // snapshot automatically, whereas an explicit list would silently omit it.
-    // The intermediate shallow board exists only between these two statements,
-    // and nothing is stepped in that window.
+    // Copy-then-replace, so a new member joins the snapshot automatically.
     GameManager snapshot() const {
         GameManager copy(*this);
         copy.board = board.deepCopy();
@@ -389,21 +258,14 @@ public:
         return copy;
     }
 
-    // Exact bounds isValidPlacement enforces, exposed so callers (the Python
-    // binding layer) query the real boundary instead of re-deriving it from
-    // separate board/river/buffer constants that could silently drift out of
-    // sync (confirmed painful in practice -- this project's own map-geometry
-    // and NUM_CARD_IDS incidents were both exactly this kind of drift, just
-    // for other constants).
+    // The exact bounds isValidPlacement enforces, exposed so the bindings query
+    // them instead of re-deriving them.
     float getMaxPlacementX() const {
         return static_cast<float>(board.getWidth() - 1);
     }
 
-    // "How far into your own half can a non-spell, non-deploy-anywhere card
-    // be aimed" -- symmetric for both teams from each one's own point of view
-    // (extractObservationForTeam mirrors team 1's board so it sees itself the
-    // same way team 0 does), so one value covers both sides' action-space
-    // scaling.
+    // How far into its own half a non-spell, non-deploy-anywhere card can go;
+    // the same for both teams in their own mirrored frame.
     float getOwnHalfMaxY() const {
         return board.getRiverStart() - OWN_HALF_RIVER_BUFFER;
     }
@@ -418,14 +280,10 @@ public:
         return (team == 0) ? playerAI.hand : playerOpponent.hand;
     }
 
-    // Tick at which `team` last played `cardId`, or -1 if never this match.
-    // Out-of-range ids answer -1 rather than throwing: callers sweep the whole
-    // [0, CARD_ID_COUNT) range to build an observation and a gap in the id
-    // space is a normal, expected miss, not an error.
-    // Record an OBSERVED play without simulating one -- see
-    // ClashEnv::notePlayedCard for why this is separate from inject(). Silently
-    // ignores an out-of-range team or card id, matching getLastPlayedTick's
-    // treatment of the same: a caller sweeping ids is doing normal work.
+    // Records an observed play without simulating one (see
+    // ClashEnv::notePlayedCard for why this is separate from inject()).
+    // getLastPlayedTick returns the tick of `team`'s last play of `cardId`, or
+    // -1. Both ignore out-of-range ids: callers sweep the whole id range.
     void notePlayedCard(int team, int cardId) {
         if (team != 0 && team != 1) return;
         if (cardId < 0 || cardId >= CARD_ID_COUNT) return;
@@ -442,83 +300,52 @@ public:
         return (team == 0) ? playerAI.elixir : playerOpponent.elixir;
     }
 
-    // --- STATE-ESTIMATOR SETTERS (2026-08-17) ------------------------------
-    // Write a reconstructed live state into the simulator, so decision-time
-    // search evaluates the REAL position rather than a reset one.
-    //
-    // Why these have to exist. perception/ already reads our elixir accurately
-    // (587 samples, mean confidence 0.990) and reports the hand, but
-    // forecast.py rebuilds a board by calling reset() and injecting units --
-    // and reset() sets elixir to 5.0 and deals a hand from an UNSEEDED
-    // std::mt19937. So the reconstructed position had the right units and a
-    // fabricated hand/elixir, and `affordability_mask` is built from exactly
-    // those scalars. Search over it would score fiction. The existing
-    // workaround (perception/bridge/sim_driver.py) reverse-engineers the
-    // shuffle by drawing resets until the hand matches, which is expensive and
-    // only ever recovers the OPENING hand.
-    //
-    // Deliberately on GameManager and not on PlayerState alone: the hand and
-    // the deck queue are one invariant (together they are a permutation of the
-    // 8-card deck), and letting a caller set one without the other is how that
-    // invariant rots.
+    // --- state-estimator setters ---
+    // Write a reconstructed live state into the simulator, so search evaluates
+    // the real position rather than a reset one (reset() sets elixir to 5.0 and
+    // deals a random hand). On GameManager rather than PlayerState because the
+    // hand and the deck queue are one invariant: together a permutation of the
+    // deck.
     void setElixir(int team, float value) {
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
-        // Same [0, 10] clamp tick() enforces -- a caller handing us 11 elixir
-        // (or a negative from a bad estimate) must not create a state the
-        // engine itself can never reach.
+        // The same [0, 10] clamp step() enforces.
         player.elixir = std::max(0.0f, std::min(value, 10.0f));
     }
 
-    // Returns FALSE and changes nothing if `cards` is not a valid hand for
-    // this team's deck. Loudly rejecting is the point: perception's card
-    // identity is the least reliable reading it produces, and a silently
-    // accepted misread would put the policy in a position the real game is not
-    // in -- the exact failure mode this project keeps paying for.
-    //
-    // Rejects: wrong size, a duplicate, or a card that is not in this team's
-    // deck at all.
+    // Returns false and changes nothing unless `cards` is a valid hand for this
+    // team's deck: right size, no duplicates, every card in the deck. A
+    // silently accepted misread would put the policy in a position the real
+    // game is not in.
     bool setHand(int team, const std::vector<int>& cards) {
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
         if (cards.size() != player.hand.size()) return false;
 
-        // The deck is whatever is currently in hand plus whatever is queued --
-        // read from the live state rather than from the original deck list, so
-        // this stays correct mid-match after any amount of cycling.
+        // The deck is the current hand plus the queue, so this stays correct
+        // mid-match.
         std::vector<int> pool(player.hand.begin(), player.hand.end());
         pool.insert(pool.end(), player.deckQueue.begin(), player.deckQueue.end());
 
         std::vector<int> remaining = pool;
         for (int card : cards) {
             auto it = std::find(remaining.begin(), remaining.end(), card);
-            if (it == remaining.end()) return false;   // not in deck, or duplicate
+            if (it == remaining.end()) return false;   // not in the deck, or a duplicate
             remaining.erase(it);
         }
 
         player.hand.assign(cards.begin(), cards.end());
-        // Queue keeps the relative order the remaining cards already had, so a
-        // caller that sets the hand to what it already was is a no-op on the
-        // cycle rather than a silent reshuffle.
+        // The queue keeps the remaining cards' order, so re-setting the current
+        // hand is a no-op.
         player.deckQueue.assign(remaining.begin(), remaining.end());
-        // Cooldowns cleared, and this is a judgement call worth stating: a
-        // freshly-cycled slot is unplayable for 20 ticks, but perception cannot
-        // observe that. Zero is the permissive reading -- it can make search
-        // believe a card is playable ~2 s early, whereas a non-zero guess would
-        // make it refuse a play the real game allows. Refusing a legal play is
-        // the worse error for a policy that is already too passive.
+        // Cooldowns are cleared: perception cannot see a slot's post-cycle
+        // delay, and assuming none risks a play ~2 s early, while guessing one
+        // would refuse a legal play.
         player.handCooldownTicks.assign(player.hand.size(), 0);
         return true;
     }
 
-    // --- The tower and clock half of the estimator write interface --------
-    // perception/UPSTREAM_REQUESTS.md item 22 (2026-08-24). setElixir/setHand
-    // above closed elixir and the hand; a mirror rebuilt from a real screen
-    // still came back with every tower at full health and the clock at zero.
-    //
-    // SLOTS ARE BOARD COORDINATES, NEVER TEAM-RELATIVE: 0 = King, 1 = left
-    // Princess, 2 = right Princess, left/right decided against ArenaLayout's
-    // own centre rather than a restated literal. The caller is a sensor
-    // reading a screen, and asking it to mirror its own coordinates per team
-    // is the convention error that put the arena half a tile off-centre.
+    // --- towers and clock (perception/UPSTREAM_REQUESTS.md item 22) ---
+    // Slots are board coordinates, never team-relative: 0 = King, 1 = left
+    // Princess, 2 = right, left/right judged against ArenaLayout's centre.
     const Tower* findTower(int team, int slot) const {
         for (const auto& e : board.getEntities()) {
             const Tower* t = dynamic_cast<const Tower*>(e.get());
@@ -535,22 +362,13 @@ public:
         return const_cast<Tower*>(std::as_const(*this).findTower(team, slot));
     }
 
-    // Returns FALSE and changes nothing on a value the engine cannot hold.
+    // Returns false and changes nothing on a value the engine cannot hold. hp
+    // <= 0 is refused rather than clamped: a 0-hp tower that still stands is
+    // impossible, and killing one has side effects that belong to
+    // destroyTower().
     //
-    // hp <= 0 is REFUSED rather than clamped, and that is the whole contract:
-    // a 0-hp tower that still occupies its cell and still fires is a position
-    // the real game can never be in, and killing one has side effects -- the
-    // crown, the King's princess-count trigger, LanePath's retargeting --
-    // that belong to destroyTower() below. Same refuse-rather-than-accept
-    // rule setHand uses, and for the same reason: a silently accepted misread
-    // is worse than none.
-    //
-    // Takes ENGINE-ABSOLUTE hp. The caller converts, because tower levels do
-    // not match -- this engine's towers are level 9 (2534/4008) while a real
-    // account's may be level 4-5 (1750/1890), i.e. wrong by a DIFFERENT factor
-    // per player. perception/ reports a fraction and multiplies by
-    // getTowerMaxHp() below, keeping the level knowledge on the side that
-    // already owns it.
+    // Takes engine-absolute hp. Real accounts' tower levels differ per player,
+    // so perception reports a fraction and multiplies by getTowerMaxHp().
     bool setTowerHp(int team, int slot, float hp) {
         Tower* t = findTower(team, slot);
         if (t == nullptr || !t->isAlive()) return false;
@@ -560,33 +378,24 @@ public:
         if (want > ceiling) want = ceiling;
         if (want < 1) want = 1;
         t->hp = want;
-        // `awake` is deliberately NOT set here. Tower::update latches it on
-        // the `hp < maxHp` invariant, so a wound written this way wakes the
-        // King through exactly the path real damage uses -- and because the
-        // flag is a latch, writing full health back cannot re-sleep it.
+        // `awake` is not set here: Tower::update latches it on hp < maxHp, the
+        // same path real damage takes.
         return true;
     }
 
-    // The destruction destroyTower exists to route: setTowerHp refuses hp <= 0,
-    // so without this a fallen tower would be inexpressible in a mirror -- and
-    // a rollout that still has the tower standing is wrong from the moment it
-    // falls, i.e. exactly when the position matters most.
+    // The only way to express a fallen tower, since setTowerHp refuses hp <= 0.
     bool destroyTower(int team, int slot) {
         Tower* t = findTower(team, slot);
-        if (t == nullptr || !t->isAlive()) return false;   // idempotent, and says so
+        if (t == nullptr || !t->isAlive()) return false;   // idempotent
         t->takeDamage(t->hp);
-        // takeDamage is the right entry point -- it is what a real killing
-        // blow uses and it fires onDamageTakenEffect. But CombatEntity's
-        // override can ABSORB (shield, parry, mid-dash invulnerability). No
-        // Tower carries any of those today; pinning the postcondition means
-        // this stays a destruction if one ever does, instead of silently
-        // leaving the tower standing.
+        // takeDamage, as a real killing blow, but CombatEntity's override can
+        // absorb (shield, parry, dash). No tower has those today; the
+        // postcondition keeps this a destruction if one ever does.
         if (t->isAlive()) t->hp = 0;
         return true;
     }
 
-    // -1 for a slot that does not exist, so a caller cannot mistake a missing
-    // tower for a tower at zero.
+    // -1 for a slot that does not exist, never mistaken for a tower at zero.
     int getTowerHp(int team, int slot) const {
         const Tower* t = findTower(team, slot);
         return t == nullptr ? -1 : t->hp;
@@ -597,10 +406,8 @@ public:
         return t == nullptr ? -1 : t->getMaxHp();
     }
 
-    // Clamped at zero only: the UPPER bound is maxTicks, which lives in
-    // ClashEnv, and ClashEnv::setCurrentTick applies it before calling here.
-    // Board's mirror moves with it so the two never drift -- board.currentTick
-    // stamps every spawn event and drives ability cooldown arithmetic.
+    // Clamped at zero only; ClashEnv::setCurrentTick applies the maxTicks
+    // bound. Board's copy moves with it.
     void setCurrentTick(int tick) {
         currentTick = std::max(0, tick);
         board.currentTick = currentTick;
@@ -609,7 +416,7 @@ public:
     int getCurrentTick() const { return currentTick; }
 
     // `isRollingSpell` narrows the spell exemption for The Log and Barbarian
-    // Barrel -- see the branch at the bottom of this function.
+    // Barrel (see the end of this function).
     bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius,
                           bool deployAnywhere = false, bool isRollingSpell = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
@@ -618,22 +425,10 @@ public:
         if (board.isBackRowDeadZone(x, y)) return false;
 
         if (!isSpell) {
-            // FOOTPRINT vs the board edge. The centre test above is the INDEX
-            // range; this one is the PHYSICAL extent, because a body placed
-            // legally by its centre can still hang off the arena. Measured
-            // 2026-08-28: a Cannon (placementRadius = Building::
-            // COLLISION_RADIUS = 1.0) at x = 0.0 was accepted while spanning
-            // [-1.0, +1.0], and at x = 17.0 while spanning [16.0, 18.0].
-            //
-            // This is the same two-conventions-for-one-question defect the
-            // sight-vs-attack-range band was: the overlap loop immediately
-            // below already reasons in footprints (placedRadius + r) while
-            // the bounds test three lines up reasoned in centres.
-            //
-            // Spells are exempt deliberately -- a Fireball's radius is its
-            // area of effect, not a body, and clipping the arena edge is
-            // normal for it. Same reason the overlap loop is inside this
-            // branch.
+            // Footprint against the board's physical edge
+            // (Board::CELL_HALF_EXTENT): a body legal by its centre can still
+            // hang off the arena. Spells are exempt; a spell's radius is an
+            // area of effect, not a body.
             const float minEdge = -Board::CELL_HALF_EXTENT;
             const float maxEdgeX = maxX + Board::CELL_HALF_EXTENT;
             const float maxEdgeY = maxY + Board::CELL_HALF_EXTENT;
@@ -642,18 +437,15 @@ public:
                 return false;
             }
 
-            // Miner/Goblin Drill skip the own-half restriction (they can
-            // deploy anywhere on the board) but still can't overlap an
-            // existing building -- that check runs unconditionally below.
+            // Deploy-anywhere cards (Miner, Goblin Drill) skip the own-half
+            // rule but not the building check below.
             if (!deployAnywhere) {
                 if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;
                 if (team == 1 && y < board.getRiverEnd() + OWN_HALF_RIVER_BUFFER) return false;
             }
 
-            // Prevent placing on top of an existing building -- Clash Royale
-            // forbids this outright regardless of what's being placed, so the
-            // required gap is the building's own radius plus whatever
-            // footprint the new card will actually spawn with.
+            // Nothing may be placed on an existing building: the gap is its
+            // radius plus the new card's footprint.
             for (const auto& entity : board.getEntities()) {
                 float r = entity->getCollisionRadius();
                 if (entity->isAlive() && r > 0.0f) {
@@ -665,36 +457,11 @@ public:
             }
         }
 
-        // ROLLING SPELLS ARE NOT CAST ANYWHERE (2026-08-29). The Log and
-        // Barbarian Barrel may be dropped on the caster's own half OR on the
-        // river band, and no further into enemy territory.
-        //
-        // WHY THE RIVER IS INCLUDED, AND WHY THAT BOUND IS EXACT. A roller does
-        // its damage by travelling FORWARD from where it lands, so the useful
-        // cast is at the front edge of your own ground -- and the whole point of
-        // The Log's 10.1 range is that from the bridge it reaches the enemy
-        // Princess Tower, whose near edge sits 9.00 tiles from BRIDGE_Y.
-        // Measured 2026-08-29 through the binding, that interaction survives
-        // this rule by exactly one row:
-        //
-        //     cast at y = 15.0 (own-half max) -> reaches 25.1 -> 0 damage
-        //     cast at y = 16.0                -> reaches 26.1 -> 269 damage
-        //
-        // so a STRICT own-half rule (y <= riverStart - OWN_HALF_RIVER_BUFFER,
-        // i.e. 15.0) would have made the tower physically unreachable by a Log
-        // from any legal cell, silently deleting the card's main use. The river
-        // band is what keeps it, and it is the reason this bound is
-        // getRiverEnd() rather than the own-half line every troop uses.
-        //
-        // What it DOES remove is the deep-enemy-half cast, which is pure waste:
-        // a Log dropped at y = 31 rolls away from everything and off the board.
-        // Measured on the ep-32,484 policy over 60 sampled episodes, 53.4% of
-        // its Log placements were on the enemy half and spread to y = 33 --
-        // roughly half the card's training experience spent on placements that
-        // cannot do anything.
-        //
-        // Mirrored for team 1 about the same band, so the rule reads identically
-        // from either side.
+        // Rolling spells may be cast on their own half or the river band, no
+        // further. From the bridge row The Log's 10.1 range reaches the enemy
+        // Princess Tower's near edge, 9.00 away; from the own-half limit it
+        // does not, which is why the bound is the river's end. A roller cast
+        // deep in enemy territory rolls off the board. Mirrored for team 1.
         if (isSpell && isRollingSpell) {
             if (team == 0 && y > board.getRiverEnd()) return false;
             if (team == 1 && y < board.getRiverStart()) return false;
@@ -720,36 +487,22 @@ public:
         const CardDefinition* cardDef = CardRegistry::getInstance().getCard(targetCardId);
         if (!cardDef) return false;
 
-        // Mirror: placement legality, spawn, and cost all come from
-        // whatever this team last played (+1 elixir), not from Mirror's
-        // own (otherwise-unused) registration -- reuses the real
-        // mirrored card's own rules verbatim (a mirrored Fireball must
-        // target the enemy half, a mirrored Knight must not) instead of
-        // a bespoke Mirror spawn closure. Fails outright with nothing
-        // played yet (lastPlayedCardId == -1), same as any other
-        // unaffordable/invalid play.
+        // Mirror: legality, spawn and cost come from this team's last play (+1
+        // elixir), reusing that card's own rules. Fails if nothing has been
+        // played.
         bool isMirror = (targetCardId == MIRROR_CARD_ID);
-        // Spirit Empress: form (and elixir cost) is deduced fresh from
-        // CURRENT elixir at the moment of play, not sticky/ratcheted --
-        // documented approximation, see SpiritEmpressForms.h's own
-        // comment (the real switching rule isn't clearly sourced even
-        // from this project's usual trusted sources). Unlike Mirror, both
-        // forms share the same placement footprint (see that header's
-        // comment), so no effectiveDef substitution is needed for
-        // isValidPlacement -- only cost and which spawn function runs.
+        // Spirit Empress: the form and cost follow the current elixir at play
+        // time (an approximation; see SpiritEmpressForms.h). Both forms share a
+        // footprint, so legality needs no substitution.
         bool isSpiritEmpress = (targetCardId == SPIRIT_EMPRESS_CARD_ID);
         const CardDefinition* effectiveDef = cardDef;
         float costOverride = -1.0f;
         if (isMirror) {
             effectiveDef = CardRegistry::getInstance().getCard(player.lastPlayedCardId);
             if (!effectiveDef) return false;
-            // Mirror CAN duplicate a Champion/Hero -- the ability always
-            // belongs to whichever instance of that slot's troop was most
-            // recently deployed, whether that deployment came from playing
-            // the original card or from Mirror (see the tracking hook
-            // below, which resolves this off the spawned entity's own
-            // cardId rather than off result.cardId, so a Mirror-spawned
-            // instance is just as trackable as the original).
+            // Mirror can duplicate a Champion or Hero; the tracking below
+            // resolves off the spawned entity's cardId, so the copy is
+            // trackable too.
             costOverride = effectiveDef->cost + 1.0f;
         } else if (isSpiritEmpress) {
             costOverride = (player.elixir >= 6.0f) ? 6.0f : 3.0f;
@@ -772,44 +525,23 @@ public:
             float reportedCost = (costOverride >= 0.0f) ? costOverride : cardDef->cost;
             board.statsEvents.notifyCardPlayed({ team, result.cardId, reportedCost, x, y, currentTick });
 
-            // CARD-CYCLE TRACKING (2026-08-27, UPSTREAM_REQUESTS item 24).
-            // Recorded HERE because this is the only choke point every real
-            // play passes through: ClashEnv::step, ClashEnv::stepSelfPlay and
-            // HeuristicOpponent::update all reach a card play through this
-            // function, and hooking any one caller would silently miss the
-            // others -- the same shape as the five damage entry points that
-            // made Tower::awake latch on an HP invariant instead.
+            // Card-cycle tracking (perception/UPSTREAM_REQUESTS.md item 24).
+            // Recorded here because every real play passes through this
+            // function, whoever the caller.
             //
-            // `result.cardId` is what actually LEFT THE HAND, which is the
-            // cycle-relevant fact and therefore the right thing to record. For
-            // a Mirror play that is Mirror's own id (164) rather than the
-            // duplicated card's -- deliberate: Mirror is what left their hand
-            // and Mirror is what has to cycle back round, even though the unit
-            // the observer SEES on the board is the mirrored one. The spawned
-            // entity keeps carrying the mirrored id (see the Champion tracking
-            // below), so nothing else is affected by this choice.
+            // `result.cardId` is what left the hand: for a Mirror play, Mirror
+            // itself (164), which is what has to cycle back round.
             if (result.cardId >= 0 && result.cardId < CARD_ID_COUNT) {
                 lastPlayedTick[team][result.cardId] = currentTick;
             }
-            // A second Mirror replays whatever was played before the
-            // FIRST Mirror, not the first Mirror itself -- so a Mirror
-            // play must not overwrite lastPlayedCardId with its own id.
+            // A second Mirror replays what preceded the first, so Mirror never
+            // becomes lastPlayedCardId.
             if (!isMirror) player.lastPlayedCardId = result.cardId;
 
-            // Champion/Hero per-slot tracking (see PlayerState::
-            // ChampionSlotState): resolved off the freshly-spawned
-            // entity's OWN cardId, not result.cardId -- a Mirror play's
-            // result.cardId is always Mirror's own id (164), but the
-            // entity it actually spawns carries the mirrored (effectiveDef)
-            // card's real id (see applyCardMetadata), so checking the
-            // entity itself tracks a Mirror-duplicated Champion/Hero just
-            // as well as an original play. This gives "the ability always
-            // belongs to whichever instance was deployed last" uniformly,
-            // matching real-game fidelity -- Mirror CAN duplicate a
-            // Champion/Hero, and activating the ability targets whichever
-            // copy (original or mirrored) was created most recently. Hero
-            // shares this exact same tracking as Champion -- both occupy
-            // the same two slots.
+            // Champion and Hero slot tracking (PlayerState::ChampionSlotState),
+            // resolved off the spawned entity's own cardId rather than
+            // result.cardId, so a Mirror copy is tracked like an original and
+            // the ability belongs to the newest instance.
             const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
             for (int slot : { 1, 2 }) {
                 for (size_t i = pendingBefore; i < board.pendingEntityCount(); ++i) {
@@ -828,14 +560,9 @@ public:
         return false;
     }
 
-    // Read-only: whether `team`'s Champion in the given slot (1 = Heroic,
-    // 2 = Wild Card; defaults to 1 so any single-Champion-in-slot-1 caller
-    // keeps compiling and behaving unchanged) could successfully activate
-    // its ability right now (deployed, off cooldown, affordable) without
-    // actually doing so -- exposed for ClashEnv to surface without
-    // mutating state. Two different Champions (slots 1 and 2) are fully
-    // independent -- checking/activating one never touches the other's
-    // cooldown or elixir cost.
+    // Whether `team`'s Champion in `slot` (1 = Heroic, 2 = Wild Card) could
+    // activate now: deployed, off cooldown, uses left, affordable. The two
+    // slots are independent.
     bool isChampionAbilityReady(int team, int slot = 1) const {
         auto champion = findChampionInSlot(team, slot);
         if (champion && champion->abilityEffect) {
@@ -844,33 +571,22 @@ public:
             const PlayerState& player = (team == 0) ? playerAI : playerOpponent;
             return player.elixir >= champion->abilityElixirCost;
         }
-        // Nothing alive in this slot -- fall back to the post-death path
-        // (Hero Goblins-style; a no-op false for every other card, since
-        // isPostDeathAbilityReady itself requires abilityUsableAfterDeathTicks > 0).
+        // Nothing alive in the slot: fall back to the post-death path (false
+        // for every card without one).
         return isPostDeathAbilityReady(team, slot);
     }
 
-    // Activates `team`'s deployed Champion's ability in the given slot
-    // (e.g. Mighty Miner's "Explosive Escape") -- distinct from playCard,
-    // which places a NEW card from hand onto an empty spot. Mirrors
-    // playCard's own shape: returns bool, never throws, deducts elixir only
-    // once success is already guaranteed (find the champion, confirm
-    // cooldown/elixir, THEN deduct and fire) so a failed call never
-    // partially spends resources.
+    // Activates the Champion's ability in `slot` (e.g. Mighty Miner's
+    // "Explosive Escape"). Checks everything before deducting elixir, so a
+    // failed call spends nothing.
     bool activateChampionAbility(int team, int slot = 1) {
         if (gameOver) return false;
 
         auto champion = findChampionInSlot(team, slot);
         if (champion && champion->abilityEffect) {
             if (champion->abilityCooldownRemaining > 0) return false;
-            // Matches isChampionAbilityReady's own check -- without this, a
-            // uses-limited ability (Boss Bandit; now also Hero Mini P.E.K.K.A's
-            // one-use Breakfast Boost) whose abilityCooldownTicks happens to be
-            // 0 would deduct elixir and return true on every call even after
-            // CombatEntity::activateAbility's own internal uses check makes the
-            // activation itself a no-op -- previously masked for Boss Bandit
-            // only because his cooldown (30 ticks) is nonzero, so a repeat call
-            // was always caught by the cooldown check above first.
+            // Without this, a uses-limited ability with a zero cooldown would
+            // keep charging elixir for a no-op activation.
             if (champion->abilityUsesRemaining == 0) return false;
 
             PlayerState& player = (team == 0) ? playerAI : playerOpponent;
@@ -882,11 +598,8 @@ public:
             return true;
         }
 
-        // Post-death squad reactivation (Hero Goblins-style): only
-        // reachable when nothing is currently alive in this slot. Mirrors
-        // the alive-path's own shape -- confirm readiness fully (via the
-        // shared isPostDeathAbilityReady helper) BEFORE deducting anything,
-        // so a failed call never partially spends resources.
+        // Post-death squad reactivation, reachable only when nothing in the
+        // slot is alive. Readiness is confirmed before anything is spent.
         if (!isPostDeathAbilityReady(team, slot)) return false;
 
         PlayerState& player = (team == 0) ? playerAI : playerOpponent;
@@ -896,26 +609,21 @@ public:
 
         player.elixir -= slotDef->abilityElixirCost;
         slotDef->postDeathAbilityEffect->apply(board, slotState.lastSquadWipePosition, team);
-        slotState.lastSquadWipeTick = -1; // consumed -- until redeployed and wiped again
+        slotState.lastSquadWipeTick = -1; // consumed until the squad is redeployed and wiped again
         board.statsEvents.notifyChampionAbilityActivated({ team, deckConfig[slot], slotDef->abilityElixirCost, currentTick });
         return true;
     }
 
     void reset() {
         board = Board();
-        // First line after replacing board -- board = Board() destroys the
-        // old Board's statsEvents subscriber list along with it, so stats
-        // needs fresh collectors subscribed to the *new* bus before
-        // anything below (the addTower() spawns, the final
-        // commitPendingEntities()) fires a single event.
+        // Right after replacing the board, whose subscriber list died with it:
+        // fresh collectors before any event fires.
         stats.attach(board);
         currentTick = 0;
         gameOver = false;
         loserTeam = -1;
-        // -1 == "never played this match". Cleared HERE rather than in the
-        // constructor alone, because reset() is what starts a new match and a
-        // carried-over cycle would tell the agent the opponent had already
-        // shown cards they have not.
+        // Cleared per match, or the agent would see cards the opponent has not
+        // shown.
         for (auto& perTeam : lastPlayedTick) perTeam.fill(-1);
 
         std::string aiErr = validateDeckSlots(aiDeckConfig);
@@ -926,41 +634,11 @@ public:
         playerAI.initializeDeck(aiDeckConfig, rng);
         playerOpponent.initializeDeck(oppDeckConfig, rng);
 
-        // X-coordinates below corrected 2026-07-30 per perception/'s
-        // UPSTREAM_REQUESTS.md items 1-2, fitted from real-recording
-        // homography (screen->tile, 8 landmarks, aggregated over 8 matches):
-        //
-        //   - Left Princess x: 3.0 -> 4.0. It was a full tile off its own
-        //     bridge (also x=4.0) while the right side already agreed with
-        //     ITS bridge (both 14.0) -- an internal asymmetry, not a
-        //     convention choice. Measured: left tower centre 819px, left
-        //     bridge centre 821px, same lane.
-        //   - King x: 8.5 -> 9.0. Supersedes this engine's own previous
-        //     flush-footprint reasoning (a 4-wide footprint centered on a
-        //     half-integer lands on whole tile-boundary lines) now that real
-        //     footage gives a directly measured value instead: king centre
-        //     955.75px resolves to 8.79 in bridge-calibrated tile
-        //     coordinates, closer to 9.0. Moving the King alone is a wash
-        //     (it fixes one landmark while the left Princess is still wrong);
-        //     combined with the Princess fix above, held-out calibration
-        //     error dropped max 0.63 -> 0.31 tiles, rms 0.33 -> 0.21.
-        //   - Right side (14.0/14.0) was already correct and is unchanged.
-        //
-        // Y-coordinates are untouched here (separate history -- see the
-        // river re-centring commit): King 2.5<->30.5, Princess 6.0<->27.0,
-        // still symmetric under (height-1) - y = 33 - y, same convention as
-        // every other team-mirroring formula in this engine (e.g.
-        // ClashEnv::extractObservationForTeam).
-        // 8.5, not 9.0: x is a cell index in [0, 17], so the board's centre
-        // -- and the fixed point of the mirror 17 - x -- is 8.5. A King at
-        // 9.0 sat half a tile right of centre on both teams, which is also
-        // why the left Princess and the left bridge were each a half tile
-        // out. See Board::leftBridge for the same correction.
+        // Tower positions from ArenaLayout.h.
         addTower(ArenaLayout::CENTER_X, ArenaLayout::kingY(0), 4008, 0, 7.0f, 90, 10, 'R', "King Tower");
         addTower(ArenaLayout::CENTER_X, ArenaLayout::kingY(1), 4008, 1, 7.0f, 90, 10, 'R', "King Tower");
 
-        // 3.0 / 14.0: mirror images under 17 - x, and each flush with its own
-        // bridge column (Board::leftBridge / rightBridge).
+        // Princess Towers, from the configured Tower Troop.
         addTower(ArenaLayout::LEFT_LANE_X,  ArenaLayout::princessY(0), 0, "Princess Tower", towerTroopStats(aiTowerTroop));
         addTower(ArenaLayout::RIGHT_LANE_X, ArenaLayout::princessY(0), 0, "Princess Tower", towerTroopStats(aiTowerTroop));
         addTower(ArenaLayout::LEFT_LANE_X,  ArenaLayout::princessY(1), 1, "Princess Tower", towerTroopStats(oppTowerTroop));
@@ -975,13 +653,9 @@ public:
         currentTick++;
         board.currentTick = currentTick;
 
-        // Read the phase ONCE, after currentTick++ above, and hand the same
-        // value to both players. Two reads of the same schedule straddling a
-        // write is the freeze off-by-one all over again (see CLAUDE.md, "one
-        // fact, two readers, and a write in between"); one read cannot desync.
-        // The phase multiplies the BASE rate, and oppElixirMultiplier then
-        // multiplies that -- so a stage-5 opponent at 1.5x in double elixir
-        // gets 3x, which is the intended composition, not a bug.
+        // Read the phase once, after the tick advances, and use it for both
+        // players. oppElixirMultiplier multiplies on top: a 1.5x opponent in
+        // double elixir gets 3x, as intended.
         const float elixirPhase = getElixirMultiplier();
         playerAI.elixir = std::min(playerAI.elixir + ELIXIR_REGEN_RATE * elixirPhase, 10.0f);
         playerOpponent.elixir = std::min(
@@ -995,9 +669,8 @@ public:
             if (entity->isAlive()) entity->update(board);
         }
 
-        // Elixir Collector: drain whatever ElixirGrantEffect accumulated
-        // this tick into the real PlayerState, then reset -- same cap as
-        // normal regen above.
+        // Elixir Collector: drain this tick's grants into the players, with the
+        // same cap.
         playerAI.elixir = std::min(playerAI.elixir + board.pendingElixirGrant[0], 10.0f);
         playerOpponent.elixir = std::min(playerOpponent.elixir + board.pendingElixirGrant[1], 10.0f);
         board.pendingElixirGrant[0] = 0.0f;
@@ -1006,9 +679,8 @@ public:
         board.commitPendingEntities(currentTick);
         board.resolveCollisions();
 
-        // evaluateAtTick, not evaluate: from 3:00 a crown lead ends the match
-        // (regulation win) and so does the first crown taken after it (sudden
-        // death). See MatchRules::evaluateAtTick.
+        // evaluateAtTick: from 3:00 a crown lead, or the first crown in
+        // overtime, ends the match.
         MatchRules::Outcome outcome = MatchRules::evaluateAtTick(board, currentTick);
         if (outcome.over) {
             gameOver = true;
@@ -1016,10 +688,9 @@ public:
             board.statsEvents.notifyMatchEnded({ loserTeam, currentTick });
         }
 
-        // After this tick's entity updates (so this tick's cooldown
-        // decrement is captured) but before dead entities are erased (so a
-        // Champion that died this very tick still gets its final cooldown
-        // value persisted) -- see PlayerState::ChampionSlotState's comment.
+        // After the entity updates (so this tick's cooldown decrement is
+        // captured) and before dead entities are erased (so a Champion that
+        // died this tick persists its final cooldown).
         syncChampionCooldowns(0);
         syncChampionCooldowns(1);
 

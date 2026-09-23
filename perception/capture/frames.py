@@ -1,20 +1,13 @@
 """FrameSource backed by a directory of stills.
 
-Two jobs. First, calibration: a single extracted frame is the natural unit
-for picking anchors, and a directory of them is the natural unit for
-regression-testing readers against a handful of interesting moments (elixir
-nearly full, clock at a phase boundary, a card slot greyed out) without
-shipping a video for each.
+For calibration (a single frame is the unit for picking anchors) and for
+regression-testing readers against interesting moments without a video each; a
+failing frame from a long recording becomes a permanent test case by dropping
+it in a directory.
 
-Second, it is how a failing frame from a long recording gets turned into a
-permanent test case: dump the frame, drop it in a directory, and the same
-pipeline runs over it unchanged.
-
-Since stills carry no timing of their own, the rate is supplied by the
-caller and timestamps are synthesised from it. That is honest for the
-calibration use, where the frames are independent samples rather than a
-sequence, and it is exactly why this class does not pretend to probe timing
-the way VideoSource does.
+Stills carry no timing, so the rate is supplied by the caller and timestamps
+are synthesised. Honest for calibration, where frames are independent samples,
+and why this class does not probe timing as VideoSource does.
 """
 
 from __future__ import annotations
@@ -30,11 +23,8 @@ _EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 
 
 class FrameDirSource(FrameSource):
-    """Images from a directory, in sorted filename order.
-
-    Sorted so ordering is deterministic and reproducible across machines --
-    directory iteration order is not. Zero-pad numeric filenames
-    (frame_0001.png) or the tenth frame sorts before the second.
+    """Images from a directory, in sorted filename order, so ordering is
+    reproducible. Zero-pad numeric filenames (frame_0001.png).
     """
 
     def __init__(self, directory: str | Path, fps: float = 30.0, pattern: str = "*"):
@@ -79,8 +69,8 @@ class FrameDirSource(FrameSource):
             image = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if image is None:
                 raise RuntimeError(f"could not decode {path}")
-            # Mixed sizes would make one calibration profile silently wrong
-            # for part of the directory, which is the failure this catches.
+            # Mixed sizes would make one calibration profile silently wrong for
+            # part of the directory.
             if (image.shape[1], image.shape[0]) != self._size:
                 raise ValueError(
                     f"{path.name} is {image.shape[1]}x{image.shape[0]} but the "
@@ -96,17 +86,11 @@ class FrameDirSource(FrameSource):
 class RecordingSource(FrameSource):
     """A directory written by `tools/record_match.py`: stills plus a manifest.
 
-    Distinct from FrameDirSource, which synthesises timestamps from a nominal
-    rate because stills carry no timing of their own. A live recording DOES
-    carry timing -- the recorder stamps every frame at capture -- and it is
-    variable-rate by nature, since Windows.Graphics.Capture delivers on window
-    repaints. Feeding it through a constant-rate source would replace real
-    timestamps with a fiction, and the readers that depend on the clock would
-    inherit the drift.
-
-    That matters concretely: the clock digit templates are labelled by
-    `clock(t) = anchor - (t - anchor_t)`, so a wrong `t` mislabels the glyph and
-    the error is baked into the template rather than showing up as a bad read.
+    A live recording carries real per-frame capture stamps and is variable-rate
+    (WGC delivers on repaints), so feeding it through a constant-rate source
+    would replace real timestamps with a fiction. The clock digit templates are
+    labelled by `clock(t) = anchor - (t - anchor_t)`, so a wrong `t` would bake
+    the error into the templates.
     """
 
     def __init__(self, directory: str | Path):
@@ -134,11 +118,8 @@ class RecordingSource(FrameSource):
 
     @property
     def fps(self) -> float:
-        """ACHIEVED rate, recorded at capture time.
-
-        Not a constant-rate promise -- see the class docstring. Anything doing
-        time arithmetic must use each Frame's own `wall_time_ms`, which is the
-        real capture stamp, never index/fps.
+        """Achieved rate at capture time, not a constant-rate promise. Time
+        arithmetic must use each Frame's own `wall_time_ms`, never index/fps.
         """
         return self._achieved_fps
 

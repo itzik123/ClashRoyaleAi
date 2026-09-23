@@ -4,7 +4,7 @@
 #include <vector>
 #include <string>
 #include <cstddef>
-#include <iomanip> // std::setprecision, for the one-decimal elixir readout
+#include <iomanip> // std::setprecision
 
 class TerminalRenderer {
 private:
@@ -20,31 +20,8 @@ private:
 public:
     TerminalRenderer(int w = 18, int h = 34) : width(w), height(h) {}
 
-    // The river row, DERIVED from the board instead of restated.
-    //
-    // This was `(x >= 3 && x <= 5) || (x >= 13 && x <= 15)` -- another stale
-    // copy of the arena's bridge columns, the EIGHTH this project has found
-    // (CLAUDE.md keeps the list; the seventh was python_ai/envs/
-    // scenario_offense.py, found the same day).
-    // The real river row is
-    //
-    //     column  012345678901234567
-    //             WWBBWWWWWWWWWWBBWW      (W water, B bridge)
-    //
-    // and the old test painted B at {3,4,5,13,14,15} against a real
-    // {2,3,14,15}: FOUR of eighteen columns wrong in both directions -- column
-    // 2 is real bridge and was drawn as water, while 4, 5 and 13 are water and
-    // were drawn as bridge. It also drew a THREE-tile bridge, the
-    // pre-2026-08-21 shape from before the bridges were re-centred on the seam
-    // between their two tiles.
-    //
-    // Unlike web/viewer.html, which CLAUDE.md records as structurally unable to
-    // derive this (its only input is a replay JSON that carries no geometry),
-    // this renderer holds a `const Board&` and `Board::isOnBridge` is public.
-    // There was never a reason for the copy.
-    //
-    // Public and string-returning so a test can check it without parsing ANSI
-    // escapes out of stdout.
+    // The river row, derived from the board (e.g. WWBBWWWWWWWWWWBBWW). A
+    // string, so a test can check it without parsing ANSI escapes.
     static std::string riverRow(const Board& board) {
         std::string row(static_cast<size_t>(board.getWidth()), 'W');
         for (int x = 0; x < board.getWidth(); ++x) {
@@ -53,18 +30,17 @@ public:
         return row;
     }
 
-    // Which grid row the river is drawn on. getRiverEnd() is 17.5, so this is
-    // 17 -- the same row ClashEnv::extractObservationForTeam paints channel 8
-    // on, derived rather than restated so both follow if the river moves again.
+    // The grid row the river is drawn on: the row
+    // ClashEnv::extractObservationForTeam paints channel 8 on.
     static int riverRowIndex(const Board& board) {
         return static_cast<int>(board.getRiverEnd());
     }
 
-    // Draws the whole match state: the board, then the AI player's elixir and hand.
+    // Draws the board, then the AI player's elixir and hand.
     void render(const GameManager& game) {
         const Board& board = game.getBoard();
 
-        // 1. An empty grid, with the river row derived from the board.
+        // 1. An empty grid with the river row.
         std::vector<std::string> grid(height, std::string(width, '.'));
 
         const std::string river = riverRow(board);
@@ -75,7 +51,7 @@ public:
             }
         }
 
-        // 2. Place every living entity on the grid by its truncated cell.
+        // 2. Every living entity at its truncated cell.
         for (const auto& entity : board.getEntities()) {
             if (!entity->isAlive()) continue;
 
@@ -117,11 +93,11 @@ public:
             std::cout << std::endl;
         }
 
-        // --- 4. The AI player's status under the board: elixir, next card, hand ---
+        // 4. The AI player's elixir, next card and hand.
         std::cout << "===============================" << std::endl;
 
         // Elixir in magenta, with the next card in the queue.
-        std::cout << std::fixed << std::setprecision(1); // one decimal place
+        std::cout << std::fixed << std::setprecision(1);
         std::cout << "[\033[35mElixir: " << game.getElixirAI() << " / 10.0\033[0m] | Next: "
             << getCardName(game.playerAI.deckQueue.front()) << std::endl;
 

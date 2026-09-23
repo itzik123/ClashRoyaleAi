@@ -1,40 +1,28 @@
 """Live strategy diagnostics: what the win rate cannot see.
 
-These track the two degenerate behaviours measured in phase 1, both of which are
-invisible in win/loss against a weak opponent and fatal against a competent one:
+They track behaviours invisible in win/loss against a weak opponent: abandoning
+cards (never playing the win condition or the spell) and never banking enough
+elixir for a push.
 
-  * the greedy policy had abandoned 2 of its 8 cards entirely -- never the win
-    condition, never the spell -- and won purely by cheap defence
-  * it never accumulated elixir (mean 3.6/10 at the moment it acted), so it
-    could never afford a real push
+Read them in pairs. `Fwd` (forward placement rate) and the entropy series both
+rise from noise alone; `ROI` is the half that noise pushes the other way.
+Spread up with ROI up or flat is learning; spread up with ROI down is
+randomness.
 
-READ THESE IN PAIRS, WHICH IS THE ENTIRE POINT OF THE MODULE.
-
-`Fwd` (forward placement rate) and the entropy series can BOTH rise from noise
-alone: raising placement entropy spreads the marginal toward the middle of the
-legal region, which lifts forward rate whether or not the policy got better.
-`ROI` is the half that noise pushes the OTHER way. Spread up with ROI up or flat
-is learning; spread up with ROI down is randomness.
-
-TWO DEFINITIONS THAT ARE LOAD-BEARING:
-
-  ROI is a ratio of SUMS over the window, never a mean of per-episode ratios.
-      An episode where a card went unplayed contributes 0/0, and averaging those
-      moves the number for reasons unrelated to how well the card was used.
-  TwrDmg is per 1000 TICKS, not per episode. `AvgTicks` moved 24% in one hour
-      after the placement-mask fix, and an unnormalized total would have read as
-      more pressure when it was only longer matches.
+  ROI     a ratio of sums over the window, never a mean of per-episode
+          ratios (an unplayed card contributes 0/0)
+  TwrDmg  per 1000 ticks, not per episode, so longer matches do not read as
+          more pressure
 """
 from collections import deque
 
 import numpy as np
 
-#: Placements at or beyond this row are "forward" -- the bridge-adjacent band
-#: rather than the tower pocket. Reported as a rate so it does not move with
-#: match length.
+#: Placements at or beyond this row are "forward" (the bridge-adjacent band);
+#: reported as a rate.
 FORWARD_ROW_Y = 12
 
-#: Engine ticks per bot decision, for the tick-normalized damage rate.
+#: Engine ticks per decision, for the tick-normalized damage rate.
 TICKS_PER_DECISION = 10.0
 
 
@@ -49,7 +37,7 @@ class StrategyMetrics:
         self.plays_per_game = deque(maxlen=short)
         self.forward_rate = deque(maxlen=short)
         self.tower_damage_rate = deque(maxlen=short)
-        #: Realized per-card elixir economy, summed over recent episodes.
+        #: Realized per-card elixir economy over recent episodes.
         self.econ_killed = deque(maxlen=short)
         self.econ_spent = deque(maxlen=short)
 
@@ -58,29 +46,22 @@ class StrategyMetrics:
         self._play_count = np.zeros(num_envs, dtype=np.int64)
         self._forward_placements = np.zeros(num_envs, dtype=np.int64)
 
-    # -- per-step -----------------------------------------------------------
     def record_play(self, i, card_id, elixir, cell, board_width):
         """One card actually reached the board in env `i`.
 
-        "The policy chose a card" is NOT the same as "a card was played": the
-        engine silently refuses an illegal or unaffordable play, so only a rise
-        in cumulative elixir_spent proves it. The caller checks that; this only
-        records.
-
-        Card identity and elixir must come from the observation the ACTION was
-        taken on -- the hand rotates the instant a card is played, so reading it
-        afterwards returns the wrong card.
+        The caller establishes that (the engine silently refuses bad plays, so
+        only a rise in elixir_spent proves one). Card identity and elixir must
+        come from the observation the action was taken on: the hand rotates as
+        soon as a card is played.
         """
         if card_id is not None and card_id >= 0:
             self._card_ids[i].add(int(card_id))
         self._elixir_at_play[i].append(float(elixir))
         self._play_count[i] += 1
-        # `cell` is row-major over board_width, the same layout cell_to_xy
-        # inverts.
+        # `cell` is row-major over board_width, as cell_to_xy inverts.
         if cell // board_width >= FORWARD_ROW_Y:
             self._forward_placements[i] += 1
 
-    # -- per-episode --------------------------------------------------------
     def finish_episode(self, i, killed_by_card, spent_by_card, tower_damage,
                        steps):
         self.cards_per_game.append(len(self._card_ids[i]))
@@ -105,11 +86,9 @@ class StrategyMetrics:
         self._play_count[i] = 0
         self._forward_placements[i] = 0
 
-    # -- read-out -----------------------------------------------------------
     def roi(self):
-        """(overall ROI, worst card index, worst ROI, per-card ROI array).
-
-        `per_card` is None where nothing was spent on that slot in the window.
+        """(overall ROI, worst card index, worst ROI, per-card ROI array);
+        per-card entries are NaN where nothing was spent in the window.
         """
         if not self.econ_spent:
             return float("nan"), None, float("nan"), None
@@ -141,14 +120,11 @@ class StrategyMetrics:
 
 class ScenarioMetrics:
     """Success rates for injected scenarios, split by whether the test means
-    anything for that scenario.
+    anything.
 
-    Only DEFENSIVE scenarios reach `defensive`. Success there means "the episode
-    did not end in a tower/game loss", which is only a question worth asking
-    when something was threatening us. `fireball_tower_value` spawns at the
-    ENEMY tower, so it passes that test by default -- including when the agent
-    does nothing at all. Counting it pushed ScenDef toward 1.0 and would have
-    masked a genuine collapse in the very reflex the metric exists to watch.
+    Only defensive scenarios reach `defensive`, where success ("no tower or
+    game lost") is a real question. A scenario with no threat on our half
+    passes by default and would mask a real collapse.
     """
 
     def __init__(self, maxlen=200):

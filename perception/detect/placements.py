@@ -1,52 +1,23 @@
-"""Detecting the opponent's placements. The expensive stage.
+"""Detecting the opponent's placements.
 
-STATUS: the two sides are deliberately asymmetric, and only one of them is
-finished. That is not an oversight -- it is the cheapest correct ordering.
-
-OUR SIDE IS DONE AND NEEDS NO MODEL
------------------------------------
-A card leaving one of our hand slots IS a placement, and the card that
-replaces it is the next queue entry. readers/hand.infer_play_from_hand_change
-extracts both, exactly, from two consecutive frames. So our card identity and
-our timing are free and perfectly labelled -- no tap logger, no annotation
-pass, no model. Only the TILE has to be recovered from the board.
-
-That is the whole basis of the semi-supervised plan: our own plays generate a
-correctly labelled dataset just by playing, and the opponent's side is the
-same visual problem with the board mirrored.
-
-THE OPPONENT'S SIDE NEEDS RECORDED DATA, AND THERE IS NONE
------------------------------------------------------------
-Detecting an opponent placement means finding the moment and screen position
-where a unit appears, then classifying it. Both halves need frames from the
-real game to build or train anything at all.
-
-("no recording exists yet" was true when this was written and is not now --
-`assets/recordings/` holds 8 matches. README.md's stage 3 still reports this
-blocked on data and asks for a further batch, so the shortfall is in what the
-existing footage covers, not in whether footage exists. Corrected 2026-08-24
-so the file does not read as blocked on something already delivered.)
+The two sides are deliberately asymmetric. Ours needs no model: a card leaving
+a hand slot is a placement and its replacement is the next queue entry
+(readers/hand.infer_play_from_hand_change), so our card identity and timing are
+free and exactly labelled; only the tile comes from the board. The opponent's
+side is the same visual problem with the board mirrored, and needs frames from
+the real game to build or train anything.
 
 So `OpponentPlacementDetector.detect` raises NotImplementedError rather than
-shipping a plausible-looking heuristic. A frame-differencing stub would
-"work" on any input and be wrong in ways that only show up as divergence
-three stages downstream -- which is exactly the failure this whole design is
-built to avoid.
+shipping a plausible heuristic: a frame-differencing stub would "work" on any
+input and be wrong in ways that show up only as divergence three stages
+downstream. What is specified here (interface, sampling rate, suppression) is
+testable without a model.
 
-What IS specified here is the interface, the sampling rate, and the
-suppression logic, all of which are testable and independent of the model.
-
-WHY THE DETECTION RATE IS A PARAMETER
--------------------------------------
-A match produces roughly 20 placements a minute. Running a detector at 30fps
-to catch 20 events is three orders of magnitude of waste. The rate is
-configurable and decimation happens once, in FrameSource.sample_every, on
-presentation time rather than frame index.
-
-The floor is set by tile accuracy, not by event count: a Hog Rider covers
-about a tile every 0.9 s, so at 4 fps a unit has already moved ~0.3 tiles
-before its first observation -- inside the 1.5-tile budget, but not by much
-if the unit is fast. 6 fps is the default for that reason.
+The detection rate is a parameter. A match produces ~20 placements a minute, so
+30 fps would be waste; decimation happens once, in FrameSource.sample_every, on
+presentation time. The floor is tile accuracy: a Hog Rider covers about a tile
+every 0.9 s, so at 4 fps a unit has moved ~0.3 tiles before its first
+observation. 6 fps is the default.
 """
 
 from __future__ import annotations
@@ -57,20 +28,19 @@ import numpy as np
 
 from contracts import PlacementEvent
 
-# Detector rate, in frames per second. See the docstring's last section.
+# Detector rate, in frames per second (module docstring).
 DEFAULT_DETECT_FPS = 6.0
 
-# Two detections of the same card within this many ticks and this many tiles
-# are treated as one placement. Multi-unit cards spawn several units at once
-# and slow-decimated frames can see the same spawn twice; both must collapse
-# to a single event or the opponent-elixir model double-charges and the
-# missed-placement alarm inverts into a false-positive machine.
+# Two detections of the same card within this many ticks and tiles are one
+# placement: multi-unit cards spawn several units, and decimated frames can see
+# one spawn twice. Otherwise the opponent-elixir model double-charges and the
+# missed-placement alarm fires falsely.
 SUPPRESS_WITHIN_TICKS = 12
 SUPPRESS_WITHIN_TILES = 3.5
 
 
 class DetectorNotTrainedError(NotImplementedError):
-    """No detector exists yet. See this module's docstring."""
+    """No detector exists yet; see the module docstring."""
 
 
 @dataclass
@@ -118,10 +88,9 @@ class PlacementSuppressor:
 class OpponentPlacementDetector:
     """Finds opponent placements on the board.
 
-    Not implemented -- see the module docstring. The constructor accepts its
-    real dependencies so the wiring around it can be built and tested now,
-    and so that the day a model exists it drops in without any consumer
-    changing.
+    Not implemented (module docstring). The constructor takes its real
+    dependencies so the wiring can be built and tested now, and a model drops
+    in without any consumer changing.
     """
 
     def __init__(self, homography, geometry, model_path=None, detect_fps: float = DEFAULT_DETECT_FPS):
@@ -149,10 +118,8 @@ class OpponentPlacementDetector:
 
     def to_events(self, detections: list[Detection]) -> list[PlacementEvent]:
         """Map detections to events, applying suppression and the card map.
-
-        Mirrors y into ClashEnv convention here, once, so no consumer has to
-        remember to. PlacementEvent.tile_y is defined as already mirrored for
-        team 1 -- see contracts.py.
+        Mirrors y into ClashEnv convention here, once: PlacementEvent.tile_y is
+        already mirrored for team 1 (contracts.py).
         """
         import mapping  # imported here so this module works without the map
 

@@ -172,9 +172,7 @@ TEST_CASE("SkeletonKingSoulSummonEffect spawns base+souls skeletons and consumes
     king->soulCount = 4;
     spawn(board, king);
 
-    // Built directly rather than reaching into CardRegistry's private
-    // child-stats helper -- only the spawn count/soul-consumption below
-    // are under test, not the skeleton's own stats.
+    // Built directly: only the spawn count and soul consumption are under test.
     CardStats skeletonStats;
     skeletonStats.name = "Skeletons";
     skeletonStats.archetype = Archetype::MeleeSquad;
@@ -294,13 +292,9 @@ TEST_CASE("BossBanditGetawayGrenadeEffect teleports the opposite direction for t
 
 TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river band itself, not snapped to an edge",
         "[boss_bandit]") {
-    // A "getaway" landing spot doesn't always clear the whole river in one
-    // jump -- if it lands INSIDE the river band (15.5-17.5, see Board's own
-    // defaults), a normal (river-respecting) troop would get shoved back to
-    // the near edge by Board::clampToBoard. Boss Bandit's retreat must
-    // cross the river on the way back to her own side, so this specifically
-    // must NOT happen -- see BossBanditGetawayGrenadeEffect's own comment
-    // on why clampToBoard is called with ignoresRiver=true.
+    // A getaway landing inside the river band (15.5-17.5) must not be clamped
+    // back to the near bank: the retreat crosses the river (clampToBoard with
+    // ignoresRiver=true).
     Board board;
     auto bandit = std::make_shared<StationaryCombatant>(1, 9.0f, 23.0f, 2624, 0, 0.8f, 245, 11); // team 0, deep in enemy territory
 
@@ -311,19 +305,13 @@ TEST_CASE("BossBanditGetawayGrenadeEffect can land the retreat inside the river 
 }
 
 
-// ============================================================================
-// Ability-effect defects found in the 2026-08-26 C++ audit.
-// ============================================================================
+// --- ability-effect defects ---
 
 TEST_CASE("the Golden Knight's dash never moves him AWAY from his target",
           "[champion][golden_knight][regression]") {
-    // GoldenKnightDashEffect closes to melee with
-    //     pullToward(self, target->position, dist - 1.0f)
-    // and nothing guarded that subtraction. Against an enemy already closer
-    // than 1.0 tiles the distance goes NEGATIVE, and pullToward's
-    // `moveBy = (distance < dist) ? distance : dist` happily takes a negative
-    // moveBy -- so the dash runs backwards. He is registered with maxDashes 10,
-    // so a Golden Knight who dashes onto something adjacent retreats from it.
+    // The dash closes with `pullToward(self, target, dist - 1.0f)`; against an
+    // enemy closer than 1.0 the distance goes negative, which must not pull him
+    // backwards.
     Board board;
     auto victim = std::make_shared<MeleeTroop>(1, 5.0f, 5.5f, 100000, 1, 0.0f, 1.0f, 1, 10, 'v');
     spawn(board, victim);
@@ -339,8 +327,8 @@ TEST_CASE("the Golden Knight's dash never moves him AWAY from his target",
 
     const float after = knight->position.distanceTo(victim->position);
     INFO("distance before = " << before << ", after = " << after);
-    // Control: the dash must actually have HAPPENED, or "did not retreat" is
-    // satisfied by an effect that did nothing at all.
+    // Control: the dash must have happened, or "did not retreat" passes for a
+    // no-op.
     REQUIRE(victim->hp < 100000);
     REQUIRE(after <= Catch::Approx(before).margin(1e-4f));
 }

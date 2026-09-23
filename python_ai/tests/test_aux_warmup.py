@@ -1,17 +1,11 @@
-"""The next-card auxiliary loss is ramped in over a from-scratch run's first episodes.
+"""The next-card auxiliary loss is ramped in over a from-scratch run's first
+episodes.
 
-Measured 2026-09-15 on a fresh init at the from-scratch phase-1 config, over 12
-real PPO updates: the aux term's gradient on the shared modules grew from 0.62x
-to 1.67x the size of every other term combined on the LSTM (0.63x -> 2.01x on the
-CNN trunk), with cosine to them falling from -0.37 to -0.84 (-0.90 on the trunk).
-The auxiliary head was out-pulling, and pointing against, the policy and critic
-on the representation they share -- in exactly the window where a random-init
-net has to find its first wins. Its coefficient was sized against a CE of
-~ln(8) = 2.08; a fresh 185-way head starts at ln(185) = 5.22.
-
-A LINEAR WARM-UP, not a removal: the aux task exists to shape recurrent memory
-toward the opponent's cycle, and nothing measured says it hurts once the policy
-has a foothold. `aux_warmup_episodes = 0` restores the old behaviour exactly.
+A fresh 185-way head starts at CE ln(185) = 5.22, far above the ~ln(8) its
+coefficient was sized for, and its gradient out-pulls and opposes the policy
+and critic on the shared LSTM and trunk exactly when a random-init net must
+find its first wins. A linear warm-up, not a removal; `aux_warmup_episodes = 0`
+restores the old behaviour exactly.
 """
 import copy
 
@@ -72,8 +66,8 @@ def test_scale_zero_removes_the_aux_gradient_and_scale_one_changes_nothing(rollo
     g_one = _grads(rollout, aux_scale=1.0)
     g_zero = _grads(rollout, aux_scale=0.0)
     g_nocoef = _grads(rollout, cfg=dataclasses.replace(TINY, aux_card_coef=0.0))
-    # Tolerance, not torch.equal: two IDENTICAL runs of this update differ by up
-    # to 1.5e-08 (multithreaded CPU backward), against gradients of order 1.
+    # Tolerance, not torch.equal: two identical runs differ by up to ~1.5e-08
+    # (multithreaded CPU backward).
     for n in g_default:
         assert torch.allclose(g_default[n], g_one[n], atol=1e-6), n
         assert torch.allclose(g_zero[n], g_nocoef[n], atol=1e-6), n

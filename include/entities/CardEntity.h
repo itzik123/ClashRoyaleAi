@@ -1,11 +1,8 @@
 #pragma once
 #include "Entity.h"
 
-// Marker base for anything a card can place directly on the board --
-// troops, buildings, and spells (via CombatEntity and AreaSpell). Formalizes
-// the one real split among Entity's descendants: "a player chose to put
-// this here" versus Projectile, which only ever appears as a side effect of
-// another entity's attack and is never itself selected from a hand.
+// Marker base for what a card places directly (troops, buildings, spells), as
+// opposed to Projectile, which only exists as a side effect of an attack.
 class CardEntity : public Entity {
 public:
     using Entity::Entity;

@@ -1,36 +1,17 @@
-"""Re-initialise the auxiliary heads in a checkpoint. One-shot, for a deck change.
+"""Re-initialise a checkpoint's auxiliary heads, for a change of opponent
+distribution.
 
-WHY A CHECKPOINT NEEDS THIS AT ALL
-----------------------------------
-`aux_card_head` predicts WHICH CARD the opponent plays next, over all 185 card
-ids. A checkpoint trained against the 2.6 mirror has only ever seen 8 of them,
-so its head is not merely untrained on the rest -- it is CONFIDENT about a
-distribution that no longer exists.
+`aux_card_head` predicts the opponent's next card over all 185 ids. A
+checkpoint trained against one deck is confidently wrong about any other
+distribution, worse than uniform, and the head reads `hx` without detach, so
+that error backpropagates through the LSTM and the trunk. A fresh head starts
+near uniform and relearns on what it will actually see. (`ppo.py` also caps how
+hard a stale head can pull.)
 
-Measured on 2026-09-03, resuming `model_weights_phase5.pth` into the 16-deck
-pool: the head's cross-entropy read **13.76**, against **ln(185) = 5.22** for
-predicting uniformly. Worse than uniform is the signature of a stale classifier,
-and it is not a harmless readout: the head reads `hx` with no detach, so that
-error backpropagates through the LSTM and the entire trunk. The weighted term
-reached ~7x the actor loss and the policy's win rate fell 0.58 -> 0.00 in 126
-episodes.
-
-`ppo.py`'s stale-head cap bounds how hard that can pull. This tool removes the
-cause rather than the symptom: a freshly initialised head starts at ~uniform and
-relearns on the distribution it will actually see, instead of spending thousands
-of episodes unlearning a confident wrong answer.
-
-WHAT IT DOES NOT TOUCH
-----------------------
-Only the two auxiliary heads. The trunk, the LSTM, the card head, the placement
-heads and the critic are left exactly as they are -- this is not a partial
-restart, and the policy that comes out plays identically on its first step. The
-optimizer moments for the reset tensors are zeroed too, or Adam would carry the
-old head's momentum into the new one and undo the reset over the first updates.
-
-`cycle_id_head` is reset for the same reason even though its gradient is
-detached from everything upstream: its readout is what the console reports as
-`CycleId`, and a stale one makes that diagnostic lie.
+Only the two auxiliary heads change; the acting path is untouched and plays
+identically on its first step. Their Adam moments are zeroed too, or the old
+momentum would undo the reset. `cycle_id_head` is reset as well: its gradient
+is detached, but its readout is the console's `CycleId`.
 
     python_ai/venv/Scripts/python.exe -m python_ai.tools.reset_aux_heads \\
         --weights model_weights_phase6.pth [--out model_weights_phase6b.pth]
@@ -49,8 +30,7 @@ import torch.nn as nn  # noqa: E402
 
 from python_ai.rl.checkpointing import atomic_save  # noqa: E402
 
-#: Prefixes whose parameters are re-initialised. Both are auxiliary readouts,
-#: neither is on the acting path.
+#: Prefixes re-initialised. Both are auxiliary readouts, off the acting path.
 AUX_PREFIXES = ("aux_card_head.", "cycle_id_head.")
 
 
@@ -63,10 +43,7 @@ def reset(state_dict, optim_state=None, prefixes=AUX_PREFIXES, seed=0):
     """Re-init matching tensors in place. Returns (names, n_params)."""
     gen = torch.Generator().manual_seed(seed)
     touched, n = [], 0
-    # Index of parameter name -> position, so the optimizer's integer-keyed
-    # state can be cleared for exactly the tensors that moved. Optimizer state
-    # is keyed by ORDER, which is why this has to be derived from the same
-    # ordered dict rather than guessed.
+    # Name -> position: the optimizer's state is keyed by parameter order.
     order = {name: i for i, name in enumerate(state_dict)}
     for name, t in state_dict.items():
         if not name.startswith(prefixes):
@@ -74,8 +51,8 @@ def reset(state_dict, optim_state=None, prefixes=AUX_PREFIXES, seed=0):
         if name.endswith(".bias"):
             t.zero_()
         else:
-            # Same scheme nn.Linear uses for a fresh layer, so the head starts
-            # where a newly constructed one would -- near-uniform logits.
+            # nn.Linear's own init, so the head starts where a fresh one would:
+            # near-uniform logits.
             tmp = torch.empty_like(t)
             nn.init.kaiming_uniform_(tmp, a=5 ** 0.5, generator=gen)
             t.copy_(tmp)
@@ -85,9 +62,8 @@ def reset(state_dict, optim_state=None, prefixes=AUX_PREFIXES, seed=0):
             st = optim_state.get("state", {})
             key = order[name]
             if key in st:
-                # Adam would otherwise carry the OLD head's first and second
-                # moments into the new weights and walk them straight back
-                # toward the distribution being discarded.
+                # Zero Adam's moments, or they walk the new weights back toward
+                # the discarded head.
                 for k in ("exp_avg", "exp_avg_sq"):
                     if k in st[key]:
                         st[key][k].zero_()
@@ -114,9 +90,8 @@ def main():
     if not names:
         raise SystemExit("no auxiliary head tensors found -- nothing reset")
 
-    # atomic_save, never torch.save: --out defaults to overwriting the SOURCE
-    # checkpoint in place, so an interrupted write here destroys the weights
-    # being reset rather than merely failing. Pinned by test_checkpoint_paths.
+    # atomic_save, never torch.save: --out defaults to overwriting the source,
+    # so a torn write would destroy it.
     atomic_save(ck, dst)
     total = sum(t.numel() for t in ck["model"].values())
     print(f"reset {len(names)} tensors, {n:,} parameters "

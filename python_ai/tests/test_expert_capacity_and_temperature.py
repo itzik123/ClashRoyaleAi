@@ -1,45 +1,18 @@
-"""Capacity and temperature for expert collection under the WIDENED search.
+"""Capacity and temperature for expert collection under the widened search.
 
-WHY THESE TWO ARE ONE PROBLEM
------------------------------
-Collection pads each row's ranked candidate set to a fixed schema width
-`K_MAX` and, on overflow, kept the K_MAX HIGHEST-scoring candidates. Under the
-widened search that is not a capacity nuisance, it silently breaks the
-temperature calibration the whole distillation depends on.
-
-Measured over 100 decisions with >=2 candidates:
-
-    candidates/decision   median 77   p90 139   max 150
-    rows over K_MAX=8     87.0%
-
-    value spread (max-min)   full set  mean 0.5786  median 0.6186
-                             top-8     mean 0.2111  median 0.1055
-                             overflow rows: 0.6371 -> 0.1036  (84% compressed)
-
-The top 8 are the candidates most similar to each other, so keeping them throws
-away 84% of the spread. And the target is `softmax(values / T)`, so:
-
-    T      full set   top-8
-    0.02      0.288   0.538
-    0.05      0.592   0.858     <- calibrate here, collect truncated, and the
-    0.25      0.959   0.994        target is near-uniform without any symptom
-
-Calibrating T=0.05 on the full distribution and then collecting truncated puts
-the real target at 0.858 of maximum entropy -- the near-uniform region CLAUDE.md
-records as having produced a null "while looking like it was training".
+Collection pads each row's candidate set to K_MAX. Under the widened search
+most rows overflow, and keeping the top-scoring K_MAX discards most of the
+value spread (the top candidates are the most similar), which pushes the
+`softmax(values / T)` target toward uniform with no symptom. Overflow keeps a
+value-sorted stride instead, and T is recalibrated from the data.
 """
 import numpy as np
 import pytest
 
 
-# --- 1. the widened proposal set must be analytically bounded ---------------
+# --- 1. the widened proposal set is analytically bounded ---
 def test_the_widened_set_is_capped():
-    """A schema width must rest on a proof, not on the largest sample seen.
-
-    Before the cap the worst case was 1 + k_cards * 153 = 460 (the full stride
-    grid for every expanded card) while the observed max was 150 -- so sizing
-    K_MAX on observation would have been sizing it on luck.
-    """
+    """A schema width must rest on a proof, not on the largest sample seen."""
     import torch
     from python_ai.search.config import WIDE_PROPOSAL_MAX_CELLS
     from python_ai.search.search import propose_cells
@@ -65,12 +38,8 @@ def test_the_cap_keeps_the_board_spread():
 
 
 def test_max_candidates_accounts_for_widening():
-    """THE GUARD THAT HAD SILENTLY STOPPED GUARDING.
-
-    `max_candidates` returned 1 + k_cards*k_cells = 7 while the real search
-    emitted up to 150, so the padding-width test passed for a schema that could
-    not hold a row. Same failure mode as the receptive-field test that kept
-    measuring 10x10 across the change that invalidated its own docstring.
+    """`max_candidates` must include the widened set, or the padding-width test
+    passes for a schema that cannot hold a row.
     """
     from python_ai.search.config import SearchCfg, WIDE_PROPOSAL_MAX_CELLS
 
@@ -85,13 +54,10 @@ def test_the_padding_width_holds_the_widened_search():
     assert shipping.search_cfg().max_candidates <= K_MAX
 
 
-# --- 2. overflow must preserve the SPREAD, not the top ---------------------
+# --- 2. overflow preserves the spread, not the top ---
 def test_overflow_keeps_the_min_and_the_max():
-    """Value-sorted UNIFORM STRIDE, not top-k.
-
-    Top-k keeps the candidates most similar to each other. Striding the
-    value-sorted list keeps the endpoints, so the target's dynamic range -- the
-    only thing distinguishing "marginally better" from "a blunder" -- survives.
+    """A value-sorted uniform stride keeps the endpoints, so the target's dynamic
+    range, which separates "marginally better" from "a blunder", survives.
     """
     from python_ai.trainers.expert_collect import select_candidate_indices
 
@@ -104,7 +70,7 @@ def test_overflow_keeps_the_min_and_the_max():
 
 
 def test_overflow_retains_the_best_candidate_first():
-    """The argmax is the expert's actual choice and must never be dropped."""
+    """The argmax is the expert's actual choice and is never dropped."""
     from python_ai.trainers.expert_collect import select_candidate_indices
 
     scores = np.array([0.1, 0.9, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.05, 0.8])
@@ -122,11 +88,7 @@ def test_no_overflow_keeps_everything_ranked():
 
 
 def test_striding_preserves_far_more_spread_than_top_k():
-    """The measured claim, as an executable contrast.
-
-    Real overflow rows compressed 0.6371 -> 0.1036 under top-k. Striding must
-    do materially better on the same shape of input.
-    """
+    """Striding keeps far more spread than top-k on the same input shape."""
     from python_ai.trainers.expert_collect import select_candidate_indices
 
     scores = np.concatenate([np.linspace(0.60, 0.64, 40),   # a tight top cluster
@@ -137,10 +99,11 @@ def test_striding_preserves_far_more_spread_than_top_k():
     assert (strided.max() - strided.min()) > 5 * (topk.max() - topk.min())
 
 
-# --- 3. temperature must be recalibrated per DAgger round ------------------
+# --- 3. temperature is recalibrated per DAgger round ---
 def test_temperature_is_solved_from_the_data_not_fixed():
-    """T is a property of the CRITIC's value spread, and expert iteration
-    changes the critic -- so a T fixed once is correct only for round 0."""
+    """T is a property of the critic's value spread, which expert iteration
+    changes.
+    """
     from python_ai.trainers.expert_distill import calibrate_temperature
 
     rng = np.random.default_rng(0)
@@ -167,8 +130,9 @@ def test_the_calibrated_temperature_hits_its_target():
 
 
 def test_calibration_refuses_a_degenerate_dataset():
-    """All-equal values carry no preference. Returning some default T would
-    hand the trainer a uniform target that looks like a real one."""
+    """All-equal values carry no preference; a default T would hand the trainer a
+    uniform target that looks real.
+    """
     from python_ai.trainers.expert_distill import calibrate_temperature
 
     vals = np.zeros((50, 8), dtype=np.float32)
@@ -178,14 +142,9 @@ def test_calibration_refuses_a_degenerate_dataset():
 
 
 def test_the_cap_holds_even_when_the_argmax_is_OFF_the_grid():
-    """The case that escaped the first cap test and reached the bound check.
-
-    `propose_cells` appends the head's argmax so search can never do worse than
-    the head it is helping. Appending it AFTER the cap returns
-    WIDE_PROPOSAL_MAX_CELLS + 1 cells, and with k_cards=3 that put the real
-    emission at 147 against an analytic bound of 145 -- caught only by an
-    end-to-end assert, because the first cap test used a uniform distribution
-    whose argmax lands on the grid by luck.
+    """`propose_cells` appends the head's argmax so search never does worse than
+    the head; it must be counted inside the cap. A uniform input puts the
+    argmax on the grid by luck, so this uses an off-grid one.
     """
     import torch
     from python_ai.search.config import WIDE_PROPOSAL_MAX_CELLS
@@ -193,7 +152,7 @@ def test_the_cap_holds_even_when_the_argmax_is_OFF_the_grid():
 
     n = 612
     v = torch.full((n,), 1.0 / n)
-    v[7] = v[7] * 1.5              # argmax at an ODD index, off a (2,2) grid
+    v[7] = v[7] * 1.5              # argmax at an odd index, off a (2,2) grid
     cells = propose_cells(torch.log(v), k_cells=2)
 
     assert len(cells) <= WIDE_PROPOSAL_MAX_CELLS, (
@@ -202,7 +161,7 @@ def test_the_cap_holds_even_when_the_argmax_is_OFF_the_grid():
 
 
 def test_the_analytic_bound_is_not_merely_the_observed_maximum():
-    """The bound must cover the worst case propose_cells can actually emit."""
+    """The bound covers the worst case propose_cells can emit."""
     from python_ai.search.config import SearchCfg, WIDE_PROPOSAL_MAX_CELLS
 
     cfg = SearchCfg(k_cards=3, k_cells=2)

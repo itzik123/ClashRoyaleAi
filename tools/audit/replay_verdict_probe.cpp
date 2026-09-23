@@ -1,6 +1,6 @@
-// End-to-end: does a REAL timed-out replay now carry a decisive verdict?
-// Reproduces the exact situation reported from the viewer -- match runs to the
-// 3600-tick limit, both Kings alive, one Princess Tower badly damaged.
+// End to end: does a real timed-out replay carry a decisive verdict? The match
+// runs to the 3600-tick limit with both Kings alive and one Princess Tower
+// badly damaged.
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -15,8 +15,8 @@ int main() {
     GameManager game(deck, deck);
     Board& board = game.getBoard();
 
-    // Team 0's left Princess chipped down to 90 hp -- alive, so tower counts
-    // stay 3-3 and the ONLY thing that can decide the match is the tie-break.
+    // Team 0's left Princess at 90 hp: tower counts stay 3-3, so only the
+    // tie-break can decide.
     for (const auto& e : board.getEntities()) {
         if (e->isTower() && e->team == 0 && e->symbol != 'R') { e->takeDamage(e->hp - 90); break; }
     }

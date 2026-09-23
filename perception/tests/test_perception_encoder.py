@@ -1,25 +1,12 @@
-"""Round-trip: a GameState encodes to the observation the ENGINE would emit.
+"""Round-trip: a GameState encodes to the observation the engine would emit.
 
-WHY THIS TEST CAN BE EXACT
---------------------------
-Most of perception can only be checked against hand labels, because there is no
-ground truth for what a screen contains. The encoder is different: the engine
-can be driven to a known board and asked for its own observation, and a
-GameState describing that same board must encode to the identical vector. No
-labels, no tolerance, no sampling -- byte equality or a bug.
+The one exact test in perception: the engine can be driven to a known board and
+asked for its own observation, and a GameState describing that board must
+encode to the identical vector. Byte equality or a bug.
 
-That makes it the strongest test in the module, and the reason the encoder was
-built against it rather than against a spec.
-
-WHY THE GameState IS REBUILT FROM THE BOARD, NOT FROM THE INJECTION
--------------------------------------------------------------------
-The obvious construction -- inject card X at (9,8), then assert a GameState
-holding "X at (9,8)" matches -- is wrong, and failed exactly that way first.
-A Minions placement is THREE bodies which the engine spreads across cells, so a
-sensor would report three units at their real positions, not one at the
-placement point. Reconstructing from the engine's board is what a perfect
-sensor would have seen, which is the input the encoder is actually specified
-against.
+The GameState is rebuilt from the engine's board, not from the injection: a
+Minions placement is three bodies spread across cells, which a perfect sensor
+would report as three units, not one at the placement point.
 """
 from __future__ import annotations
 
@@ -29,32 +16,16 @@ import pytest
 from contracts import GameState, Phase, TowerObservation, UnitObservation
 
 # No module-level `importorskip` for the engine: `python_ai/` reaches sys.path
-# via conftest's `engine` fixture, which runs AFTER collection imports this
-# file. An importorskip here therefore skips the whole module even when the
-# binding is perfectly available -- which it did, silently, until the run
-# reported "1 skipped" instead of the expected failures.
+# via conftest's `engine` fixture, which runs after collection, so it would
+# skip the module even when the binding is available.
 
 DECK = [10, 1, 41, 25, 7, 2, 6, 5]
 FULL = TowerObservation(hp_fraction=1.0, hp_measured=True)
 
-# Passed EXPLICITLY to every env built here, and that is the whole point.
-#
-# There are three different "default" match lengths in this project and they do
-# not agree: ClashEnv.h's C++ constructor default is 3600, bindings.cpp's
-# pybind default is **1800**, and gym_wrapper -- the thing that actually trains
-# the policy -- passes 3600. A bare `ClashRoyaleEnv(DECK, DECK)` from Python
-# therefore silently gets a HALF-LENGTH match.
-#
-# That mattered here because the observation's time scalar is
-# currentTick / maxTicks. These round-trip tests used the bare constructor, so
-# they pinned perception_encoder to the 1800 binding default -- and the encoder
-# had been written to match, dividing by 1800 while the policy it feeds was
-# trained against 3600. The live agent's clock ran at twice the rate it had
-# learned, and every simulator metric was blind to it because nothing in the
-# simulator path uses perception_encoder.
-#
-# These tests ask "does encode() reproduce the engine's observation", so they
-# have to ask it in the configuration the policy is actually trained in.
+# Passed explicitly to every env built here. The pybind default match length
+# (1800) differs from the C++ default and from what training uses (3600), and
+# the observation's time scalar is currentTick / maxTicks; these tests must
+# reproduce the engine's observation in the configuration the policy trains in.
 TRAINING_MAX_TICKS = 3600
 
 
@@ -122,9 +93,7 @@ def test_observation_size_matches_the_engine(enc, engine):
 
 
 def test_empty_board_is_bit_exact(enc, engine):
-    """River and six towers, none of which perception reports as units. A
-    units-only encoder leaves 34 floats at zero here -- that was the entire
-    difference before towers were handled."""
+    """River and six towers, none of which perception reports as units."""
     env = _engine_with(engine, [])
     truth = np.asarray(env.get_observation_for_team(0), np.float32)
     assert np.array_equal(enc.encode(_blank_state(env)), truth)
@@ -145,12 +114,9 @@ def test_round_trip_is_bit_exact(enc, engine, tag, injects):
 
 
 def test_a_full_princess_is_not_encoded_as_1(enc, engine):
-    """The conversion that a units-only reading would get wrong.
-
-    Tower scalars are hp / MAX_BUILDING_HP, so an undamaged Princess reads
-    0.632 (2534/4008). GameState carries a fraction of the tower's OWN maximum,
-    where full is 1.0. Kings hide this -- they ARE 4008 -- so only the four
-    Princesses ever disagreed.
+    """Tower scalars are hp / MAX_BUILDING_HP, so an undamaged Princess reads
+    0.632 (2534/4008), while GameState carries a fraction of the tower's own
+    maximum. Kings hide this (they are 4008), so only the Princesses disagree.
     """
     env = _engine_with(engine, [])
     obs = enc.encode(_blank_state(env))
@@ -177,9 +143,9 @@ def test_a_destroyed_tower_zeroes_its_cells_and_scalar(enc, engine):
 
 
 def test_unmeasured_opponent_spend_uses_the_named_constant(enc, engine):
-    """None must not silently become an anonymous zero. The 900-episode result
-    validated 0.0 specifically, so the value is named and changing it is
-    understood to invalidate that measurement."""
+    """None must not silently become an anonymous zero: the value is named, and
+    changing it invalidates the 900-episode result that validated 0.0.
+    """
     env = _engine_with(engine, [])
     obs = enc.encode(_blank_state(env))
     extra = enc.SPATIAL_SIZE + 1 + enc.HAND_SIZE + enc.HAND_SIZE * enc.NUM_CARD_IDS

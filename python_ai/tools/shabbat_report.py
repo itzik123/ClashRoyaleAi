@@ -1,10 +1,8 @@
 """Build the training-session report from the run's own artifacts.
 
-Re-runnable: reads the TensorBoard event files, the frozen-bank trend CSV and
-the trainer log, and writes a self-contained HTML page. Nothing here computes a
-number that is not already recorded somewhere -- the point is to assemble
-evidence, not to generate it, so a claim in the report can always be traced to
-the series it came from.
+Reads the TensorBoard event files, the frozen-bank trend CSV and the trainer
+log, and writes a self-contained HTML page. It assembles recorded numbers and
+computes none, so every claim traces to a series.
 
     python_ai/venv/Scripts/python.exe -m python_ai.tools.shabbat_report \\
         --run-dir runs/phase7 --csv python_ai/eval/banks/trend_phase7.csv \\
@@ -24,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 import python_ai  # noqa: E402
 from python_ai.tools.track_placement import scalars, last, signal  # noqa: E402
 
-#: Where each rung boundary fell, discovered from the log rather than assumed.
+#: Log lines marking a rung boundary.
 ADVANCE_MARKERS = ("Curriculum advanced to stage", "DEMOTED", "PLATEAU")
 
 
@@ -52,7 +50,7 @@ def trend(csv_path):
     with open(csv_path, newline="") as fh:
         for r in csv.DictReader(fh):
             rows.setdefault(r["card"], []).append(r)
-    # De-duplicate by episode, keeping the last measurement written for it.
+    # De-duplicate by episode, keeping the last measurement.
     for card, rs in rows.items():
         seen = {}
         for r in rs:
@@ -66,8 +64,9 @@ def series(s, tag, n=1):
 
 
 def spark(values, w=260, h=44, lo=None, hi=None):
-    """An inline SVG sparkline. No CDN, no library -- the page must render
-    from a file:// URL and inside an artifact sandbox alike."""
+    """An inline SVG sparkline, so the page renders from file:// and in a sandbox
+    alike.
+    """
     v = [x for x in values if x is not None and np.isfinite(x)]
     if len(v) < 2:
         return ""
@@ -105,7 +104,7 @@ def build(args):
     A(f'<p class="sub">Generated {args.stamp} · run <code>{args.run_dir}</code> · '
       f'episode <strong>{ep_now}</strong></p>')
 
-    # ---- headline -------------------------------------------------------
+    # --- headline ---
     A('<div class="cards">')
     for label, val, note in [
         ("Episodes", f"{ep_now}", f"from {args.start_ep} at session start"),
@@ -120,7 +119,7 @@ def build(args):
           f'<div class="v">{val}</div><div class="n">{note}</div></div>')
     A('</div>')
 
-    # ---- the placement result ------------------------------------------
+    # --- the placement result ---
     A("<h2>Placement quality — the session's main result</h2>")
     A('<p><code>place_q</code> is the share of achievable value a card\'s '
       'placement distribution expects to collect, measured on a <strong>frozen '
@@ -152,7 +151,7 @@ def build(args):
       'jitter — this project has been fooled once by a three-point read whose '
       'fourth point reversed it.</p>')
 
-    # ---- per-deck -------------------------------------------------------
+    # --- per-deck ---
     A("<h2>Opponent pool — 16 real ladder decks</h2>")
     A('<p>PFSP samples by <code>(1 − win_rate)²</code>, so the run concentrates '
       'on its worst matchups and the readable win rate is regulated toward the '
@@ -166,13 +165,13 @@ def build(args):
           f"<td>{vs[0]:.3f} → {vs[-1]:.3f}</td><td>{spark(vs, w=180, lo=0, hi=1)}</td></tr>")
     A("</tbody></table>")
 
-    # ---- curriculum timeline -------------------------------------------
+    # --- curriculum timeline ---
     A("<h2>Curriculum timeline</h2><ul class='timeline'>")
     for ep, line in events[-24:]:
         A(f'<li><code>{ep}</code> {line[:170]}</li>')
     A("</ul>")
 
-    # ---- diagnostics ----------------------------------------------------
+    # --- diagnostics ---
     A("<h2>Health diagnostics</h2><table><thead><tr><th>metric</th>"
       "<th>value</th><th>read against</th></tr></thead><tbody>")
     for tag, label, ref in [

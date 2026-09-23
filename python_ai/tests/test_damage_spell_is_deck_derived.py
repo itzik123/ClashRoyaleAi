@@ -1,36 +1,17 @@
-"""The two damage-spell reward terms must follow the DECK, not card id 7.
+"""The two damage-spell reward terms follow the deck's own spell, not card id 7.
+Pinned, in order of importance:
 
-The 2026-09-15 audit's finding (`TODO.md` item 00.3) was that `W_LETHAL_SPELL`
-and `W_SPELL_VALUE_START` are keyed to Fireball, so a deck without it trains
-under a silently smaller objective -- no exception, no log line. Measured on
-2026-09-16 over 12 seeded matches through the trainer's own reward path: a Hog
-deck carrying Rocket instead of Fireball had both terms at exactly zero on every
-one of 2,372 steps.
+1. the resolver picks the deck's damage spell, measured by injection and ranked
+   by Crown Tower damage;
+2. the probe reads a spell's whole effect, including damage over time;
+3. the shaping reads the spell's damage and cost from the stats dict, and a
+   missing key raises rather than falling back to Fireball;
+4. a deck with no damage spell contributes exactly zero (no NaN, no division by
+   zero, no Fireball-shaped phantom);
+5. the 2.6 deck is unchanged: the control that stops this being a silent retune
+   of the deck the baselines were earned on.
 
-What is pinned here, in the order that matters:
-
-1. the resolver picks the deck's own damage spell, measured by injection, and
-   ranks it by what it does to a CROWN TOWER;
-2. the probe underneath reads a spell's WHOLE effect (it cut damage-over-time
-   spells off halfway: Poison read 368 of its 736);
-3. the shaping READS the spell's damage and cost out of the stats dict, so a
-   Rocket deck gets a Rocket-sized lethal window -- and a missing key raises
-   rather than falling back to Fireball;
-4. a deck with NO damage spell contributes exactly zero -- not a nan, not a
-   division by zero, and not a Fireball-shaped phantom;
-5. the 2.6 Hog Cycle is UNCHANGED across the change, which is the control that
-   stops this being a silent retune of a deck that already worked.
-
-(5) is the load-bearing one. Everything else here could pass while the change
-quietly moved the reward for the deck every measured baseline was earned on.
-It is pinned here by the resolved constants; the end-to-end version -- identical
-seeded matches through extract_engine_stats -> compute_shaping on the old and
-the new code, compared bit for bit -- was run when this landed and is recorded
-in the commit.
-
-Card ids are the ENGINE'S, checked against get_card_info below rather than
-trusted: the first draft of this file had Rocket as 32 (Poison), Zap as 12
-(Skeleton Army) and Arrows as 8 (Barbarians).
+Card ids are checked against get_card_info rather than trusted.
 """
 import numpy as np
 import pytest
@@ -47,11 +28,11 @@ HOG, MUSKETEER, CANNON, ICE_GOLEM = 15, 6, 25, 40
 SKELETONS, ICE_SPIRIT, LOG, KNIGHT = 24, 72, 33, 0
 
 HOG_26 = (HOG, MUSKETEER, CANNON, ICE_GOLEM, SKELETONS, ICE_SPIRIT, LOG, FIREBALL)
-#: Same deck with the Fireball swapped for a Rocket -- a bigger, dearer spell,
-#: so every quantity this term derives moves in a direction a test can see.
+#: The same deck with a Rocket for the Fireball: a bigger, dearer spell, so
+#: every derived quantity moves visibly.
 ROCKET_26 = HOG_26[:-1] + (ROCKET,)
-#: Log is a ROLLER: `spell_effect` declines it (its value is a corridor, not a
-#: disc), so this deck has no damage spell at all.
+#: The Log is a roller that `spell_effect` declines (a corridor, not a disc),
+#: so this deck has no damage spell.
 NO_SPELL = HOG_26[:-1] + (KNIGHT,)
 
 
@@ -63,7 +44,7 @@ def test_the_ids_this_file_uses_are_the_cards_it_says():
         assert E.get_card_info(cid)["name"] == name, (cid, name)
 
 
-# --- 1. the resolver --------------------------------------------------------
+# --- 1. the resolver ---
 
 def test_the_resolver_names_the_decks_own_spell_not_card_7():
     assert card_probes.damage_spell(HOG_26)[0] == FIREBALL
@@ -72,11 +53,8 @@ def test_the_resolver_names_the_decks_own_spell_not_card_7():
 
 
 def test_the_resolver_prefers_the_bigger_spell_when_a_deck_carries_two():
-    """A deck with Zap AND Rocket must key the LETHAL term to the Rocket.
-
-    Both are damaging spells; only one can finish a tower. Picking by cost or by
-    hand order (Zap sits first here) would pick the Zap, so this is not a
-    tautology.
+    """With Zap and Rocket the lethal term keys to the Rocket; picking by cost or
+    hand order would pick the Zap.
     """
     two = (HOG, MUSKETEER, CANNON, ICE_GOLEM, ZAP, SKELETONS, LOG, ROCKET)
     assert card_probes.damage_spell(two)[0] == ROCKET
@@ -85,16 +63,16 @@ def test_the_resolver_prefers_the_bigger_spell_when_a_deck_carries_two():
 def test_the_resolver_reports_the_measured_tower_damage_and_the_real_cost():
     cid, damage, cost = card_probes.damage_spell(ROCKET_26)
     assert cost == pytest.approx(float(E.get_card_info(cid)["cost"]))
-    # The CROWN TOWER number, which is what "tower hp <= damage" is about. It
-    # equals the troop number in today's engine; see spell_tower_damage.
+    # The Crown Tower number, which is what "tower hp <= damage" is about; see
+    # spell_tower_damage.
     assert damage == pytest.approx(card_probes.spell_tower_damage(ROCKET))
     assert damage > card_probes.spell_tower_damage(FIREBALL)
 
 
 def test_the_tower_probe_reads_what_the_tower_actually_loses():
-    """Independent of the probe's own plumbing: cast the spell on the tower by
-    hand, run well past any effect, and read the tower. A probe that measured
-    the wrong tower, the wrong team or a truncated window disagrees here."""
+    """Independent of the probe's plumbing: cast the spell on the tower by hand,
+    run past any effect, read the tower.
+    """
     import python_ai.engine_constants as EC
     for cid in (FIREBALL, ROCKET, POISON):
         e = E.ClashRoyaleEnv(list(HOG_26), list(HOG_26), 3600)
@@ -107,23 +85,20 @@ def test_the_tower_probe_reads_what_the_tower_actually_loses():
             before - e.get_tower_hp(1, 1)), E.get_card_info(cid)["name"]
 
 
-# --- 2. the probe reads the WHOLE effect ------------------------------------
+# --- 2. the probe reads the whole effect ---
 
 def test_a_damage_over_time_spell_is_read_to_completion():
-    """Poison is `spell(32, ..., 92, ...).withRepeats(8, 10)` in CardRegistry.h
-    -- 92 every 10 ticks for 8 pulses = 736. A fixed 40-tick window read 368,
-    and this module's docstring quoted the 368 as proof the probe reproduced
-    the registry. Goblin Curse (43 x 6 = 258) is the second, independent
-    control: it read 129."""
+    """Poison is 92 every 10 ticks for 8 pulses = 736 (CardRegistry.h); Goblin
+    Curse (43 x 6 = 258) is a second, independent control.
+    """
     assert card_probes.spell_effect(POISON)[1] == pytest.approx(92 * 8)
     assert card_probes.spell_effect(GOBLIN_CURSE)[1] == pytest.approx(43 * 6)
 
 
 def test_reading_longer_adds_nothing_for_any_damaging_spell():
-    """The general form of the check above, over every registered spell the
-    probe accepts: whatever the settle rule decided, running the same cast for
-    the target's whole hold window must not find more damage. A settle rule that
-    stopped early fails here for the spell it stopped on."""
+    """General form over every spell the probe accepts: reading for the target's
+    whole hold window must find no more damage.
+    """
     for cid in sorted(E.get_all_card_ids()):
         eff = card_probes.spell_effect(cid)
         if eff is None:
@@ -139,7 +114,7 @@ def test_reading_longer_adds_nothing_for_any_damaging_spell():
             E.get_card_info(cid)["name"]
 
 
-# --- 3. the shaping reads the deck's spell ----------------------------------
+# --- 3. the shaping reads the deck's spell ---
 
 def _lethal_stats(tower_hp, *, damage, cost, elixir=10.0):
     cur, _ = shaping_stats(0.0)
@@ -166,7 +141,7 @@ def test_the_lethal_window_is_the_decks_spell_damage():
 
 
 def test_the_castability_gate_is_the_decks_spell_cost():
-    """5 elixir casts a Fireball and does not cast a Rocket."""
+    """5 elixir casts a Fireball and not a Rocket."""
     _, fb_dmg, fb_cost = card_probes.damage_spell(HOG_26)
     _, rk_dmg, rk_cost = card_probes.damage_spell(ROCKET_26)
     assert fb_cost <= 5.0 < rk_cost, "fixture no longer straddles the two costs"
@@ -179,10 +154,9 @@ def test_the_castability_gate_is_the_decks_spell_cost():
 
 
 def test_the_trade_ratio_is_priced_in_the_decks_own_spell_cost():
-    """6 elixir killed is a WIN for a 4-cost spell and break-even for a 6-cost
-    one. This is the whole point of the term -- it is a ratio centred on
-    break-even -- and a hardcoded 4.0 denominator paid a Rocket +0.5 for an even
-    trade."""
+    """6 elixir killed is a win for a 4-cost spell and break-even for a 6-cost
+    one; the term is a ratio centred on break-even.
+    """
     def traded(cost):
         cur, prev = shaping_stats(0.0)
         for d in (cur, prev):
@@ -200,8 +174,9 @@ def test_the_trade_ratio_is_priced_in_the_decks_own_spell_cost():
 
 
 def test_the_solvency_reserve_is_the_spells_own_cost():
-    """A winning Rocket trade made with 5 elixir left is NOT solvent (the reserve
-    is one more Rocket, 6), where the retired constant 4.0 would have paid it."""
+    """A winning Rocket trade with 5 elixir left is not solvent: the reserve is
+    one more Rocket, 6.
+    """
     cur, prev = shaping_stats(0.0)
     for d in (cur, prev):
         d["spell_cost"] = np.array([6.0], dtype=np.float32)
@@ -215,21 +190,22 @@ def test_the_solvency_reserve_is_the_spells_own_cost():
 
 @pytest.mark.parametrize("key", ["spell_damage", "spell_cost"])
 def test_a_missing_spell_key_raises_rather_than_falling_back_to_fireball(key):
-    """The first draft read `stats.get("spell_damage", FIREBALL_DAMAGE)`. A
-    silent Fireball default is the defect this file exists to remove, arriving
-    by a different road; `extract_engine_stats` always supplies the keys, so a
-    caller that lacks them is a bug to hear about."""
+    """A silent Fireball default would be the removed defect by another road;
+    `extract_engine_stats` always supplies the keys, so a missing one is a bug
+    to hear about.
+    """
     cur, prev = shaping_stats(8.0)
     del cur[key]
     with pytest.raises(KeyError):
         shaping.compute_shaping(cur, prev, gamma=0.99)
 
 
-# --- 4. no damage spell -> exactly zero ---------------------------------------
+# --- 4. no damage spell: exactly zero ---
 
 def test_a_deck_with_no_damage_spell_contributes_exactly_zero_not_a_nan():
-    """The control that must fire: zero cost must not divide, and zero damage
-    must not make every tower lethal."""
+    """Control that must fire: zero cost must not divide, and zero damage must not
+    make every tower lethal.
+    """
     cur, prev = shaping_stats(0.0)
     for d in (cur, prev):
         d["spell_damage"] = np.zeros(1, dtype=np.float32)
@@ -245,19 +221,19 @@ def test_a_deck_with_no_damage_spell_contributes_exactly_zero_not_a_nan():
         assert float(arr[0]) == 0.0, f"{name} fabricated a reward with no spell"
 
 
-# --- 5. the 2.6 control ---------------------------------------------------------
+# --- 5. the 2.6 control ---
 
 def test_the_26_deck_resolves_to_exactly_the_constants_it_used_to_hardcode():
-    """THE CONTROL. The 2.6 deck's reward must not move: its resolved spell must
-    be card 7 at exactly the damage and cost the terms used to read from
-    constants, and its cost must equal the retired SPELL_SOLVENCY_RESERVE."""
+    """The control: the 2.6 deck resolves to card 7 at exactly the damage and cost
+    the terms used to read from constants.
+    """
     cid, damage, cost = card_probes.damage_spell(HOG_26)
     assert cid == W.FIREBALL_CARD_ID
     assert damage == W.FIREBALL_DAMAGE == 689.0
     assert cost == W.FIREBALL_COST == 4.0   # the retired SPELL_SOLVENCY_RESERVE
 
 
-# --- the envs publish it ----------------------------------------------------------
+# --- the envs publish it ---
 
 _SPELL_KEYS = ("spell_in_hand", "spell_value_killed", "spell_elixir_spent",
                "spell_damage", "spell_cost")
@@ -291,10 +267,9 @@ def _selfplay_info(deck):
 @pytest.mark.parametrize("info_of", [_gym_info, _selfplay_info],
                          ids=["phase1", "phase2"])
 def test_both_envs_publish_the_spell_keys_for_their_own_deck(info_of):
-    """Measured through the real env, because the info dict is where the two
-    halves of this meet and a unit test on either half alone cannot see it.
-    Both pipelines, because a key only one supplies is a term that silently
-    contributes zero for a whole phase."""
+    """Measured through the real env, where both halves meet; both pipelines,
+    since a key only one supplies silences the term for a whole phase.
+    """
     info = info_of(ROCKET_26)
     for key in _SPELL_KEYS:
         assert key in info, f"env published no {key}"

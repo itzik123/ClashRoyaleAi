@@ -1,6 +1,5 @@
-// Scratch: how much does King dormancy change a lone Hog push?
-// Same match, same placement; the only difference is whether the Kings are
-// woken up front (the pre-2026-08-21 behaviour) or left dormant (the new one).
+// How much does King dormancy change a lone Hog push? Same match and placement;
+// the Kings are either woken up front or left dormant.
 #include <cstdio>
 #include <vector>
 #include <memory>

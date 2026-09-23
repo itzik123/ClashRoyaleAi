@@ -1,13 +1,7 @@
-"""Scenario injection must not spend its budget on boards the deck cannot answer.
+"""Scenario injection does not spend its budget on boards the deck cannot answer.
 
-Two of the four scenarios (60% of the injection weight, 18% of ALL phase-1
-episodes at SCENARIO_INJECTION_PROB = 0.30) build a board whose correct answer is
-an area-damage spell -- a swarm in our half, troops hugging an enemy tower. With
-no such spell in the trainee's deck they still fired, teaching a reflex the deck
-cannot express. `giant_commit` was removed on 2026-08-19 for exactly this at
-17% of the budget ("a dead entry here is worse than none"). The weights now
-follow the deck: a spell scenario draws only if the deck holds a spell that can
-answer it.
+The two spell scenarios (a swarm in our half, troops hugging an enemy tower)
+are drawn only if the deck holds an area spell that answers them.
 """
 import numpy as np
 

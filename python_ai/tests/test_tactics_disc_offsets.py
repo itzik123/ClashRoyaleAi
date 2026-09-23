@@ -1,24 +1,9 @@
-"""`_disc_offsets` is loop-invariant and pure -- it must be neither recomputed
-per enemy cell nor recomputed per call.
+"""`_disc_offsets` is memoised and hoisted out of `spell_catch_map`'s per-cell
+loop.
 
-`spell_catch_map` called `_disc_offsets(radius)` INSIDE its
-`for y, x in zip(ys, xs)` loop, rebuilding the identical offset list once per
-occupied enemy cell. The very next scatter loop in this same module (in
-`_reach_cover`, ~line 701) hoists it correctly -- so the module already knew the
-pattern; one site just did not follow it.
-
-The module also computed `_FIREBALL_DISC = _disc_offsets(FIREBALL_RADIUS)` at
-import and then NEVER READ IT: the cache was built, left unwired, and the hot
-loop recomputed the same thing anyway. Memoizing the function supersedes that
-module-level global, which is removed.
-
-Caching hands the SAME object to every caller, so the return type is now a
-tuple. Both call sites only iterate it, and a tuple makes accidental mutation
-an error instead of a cross-caller corruption.
-
-The output is a pure function of `radius` -- integer offsets from a hypot test
--- so memoizing cannot change any downstream number. The tests below pin that
-directly rather than assuming it.
+The result is a pure function of `radius`, so memoising cannot change any
+downstream number; these tests pin that directly. Being shared, it is returned
+as an immutable tuple.
 """
 import numpy as np
 import pytest
@@ -33,12 +18,12 @@ def test_the_offsets_are_a_pure_function_of_the_radius():
 
 
 def test_memoization_returns_the_identical_object():
-    """Cheap proof the cache is actually engaged, not just correct."""
+    """Proof the cache is engaged, not just correct."""
     assert tactics._disc_offsets(2.5) is tactics._disc_offsets(2.5)
 
 
 def test_the_result_is_immutable():
-    """It is shared now, so it must not be mutable by one caller."""
+    """Shared now, so no caller may mutate it."""
     offs = tactics._disc_offsets(2.5)
     assert isinstance(offs, tuple)
     with pytest.raises((AttributeError, TypeError)):
@@ -54,8 +39,7 @@ def test_distinct_radii_do_not_collide_in_the_cache():
 
 @pytest.mark.parametrize("radius", [0.5, 1.0, 2.5, 3.0, 4.5, 7.0])
 def test_the_geometry_is_unchanged(radius):
-    """Recompute the original definition inline and compare exactly. This is
-    what makes the optimization safe to believe."""
+    """Recompute the original definition inline and compare exactly."""
     r = int(np.ceil(radius))
     expected = [(dy, dx)
                 for dy in range(-r, r + 1)
@@ -65,15 +49,14 @@ def test_the_geometry_is_unchanged(radius):
 
 
 def test_the_dead_module_level_cache_is_gone():
-    """It was assigned at import and never read once. Leaving it would keep a
-    second, unmemoized copy of the same computation in the module."""
+    """An unread module-level copy would be a second, unmemoised copy of the same
+    computation.
+    """
     assert not hasattr(tactics, "_FIREBALL_DISC")
 
 
 def test_spell_catch_map_calls_disc_offsets_once_per_call(monkeypatch):
-    """THE regression test: the call must not be inside the per-cell loop.
-
-    Driven with several occupied enemy cells, so a per-cell call is clearly
+    """The regression test: with several occupied enemy cells, a per-cell call is
     distinguishable from a hoisted one.
     """
     import clash_royale_env
@@ -117,8 +100,9 @@ def test_spell_catch_map_calls_disc_offsets_once_per_call(monkeypatch):
 
 
 def test_spell_catch_map_output_is_unchanged_by_the_hoist():
-    """Compare against an independent reimplementation of the original
-    per-cell-call shape, so the optimization is proven value-preserving."""
+    """Compare against an independent reimplementation of the original per-cell
+    shape.
+    """
     import clash_royale_env
     from python_ai.envs.gym_wrapper import DEFAULT_DECK
 
@@ -136,7 +120,7 @@ def test_spell_catch_map_output_is_unchanged_by_the_hoist():
 
     got = tactics.spell_catch_map(obs)
 
-    # the original shape, recomputing offsets per cell
+    # The original shape, recomputing offsets per cell.
     hp = tactics.enemy_hp_map(obs)
     count = np.maximum(
         1.0, tactics.spatial(obs)[tactics.CH_ENEMY_COUNT] * tactics.MAX_CELL_UNITS)

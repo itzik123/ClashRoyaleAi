@@ -1,21 +1,19 @@
 """Episodes -> a table of (episode, card, context, cell) placements.
 
-A TABLE, not a histogram. Counts are one `np.add.at` away and can be rebuilt for
-any subset, which is what makes the held-out evaluation in `evaluate_prior.py`
-possible without re-reading 1.3 GB. The table for the whole corpus is ~12k rows.
+A table, not a histogram: counts are one `np.add.at` away for any subset, which
+makes held-out evaluation in `evaluate_prior.py` possible without re-reading
+the corpus.
 
-Two things this refuses to do quietly, both learned the hard way:
+Two refusals:
 
-  - A placement that maps OUTSIDE our board is DROPPED and counted, never
-    truncated. Their arena is 32 rows and ours is 34, and the transform is
-    fitted on the four towers, which are interior; extrapolated to the deep
-    edge it puts the deepest human placements at y slightly below 0, where
-    `int(-0.87) == 0` silently relocates them to the back row. Measured before
-    this guard existed: that artifact alone made (8, 0) the Musketeer's modal
-    cell with 7.6% of its mass.
+  - A placement mapping outside our board is dropped and counted, never
+    truncated. Their arena is 32 rows to our 34, and the transform is fitted
+    on the interior towers; extrapolated to the deep edge it puts the deepest
+    placements slightly below y=0, where `int(-0.87) == 0` would move them to
+    the back row.
   - A prior is stamped with the arena it was built against and the loader
-    refuses a mismatch, the way `bc_pretrain.load_dataset` refuses a dataset
-    recorded against a different `observation_size()`.
+    refuses a mismatch, as `bc_pretrain.load_dataset` does for
+    `observation_size()`.
 """
 from __future__ import annotations
 
@@ -38,16 +36,13 @@ N_CELLS = BOARD_H * BOARD_W
 def cell_from_xy(x: float, y: float):
     """Engine coordinates -> cell index, or None if outside the board.
 
-    TRUNCATION, matching `bc_pretrain._cell_from_xy` and the engine's own
-    `static_cast<int>(position.y)`. Never `round()`: round(15.5) = 16 is one row
-    past the last legal own-half row, and the resulting target can never be
-    matched because the mask makes that cell -inf.
+    Truncation, matching `bc_pretrain._cell_from_xy` and the engine's
+    `static_cast<int>(position.y)`. Never `round()`: round(15.5) = 16 is past
+    the last legal own-half row, a target the mask makes -inf.
 
-    Deliberately a separate implementation from bc_pretrain's rather than an
-    import -- that module pulls in gym_wrapper and through it gymnasium, which
-    perception's venv does not have. Agreement is pinned by test instead, the
-    same arrangement `advisor_target._standardize` has with
-    `prove_hires.soft_target_logits`.
+    A separate implementation because bc_pretrain pulls in gymnasium, which
+    perception's venv lacks; agreement is pinned by test, as
+    `advisor_target._standardize` is with `prove_hires.soft_target_logits`.
     """
     if not (np.isfinite(x) and np.isfinite(y)):
         return None
@@ -121,9 +116,9 @@ def extract(paths, labels_py, deck, drop_illegal=True):
     return table, cen
 
 
-#: The arena stamp comes from python_ai/advisors/human_prior.py, the module that
-#: VALIDATES it at load time. One definition, so a prior cannot be stamped with
-#: one set of constants and checked against another.
+#: The arena stamp comes from python_ai/advisors/human_prior.py, which
+#: validates it at load time, so a prior cannot be stamped with one set of
+#: constants and checked against another.
 from python_ai.advisors.human_prior import geometry_stamp  # noqa: E402
 
 

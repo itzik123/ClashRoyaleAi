@@ -1,11 +1,8 @@
-"""EpisodeMetrics: what Win_Rate_100 actually counts.
+"""EpisodeMetrics: what Win_Rate_100 counts.
 
-Nine deques with hand-picked maxlens, declared identically in two files and
-appended to from inside a nested loop. The property worth pinning is the one
-pipeline 2 depends on: a SCENARIO episode must be able to reset its
-accumulators WITHOUT contributing an outcome, because an injected threat is a
-handicap and averaging it into the headline W/L/D makes the win rate a mix of
-two different games.
+A scenario episode must reset its accumulators without contributing an outcome:
+an injected threat is a handicap, and averaging it in would make the win rate a
+mix of two games.
 """
 import numpy as np
 import pytest
@@ -14,8 +11,9 @@ from python_ai.rl.episode_metrics import DRAW, LOSS, WIN, EpisodeMetrics, outcom
 
 
 def test_outcome_thresholds_match_the_engines_reward_convention():
-    """+/-1 for a king kill, ~0 for a timeout. The 0.5 thresholds are how a
-    draw is told apart from a decisive result."""
+    """+/-1 for a king kill, ~0 for a timeout; the 0.5 thresholds separate a draw
+    from a decisive result.
+    """
     assert outcome_of(1.0) == WIN
     assert outcome_of(0.6) == WIN
     assert outcome_of(-1.0) == LOSS
@@ -48,7 +46,7 @@ def test_finishing_resets_only_that_envs_accumulators():
 
 
 def test_reset_env_clears_without_recording_an_outcome():
-    """THE property pipeline 2 needs for scenario episodes."""
+    """What pipeline 2 needs for scenario episodes."""
     m = EpisodeMetrics(num_envs=1)
     m.accumulate(np.array([5.0]), np.array([1.0]))
     m.reset_env(0)
@@ -57,9 +55,9 @@ def test_reset_env_clears_without_recording_an_outcome():
 
 
 def test_the_decisive_rate_excludes_draws_and_the_raw_rate_does_not():
-    """40 win / 13 loss / 47 draw is 75% decisive while only winning 40% of
-    games. Both are reported because they answer different questions and the
-    curriculum gate deliberately uses the RAW one."""
+    """40 win / 13 loss / 47 draw is 75% decisive but a 40% win rate. Both are
+    reported; the curriculum gate uses the raw one.
+    """
     m = EpisodeMetrics(num_envs=1)
     for raw in [1.0] * 40 + [-1.0] * 13 + [0.0] * 47:
         m.finish_episode(0, raw, 0.0, 0.0)
@@ -70,21 +68,9 @@ def test_the_decisive_rate_excludes_draws_and_the_raw_rate_does_not():
 
 
 def test_an_all_draw_window_reports_an_UNDEFINED_decisive_rate_not_a_crash():
-    """An all-draw window has no decided games, so its decisive win rate does
-    not exist -- and it must not be reported as 0.00.
-
-    This test previously pinned 0.0. Its stated intent was "not a crash", which
-    NaN satisfies equally, and the 0.0 was incidental to that goal rather than
-    the goal itself. It conflicted with this module's own documented rule
-    ("Empty windows give NaN rather than 0, so 'no data yet' cannot be mistaken
-    for 'measured zero'") and with `test_empty_windows_report_nan_not_zero`
-    directly below.
-
-    The conflict matters most exactly where it is most misleading: an agent
-    that DRAWS EVERY GAME is the timeout pathology DRAW_PENALTY exists to
-    fight, and in that state the console printed a decisive rate of 0.00 --
-    indistinguishable from "loses every decided game", which is a different
-    diagnosis with a different fix.
+    """An all-draw window has no decided games, so its decisive rate is NaN, not
+    0.00, which would read as "loses every decided game" (a different diagnosis
+    from the all-draw timeout pathology).
     """
     m = EpisodeMetrics(num_envs=1)
     for _ in range(5):
@@ -93,9 +79,9 @@ def test_an_all_draw_window_reports_an_UNDEFINED_decisive_rate_not_a_crash():
 
 
 def test_every_undefined_rate_uses_ONE_convention():
-    """`summary()` used three conventions for "undefined" in one dict: NaN for
-    the raw rates, 0.0 for the decisive rate, and None for the long decisive
-    rate. A caller cannot branch correctly on three."""
+    """Every undefined rate uses one convention (NaN), so a caller can branch on
+    it.
+    """
     s = EpisodeMetrics(num_envs=1).summary()
     for key in ("win_rate", "loss_rate", "draw_rate",
                 "decisive_win_rate", "decisive_win_rate_long"):
@@ -103,9 +89,9 @@ def test_every_undefined_rate_uses_ONE_convention():
 
 
 def test_windows_have_the_documented_sizes():
-    """100 is the curriculum gate's resolution (+/-0.1 sampling band); 500 is
-    wide enough to show a trend through that band; 50 is enough for the smooth
-    continuous quantities."""
+    """100 is the curriculum gate's resolution (+/-0.1 band); 500 shows a trend
+    through that band; 50 suffices for the smooth continuous quantities.
+    """
     m = EpisodeMetrics(num_envs=1)
     assert m.outcomes.maxlen == 100
     assert m.outcomes_long.maxlen == 500
@@ -124,8 +110,7 @@ def test_the_long_window_keeps_reporting_after_the_short_one_has_rolled():
 
 
 def test_empty_windows_report_nan_not_zero():
-    """"No data yet" must not be readable as "measured zero" -- a 0.00 on the
-    console at episode 3 would look like a collapse."""
+    """"No data yet" must not read as "measured zero"."""
     s = EpisodeMetrics(num_envs=1).summary()
     assert np.isnan(s["avg_reward"])
     assert np.isnan(s["win_rate"])
