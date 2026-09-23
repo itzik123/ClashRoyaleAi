@@ -95,7 +95,7 @@ class CapturingTeacher(UtilityTeacher):
                "baseline": None, "candidates": []}
 
         if self.horizon_ticks <= 0:
-            # Stages 0-1 take `_rules_only`, which never rolls out and has no
+            # Rung 0 (horizon 0) takes `_rules_only`, which never rolls out and has no
             # scores at all. Recording one here would be inventing it.
             rec["kind"] = "rules_only"
             self.debug_records.append(rec)

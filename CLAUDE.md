@@ -195,7 +195,7 @@ first step of every episode. Finished, not reverted:
   completion now; across all 22 spells only those two values moved. That doubles
   Poison's damage cap in the advisor target.
 - **The teacher aimed every spell with Fireball's disc** (`_top_spell_cells`,
-  both spell combos, the rung 0-1 gate) -- the copy the audit's advisor fix
+  both spell combos, the rung-0 rules gate) -- the copy the audit's advisor fix
   missed. Engine-scored on 320 mid-match boards, elixir value killed: Rocket
   **+38%** (better on 75 boards, worse on 4), Zap +11%, Poison +7%, Arrows +4%,
   Fireball the same cell on 320/320. `teacher.spell_geometry`.

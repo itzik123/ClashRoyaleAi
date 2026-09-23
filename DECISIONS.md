@@ -3653,7 +3653,7 @@ What landed, each with its control:
 | 00.6 spawners | Splashyard named TOMBSTONE its win condition | all 16 pool decks resolve as before |
 | 00.4 PBRS docs | "EXACTLY ZERO" / "policy-invariant" were false | measured residues; code left, one-line option given |
 | 00.9 settings stamp | a resume under different CLASH_* was silent | a same-settings resume prints nothing |
-| 00.5 air defence | rung 0-1 answered a Balloon with Skeletons | Hog control bit-identical; Balloon 1481 -> 1131 |
+| 00.5 air defence | rung 0 answered a Balloon with Skeletons | Hog control bit-identical; Balloon 1481 -> 1131 |
 | 00.8 phase-2 PFSP | per-opponent estimates lost on every resume | a real match is counted exactly once |
 
 Every behaviour-change test was checked to FAIL with the old behaviour patched

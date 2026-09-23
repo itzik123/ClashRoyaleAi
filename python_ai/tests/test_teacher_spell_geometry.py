@@ -1,6 +1,6 @@
 """The teacher aims each spell with ITS OWN radius and damage, not Fireball's.
 
-`_top_spell_cells`, both spell combos and the rung 0-1 rules gate called
+`_top_spell_cells`, both spell combos and the rung-0 rules gate called
 `tactics.spell_catch_map(obs)` with its Fireball defaults whatever spell was in
 hand. Measured on 320 mid-match boards against eight pool decks, engine-scored
 by elixir value killed: Rocket +38% (better on 75 boards, worse on 4), Zap +11%,
@@ -67,7 +67,7 @@ def test_suppression_uses_the_cards_own_disc():
 
 
 def _rules_gate_casts(obs, cid):
-    """Drive the REAL rung 0-1 gate (`_rules_only`) with one spell candidate."""
+    """Drive the REAL rung-0 gate (`_rules_only`) with one spell candidate."""
     teacher = T.UtilityTeacher(list(DECK), team=0)
     cand = T.Candidate.single(2, cid, 8.0, 10.0, role="spell")
     slot, _x, _y = teacher._rules_only(obs, [cand])
@@ -76,7 +76,7 @@ def _rules_gate_casts(obs, cid):
 
 def test_the_rules_gate_fires_a_zap_on_a_skeleton_clump():
     """243 HP of Skeletons is a full-damage Zap. Fireball's 689 bar held the
-    rung 0-1 teacher's Zap back from exactly this board."""
+    rung-0 teacher's Zap back from exactly this board."""
     obs = _board((SKELETONS, 8.0, 10.0))
     assert float(tactics.spell_catch_map(obs).max()) < tactics.FIREBALL_DAMAGE, \
         "fixture: the OLD gate must have refused this board"

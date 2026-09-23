@@ -1,8 +1,8 @@
 """The teacher answers a flying building-targeter with something that can hit it.
 
 TODO 00.5: the teacher had no air concept. A Balloon ignores every troop on the
-board, so a ground-only card dropped under it is an elixir gift -- and the rung
-0-1 rules gate picked Skeletons and Ice Golem against a lone Balloon more often
+board, so a ground-only card dropped under it is an elixir gift -- and the
+rung-0 rules gate picked Skeletons and Ice Golem against a lone Balloon more often
 than Musketeer or Ice Spirit. Measured, rung-0 teacher holding the 2.6 deck, 36
 seeds paired by seed, 40 s of a lone push:
 
@@ -58,7 +58,7 @@ def test_the_air_siege_map_sees_a_balloon_and_nothing_a_ground_unit_can_answer()
 
 
 def _gate(obs, *names):
-    """Drive the REAL rung 0-1 gate; return the card it plays, or None."""
+    """Drive the REAL rung-0 gate; return the card it plays, or None."""
     teacher = T.UtilityTeacher(list(DECK), team=0)
     cands = [T.Candidate.single(i, ID[n], 8.0, 10.0,
                                 role=teacher.roles.get(ID[n], "melee"))

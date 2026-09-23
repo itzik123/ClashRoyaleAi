@@ -78,8 +78,9 @@ on purpose, each with the reason.
    ZERO". `weights.py`, `shaping.py` and `CLAUDE.md` now say what is true. The
    code option is one line: `(1 - done)` on the `gamma*Phi(s')` half.
 
-5. ~~**The teacher has no air-defence concept**~~ **DONE for the rung 0-1
-   rules gate, 2026-09-23.** `card_probes.damages_air` (behavioural: does the card
+5. ~~**The teacher has no air-defence concept**~~ **DONE for the rung-0
+   rules gate, 2026-09-23** (rung 0 is the only rules-only rung).
+   `card_probes.damages_air` (behavioural: does the card
    hurt a held Balloon) and `tactics.air_siege_map` (flying BUILDING-targeters --
    the case only anti-air answers; Minions/Baby Dragon are deliberately not in it,
    a ground unit still distracts them). With one on our half, anti-air cards
@@ -99,6 +100,26 @@ on purpose, each with the reason.
     `perception/UPSTREAM_REQUESTS.md` item 30, proposed with the exact edit and a
     generic test. Two pool decks field Goblin Gang. Night Witch's bats also dealt
     0 to a held Balloon for a reason NOT yet diagnosed (recorded there).
+
+13. **Rung 1 is probably WEAKER than rung 0, and rungs 3 and 9 add nothing.**
+    Measured 2026-09-23, 2.6 mirror, seat-swapped teacher-vs-teacher matches:
+
+    | rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | vs rung 0 (24 each) | 0.38 | 0.58 | 0.79 | 0.79 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+    | vs rung r-1 (32 each) | 0.38 | 0.78 | 0.47 | 0.59 | 0.69 | 0.88 | 0.56 | 0.66 | 0.50 | 0.72 |
+
+    Rung 1 scored 0.375 against rung 0 in BOTH independent measurements (21 of 56
+    pooled, ~[0.25, 0.50]) -- suggestive, at the edge of significance. The likely
+    mechanism is the one item 5 found: rung 0 is the only RULES-only rung (the
+    gate defends reflexively), and rung 1 swaps that for a 1 s rollout that
+    cannot see a push arrive (a lone Hog costs rung 2 1294 tower HP vs rung 0's
+    687). Not harmful to learning -- an agent past rung 0 clears rung 1 fast --
+    but it is a rung of negative difficulty and two rungs of none. Options, NOT
+    applied (the curriculum has been changed several times already): keep the
+    rules gate for DEFENCE below some horizon and let the rollout rank offence
+    only; or drop rungs 1/3/9. Measure a candidate with
+    `scratchpad`-style rung-vs-rung matches before and after.
 
 6. ~~**Spawner huts measure as tower threats**~~ **DONE 2026-09-23**, and it was
    live: a Splashyard control deck (Graveyard, Poison, Baby Dragon, Bowler, Ice

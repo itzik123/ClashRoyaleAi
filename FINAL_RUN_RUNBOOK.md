@@ -42,7 +42,7 @@ Evolution only in slots 0 or 2. Order in the list matters for those.
 **If the deck is unusual** (siege, spell win condition, air-heavy), run the
 teacher's passive-opponent probe from `CLAUDE.md` ("THE TEACHER COULD NOT PILOT")
 on it — the mirror opponent plays your deck, and a teacher that cannot pilot it
-makes the mirror rung meaningless. Since 2026-09-23 the rung 0-1 teacher answers
+makes the mirror rung meaningless. Since 2026-09-23 the rung-0 teacher answers
 a Balloon / Lava Hound with a card that can hit it (TODO 00.5); the rollout
 rungs still see only 2-10 s ahead.
 
@@ -231,7 +231,7 @@ and refuses to restart more than 4 times an hour.
 - **Champion/Hero ability training is new** (2026-09-16) and has never run at
   length. The mirror teacher uses the ability heuristically, so a Champion deck's
   early rungs are easier than they look.
-- The teacher's air defence is new (2026-09-23) and lives in the rung 0-1 rules
+- The teacher's air defence is new (2026-09-23) and lives in the rung-0 rules
   gate only; the rollout rungs see 2-10 s ahead and can miss an incoming Balloon.
 - Goblin Gang / Rascals / Goblin Hut units cannot hit air in this engine
   (`perception/UPSTREAM_REQUESTS.md` item 30, proposed). Avoid relying on them as

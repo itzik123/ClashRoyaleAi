@@ -370,7 +370,7 @@ def spell_geometry(card_id):
 
     Every spell used to be aimed with FIREBALL's disc -- `tactics.spell_catch_map`
     called with its defaults (radius 2.5, a 689 cap per unit) whatever was in
-    hand, in `_top_spell_cells`, both spell combos and the rung 0-1 rules gate.
+    hand, in `_top_spell_cells`, both spell combos and the rung-0 rules gate.
     `advisor_target` was moved to per-card geometry on 2026-09-15; this was the
     copy that audit missed.
 
@@ -2270,8 +2270,9 @@ class UtilityTeacher:
         return best.slot, best.x, best.y
 
     def _rules_only(self, obs_own, playable):
-        """Stages 0-1: no rollout at all, so the curriculum's easy rungs cost
-        nothing. The gate matters more than the ranking here -- a bot that plays
+        """Rung 0 ONLY (`horizon_ticks == 0`): no rollout at all, so the easiest
+        rung costs nothing. This said "Stages 0-1" -- true of the 6-rung table,
+        not of the 11-rung one, where rung 1 already rolls out 10 ticks. The gate matters more than the ranking here -- a bot that plays
         on every affordable step is the elixir-dumping opponent this project
         already replaced once."""
         threat = tactics.threat_level(obs_own)
