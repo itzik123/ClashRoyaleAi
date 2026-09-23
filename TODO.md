@@ -44,7 +44,10 @@ on purpose, each with the reason.
    move `observation_size()`.
    (b) **`trainers/exploiter.py` has its own rollout loop and does not sample
    abilities** -- harmless while `EXPLOITER_ENABLED = False`, a silent asymmetry
-   if it is ever turned on with a Champion deck.
+   if it is ever turned on with a Champion deck. **Made LOUD 2026-09-23:**
+   `run_exploiter_burst` now raises NotImplementedError for a deck with ability
+   slots, before any file is written. Porting `rl/abilities.py` into its loop is
+   still the real fix, needed only if the exploiter is re-enabled.
 
 2. **Does the aux anti-alignment persist after the warm-up?** Measured only over
    the first 12 updates from init (LSTM 1.67x the other terms at cosine -0.84).
