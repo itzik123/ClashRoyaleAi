@@ -78,9 +78,23 @@ from python_ai.opponents import deck_pool  # noqa: E402
 #: 3.9 wide x 10.1 long, swept forward from the cast point. A disc of the same
 #: AREA would be the wrong shape -- the whole point of the 2026-08-28 change is
 #: that the Log is a narrow moving rectangle, not the 7.8-wide circle it was.
-LOG_WIDTH = 3.9
-LOG_RANGE = 10.1
-LOG_DAMAGE = 240.0     # CardRegistry.h -- The Log's damage, for the overkill cap
+LOG_WIDTH = 3.9        # CardRegistry.h: The Log's roll width  (not bound)
+LOG_RANGE = 10.1       # CardRegistry.h: The Log's roll range  (not bound)
+#: The Log's damage, for the overkill cap -- MEASURED, not restated. This was a
+#: literal 240.0 labelled "CardRegistry.h" while the registry says 269, so every
+#: Log-opportunity figure measured with it capped each body 11% low. Numbers
+#: recorded before 2026-09-23 (CLAUDE.md's 145 / 273 / 427) used the old cap.
+LOG_DAMAGE = None
+
+
+def _log_damage():
+    global LOG_DAMAGE
+    if LOG_DAMAGE is None:
+        from python_ai.advisors import card_probes
+        log_id = next(c for c in E.get_all_card_ids()
+                      if E.get_card_info(c)["name"] == "The Log")
+        LOG_DAMAGE = card_probes.roller_damage(log_id)
+    return LOG_DAMAGE
 
 
 def log_catch_map(obs):
@@ -100,7 +114,7 @@ def log_catch_map(obs):
     hp = tactics.enemy_hp_map(obs)
     count = np.maximum(1.0, tactics.spatial(obs)[tactics.CH_ENEMY_COUNT]
                        * tactics.MAX_CELL_UNITS)
-    effective = np.minimum(hp, LOG_DAMAGE * count).astype(np.float64)
+    effective = np.minimum(hp, _log_damage() * count).astype(np.float64)
 
     # Lateral: a cast at column ax catches column x when |ax - x| <= 1.95, i.e.
     # dx in {-1, 0, +1} on the integer grid.
@@ -141,7 +155,7 @@ def _log_catch_map_reference(obs):
     hp = tactics.enemy_hp_map(obs)
     count = np.maximum(1.0, tactics.spatial(obs)[tactics.CH_ENEMY_COUNT]
                        * tactics.MAX_CELL_UNITS)
-    effective = np.minimum(hp, LOG_DAMAGE * count)
+    effective = np.minimum(hp, _log_damage() * count)
     out = np.zeros((tactics.BOARD_H, tactics.BOARD_W), dtype=np.float64)
     half_w = LOG_WIDTH / 2.0
     ys, xs = np.nonzero(effective)

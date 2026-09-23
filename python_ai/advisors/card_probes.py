@@ -168,6 +168,38 @@ def spell_tower_damage(card_id):
     return float(before - _settled_damage(e, lambda env: env.get_tower_hp(1, 1)))
 
 
+@functools.lru_cache(maxsize=64)
+def roller_damage(card_id):
+    """Damage a ROLLING spell (The Log, Barbarian Barrel) deals one body it sweeps.
+
+    `spell_effect` declines rollers -- their value is a corridor, not a disc -- so
+    their damage had no derivation, and a harness restated The Log's as 240.0
+    against the registry's 269 (`spell(33, "The Log", ..., 269, ...)`). Measured:
+    cast from the bridge row (a roller may be cast on its own half or the river,
+    no further), one enemy P.E.K.K.A. held three tiles down the corridor, and the
+    damage read at FIRST CONTACT -- a roller hits each target once, and reading
+    any later would add the Barbarian a Barbarian Barrel drops at the end of its
+    roll. 0.0 for anything that is not a roller castable there.
+    """
+    info = E.get_card_info(card_id)
+    if not info["is_spell"] or spell_effect(card_id) is not None:
+        return 0.0
+    e = _env()
+    x, y = _CX, float(EC.BRIDGE_Y)
+    if not e.is_valid_placement(card_id, x, y, 0):
+        return 0.0
+    e.inject(_TANK_ID, x, y + 3.0, 1, -1.0, _HOLD_TICKS)
+    e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 1)
+    before = e.get_troop_damage_dealt(0)
+    e.inject(card_id, x, y, 0, -1.0, 0)
+    for _ in range(60):
+        e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 1)
+        dealt = e.get_troop_damage_dealt(0) - before
+        if dealt > 0:
+            return float(dealt)
+    return 0.0
+
+
 def damage_spell(deck):
     """(card_id, tower_damage, cost) for the deck's finishing spell, or None.
 
