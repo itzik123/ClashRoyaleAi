@@ -31,8 +31,8 @@ Rules that apply to every item below:
 
 ## 00. Pre-launch audit follow-ups (2026-09-15) — open, none blocks the run
 
-The audit and its fixes are in `CLAUDE.md` ("2026-09-15: the pre-launch audit");
-the operator's steps are `FINAL_RUN_RUNBOOK.md`. These were found and left open
+The audit and its fixes are in `.claude/CLAUDE.md` ("2026-09-15: the pre-launch audit");
+the operator's steps are `docs/runbooks/FINAL_RUN_RUNBOOK.md`. These were found and left open
 on purpose, each with the reason.
 
 1. **Champion / Hero ability training: IMPLEMENTED 2026-09-16, with two gaps.**
@@ -526,7 +526,7 @@ a checkpoint.
 APPLIED). **Only Python remains, and all of it is in `perception/`, which is
 freely editable.**
 
-Design: `docs/superpowers/specs/2026-08-24-live-teacher-play-design.md`.
+Design: `docs/design/specs/2026-08-24-live-teacher-play-design.md`.
 The measured deploy-time result behind it: `DECISIONS.md`, "2026-08-24: the
 live-mirror state setters". Stage 1 (a passive gap-logger) was **deliberately
 skipped** by the human once item 22 was approved.

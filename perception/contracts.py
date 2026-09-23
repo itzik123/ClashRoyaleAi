@@ -258,7 +258,7 @@ class GameState:
     and eyeballed, which a float vector cannot.
 
     SHARED CONTRACT. Neither side changes it alone -- see the coordination
-    section of docs/superpowers/specs/2026-07-30-perception-live-sensor-design.md.
+    section of docs/design/specs/2026-07-30-perception-live-sensor-design.md.
     """
 
     units: tuple[UnitObservation, ...]

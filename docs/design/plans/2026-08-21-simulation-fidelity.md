@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17 header-only engine, Catch2 (`build_python/ClashRoyaleTests.vcxproj`), MSVC via absolute MSBuild path, standalone audit instruments built by `tools/audit/build.ps1`, pybind11 `.pyd` for the Python side, vanilla JS for `web/viewer.html`.
 
-**Spec:** [docs/superpowers/specs/2026-08-20-simulation-fidelity-design.md](../specs/2026-08-20-simulation-fidelity-design.md)
+**Spec:** [docs/design/specs/2026-08-20-simulation-fidelity-design.md](../specs/2026-08-20-simulation-fidelity-design.md)
 
 ## Global Constraints
 

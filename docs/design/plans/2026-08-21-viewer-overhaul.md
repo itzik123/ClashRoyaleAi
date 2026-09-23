@@ -160,7 +160,7 @@ immediately before the closing `</script>` tag:
 
 ```javascript
 // Test surface. Pure functions only -- nothing here mutates viewer state.
-// Used by the browser-driven checks in docs/superpowers/plans/; harmless in
+// Used by the browser-driven checks in docs/design/plans/; harmless in
 // normal use (it only assigns references to already-defined functions).
 window.__viewerTests = {
   getEntityMeta,

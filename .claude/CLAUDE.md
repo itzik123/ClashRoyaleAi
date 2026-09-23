@@ -33,7 +33,7 @@ hardcoded with a comment naming the header where not.
 The next run starts **from scratch** with a **different deck** (chosen later).
 Checkpoint invalidation was therefore free, and the audit hunted for anything
 that would crash, silently switch off, or quietly mis-tune under that. The
-operator's side is `FINAL_RUN_RUNBOOK.md`; this is what is now true of the code.
+operator's side is `docs/runbooks/FINAL_RUN_RUNBOOK.md`; this is what is now true of the code.
 Reports and probes lived in the session scratchpad; every number below was
 measured on the rebuilt `.pyd`.
 
@@ -2171,10 +2171,10 @@ the data. **The recordings now exist** (8 matches in
 
 ---
 
-## How the learning mechanism got here — moved to `DECISIONS.md`
+## How the learning mechanism got here — moved to `docs/DECISIONS.md`
 
 The chronological narrative — every measured result, every reversal, and the
-reasoning behind the constants above — was extracted to **`DECISIONS.md`** on
+reasoning behind the constants above — was extracted to **`docs/DECISIONS.md`** on
 2026-08-24. 12 sections, unchanged and with their headings intact, so any
 passage cited by title still resolves.
 
@@ -2201,9 +2201,9 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 ## NEXT UP: Stage 2 — see `TODO.md` item 0
 
 The full brief — goal, the two modules to write, the three invariants that can
-go silently wrong, and the limits already measured — is **`TODO.md` item 0**,
+go silently wrong, and the limits already measured — is **`docs/TODO.md` item 0**,
 because pending work belongs in the pending-work list and this file had a second
-copy of it. Design: `docs/superpowers/specs/2026-08-24-live-teacher-play-design.md`.
+copy of it. Design: `docs/design/specs/2026-08-24-live-teacher-play-design.md`.
 The measurements behind it: `DECISIONS.md`, "2026-08-24: the live-mirror state
 setters".
 
@@ -2382,7 +2382,7 @@ retired. Each one cost real time; none of them is hypothetical.
 
 ## Open problems — the EVIDENCE behind them
 
-> **`TODO.md` is the authoritative task list.** It was consolidated on
+> **`docs/TODO.md` is the authoritative task list.** It was consolidated on
 > 2026-08-19 from this section and from three session handoffs, and every item
 > in it was verified against the source tree. This section is not a second task
 > list: it is the measured history that justifies those items, kept here because
@@ -3031,8 +3031,17 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
                        Uses step_self_play, never step -- step runs the
                        HeuristicOpponent, which defends, and a Giant stopped by
                        a defender says nothing about navigation.
-CLAUDE.md            This file: the knowledge base.
-TODO.md              The single, verified list of pending work.
+.claude/CLAUDE.md    This file: the knowledge base. Lives in .claude/ (Claude
+                     Code loads it from there too) so the public root stays
+                     clean -- moved 2026-09-23 along with the three below.
+docs/TODO.md         The single, verified list of pending work.
+docs/DECISIONS.md    The narrative: every measured result and reversal.
+docs/runbooks/       FINAL_RUN_RUNBOOK.md, ELIXIR_PHASE_RUNBOOK.md.
+docs/design/         Design specs and implementation plans. Write NEW ones
+                     here (docs/design/specs, docs/design/plans), not in the
+                     superpowers plugin's default docs/superpowers/.
+LICENSE              MIT. The vendored CRBAB keeps its own MIT notice in
+                     perception/clashroyalebuildabot/LICENSE.md.
 perception/          Screen -> placement events -> simulator as estimator.
                      Self-contained: own venv, own requirements.txt.
 web/viewer.html      Replay viewer.

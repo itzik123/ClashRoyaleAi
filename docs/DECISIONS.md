@@ -3696,7 +3696,7 @@ before acting.** They are the part of this entry most worth keeping:
 
 Python suite 931 -> 1000 passed (2 skipped); the runbook's pre-flight 22/22 on
 the new main; 28 plausible trainee decks, three of them Champion decks, pass a
-construct-and-play sweep and are tabled in `FINAL_RUN_RUNBOOK.md`.
+construct-and-play sweep and are tabled in `docs/runbooks/FINAL_RUN_RUNBOOK.md`.
 
 ---
 

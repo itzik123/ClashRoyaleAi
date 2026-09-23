@@ -2426,7 +2426,7 @@ document.addEventListener('keydown', (e) => {
 // level, which in a classic script creates LEXICAL bindings that are NOT
 // properties of `window` -- so none of it is reachable from the console or
 // from a driving harness. This block is the deliberate, single place that
-// exposes what the checks in docs/superpowers/plans/ need.
+// exposes what the checks in docs/design/plans/ need.
 //
 // Read-only by intent: `state()` returns a snapshot, not live references to
 // mutate. Nothing here runs on load, so it cannot affect normal use.
