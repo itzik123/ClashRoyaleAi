@@ -261,6 +261,7 @@ class Phase2Trainer(BaseTrainer):
                 "last_exploiter_burst_episode", self.episodes_completed)
             self.exploiter_burst_index = checkpoint.get(
                 "exploiter_burst_index", 0)
+            self._seed_pfsp(checkpoint)
             print(f"Resumed pipeline #2 (PFSP) from {self.weight_path}: "
                   f"episode {self.episodes_completed}, reference roster size "
                   f"{len(self.reference_roster)}, ent coef c/p "
@@ -298,8 +299,55 @@ class Phase2Trainer(BaseTrainer):
         return ("next exploiter burst at ep "
                 f"{self.last_exploiter_burst_ep + exploiter_mod.EXPLOITER_CYCLE_EPISODES}")
 
+    @staticmethod
+    def merge_pfsp(per_worker):
+        """[(stats, counts), ...] from the workers -> pooled (stats, counts).
+
+        COUNT-WEIGHTED, and a worker that never scored an opponent contributes
+        nothing for it: its 0.5 is the prior, not a measurement. Keys nobody has
+        played are dropped, so a resume leaves them to the prior as before.
+        """
+        total, weighted = {}, {}
+        for stats, counts in per_worker:
+            for key, n in (counts or {}).items():
+                if n <= 0 or key not in (stats or {}):
+                    continue
+                total[key] = total.get(key, 0) + int(n)
+                weighted[key] = weighted.get(key, 0.0) + float(stats[key]) * int(n)
+        return ({k: weighted[k] / total[k] for k in total}, dict(total))
+
+    def _merged_pfsp(self):
+        """Pooled PFSP estimates, or (None, None) if the workers cannot say."""
+        if self.envs is None:
+            return None, None
+        try:
+            per_worker = self.envs.call("get_pfsp_stats")
+        except Exception:        # noqa: BLE001 -- must never break a checkpoint
+            return None, None
+        stats, counts = self.merge_pfsp(per_worker)
+        return (stats or None), (counts or None)
+
+    def _seed_pfsp(self, checkpoint):
+        """Push a resumed checkpoint's pooled estimates into every worker.
+
+        Each worker gets the pooled rate and an EQUAL SHARE of the pooled count,
+        so the next merge weights them as the interchangeable estimators they
+        are. Absent keys mean an older checkpoint: the prior, as before.
+        """
+        stats = checkpoint.get("pfsp_stats") or {}
+        if not stats or self.envs is None:
+            return
+        counts = checkpoint.get("pfsp_counts") or {}
+        share = {k: max(1, int(n) // max(1, self.cfg.num_envs))
+                 for k, n in counts.items()}
+        self.envs.call("set_pfsp_stats", stats, share)
+        worst = min(stats.items(), key=lambda kv: kv[1])
+        print(f">>> Restored PFSP estimates for {len(stats)} opponents "
+              f"(hardest: {os.path.basename(str(worst[0]))} {worst[1]:.3f}) -- "
+              f"without this every opponent restarts at the 0.5 prior.")
+
     def checkpoint_payload(self):
-        return {
+        payload = {
             "entropy_reboost_episode": self.entropy_reboost_episode,
             "last_stall_reboost_episode": self.last_stall_reboost_episode,
             "last_eval_ep": self.last_eval_ep,
@@ -307,6 +355,13 @@ class Phase2Trainer(BaseTrainer):
             "last_exploiter_burst_episode": self.last_exploiter_burst_ep,
             "exploiter_burst_index": self.exploiter_burst_index,
         }
+        # TODO 00.8: the per-opponent PFSP estimates lived only in the workers
+        # and were lost on every resume. See MicroRoyaleSelfPlayEnv.set_pfsp_stats.
+        stats, counts = self._merged_pfsp()
+        if stats:
+            payload["pfsp_stats"] = stats
+            payload["pfsp_counts"] = counts or {}
+        return payload
 
     # -- per-step diagnostics ----------------------------------------------
     def on_step(self, ctx):

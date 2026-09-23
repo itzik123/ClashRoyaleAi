@@ -115,8 +115,12 @@ on purpose, each with the reason.
    credits zero elixir for a spawned body, so a Fireball clearing a Goblin Gang
    earns no value.
 
-8. **Phase 2's per-opponent PFSP win rates are not checkpointed** (per worker,
-   lost on every resume). Same merge-and-reseed pattern as the phase-1 deck pool.
+8. ~~**Phase 2's per-opponent PFSP win rates are not checkpointed**~~ **DONE
+   2026-09-23**, with the phase-1 deck pool's merge-and-reseed pattern: workers
+   now count games per opponent, the trainer stores a COUNT-WEIGHTED pooled
+   estimate (a worker's untouched 0.5 is a prior and is not averaged in), and a
+   resume seeds every worker with it. `refresh_pfsp_pool` only fills missing
+   entries, so the seeded estimates survive it.
 
 9. ~~**`CLASH_*` settings are not stamped in the checkpoint**~~ **DONE
    2026-09-23.** `checkpointing.clash_settings()` goes into every checkpoint;

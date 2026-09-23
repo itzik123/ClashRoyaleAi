@@ -182,6 +182,12 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         # envs.reset() call).
         self.pfsp_pool = []
         self.pfsp_stats = {}
+        #: Games this worker has scored against each opponent. The EMA's alpha
+        #: is fixed, so this does not change the update -- it WEIGHTS the merge
+        #: across workers when the trainer checkpoints (TODO 00.8): a worker
+        #: that never met an opponent holds the 0.5 prior, and averaging it in
+        #: unweighted would dilute the estimates that were actually measured.
+        self.pfsp_counts = {}
 
         # Scenario injection (see SCENARIOS / sample_scenario). Independent
         # per-worker RNG so the vectorized envs don't all inject the same
@@ -324,6 +330,28 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
         for p in self.pfsp_pool:
             if p not in self.pfsp_stats:
                 self.pfsp_stats[p] = 0.5
+
+    def get_pfsp_stats(self):
+        """(estimates, counts) this worker holds -- the trainer merges them."""
+        return dict(self.pfsp_stats), dict(self.pfsp_counts)
+
+    def set_pfsp_stats(self, stats, counts=None):
+        """Seed this worker from a resumed checkpoint's POOLED estimates.
+
+        WHY (TODO 00.8). `pfsp_stats` lived only in worker memory, so every
+        resume reset every opponent to the 0.5 prior, and PFSP -- which weights
+        by (1 - winrate)^2 -- sampled a mastered snapshot as often as the one
+        the agent still loses to, until each worker re-met each of ~100 pool
+        members about 1/PFSP_EMA_ALPHA = 12 times. Phase 1 fixed the same
+        failure for its deck pool (`MicroRoyaleEnv.set_deck_pool_stats`).
+
+        Keys need not be in the pool yet: `refresh_pfsp_pool` only fills MISSING
+        entries with the prior, so a seeded estimate survives it.
+        """
+        for key, rate in (stats or {}).items():
+            self.pfsp_stats[key] = float(rate)
+        for key, n in (counts or {}).items():
+            self.pfsp_counts[key] = int(n)
 
     def _sample_pfsp_opponent(self):
         """Draw this episode's opponent, dropping any entry that will not load.
@@ -595,6 +623,8 @@ class MicroRoyaleSelfPlayEnv(gym.Env):
                 outcome = 0.5
             prev = self.pfsp_stats.get(self.opponent_checkpoint_path, 0.5)
             self.pfsp_stats[self.opponent_checkpoint_path] = prev * (1.0 - PFSP_EMA_ALPHA) + outcome * PFSP_EMA_ALPHA
+            self.pfsp_counts[self.opponent_checkpoint_path] = (
+                self.pfsp_counts.get(self.opponent_checkpoint_path, 0) + 1)
 
         # Same key names/shape as gym_wrapper.MicroRoyaleEnv.step()'s info dict
         # on purpose -- lets rewards.shaping.compute_shaping be reused as-is.
