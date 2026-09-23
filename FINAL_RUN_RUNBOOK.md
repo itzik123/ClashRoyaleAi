@@ -42,8 +42,51 @@ Evolution only in slots 0 or 2. Order in the list matters for those.
 **If the deck is unusual** (siege, spell win condition, air-heavy), run the
 teacher's passive-opponent probe from `CLAUDE.md` ("THE TEACHER COULD NOT PILOT")
 on it — the mirror opponent plays your deck, and a teacher that cannot pilot it
-makes the mirror rung meaningless. The teacher has no air-defence concept
-(audit 05), so an air deck will face a weak early-rung mirror.
+makes the mirror rung meaningless. Since 2026-09-23 the rung 0-1 teacher answers
+a Balloon / Lava Hound with a card that can hit it (TODO 00.5); the rollout
+rungs still see only 2-10 s ahead.
+
+### Pre-checked decks (2026-09-23, main @ 5c7de5a)
+
+Each deck below was run as the TRAINEE: `validate_deck`, then a phase-1 env
+against a rung-3 mirror teacher for 60 real steps, checking nothing raised and
+the published `spell_*` keys match the resolver. **All 28 passed.** A snapshot,
+not a guarantee -- re-run `validate_deck` on the deck you pick.
+
+| deck | win condition (tower HP / elixir) | spell terms follow | notes |
+|---|---|---|---|
+| hog_26_mirror (shipped) | Hog Rider (634) | Fireball | |
+| splashyard | Graveyard (146, WEAK) | Poison | named TOMBSTONE before 00.6 |
+| graveyard_control | Graveyard (146, WEAK) | Poison | |
+| miner_poison_control | Miner (582) | Poison | |
+| mk_miner_control | Miner (582) | Poison | |
+| pekka_miner_poison | Miner (582) | Poison | |
+| pekka_bridge_spam | Battle Ram (634) | Poison | |
+| xbow_30_cycle | X-Bow (637) | Fireball | |
+| xbow_rocket | X-Bow (637) | Rocket | |
+| mortar_cycle | Mortar (399) | Fireball | |
+| hog_eq | Hog Rider (634) | Earthquake | |
+| rocket_cycle | Miner (582) | Rocket | |
+| classic_log_bait_inferno | Goblin Barrel (240) | Rocket | Goblin Gang can't hit air (UPSTREAM 30) |
+| dart_bait_cycle | Goblin Barrel (240) | none | spell terms off; Goblin Gang (UPSTREAM 30) |
+| wall_breakers_cycle | Miner (582) | none | spell terms off |
+| rg_fisherman_cycle | Royal Giant (525) | Fireball | |
+| royal_hogs_furnace | Royal Hogs (773) | Fireball | |
+| giant_double_dragon | Giant (507) | Arrows | |
+| golem_beatdown | Golem (312) | Lightning | Night Witch bats (UPSTREAM 30, open) |
+| lavaloon | Balloon (507) | Fireball | |
+| lumberloon_freeze | Balloon (507) | Tornado | |
+| three_musketeers_bridge | Battle Ram (634) | Zap | |
+| mega_knight_ram | Battle Ram (634) | Fireball | |
+| drill_cycle | Goblin Drill (664) | Fireball | Drill played from the siege row before 00.6 |
+| barb_hut_beatdown | Giant (507) | Fireball | named BARBARIAN HUT before 00.6 |
+| monk_control | Hog Rider (634) | Poison | Champion (slot 1) |
+| archer_queen_cycle | Hog Rider (634) | Fireball | Champion (slot 1) |
+| golden_knight_bait | Goblin Barrel (240) | Rocket | Champion (slot 2) |
+
+WEAK is `validate_deck`'s own flag (below 200); a Graveyard reads low because its
+probe window saturates, not because the card is broken (`teacher.py`,
+`WINCON_MIN_DAMAGE_PER_ELIXIR`).
 
 ---
 
@@ -188,7 +231,11 @@ and refuses to restart more than 4 times an hour.
 - **Champion/Hero ability training is new** (2026-09-16) and has never run at
   length. The mirror teacher uses the ability heuristically, so a Champion deck's
   early rungs are easier than they look.
-- The teacher has **no air-defence concept**; air decks meet a weak mirror early.
+- The teacher's air defence is new (2026-09-23) and lives in the rung 0-1 rules
+  gate only; the rollout rungs see 2-10 s ahead and can miss an incoming Balloon.
+- Goblin Gang / Rascals / Goblin Hut units cannot hit air in this engine
+  (`perception/UPSTREAM_REQUESTS.md` item 30, proposed). Avoid relying on them as
+  anti-air, or approve item 30 first.
 - **Spells hit Crown Towers for 100% of their damage**, against the real game's
   15-30% (`perception/UPSTREAM_REQUESTS.md` item 29, proposed, not applied). A
   spell-heavy deck will learn chip that does not transfer. If you approve item 29,
