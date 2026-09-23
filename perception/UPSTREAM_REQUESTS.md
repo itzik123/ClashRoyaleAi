@@ -734,3 +734,80 @@ spell-strong variant. Defensible only if sim-to-real transfer is not a goal.
 * The King Tower takes the same Crown Tower value (the real game does not
   distinguish King from Princess here).
 * A spell with no value set is bit-identical to today (default -1).
+
+---
+
+## Item 30 — three spawned/secondary Spear-Goblin-type units cannot hit air
+
+**Status: PROPOSED 2026-09-23 — NOT applied.** **Class:** registry data.
+**GAMEPLAY-AFFECTING** for decks holding Goblin Gang, Rascals or Goblin Hut —
+two pool decks (`dart_bait_cycle`, `classic_log_bait_inferno`) field Goblin Gang.
+
+### The gap
+
+The registry contradicts itself about one unit, the shape the 2026-08-26 speed
+pass found for Bats and Goblins. The playable Spear Goblins (id 23) carry
+`.withTargetsAir()`, and so do the ones riding a Goblin Giant (helper -26). Three
+other copies do not:
+
+| helper | where | `.withTargetsAir()` |
+|---|---|---|
+| -17 "Spear Goblins" | `goblinHutSpearGoblinStats()` (Goblin Hut's spawns) | **missing** |
+| -27 "Spear Goblins" | Goblin Gang's inline `withSecondaryUnit(...)` | **missing** |
+| -28 "Rascals" (the Girls) | Rascals' inline `withSecondaryUnit(...)` | **missing** |
+
+In the real game all three are ranged units that hit air. The Rascal Girls
+helper also carries a raw `0.5f` speed rather than a `SPEED_*` tier -- the exact
+pattern the 2026-08-26 pass fixed for death-spawned children. Its pinning test
+("every spawned unit moves at the speed of its own playable card") evidently does
+not reach SECONDARY units; worth confirming when this is fixed.
+
+### Evidence
+
+Measured through the rebuilt `.pyd`, one enemy Balloon held stationary, the card
+placed beside it, 50 s, against the same board without the card:
+
+| card | damage to the Balloon | anti-air cells / occupied (obs channel 13) |
+|---|---|---|
+| Spear Goblins (control) | **567** | 2 / 2 |
+| Goblin Giant (control: helper -26 has the flag) | **324** | 2 / 3 |
+| **Goblin Gang** | **0** | 0 / 4 |
+| **Rascals** | **0** | 0 / 2 |
+| **Goblin Hut** | **0** | 0 / 1 |
+
+Engine targeting itself is correct (`CombatEntity.h:1161`, `!entity->isFlying ||
+targetsAir`): Knight, Skeletons, Ice Golem, Hog Rider and Cannon all deal 0 to a
+held Balloon and Musketeer deals 1085. Only these three helpers' DATA is wrong.
+
+### Proposed change (exact)
+
+`include/core/CardRegistry.h`:
+
+1. `goblinHutSpearGoblinStats()`: append `.withTargetsAir()`.
+2. Goblin Gang's secondary `troop(-27, "Spear Goblins", ...)`: append
+   `.withTargetsAir()` before `.withOffsets(...)` (order does not matter).
+3. Rascals' secondary `troop(-28, "Rascals", ...)`: append `.withTargetsAir()`;
+   and replace the raw `0.5f` speed with the Rascal Girls' tier from the same
+   source the 2026-08-24 speed rework used (not guessed here).
+
+Plus a GENERIC test beside the speed one in `tests/core/test_card_registry.cpp`:
+*every spawned or secondary unit that shares a name with a playable card agrees
+with that card on `targetsAir` (and speed)* -- generic, so the next helper cannot
+reintroduce this. It must iterate secondary units as well as death / periodic /
+spell spawns, since that is the family the speed test missed.
+
+### Blast radius
+
+* Goblin Gang and Rascals become real anti-air answers (the whole reason a bait
+  deck carries Goblin Gang is its Spear Goblins); Goblin Hut starts defending air.
+* The teacher needs no change: `card_probes.damages_air` MEASURES the card, so it
+  re-classifies all three automatically once the engine is fixed.
+* Win rates against `dart_bait_cycle` / `classic_log_bait_inferno` move.
+
+### Open, NOT diagnosed: Night Witch
+
+Her periodic Bats DO carry `.withTargetsAir()` (helper -14) and they do spawn
+(flyer cells appear by tick 50), yet over 300 ticks beside a held Balloon they
+dealt **0** -- while standalone Bats (id 78) pass the same probe. The cause is not
+established; recorded as a measurement, not a diagnosis. `golem_beatdown` fields
+Night Witch.
