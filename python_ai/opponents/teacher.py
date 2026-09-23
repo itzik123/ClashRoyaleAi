@@ -402,14 +402,56 @@ def spell_catch_for(obs, card_id):
     return tactics.spell_catch_map(obs, radius, 0, damage)
 
 
-def threatens_tower_alone(card_id):
-    """Can this card damage an enemy tower with no help from a troop?
+@functools.lru_cache(maxsize=256)
+def building_spawns_bodies(card_id):
+    """Peak count of friendly TROOP bodies a building puts on an empty board.
 
-    The two ways a deck without a building-targeter still wins: a siege building
-    that out-ranges the tower from the own half, and a spell that delivers
-    bodies onto it.
+    The discriminator `siege_reach` alone lacks. "Damages the enemy tower from
+    the own half" is true of an X-Bow, which FIRES at it, and equally of a
+    Barbarian Hut, whose Barbarians WALK to it. Measured 2026-09-23 (400 ticks):
+
+        X-Bow 0   Mortar 0            -- siege: the building itself fires
+        Barbarian Hut 5   Tombstone 6   Goblin Cage 1   Goblin Hut 1
+        Goblin Drill 4                -- spawners
     """
-    return siege_reach(card_id) > 0.0 or spell_spawns_bodies(card_id) > 0
+    if not E.get_card_info(card_id)["is_building"]:
+        return 0
+    env = _probe_env()
+    row = float(own_half_max_row())
+    x = float(int(EC.BOARD_CENTER_X))
+    if not env.is_valid_placement(card_id, x, row, 0):
+        x = float(int(EC.LEFT_LANE_X))
+    env.inject(card_id, x, row, 0, -1.0, 0)
+    peak = 0
+    for _ in range(40):
+        env.step_self_play(HAND_SIZE, 0.0, 0.0, HAND_SIZE, 0.0, 0.0, 10,
+                           False, False, False, False)
+        obs = np.asarray(env.get_observation_for_team(0), np.float32)
+        peak = max(peak, sum(int((obs[ch * PLANE:(ch + 1) * PLANE] > 1e-6).sum())
+                             for ch in CH_ALLY_TROOP))
+    return peak
+
+
+def siege_building(card_id):
+    """A building that attacks the enemy tower ITSELF, from the own half.
+
+    ONE definition, read by both the win-condition resolver and
+    `card_probes.building_defends`. It was `siege_reach > 0` in both, which
+    also admitted every SPAWNER: the resolver named Tombstone the win condition
+    of a Splashyard deck over its Graveyard (Tombstone's 1134 in a 1200-tick
+    siege window against the Graveyard's 730 in a 300-tick troop window), and a
+    Barbarian Hut outranked the Giant beside it at 6182. Measured over 28 decks
+    on 2026-09-23: those two change and the other 26 -- all 16 of the pool --
+    resolve exactly as before. TODO 00.6.
+
+    A deploy-anywhere building (Goblin Drill) is not a siege building either: it
+    is played BESIDE the enemy tower like a Miner, and from the own siege row it
+    measured 0 tower damage in 300 ticks against 2654 from beside the tower.
+    """
+    info = E.get_card_info(card_id)
+    if not info["is_building"] or info.get("deploy_anywhere", False):
+        return False
+    return siege_reach(card_id) > 0.0 and building_spawns_bodies(card_id) == 0
 
 
 #: How long the win-condition probe rolls a lone attacker forward. SHORT on
@@ -492,7 +534,7 @@ def wincon_damage_per_elixir(card_id):
     """
     info = E.get_card_info(card_id)
     cost = max(float(info["cost"]), 1.0)
-    if info["is_building"]:
+    if info["is_building"] and not info.get("deploy_anywhere", False):
         return siege_reach(card_id) / cost
     if info["is_spell"] and spell_spawns_bodies(card_id) == 0:
         return 0.0
@@ -509,15 +551,20 @@ def wincon_damage_per_elixir(card_id):
 def _wincon_eligible(card_id, is_building_targeter):
     """Could this card be a deck's route to a tower at all?
 
-    A building-targeter walks past defenders; a deploy-anywhere troop skips
-    them; a siege building out-ranges the tower; a spawning spell delivers
-    bodies onto it. A Knight or a P.E.K.K.A. also damages an EMPTY tower, so
-    measured damage alone would promote them -- eligibility is by CLASS, and
-    measurement only ranks within it.
+    A building-targeter walks past defenders; a deploy-anywhere troop or
+    building skips them; a siege building out-ranges the tower; a spawning spell
+    delivers bodies onto it. A Knight or a P.E.K.K.A. also damages an EMPTY
+    tower, so measured damage alone would promote them -- eligibility is by
+    CLASS, and measurement only ranks within it. A SPAWNER building (Tombstone,
+    Barbarian Hut, Goblin Cage) reaches a tower only by walking bodies there, the
+    same way a Knight does, and is not a class that wins games -- see
+    `siege_building`.
     """
     info = E.get_card_info(card_id)
     if info["is_building"]:
-        return siege_reach(card_id) > 0.0
+        if info.get("deploy_anywhere", False):
+            return wincon_damage_per_elixir(card_id) > 0.0
+        return siege_building(card_id)
     if info["is_spell"]:
         return spell_spawns_bodies(card_id) > 0
     return is_building_targeter or bool(info.get("deploy_anywhere", False))
@@ -1624,7 +1671,10 @@ class UtilityTeacher:
             if self.wincon_mode == "cycle":
                 return list(WINCON_DUD_CELLS)
             info = E.get_card_info(card_id)
-            if info["is_building"]:
+            # deploy_anywhere FIRST: a Goblin Drill is a building AND
+            # deploy-anywhere, and from the siege row it measured 0 tower damage
+            # in 300 ticks against 2654 beside the tower -- see siege_building.
+            if info["is_building"] and not info.get("deploy_anywhere", False):
                 return self._siege_cells(obs)[:k]
             if info["is_spell"]:
                 return self._tower_cells(obs)[:k]

@@ -74,9 +74,18 @@ on purpose, each with the reason.
    4 seeds; at rung 10 the rollout usually finds the Musketeer. An air-heavy agent
    deck meets a weak early mirror.
 
-6. **Spawner huts measure as tower threats** (`siege_reach`: Barbarian Hut 6182,
-   Tombstone 1134, Goblin Cage 1348), so a deck built around one may name the hut
-   as its win condition.
+6. ~~**Spawner huts measure as tower threats**~~ **DONE 2026-09-23**, and it was
+   live: a Splashyard control deck (Graveyard, Poison, Baby Dragon, Bowler, Ice
+   Wizard, Tornado, The Log, Tombstone) resolved TOMBSTONE as its win condition,
+   and a Barbarian Hut outranked the Giant beside it. `teacher.siege_building`
+   (fires at the tower itself, spawns no bodies, not deploy-anywhere) is now the
+   one definition both the resolver and `card_probes.building_defends` read.
+   Over 28 decks only those two resolutions changed; all 16 pool decks are
+   identical. Found on the way: a Goblin Drill was measured and PLAYED from the
+   own siege row, where it does 0 tower damage in 300 ticks (2654 beside the
+   tower) -- it is deploy-anywhere and is handled as such now. Still open: the
+   resolver compares buildings over a 1200-tick window against troops' 300, which
+   no measured deck currently turns on.
 
 7. **Engine stat inexactness, not fixed:** last-hit overkill is booked as tower
    damage (a Giant "deals" 3,795 to remove 3,546); `ElixirValueKilledCollector`

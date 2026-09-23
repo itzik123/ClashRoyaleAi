@@ -215,13 +215,22 @@ def building_defends(card_id):
 
     Excludes siege buildings (Mortar, X-Bow: their rule is the siege row, and a
     defensive coverage rule would pull them back to exactly the cells worth
-    nothing) and buildings that do not attack (Elixir Collector).
+    nothing), deploy-anywhere buildings (a Goblin Drill is a win condition,
+    played beside the enemy tower) and buildings that do not attack (Elixir
+    Collector).
+
+    "Siege" is `teacher.siege_building`, the resolver's own definition. This read
+    `siege_reach > 0` until 2026-09-23, which also excluded every SPAWNER before
+    the behavioural test below ever ran. Spawners are now judged by that test on
+    their own merits: Goblin Hut passes (its Spear Goblins shoot); Tombstone,
+    Barbarian Hut and Goblin Cage do not attack inside its 60-tick window, so
+    they stay uncovered -- by measurement now, not by the siege test. TODO 00.6.
     """
     info = E.get_card_info(card_id)
-    if not info["is_building"]:
+    if not info["is_building"] or info.get("deploy_anywhere", False):
         return False
-    from python_ai.opponents.teacher import siege_reach
-    if siege_reach(card_id) > 0.0:
+    from python_ai.opponents.teacher import siege_building
+    if siege_building(card_id):
         return False
     # BEHAVIOURAL, not a channel read: the observation's DPS channel is
     # non-zero for an Elixir Collector, which never attacks. So place the

@@ -79,3 +79,64 @@ def test_the_reward_and_the_teacher_name_the_same_card(pool):
 def test_a_rolling_spell_is_never_probed_on_a_cell_it_cannot_be_cast_on():
     assert teacher.wincon_damage_per_elixir(101) == 0.0    # Barbarian Barrel
     assert teacher.wincon_damage_per_elixir(110) > 0.0     # Graveyard, control
+
+
+# --- TODO 00.6: a SPAWNER building is not a siege win condition --------------
+# `siege_reach > 0` admitted every building whose SPAWNED bodies walk to a tower.
+# Measured over 28 decks: Splashyard named Tombstone over its Graveyard, and a
+# Barbarian Hut outranked the Giant beside it (6182 in a 1200-tick siege window
+# against a troop's 300-tick one). The 16 pool decks are the control above.
+
+X_BOW, MORTAR, BARB_HUT, GOBLIN_HUT, TOMBSTONE, GOBLIN_CAGE, GOBLIN_DRILL = (
+    92, 93, 94, 95, 96, 97, 98)
+CANNON = 25
+
+
+def test_only_a_building_that_fires_at_the_tower_itself_is_siege():
+    for cid in (X_BOW, MORTAR):
+        assert teacher.siege_building(cid), NAME(cid)
+        assert teacher.building_spawns_bodies(cid) == 0, NAME(cid)
+    for cid in (BARB_HUT, TOMBSTONE, GOBLIN_CAGE, GOBLIN_HUT):
+        assert not teacher.siege_building(cid), NAME(cid)
+        assert teacher.building_spawns_bodies(cid) > 0, NAME(cid)
+    # Deploy-anywhere is its own class, and a defensive building is no route.
+    assert not teacher.siege_building(GOBLIN_DRILL)
+    assert not teacher.siege_building(CANNON)
+
+
+def test_splashyard_is_won_by_its_graveyard_not_its_tombstone():
+    from python_ai import deck as D
+    deck = D.parse_deck("graveyard,poison,baby dragon,bowler,ice wizard,"
+                        "tornado,the log,tombstone")
+    assert NAME(wincon(deck)) == "Graveyard"
+
+
+def test_a_barbarian_hut_does_not_outrank_the_giant_beside_it():
+    from python_ai import deck as D
+    deck = D.parse_deck("barbarian hut,giant,musketeer,zap,fireball,knight,"
+                        "archers,minions")
+    assert NAME(wincon(deck)) == "Giant"
+
+
+def test_a_goblin_drill_is_measured_and_played_beside_the_enemy_tower():
+    """From the own siege row a Drill measured 0 tower damage in 300 ticks;
+    beside the tower, 2654. It is deploy-anywhere, like the Miner."""
+    import numpy as np
+    from python_ai import engine_constants as EC
+    assert teacher._wincon_eligible(GOBLIN_DRILL, False)
+    assert teacher.wincon_damage_per_elixir(GOBLIN_DRILL) * 4.0 > 2000.0
+    deck = [GOBLIN_DRILL, 3, 29, 0, 1, 24, 41, 25]
+    t = teacher.UtilityTeacher(deck, team=0)
+    env = E.ClashRoyaleEnv(deck, deck, 3600)
+    env.seed(0)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    cells = t._cells_for("wincon", GOBLIN_DRILL, obs)
+    assert cells and all(y > EC.BRIDGE_Y for _x, y in cells), cells
+
+
+def test_the_advisor_judges_a_spawner_by_behaviour_not_by_the_siege_test():
+    from python_ai.advisors import card_probes
+    assert card_probes.building_defends(CANNON)          # control
+    assert card_probes.building_defends(GOBLIN_HUT)      # its Spear Goblins shoot
+    assert not card_probes.building_defends(X_BOW)       # siege
+    assert not card_probes.building_defends(GOBLIN_DRILL)  # a win condition
