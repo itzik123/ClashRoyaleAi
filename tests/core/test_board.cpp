@@ -1,8 +1,14 @@
 #include <catch_amalgamated.hpp>
 #include "test_helpers.h"
+#include "ArenaLayout.h"
 #include "Board.h"
 #include "Building.h"
+#include "CardRegistry.h"
+#include "GameManager.h"
 #include "MeleeTroop.h"
+#include <cmath>
+#include <sstream>
+#include <vector>
 
 // --- clampToBoard ---
 // Used after a troop moves and again after collision resolution.
@@ -438,6 +444,74 @@ TEST_CASE("getNextWaypoint from inside the river band heads to the exit edge tow
         Vector2D wp = board.getNextWaypoint(Vector2D{ board.getLeftBridge().x, 17.0f }, Vector2D{ board.getLeftBridge().x, 5.0f });
         REQUIRE(wp.y == Catch::Approx(15.5f));
     }
+}
+
+// --- the bank-line overshoot orbit ---
+// A third bridge-mouth trap, and not a fixed point: an orbit. A unit knocked off
+// a bridge deck is snapped onto the bank line (clampToBoard), still counts as
+// "below", and is sent to the mouth sideways along the bank. A full step past
+// the mouth leaves it on the same bank line, so it is handed the same mouth back
+// and steps past it the other way, forever: x flips either side of the mouth
+// while getNextWaypoint never returns the unit's own position, which is why the
+// sweeps above cannot see it. Measured: a Fireball left a Giant vibrating for
+// 224 ticks, and 18% of teacher matches had one (UPSTREAM_REQUESTS.md item 31).
+//
+// Real cards through the GameManager tick loop, because the orbit lives in
+// Troop::moveTowards's step, not in the planner.
+TEST_CASE("a troop on a bank line walks onto the bridge instead of oscillating at its mouth",
+          "[board][waypoint][regression][orbit]") {
+    constexpr int GIANT = 2;       // SPEED_SLOW, the measured case
+    constexpr int HOG_RIDER = 15;  // SPEED_VERY_FAST, a different step size
+    const std::vector<int> deck = { 15, 6, 25, 40, 24, 72, 33, 7 };
+    const float bridges[] = { ArenaLayout::LEFT_BRIDGE_X, ArenaLayout::RIGHT_BRIDGE_X };
+
+    int stuck = 0, runs = 0, missing = 0;
+    std::ostringstream examples;
+    for (int card : { GIANT, HOG_RIDER }) {
+        for (int team : { 0, 1 }) {
+            for (float bx : bridges) {
+                // Every 0.01 tiles, finer than any step, for two tiles either
+                // side of the mouth.
+                for (int i = -200; i <= 200; ++i) {
+                    GameManager game(deck, deck);
+                    Board& board = game.getBoard();
+                    // Each team's own bank: team 0 crosses north, team 1 south.
+                    const float bankY = team == 0 ? board.getRiverStart() : board.getRiverEnd();
+                    const float x = bx + i * 0.01f;
+                    CardRegistry::getInstance().getCard(card)->spawnEntity(x, bankY, team, board);
+                    board.commitPendingEntities();
+                    std::shared_ptr<Troop> unit;
+                    for (const auto& e : board.getEntities()) {
+                        if (e->cardId == card) unit = std::dynamic_pointer_cast<Troop>(e);
+                    }
+                    if (!unit) {  // counted, not REQUIREd: 3,208 runs
+                        ++missing;
+                        continue;
+                    }
+
+                    // Deploy, the sideways leg to the mouth, the river, and
+                    // slack.
+                    const int budget = DEPLOY_TIME_TICKS
+                        + static_cast<int>(std::ceil((2.0f + 2.5f) / unit->getSpeed())) + 10;
+                    bool crossed = false;
+                    for (int t = 0; t < budget && !crossed; ++t) {
+                        game.step();
+                        crossed = team == 0 ? unit->position.y > board.getRiverEnd()
+                                            : unit->position.y < board.getRiverStart();
+                    }
+                    ++runs;
+                    if (!crossed && ++stuck <= 8) {
+                        examples << "\n  card " << card << " team " << team << " from x=" << x
+                                 << ", now (" << unit->position.x << ", "
+                                 << unit->position.y << ")";
+                    }
+                }
+            }
+        }
+    }
+    REQUIRE(missing == 0);
+    INFO(stuck << " of " << runs << " placements never crossed; first few:" << examples.str());
+    REQUIRE(stuck == 0);
 }
 
 // --- isBackRowDeadZone ---

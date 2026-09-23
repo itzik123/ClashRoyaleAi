@@ -44,7 +44,7 @@ a live match off the screen and replays it inside the engine.
   fixes the opening hand, and `snapshot()` forks a match for lookahead or
   paired A/B tests.
 - **Header-only C++17**, exposed to Python through pybind11.
-- **714 Catch2 test cases** covering combat, pathing, targeting, placement
+- **715 Catch2 test cases** covering combat, pathing, targeting, placement
   rules and match resolution.
 
 **Learning** (`python_ai/`)
@@ -159,7 +159,7 @@ handoff, is in [`docs/runbooks/FINAL_RUN_RUNBOOK.md`](docs/runbooks/FINAL_RUN_RU
 ### Run the tests
 
 ```powershell
-.\build_python\Release\ClashRoyaleTests.exe                          # C++: 714 cases
+.\build_python\Release\ClashRoyaleTests.exe                          # C++: 715 cases
 python_ai\venv\Scripts\python.exe -m pytest python_ai\tests -q       # training stack
 perception\.venv\Scripts\python.exe -m pytest perception\tests -q    # perception
 ```
