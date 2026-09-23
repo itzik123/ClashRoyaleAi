@@ -159,9 +159,8 @@ deleted checkpoint (a seeded random-init net now, a sharper subject).
   troop HP (2.6: 0.8%, control: 1.7%), but max would recover only ~2.3 points —
   the loss is one-value-per-cell, not the write rule. Not worth a late change to
   every HP estimate the teacher and advisor read.
-- **The Fireball-keyed spell shaping terms** stay keyed to id 7 (deriving them in
-  `rewards/weights.py` would create an import cycle; ~1.5% of the objective).
-  `validate_deck` warns when they are dead.
+- ~~**The Fireball-keyed spell shaping terms.**~~ **FIXED 2026-09-23** -- see
+  the next section.
 - ~~**Champion ability training.**~~ **IMPLEMENTED 2026-09-16** -- see below.
 
 **Refuted, do not re-raise:** the recurrent PPO core is sound (ratio at epoch 0
@@ -172,6 +171,55 @@ zero-gradient `cnn_trunk.6/7.reduce/spread` at init are NOT dead: they sit behin
 the zero-initialised `expand`, which does receive gradient.
 
 ---
+
+## 2026-09-23: the spell terms follow the deck, and spells hit towers 4x too hard
+
+**`main` could not start a run until this landed.** A session on 2026-09-16 left
+TODO 00.3 half-applied and uncommitted: `rewards/shaping.py` read `spell_*` keys
+nothing produced, so `compute_shaping` raised `KeyError('spell_in_hand')` on the
+first step of every episode. Finished, not reverted:
+
+- **Both spell terms follow the deck's own damage spell**
+  (`card_probes.damage_spell`, ranked by MEASURED Crown Tower damage, then cost),
+  published by both envs through ONE builder, `gym_wrapper.deck_spell_info`. The
+  keys are REQUIRED -- the draft's silent Fireball fallback was the same defect by
+  another road. A spell-less deck publishes zeros and both terms are exactly zero,
+  never nan. `SPELL_SOLVENCY_RESERVE` is retired: the reserve is the spell's cost.
+- **CONTROL: the 2.6 deck is bit-identical.** Same 12 seeded teacher-vs-teacher
+  matches through `extract_engine_stats -> compute_shaping`, old code vs new: 0 of
+  2,280 steps differ, total and per term. A Rocket-for-Fireball deck read exactly
+  zero on all 2,372 steps before; 25 lethal and 12 value steps after.
+- **`card_probes.spell_effect` cut damage-over-time spells off halfway** (a fixed
+  40-tick read): Poison 368 of its 736, Goblin Curse 129 of 258 -- and its own
+  docstring quoted the 368 as proof it reproduced the registry. It reads to
+  completion now; across all 22 spells only those two values moved. That doubles
+  Poison's damage cap in the advisor target.
+- **The teacher aimed every spell with Fireball's disc** (`_top_spell_cells`,
+  both spell combos, the rung 0-1 gate) -- the copy the audit's advisor fix
+  missed. Engine-scored on 320 mid-match boards, elixir value killed: Rocket
+  **+38%** (better on 75 boards, worse on 4), Zap +11%, Poison +7%, Arrows +4%,
+  Fireball the same cell on 320/320. `teacher.spell_geometry`.
+
+**SPELLS HIT CROWN TOWERS FOR 100% OF THEIR DAMAGE -- proposed, NOT changed**
+(`perception/UPSTREAM_REQUESTS.md` item 29). The real game publishes a separate
+Crown Tower damage per spell: Fireball 159 of 688, Rocket 371 of 1484, The Log 41
+of 268 ([DeckShop](https://www.deckshop.pro/card/damage), friendly level 11 -- the
+level the registry's troop numbers match). `AreaSpell::spellTowerDamageMultiplier`
+exists and only Hero Ice Golem's Snowstorm sets it. Measured consequences: a
+Princess Tower falls to 4 Fireballs (real: 16); one Rocket on a tower pays the
+agent **+0.185** shaping in one step (real: +0.046); in 48 teacher-vs-teacher
+matches direct spells are 7.0% of all tower damage (real ratios: 1.3%), 83% of it
+The Log, **53% of whose casts roll into a Princess Tower** for 269 (real: 41). The
+Python side is already correct under either engine: the lethal window reads
+`card_probes.spell_tower_damage`, which MEASURES the tower.
+
+**The general lesson, and it is the audit's own, one level down:** a fix that
+derives a quantity is only as good as the instrument it derives from. The advisor
+had been moved off Fireball's constants onto `spell_effect` -- whose damage figure
+was truncated for exactly the cards (DoT spells) that differ most from Fireball.
+And the teacher kept a third copy of the geometry the audit had removed from the
+advisor. **When one copy is fixed, grep for the call with its DEFAULTS**
+(`spell_catch_map(obs)` with no radius), not just for the constant's name.
 
 ## Environment — the things that waste an hour
 

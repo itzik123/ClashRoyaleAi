@@ -53,11 +53,15 @@ on purpose, each with the reason.
    coefficient or a PCGrad-style projection of the aux gradient on the shared
    modules (costs a second backward per minibatch -- price it first).
 
-3. **The Fireball-keyed shaping terms** (`W_LETHAL_SPELL`, `W_SPELL_VALUE_START`)
-   are dead without card 7. Deriving the deck's damage spell inside
-   `rewards/weights.py` creates an import cycle through the teacher; the fix is to
-   compute it in the env (which already fills `fireball_*` info keys) and pass
-   damage/cost through the stats dict. ~1.5% of the objective at init.
+3. ~~**The Fireball-keyed shaping terms**~~ **DONE 2026-09-23.** Both spell terms
+   follow `card_probes.damage_spell(deck)` -- the deck's finishing spell, ranked
+   by MEASURED Crown Tower damage -- published by both envs as `spell_*` keys
+   through one builder (`gym_wrapper.deck_spell_info`). The 2.6 deck's reward is
+   bit-identical (12 seeded matches, 0 of 2,280 steps differ); a Rocket deck's
+   terms go from exactly zero to live. The same pass fixed the probe cutting
+   damage-over-time spells off halfway (Poison 368 -> 736) and the teacher aiming
+   every spell with Fireball's disc (Rocket +38% value killed). See `CLAUDE.md`,
+   "2026-09-23".
 
 4. **The tower PBRS term is not policy-invariant.** It telescopes exactly, but
    Phi(terminal) is never zeroed (-0.465 per episode at init), so it carries an
@@ -89,6 +93,12 @@ on purpose, each with the reason.
     episodes, the windows they gate do not, so every patience is ~30% shorter
     than the run it was calibrated on. Documented; not changed on a control loop
     already changed several times.
+
+11. **Spells hit Crown Towers for 100% of their damage** (real game: 15-30%;
+    Fireball 689 vs 159, Rocket 1485 vs 371, The Log 269 vs 41). Proposed as
+    `perception/UPSTREAM_REQUESTS.md` item 29 with the exact edit -- C++, so it
+    waits for a yes. A from-scratch run is the cheap moment. The Python side
+    already follows whichever the engine does (`card_probes.spell_tower_damage`).
 
 ---
 

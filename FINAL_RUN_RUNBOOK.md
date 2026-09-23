@@ -33,7 +33,8 @@ Read the output:
 | `win condition: X (N tower HP per elixir)` | the card the reward's win-condition term and the mirror teacher both build around. `WEAK` below 200 is a warning, not a blocker. |
 | `WARN no win condition resolves` | the win-condition reward term is off for this deck. |
 | `advisor target speaks for K/8 cards` | the placement head gets a rule-based target for these K cards and only an entropy bonus for the rest. 0/8 is a warning. |
-| `WARN no Fireball` | the lethal-spell and value-spell shaping terms (small: ~1.5% of the objective at init) are off. |
+| `spell reward terms follow X` | the lethal-spell and value-spell shaping terms (small: ~1.5% of the objective at init) use this deck's own damage spell, with its measured tower damage and cost. |
+| `WARN no damaging area spell` | those two terms are off for this deck (The Log alone does not count: it is a roller). |
 
 Engine slot rules the parser enforces: a Champion only in deck slots 1-2, an
 Evolution only in slots 0 or 2. Order in the list matters for those.
@@ -180,7 +181,10 @@ and refuses to restart more than 4 times an hour.
   length. The mirror teacher uses the ability heuristically, so a Champion deck's
   early rungs are easier than they look.
 - The teacher has **no air-defence concept**; air decks meet a weak mirror early.
-- The lethal/value spell shaping terms are keyed to **Fireball**.
+- **Spells hit Crown Towers for 100% of their damage**, against the real game's
+  15-30% (`perception/UPSTREAM_REQUESTS.md` item 29, proposed, not applied). A
+  spell-heavy deck will learn chip that does not transfer. If you approve item 29,
+  apply it BEFORE launching: this run starts from scratch, so it costs nothing now.
 - Spawner huts (Barbarian Hut, Tombstone) measure as tower threats alone, so a
   deck built around one may name the hut as its win condition.
 - Observation channels 0-7 still show one unit per cell. Measured: a swarm deck

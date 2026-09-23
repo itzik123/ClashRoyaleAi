@@ -554,3 +554,183 @@ each asserting zero booked tower damage WITH the precondition that team 0's towe
 were genuinely untouched, plus a CONTROL that a real tower hit is still booked.
 `tests/core/test_match_statistics.cpp`: an unregistered target is a troop unless
 the event says tower. Suite: 714 cases, 713 passed, 1 failed as expected, exit 0.
+
+---
+
+## Item 29 — spells hit a Crown Tower for 100% of their damage; the real game charges 15-30%
+
+**Status: PROPOSED 2026-09-23 — NOT applied.** **Class:** gameplay fidelity.
+**GAMEPLAY-AFFECTING.** The next run starts from scratch, so checkpoint
+invalidation is free *now* and never again at this price.
+
+### The gap
+
+The real game gives every damaging spell a separate **Crown Tower damage**
+statistic, a published fraction of its troop damage. This engine has the
+mechanism — `AreaSpell::spellTowerDamageMultiplier`, applied in both the disc
+branch and the rolling-sweep branch of `AreaSpell.h` — and exactly **one**
+caller sets it: Hero Ice Golem's Snowstorm, at 0.05. `CardFactories::spawnSpell`
+never passes it, so every played spell card hits a tower at the default 1.0.
+
+The registry's TROOP numbers match the real game's current values almost
+exactly (Fireball 689, Rocket 1485, Zap 192), so the registry was built from
+the right source. The Crown Tower column is the part that never came across.
+Nothing in the repo mentioned it (a grep of every `.md` for "crown tower
+damage" returned nothing before this item).
+
+### Evidence
+
+**Engine**, measured by injection on 2026-09-16 and reproduced by
+`card_probes.spell_tower_damage`: each spell cast by team 0 on the centre of
+team 1's left Princess Tower, the tower's own HP loss read after the effect
+settles, against a stationary P.E.K.K.A. for the troop number. Every
+direct-damage spell reads tower / troop = **1.00**.
+
+**Real game**, [DeckShop's spell damage chart](https://www.deckshop.pro/card/damage),
+friendly level 11 (the level whose troop numbers the registry carries):
+
+| spell | engine troop | engine vs tower | **real vs tower** | engine / real |
+|---|---|---|---|---|
+| Fireball | 689 | 689 | **159** | 4.3x |
+| Rocket | 1485 | 1485 | **371** | 4.0x |
+| The Log | 269 | 269 | **41** | 6.6x |
+| Poison | 736 (92 x 8) | 736 | **184** | 4.0x |
+| Arrows | 369 (123 x 3) | 369 | **93** | 4.0x |
+| Zap | 192 | 192 | **58** | 3.3x |
+| Lightning | 1057 | 1057 | **286** | 3.7x |
+| Giant Snowball | 179 | 179 | **54** | 3.3x |
+| Earthquake | 246 (82 x 3) | 246 | **159** | 1.5x |
+
+Four spells' TROOP damage already disagrees with the same source and should be
+resolved before a tower value is attached: Tornado (engine 154 / source 84),
+Goblin Curse (258 / 210), Vines (405 / 306), Void (1020 / 2088, tiered).
+
+### What it does downstream — measured
+
+* **A Princess Tower (2534) falls to 4 Fireballs or 2 Rockets.** At real Crown
+  Tower damage it is 16 and 7.
+* **The agent's reward pays ~4x for a spell on a tower.** Through the real
+  `compute_shaping` (tower PBRS term, gamma 0.999): one Rocket on a tower is
+  **+0.185** in a single step — 18.5% of a win's terminal reward, guaranteed and
+  undefendable — against +0.046 at the real value. Fireball +0.086 vs +0.020;
+  The Log +0.034 vs +0.005.
+* **The lethal-spell window is ~4x too wide.** "Tower HP <= my spell's damage"
+  opens at 689 for Fireball, 27% of a Princess Tower; the real game's is 159,
+  6%. (The Python side no longer depends on this being fixed: since 2026-09-16
+  the window is keyed to the MEASURED tower damage,
+  `card_probes.spell_tower_damage`, so it follows the engine either way.)
+* **In actual play the effect is modest today, and concentrated in The Log.**
+  48 teacher-vs-teacher matches at rung 4, pool decks on both sides, every
+  spell actually cast attributed exactly (the same spell re-cast at the same
+  board point on an empty board carrying the enemy towers' current HP; spawning
+  spells excluded, since their tower damage is the body's):
+
+  | spell | casts | hit a tower | tower damage | at the real ratio |
+  |---|---|---|---|---|
+  | The Log | 211 | **112** | 29,629 | 4,533 |
+  | Poison | 44 | 4 | 2,784 | 696 |
+  | Lightning | 11 | 1 | 1,057 | 286 |
+  | Tornado | 42 | 5 | 924 | 297 |
+  | Arrows | 20 | 2 | 738 | 188 |
+  | Fireball | 166 | 1 | 689 | 159 |
+  | Zap / Rocket | 59 / 13 | 0 / 0 | 0 | 0 |
+
+  **7.0% of all tower damage** (35,821 of 514,759) is direct spell damage; at
+  real ratios it would be **1.3%**. The teacher does not aim big spells at
+  towers (1 Fireball in 166). But **53% of its Logs roll into a Princess
+  Tower** — cast defensively at the river, a 10.1-tile roll reaches the tower
+  on the way — for 269 each where the real card does 41.
+
+* **What is NOT measured, and is the real risk: a learning agent.** The
+  teacher is hand-written and does not look for chip; PPO will. An undefendable
+  +0.185 per Rocket is exactly the kind of reliable payoff it finds first, and
+  the habit it builds does not transfer to the real game `perception/` exists
+  to play.
+
+### Proposed change (exact)
+
+Option **A (recommended): an absolute per-hit Crown Tower value, sourced per
+card.**
+
+1. `include/core/CardStats.h`, beside `spellKnockback`:
+
+   ```cpp
+   // Damage ONE hit of this spell deals to a Crown Tower (King or Princess).
+   // -1 (the default) keeps the troop damage, i.e. today's behaviour. The real
+   // game publishes this per spell (15-30% of troop damage); see
+   // perception/UPSTREAM_REQUESTS.md item 29 for the source.
+   int spellCrownTowerDamage = -1;
+   CardStats& withCrownTowerDamage(int perHit) { spellCrownTowerDamage = perHit; return *this; }
+   ```
+
+2. `include/entities/AreaSpell.h`: a public member `int crownTowerDamage = -1;`,
+   and in BOTH tower branches (the disc's `dealt = entity->isTower() ? ...` and
+   the roll's twin):
+
+   ```cpp
+   int dealt = entity->isTower()
+       ? (crownTowerDamage >= 0 ? crownTowerDamage
+                                : static_cast<int>(effectiveDamage * spellTowerDamageMultiplier))
+       : effectiveDamage;
+   ```
+
+   Set after construction in `CardFactories::spawnSpell`, beside
+   `configureRoll`, for the reason that function already gives (the constructor
+   is 23 parameters wide and shared with five non-card call sites):
+   `spell->crownTowerDamage = stats.spellCrownTowerDamage;`.
+   `AreaSpell::snapshot()` is the implicit copy, so the member rides along.
+
+3. `include/core/CardRegistry.h`: per-hit values, the source's total divided by
+   the registry's own hit count.
+
+   | card | `.withCrownTowerDamage(...)` |
+   |---|---|
+   | Fireball (7) | 159 |
+   | Rocket (30) | 371 |
+   | The Log (33) | 41 |
+   | Zap (29) | 58 |
+   | Lightning (31) | 286 (per strike) |
+   | Giant Snowball (100) | 54 |
+   | Arrows (3) | 31 (x 3 waves = 93) |
+   | Poison (32) | 23 (x 8 pulses = 184) |
+   | Earthquake (103) | 53 (x 3 pulses = 159) |
+
+   Evolutions carrying these spells need the same values.
+
+Why an absolute value rather than a multiplier: the existing branch truncates
+`static_cast<int>(damage * multiplier)`, so a multiplier derived as
+`159.0f / 689.0f` depends on float rounding to land on 159 rather than 158. All
+nine values above were checked in float32 and DO land exactly, so option B is
+safe for them today; the absolute field is the one that cannot drift.
+
+Option **B**: `withCrownTowerMultiplier(float)` feeding the existing
+`spellTowerDamageMultiplier`. Smaller diff, no new AreaSpell member.
+
+Option **C**: do nothing, and record the engine as a deliberately
+spell-strong variant. Defensible only if sim-to-real transfer is not a goal.
+
+### Blast radius
+
+* **Gameplay-affecting for every deck with a damage spell**, the 2.6 deck's
+  Fireball and Log among them. Every win rate in `CLAUDE.md` was earned with
+  ~4x spell chip. No observation or action-space change, so checkpoints LOAD;
+  it is the win-rate history that stops being comparable.
+* **Python needs NO change.** `card_probes.spell_tower_damage` measures the
+  tower, so the lethal window, `validate_deck`'s report and
+  `test_damage_spell_is_deck_derived` follow the engine automatically. The
+  teacher's rollouts score tower HP read from the engine, so they re-price on
+  their own.
+* **The Log** changes most (6.6x) and is in `SHIPPED_DECK`.
+* `tests/entities/test_area_spell.cpp` pins The Log reaching the tower from the
+  bridge for 269 against `ArenaLayout`; it would read 41. The REACH assertion
+  is the load-bearing half and is unaffected.
+* `verify_pyd.py` and any C++ test asserting a spell's tower damage will move.
+
+### Tests (to add with the change)
+
+* Parameterised over the nine cards: cast on a Princess Tower centre, assert HP
+  lost == the table's total. Plus the CONTROL that must not move: the same cast
+  on a stationary P.E.K.K.A. still loses the full troop damage.
+* The King Tower takes the same Crown Tower value (the real game does not
+  distinguish King from Princess here).
+* A spell with no value set is bit-identical to today (default -1).
