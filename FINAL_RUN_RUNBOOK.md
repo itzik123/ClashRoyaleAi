@@ -73,7 +73,7 @@ not a guarantee -- re-run `validate_deck` on the deck you pick.
 | rg_fisherman_cycle | Royal Giant (525) | Fireball | |
 | royal_hogs_furnace | Royal Hogs (773) | Fireball | |
 | giant_double_dragon | Giant (507) | Arrows | |
-| golem_beatdown | Golem (312) | Lightning | Night Witch bats (UPSTREAM 30, open) |
+| golem_beatdown | Golem (312) | Lightning | |
 | lavaloon | Balloon (507) | Fireball | |
 | lumberloon_freeze | Balloon (507) | Tornado | |
 | three_musketeers_bridge | Battle Ram (634) | Zap | |
@@ -83,6 +83,11 @@ not a guarantee -- re-run `validate_deck` on the deck you pick.
 | monk_control | Hog Rider (634) | Poison | Champion (slot 1) |
 | archer_queen_cycle | Hog Rider (634) | Fireball | Champion (slot 1) |
 | golden_knight_bait | Goblin Barrel (240) | Rocket | Champion (slot 2) |
+
+The 12 decks beyond the pool also went through the teacher's passive-opponent
+pilot probe (rung 10, 3 seeds each): every match ended in a King kill, on
+average 23-87 s in, with the named win condition played in every deck -- the
+mirror teacher can pilot all of them.
 
 WEAK is `validate_deck`'s own flag (below 200); a Graveyard reads low because its
 probe window saturates, not because the card is broken (`teacher.py`,

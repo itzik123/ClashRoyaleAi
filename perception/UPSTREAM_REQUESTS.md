@@ -804,10 +804,20 @@ spell spawns, since that is the family the speed test missed.
   re-classifies all three automatically once the engine is fixed.
 * Win rates against `dart_bait_cycle` / `classic_log_bait_inferno` move.
 
-### Open, NOT diagnosed: Night Witch
+### Night Witch: NOT a defect -- the probe was wrong (resolved 2026-09-23)
 
-Her periodic Bats DO carry `.withTargetsAir()` (helper -14) and they do spawn
-(flyer cells appear by tick 50), yet over 300 ticks beside a held Balloon they
-dealt **0** -- while standalone Bats (id 78) pass the same probe. The cause is not
-established; recorded as a measurement, not a diagnosis. `golem_beatdown` fields
-Night Witch.
+First recorded here as "her bats dealt 0 to a held Balloon, cause unknown". The
+bats are fine: attributed by card id, her periodic Bats (helper -14) dealt **1215**
+to a held Balloon and 1539 to a held Knight. The zero came from two flaws in the
+PROBE, both worth knowing:
+
+* **A saturating control.** With the Balloon held on our own half, our towers
+  destroy it in BOTH arms, so "with minus without" read 0 while the bats were
+  hitting it -- the maximal-suppression trap `CLAUDE.md` describes for Graveyard.
+* **The attacker walked away.** Placed on the enemy half, Night Witch (who cannot
+  target air) walked at the enemy tower and her bats spawned beside it, hitting
+  the tower instead of the Balloon.
+
+The three helpers above are unaffected: their evidence is the source (no
+`.withTargetsAir()`) and the per-entity observation flag, not a with/without
+difference.

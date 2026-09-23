@@ -3683,8 +3683,9 @@ before acting.** They are the part of this entry most worth keeping:
   at real ratios), 83% of it The Log, 53% of whose casts roll into a tower.
 - **Spawned Spear Goblins and Rascal Girls cannot hit air** (UPSTREAM 30):
   Goblin Gang, Rascals and Goblin Hut deal 0 to a held Balloon over 50 s; their
-  helpers lack `.withTargetsAir()`. Night Witch's bats also dealt 0, cause NOT
-  established.
+  helpers lack `.withTargetsAir()`. (Night Witch looked the same and was
+  CLEARED: her bats deal 1215 to a held Balloon. The zero was the probe -- a
+  control our own towers saturated, and an attacker that walked off.)
 - **The ladder's bottom is flat.** A rung-r teacher against rung 0, 2.6 mirror,
   24 seat-swapped matches each: rungs 1 and 2 score 0.375 and 0.583 -- not
   measurably harder than rung 0 -- while rung 3-4 reach 0.79 and rungs 5-10 win
