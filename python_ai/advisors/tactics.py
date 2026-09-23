@@ -81,6 +81,7 @@ CH_ENEMY_BUILDING = 7
 CH_ENEMY_COUNT = CE.CH_COUNT + 1
 CH_ENEMY_SPEED = CE.CH_SPEED + 1
 CH_ENEMY_DPS = CE.CH_DPS + 1
+CH_ENEMY_FLYING = CE.CH_FLYING + 1
 
 # River START edge, DERIVED rather than typed. GameManager::getOwnHalfMaxY()
 # returns getRiverStart() - OWN_HALF_RIVER_BUFFER, so adding the buffer back
@@ -521,6 +522,22 @@ def threat_map(obs):
 def threat_level(obs):
     """Scalar: total enemy troop HP on our half."""
     return float(threat_map(obs).sum())
+
+
+def air_siege_map(obs):
+    """(34,18) enemy HP that ONLY an anti-air card can answer, anywhere.
+
+    A flying BUILDING-targeter -- Balloon, Lava Hound: the enemy-flyer channel
+    AND the enemy building-targeter HP channel lit in the same cell. A flying
+    unit that chases troops (Minions, Baby Dragon) is deliberately excluded: a
+    ground unit still distracts it while the towers shoot, so it is not the
+    case a ground-only card cannot touch. Measured 2026-09-23, rung-0 teacher
+    holding the 2.6 deck, lone pushes, 40 s: a Balloon took 1322 tower HP
+    (5 of 12 seeds over 1000) while Minions took 71 and Baby Dragon 126.
+    """
+    sp = spatial(obs)
+    bt = sp[CH_ENEMY_TROOP[2]] * MAX_TROOP_HP
+    return np.where(sp[CH_ENEMY_FLYING] > 0.0, bt, 0.0).astype(np.float32)
 
 
 #: Enemy HP on our half above which the deck-coverage floor is allowed to push.

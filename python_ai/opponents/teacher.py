@@ -1704,9 +1704,14 @@ class UtilityTeacher:
             return cells[:k]
 
         # Plain troops: meet the deepest threat as far forward as legal, and
-        # (second) support our own most advanced unit.
+        # (second) support our own most advanced unit. An anti-air card meets a
+        # flying building-targeter FIRST when one is coming: it is the threat
+        # nothing else in the deck can answer (TODO 00.5).
         cells = []
         tx, ty = self._deepest_threat(obs)
+        ax, ay = self._air_siege_threat(obs)
+        if ax is not None and card_probes.damages_air(card_id):
+            tx, ty = ax, ay
         if tx is not None:
             cells.append((tx, min(ty, float(tactics.BRIDGE_ROW))))
         sx, sy = self._support_cell(obs)
@@ -1812,6 +1817,19 @@ class UtilityTeacher:
                 if 0 <= ay < BOARD_H and 0 <= ax < BOARD_W:
                     m[ay, ax] = 0.0
         return cells
+
+    def _air_siege_threat(self, obs):
+        """(x, y) of the deepest flying BUILDING-targeter, or (None, None).
+
+        The one threat a ground-only card cannot touch -- see
+        `tactics.air_siege_map`. Scans the whole board, like `_deepest_threat`.
+        """
+        m = tactics.air_siege_map(obs)
+        if m.sum() <= 0.0:
+            return None, None
+        ys, xs = np.nonzero(m)
+        deepest = int(np.argmin(ys))
+        return float(xs[deepest]), float(ys[deepest])
 
     def _deepest_threat(self, obs):
         """(x, y) of the enemy mass furthest into our half, or (None, None).
@@ -2257,13 +2275,30 @@ class UtilityTeacher:
         on every affordable step is the elixir-dumping opponent this project
         already replaced once."""
         threat = tactics.threat_level(obs_own)
+        # AIR (TODO 00.5): the part of the threat only an anti-air card can
+        # answer -- a flying building-targeter already on our half. With one
+        # present, an anti-air card outranks everything, and a ground-only card
+        # is played only if there is ALSO a ground threat for it to meet: a
+        # Skeleton dropped under a Balloon is an elixir gift. Measured before:
+        # the rung-0 teacher answered a lone Balloon with Skeletons and Ice Golem
+        # more often than with its Musketeer or Ice Spirit.
+        air = tactics.air_siege_map(obs_own)
+        air[int(np.ceil(tactics.RIVER_Y)):] = 0.0
+        air_hp = float(air.sum())
+        ground_threat = threat - air_hp
         best, best_pri = None, 0.0
         for c in playable:
             pri = 0.0
             if c.role in ("melee", "ranged") and threat > 0.0:
                 pri = 3.0
+                if air_hp > 0.0:
+                    pri = (3.5 if card_probes.damages_air(c.card_id)
+                           else 3.0 if ground_threat > 0.0 else 0.0)
             elif c.role == "building" and threat > 0.0:
                 pri = 2.5
+                if air_hp > 0.0:
+                    pri = (3.25 if card_probes.damages_air(c.card_id)
+                           else 2.5 if ground_threat > 0.0 else 0.0)
             elif c.role == "spell":
                 # Only cast when the catch uses the spell's FULL damage -- for a
                 # Fireball, something worth its 4 elixir; forcing Fireball once

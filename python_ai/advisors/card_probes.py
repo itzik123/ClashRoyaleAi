@@ -247,6 +247,52 @@ def building_defends(card_id):
     return dealt(True) > dealt(False)
 
 
+#: The flyer the air probe defends against: a Balloon, found by NAME from the
+#: registry rather than by a literal id. A flying BUILDING-targeter is the case
+#: only an anti-air card can answer -- a Minion chases troops, so a ground unit
+#: can still distract it; a Balloon ignores every troop on the board.
+_AIR_TARGET_NAME = "Balloon"
+
+
+@functools.lru_cache(maxsize=1)
+def _air_target_id():
+    return next(c for c in E.get_all_card_ids()
+                if E.get_card_info(c)["name"] == _AIR_TARGET_NAME)
+
+
+@functools.lru_cache(maxsize=512)
+def damages_air(card_id):
+    """Can this card hurt a flying unit? BEHAVIOURAL, like `building_defends`.
+
+    One enemy Balloon is held stationary; the card is played beside it (a troop
+    or building) or on it (a spell); the Balloon's damage is read against the
+    same board without the card. Measured 2026-09-23: Musketeer, Ice Spirit,
+    Archers, Minions, Tesla and Fireball do; Knight, Skeletons, Ice Golem, Hog
+    Rider, Cannon, Bomb Tower and The Log do not -- the real game's split.
+
+    NOT read off the observation's anti-air channel without care: that channel
+    is right per entity, but a whole-plane max also sees the caster's own
+    TOWERS, which all target air (`Tower.h`), and reads 1.0 for every card --
+    a probe of this very function did exactly that before it was made
+    behavioural.
+    """
+    info = E.get_card_info(card_id)
+    target = _air_target_id()
+
+    def dealt(with_card):
+        e = _env()
+        e.inject(target, _CX, _CY, 1, -1.0, _HOLD_TICKS)
+        if with_card:
+            dx = 0.0 if info["is_spell"] else 1.5
+            e.inject(card_id, _CX + dx, _CY - (0.0 if info["is_spell"] else 1.0),
+                     0, -1.0, 0)
+        e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 1)
+        before = e.get_troop_damage_dealt(0)
+        _idle(e, 100)
+        return e.get_troop_damage_dealt(0) - before
+    return dealt(True) > dealt(False)
+
+
 @functools.lru_cache(maxsize=512)
 def walking_building_targeter(card_id):
     """A troop that walks past defenders to hit buildings (Hog, Giant, Balloon),

@@ -75,10 +75,27 @@ on purpose, each with the reason.
    ZERO". `weights.py`, `shaping.py` and `CLAUDE.md` now say what is true. The
    code option is one line: `(1 - done)` on the `gamma*Phi(s')` half.
 
-5. **The teacher has no air-defence concept** (zero hits for any air term in
-   `teacher.py`/`tactics.py`). At rung 0 a lone Balloon takes a full Princess 2 of
-   4 seeds; at rung 10 the rollout usually finds the Musketeer. An air-heavy agent
-   deck meets a weak early mirror.
+5. ~~**The teacher has no air-defence concept**~~ **DONE for the rung 0-1
+   rules gate, 2026-09-23.** `card_probes.damages_air` (behavioural: does the card
+   hurt a held Balloon) and `tactics.air_siege_map` (flying BUILDING-targeters --
+   the case only anti-air answers; Minions/Baby Dragon are deliberately not in it,
+   a ground unit still distracts them). With one on our half, anti-air cards
+   outrank everything and ground-only cards play only against a ground threat;
+   anti-air cards are aimed at the air threat. 36 seeds paired, lone push, 40 s:
+   Balloon 1481 -> 1131 HP lost (9 better / 2 worse / 25 tied), Lava Hound 877 ->
+   807 (17 / 7 / 12), pooled sign test p ~ 0.006; Hog control bit-identical.
+   **Still open:** rungs >= 2 rank by rollout, and a 2-4 s horizon cannot see a
+   Balloon arrive -- rung 2 defends ANY lone push worse than rung 0 (Balloon 1587
+   vs 1322, Hog 1294 vs 687 over 12 seeds). A property of short lookahead, not of
+   air; noted rather than changed.
+   Found on the way (C++, `UPSTREAM_REQUESTS.md` item 30): Goblin Gang's and
+   Goblin Hut's Spear Goblins and the Rascal Girls cannot hit air -- their
+   helpers lack `.withTargetsAir()`.
+
+12. **Spawned Spear Goblins / Rascal Girls cannot hit air** --
+    `perception/UPSTREAM_REQUESTS.md` item 30, proposed with the exact edit and a
+    generic test. Two pool decks field Goblin Gang. Night Witch's bats also dealt
+    0 to a held Balloon for a reason NOT yet diagnosed (recorded there).
 
 6. ~~**Spawner huts measure as tower threats**~~ **DONE 2026-09-23**, and it was
    live: a Splashyard control deck (Graveyard, Poison, Baby Dragon, Bowler, Ice
