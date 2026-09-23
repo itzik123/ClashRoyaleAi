@@ -7,41 +7,46 @@ import torch.nn.functional as F
 
 import clash_royale_env
 
-# קטן בכוונה (באותה רוח שבה AlphaStar מגדיר embeddings לבחירת action-type) --
-# צריך רק להבדיל בין כמה קלפים אפשריים במשבצת יד, לא לקודד את המשמעות
-# האסטרטגית המלאה של קלף; ה-CNN/scalar MLP כבר נותנים ל-LSTM את כל השאר.
+# Deliberately small (in the same spirit as AlphaStar's embeddings for choosing
+# an action type): it only has to tell apart the few cards a hand slot can hold,
+# not encode a card's full strategic meaning; the CNN and the scalar MLP already
+# give the LSTM everything else.
 CARD_EMBED_DIM = 16
 
-# רוחב ענף הרזולוציה המלאה של ראש המיקום (ראה place_hires ב-__init__).
-# מכוון בכוונה צר: הענף רץ ב-34x18 המלא, כלומר פי 12.24 תאים מהמפה המאוחדת
-# 9x5, אז כל ערוץ שם עולה בערך פי 12 מערוץ בקצה הגס. 8 ערוצי הקשר + 8 ערוצי
-# ביניים מספיקים כדי לבחור משבצת בתוך בלוק, וזה מה שהענף צריך לעשות -- את
-# "איפה בערך" הקצה הגס כבר יודע.
+# Width of the placement head's full-resolution branch (see place_hires in
+# __init__). Deliberately narrow: the branch runs at the full 34x18, 12.24x the
+# cells of the pooled 9x5 map, so every channel there costs about 12x a channel
+# on the coarse path. 8 context channels + 8 hidden channels are enough to pick
+# a cell inside a block, which is all the branch has to do -- the coarse path
+# already knows roughly where.
 HIRES_CTX_DIM = 8
 HIRES_HIDDEN = 8
 
-# מספר שורות המיקום החוקיות בחצי שלנו, נשלף חי מהמנוע (כמו כל שאר הקבועים
-# כאן) במקום עותק hardcoded. get_own_half_max_y() מחזיר 15.0 (לאחר תיקון
-# מירכוז הנהר סביב 16.5, ראה Board.h -- קודם היה 15.5 עם נהר לא-ממורכז
-# שנתן ל-team 0 שורה אחת יותר מ-team 1), כלומר שורות שלמות 0..15 -- 16
-# שורות בכל מקרה. נדרש instance (לא static attr) אז נבנית פה פעם אחת
-# בטעינת המודול, בדיוק כמו ה-_dim_probe ש-train.py כבר בונה.
+# The number of legal placement rows on our half, read live from the engine
+# (like every other constant here) instead of a hard-coded copy.
+# get_own_half_max_y() returns 15.0 since the river was centred on 16.5 (see
+# Board.h; it used to be 15.5 with an off-centre river that gave team 0 one more
+# row than team 1), i.e. whole rows 0..15 -- 16 rows either way. It needs an
+# instance rather than a static attribute, so one is built here once, at module
+# load.
 _probe = clash_royale_env.ClashRoyaleEnv(list(range(8)), list(range(8)), 100)
 OWN_HALF_MAX_Y = _probe.get_own_half_max_y()
 MAX_PLACEMENT_X = _probe.get_max_placement_x()
 del _probe
-# השורה האחרונה בחצי שלנו שמותרת לכוחות (get_own_half_max_y = 15.0 -> שורה 15)
+# The last row on our half that troops may use (get_own_half_max_y = 15.0 -> row 15)
 OWN_HALF_ROWS = int(OWN_HALF_MAX_Y) + 1
-# ראש המיקום פורש עכשיו את **כל** הלוח, לא רק את החצי שלנו. הסיבה: המנוע
-# פוטר לחשים ממגבלת החצי (GameManager::isValidPlacement בודק ללחש רק גבולות
-# לוח + אזור מת), אבל מרחב הפעולות חסם את target_y ב-15.5 לכל קלף -- כלומר
-# Fireball פיזית לא יכול היה לחצות את הנהר, ורבע מהחפיסה לא היה שמיש למטרתו
-# בשום כמות אימון. עכשיו הראש מייצר את כל הלוח והחוקיות נאכפת ע"י מסכה
-# מותנית-קלף (ראה placement_mask), לא ע"י כיווץ המרחב.
+# The placement head spans the WHOLE board, not only our half. The reason: the
+# engine exempts spells from the half rule (GameManager::isValidPlacement checks
+# only the board bounds and the dead zone for a spell), but the action space used
+# to cap target_y at 15.5 for every card -- so Fireball physically could not
+# cross the river, and a quarter of the deck could not be used for its purpose at
+# any amount of training. The head now produces the whole board, and legality is
+# enforced by a per-card mask (see placement_mask), not by shrinking the space.
 PLACEMENT_ROWS = clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
 
-# is_spell לכל card_id, נשלף חי מהמנוע (binding get_card_info) במקום רשימה
-# קשיחה בפייתון -- בדיוק סוג ה-drift שהפרויקט הזה כבר נכווה ממנו.
+# is_spell for every card_id, read live from the engine (the get_card_info
+# binding) instead of a hard-coded Python list -- exactly the kind of drift this
+# project has already been burned by.
 _ALL_IDS = clash_royale_env.get_all_card_ids()
 NUM_CARD_IDS_LIVE = clash_royale_env.ClashRoyaleEnv.NUM_CARD_IDS
 
@@ -430,7 +435,9 @@ class ScalarEncoder(nn.Module):
 
 
 class MicroRoyaleNet(nn.Module):
-    # 9 ערוצים: 0-3 כוחות שלנו (קרבי/טווח/טנק/מבנים), 4-7 אותו דבר ליריב, 8 נהר/גשרים
+    # 21 observation channels: 0-3 our units (melee/ranged/tank/buildings), 4-7 the
+    # same for the opponent, 8 river/bridges, 9-20 per-team attribute channels
+    # (indexed through the bound CH_* constants).
 
     # The recurrent width, declared ONCE here because it is the shape every
     # caller needs before it has a net: a fresh (hx, cx) is zeros of this size,
@@ -446,10 +453,11 @@ class MicroRoyaleNet(nn.Module):
                  branched_scalars=True):
         super(MicroRoyaleNet, self).__init__()
 
-        # ברירות מחדל נשלפות חי מהמנוע המקומפל (לא hardcoded) -- כל שינוי גודל
-        # לוח/מספר קלפים בצד ה-C++ מתפשט לכאן אוטומטית, בלי צורך בעדכון ידני
-        # תואם בקובץ הזה. זו בדיוק סוג הסחיפה (drift) שגרמה לקריסות אימון
-        # בפועל בפרויקט הזה יותר מפעם אחת לפני התיקון הזה.
+        # Defaults are read live from the compiled engine (not hard-coded), so any
+        # change to the board size or the card count on the C++ side propagates
+        # here automatically, with no matching manual edit in this file. This is
+        # exactly the kind of drift that crashed training runs in this project
+        # more than once before this fix.
         channels = channels if channels is not None else clash_royale_env.ClashRoyaleEnv.NUM_CHANNELS
         board_width = board_width if board_width is not None else clash_royale_env.ClashRoyaleEnv.BOARD_WIDTH
         board_height = board_height if board_height is not None else clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT
@@ -462,15 +470,17 @@ class MicroRoyaleNet(nn.Module):
         self.hand_size = hand_size
         self.num_card_ids = num_card_ids
 
-        # רשת המיקום היא קטגוריאלית על תאי לוח שלמים (ראה placement_head
-        # למטה). placement_rows = כל גובה הלוח; החוקיות בפועל נאכפת במסכה
-        # מותנית-קלף (placement_mask), כי היא שונה בין כוח ללחש.
+        # The placement head is categorical over whole board cells (see place_ctx /
+        # place_up below). placement_rows = the full board height; actual legality
+        # is enforced by a per-card mask (placement_mask), because it differs
+        # between a troop and a spell.
         self.placement_rows = placement_rows if placement_rows is not None else PLACEMENT_ROWS
         self.placement_cells = self.placement_rows * board_width
-        # שורות מותרות לכוח רגיל (לא לחש, לא deploy-anywhere) -- החצי שלנו בלבד.
+        # Rows allowed for an ordinary troop (not a spell, not deploy-anywhere): our half only.
         self.own_half_rows = min(OWN_HALF_ROWS, self.placement_rows)
-        # (num_card_ids,) -- 1.0 אם הקלף הוא לחש. buffer ולא פרמטר: זו עובדה
-        # על המנוע, לא משהו שנלמד, אבל היא חייבת לנוע יחד עם הרשת ל-device.
+        # (num_card_ids,) -- 1.0 if the card is a spell. A buffer, not a parameter:
+        # it is a fact about the engine, not something learned, but it has to move
+        # to the device together with the network.
         self.register_buffer("spell_flags", _spell_flags[:num_card_ids].clone())
         # (num_card_ids,) -- 1.0 where the own-half ROW rule does not apply
         # (spells AND deploy-anywhere troops). This, not spell_flags, is what
@@ -482,16 +492,20 @@ class MicroRoyaleNet(nn.Module):
                              _row_free_flags[:num_card_ids].clone(),
                              persistent=False)
 
-        # (num_card_ids + 1, placement_cells) bool -- אילו תאים המנוע באמת
-        # מקבל לכל קלף. השורה האחרונה היא fallback מתירני ל-no-op.
+        # (num_card_ids + 1, placement_cells) bool -- which cells the engine
+        # actually accepts for each card. The last row is a permissive fallback
+        # for the no-op.
         #
-        # נבנה פעם אחת, כי הוא סטטי: נמדד 208/288 תאים חוקיים ללוח ריק ו-
-        # 208/288 בדיוק עם שישה כוחות על הלוח, אפס תאים שהשתנו. לכן זו טבלה
-        # קבועה ולא שאילתה בזמן ריצה, ואין לה עלות פר-צעד.
+        # Built once, because it is static: measured on our 288-cell half, 208
+        # cells were legal on an empty board and exactly 208 with six troops on
+        # it -- zero cells changed. So it is a fixed table rather than a runtime
+        # query, and it costs nothing per step. (The one change a match can make,
+        # one of our Princess Towers dying, is handled by the variants below.)
         #
-        # buffer ולא פרמטר, ומסומן persistent=False: זו עובדה על המנוע ולא
-        # משקל נלמד, ושמירתו בצ'קפוינט הייתה הופכת אותו לעותק שני שיכול
-        # להתיישן מול המנוע -- בדיוק הסחיפה שהטבלה נועדה למנוע.
+        # A buffer rather than a parameter, and persistent=False: it is a fact
+        # about the engine, not a learned weight, and saving it in a checkpoint
+        # would turn it into a second copy that can go stale against the engine
+        # -- exactly the drift the table exists to prevent.
         _legal_table, _freed_table = _build_placement_legality(
             num_card_ids, self.placement_rows, board_width)
         self.register_buffer("_placement_legal", _legal_table,
@@ -534,56 +548,61 @@ class MicroRoyaleNet(nn.Module):
             _ch_ally_buildings * self.board_height * board_width + c
             for c in self._own_princess_cells]
 
-        # 0 = לחפיסה אין צ'מפיון, ולכן אין בכלל ראשי הפעלת יכולת. זה לא
-        # אופטימיזציה קוסמטית: כשאין צ'מפיון, שני הראשים האלה דגמו רעש טהור
-        # בכל טיק -- הוסיפו שונות ליחס ה-PPO (total_logprob) ותרמו עד
-        # 2*log(2)=1.386 לבונוס האנטרופיה, כלומר המאמן *השקיע* מאמץ בשמירה
-        # על מטבע אקראי הפוך. נמדד בפועל: DEFAULT_DECK לא מכילה צ'מפיון,
-        # ו-is_champion_ability_ready החזיר False בשתי המשבצות לכל אורך
-        # המשחק. הערך מועבר מפורשות מהמאמן לפי החפיסה בשימוש.
+        # 0 = the deck has no Champion, so there are no ability heads at all. This
+        # is not a cosmetic optimisation: without a Champion those two heads
+        # sampled pure noise every tick -- they added variance to the PPO ratio
+        # (total_logprob) and contributed up to 2*log(2) = 1.386 to the entropy
+        # bonus, i.e. the trainer spent effort keeping a coin flip random.
+        # Measured: DEFAULT_DECK has no Champion, and is_champion_ability_ready
+        # returned False for both slots for the whole match. The trainer passes
+        # the value explicitly, from the deck in use.
         self.num_ability_slots = num_ability_slots
 
-        # גודל המטריצה השטוחה המגיעה מ-ClashEnv
+        # Size of the flattened spatial block ClashEnv produces
         self.spatial_size = channels * board_height * board_width
-        # החלק הסקלרי: אליקסיר + hand_size עלויות + hand_size one-hot של זהות
-        # קלף (num_card_ids ערכים כל אחד) + הזנב שנוסף ב-ClashEnv
-        # (NUM_EXTRA_SCALARS): שבר הזמן, אליקסיר שהוצא ע"י שני הצדדים, ו-6
-        # ערכי HP של מגדלים.
+        # The scalar part: elixir + hand_size costs + hand_size one-hots of card
+        # identity (num_card_ids values each) + the tail ClashEnv appends
+        # (NUM_EXTRA_SCALARS): the time fraction, the elixir spent by each side,
+        # the six tower HPs, and the elixir-phase multiplier.
         #
-        # הזנב **מתווסף בסוף** ולא נדחף באמצע, וזה לא שרירותי: כל הקוד שקורא
-        # את הווקטור הזה לפי היסטים (affordability_mask, hand_card_ids,
-        # placement_mask כאן, והיריבים הסקריפטיים ב-train_selfplay.py) מודד
-        # מתחילת הקטע הסקלרי. הוספה בסוף משאירה כל אחד מההיסטים האלה תקף
-        # בלי שינוי; הוספה באמצע הייתה שוברת את כולם בשקט -- בלי חריגה, רק
-        # מדיניות שמסתכלת על מספרים לא נכונים.
+        # The tail is APPENDED, not pushed into the middle, and that is not
+        # arbitrary: all the code that reads this vector by offset
+        # (affordability_mask, hand_card_ids, placement_mask here, and the
+        # scripted opponents) measures from the start of the scalar section.
+        # Appending keeps every one of those offsets valid unchanged; inserting
+        # in the middle would have broken them all silently -- no exception, just
+        # a policy reading the wrong numbers.
         self.num_extra_scalars = clash_royale_env.ClashRoyaleEnv.NUM_EXTRA_SCALARS
-        # שני בלוקים ברוחב num_card_ids עם מחזור הקלפים של היריב (item 24,
-        # 2026-08-27): seen[] ו-recency[]. נגזר מה-binding ולא נכתב כאן כמספר
-        # -- 2*185 בפייתון היה בדיוק העותק השני שהכלל בראש CLAUDE.md אוסר.
-        # נוסף **אחרי** הזנב, כך שגם extra_start וגם כל ההיסטים שלפניו נשארים
-        # תקפים בדיוק כפי שהיו.
+        # Two num_card_ids-wide blocks holding the opponent's card cycle (item 24,
+        # 2026-08-27): seen[] and recency[]. Derived from the binding rather than
+        # written here as a number -- 2*185 in Python would be exactly the second
+        # copy the rule at the top of CLAUDE.md forbids. Appended AFTER the tail,
+        # so extra_start and every offset before it stay exactly as valid as they
+        # were.
         self.cycle_block_size = clash_royale_env.ClashRoyaleEnv.CYCLE_BLOCK_SIZE
         self.scalar_size = (1 + hand_size + hand_size * num_card_ids
                             + self.num_extra_scalars + self.cycle_block_size)
-        # ההיסט (בתוך scalar_obs) שבו מתחיל הזנב -- נחוץ לראש העזר ולאבחון.
+        # The offset (within scalar_obs) where the tail starts -- needed by ScalarEncoder and by diagnostics.
         self.extra_start = 1 + hand_size + hand_size * num_card_ids
-        # ...ותחילת בלוקי המחזור, מיד אחרי הזנב. שני ההיסטים נמדדים קדימה
-        # מתחילת הקטע הסקלרי ולא לאחור מסופו: מדידה לאחור נשברת בשקט בכל פעם
-        # שמשהו נוסף בסוף, וזה בדיוק מה שקרה עכשיו.
+        # ...and the start of the cycle blocks, right after the tail. Both offsets
+        # are measured FORWARD from the start of the scalar section, never
+        # backward from its end: a backward offset breaks silently every time
+        # something is appended, which is exactly what happened here.
         self.cycle_start = self.extra_start + self.num_extra_scalars
 
         # ==========================================
-        # 1. חילוץ תכונות מרחבי (CNN)
-        # קלט: (Batch, 9, 34, 18)
+        # 1. Spatial feature extraction (CNN)
+        # Input: (Batch, NUM_CHANNELS, 34, 18)
         # ==========================================
-        # ceil_mode=True בשני ה-MaxPool: board_height=34 לא מתחלק נקי פי 4
-        # (34 -> 17 -> 8 עם floor רגיל, מה שהיה מוחק שורה שלמה -- בדיוק השורה
-        # האחורית החדשה ליד מגדל המלך, שזה כל הטעם בשינוי הזה). עם ceil_mode
-        # שום שורה/עמודה לא נופלת בשקט, רק התמונה המרחבית קצת יותר גדולה.
-        # מפוצל ל-trunk + flatten (במקום Sequential אחד שנגמר ב-Flatten):
-        # מפת המאפיינים המרחבית *לפני* ההשטחה היא הקלט של ראש המיקום
-        # הקונבולוציוני (ראה placement_given_card). זה אותו טנזור בדיוק, לא
-        # חישוב נוסף -- ה-CNN עדיין רץ פעם אחת בלבד.
+        # ceil_mode=True on both MaxPools: board_height=34 does not divide cleanly
+        # by 4 (34 -> 17 -> 8 with ordinary floor, which would delete a whole row
+        # -- exactly the new back row next to the King Tower, which was the whole
+        # point of that change). With ceil_mode no row or column is silently
+        # dropped; the spatial map is only slightly larger.
+        # Split into trunk + flatten (instead of one Sequential ending in Flatten):
+        # the spatial feature map BEFORE flattening is the input of the
+        # convolutional placement head (see placement_given_card). It is the same
+        # tensor, not an extra computation -- the CNN still runs only once.
         self.cnn_trunk = nn.Sequential(
             nn.Conv2d(channels, 16, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
@@ -593,40 +612,42 @@ class MicroRoyaleNet(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True),
         )
-        # נוספים **בסוף** ולא באמצע, וזה לא סגנון: שני קוראים חותכים את
-        # ה-trunk לפי אינדקס (extract_features_hires ו-hires_features לוקחים
-        # [:2] לענף הרזולוציה המלאה ו-[2:] לשאר). הוספה בסוף משאירה את שני
-        # החיתוכים תקפים בדיוק כפי שהם; הוספה בהתחלה הייתה מוסרת לענף
-        # ברזולוציה המלאה טנזור אחר לגמרי, בלי שום שגיאה בשום מקום.
+        # Appended at the END, not in the middle, and that is not style: two
+        # callers slice the trunk by index (extract_features_hires and
+        # hires_features take [:2] for the full-resolution branch and [2:] for the
+        # rest). Appending keeps both slices exactly valid; inserting at the start
+        # would hand the full-resolution branch a completely different tensor,
+        # with no error anywhere.
         self.context_dilations = tuple(context_dilations)
         for dilation in self.context_dilations:
             self.cnn_trunk.append(
                 DilatedContextBlock(32, CONTEXT_BOTTLENECK, dilation))
         self.cnn_flatten = nn.Flatten()
 
-        # חישוב ממד הפלט של ה-CNN לאחר הפולינג (ceil פעמיים, תואם ceil_mode=True למעלה)
+        # Output size of the CNN after pooling (ceil twice, matching ceil_mode=True above)
         pooled_h = math.ceil(math.ceil(board_height / 2) / 2)
         pooled_w = math.ceil(math.ceil(board_width / 2) / 2)
         self.pooled_h, self.pooled_w = pooled_h, pooled_w
         self.cnn_out_dim = 32 * pooled_h * pooled_w
 
         # ==========================================
-        # 2. חילוץ תכונות סקלרי (MLP)
-        # קלט: אליקסיר + עלויות + זהות הקלפים ביד (one-hot לכל משבצת)
+        # 2. Scalar feature extraction (MLP)
+        # Input: elixir, hand costs and card identities, the extra scalars, and the cycle blocks
         # ==========================================
-        # ארבעה ענפים סמנטיים במקום Linear(1124, 64) יחיד. השם נשמר
-        # (`scalar_mlp`) בכוונה: expert_distill.TRUNK_MODULES מזהה מודולים
-        # לפי שם, ושינוי שם היה מנתק אותו בשקט. ראה ScalarEncoder.
+        # Four semantic branches instead of a single Linear(scalar_size, 64). The
+        # name (`scalar_mlp`) is kept deliberately: expert_distill.TRUNK_MODULES
+        # finds modules by name, and renaming it would have disconnected it
+        # silently. See ScalarEncoder.
         if branched_scalars:
             self.scalar_mlp = ScalarEncoder(
                 hand_size, num_card_ids, self.num_extra_scalars,
                 self.cycle_block_size, self.extra_start, self.cycle_start)
             scalar_feature_dim = self.scalar_mlp.out_dim
         else:
-            # השכבה המונוליטית שקדמה לזה. נשמרת כדי שה-A/B יהיה בר-הרצה
-            # תמיד (בדיוק כמו collision_bench.cpp שמחזיק את שני המסלולים),
-            # ובעיקר כדי שהבדיקה שמראה שהיא **נכשלת** בבדיקת אי-ההפרעה
-            # תוכל להריץ אותה באמת ולא לתאר אותה.
+            # The monolithic layer this replaced. Kept so the A/B can always be
+            # run (just like collision_bench.cpp keeps both paths), and above all
+            # so the test showing that it FAILS the non-interference check can
+            # actually run it rather than describe it.
             self.scalar_mlp = nn.Sequential(
                 nn.Linear(self.scalar_size, SCALAR_FEATURE_DIM),
                 nn.ReLU()
@@ -659,99 +680,109 @@ class MicroRoyaleNet(nn.Module):
         head_dim = self.LSTM_HIDDEN + self.cycle_feature_dim
 
         # ==========================================
-        # 2ב. Embedding לזהות קלף -- למיקום אוטורגרסיבי (ראה placement_given_card)
+        # 2b. Card-identity embedding -- for autoregressive placement (see placement_given_card)
         # ==========================================
-        # פועל ישירות על ה-one-hot שכבר קיים ב-obs (לא על אינדקס המשבצת עצמו --
-        # אינדקס המשבצת מסתובב, אותה משבצת היא קלף פיזי שונה כל מחזור, אז
-        # embedding של האינדקס לא היה מלמד "Fireball על הצבר שלהם, Hog על
-        # הגשר" בכלל). nn.Linear על וקטור one-hot אמיתי שקול מתמטית בדיוק ל-
-        # embedding lookup רגיל, בלי מעגל דרך argmax.
+        # Works directly on the one-hot already in obs, not on the slot index:
+        # slots rotate, so the same slot is a different physical card every
+        # cycle, and an embedding of the index could never learn "Fireball on
+        # their cluster, Hog at the bridge". nn.Linear on a true one-hot vector is
+        # mathematically identical to an ordinary embedding lookup, without a
+        # detour through argmax.
         self.card_id_embed = nn.Linear(num_card_ids, CARD_EMBED_DIM, bias=False)
-        # Embedding ייעודי לפעולת ה-no-op (card_index == hand_size, אין קלף
-        # אמיתי במשבצת הזו) -- המנוע מתעלם לגמרי מ-target_x/target_y כש-
-        # card_index מחוץ ל-[0, hand_size) (ראה ההערה המקבילה ב-gym_wrapper.py),
-        # אז זה קיים אך ורק כדי לשמור על התפלגות מיקום מוגדרת-היטב לכל טיק
-        # לצורך ה-loss -- פרמטר נלמד נפרד, כדי שגרדיאנט מ-timesteps של no-op
-        # אף פעם לא "יזהם" את הלמידה של מיקום מותנה-קלף אמיתי כלשהו.
+        # A dedicated embedding for the no-op (card_index == hand_size, no real
+        # card in that slot). The engine ignores target_x/target_y entirely when
+        # card_index is outside [0, hand_size) (see the matching comment in
+        # gym_wrapper.py), so this exists only to keep a well-defined placement
+        # distribution on every tick for the loss -- a separate learned
+        # parameter, so gradient from no-op timesteps never contaminates the
+        # learning of any real card-conditioned placement.
         self.noop_embed = nn.Parameter(torch.zeros(CARD_EMBED_DIM))
 
         # ==========================================
-        # 3. שכבת זיכרון (LSTM)
+        # 3. Memory layer (LSTM)
         # ==========================================
         self.lstm_input_dim = self.cnn_out_dim + scalar_feature_dim
-        # אנו משתמשים ב-LSTMCell כדי שנוכל לשלוט על הפעימות (Ticks) ידנית בלולאת הסביבה
+        # LSTMCell rather than LSTM, so the environment loop steps each tick by hand
         self.lstm = nn.LSTMCell(self.lstm_input_dim, self.LSTM_HIDDEN)
 
         # ==========================================
-        # 4. ראשי הפעולה - Actor Heads
+        # 4. Action heads (actor)
         # ==========================================
-        # א. ראש בחירת הקלף (התפלגות קטגוריאלית) -- תלוי רק ב-hx, בדיוק כמו קודם.
-        # hand_size משבצות יד + פעולה אחת נוספת = no-op (המתנה/אגירת אליקסיר).
-        # המנוע מתעלם מ-cardIndex מחוץ ל-[0,hand_size) כך שאין צורך בשינוי C++.
+        # a. The card-choice head (categorical). Like the value head it reads hx
+        # (plus the cycle skip), never the card about to be chosen. hand_size hand
+        # slots + one extra action = the no-op (wait / bank elixir). The engine
+        # ignores a cardIndex outside [0, hand_size), so no C++ change was needed.
         self.card_head = nn.Linear(head_dim, hand_size + 1)
 
-        # ב. ראש המיקום במרחב -- קטגוריאלי על תאי לוח שלמים, לא גאוסיאן.
-        # אוטורגרסיבי כמו קודם: מותנה ב-hx *וגם* ב-embedding של הקלף שנבחר.
+        # b. The spatial placement head -- categorical over whole board cells, not
+        # Gaussian. Autoregressive: conditioned on hx AND on the chosen card's
+        # embedding.
         #
-        # למה זה הוחלף: הגרסה הקודמת דגמה מ-Normal עם placement_log_std
-        # נלמד. האנטרופיה של גאוסיאן היא log(sigma) + const, ולכן הנגזרת של
-        # בונוס האנטרופיה לפי log_std היא *בדיוק 1, קבועה*, ללא תלות בנתונים
-        # -- כוח קבוע שדוחף את sigma למעלה, שה-policy gradient הרועש מפסיד
-        # לו. נמדד בפועל על הצ'קפוינטים: log_std התחיל ב--2.0 וטיפס
-        # ל--1.86 אחרי 68,515 אפיזודות (סיגמא *גדלה* במקום להצטמצם), כלומר
-        # sigma=0.156 ביחידות מנורמלות = 2.66 משבצות סטיית תקן ב-x ו-2.46
-        # ב-y. שני הגשרים מרוחקים 10 משבצות זה מזה, אז הרעש העצמי של הסוכן
-        # היה חצי מהמרחק שהוא אמור להבחין בו -- הוא פשוט לא היה מסוגל לכוון
-        # לנתיב. התפלגות קטגוריאלית פותרת את זה משורש: האנטרופיה שלה חסומה
-        # מלמעלה ב-log(placement_cells) ויורדת באופן טבעי ככל שהמדיניות
-        # מתחדדת, המיקום מדויק עד משבצת, וניתן למסוך תאים לא חוקיים.
+        # Why it was replaced: the previous version sampled from a Normal with a
+        # learned placement_log_std. A Gaussian's entropy is log(sigma) + const,
+        # so the gradient of the entropy bonus with respect to log_std is EXACTLY
+        # 1, constant and data-independent -- a constant force pushing sigma up,
+        # which the noisy policy gradient loses to. Measured on the checkpoints:
+        # log_std started at -2.0 and climbed to -1.86 after 68,515 episodes
+        # (sigma GREW instead of shrinking), i.e. sigma = 0.156 in normalised
+        # units = 2.66 tiles of standard deviation in x and 2.46 in y. The two
+        # bridges are 10 tiles apart, so the agent's own noise was half the
+        # distance it had to tell apart -- it simply could not aim for a lane. A
+        # categorical distribution fixes this at the root: its entropy is bounded
+        # above by log(placement_cells) and falls naturally as the policy
+        # sharpens, placement is exact to the cell, and illegal cells can be
+        # masked.
         #
-        # ומה שהוחלף *עכשיו*: הגרסה הקודמת הייתה
+        # And what was replaced AFTER that: the previous version was
         #     nn.Linear(256 + CARD_EMBED_DIM, placement_cells)   # 272 -> 612
-        # כלומר שכבה צפופה אחת שמייצרת מפת לוגיטים על הלוח מתוך וקטור שכבר
-        # עבר שני MaxPool והושטח. לשכבה כזו אין שום מבנה מרחבי: היא חייבת
-        # *לשנן* בנפרד, במשקל נפרד, מה המשמעות של כל אחת מ-612 המשבצות, ואין
-        # שום שיתוף בין משבצת (5,7) לשכנתה (5,8) -- גם אחרי שהרשת למדה
-        # "להניח ליד הגשר השמאלי", שום דבר מזה לא מתפשט למשבצת הסמוכה.
+        # i.e. a single dense layer producing a logit map over the board from a
+        # vector that had already been through two MaxPools and been flattened.
+        # Such a layer has no spatial structure: it must MEMORISE, with a separate
+        # weight, what each of the 612 cells means, and nothing is shared between
+        # cell (5,7) and its neighbour (5,8) -- even after the net learns "place
+        # near the left bridge", none of it carries over to the adjacent cell.
         #
-        # במקום זה: לוקחים את מפת המאפיינים המרחבית מה-CNN (B,32,9,5),
-        # מוסיפים לה הקשר (hx + זהות הקלף) בשידור על כל התאים, ומרחיבים
-        # בחזרה ל-34x18 (ראה place_up למטה). הלוגיט של כל תא מחושב אז ע"י אותם
-        # משקלים משותפים שפועלים על המאפיינים המקומיים *של אותו אזור לוח* --
-        # וזו בדיוק ההטיה האינדוקטיבית הנכונה למשחק שבו ההחלטה היא "איפה".
-        # אותו דפוס שבו AlphaStar מייצר ארגומנטים מרחביים.
+        # Instead: take the CNN's spatial feature map (B,32,9,5), add the context
+        # (hx + card identity) broadcast over every cell, and upsample back to
+        # 34x18 (see place_up below). Each cell's logit is then computed by the
+        # same shared weights acting on the local features OF THAT BOARD REGION
+        # -- exactly the right inductive bias for a game whose decision is
+        # "where". The same pattern AlphaStar uses to produce spatial arguments.
         self.place_ctx = nn.Linear(head_dim + CARD_EMBED_DIM, 32)
-        # RESIZE + CONV, not ConvTranspose. השינוי הזה תוקן ב-2026-08-09 אחרי
-        # שנמדד שהגרסה הקודמת --
+        # RESIZE + CONV, not ConvTranspose. Fixed on 2026-08-09, after it was
+        # measured that the previous version --
         #     ConvTranspose2d(32,32,k=2,s=2) -> ReLU -> ConvTranspose2d(32,16,k=2,s=2)
-        # -- מייצרת **הטיה מחזורית קבועה** על מפת הלוגיטים, זהה לכל קלף ולכל
-        # מצב משחק.
+        # -- produces a FIXED PERIODIC BIAS on the logit map, identical for every
+        # card and every game state.
         #
-        # למה זה קורה: ctx מתווסף ב-broadcast, כלומר הוא **אחיד מרחבית**. ל-
-        # ConvTranspose2d עם kernel_size=2, stride=2 יש משקל שונה לכל אחת מ-4
-        # העמדות בבלוק הפלט, ולכן קלט אחיד *לא* מייצר פלט אחיד -- הוא מייצר
-        # דפוס עם מחזור 2, ושתי שכבות כאלה נותנות מחזור 4. הדפוס הזה הוא
-        # תכונה של המשקלים בלבד; הקלף יכול רק להזיז את כל המפה בקבוע, הוא לא
-        # יכול לשנות איזה תא *בתוך* המחזור מנצח.
+        # Why it happens: ctx is added by broadcast, i.e. it is SPATIALLY UNIFORM.
+        # A ConvTranspose2d with kernel_size=2, stride=2 has a different weight for
+        # each of the 4 positions in an output block, so a uniform input does NOT
+        # produce a uniform output -- it produces a pattern with period 2, and two
+        # such layers give period 4. That pattern is a property of the weights
+        # alone; the card can only shift the whole map by a constant, it cannot
+        # change which cell WITHIN the period wins.
         #
-        # מה שנמדד על צ'קפוינט ep~129k: 75.0% מהשונות של מפת הלוגיטים מוסברת
-        # ע"י (x mod 4, y mod 4) לבדם, ובהתנהגות -- 73.0% מכלל ההנחות נחתו על
-        # x = 3 (mod 4) מול null של 22.2% (chi^2 = 94.8, 3 df), 28.9% על שני
-        # התאים (11,2)/(11,3), ורק 91 מתוך 288 תאים חוקיים נוצלו אי פעם.
-        # זה יוחס בטעות לתמחור המבנים בפונקציית התגמול ("Cannon pathology"),
-        # אבל הריכוז היה **בלתי תלוי בקלף** -- Giant 44.4%, Valkyrie 38.9%,
-        # Cannon 27.1% -- ואסימטריית תגמול שנוגעת למבנים לא יכולה להסביר
-        # Giant שהולך מאחורי מגדל המלך של עצמו.
+        # Measured on the ep~129k checkpoint: 75.0% of the variance of the logit
+        # map is explained by (x mod 4, y mod 4) alone, and in behaviour 73.0% of
+        # all placements landed on x = 3 (mod 4) against a null of 22.2%
+        # (chi^2 = 94.8, 3 df), 28.9% on the two cells (11,2)/(11,3), and only 91
+        # of the 288 legal cells were ever used. This was wrongly blamed on how
+        # the reward priced buildings (the "Cannon pathology"), but the
+        # concentration was CARD-INDEPENDENT -- Giant 44.4%, Valkyrie 38.9%,
+        # Cannon 27.1% -- and a reward asymmetry that concerns buildings cannot
+        # explain a Giant walking behind its own King Tower.
         #
-        # Upsample(nearest) + Conv2d(stride=1) פותר את זה מהשורש: קלט אחיד
-        # מרחבית נשאר אחיד אחרי שתי הפעולות (למעט שוליים מה-padding), כי כל
-        # תא פלט מחושב באותם משקלים בדיוק. Odena, Dumoulin & Olah,
+        # Upsample(nearest) + Conv2d(stride=1) fixes it at the root: a spatially
+        # uniform input stays uniform after both operations (except at the
+        # padding edges), because every output cell is computed with exactly the
+        # same weights. Odena, Dumoulin & Olah,
         # "Deconvolution and Checkerboard Artifacts" (2016).
         #
-        # ערוצים מצטמצמים 32->16->8 ולא 32->32->16: conv 3x3 ברזולוציה מלאה
-        # יקר בהרבה מ-ConvTranspose עם k=2, וראש המיקום כבר צורך 41% מזמן
-        # העדכון. הצמצום מחזיק את העלות קרוב למקור -- ראה את מספרי ה-benchmark
-        # ב-git log של השינוי הזה.
+        # Channels shrink 32->16->8, not 32->32->16: a 3x3 conv at full resolution
+        # costs far more than a ConvTranspose with k=2, and the placement head
+        # already takes 41% of update time. The narrowing keeps the cost close to
+        # the original -- see the benchmark numbers in this change's git log.
         self.place_up = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),            # 9x5 -> 18x10
             nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
@@ -762,31 +793,34 @@ class MicroRoyaleNet(nn.Module):
             nn.Conv2d(8, 1, kernel_size=3, stride=1, padding=1),    # -> (B,1,36,20)
         )
         # ==========================================
-        # 4ג. ענף רזולוציה-מלאה שיורי (2026-08-14)
+        # 4c. Residual full-resolution branch (2026-08-14)
         # ==========================================
-        # מה שהיה חסר: place_up קורא מפה של 9x5 עבור לוח 34x18, כלומר תא מאוחד
-        # אחד מכסה ~4x4 משבצות לוח, וההקשר (hx + קלף) נכנס כוקטור **אחיד
-        # מרחבית**. לכן אוצר המילים המרחבי של הראש הוא בלוקים של 4 משבצות: הקלף
-        # יכול להזיז את כל המפה בקבוע, אבל *איזו משבצת בתוך הבלוק מנצחת* נקבע
-        # ע"י משקלים משותפים לכל המצבים. זו מגבלת **ייצוג**, לא כשל אימון --
-        # וזה בדיוק מה ש-distill_tactics.py מדד ב-2026-08-14: cross-entropy מול
-        # התא המדויק של היועץ ירד 180.9 -> 21.4 בעוד ההתאמה המדויקת (argmax)
-        # נשארה **0.0%**. loss שיורד בזמן ש-argmax לא זז אף פעם הוא החתימה של
-        # מטרה שהראש לא מסוגל לבטא.
+        # What was missing: place_up reads a 9x5 map for a 34x18 board, so one
+        # pooled cell covers ~4x4 board tiles, and the context (hx + card) enters
+        # as a SPATIALLY UNIFORM vector. So the head's spatial vocabulary is
+        # blocks of 4 tiles: the card can shift the whole map by a constant, but
+        # WHICH TILE INSIDE THE BLOCK WINS is fixed by weights shared across all
+        # states. That is a REPRESENTATION limit, not a training failure -- and it
+        # is exactly what distill_tactics.py measured on 2026-08-14: cross-entropy
+        # against the advisor's exact cell fell 180.9 -> 21.4 while the exact
+        # (argmax) match stayed at 0.0%. A loss that falls while the argmax never
+        # moves is the signature of a target the head cannot express.
         #
-        # הענף כאן קורא את האקטיבציה של ה-trunk **לפני** הפולינג (16x34x18),
-        # ברזולוציית משבצת בודדת, מותנה באותו הקשר בדיוק, ומתווסף ללוגיטים
-        # הגסים כשארית.
+        # The branch here reads the trunk's activation BEFORE pooling (16x34x18),
+        # at single-tile resolution, conditioned on exactly the same context, and
+        # is added to the coarse logits as a residual.
         #
-        # למה הקונבולוציה האחרונה מאותחלת ל-אפס: ה-handoff הציע לשרשר לתוך
-        # place_up, מה שמשנה את הצורה שלו ולכן **זורק את ראש המיקום המאומן**
-        # מכל צ'קפוינט (בדיוק המחיר שתיקון הצ'קרבורד ב-2026-08-09 נאלץ לשלם).
-        # המחיר הזה מיותר: ענף שיורי מאותחל-אפס מחשב פונקציה **זהה בדיוק**
-        # באתחול, ולכן צ'קפוינט קיים נטען ומתנהג bit-identical, הקלפים שעובדים
-        # היום ממשיכים לעבוד, ורק פרמטרים חדשים באמת מתחילים מאפס.
-        # הגרדיאנט עדיין זורם: לשכבה המאופסת עצמה יש גרדיאנט לא-אפסי (היא
-        # רואה אקטיבציה חיה), אז היא יוצאת מאפס בצעד הראשון והשכבה שמתחתיה
-        # מתחילה ללמוד בשני. התנהגות zero-conv סטנדרטית.
+        # Why the last convolution is zero-initialised: the handoff proposed
+        # concatenating into place_up, which changes its shape and therefore
+        # THROWS AWAY the trained placement head from every checkpoint (exactly
+        # the price the 2026-08-09 checkerboard fix had to pay). That price is
+        # unnecessary: a zero-initialised residual branch computes an IDENTICAL
+        # function at initialisation, so an existing checkpoint loads and behaves
+        # bit-identically, the cards that work today keep working, and only the
+        # genuinely new parameters start from zero. Gradient still flows: the
+        # zeroed layer itself gets a non-zero gradient (it sees live
+        # activations), so it leaves zero on the first step and the layer below
+        # starts learning on the second. Standard zero-conv behaviour.
         self.place_ctx_hi = nn.Linear(head_dim + CARD_EMBED_DIM, HIRES_CTX_DIM)
         self.place_hires = nn.Sequential(
             nn.Conv2d(16 + HIRES_CTX_DIM, HIRES_HIDDEN,
@@ -797,56 +831,42 @@ class MicroRoyaleNet(nn.Module):
         nn.init.zeros_(self.place_hires[-1].weight)
         nn.init.zeros_(self.place_hires[-1].bias)
 
-        # ה-deconv מייצר 4*pooled_h x 4*pooled_w, שהוא >= גודל הלוח כי הפולינג
-        # השתמש ב-ceil_mode. חותכים בחזרה לפינה השמאלית-עליונה: מכיוון ששני
-        # הפולינגים הם stride 2 עם ceil, תא ממוזג i מכסה את המקוריים 2i,2i+1
-        # בכל רמה, ולכן אינדקס j במפה המורחבת מתיישר בדיוק עם שורה/עמודה j
-        # בלוח המקורי. החיתוך הוא יישור, לא קירוב.
+        # The upsampling produces 4*pooled_h x 4*pooled_w, which is >= the board
+        # size because pooling used ceil_mode. Crop back to the top-left corner:
+        # since both pools are stride 2 with ceil, pooled cell i covers originals
+        # 2i and 2i+1 at every level, so index j in the upsampled map aligns
+        # exactly with row/column j of the original board. The crop is an
+        # alignment, not an approximation.
         assert self.placement_rows == board_height, (
-            "ראש המיקום הקונבולוציוני מייצר מפה בגודל הלוח וחותך אותה; "
-            "placement_rows שונה מ-board_height יישבור את היישור הזה")
+            "the convolutional placement head builds a board-sized map and crops it; "
+            "a placement_rows different from board_height would break that alignment")
 
         # ==========================================
-        # 5. ראש הערכת המצב - Critic Head -- תלוי רק ב-hx.
+        # 5. State-value head (critic) -- reads hx (plus the cycle skip), never the chosen card.
         # ==========================================
         self.value_head = nn.Linear(head_dim, 1)
 
         # ==========================================
-        # 6. ראשי הפעלת יכולת צ'מפיון (עד 2 צ'מפיונים בו-זמנית -- ראו
-        # activate_ability_slot1/2 ב-gym_wrapper.py, ו-
-        # CardRegistry::validateDeckSlots בצד ה-C++). כל אחד: 2 לוגיטים
-        # (0=אל תפעיל, 1=הפעל).
+        # 6. Champion ability heads (up to 2 Champions at once -- see
+        # activate_ability_slot1/2 in gym_wrapper.py, and
+        # CardRegistry::validateDeckSlots on the C++ side). Each has 2 logits
+        # (0 = do not activate, 1 = activate).
         #
-        # נוצרים *רק* אם num_ability_slots > 0 -- ראה ההערה על השדה הזה
-        # למעלה. עם חפיסה בלי צ'מפיון הם היו רעש בלבד, ועכשיו הם פשוט לא
-        # קיימים (גם לא ב-state_dict), אז אין פרמטרים מתים ואין תרומה
-        # ל-logprob/entropy.
+        # Created ONLY if num_ability_slots > 0 -- see the note on that field
+        # above. With a Champion-less deck they were pure noise; now they simply
+        # do not exist (not even in the state_dict), so there are no dead
+        # parameters and no contribution to logprob/entropy.
         # ==========================================
         self.ability_slot1_head = nn.Linear(256, 2) if num_ability_slots >= 1 else None
         self.ability_slot2_head = nn.Linear(256, 2) if num_ability_slots >= 2 else None
 
         # ==========================================
-        # 7. ראש עזר: הערכת האליקסיר של היריב (auxiliary prediction head)
+        # 7. Auxiliary head: the opponent's next card
         # ==========================================
-        # מנבא את האליקסיר הנוכחי של היריב (0..10, מנורמל ל-0..1) מתוך hx.
+        # Like the auxiliary tasks in UNREAL and IMPALA, this head plays no part
+        # in choosing an action: its only job is its loss, which shapes what the
+        # LSTM state keeps rather than what the policy does.
         #
-        # למה זה קיים: ספירת אליקסיר היא הכישור המרכזי של שחקני קלאש חזקים,
-        # והמידע הזה **מוסתר** -- אי אפשר לקרוא אותו מהמסך. לכן הוא בכוונה
-        # לא נמצא בתצפית (ראה ClashEnv::getElixirForTeam): מדיניות שמותנית בו
-        # לא הייתה ניתנת להפעלה מול יריב אמיתי דרך perception/. במקום זה
-        # הרשת מקבלת בתצפית רק את מה ששחקן אנושי באמת רואה -- זמן שחלף
-        # וההוצאה המצטברת של שני הצדדים -- ומתבקשת להסיק מהם את הערך המוסתר.
-        #
-        # הראש הזה לא משתתף בבחירת הפעולה בכלל. כל תפקידו הוא ה-loss: הוא
-        # מכריח את מצב ה-LSTM לשמור בפועל את האינטגרל של ההוצאה לאורך המשחק,
-        # במקום לקוות שהאות הדליל של ניצחון/הפסד ילמד את זה לבד. זה בדיוק
-        # התפקיד של auxiliary tasks ב-UNREAL/IMPALA: לעצב את הייצוג, לא את
-        # המדיניות.
-        #
-        # מכוון בכוונה כמתודה נפרדת ולא כפלט נוסף של step_lstm_and_card:
-        # הוא נחוץ **רק בזמן אימון**, אף פעם לא בבחירת פעולה, אז אין סיבה
-        # לשלם עליו בכל טיק של rollout ואין סיבה לשנות את החתימה של מסלול
-        # הפעולה החם (ולסכן את כל מי שקורא לו).
         # AUXILIARY TASK: which card does the OPPONENT play next?
         #
         # This replaced an opponent-ELIXIR regression head on 2026-08-28, and
@@ -955,42 +975,47 @@ class MicroRoyaleNet(nn.Module):
 
     def extract_features_hires(self, obs):
         """
-        חילוץ מאפיינים (CNN + MLP סקלרי + embeddings של זהות קלף) - החלק
-        הלא-רקורנטי של הרשת. אפשר לקרוא לזה על באצ' ענק ומשוטח (T*N) כדי
-        להריץ את ה-CNN (והחישוב הזול של embeddings הקלפים) פעם אחת במקום
-        פעם לכל טיק - זהו הזירוז המרכזי של עדכון ה-PPO.
+        Feature extraction (CNN + scalar MLP + card-identity embeddings) -- the
+        non-recurrent part of the network. It can be called on one huge flattened
+        batch (T*N) to run the CNN (and the cheap card-embedding computation)
+        once instead of once per tick -- the main speed-up of the PPO update.
 
         obs: (Batch, obs_dim)
-        מחזיר (combined, card_embeds, spatial_map):
-          combined: (Batch, lstm_input_dim) -- בדיוק כמו קודם, מוזן ל-LSTM.
-          card_embeds: (Batch, hand_size+1, CARD_EMBED_DIM) -- embedding לכל
-            משבצת יד ממשית + אחד נוסף (no-op), נדגם לפי card_idx רק אחרי
-            שנבחר -- ראה placement_given_card. הפיצול מ-combined הוא בדיוק מה
-            שמאפשר את המיקום האוטורגרסיבי: אי אפשר "לערבב" את זהות הקלף לתוך
-            ה-LSTM before הבחירה בלי לאבד את היכולת להתנות אחריה.
-          spatial_map: (Batch, 32, pooled_h, pooled_w) -- מפת המאפיינים של
-            ה-CNN *לפני* ההשטחה, הקלט של ראש המיקום הקונבולוציוני. זהו אותו
-            טנזור שממנו נגזר combined, לא חישוב נוסף.
-          hires_map: (Batch, 16, board_height, board_width) -- האקטיבציה
-            שלפני הפולינג הראשון, הקלט של ענף הרזולוציה המלאה
-            (ראה place_hires). גם היא לא חישוב נוסף: spatial_map נגזר ממנה.
+        Returns (combined, card_embeds, spatial_map, hires_map):
+          combined: (Batch, lstm_input_dim) -- fed to the LSTM.
+          card_embeds: (Batch, hand_size+1, CARD_EMBED_DIM) -- one embedding per
+            real hand slot plus one more (the no-op), indexed by card_idx only
+            after the card is chosen -- see placement_given_card. Keeping it
+            apart from `combined` is exactly what makes autoregressive
+            placement possible: the card's identity cannot be mixed into the
+            LSTM before the choice without losing the ability to condition on
+            it afterwards.
+          spatial_map: (Batch, 32, pooled_h, pooled_w) -- the CNN feature map
+            BEFORE flattening, the input of the convolutional placement head.
+            It is the tensor `combined` is derived from, not an extra
+            computation.
+          hires_map: (Batch, 16, board_height, board_width) -- the activation
+            before the first pooling, the input of the full-resolution branch
+            (see place_hires). Also not an extra computation: spatial_map is
+            derived from it.
         """
-        # פיצול הווקטור השטוח לחלק המרחבי ולחלק הסקלרי בהתאם לפונקציית observationSize() ב-C++
+        # Split the flat vector into its spatial and scalar parts, following observationSize() in C++
         spatial_obs = obs[:, :self.spatial_size].view(-1, self.channels, self.board_height, self.board_width)
         scalar_obs = obs[:, self.spatial_size:]
 
-        # ה-trunk מורץ בשני חצאים במקום כ-Sequential אחד, כדי להוציא את
-        # האקטיבציה שלפני הפולינג (16x34x18) לענף הרזולוציה המלאה. אותם
-        # מודולים, אותו סדר, אותו חישוב -- לא מחושב שום דבר פעמיים, ו-
-        # test_trunk_split_is_bit_identical_to_the_sequential מוודא שאין סטייה
-        # ולו ב-ulp אחד (סטייה כזו הייתה מזיזה את המאפיינים מתחת לכל צ'קפוינט).
+        # The trunk runs in two halves instead of as one Sequential, to expose the
+        # pre-pooling activation (16x34x18) to the full-resolution branch. Same
+        # modules, same order, same computation -- nothing is computed twice, and
+        # test_trunk_split_is_bit_identical_to_the_sequential checks there is not
+        # even a one-ulp difference (one would shift the features under every
+        # checkpoint).
         hires_map = self.cnn_trunk[:2](spatial_obs)
         spatial_map = self.cnn_trunk[2:](hires_map)
         cnn_features = self.cnn_flatten(spatial_map)
         scalar_features = self.scalar_mlp(scalar_obs)
         combined = torch.cat((cnn_features, scalar_features), dim=1)
 
-        # אותו layout שבו ClashEnv::extractObservationForTeam בונה את
+        # The layout in which ClashEnv::extractObservationForTeam builds
         # scalar_obs: [elixir(1), costs(hand_size), onehots(hand_size*num_card_ids)].
         onehot_start = 1 + self.hand_size
         card_onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
@@ -1003,23 +1028,25 @@ class MicroRoyaleNet(nn.Module):
         return combined, card_embeds, spatial_map, hires_map
 
     def extract_features(self, obs):
-        """שלושת הערכים הישנים בלבד -- ראה extract_features_hires.
+        """Only the original three return values -- see extract_features_hires.
 
-        נשמר כעטיפה במקום להרחיב את החתימה, כי לכל קורא קיים (שני המאמנים,
-        exploiter, כל סקריפטי המדידה, לולאת ה-live) יש פריקה של בדיוק שלושה
-        ערכים. הקוראים החמים בלבד עברו ל-extract_features_hires ומעבירים את
-        המפה הלאה; כל השאר נותנים ל-placement_given_card לבנות אותה מחדש מ-obs,
-        וזה **אותו חישוב בדיוק** (נבדק ב-test_recomputed_hires_equals_the_
-        passed_one), רק בעלות של conv אחד נוסף בנתיב קר.
+        Kept as a wrapper instead of widening the signature, because every
+        existing caller (both trainers, the exploiter, every measurement script,
+        the live loop) unpacks exactly three values. Only the hot callers moved
+        to extract_features_hires and pass the map on; everyone else lets
+        placement_given_card rebuild it from obs, which is EXACTLY THE SAME
+        computation (checked by test_recomputed_hires_equals_the_passed_one), at
+        the cost of one extra conv on a cold path.
         """
         combined, card_embeds, spatial_map, _ = self.extract_features_hires(obs)
         return combined, card_embeds, spatial_map
 
     def hires_features(self, obs):
-        """האקטיבציה של ה-trunk לפני הפולינג: (Batch, 16, 34, 18).
+        """The trunk's activation before pooling: (Batch, 16, 34, 18).
 
-        זהו הקלט של ענף הרזולוציה המלאה. מחושב מ-obs כדי שקורא שלא החזיק את
-        המפה יוכל לשחזר אותה בעצמו במקום לקבל ראש אחר בשקט.
+        This is the input of the full-resolution branch. Computed from obs so a
+        caller that did not keep the map can rebuild it itself, instead of
+        silently getting a different head.
         """
         spatial_obs = obs[:, :self.spatial_size].view(
             -1, self.channels, self.board_height, self.board_width)
@@ -1027,96 +1054,104 @@ class MicroRoyaleNet(nn.Module):
 
     def affordability_mask(self, obs):
         """
-        מסכת פעולות: אילו משבצות יד באמת ניתנות לשחק *עכשיו*, לפי האליקסיר
-        הנוכחי והעלויות -- שניהם כבר נמצאים בתוך וקטור התצפית עצמו, אז זה
-        מחושב בפייתון בלבד בלי שום קריאה נוספת למנוע.
+        Action mask: which hand slots are actually playable NOW, given the
+        current elixir and the costs -- both already inside the observation
+        vector, so this is computed in Python alone, with no extra engine call.
 
-        זה התיקון המשמעותי ביותר בצינור כולו. GameManager::playCard מחזירה
-        false בשקט כשאין מספיק אליקסיר -- בלי חריגה, בלי תגמול שלילי, בלי
-        שום סימן לסוכן. נמדד על המדיניות המאומנת (243 צעדי החלטה אמיתיים):
-        74.9% מכלל הצעדים היו ניסיון לשחק קלף שאין עליו אליקסיר, ורק 11.5%
-        מהצעדים באמת הניחו קלף. כלומר ב-~87% מהדגימות בכל rollout הפעולה
-        השמורה בבאפר לא השפיעה על העולם בכלל -- אותו next_state היה מתקבל
-        מכל פעולה אחרת -- וה-advantage שיוחס להן היה רעש טהור שנכנס ישר
-        לגרדיאנט. הסיבה מבנית ולא זמנית: התחדשות אליקסיר היא 0.035 לטיק
-        ו-skip_frames=10, כלומר 0.35 אליקסיר לצעד החלטה מול קלף שעולה 3-5,
-        אז בממוצע רק 0.55 מתוך 4 משבצות ניתנות לשחק ורק ב-27.2% מהצעדים יש
-        ולו אפשרות חוקית אחת.
+        This is the single most important fix in the whole pipeline.
+        GameManager::playCard returns false silently when there is not enough
+        elixir -- no exception, no negative reward, no signal to the agent at
+        all. Measured on the trained policy of the time (243 real decision
+        steps): 74.9% of all steps tried to play a card it could not afford,
+        and only 11.5% actually placed one. So in ~87% of the samples in every
+        rollout the action stored in the buffer had no effect on the world --
+        the same next_state would have followed any other action -- and the
+        advantage attributed to it was pure noise fed straight into the
+        gradient. The cause is structural, not transient: elixir regenerates at
+        0.035 per tick (at 1x) and skip_frames=10, i.e. 0.35 elixir per
+        decision against cards costing 3-5, so on average only 0.55 of the 4
+        slots were playable and only 27.2% of steps had even one legal option.
 
-        המסכה חייבת להיות מיושמת *זהה* באיסוף ה-rollout ובעדכון ה-PPO,
-        אחרת יחס ה-old/new logprob נשבר -- ולכן היא מחושבת מהתצפית עצמה
-        (שנשמרת בבאפר ממילא) ולא נשמרת בנפרד: אותו obs מייצר בהכרח אותה
-        מסכה בשתי הקריאות.
+        The mask must be applied IDENTICALLY in rollout collection and in the
+        PPO update, or the old/new logprob ratio breaks -- which is why it is
+        computed from the observation itself (stored in the buffer anyway)
+        rather than stored separately: the same obs necessarily produces the
+        same mask in both calls.
 
-        obs: (Batch, obs_dim). מחזיר bool tensor (Batch, hand_size+1);
-        העמודה האחרונה (no-op) תמיד True -- המתנה היא תמיד פעולה חוקית.
+        obs: (Batch, obs_dim). Returns a bool tensor (Batch, hand_size+1); the
+        last column (no-op) is always True -- waiting is always a legal action.
         """
         scalar_obs = obs[:, self.spatial_size:]
-        # אותו layout שבו ClashEnv::extractObservationForTeam בונה את
-        # scalar_obs: [elixir(1), costs(hand_size), onehots(...)]. שניהם
-        # מחולקים ב-10 שם, אז היחס ביניהם נכון בלי להכפיל בחזרה.
+        # The layout in which ClashEnv::extractObservationForTeam builds
+        # scalar_obs: [elixir(1), costs(hand_size), onehots(...)]. Both are
+        # divided by 10 there, so their ratio is right without scaling back.
         elixir = scalar_obs[:, 0:1]
         costs = scalar_obs[:, 1:1 + self.hand_size]
-        # cost <= 0 מסמן משבצת ריקה/לא חוקית (ראה ClashEnv: card ? cost/10 : 0)
-        # -- אף פעם לא קלף אמיתי בחינם.
+        # cost <= 0 marks an empty or invalid slot (see ClashEnv: card ? cost/10 : 0)
+        # -- never a real free card.
         playable = (costs > 0.0) & (costs <= elixir + 1e-6)
         noop = torch.ones(obs.shape[0], 1, dtype=torch.bool, device=obs.device)
         return torch.cat([playable, noop], dim=1)
 
     def hand_card_ids(self, obs):
         """
-        איזה card_id יושב בכל משבצת יד, לפי ה-one-hot שכבר נמצא ב-obs.
-        (Batch, hand_size) long. משבצת ריקה -> -1.
+        Which card_id sits in each hand slot, from the one-hot already in obs.
+        (Batch, hand_size) long. An empty slot -> -1.
 
-        נדרש למדדי האבחון החיים (כמה קלפים שונים הבוט באמת משחק): את זהות
-        הקלף חייבים לקרוא מה-obs שעליו התקבלה ההחלטה, לא מ-game.get_hand()
-        אחרי הצעד -- היד מסתובבת ברגע ששוחק קלף, אז קריאה מאוחרת מחזירה
-        את הקלף *הבא* ולא את זה שנבחר.
+        Needed by the live diagnostics (how many distinct cards the bot really
+        plays): a card's identity must be read from the obs the decision was
+        made on, not from game.get_hand() after the step -- the hand rotates as
+        soon as a card is played, so a late read returns the NEXT card, not the
+        one chosen.
         """
         scalar_obs = obs[:, self.spatial_size:]
         onehot_start = 1 + self.hand_size
         onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
         onehots = onehots.view(-1, self.hand_size, self.num_card_ids)
         ids = onehots.argmax(dim=-1)
-        # שורת one-hot ריקה (סכום 0) היא משבצת בלי קלף -- argmax היה מחזיר 0
-        # שהוא card_id חוקי (Knight), אז מסמנים אותה מפורשות.
+        # An empty one-hot row (sum 0) is a slot with no card -- argmax would
+        # return 0, which is a valid card_id (Knight), so mark it explicitly.
         return torch.where(onehots.sum(dim=-1) > 0.5, ids, torch.full_like(ids, -1))
 
     def elixir_from_obs(self, obs):
-        """אליקסיר נוכחי (0..10) מתוך ה-obs. ClashEnv מחלק ב-10 בבנייה."""
+        """Current elixir (0..10) from the obs. ClashEnv divides it by 10 when building it."""
         return obs[:, self.spatial_size] * 10.0
 
     def hand_costs_from_obs(self, obs):
-        """עלויות קלפי היד (0..10) מתוך ה-obs: טנזור (Batch, hand_size).
+        """Hand card costs (0..10) from the obs: a (Batch, hand_size) tensor.
 
-        אותו היפוך של החלוקה ב-10 ש-elixir_from_obs עושה, על הסקלרים שמייד
-        אחרי האליקסיר -- אותם היסטים בדיוק ש-affordability_mask קורא.
+        The same undoing of the divide-by-10 that elixir_from_obs does, on the
+        scalars right after the elixir -- exactly the offsets affordability_mask
+        reads.
 
-        מחזיר טנזור ולא רשימה, בעקבות elixir_from_obs שמעליו: קורא שרוצה
-        רשימה שטוחה לשורה בודדת כותב `[0].tolist()` במפורש, במקום שהפונקציה
-        תבליע בשקט את מימד ה-batch.
+        Returns a tensor, not a list, following elixir_from_obs above: a caller
+        that wants a flat list for a single row writes `[0].tolist()`
+        explicitly, instead of the function silently swallowing the batch
+        dimension.
 
-        קיים כאן כי היו לו שלושה עותקים מילוליים
+        It lives here because it had three literal copies
         (advisors/hybrid_policy.py, eval/gate_ab.py, perception/live/mvp_loop.py),
-        כל אחד עם ההיסט וה-10.0 כתובים ביד -- בדיוק דפוס ה"עותק שני של קבוע
-        מנוע" ש-CLAUDE.md אוסר, ושכבר התיישן פעמיים בפרויקט הזה.
+        each with the offset and the 10.0 written by hand -- exactly the "second
+        copy of an engine constant" pattern CLAUDE.md forbids, which has already
+        gone stale twice in this project.
 
-        לא מקפלים את זה לתוך SolvencyGate.mask: הבדיקה שם נבנית על
-        np.zeros(SPATIAL+1), כך שקריאת עלויות הייתה מחזירה פרוסה ריקה ולא
-        חריגה -- והבדיקה הייתה עוברת מבלי לבדוק דבר.
+        Not folded into SolvencyGate.mask: the test there is built on
+        np.zeros(SPATIAL+1), so reading costs would return an empty slice rather
+        than raise -- and the test would pass without checking anything.
         """
         s = self.spatial_size
         return obs[:, s + 1:s + 1 + self.hand_size] * 10.0
 
     def step_lstm_and_card(self, features, hidden_state, card_mask=None):
         """
-        חצי ראשון של הצעד הרקורנטי: מקדם את ה-LSTM ומחשב בחירת קלף + הערכת
-        מצב -- שניהם תלויים רק ב-hx, לא בקלף שעוד ייבחר. מופרד מהמיקום כדי
-        שקריאת ה-bootstrap value-only (ל-GAE) לעולם לא תצטרך לחשב מיקום
-        שהיא סתם תזרוק.
+        First half of the recurrent step: advances the LSTM and computes the
+        card choice and the state value -- neither depends on the card about to
+        be chosen. Kept apart from placement so the value-only bootstrap call
+        (for GAE) never has to compute a placement it would throw away.
         features: (Batch, lstm_input_dim)
-        card_mask: (Batch, hand_size+1) bool מ-affordability_mask, או None
-          (ללא מיסוך -- ההתנהגות הישנה, לשימוש רק היכן שאין תצפית זמינה).
+        card_mask: (Batch, hand_size+1) bool from affordability_mask, or None
+          (no masking -- the old behaviour, only for where no observation is
+          available).
         """
         hx, cx = self.lstm(features, hidden_state)
         # The cycle skip. Taken from `features` rather than recomputed, so it
@@ -1125,16 +1160,18 @@ class MicroRoyaleNet(nn.Module):
         head_in = self._head_input(hx, self._split_cycle(features))
         card_logits = self.card_head(head_in)
         if card_mask is not None:
-            # -inf ולא ערך שלילי גדול-אך-סופי: Categorical מנרמל דרך
-            # log_softmax, וערך סופי היה עדיין משאיר הסתברות זעירה אך אי-
-            # אפסית לפעולה בלתי-חוקית, כלומר גם דגימה נדירה שלה וגם תרומה
-            # לאנטרופיה. -inf נותן בדיוק אפס בשניהם. ה-no-op תמיד חוקי
-            # (ראה affordability_mask) אז אף שורה לא יכולה לצאת כולה -inf.
+            # -inf, not a large-but-finite negative: Categorical normalises
+            # through log_softmax, and a finite value would still leave a tiny
+            # but non-zero probability for an illegal action, i.e. both a rare
+            # sample of it and an entropy contribution. -inf gives exactly zero
+            # in both. The no-op is always legal (see affordability_mask), so no
+            # row can come out all -inf.
             card_logits = card_logits.masked_fill(~card_mask, float("-inf"))
         state_value = self.value_head(head_in)
-        # ראשי הצ'מפיון תלויים רק ב-hx, בדיוק כמו card_logits/state_value --
-        # לכן מחושבים כאן, לא ב-placement_given_card. None כשאין צ'מפיון
-        # בחפיסה (ראה num_ability_slots), והמאמן מדלג עליהם לגמרי.
+        # Like card_logits and state_value, the Champion heads never depend on
+        # the card about to be chosen, so they are computed here, not in
+        # placement_given_card. None when the deck has no Champion (see
+        # num_ability_slots), and the trainer skips them entirely.
         ability_slot1_logits = self.ability_slot1_head(hx) if self.ability_slot1_head is not None else None
         ability_slot2_logits = self.ability_slot2_head(hx) if self.ability_slot2_head is not None else None
         return card_logits, ability_slot1_logits, ability_slot2_logits, state_value, (hx, cx)
@@ -1143,76 +1180,89 @@ class MicroRoyaleNet(nn.Module):
                              spatial_map=None, hires_map=None,
                              ctx=None, ctx_hi=None, cycle_feat=None):
         """
-        חצי שני: מיקום מותנה ב-card_idx (שנדגם עכשיו, בזמן rollout, או נשמר
-        מהבאפר, בזמן עדכון PPO) -- זהו הצעד האוטורגרסיבי עצמו.
+        Second half: placement conditioned on card_idx (sampled just now at
+        rollout time, or read from the buffer during the PPO update) -- this is
+        the autoregressive step itself.
         hx: (Batch, 256). card_embeds: (Batch, hand_size+1, CARD_EMBED_DIM).
-        card_idx: (Batch,) טנזור long, ערכים ב-[0, hand_size] כולל.
+        card_idx: (Batch,) long tensor, values in [0, hand_size] inclusive.
 
-        מחזיר לוגיטים (Batch, placement_cells) על תאי לוח שלמים. ההמרה
-        לקואורדינטות אמיתיות היא cell_to_xy() למטה.
+        Returns logits (Batch, placement_cells) over whole board cells. The
+        conversion to real coordinates is cell_to_xy() below.
 
-        מפורק *כמפרק אחד* על כל התאים (ולא כמכפלה נפרדת של x ו-y): התפלגות
-        מפורקת p(x)*p(y) לא יכולה לייצג "או ליד הגשר השמאלי או בפינה
-        האחורית הימנית" בלי לפזר מסה גם על שתי הקומבינציות המעורבות, וזה
-        בדיוק סוג ההחלטה הדו-מודאלית שהמשחק דורש.
+        Factorised JOINTLY over all cells (not as a separate product of x and
+        y): a factorised p(x)*p(y) cannot represent "either near the left
+        bridge or in the back-right corner" without also spreading mass over
+        the two mixed combinations, and that is exactly the kind of bimodal
+        decision the game demands.
 
-        placement_cells = placement_rows * board_width = 34*18 = **612**, לא
-        288. התיקון הזה נעשה ב-2026-08-27: הערך 18*16=288 היה נכון רק כשראש
-        המיקום כיסה את החצי שלנו בלבד (16 שורות), ונשאר כאן אחרי שהראש הורחב
-        לכל 34 השורות כדי שלחש יוכל לחצות את הנהר. CLAUDE.md מונה את השורה
-        הזו בשמה כדוגמה לכלל "אל תשמור עותק שני של קבוע מנוע" -- וזה בדיוק
-        אותו כשל: מספר שהיה מדיד פעם, נשאר אחרי שהדבר שהוא תיאר השתנה.
+        placement_cells = placement_rows * board_width = 34*18 = **612**, not
+        288. Corrected on 2026-08-27: 18*16 = 288 was right only while the
+        placement head covered our half alone (16 rows), and it stayed here
+        after the head was widened to all 34 rows so a spell could cross the
+        river. CLAUDE.md names this line as an example of the "do not keep a
+        second copy of an engine constant" rule -- and it is exactly that
+        failure: a number that was once measurable, kept after the thing it
+        described changed.
 
-        שים לב ש-288 = 16*18 עדיין מופיע במקומות אחרים בקובץ (208/288 תאים
-        חוקיים, 91/288 שנוצלו) ושם הוא **נכון**: זה אזור ההצבה החוקי לכוח
-        רגיל, החצי שלנו בלבד. שני המספרים חיים זה לצד זה ומתארים דברים שונים,
-        וזו הסיבה שהערבוב היה קל.
+        Note that 288 = 16*18 still appears elsewhere in this file (208/288
+        legal cells, 91/288 used), and there it is CORRECT: that is the legal
+        deploy area for an ordinary troop, our half only. The two numbers live
+        side by side and describe different things, which is why mixing them
+        up was easy.
         """
         if spatial_map is None:
             raise ValueError(
-                "placement_given_card דורש את spatial_map מ-extract_features. "
-                "העברת None כאן הייתה מייצרת לוגיטים שונים מאלה שנוצרו ב-rollout, "
-                "ויחס ה-PPO היה נשבר בשקט -- לכן זו שגיאה ולא ברירת מחדל.")
+                "placement_given_card needs the spatial_map from extract_features. "
+                "Passing None here would produce different logits from the ones the "
+                "rollout produced, and the PPO ratio would break silently -- so this "
+                "is an error, not a default.")
 
         if hires_map is None and obs is None:
-            # אין נפילה שקטה לראש הגס-בלבד. פונקציה אחרת מזו שהריצה את
-            # ה-rollout הייתה שוברת את יחס ה-PPO בשקט -- בדיוק מה
-            # שהשמירה על spatial_map=None כבר קיימת בשבילו.
+            # No silent fallback to the coarse-only head. A different function
+            # from the one that ran the rollout would break the PPO ratio
+            # silently -- exactly what the spatial_map=None guard already exists
+            # for.
             #
-            # נבדק כאן, בראש הפונקציה, ולא במקום שבו hires_map נבנה: מאז
-            # תוספת ה-cycle skip יש **שתי** תלויות ב-obs, וההודעה הזו היא
-            # המדויקת יותר מבין השתיים -- קורא שקיבל את הודעת ה-cycle כשגם
-            # hires_map חסר היה מתקן את הדבר הלא נכון.
+            # Checked here, at the top of the function, not where hires_map is
+            # built: since the cycle skip was added there are TWO dependencies
+            # on obs, and this message is the more precise of the two -- a caller
+            # who got the cycle message while hires_map was also missing would
+            # fix the wrong thing.
             raise ValueError(
-                "placement_given_card דורש hires_map או obs כדי לבנות "
-                "אותו (ראה hires_features). None בשניהם היה מחשב ראש "
-                "אחר מזה שהריץ את ה-rollout.")
+                "placement_given_card needs hires_map, or obs to build it "
+                "(see hires_features). None in both would compute a different "
+                "head from the one that ran the rollout.")
 
         batch_idx = torch.arange(card_embeds.shape[0], device=card_embeds.device)
         chosen_embed = card_embeds[batch_idx, card_idx]  # (Batch, CARD_EMBED_DIM)
-        # הקשר -> 32 ערוצים, משודר על כל תא במפה המרחבית. חיבור ולא שרשור:
-        # כך "מה המצב הכללי ואיזה קלף" מזיז את כל מפת הלוגיטים, בעוד המבנה
-        # המקומי של הלוח נשאר במפה עצמה.
-        # ctx/ctx_hi מסופקים מבחוץ רק ע"י מסלול דחיסת-השורות ב-forward_sequence,
-        # שמחשב אותם על **כל** האצווה ואז חותך. הסיבה נמדדה: nn.Linear (GEMM)
-        # **אינו** בלתי-תלוי בגודל האצווה על ה-backend הזה -- Linear(280->32)
-        # נבדל ב-4.768e-07 ב-forward וב-2.289e-05 ב-grad_W בין אצווה 500 ל-167.
-        # שתי השכבות האלה הן ~0.5% מעלות הראש, אז חישוב מלא + חיתוך כמעט חינם,
-        # והוא מה שהופך את ה**לוגיטים** בשורות שנשמרות ל-bit-identical.
+        # Context -> 32 channels, broadcast over every cell of the spatial map.
+        # Addition, not concatenation: "what is the overall situation, and which
+        # card" shifts the whole logit map, while the local structure of the
+        # board stays in the map itself.
+        # ctx/ctx_hi are supplied from outside only by the row-compaction path in
+        # forward_sequence, which computes them over the WHOLE batch and then
+        # slices. The reason was measured: nn.Linear (GEMM) is NOT independent of
+        # batch size on this backend -- Linear(280->32) differs by 4.768e-07 in
+        # the forward and by 2.289e-05 in grad_W between batch 500 and 167. These
+        # two layers are ~0.5% of the head's cost, so computing in full and
+        # slicing is nearly free, and it is what makes the LOGITS of the kept
+        # rows bit-identical.
         #
-        # **אבל זה לא הופך את המשקלים ל-bit-identical, ואסור לקרוא את זה כך.**
-        # גם grad_W של Conv2d תלוי בגודל האצווה -- אך רק בחלק מהצורות, וזו
-        # בדיוק המלכודת: בדיקה ראשונה על 18x10 החזירה "בלתי-תלוי" ונרשמה כאן
-        # ככזו, וסריקה על שאר הצורות הפריכה אותה. נמדד 500->184, גרדיאנט נכנס
-        # אפס מדויק בשורות שהושמטו:
+        # **But it does not make the WEIGHTS bit-identical, and it must not be read that way.**
+        # Conv2d's grad_W also depends on batch size -- but only for some
+        # shapes, and that is exactly the trap: a first check at 18x10 came back
+        # "independent" and was recorded here as such, and a sweep over the
+        # other shapes refuted it. Measured 500 -> 184, with an exactly-zero
+        # incoming gradient on the dropped rows:
         #
-        #     place_up.1    Conv2d(32,16) 18x10   זהה ביט-לביט
-        #     place_up.4    Conv2d(16,8)  36x20   נבדל ב-5.814e-03
-        #     place_up.6    Conv2d(8,1)   36x20   נבדל ב-2.808e-03
-        #     place_hires.0 Conv2d(24,8)  34x18   נבדל ב-4.883e-03
+        #     place_up.1    Conv2d(32,16) 18x10   bit-identical
+        #     place_up.4    Conv2d(16,8)  36x20   differs by 5.814e-03
+        #     place_up.6    Conv2d(8,1)   36x20   differs by 2.808e-03
+        #     place_hires.0 Conv2d(24,8)  34x18   differs by 4.883e-03
         #
-        # זה חוסם **כל** סכימת דחיסת-שורות מלהיות bit-exact ברמת המשקלים. מה
-        # שכן מובטח, ונמדד: הלוגיטים בשורות שנשמרות, וה-loss עצמו.
+        # This blocks ANY row-compaction scheme from being bit-exact at the level
+        # of the weights. What IS guaranteed, and measured: the logits of the
+        # kept rows, and the loss itself.
         # The cycle skip, on the same terms as `hires_map` two blocks down:
         # supplied by the hot caller, else rebuilt from `obs`, else an error --
         # never a silent zero. A zero block here would compute a DIFFERENT head
@@ -1236,12 +1286,13 @@ class MicroRoyaleNet(nn.Module):
         logits = logit_map[:, 0, :self.placement_rows, :self.board_width].reshape(
             -1, self.placement_cells)
 
-        # --- ענף הרזולוציה המלאה, כשארית --------------------------------
-        # הקצה הגס למעלה יודע "איפה בערך"; זה בוחר את המשבצת בתוך הבלוק.
-        # מאותחל-אפס, אז באתחול השורה הזו מוסיפה אפס מדויק (לא "בקירוב"):
-        # הקונבולוציה האחרונה מאופסת במשקל ובהטיה, ולכן הפלט הוא טנזור אפס
-        # מדויק והחיבור השיורי מדויק. זה מה שמאפשר לצ'קפוינטים קיימים
-        # להיטען ולהתנהג bit-identical.
+        # --- the full-resolution branch, as a residual -----------------------
+        # The coarse path above knows roughly where; this picks the tile inside
+        # the block. Zero-initialised, so at initialisation this line adds an
+        # EXACT zero (not "approximately"): the last convolution is zeroed in
+        # weight and bias, so its output is an exact zero tensor and the
+        # residual sum is exact. That is what lets existing checkpoints load and
+        # behave bit-identically.
         if hires_map is None:
             hires_map = self.hires_features(obs)
         if ctx_hi is None:
@@ -1254,11 +1305,11 @@ class MicroRoyaleNet(nn.Module):
         logits = logits + fine[:, 0, :self.placement_rows, :self.board_width].reshape(
             -1, self.placement_cells)
         if obs is not None:
-            # מיסוך חוקיות מותנה-קלף. -inf ולא ערך סופי, מאותה סיבה בדיוק
-            # כמו ב-step_lstm_and_card: Categorical מנרמל דרך log_softmax,
-            # אז ערך סופי היה משאיר הסתברות זעירה לתא לא חוקי ותרומה
-            # לאנטרופיה. תמיד יש לפחות שורה חוקית אחת, אז אף שורה לא יוצאת
-            # כולה -inf.
+            # Per-card legality mask. -inf, not a finite value, for exactly the
+            # same reason as in step_lstm_and_card: Categorical normalises
+            # through log_softmax, so a finite value would leave a tiny
+            # probability on an illegal cell and an entropy contribution. There
+            # is always at least one legal cell, so no row comes out all -inf.
             logits = logits.masked_fill(~self.placement_mask(obs, card_idx), float("-inf"))
         return logits
 
@@ -1267,29 +1318,34 @@ class MicroRoyaleNet(nn.Module):
                          extra_card_idx_seq=None, hires_seq=None,
                          active_rows=None, with_ability=False):
         """
-        חלופה מאוחדת ל-forward_from_features בלולאה על timesteps.
-        מתמטית **זהה** לחלוטין -- מוודא בבדיקת bit-identity ייעודית.
+        A batched replacement for looping forward_from_features over timesteps.
+        Mathematically IDENTICAL -- checked by a dedicated bit-identity test.
 
-        למה זה קיים: רק ה-LSTM באמת רקורנטי. כל מה שאחריו (ראש קלף, ערך, עזר,
-        מיקום) הוא נקודתי בזמן, אבל הלולאה הריצה אותו L פעמים על באצ' של B=8.
-        על CPU זה נשלט ע"י תקורה ולא ע"י חישוב: נמדד 35.3ms ל-25 קריאות של
-        ראשי הקלף/ערך/עזר, מול 0.7ms לקריאה אחת על L*B=200 -- פי 48. ראש
-        המיקום מרוויח פי 1.3 (הוא חסום-חישוב, לא חסום-תקורה).
+        Why it exists: only the LSTM is truly recurrent. Everything after it
+        (card head, value, aux, placement) is pointwise in time, but the loop
+        ran it L times on a batch of B=8. On CPU that is dominated by overhead,
+        not compute: measured 35.3 ms for 25 calls of the card/value/aux heads,
+        against 0.7 ms for one call on L*B=200 -- 48x. The placement head gains
+        1.3x (it is compute-bound, not overhead-bound).
 
-        בסך הכול זה חוסך ~5% מזמן העדכון, לא יותר -- ה-CNN וה-deconv הם עדיין
-        84% מהעלות. זה שווה את זה רק בגלל שהשקילות ניתנת להוכחה.
+        Overall this saves ~5% of update time, no more -- the CNN and the
+        placement convolutions are still 84% of the cost. It is worth it only
+        because the equivalence is provable.
 
         feats_seq/obs_seq/card_mask_seq/card_idx_seq/reset_seq: (L, B, ...).
-        מחזיר card_logits (L,B,hand+1), place_logits (L,B,cells),
-        values (L,B), aux_card_logits (L,B,C), ומצב חבוי סופי.
+        Returns card_logits (L,B,hand+1), place_logits (L,B,cells),
+        values (L,B), aux_card_logits (L,B,C), the final hidden state, and the
+        coverage-pass logits (or None); with_ability=True appends the ability
+        logits.
         """
         L, B = feats_seq.shape[0], feats_seq.shape[1]
         hx, cx = hidden_state
         hx_steps = []
         for l in range(L):
             hx, cx = self.lstm(feats_seq[l], (hx, cx))
-            # נאסף **לפני** ה-reset, בדיוק כמו בלולאה המקורית: הראשים בצעד l
-            # משתמשים במצב שאחרי ה-LSTM ולפני איפוס סוף-אפיזודה.
+            # Collected BEFORE the reset, exactly as in the original loop: the
+            # heads at step l use the state after the LSTM and before the
+            # end-of-episode reset.
             hx_steps.append(hx)
             reset = reset_seq[l].unsqueeze(1)
             hx = hx * reset
@@ -1312,36 +1368,40 @@ class MicroRoyaleNet(nn.Module):
         # and handed the skip it would answer straight off the branch.
         aux = self.aux_card_head(flat_hx)
 
-        # נבנית פעם אחת ומשותפת לשתי הקריאות למטה. בלי זה מעבר הכיסוי היה
-        # משחזר את conv1 של ה-trunk בפעם השנייה על אותו קלט בדיוק.
+        # Built once and shared by both calls below. Without it the coverage
+        # pass would recompute the trunk's conv1 a second time on exactly the
+        # same input.
         flat_obs = obs_seq.reshape(L * B, -1)
         flat_hires = (self.hires_features(flat_obs) if hires_seq is None
                       else hires_seq.reshape(L * B, *hires_seq.shape[2:]))
         flat_embeds = card_embeds_seq.reshape(L * B, *card_embeds_seq.shape[2:])
         flat_spatial = spatial_seq.reshape(L * B, *spatial_seq.shape[2:])
 
-        # --- דחיסת שורות (2026-08-24) ----------------------------------------
-        # ראש המיקום הוא ~41% מזמן העדכון והוא רץ כאן **פעמיים** (הקלף שנבחר +
-        # משבצת הכיסוי). כל צרכני שני הפלטים ממוסכים ב-decision: actor_loss
-        # ב-mb_decision, אנטרופיית המיקום ב-mb_placed (תת-קבוצה שלו), clip_frac
-        # ב-mb_decision, ושני חצאי coverage_terms ב-decision. נמדד על
-        # model_weights_selfplay.pth לאורך 1500 צעדים: decision דולק ב-0.368
-        # מהשורות, כלומר **63.2% מהקונבולוציות האלה מוכפלות באפס מדויק**.
+        # --- row compaction (2026-08-24) --------------------------------------
+        # The placement head is ~41% of update time and runs here TWICE (the
+        # chosen card + the coverage slot). Every consumer of both outputs is
+        # masked by decision: actor_loss by mb_decision, placement entropy by
+        # mb_placed (a subset of it), clip_frac by mb_decision, and both halves
+        # of coverage_terms by decision. Measured on model_weights_selfplay.pth
+        # over 1500 steps: decision fires on 0.368 of rows, i.e. **63.2% of these
+        # convolutions were multiplied by an exact zero**.
         #
-        # active_rows=None משחזר בדיוק את ההתנהגות הקודמת, ולכן שום קורא קיים
-        # לא מושפע.
+        # active_rows=None reproduces the previous behaviour exactly, so no
+        # existing caller is affected.
         #
-        # המילוי הוא **אפס ולא -inf**, וזו בחירה נושאת-משקל: שורה שכולה -inf
-        # נותנת Categorical.entropy() = nan, ו-nan * 0.0 = nan היה מרעיל כל
-        # סכום ממוסך בעדכון. כל מילוי **סופי** נותן finite * 0.0 == 0.0 בדיוק,
-        # וזה בדיוק מה שהמסלול הישן ייצר שם -- ולכן כל רדוקציה ממוסכת שומרת
-        # על הצורה, הסדר והערכים שלה, וה-loss יוצא bit-identical.
+        # The fill is **zero, not -inf**, and that choice is load-bearing: an all
+        # -inf row gives Categorical.entropy() = nan, and nan * 0.0 = nan would
+        # poison every masked sum in the update. Any FINITE fill gives
+        # finite * 0.0 == 0.0 exactly, which is exactly what the old path
+        # produced there -- so every masked reduction keeps its shape, order and
+        # values, and the loss comes out bit-identical.
         #
-        # שתי שכבות ההקשר הליניאריות מחושבות על **כל** האצווה ורק אז נחתכות,
-        # כי GEMM אינו בלתי-תלוי בגודל אצווה. ראה placement_given_card -- שם
-        # גם מתועד למה **המשקלים** בכל זאת אינם bit-identical (grad_W של
-        # Conv2d תלוי-אצווה בצורות 36x20 ו-34x18), וזו מגבלת backend שאף
-        # מימוש של דחיסת שורות לא יכול לעקוף.
+        # The two linear context layers are computed over the WHOLE batch and
+        # only then sliced, because GEMM is not batch-size independent. See
+        # placement_given_card -- which also documents why the WEIGHTS are
+        # nevertheless not bit-identical (Conv2d's grad_W is batch-dependent at
+        # the 36x20 and 34x18 shapes), a backend limit no row-compaction
+        # implementation can get around.
         def _placement(idx_seq):
             flat_idx = idx_seq.reshape(L * B)
             if active_rows is None:
@@ -1350,9 +1410,10 @@ class MicroRoyaleNet(nn.Module):
                     hires_map=flat_hires, cycle_feat=flat_cycle)
             out = flat_hx.new_zeros(L * B, self.placement_cells)
             if active_rows.numel() == 0:
-                # אצווה ריקה מגיעה ל-Conv2d; מדלגים לגמרי. זה לא מקרה קצה
-                # תיאורטי -- chunk שכולו צעדים כפויים הוא בדיוק מה שסוכן
-                # פושט-רגל מייצר, ונמדד P(אין מה להרשות) = 73.9%.
+                # An empty batch would reach Conv2d; skip it entirely. This is
+                # not a theoretical corner case -- a chunk made entirely of
+                # forced steps is exactly what a bankrupt agent produces, and
+                # P(nothing affordable) measured 73.9%.
                 return out
             rows = torch.arange(L * B, device=flat_hx.device)
             joint = torch.cat((flat_head, flat_embeds[rows, flat_idx]), dim=-1)
@@ -1368,17 +1429,19 @@ class MicroRoyaleNet(nn.Module):
         place_logits = _placement(card_idx_seq)
 
         # --- placement COVERAGE pass (optional) -----------------------------
-        # מפת המיקום של קלף *אחר* מזה שנבחר, על אותם flat_hx/spatial בדיוק.
-        # קיים כדי לסגור חור-כיסוי בגרדיאנט: גם actor_loss וגם בונוס
-        # האנטרופיה זורמים רק דרך placement_given_card של הקלף ש**נבחר**, ולכן
-        # קלף שהמדיניות הפסיקה לשחק לא מקבל שום גרדיאנט מיקום לעולם והראש שלו
-        # קופא. נמדד: Cannon/Fireball/Giant החזירו את התא הקבוע (11,0) ב-54%-91%
-        # מהמצבים, והנחת Cannon בתא של המדיניות שימרה 121 HP של מגדלים מול 396
-        # לתא אקראי חוקי -- גרוע מאקראי, כלומר פונקציה שבורה ולא הערכת ערך.
+        # The placement map of a card OTHER than the chosen one, on exactly the
+        # same flat_hx/spatial. It exists to close a coverage hole in the
+        # gradient: both actor_loss and the entropy bonus flow only through the
+        # placement_given_card of the card that was CHOSEN, so a card the policy
+        # stopped playing never gets placement gradient again and its head
+        # freezes. Measured: Cannon/Fireball/Giant returned the fixed cell (11,0)
+        # in 54%-91% of states, and a Cannon at the policy's cell saved 121 tower
+        # HP against 396 for a random legal cell -- worse than random, i.e. a
+        # broken function rather than a value judgement.
         #
-        # מחזיר לוגיטים בלבד; מי שקורא מחליט מה לעשות איתם (train.py מוסיף
-        # אנטרופיה). אין כאן שום פרמטר חדש -- הראש הוא אותו ראש -- ולכן שום
-        # צ'קפוינט לא נפסל.
+        # Returns logits only; the caller decides what to do with them (train.py
+        # adds entropy). There is no new parameter here -- the head is the same
+        # head -- so no checkpoint is invalidated.
         extra_logits = None
         if extra_card_idx_seq is not None:
             extra_logits = _placement(extra_card_idx_seq).view(L, B, -1)
@@ -1411,33 +1474,36 @@ class MicroRoyaleNet(nn.Module):
 
     def placement_mask(self, obs, card_idx):
         """
-        אילו תאי לוח חוקיים לקלף שנבחר. (Batch, placement_cells) bool.
+        Which board cells are legal for the chosen card. (Batch, placement_cells) bool.
 
-        המנוע (GameManager::isValidPlacement) מבחין בין שניים:
-          * כוח רגיל -- רק החצי שלנו, y <= get_own_half_max_y().
-          * לחש      -- כל הלוח; מגבלת החצי מדולגת לגמרי.
-        עד עכשיו הפייתון כפה את המקרה המחמיר על שניהם (target_y נחסם ב-15.5
-        תמיד), ולכן Fireball לא יכול היה לחצות את הנהר אף פעם. המסכה הזו
-        מחזירה את ההבחנה למקום שבו היא שייכת.
+        The engine (GameManager::isValidPlacement) distinguishes two cases:
+          * an ordinary troop -- our half only, y <= get_own_half_max_y().
+          * a spell           -- the whole board; the half rule is skipped.
+        Before this mask, Python forced the stricter case on both (target_y was
+        always capped at 15.5), so Fireball could never cross the river. This
+        mask puts the distinction back where it belongs.
 
-        זהות הלחש נגזרת מה-one-hot שכבר יושב ב-obs כפול spell_flags, בלי
-        קריאה למנוע ובלי argmax -- כלומר עובד על באצ' שלם ומשחזר בדיוק את
-        אותה מסכה בעדכון ה-PPO כמו ב-rollout.
+        Which cards are exempt from the half rule is read from the one-hot
+        already in obs times row_free_flags (spells and deploy-anywhere
+        troops), with no engine call and no argmax -- so it works on a whole
+        batch and reproduces exactly the same mask in the PPO update as in the
+        rollout.
 
-        no-op (card_idx == hand_size): המנוע מתעלם מהמיקום לגמרי, אז מחזירים
-        את מסכת החצי שלנו רק כדי שההתפלגות תישאר מוגדרת-היטב ולא ריקה.
+        no-op (card_idx == hand_size): the engine ignores the placement
+        entirely, so the our-half mask is returned only to keep the
+        distribution well-defined and non-empty.
         """
         batch = obs.shape[0]
         scalar_obs = obs[:, self.spatial_size:]
         onehot_start = 1 + self.hand_size
         onehots = scalar_obs[:, onehot_start:onehot_start + self.hand_size * self.num_card_ids]
         onehots = onehots.view(batch, self.hand_size, self.num_card_ids)
-        # (Batch, hand_size) -- 1.0 היכן שהמשבצת מחזיקה לחש
+        # (Batch, hand_size) -- 1.0 where the slot holds a spell
         # "spell" here means "exempt from the own-half ROW rule", which covers
         # deploy-anywhere troops too (row_free_flags). Reading spell_flags
         # instead confined a Miner to its own half: audit 06, E-1.
         slot_is_spell = (onehots * self.row_free_flags.view(1, 1, -1)).sum(dim=-1)
-        # הרחבה למשבצת ה-no-op (אף פעם לא לחש)
+        # Extend to the no-op slot (never a spell)
         slot_is_spell = torch.cat(
             [slot_is_spell, torch.zeros(batch, 1, device=obs.device, dtype=slot_is_spell.dtype)], dim=1)
         chosen_is_spell = slot_is_spell.gather(1, card_idx.view(-1, 1)).squeeze(1) > 0.5  # (Batch,)
@@ -1449,34 +1515,37 @@ class MicroRoyaleNet(nn.Module):
         mask = allowed_rows.expand(batch, self.placement_rows, self.board_width)
         mask = mask.reshape(batch, self.placement_cells)
 
-        # ...ועכשיו גם מה שהמנוע באמת מקבל, ולא רק חצי-הלוח.
+        # ...and now also what the engine actually accepts, not just the half-board.
         #
-        # המסכה למעלה מתירה כל שורה בחצי שלנו. GameManager::isValidPlacement
-        # לא: הוא דוחה גם את Board::isBackRowDeadZone וגם את טביעת-הרגל של
-        # המגדלים. playCard מחזיר false בשקט, בלי חריגה ובלי סיגנל, ולכן
-        # פעולה כזו זהה ל-no-op בהשפעתה וה-advantage שלה הוא רעש טהור
-        # שנכנס לגרדיאנט. זו בדיוק המחלה שמסכת-האפשרות (affordability) נבנתה
-        # כדי לסגור, שנשארה פתוחה בציר המיקום.
+        # The mask above allows every row on our half. GameManager::isValidPlacement
+        # does not: it also rejects Board::isBackRowDeadZone and the towers'
+        # footprints. playCard returns false silently, with no exception and no
+        # signal, so such an action has the same effect as a no-op and its
+        # advantage is pure noise fed into the gradient. This is exactly the
+        # disease the affordability mask was built to cure, left open on the
+        # placement axis.
         #
-        # נמדד על צ'קפוינט ep~45,800, 1,340 צעדי החלטה: 58.7% מבחירות הקלף
-        # נדחו כאן. 94.8% מהדחיות בשורה y=0. אפס דליפות באפשרות.
+        # Measured on the ep~45,800 checkpoint over 1,340 decision steps: 58.7% of
+        # the card choices were rejected here, 94.8% of the rejections on row
+        # y=0. Zero leaks through the affordability mask.
         #
-        # הטבלה נגזרת מ-is_valid_placement של המנוע, לא מחושבת מחדש בפייתון:
-        # הפרדיקט מרכיב גבולות לוח, dead-zone, placementRadius/isSpell/
-        # deployAnywhere וטביעת-רגל של מגדלים. עותק שני של הגיאומטריה הזו הוא
-        # בדיוק הסחיפה שהפרויקט כבר שילם עליה פעמיים.
+        # The table is derived from the engine's is_valid_placement, not
+        # recomputed in Python: the predicate combines the board bounds, the dead
+        # zone, placementRadius/isSpell/deployAnywhere and the towers'
+        # footprints. A second copy of that geometry is exactly the drift this
+        # project has already paid for twice.
         if self._placement_legal is not None:
             table = self._placement_legal.to(obs.device)
             slot_ids = onehots.argmax(dim=-1)                       # (B, hand)
-            # משבצת ריקה: ה-one-hot כולו אפס ו-argmax מחזיר 0, שהוא מזהה קלף
-            # חוקי. מסמנים אותה במפורש כדי שלא תיקרא בטעות כקלף 0.
+            # An empty slot: the one-hot is all zero and argmax returns 0, which
+            # is a valid card id. Mark it explicitly so it is never read as card 0.
             slot_empty = onehots.sum(dim=-1) <= 0.0                 # (B, hand)
             slot_ids = torch.where(slot_empty, torch.full_like(slot_ids, -1), slot_ids)
             noop = torch.full((batch, 1), -1, device=obs.device, dtype=slot_ids.dtype)
             slot_ids = torch.cat([slot_ids, noop], dim=1)
             chosen_id = slot_ids.gather(1, card_idx.view(-1, 1)).squeeze(1)
-            # שורה אחרונה בטבלה = fallback מתירני ל-no-op/משבצת ריקה, כדי
-            # שההתפלגות תישאר מוגדרת-היטב (אף שורה לא כולה -inf).
+            # The table's last row is a permissive fallback for the no-op / an
+            # empty slot, so the distribution stays well-defined (no row all -inf).
             chosen_id = torch.where(chosen_id < 0,
                                     torch.full_like(chosen_id, table.shape[0] - 1),
                                     chosen_id)
@@ -1522,14 +1591,15 @@ class MicroRoyaleNet(nn.Module):
 
     def cell_to_xy(self, cell_idx):
         """
-        אינדקס תא -> קואורדינטות לוח אמיתיות שהמנוע מקבל.
-        cell_idx: טנזור long כלשהו. מחזיר (x, y) טנזורי float באותה צורה.
+        Cell index -> the real board coordinates the engine accepts.
+        cell_idx: any long tensor. Returns (x, y) float tensors of the same shape.
 
-        row-major, זהה לפריסה של placement_head. x=עמודה ו-y=שורה כערכים
-        שלמים בדיוק: העמודה המקסימלית היא board_width-1 = get_max_placement_x()
-        והשורה המקסימלית היא placement_rows-1 = 15 <= get_own_half_max_y()
-        (15.5), כלומר כל תא נופל בתוך התחום שהמנוע אוכף -- אין צורך ב-clamp
-        ואף תא לא "מתגלגל" בשקט לגבול.
+        Row-major, matching the placement head's layout. x = column and y = row,
+        as exact integers: the largest column is board_width - 1 =
+        get_max_placement_x() and the largest row is placement_rows - 1 =
+        BOARD_HEIGHT - 1, so every cell falls inside the board the engine
+        enforces -- no clamp is needed and no cell silently rolls onto the edge.
+        Which cells a given card may use is placement_mask's job.
         """
         row = torch.div(cell_idx, self.board_width, rounding_mode="floor")
         col = cell_idx % self.board_width
@@ -1538,15 +1608,17 @@ class MicroRoyaleNet(nn.Module):
     def forward_from_features(self, features, card_embeds, hidden_state, card_idx,
                               card_mask=None, obs=None, spatial_map=None):
         """
-        עוטף את שני החצאים ביחד, לשימוש כש-card_idx כבר ידוע מראש (עדכון PPO,
-        עם הפעולה השמורה מהבאפר -- קריטי: תמיד להעביר את card_idx *השמור*
-        כאן, לא דגימה טרייה, אחרת יחס ה-PPO (ratio) בין old/new logprob
-        מתקלקל). לא שימושי בזמן איסוף rollout (שם card_idx עוד לא ידוע לפני
-        שדוגמים אותו מ-card_logits) -- שם קוראים ל-step_lstm_and_card ואז
-        ל-placement_given_card בנפרד, ראה train.py/train_selfplay.py.
+        Runs both halves together, for use when card_idx is already known (the
+        PPO update, with the action stored in the buffer -- critical: always
+        pass the STORED card_idx here, never a fresh sample, or the PPO ratio
+        between the old and new logprob breaks). Not useful during rollout
+        collection (card_idx is not known there until it is sampled from
+        card_logits) -- there, call step_lstm_and_card and then
+        placement_given_card separately; see train.py / train_selfplay.py.
 
-        card_mask חייבת להיות אותה מסכה שהופעלה בזמן ה-rollout (בפועל:
-        מחושבת מחדש מאותו obs שנשמר בבאפר -- ראה affordability_mask).
+        card_mask must be the same mask that was applied at rollout time (in
+        practice: recomputed from the same obs stored in the buffer -- see
+        affordability_mask).
         """
         (card_logits, ability_slot1_logits, ability_slot2_logits, state_value,
          (hx, cx)) = self.step_lstm_and_card(features, hidden_state, card_mask)

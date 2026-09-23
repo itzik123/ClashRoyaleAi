@@ -3042,6 +3042,13 @@ docs/design/         Design specs and implementation plans. Write NEW ones
                      superpowers plugin's default docs/superpowers/.
 LICENSE              MIT. The vendored CRBAB keeps its own MIT notice in
                      perception/clashroyalebuildabot/LICENSE.md.
+.github/workflows/cpp-tests.yml
+                     CI: builds and runs the Catch2 suite with MSVC on
+                     windows-latest, on pushes/PRs touching include/, src/,
+                     tests/ or CMakeLists.txt. Drives the README's live badge.
+                     It does NOT build the .pyd or run the Python suites.
+docs/assets/         README GIF and the 1280x640 social preview image.
+python_ai/archive_*/ Local checkpoint archives, gitignored since 2026-09-23.
 perception/          Screen -> placement events -> simulator as estimator.
                      Self-contained: own venv, own requirements.txt.
 web/viewer.html      Replay viewer.

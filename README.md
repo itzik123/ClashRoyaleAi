@@ -8,7 +8,7 @@
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-2%2C100%2B-2ea44f)
+[![C++ tests](https://github.com/itzik123/ClashRoyaleAi/actions/workflows/cpp-tests.yml/badge.svg)](https://github.com/itzik123/ClashRoyaleAi/actions/workflows/cpp-tests.yml)
 
 <img src="docs/assets/teacher-simulation-view.gif" alt="Replay viewer with the Simulation View open: the opponent's candidate plays, each shown with the board it predicts 10 seconds ahead, changing every second as a Skeleton Army floods the arena" width="880">
 

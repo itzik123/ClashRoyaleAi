@@ -260,17 +260,18 @@ class MicroRoyaleEnv(gym.Env):
     def __init__(self, env_config=None):
         super().__init__()
         
-        # אם לא הועברה קונפיגורציה, ניצור מילון ריק
+        # No config passed: fall back to an empty dict.
         if env_config is None:
             env_config = {}
             
-        # משיכת ההגדרות עם ערכי ברירת מחדל הגיוניים, ללא Hard-coding מחייב
+        # Every setting is read with a sensible default; nothing is hard-coded.
         ai_deck = env_config.get("ai_deck", list(DEFAULT_DECK))
-        # ברירת מחדל: היריב משחק עם אותה חפיסה בדיוק (mirror match). נמדד אמפירית
-        # שחפיסה רנדומלית מהמאגר חזקה בעשרות אחוזי win-rate מהחפיסה הקבועה (במנוע
-        # הזה יחידות-ענק דורסות חפיסת cycle), כך שאימון מול חפיסות רנדומליות מציב
-        # את הסוכן במשחק כמעט-אבוד מראש ואות הניצחון/הפסד נעלם. גיוון חפיסות שייך
-        # לשלב קוריקולום מאוחר, אחרי שהסוכן לומד לנצח במשחק מאוזן.
+        # Default: the opponent plays exactly the same deck (a mirror match).
+        # Measured: a random deck from the registry wins tens of percentage points
+        # more than the fixed deck (in this engine, giant units crush a cycle deck),
+        # so training against random decks starts the agent in a nearly lost game
+        # and the win/loss signal disappears. The phase-1 trainer overrides this
+        # default with the meta-deck pool (`deck_pool`, below).
         self.ai_deck = list(ai_deck)
         # The card the two spell reward terms follow, measured by injection and
         # cached per process -- see deck_spell_info.
@@ -318,7 +319,7 @@ class MicroRoyaleEnv(gym.Env):
             self._deck_rng = random.Random(
                 random.randrange(1 << 30) if seed_cfg is None else seed_cfg)
         max_ticks = env_config.get("max_ticks", 3600)
-        # וו לתכנית לימודים: מכפיל קצב האליקסיר של היריב (1.0 = רגיל, ערך גבוה מדמה יריב אגרסיבי/כמעט-בלתי-מוגבל)
+        # Curriculum hook: the opponent's elixir-rate multiplier (1.0 = normal; higher simulates an aggressive, nearly unlimited opponent).
         opp_elixir_multiplier = env_config.get("opp_elixir_multiplier", 1.0)
         # Tower Troops: per-match config like the deck itself, not a per-step
         # action -- see GameManager's constructor. NONE (the default)
@@ -382,10 +383,11 @@ class MicroRoyaleEnv(gym.Env):
             self.teacher.reset()
 
         self.action_space = spaces.Dict({
-            # אינדקס HAND_SIZE = no-op (לא לשחק קלף הצעד הזה). המנוע מתעלם מ-cardIndex
-            # מחוץ ל-[0,HAND_SIZE), כך שהסוכן יכול סוף-סוף לאגור אליקסיר במקום להיות
-            # מאולץ לשחק. הגבולות נשלפים חי מהמנוע (לא hardcoded) כדי שלא יהיה
-            # צורך לסנכרן ידנית אם גודל הלוח/היד ישתנה בצד ה-C++.
+            # Index HAND_SIZE is the no-op: play no card this step. The engine ignores
+            # a cardIndex outside [0, HAND_SIZE), so the agent can bank elixir instead
+            # of being forced to play. The bounds are read live from the engine, not
+            # hard-coded, so nothing needs syncing by hand if the C++ side changes the
+            # board or hand size.
             "card_index": spaces.Discrete(clash_royale_env.ClashRoyaleEnv.HAND_SIZE + 1),
             "target_x": spaces.Box(low=0.0, high=self.game.get_max_placement_x(), shape=(1,), dtype=np.float32),
             # Full board height, not get_own_half_max_y(). Spells are exempt
@@ -397,12 +399,12 @@ class MicroRoyaleEnv(gym.Env):
             # cells are legal for the card actually chosen this step.
             "target_y": spaces.Box(low=0.0, high=float(clash_royale_env.ClashRoyaleEnv.BOARD_HEIGHT - 1),
                                    shape=(1,), dtype=np.float32),
-            # הפעלת יכולת צ'מפיון -- שתי משבצות עצמאיות (1=Heroic, 2=Wild Card,
-            # ראו CardRegistry::validateDeckSlots), כי דק יכול להכיל עד 2
-            # צ'מפיונים בו-זמנית. כל אחת: 0 = לא להפעיל, 1 = להפעיל עכשיו אם יש
-            # צ'מפיון פרוס באותה משבצת, לא ב-cooldown, ויש מספיק אליקסיר (אחרת
-            # no-op שקט, כמו ה-no-op של card_index). ברירת המחדל False בכל מקום
-            # שלא מעביר את המפתח.
+            # Champion ability activation: two independent slots (1 = Heroic, 2 = Wild
+            # Card; see CardRegistry::validateDeckSlots), because a deck can hold up to
+            # two Champions at once. Each is 0 = do not activate, 1 = activate now if a
+            # Champion is deployed in that slot, off cooldown, with enough elixir
+            # (otherwise a silent no-op, like card_index's no-op). Defaults to False
+            # wherever the key is not passed.
             "activate_ability_slot1": spaces.Discrete(2),
             "activate_ability_slot2": spaces.Discrete(2),
         })

@@ -1,16 +1,16 @@
 #pragma once
-#include "GameManager.h" // שמנו לב: הייבוא שונה ל-GameManager
+#include "GameManager.h"
 #include <iostream>
 #include <vector>
 #include <string>
 #include <cstddef>
-#include <iomanip> // מאפשר לנו לעצב את הדפסת האליקסיר עם נקודה עשרונית
+#include <iomanip> // std::setprecision, for the one-decimal elixir readout
 
 class TerminalRenderer {
 private:
     int width, height;
 
-    // פונקציית עזר לתרגום מזהה קלף לשם ועלות
+    // Card id -> display name ("None" for an id the registry does not know).
     std::string getCardName(int id) const {
         const auto* card = CardRegistry::getInstance().getCard(id);
         std::string name = card ? card->name : "None";
@@ -60,11 +60,11 @@ public:
         return static_cast<int>(board.getRiverEnd());
     }
 
-    // הפונקציה כעת מקבלת את מנהל המשחק כולו
+    // Draws the whole match state: the board, then the AI player's elixir and hand.
     void render(const GameManager& game) {
         const Board& board = game.getBoard();
 
-        // 1. יצירת לוח ריק עם טופוגרפיה
+        // 1. An empty grid, with the river row derived from the board.
         std::vector<std::string> grid(height, std::string(width, '.'));
 
         const std::string river = riverRow(board);
@@ -75,7 +75,7 @@ public:
             }
         }
 
-        // 2. מיפוי הישויות על הלוח
+        // 2. Place every living entity on the grid by its truncated cell.
         for (const auto& entity : board.getEntities()) {
             if (!entity->isAlive()) continue;
 
@@ -83,11 +83,11 @@ public:
             int y = static_cast<int>(entity->position.y);
 
             if (x >= 0 && x < width && y >= 0 && y < height) {
-                grid[y][x] = entity->symbol; // פשוט לוקח את המאפיין ישירות
+                grid[y][x] = entity->symbol;
             }
         }
 
-        // 3. ניקוי המסך והדפסה
+        // 3. Clear the terminal and print the grid, top row first.
         std::cout << "\033[2J\033[1;1H";
         std::cout << "=== Micro Royale Simulation ===" << std::endl;
 
@@ -117,15 +117,15 @@ public:
             std::cout << std::endl;
         }
 
-        // --- 4. תצוגת סטטוס השחקן (אליקסיר, יד ותור) תחת הלוח ---
+        // --- 4. The AI player's status under the board: elixir, next card, hand ---
         std::cout << "===============================" << std::endl;
 
-        // הדפסת אליקסיר בסגול
-        std::cout << std::fixed << std::setprecision(1); // הצגת ספרה אחת אחרי הנקודה העשרונית
+        // Elixir in magenta, with the next card in the queue.
+        std::cout << std::fixed << std::setprecision(1); // one decimal place
         std::cout << "[\033[35mElixir: " << game.getElixirAI() << " / 10.0\033[0m] | Next: "
             << getCardName(game.playerAI.deckQueue.front()) << std::endl;
 
-        // הדפסת 4 הקלפים שביד
+        // The four cards in hand, by slot.
         std::cout << "Hand: ";
         for (int i = 0; i < 4; i++) {
             std::cout << "[" << i << "] " << getCardName(game.playerAI.hand[i]) << "  ";

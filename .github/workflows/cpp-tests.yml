@@ -1,0 +1,58 @@
+name: C++ tests
+
+# Builds the Catch2 suite with MSVC and runs it. Only engine-side changes
+# trigger it: the suite covers include/, src/ and tests/, and a Windows runner
+# is billed at twice the Linux rate while the repository is private.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cpp-tests.yml"
+  pull_request:
+    paths:
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cpp-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and run (Windows, MSVC)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # CMakeLists.txt also declares the pybind11 module, and configuring it
+      # needs a Python interpreter even though this job never builds it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          cmake -S . -B build -A x64 "-DPython_EXECUTABLE=$py" "-DPYTHON_EXECUTABLE=$py"
+
+      - name: Build the test suite
+        run: cmake --build build --config Release --target ClashRoyaleTests --parallel
+
+      # Exactly one case is expected to fail: test_navigation_wedge.cpp's
+      # [!shouldfail] case pins an open collision defect. Catch2 counts it as
+      # passing, so the runner exits 0; any other failure exits non-zero.
+      - name: Run the tests
+        run: .\build\Release\ClashRoyaleTests.exe
