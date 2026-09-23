@@ -153,6 +153,14 @@ Throughput to plan with: ~943 episodes/hour, ~77 updates/hour at rung 0,
 **Same command, same environment variables, a new stdout log name.** Look for
 `Resumed from ...: episode N, curriculum stage S` near the top.
 
+Every checkpoint records the `CLASH_*` settings it was trained under (since
+2026-09-23). If the relaunching shell differs, the log says so near the top:
+`WARNING: resuming under DIFFERENT CLASH_* SETTINGS`, one line per setting, e.g.
+`CLASH_GAMMA: unset -> '0.99'`. Each is read at import, so the run CONTINUES
+under the new value -- if that was not deliberate, stop it (Ctrl-C saves), fix
+the shell, relaunch. A different `CLASH_LOGDIR` / `CLASH_SAVE_EVERY` /
+`CLASH_SEED` / `CLASH_NUM_ENVS` is listed separately as operational.
+
 What survives a crash now: weights, Adam, episode count, entropy coefficients,
 rung, phase and budget, deck-pool estimates, the plateau/regression tracker, the
 lineage start (so the opponent pool stays this run's), and the deck (a different

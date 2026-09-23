@@ -101,8 +101,12 @@ on purpose, each with the reason.
 8. **Phase 2's per-opponent PFSP win rates are not checkpointed** (per worker,
    lost on every resume). Same merge-and-reseed pattern as the phase-1 deck pool.
 
-9. **`CLASH_*` settings are not stamped in the checkpoint** (only the deck is), so
-   a resume under different env vars continues under a different config silently.
+9. ~~**`CLASH_*` settings are not stamped in the checkpoint**~~ **DONE
+   2026-09-23.** `checkpointing.clash_settings()` goes into every checkpoint;
+   `restore_common` prints each differing setting on resume (operational ones --
+   paths, cadence, workers, seed -- listed separately). A warning, not an error,
+   so the runbook's resume path survives a deliberate change. Legacy checkpoints
+   say they predate the stamp.
 
 10. **Two curriculum clocks** (audit 04 C7): the patience constants count scenario
     episodes, the windows they gate do not, so every patience is ~30% shorter

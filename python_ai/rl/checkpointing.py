@@ -128,6 +128,53 @@ def run_path(name):
         python_ai.REPO_ROOT, *name.split("/"))
 
 
+# --------------------------------------------------------------------------
+# The run's CLASH_* configuration, stamped into every checkpoint (TODO 00.9)
+# --------------------------------------------------------------------------
+#: Settings that change WHERE a run writes, how often, with how many workers
+#: or from which seed -- not WHAT it learns. A different value on resume is
+#: reported, not flagged.
+OPERATIONAL_SETTINGS = frozenset({
+    "CLASH_WEIGHTS", "CLASH_LOGDIR", "CLASH_SAVE_EVERY", "CLASH_SEED",
+    "CLASH_NUM_ENVS",
+})
+#: Compared elsewhere, on its RESOLVED value: `CLASH_DECK` accepts names or ids,
+#: so "hog rider,..." and "15,..." are the same deck and different strings.
+#: `BaseTrainer.restore_common` compares the resolved ids and warns on its own.
+_COMPARED_ELSEWHERE = frozenset({"CLASH_DECK"})
+
+
+def clash_settings(environ=None):
+    """Every CLASH_* environment variable in force, as a plain sorted dict.
+
+    Stamped into the checkpoint because every one of these is read at IMPORT
+    (the reward weights, gamma, the anneal, the scenario mix, the deck pool...),
+    so the process that resumes a run is configured by whatever the operator's
+    shell holds at relaunch -- and only the deck was recorded. A resume under a
+    different CLASH_GAMMA continued silently under a different objective.
+    """
+    env = os.environ if environ is None else environ
+    return {k: env[k] for k in sorted(env) if k.startswith("CLASH_")}
+
+
+def settings_drift(saved, current):
+    """(changed, operational): (key, saved, current) triples that differ.
+
+    Unset is None on either side, so adding or removing a variable counts.
+    `changed` holds the ones that alter the run; `operational` the ones in
+    OPERATIONAL_SETTINGS. CLASH_DECK is left to the resolved-deck check.
+    """
+    changed, operational = [], []
+    for key in sorted(set(saved) | set(current)):
+        if key in _COMPARED_ELSEWHERE:
+            continue
+        a, b = saved.get(key), current.get(key)
+        if a == b:
+            continue
+        (operational if key in OPERATIONAL_SETTINGS else changed).append((key, a, b))
+    return changed, operational
+
+
 # Historical self-play (pipeline #2, train_selfplay.py) needs a library of past
 # versions of this same policy to play against, weakest to strongest -- these
 # are saved here as bare weights-only snapshots (never resumed-from for further

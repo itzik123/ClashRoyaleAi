@@ -409,6 +409,35 @@ def test_resuming_a_checkpoint_from_a_different_deck_is_loud(workdir, capsys, mo
 
 
 @pytest.mark.slow
+def test_resuming_under_different_clash_settings_is_loud(workdir, capsys, monkeypatch):
+    """TODO 00.9: the checkpoint stamps every CLASH_* setting, and a resume under
+    a different one names it -- end to end through a real save and restore."""
+    monkeypatch.delenv("CLASH_SOLVENCY", raising=False)
+    _phase1()
+    ck = torch.load(workdir / "model_weights.pth", map_location="cpu",
+                    weights_only=False)
+    assert "CLASH_WEIGHTS" in ck["clash_settings"], "the stamp is missing"
+    capsys.readouterr()
+    monkeypatch.setenv("CLASH_SOLVENCY", "0")
+    _phase1()
+    out = capsys.readouterr().out
+    assert "DIFFERENT CLASH_* SETTINGS" in out
+    assert "CLASH_SOLVENCY: unset -> '0'" in out
+
+
+@pytest.mark.slow
+def test_resuming_under_the_same_settings_says_nothing(workdir, capsys):
+    """The CONTROL: without it, a warning printed on every resume would pass the
+    test above and teach the operator to ignore it."""
+    _phase1()
+    capsys.readouterr()
+    _phase1()
+    out = capsys.readouterr().out
+    assert "DIFFERENT CLASH_* SETTINGS" not in out
+    assert "predates the CLASH_* stamp" not in out
+
+
+@pytest.mark.slow
 def test_a_resume_error_crashes_and_destroys_nothing(workdir, monkeypatch):
     """Audit 08, gap 2. `except RuntimeError` on resume used to move the live
     checkpoint to .bak, rmtree the TensorBoard log, print "starting fresh" -- and

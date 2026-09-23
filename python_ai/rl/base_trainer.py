@@ -59,7 +59,8 @@ from python_ai.rl.buffer import (
 from python_ai.rl.config import aux_warmup_scale
 from python_ai.rl.checkpointing import (
     HISTORICAL_CHECKPOINT_DIR, HISTORICAL_CHECKPOINT_INTERVAL_EPISODES,
-    atomic_save, run_path, save_historical_snapshot, weights_path,
+    atomic_save, clash_settings, run_path, save_historical_snapshot,
+    settings_drift, weights_path,
 )
 from python_ai.rl.config import PPOConfig
 from python_ai.rl.coverage import PLACEMENT_COVERAGE_COEF, placement_coverage_slots
@@ -861,6 +862,10 @@ class BaseTrainer:
             # Which deck produced these weights. Not implied by the code any
             # more: CLASH_DECK sets it (python_ai/deck.py).
             "deck": list(_trainee_deck()),
+            # Every CLASH_* setting in force -- read at import, so a resume is
+            # configured by whatever the relaunching shell holds. See
+            # checkpointing.clash_settings.
+            "clash_settings": clash_settings(),
             "lineage_started_at": float(getattr(self, "lineage_started_at", 0.0)),
         }
         payload.update(self.entropy.state_dict())
@@ -869,6 +874,31 @@ class BaseTrainer:
         if verbose:
             print(f">>> Checkpoint saved to {self.weight_path} "
                   f"(episode {self.episodes_completed})")
+
+    @staticmethod
+    def _report_settings_drift(saved):
+        """Say, loudly, which CLASH_* settings differ from the checkpoint's.
+
+        A WARNING and not an error, like the deck check above: the runbook's
+        resume path must survive, and a deliberate change (a new CLASH_LOGDIR)
+        is legitimate. What it must not be is SILENT -- TODO 00.9.
+        """
+        if saved is None:
+            print(">>> [SETTINGS] checkpoint predates the CLASH_* stamp; the "
+                  "settings it was trained under cannot be compared.")
+            return
+        changed, operational = settings_drift(saved, clash_settings())
+        fmt = lambda a: "unset" if a is None else repr(a)  # noqa: E731
+        if changed:
+            print(">>> WARNING: resuming under DIFFERENT CLASH_* SETTINGS than the "
+                  "checkpoint was trained with. Each is read at import, so THIS "
+                  "run continues under the new value:")
+            for key, a, b in changed:
+                print(f">>>     {key}: {fmt(a)} -> {fmt(b)}")
+        if operational:
+            print(">>> [SETTINGS] operational only (paths / cadence / workers / "
+                  "seed): " + ", ".join(f"{k} {fmt(a)} -> {fmt(b)}"
+                                        for k, a, b in operational))
 
     def restore_common(self, checkpoint):
         """Model + optimizer + the state every pipeline keeps.
@@ -892,6 +922,7 @@ class BaseTrainer:
                   f"{list(saved_deck)} with CLASH_DECK={list(_trainee_deck())}. The "
                   f"weights load, but card embeddings, placement habits and every "
                   f"win rate belong to the old deck.")
+        self._report_settings_drift(checkpoint.get("clash_settings"))
         # Legacy checkpoints predate the stamp: 0.0 disables the lineage filter
         # rather than excluding that run's own older snapshots.
         self.lineage_started_at = float(checkpoint.get("lineage_started_at", 0.0))
