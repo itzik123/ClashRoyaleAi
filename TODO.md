@@ -102,7 +102,21 @@ on purpose, each with the reason.
 
 ---
 
-## 0c. The overflow test lost its regime to the match-end rules
+## 0c. ~~The overflow test lost its regime to the match-end rules~~ DONE 2026-09-23
+
+**Closed by construction, as proposed below -- and it was worse than a skip.**
+Measured on untouched main, 20 runs of the test's own sampler: 11 skip, 6 pass,
+**3 FAIL**. Its flag marked an episode contaminated the moment the bar TOUCHED
+10.0, which discards nothing unless the bar stays there (failing runs: tainted
+MAE 0.007 vs clean 0.0078), and a fit on the tainted subset alone can match a
+bar pinned at 10 with a constant anyway. The test now builds two boards with
+IDENTICAL observed scalars (tick, both spends) whose opponent differs only in
+how long it sat on a full bar: elixir 7.00 vs 0.45, gap 6.55 = 187 ticks at the
+cap x 0.035, deterministic. No setters were needed -- real plays, so nothing is
+confounded by an external write. (Found on the way: a hand slot is locked for
+20 ticks after it cycles, `PlayerState::handCooldownTicks`.)
+
+The original entry, kept for the reasoning:
 
 `test_aux_task_is_not_a_memory_probe.py::test_overflow_is_what_makes_this_task_non_trivial`
 **skips** as of 2026-09-06 instead of running.

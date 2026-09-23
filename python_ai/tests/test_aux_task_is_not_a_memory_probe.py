@@ -305,58 +305,97 @@ def test_a_single_slope_no_longer_fits_because_income_is_piecewise(samples):
         "again and CLAUDE.md's phase section is out of date.")
 
 
-def test_overflow_is_what_makes_this_task_non_trivial(samples):
+#: Every card costs exactly 3, so the ORDER of plays cannot change what a side
+#: has spent -- only WHEN. Five spells that do nothing on empty ground plus three
+#: troops; nothing here touches anyone's elixir (no Elixir Golem, Clone, Mirror).
+_THREE_COST_DECK = [3, 103, 104, 105, 106, 0, 1, 41]
+_THREE = 3.0
+_START_ELIXIR = 5.0     # PlayerState's opening bar; checked on tick 0 below
+
+
+def _passive_board_where_team1_plays_at(play_ticks, until):
+    """Team 0 never plays; team 1 plays one 3-cost card at each tick in
+    `play_ticks`. Stepped ONE tick at a time so a play lands on its exact tick.
+
+    Returns (team-0 observation, team 1's true elixir) at tick `until`. Every
+    play is VERIFIED -- an unaffordable one would silently no-op and turn "same
+    spend, different timing" into "different spend".
+
+    Each play uses the NEXT hand slot: `PlayerState::playCard` locks a slot for
+    20 ticks after it cycles (`handCooldownTicks`), so replaying slot 0 ten ticks
+    later is refused -- found by the verification below on the first draft.
+    """
+    env = _CE(list(_THREE_COST_DECK), list(_THREE_COST_DECK), 3600)
+    env.seed(0)
+    hand = _CE.HAND_SIZE
+    assert env.get_elixir_for_team(1) == pytest.approx(_START_ELIXIR)
+    plays = 0
+    for tick in range(until):
+        if tick in play_ticks:
+            before = env.get_elixir_spent(1)
+            # Own frame (9, 5): team 1's back court, where nothing is hit.
+            env.step_self_play(hand, 0.0, 0.0, plays % hand, 9.0, 5.0, 1)
+            plays += 1
+            assert env.get_elixir_spent(1) == pytest.approx(before + _THREE), (
+                f"team 1's play at tick {tick} did not happen (bar "
+                f"{env.get_elixir_for_team(1):.2f}); the construction is broken")
+        else:
+            env.step_self_play(hand, 0.0, 0.0, hand, 0.0, 0.0, 1)
+    obs = np.asarray(env.get_observation_for_team(0), dtype=np.float32)
+    return obs, float(env.get_elixir_for_team(1))
+
+
+def test_overflow_is_what_makes_this_task_non_trivial():
     """What the phases actually changed, and it is not the arithmetic.
 
-    The module docstring's closing caveat -- written 2026-08-27, before the
-    phases existed -- called this exactly: "a policy that baits the opponent
-    into overflowing would make the task genuinely non-trivial, and that, not
-    memory, is what a rising MAE would actually be detecting."
+    The module docstring's closing caveat -- written 2026-08-27 -- called this:
+    "a policy that baits the opponent into overflowing would make the task
+    genuinely non-trivial, and that, not memory, is what a rising MAE would
+    actually be detecting." The cap DISCARDS income, and nothing in
+    `(t, own spent, opp spent)` records how much.
 
-    Nothing baits anyone. Tripling the income was enough: the opponent now
-    overflows unaided, and the cap DISCARDS elixir that no scalar records, so
-    the discarded amount is unrecoverable by any function of the present
-    observation. Measured 2026-09-02 per episode against the exact analytic
-    model: the three that never capped reconstruct to a residual of -0.035
-    (one tick of regen, i.e. noise), while the three that did carry +0.76,
-    +1.63 and +5.38.
+    CONSTRUCTED, NOT SAMPLED (TODO 0c, closed 2026-09-23). This used to fish for
+    the regime in random matches, which reach overflow only sometimes since the
+    2026-09-06 match-end rules; it SKIPPED about half the time and, worse,
+    FAILED about 15% of the time on an untouched main (3 of 20 runs), because its
+    flag marked an episode "contaminated" the moment the bar TOUCHED 10.0 --
+    and touching the cap discards nothing unless the bar stays there. Those runs
+    read contaminated MAE 0.007 against clean 0.0078.
 
-    So a rising `Aux/OppElixir_MAE` under phases is an overflow detector, and
-    still not a memory diagnostic.
+    The claim, stated so it cannot be passed trivially: two boards whose
+    observed scalars are IDENTICAL -- same tick, same spend on both sides --
+    whose opponent holds DIFFERENT elixir, and whose only difference is how long
+    the opponent sat on a full bar. A spends as it goes and never caps; B banks,
+    caps, and spends the same four cards later. No function of those scalars can
+    return two values for one input.
     """
-    X, y, tainted = samples
-    if not tainted.any():
-        # NOT a silent pass, and not a failure either: the regime this test is
-        # defined on stopped occurring on 2026-09-06, for a reason that is
-        # correct.
-        #
-        # Overflow needs a long match. The match-end rules added that day end a
-        # match at 3:00 whenever the crowns differ, and TRIPLE elixir starts at
-        # exactly 3:00 -- so the opponent now reaches triple elixir only in
-        # OVERTIME, i.e. only when the score is level at regulation. That is the
-        # real game's behaviour and it makes overflow rare rather than routine.
-        # The 2026-09-02 calibration behind "roughly half of episodes overflow"
-        # was measured against the old rules and does not survive it.
-        #
-        # The FINDING is unaffected -- a cap still destroys information no
-        # scalar carries, and `Aux/OppElixir_MAE` would still be detecting that
-        # rather than memory. What is gone is this sampler's ability to reach
-        # the regime by playing ordinary matches. See TODO 0c: the fix is to
-        # CONSTRUCT the overflow state with the state setters instead of hoping
-        # the episode distribution supplies it, which would also make the test
-        # deterministic.
-        pytest.skip(
-            "no sampled episode overflowed: since the 2026-09-06 match-end "
-            "rules a match ends at 3:00 on a crown lead, so triple elixir is "
-            "reached only in overtime. Regime absent, not refuted -- TODO 0c.")
-    clean = _mae(X[~tainted], y[~tainted], [C_INCOME, C_OPP_SPENT, C_BIAS])
-    dirty = _mae(X[tainted], y[tainted], [C_INCOME, C_OPP_SPENT, C_BIAS])
-    assert dirty > 5 * max(clean, 1e-3), (
-        f"overflow-free samples reconstruct at MAE {clean:.4f} and "
-        f"overflow-contaminated ones at {dirty:.4f}. The gap IS the finding: "
-        "the cap destroys information the observation does not carry. If "
-        "these have converged, either the cap stopped binding or the "
-        "contamination flag is no longer tracking it.")
+    until = 400
+    spend_as_you_go = {100, 190, 280, 370}      # bar peaks at 8.95, never caps
+    bank_then_spend = {330, 340, 350, 390}      # capped from ~tick 143 to 330
+    obs_a, elixir_a = _passive_board_where_team1_plays_at(spend_as_you_go, until)
+    obs_b, elixir_b = _passive_board_where_team1_plays_at(bank_then_spend, until)
+
+    for idx, name in ((T_IDX, "time"), (SPENT_SELF_IDX, "own spent"),
+                      (SPENT_OPP_IDX, "opponent spent")):
+        assert obs_a[idx] == obs_b[idx], (
+            f"the {name} scalar differs ({obs_a[idx]} vs {obs_b[idx]}); the two "
+            "boards are supposed to be indistinguishable on it")
+
+    # A never capped, so the analytic model reconstructs it exactly -- the
+    # CONTROL, within one tick of regen.
+    model = _START_ELIXIR + _income(until) - 4 * _THREE
+    assert elixir_a == pytest.approx(model, abs=2 * _REGEN_PER_TICK), (
+        f"the never-capped board holds {elixir_a:.3f}, the model says "
+        f"{model:.3f}; the exact reconstruction this file rests on is broken")
+
+    # B lost exactly what it earned while pinned at the cap: from the tick its
+    # bar filled to its first play.
+    filled_at = (_CAP - _START_ELIXIR) / _REGEN_PER_TICK
+    discarded = (min(bank_then_spend) - filled_at) * _REGEN_PER_TICK
+    assert elixir_a - elixir_b == pytest.approx(discarded, abs=2 * _REGEN_PER_TICK), (
+        f"identical scalars, elixir {elixir_a:.3f} vs {elixir_b:.3f}: the gap "
+        f"should be the {discarded:.3f} the cap discarded")
+    assert discarded > 5.0, "fixture: the cap must have discarded a LOT"
 
 
 def test_neither_scalar_alone_is_enough(samples):
