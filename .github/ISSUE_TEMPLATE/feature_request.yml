@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest an improvement to the engine, the training stack, perception or the tools.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! If it's still open-ended and you'd like to talk it through first, [Ideas in Discussions](https://github.com/itzik123/ClashRoyaleAi/discussions/categories/ideas) is a good place to start.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the project?
+      options:
+        - Engine (the C++ simulation)
+        - Python bindings or the Gymnasium environment
+        - Training (PPO, curriculum, league)
+        - Perception (reading the screen)
+        - Replay viewer
+        - Build or setup
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to work on this?
+      options:
+        - Yes, I'd like to open a pull request
+        - Maybe, with some guidance
+        - No

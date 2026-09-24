@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in the engine, the training stack, perception or the viewer doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        If a card behaves differently from the real game, please use the **Card accuracy** form instead. For questions and setup help, [Q&A in Discussions](https://github.com/itzik123/ClashRoyaleAi/discussions/categories/q-a) is the better place.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the project?
+      options:
+        - Engine (the C++ simulation)
+        - Python bindings or the Gymnasium environment
+        - Training (PPO, curriculum, league)
+        - Perception (reading the screen)
+        - Replay viewer
+        - Build or setup
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what you saw. Screenshots help, especially for the viewer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How can we reproduce it?
+      description: |
+        The engine is deterministic, so exact inputs almost always reproduce a bug: the two decks (card ids), the seed, and the plays (card, x, y and tick). A short script or a replay JSON file is ideal. You can drag a file into this box.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output or logs
+      description: Paste any error message or traceback. It will be formatted as code automatically.
+      render: shell
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The output of `git rev-parse --short HEAD`.
+      placeholder: 6f7ad05
+
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Python version
+      placeholder: Windows 11, Python 3.11.9
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and didn't find this one.
+          required: true

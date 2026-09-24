@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/itzik123/ClashRoyaleAi/discussions/categories/q-a
+    about: Ask in Discussions, where the answer can help the next person too.
+  - name: An idea to talk through
+    url: https://github.com/itzik123/ClashRoyaleAi/discussions/categories/ideas
+    about: Not sure yet what you'd propose? Start a conversation in Discussions.

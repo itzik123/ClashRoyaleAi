@@ -1,0 +1,58 @@
+name: Card accuracy
+description: A card behaves differently in the engine than in the real game.
+labels: ["card accuracy"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports like this are one of the most useful things a Clash Royale player can contribute.
+
+        A few things help:
+        - The engine's HP and damage values match **level-11** cards, so please compare against level 11.
+        - Time in the engine is counted in ticks, and **10 ticks = 1 second**.
+        - A **source** matters most: a link to published stats, or a video with a timestamp.
+
+  - type: input
+    id: card
+    attributes:
+      label: Card
+      description: The card's name, and its engine id if you know it.
+      placeholder: Hog Rider (15)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's different?
+      options:
+        - A stat (HP, damage, hit speed, range, speed or cost)
+        - Targeting (what it attacks, or how it picks a target)
+        - An ability or effect (spawns, death effects, slows, stuns, knockback, charges)
+        - Movement or pathing
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: engine
+    attributes:
+      label: What the engine does
+      description: And how you saw it, for example in the replay viewer, a script, or the code.
+    validations:
+      required: true
+
+  - type: textarea
+    id: real-game
+    attributes:
+      label: What the real game does
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Source
+      description: A link to published stats for the level-11 card, or a video with a timestamp.
+    validations:
+      required: true
