@@ -11,6 +11,7 @@ imported by training.
 | `scenes.py` | the video's story beats (bugs, the reward loophole) as labelled clips |
 | `ghost_trails.py` | the futures the lookahead search compared, drawn as trails |
 | `edit/edit_short.py` | the finished Short: every clip cut to your voiceover, with captions, zooms and sound |
+| `edit/voice.py` | a text-to-speech voiceover from the script, with its sentence endings fixed |
 
 ## One-time setup
 
@@ -107,7 +108,7 @@ name scenes to render only those. Clips land in `tools/promo/out/scenes/`.
 | `giant_walk_bug` | the same walk at the pre-fix speed: 3.5 s | Recreated: pre-fix speed |
 | `giant_stuck` | a Fireball knocks a Giant off the bridge and it vibrates in place | Recorded before the fix |
 | `mortar_r` | the King and a Mortar both drawn as "R", the letter the engine once used to find the King | Recreated in the engine |
-| `fireball_one` | a 4-elixir Fireball that catches one troop | Illustration |
+| `fireball_one` | a 4-elixir Fireball that catches one troop, a Musketeer, which survives on 32 HP until our Princess Tower finishes it 2.7 s later (`beats.json` marks both moments) | Illustration |
 
 `cannon_corner` is timed for a music cut. The drop moment is measured, not
 picked: the scene tries a Cannon in the middle of the arena at every tick of
@@ -277,6 +278,34 @@ once). ffmpeg is the same one the other tools use.
 With no voiceover yet, the edit is timed at a normal speaking pace and rendered
 silent, so you can check the cut before recording. `--voiceover take2.wav` and
 `--music other.mp3` try a file without editing the config.
+
+### No voice of your own: edit/voice.py
+
+`voice.py` reads the lines from `short.json`, says them with a Microsoft neural
+voice (edge-tts, free, online), and writes `assets/voiceover.mp3`:
+
+```
+tools/promo/edit/.venv/Scripts/python.exe tools/promo/edit/voice.py
+```
+
+The Short uses Christopher (`en-US-ChristopherNeural`, the default) at `+8%`.
+`--voice` and `--rate` change them. Run it again after any change to a line.
+
+That voice barely marks the end of a sentence: the last word is not drawn
+out, and a question ends falling, like a statement. So `voice.py` reshapes the
+last word of every sentence with Praat (PSOLA, which changes pitch and timing,
+not the voice):
+
+| ending | what it does |
+|---|---|
+| `.` or `!` | glides down to end `--fall` semitones (-4) below its sentence, and is drawn out by `--stretch` (1.35x) |
+| `?` | glides up to end `--rise` semitones (+5) above its sentence |
+| `...` | held longer (`--hold`, 1.35x), pitch unchanged |
+
+It only strengthens an ending: a sentence the voice already ended low is left
+alone. The take as the voice gave it is kept in `cache/voiceover_tts.mp3`, so
+`--endings-only --fall -3` retunes the endings without a new take, and
+`--no-endings` writes the voice as it comes.
 
 ### Editing short.json
 

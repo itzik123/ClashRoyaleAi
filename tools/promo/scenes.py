@@ -17,7 +17,9 @@ web/viewer.html by export_viewer.py:
                     vibrates in place (tools/promo/recordings/)
   mortar_r          the King and the Mortar share the letter R, which is how
                     the engine once found the King (recreated)
-  fireball_one      a 4-elixir Fireball that catches a single troop
+  fireball_one      a 4-elixir Fireball that catches a single troop, which
+                    survives on a sliver of HP until our Princess Tower
+                    finishes it (beats: fireball, dies)
 
     python_ai/venv/Scripts/python.exe tools/promo/scenes.py
     python_ai/venv/Scripts/python.exe tools/promo/scenes.py cannon_corner giant_stuck
@@ -285,19 +287,32 @@ def fireball_one(ids, out_kw):
     E = engine()
     x = E.ARENA_LEFT_LANE_X
     # A lone Musketeer walks down the lane; a Fireball lands on it 2 s later.
+    # It survives on a sliver of HP, and our Princess Tower finishes it.
     path, env = _stage("fireball_one", [
         (ids["Musketeer"], x, 23.0, 1, 0),
         (20, ids["Fireball"], x, 21.0, 0, None),
-    ], 90)
+    ], 110)
     with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
-    fb = next((t for t, tick in enumerate(data["ticks"])
+    ticks = data["ticks"]
+    fb = next((t for t, tick in enumerate(ticks)
                if any(e["cardId"] == ids["Fireball"] for e in tick["entities"])), None)
     if fb is None:
         raise SystemExit("fireball_one: the Fireball never appeared")
-    return (dict(replay=path, start=max(0, fb - 15), end=min(len(data["ticks"]) - 1, fb + 40),
-                 speed=1.0, label="Illustration", beats={"fireball": fb}),
-            "one Fireball, one troop in its radius")
+    mid = _entity(path, ids["Musketeer"], 1)
+    hp = [next((e["hp"] for e in tick["entities"] if e["id"] == mid), None) for tick in ticks]
+    alive = [t for t, h in enumerate(hp) if h is not None]
+    dies = alive[-1] + 1
+    hit = next((t for t in alive if hp[t] < hp[alive[0]]), None)
+    if hit is None or dies >= len(ticks):
+        raise SystemExit("fireball_one: the Musketeer was never hit, or never died")
+    if dies <= hit + 1:
+        raise SystemExit("fireball_one: the Fireball killed the Musketeer outright; "
+                         "the scene is meant to leave it for the tower")
+    return (dict(replay=path, start=max(0, fb - 15), end=min(len(ticks) - 1, dies + 25),
+                 speed=1.0, label="Illustration", beats={"fireball": fb, "dies": dies}),
+            f"one Fireball, one troop: it survives on {hp[hit]:.0f} HP and the tower "
+            f"finishes it {(dies - hit) / 10:.1f} s later")
 
 
 SCENES = {f.__name__: f for f in (cannon_corner, giant_walk_now, giant_walk_bug,
