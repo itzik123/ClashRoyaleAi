@@ -222,7 +222,6 @@ checkpoints, is listed in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 - [ ] Card data in a data file, so balance updates don't require C++ changes
 - [ ] Crown Tower damage reduction for spells
 - [ ] Opponent placement detection in `perception/`
-- [ ] A live agent playing the real game through the perception bridge
 
 ## Repository layout
 
