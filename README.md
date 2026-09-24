@@ -22,9 +22,9 @@
 
 You can't speed up the real game, and it has no API. Reinforcement learning
 needs millions of games. ClashRoyaleEnv rebuilds the battle from the ground up
-as a headless simulator. It plays a full match in about **6 ms on one CPU
-core**, roughly **27,000× real time**. It can also fork any position in
-**0.03 ms** to look ahead.
+as a headless simulator. It plays a full match in about **10 ms on one laptop
+CPU core**, roughly **20,000× real time**. It can also fork any position in
+about **7 µs** to look ahead.
 
 The engine is the core of the project. On top of it sit a complete RL training
 stack, a search-based opponent, and a perception pipeline. That pipeline reads
@@ -44,7 +44,7 @@ a live match off the screen and replays it inside the engine.
   fixes the opening hand, and `snapshot()` forks a match for lookahead or
   paired A/B tests.
 - **Header-only C++17**, exposed to Python through pybind11.
-- **714 Catch2 test cases** covering combat, pathing, targeting, placement
+- **715 Catch2 test cases** covering combat, pathing, targeting, placement
   rules and match resolution.
 
 **Learning** (`python_ai/`)
@@ -159,7 +159,7 @@ handoff, is in [`docs/runbooks/FINAL_RUN_RUNBOOK.md`](docs/runbooks/FINAL_RUN_RU
 ### Run the tests
 
 ```powershell
-.\build_python\Release\ClashRoyaleTests.exe                          # C++: 714 cases
+.\build_python\Release\ClashRoyaleTests.exe                          # C++: 715 cases
 python_ai\venv\Scripts\python.exe -m pytest python_ai\tests -q       # training stack
 perception\.venv\Scripts\python.exe -m pytest perception\tests -q    # perception
 ```
@@ -196,7 +196,7 @@ under. The complete record, including the reversals, is in
 |---|---|
 | **1-ply lookahead search** vs. the greedy policy (160 paired matches, built-in heuristic opponent at 1.5× elixir, Aug 2026, earlier engine version) | win rate **0.625 → 0.944**, +0.319 (95% CI +0.24 to +0.40, p = 5.6e-12) |
 | **Distilling search back into the policy** (value-distribution targets + DAgger, 1,600 paired matches, Aug 2026) | **+0.045** win rate (95% CI +0.013 to +0.077, p = 0.007) |
-| **Engine speed** (20 random-play matches, one core of an i5-13420H) | **3.7 µs per tick**, about 6 ms per full match |
+| **Engine speed** (20 seeded random-play matches, one core of an i5-13420H laptop, Sep 2026) | **~5 µs per tick** (3.3–8.5 µs as the laptop's clock varies), about 10 ms per full match; forking a match takes ~7 µs |
 
 ## Project status
 

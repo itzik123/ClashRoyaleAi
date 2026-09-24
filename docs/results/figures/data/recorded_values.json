@@ -1,0 +1,304 @@
+{
+  "fig2_2_time_scale_sweep": {
+    "source": "DECISIONS.md, UPSTREAM item 9, 'The time-scale sweep' (pre-fix, n = 158 per cell)",
+    "scales": [
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.33,
+      0.5,
+      1.0
+    ],
+    "iou_1.0s": [
+      0.187,
+      0.187,
+      0.216,
+      0.216,
+      0.203,
+      0.141,
+      0.114
+    ],
+    "iou_2.0s": [
+      0.138,
+      0.134,
+      0.143,
+      0.152,
+      0.122,
+      0.111,
+      0.091
+    ]
+  },
+  "fig2_2_speed_ratio": {
+    "source": "DECISIONS.md, UPSTREAM item 9, 'Verified three ways after the change'",
+    "median_before_after": [
+      6.5,
+      1.3
+    ],
+    "p90_before_after": [
+      3.8,
+      0.8
+    ],
+    "time_scale_optimum_before_after": [
+      0.2,
+      1.0
+    ]
+  },
+  "fig2_3_collision_bench": {
+    "source": "DECISIONS.md, '2026-08-26 (perf)': resolveCollisions + resolvePositionAgainstBuildings, us per tick",
+    "entities": [
+      20,
+      32,
+      48
+    ],
+    "old_us": [
+      4.19,
+      10.657,
+      19.696
+    ],
+    "new_us": [
+      1.638,
+      4.085,
+      6.482
+    ]
+  },
+  "fig3_4_aux_gradient": {
+    "source": "CLAUDE.md, 2026-09-15 audit: aux gradient vs all other terms, 12 updates from random init",
+    "lstm_ratio_update1_update12": [
+      0.62,
+      1.67
+    ],
+    "trunk_ratio_update1_update12": [
+      0.63,
+      2.01
+    ],
+    "lstm_cosine_update1_update12": [
+      -0.37,
+      -0.84
+    ],
+    "trunk_cosine_update12": -0.9
+  },
+  "fig3_4_next_card_ce": {
+    "source": "CLAUDE.md, 'THE STALE AUX HEAD' (2026-09-03)",
+    "mirror_run_range": [
+      1.45,
+      1.58
+    ],
+    "pool_resume": 13.76,
+    "after_reset_first_update": 4.3,
+    "ln8": 2.0794415416798357,
+    "ln185": 5.220355825078324
+  },
+  "fig5_1_cannon": {
+    "source": "DECISIONS.md, 2026-08-06/09 (ep ~130k) and 2026-08-14/15 (Table 5.3: n = 1,582 paired states)",
+    "stages": [
+      {
+        "label": "A. Reward mispricing + checkerboard (ep ~130k)",
+        "cells": [
+          [
+            11,
+            2
+          ],
+          [
+            11,
+            3
+          ]
+        ],
+        "share": 27.9
+      },
+      {
+        "label": "B. Coverage freeze (seed)",
+        "cells": [
+          [
+            11,
+            0
+          ]
+        ],
+        "share": 44.9,
+        "top1": 0.14
+      },
+      {
+        "label": "C. + coverage entropy (80 updates)",
+        "cells": [
+          [
+            11,
+            0
+          ]
+        ],
+        "share": 27.1,
+        "top1": 0.05
+      },
+      {
+        "label": "D. + advisor target (524 updates)",
+        "cells": [
+          [
+            16,
+            15
+          ]
+        ],
+        "share": 17.0,
+        "top1": 0.062
+      }
+    ],
+    "hp_preserved": {
+      "B. seed": 276.0,
+      "C. coverage entropy": 403.0,
+      "D. advisor target": 553.1
+    },
+    "random_cell": 411.3,
+    "advisor": 687.9
+  },
+  "fig5_2_catch_distribution": {
+    "source": "CLAUDE.md, elixir-phase table (same policy, same 24 episodes)",
+    "p_catch_ge3_flat_phased": [
+      15.5,
+      21.8
+    ],
+    "p_catch_ge4_flat_phased": [
+      6.1,
+      10.4
+    ],
+    "median_catch_flat_phased": [
+      1,
+      1
+    ]
+  },
+  "fig5_3_marginal_value": {
+    "source": "DECISIONS.md, '2026-08-19: the curriculum pivot' (gate sweep) and '2026-08-19 (later): DEPLOY TIME'",
+    "rows": [
+      [
+        "Lone Hog, commit at opp. elixir <= 7.0",
+        -298.2,
+        -494,
+        -107,
+        "old engine"
+      ],
+      [
+        "Lone Hog, commit at opp. elixir <= 3.0",
+        -268.6,
+        -455,
+        -90,
+        "old engine"
+      ],
+      [
+        "Lone Hog, commit at opp. elixir <= 1.5",
+        -585.4,
+        -816,
+        -360,
+        "old engine"
+      ],
+      [
+        "Supported push, no deploy time",
+        -73.7,
+        -349.5,
+        195.3,
+        "controlled A/B"
+      ],
+      [
+        "Supported push, 1 s deploy time",
+        448.5,
+        137.3,
+        760.1,
+        "controlled A/B"
+      ],
+      [
+        "Escort vs lone Hog, punish window",
+        650.0,
+        429,
+        878,
+        "deploy time on"
+      ]
+    ]
+  },
+  "fig5_4_search": {
+    "source": "DECISIONS.md, 'Search horizon sweep' (heuristic @1.5x, n = 80 paired each); TODO.md 0e (teacher, rung 3, n = 32; follow-up harness n = 30)",
+    "heuristic_h": [
+      4,
+      8,
+      12,
+      20
+    ],
+    "heuristic_greedy": [
+      0.483,
+      0.525,
+      0.563,
+      0.488
+    ],
+    "heuristic_search": [
+      0.667,
+      0.925,
+      0.963,
+      0.875
+    ],
+    "teacher_h": [
+      4,
+      8,
+      12
+    ],
+    "teacher_delta": [
+      -0.313,
+      -0.531,
+      -0.469
+    ],
+    "teacher_ci": [
+      [
+        -0.531,
+        -0.125
+      ],
+      [
+        -0.719,
+        -0.313
+      ],
+      [
+        -0.688,
+        -0.25
+      ]
+    ],
+    "followup": {
+      "h4": {
+        "heuristic_rollout": [
+          -0.167,
+          -0.4,
+          0.067
+        ],
+        "teacher_rules_rollout": [
+          -0.067,
+          -0.233,
+          0.1
+        ]
+      },
+      "h12": {
+        "heuristic_rollout": [
+          -0.469,
+          null,
+          null
+        ],
+        "teacher_rules_rollout": [
+          -0.333,
+          -0.6,
+          -0.067
+        ]
+      }
+    }
+  },
+  "fig5_5_bankruptcy": {
+    "source": "DECISIONS.md, 2026-08-16 ('disconnected zombie') and the ep-600 first read",
+    "p_play_given_affordable": {
+      "before (old normaliser, Giant deck)": [
+        0.3655,
+        0.4719
+      ],
+      "after (fixed, 2.6 deck, ep 600)": [
+        0.4606,
+        0.8601
+      ]
+    },
+    "legal_arms_share_pct": {
+      "2": 54.1,
+      "3": 15.6,
+      "4": 25.8,
+      "5": 4.5
+    },
+    "old_target_nats": 0.5633032693519351
+  }
+}
