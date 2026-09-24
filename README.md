@@ -18,6 +18,8 @@
 
 https://github.com/user-attachments/assets/9508d054-0a50-489f-ba2a-3595480b8a20
 
+<sub>Music: <a href="https://incompetech.filmmusic.io/song/3875-hiding-your-reality/">"Hiding Your Reality"</a> by Kevin MacLeod (incompetech.com), licensed under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Edited: trimmed, faded and mixed under the voiceover.</sub>
+
 </div>
 
 ---
