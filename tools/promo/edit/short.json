@@ -113,7 +113,7 @@
     {"at": "cta", "clip": "mosaic.mp4", "in": 3.0, "zoom": [1.25, 1.0]}
   ],
 
-  "_effects": "Moments on top of the shots. Every effect has \"at\"; most take \"duration\" (seconds) or \"until\" (a time). punch: a quick zoom-in (scale, focus, \"hold\": true to stay in). shake: strength in pixels. flash: a white flash (color). freeze: the picture holds while the voice goes on. callout: big text (text, color, size, y). counter: a number counting up (from, to, format, hold, prefix, suffix). mark: a clean ring (locks onto its target) or arrow (slides in and points) with a white edge and soft shadow: shape, pos [x, y] in the clip's frame, from [x, y] for an arrow's tail, size, color; it stays on its target through zooms. sfx: just a sound (sound, sfx_db). Any effect takes \"sfx\" (a sound name, or null) and \"sfx_db\".",
+  "_effects": "Moments on top of the shots. Every effect has \"at\"; most take \"duration\" (seconds) or \"until\" (a time). punch: a quick zoom-in (scale, focus, \"hold\": true to stay in). shake: strength in pixels. flash: a white flash (color). freeze: the picture holds while the voice goes on. callout: big text (text, color, size, y). counter: a number counting up (from, to, format, hold, prefix, suffix). mark: a clean ring (locks onto its target) or arrow (slides in and points) with a white edge and soft shadow: shape, pos [x, y] in the clip's frame, from [x, y] for an arrow's tail, size, color; it stays on its target through zooms. credit: small centred lines on a dark box, like the label (lines, size, y). sfx: just a sound (sound, sfx_db). Any effect takes \"sfx\" (a sound name, or null) and \"sfx_db\".",
   "effects": [
     {"type": "punch", "at": "question.beat", "scale": 1.12},
     {"type": "callout", "at": "engine.20,000", "until": "engine.end", "text": "20,000×"},
@@ -139,6 +139,11 @@
      "pos": [0.522, 0.387], "from": [0.35, 0.33], "size": 110, "color": "#34C759", "sfx": "right",
      "_pos": "points at the Fireball the lookahead chose (its blast's edge)"},
     {"type": "counter", "at": "winrate.62%", "until": "winrate.94%", "from": 62, "to": 94, "format": "{:.0f}%", "hold": 1.0},
-    {"type": "callout", "at": "cta", "until": "end", "text": "github.com/itzik123/ClashRoyaleAi", "size": 64, "color": "#FFFFFF"}
+    {"type": "callout", "at": "cta", "until": "end", "text": "github.com/itzik123/ClashRoyaleAi", "size": 64, "color": "#FFFFFF"},
+    {"type": "credit", "at": "cta", "until": "end", "y": 0.738,
+     "lines": ["Music: \"Hiding Your Reality\" – Kevin MacLeod",
+               "incompetech.com · CC BY 4.0 · edited",
+               "Unofficial fan project, not endorsed by Supercell"],
+     "_credit": "The music's CC BY 4.0 attribution (it must say the track was edited) and Supercell's fan-content notice, in the video so no post needs them. Above 0.80: TikTok, Reels and Shorts cover the bottom fifth."}
   ]
 }

@@ -273,7 +273,8 @@ once). ffmpeg is the same one the other tools use.
    Add `--from 20 --to 32` to render only a stretch, or use `--still 14.5` for
    one frame as a PNG.
 5. **Render** the full-size video to `tools/promo/out/short.mp4`: the same
-   command without `--draft`, about 2–3 minutes.
+   command without `--draft`, about 2–3 minutes. `--out other.mp4` writes it
+   somewhere else, to keep a version you have already posted.
 
 With no voiceover yet, the edit is timed at a normal speaking pace and rendered
 silent, so you can check the cut before recording. `--voiceover take2.wav` and
@@ -361,6 +362,7 @@ the whole edit by itself: Whisper finds the words again.
 | `callout` | big text: `text`, `color`, `size`, `y` |
 | `counter` | a number counting up: `from`, `to`, `format` (`"{:.0f}%"`), `hold` |
 | `mark` | a clean graphic on a target: `shape` `ring` (locks onto it as it fades in) or `arrow` (slides in, then bobs toward it), `pos` (`[x, y]` in the clip's frame; an arrow's tip), `from` (an arrow's tail), `size`, `color`. It stays on its target through zooms and shakes. |
+| `credit` | small centred lines on a dark box, like the label: `lines` (a list), `size`, `y` (the box's centre). No pop and no sound; it fades in. The Short uses it for the music credit and Supercell's fan-content notice, so no post needs them in its text. |
 | `sfx` | just a sound: `sound`, `sfx_db` |
 
 Any effect also takes `sfx` (a sound name, or `null` for none) and `sfx_db`.

@@ -82,6 +82,7 @@ EFFECT_DEFAULTS = {
     "callout": {"duration": 1.2},
     "counter": {"duration": 1.0, "hold": 1.0, "format": "{:.0f}"},
     "mark": {"duration": 1.5, "shape": "ring", "size": 160, "color": "#FF3B30"},
+    "credit": {"duration": 3.0, "size": 30, "y": 0.74},
     "sfx": {"duration": 0.0},
 }
 
@@ -313,7 +314,11 @@ def load_effects(cfg, clock, style):
         dur = clock(e["until"], what) - at if "until" in e else float(p["duration"])
         if dur < 0:
             raise SystemExit(f"{what}: \"until\" is before \"at\"")
-        need = {"callout": ["text"], "counter": ["from", "to"], "sfx": ["sound"], "mark": ["pos"]}
+        need = {"callout": ["text"], "counter": ["from", "to"], "sfx": ["sound"], "mark": ["pos"],
+                "credit": ["lines"]}
+        if kind == "credit" and not (isinstance(e.get("lines"), list) and e["lines"]
+                                     and all(isinstance(x, str) for x in e["lines"])):
+            raise SystemExit(f"{what}: \"lines\" must be a list of strings")
         if kind == "mark":
             if p["shape"] not in SHAPES:
                 raise SystemExit(f"{what}: \"shape\" must be one of {', '.join(SHAPES)}")
@@ -559,6 +564,11 @@ class Frames:
 
     def _overlay(self, img, ef, t):
         dt = t - ef.at
+        if ef.kind == "credit":
+            if 0 <= dt < ef.dur:     # fades in over 0.25 s, then holds; no pop
+                pic = self.ts.credit(ef.p["lines"], float(ef.p["size"]))
+                put(img, with_alpha(pic, dt / 0.25), self.W / 2, float(ef.p["y"]) * self.H)
+            return
         if ef.kind == "callout":
             total, text = ef.dur, ef.p["text"]
         elif ef.kind == "counter":
@@ -685,7 +695,8 @@ def print_timings(report, voice, duration, lines, shots, effects, captions, swel
               f"{'  [' + s.label + ']' if s.label else ''}")
     print("\nEFFECTS")
     for e in effects:
-        what = e.p.get("text") or (f"{e.p['from']} -> {e.p['to']}" if e.kind == "counter" else "")
+        what = (e.p.get("text") or (f"{e.p['from']} -> {e.p['to']}" if e.kind == "counter" else "")
+                or (e.p["lines"][0] if e.kind == "credit" else ""))
         print(f"  {e.at:6.2f}  {e.kind:<8} {what:<24} at {e.spec}{'  sfx ' + e.sfx if e.sfx else ''}")
     if swells:
         print("\nPAUSES (music swells)\n  " + "  ".join(f"{a:.2f}-{b:.2f}" for a, b in swells))
@@ -704,6 +715,7 @@ def main():
     ap.add_argument("--timings", action="store_true", help="print the timeline and stop")
     ap.add_argument("--voiceover", default=None, help="use this recording instead of the config's")
     ap.add_argument("--music", default=None, help="use this music instead of the config's")
+    ap.add_argument("--out", default=None, help="write the video here instead of the config's output file")
     ap.add_argument("--ffmpeg", default=None)
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -754,7 +766,7 @@ def main():
     typeset = Typesetter(base / style["font"], W, style, warn)
     frames = Frames((W, H), fps, shots, effects, captions, typeset, style, ffmpeg, args.draft)
 
-    out = (base / out_cfg["file"]).resolve()
+    out = Path(args.out).resolve() if args.out else (base / out_cfg["file"]).resolve()
     stem = out.stem + ("_draft" if args.draft else "")
     if args.still is not None:
         shot = shot_at(shots, args.still)

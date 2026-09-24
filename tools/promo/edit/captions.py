@@ -210,6 +210,31 @@ class Typesetter:
             self._cache[key] = img
         return self._cache[key]
 
+    def credit(self, lines, size):
+        """Small centred lines on a dark box, like the label: the music credit
+        and the fan-content notice. The type shrinks until the box fits 90% of
+        the frame."""
+        key = ("credit", tuple(lines), size)
+        if key not in self._cache:
+            k, px = self.k, size * self.k
+            while True:
+                f = self._font(px)
+                pad_x, pad_y, gap = round(30 * k), round(18 * k), round(8 * k)
+                W = math.ceil(max(f.getlength(ln) for ln in lines)) + 2 * pad_x
+                if W <= 0.9 * 1080 * k or px <= 8:
+                    break
+                px *= 0.95
+            asc, desc = f.getmetrics()
+            H = len(lines) * (asc + desc) + (len(lines) - 1) * gap + 2 * pad_y
+            img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle((0, 0, W - 1, H - 1), radius=round(26 * k), fill=(0, 0, 0, 170))
+            for i, ln in enumerate(lines):
+                d.text((W / 2, pad_y + i * (asc + desc + gap)), ln, font=f,
+                       fill=(245, 245, 245, 255), anchor="ma")
+            self._cache[key] = img
+        return self._cache[key]
+
     def card(self, size, lines):
         """A full-frame placeholder, for a clip that has not been rendered yet."""
         W, H = size
