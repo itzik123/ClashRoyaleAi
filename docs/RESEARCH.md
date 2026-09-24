@@ -540,8 +540,9 @@ they moved with clock state. Across three runs on the same day, the median
 cost of the full step ranged from 3.3 to 8.5 µs per tick. In the two runs
 where the arms were interleaved, the full/fast ratio held at 1.14–1.16 against
 an identical-arms control of 1.02. So quote the ratios with
-confidence and the absolute figures as a range. The README's "about 6 ms per
-match, ~27,000× real time" falls inside that range at the fast end.
+confidence and the absolute figures as a range. The README follows that rule:
+it quotes about 10 ms per match (~20,000× real time) and gives the fork as
+7–20 µs, the spread across runs.
 
 **Where the cost used to be.** Two profiling passes found that most of the
 engine's time was not simulation:

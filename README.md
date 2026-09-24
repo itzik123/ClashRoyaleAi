@@ -24,7 +24,7 @@ You can't speed up the real game, and it has no API. Reinforcement learning
 needs millions of games. ClashRoyaleEnv rebuilds the battle from the ground up
 as a headless simulator. It plays a full match in about **10 ms on one laptop
 CPU core**, roughly **20,000× real time**. It can also fork any position in
-about **7 µs** to look ahead.
+**7–20 µs** to look ahead.
 
 The engine is the core of the project. On top of it sit a complete RL training
 stack, a search-based opponent, and a perception pipeline. That pipeline reads
@@ -196,7 +196,7 @@ under. The complete record, including the reversals, is in
 |---|---|
 | **1-ply lookahead search** vs. the greedy policy (160 paired matches, built-in heuristic opponent at 1.5× elixir, Aug 2026, earlier engine version) | win rate **0.625 → 0.944**, +0.319 (95% CI +0.24 to +0.40, p = 5.6e-12) |
 | **Distilling search back into the policy** (value-distribution targets + DAgger, 1,600 paired matches, Aug 2026) | **+0.045** win rate (95% CI +0.013 to +0.077, p = 0.007) |
-| **Engine speed** (20 seeded random-play matches, one core of an i5-13420H laptop, Sep 2026) | **~5 µs per tick** (3.3–8.5 µs as the laptop's clock varies), about 10 ms per full match; forking a match takes ~7 µs |
+| **Engine speed** (20 seeded random-play matches, one core of an i5-13420H laptop, Sep 2026) | **~5 µs per tick** (3.3–8.5 µs as the laptop's clock varies), about 10 ms per full match; forking a match takes 7–20 µs |
 
 ## Project status
 
