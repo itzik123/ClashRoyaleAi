@@ -14,6 +14,10 @@
 
 <sub>The replay viewer's <b>Simulation View</b>. The opponent (red) plans by simulation. Every second it scores each candidate play by running the match 10 seconds forward inside the engine. The left panel shows each candidate's placement now and the board it predicts afterwards, and the numbered rings on the arena mark the same candidates. Blue is the PPO agent.</sub>
 
+**The story in 87 seconds.** Unmute for the voiceover.
+
+https://github.com/user-attachments/assets/9508d054-0a50-489f-ba2a-3595480b8a20
+
 </div>
 
 ---
