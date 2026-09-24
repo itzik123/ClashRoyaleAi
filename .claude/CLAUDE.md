@@ -3048,6 +3048,12 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
                        Uses step_self_play, never step -- step runs the
                        HeuristicOpponent, which defends, and a Giant stopped by
                        a defender says nothing about navigation.
+tools/promo/         Promo-video footage: mosaic.py (64 matches in a grid),
+                     export_viewer.py (web/viewer.html -> MP4, headless Chrome),
+                     scenes.py (staged story beats), ghost_trails.py (the
+                     search's candidate futures). PIL + ffmpeg; output in
+                     tools/promo/out/ (ignored). Not imported by training.
+                     recordings/ holds pre-fix footage no engine can remake.
 .claude/CLAUDE.md    This file: the knowledge base. Lives in .claude/ (Claude
                      Code loads it from there too) so the public root stays
                      clean -- moved 2026-09-23 along with the three below.
