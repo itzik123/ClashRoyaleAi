@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- The GitHub social preview (docs/assets/social-preview.png, 1280x640). Render with:
+     chrome --headless=new --hide-scrollbars --force-device-scale-factor=1 --window-size=1280,640 --screenshot=out.png card.html
+     Keep the numbers in line with the README; they are measured, and each has its conditions there. --><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+html,body{width:1280px;height:640px;overflow:hidden}
+body{background:radial-gradient(1200px 640px at 0% 0%,#1b2436 0%,#0e1117 55%,#0b0d12 100%);
+ font-family:"Segoe UI",system-ui,sans-serif;color:#e6edf3;display:flex;align-items:center;padding:0 52px;gap:44px}
+.left{flex:1;display:flex;flex-direction:column;gap:22px}
+.eyebrow{font-size:17px;letter-spacing:.14em;text-transform:uppercase;color:#7d8fa9;font-weight:600}
+h1{font-size:62px;line-height:1;font-weight:800;letter-spacing:-.02em}
+h1 .b{color:#4a9eff}
+.tag{font-size:25px;line-height:1.35;color:#c3ccd8;max-width:500px}
+.chips{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.chip{display:flex;align-items:center;gap:12px;font-size:19px;color:#dfe6ee}
+.dot{width:10px;height:10px;border-radius:50%;background:#4a9eff;flex:none}
+.dot.r{background:#ff5252}.dot.g{background:#3fb950}
+.foot{margin-top:10px;font-size:16px;color:#7d8fa9;letter-spacing:.02em}
+.right{display:flex;gap:18px;align-items:center}
+.shot{border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.06);display:block}
+.col{display:flex;flex-direction:column;gap:8px;align-items:center}
+.cap{font-size:13.5px;color:#7d8fa9;text-align:center;max-width:290px;line-height:1.3}
+</style></head><body>
+<div class="left">
+  <div class="eyebrow">Open-source RL environment</div>
+  <h1>ClashRoyale<span class="b">Env</span></h1>
+  <div class="tag">A fast, deterministic Clash Royale battle engine for reinforcement learning.</div>
+  <div class="chips">
+    <div class="chip"><span class="dot"></span>A full match in ~10 ms on one CPU core</div>
+    <div class="chip"><span class="dot r"></span>132 cards and 41 Evolutions, in C++17</div>
+    <div class="chip"><span class="dot g"></span>Recurrent PPO, self-play, and lookahead search</div>
+  </div>
+  <div class="foot">C++17 &middot; pybind11 &middot; Python &middot; MIT license</div>
+</div>
+<div class="right">
+  <div class="col"><img class="shot" src="cands.png" style="height:520px"><div class="cap">The opponent scores each play by simulating 10&nbsp;s ahead</div></div>
+  <div class="col"><img class="shot" src="arena.png" style="height:520px"><div class="cap">&nbsp;</div></div>
+</div>
+</body></html>
