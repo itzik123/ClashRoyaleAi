@@ -238,12 +238,12 @@ checkpoints, is listed in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. Before changing engine code, read the
-engine facts in [`.claude/CLAUDE.md`](.claude/CLAUDE.md). It records how the
-engine is calibrated and which constants are derived from where. Any change
-that affects gameplay invalidates existing checkpoints and win-rate
-comparisons, so please say so in the pull request. Run the test suites above
-before submitting.
+Issues and pull requests are welcome. Read
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, tests and the rules for engine
+changes. A good place to start is the list of
+[good first issues](https://github.com/itzik123/ClashRoyaleAi/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22),
+and questions and ideas are welcome in
+[Discussions](https://github.com/itzik123/ClashRoyaleAi/discussions).
 
 ## License
 
