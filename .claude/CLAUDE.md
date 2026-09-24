@@ -267,9 +267,9 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-09-15 after the pre-launch audit: **714 test cases, 8,169
-assertions**, 713 pass and **exactly one fails "as expected"** -- (673 / 6,511 on
-2026-08-26)
+Measured 2026-09-24 after the bridge-mouth orbit fix: **715 test cases, 8,171
+assertions**, 714 pass and **exactly one fails "as expected"** -- (714 / 8,169 on
+2026-09-15, 673 / 6,511 on 2026-08-26)
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
 second failure is a real regression. (It read 650 cases / 6,423 assertions on
@@ -589,6 +589,23 @@ planner's arrival-condition are separate literals, they can disagree.
 > FAR bank unguarded, which stalled ~20% of lone ground crossings. See the
 > 2026-08-20 simulator-audit section. When a fix of this shape lands, sweep
 > EVERY branch of the function, not the one the reproduction happened to take.
+
+> **AND A THIRD, fixed 2026-09-24: an ORBIT, not a fixed point**
+> (`UPSTREAM_REQUESTS.md` item 31). Knockback or a collision pushes a unit off
+> the deck while it is in the river band. `clampToBoard` snaps it to the bank
+> line, where it still counts as "below", so it walks SIDEWAYS to the mouth.
+> `Troop::moveTowards` then took a full step past the mouth, stayed on the bank
+> line, got the same mouth back, and stepped past it the other way, forever.
+> Found as a Giant vibrating for 22 s in promo footage: 18% of teacher matches
+> had one, the longest lasting 52 s. The sweeps above could not see it, because
+> `getNextWaypoint` never returned the unit's own position. **The fix is in the
+> mover, not the planner:** the step is capped at the remaining distance, so a
+> unit lands ON its waypoint. Pinned by `test_board.cpp` `[orbit]`, which runs
+> 3,208 real Giant/Hog crossings through GameManager; 1,276 of them stuck before
+> the fix. GAMEPLAY-AFFECTING. The lesson beyond "sweep every branch": **an
+> arrival test needs a mover that can arrive.** A step larger than twice the
+> arrival epsilon has period-2 orbits around every waypoint, and only the
+> region change after an overshoot was hiding them.
 
 **Still wrong, unmeasured, and in the same direction:** `Projectile`'s own
 `speed` was never recalibrated alongside the movement fix.
@@ -3031,6 +3048,12 @@ tools/audit/         Standalone measurement instruments for the C++ engine,
                        Uses step_self_play, never step -- step runs the
                        HeuristicOpponent, which defends, and a Giant stopped by
                        a defender says nothing about navigation.
+tools/promo/         Promo-video footage: mosaic.py (64 matches in a grid),
+                     export_viewer.py (web/viewer.html -> MP4, headless Chrome),
+                     scenes.py (staged story beats), ghost_trails.py (the
+                     search's candidate futures). PIL + ffmpeg; output in
+                     tools/promo/out/ (ignored). Not imported by training.
+                     recordings/ holds pre-fix footage no engine can remake.
 .claude/CLAUDE.md    This file: the knowledge base. Lives in .claude/ (Claude
                      Code loads it from there too) so the public root stays
                      clean -- moved 2026-09-23 along with the three below.

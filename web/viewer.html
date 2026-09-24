@@ -933,6 +933,28 @@ const TOWER_DEFS = [
 const CELL_SIZE = 22;
 const PADDING = 12;
 
+// Backing-store pixels per CSS pixel. Every canvas is sized at this multiple and
+// drawn through a matching transform, so all drawing code stays in logical
+// (CSS) pixels while a high-DPI screen, or a headless export at a raised
+// deviceScaleFactor (tools/promo/export_viewer.py), gets a sharp board rather
+// than an upscaled one. At 1 nothing changes.
+const RENDER_SCALE = Math.max(1, window.devicePixelRatio || 1);
+
+// Size `cv` for w x h logical pixels at RENDER_SCALE and return its context,
+// already transformed. `pinCss` fixes the CSS size, which a canvas otherwise
+// takes from its (now larger) backing store.
+function sizeCanvas(cv, w, h, pinCss) {
+  cv.width = Math.round(w * RENDER_SCALE);
+  cv.height = Math.round(h * RENDER_SCALE);
+  if (pinCss) {
+    cv.style.width = w + 'px';
+    cv.style.height = h + 'px';
+  }
+  const c = cv.getContext('2d');
+  c.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
+  return c;
+}
+
 // Arena geometry. Not derivable from the replay JSON, so hardcoded with the
 // header that owns each value named:
 //
@@ -1034,8 +1056,7 @@ function initViewer() {
 
   const w = gameData.boardWidth * CELL_SIZE + PADDING * 2;
   const h = gameData.boardHeight * CELL_SIZE + PADDING * 2;
-  canvas.width = w;
-  canvas.height = h;
+  sizeCanvas(canvas, w, h, true);
   currentTick = 0;
   selectedEntityId = null;
   scrubber.max = gameData.ticks.length - 1;
@@ -1153,19 +1174,21 @@ function gameToCanvas(rc, gx, gy) {
   };
 }
 
-// Screen point -> canvas backing-store point.
+// Screen point -> logical canvas point (the coordinates gameToCanvas returns;
+// the backing store is RENDER_SCALE times larger).
 //
 // The canvas has `max-width/max-height: 100%` and `object-fit: contain`, so its
-// element box need not keep the backing store's aspect ratio: the content is
-// scaled uniformly and letterboxed. A per-axis `(clientX - rect.left) *
-// (canvas.width / rect.width)` ignores the bars and displaces clicks by up to
-// half the board. object-fit: contain scales by min(...) and centres the
-// remainder, so both are undone in that order.
+// element box need not keep the board's aspect ratio: the content is scaled
+// uniformly and letterboxed. A per-axis `(clientX - rect.left) *
+// (width / rect.width)` ignores the bars and displaces clicks by up to half the
+// board. object-fit: contain scales by min(...) and centres the remainder, so
+// both are undone in that order.
 function eventToCanvas(evt) {
   const rect = canvas.getBoundingClientRect();
-  const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
-  const offX = rect.left + (rect.width - canvas.width * scale) / 2;
-  const offY = rect.top + (rect.height - canvas.height * scale) / 2;
+  const cw = canvas.width / RENDER_SCALE, ch = canvas.height / RENDER_SCALE;
+  const scale = Math.min(rect.width / cw, rect.height / ch);
+  const offX = rect.left + (rect.width - cw * scale) / 2;
+  const offY = rect.top + (rect.height - ch * scale) / 2;
   return { x: (evt.clientX - offX) / scale, y: (evt.clientY - offY) / scale, scale };
 }
 
@@ -1240,9 +1263,32 @@ function detectAllEvents() {
 }
 
 // Rendering
+// Fraction of the way from currentTick to the next tick that the arena shows.
+// Always 0 except inside __viewerTests.gotoTickFrac, which resets it.
+let tickFraction = 0;
+
+// The board between two recorded ticks, each entity's position interpolated by
+// id toward the next tick. The replay holds whole ticks, 10 a second, so a
+// 30 fps video would otherwise hold every position for three frames. HP and
+// everything else stay at tick i; bodies absent from i + 1 stay put.
+function tickBetween(i, frac) {
+  const a = gameData.ticks[i];
+  const b = gameData.ticks[i + 1];
+  if (!b || !(frac > 0)) return a;
+  const next = new Map(b.entities.map(e => [e.id, e]));
+  return Object.assign({}, a, {
+    entities: a.entities.map(e => {
+      const n = next.get(e.id);
+      return n ? Object.assign({}, e, { x: e.x + (n.x - e.x) * frac,
+                                        y: e.y + (n.y - e.y) * frac })
+               : e;
+    }),
+  });
+}
+
 function renderTick() {
   if (!gameData) return;
-  const tickData = gameData.ticks[currentTick];
+  const tickData = tickBetween(currentTick, tickFraction);
   if (!tickData) return;
   drawBoard(mainRc(), tickData, {
     selectedEntityId: selectedEntityId,
@@ -1305,9 +1351,7 @@ function boardBackground(rc) {
   if (_bgCache[key]) return _bgCache[key];
 
   const cv = document.createElement('canvas');
-  cv.width = rc.width;
-  cv.height = rc.height;
-  const ctx2 = cv.getContext('2d');
+  const ctx2 = sizeCanvas(cv, rc.width, rc.height, false);
   const cs = rc.cellSize, pad = rc.padding, w = rc.width, h = rc.height;
   const C = cssVar;
 
@@ -1390,7 +1434,8 @@ function drawBoard(rc, tickData, opts) {
   // they are rendered once into an offscreen canvas and blitted (painting them
   // per frame cost ~127 ms/frame).
   rc.ctx.clearRect(0, 0, w, h);
-  rc.ctx.drawImage(boardBackground(rc), 0, 0);
+  // Destination size given: the layer is RENDER_SCALE times larger in pixels.
+  rc.ctx.drawImage(boardBackground(rc), 0, 0, w, h);
 
   if (opts.showLabels) {
     rc.ctx.font = '10px Inter, sans-serif';
@@ -1682,8 +1727,8 @@ function drawEntity(rc, ent, isSelected) {
     return;
   }
 
-  // Selection ring
-  if (isSelected) {
+  // Selection ring (a building's body would cover it: it gets an outline below)
+  if (isSelected && !meta.isBuilding) {
     rc.ctx.beginPath();
     rc.ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
     rc.ctx.strokeStyle = '#facc15';
@@ -1715,6 +1760,14 @@ function drawEntity(rc, ent, isSelected) {
     rc.ctx.strokeStyle = mainColor;
     rc.ctx.lineWidth = 2;
     rc.ctx.stroke();
+    if (isSelected) {
+      rc.ctx.beginPath();
+      if (rc.ctx.roundRect) rc.ctx.roundRect(x0 - 4, y0 - 4, sz + 8, sz + 8, r + 4);
+      else rc.ctx.rect(x0 - 4, y0 - 4, sz + 8, sz + 8);
+      rc.ctx.strokeStyle = '#facc15';
+      rc.ctx.lineWidth = 2;
+      rc.ctx.stroke();
+    }
 
     // Inner icon
     rc.ctx.fillStyle = '#fff';
@@ -1851,10 +1904,12 @@ function updateTowerPanel(tickData) {
 // position reads ~+1.2, a losing one ~-1.3).
 const GAUGE_RANGE = 2.0;
 const gaugeCanvas = document.getElementById('gaugeCanvas');
-const gaugeCtx = gaugeCanvas.getContext('2d');
+// Logical size from the element's attributes, read before sizeCanvas scales them.
+const GAUGE_W = gaugeCanvas.width, GAUGE_H = gaugeCanvas.height;
+const gaugeCtx = sizeCanvas(gaugeCanvas, GAUGE_W, GAUGE_H, true);
 
 function drawGauge(stateValue) {
-  const w = gaugeCanvas.width, h = gaugeCanvas.height;
+  const w = GAUGE_W, h = GAUGE_H;
   gaugeCtx.clearRect(0, 0, w, h);
 
   const cx = w / 2, cy = h - 18, r = 68;
@@ -2056,8 +2111,7 @@ function miniBoard(entities, placements) {
   const cv = document.createElement('canvas');
   const rc = makeRenderCtx(cv.getContext('2d'), gameData.boardWidth,
                            gameData.boardHeight, SIM_MINI_CELL, 2);
-  cv.width = rc.width;
-  cv.height = rc.height;
+  sizeCanvas(cv, rc.width, rc.height, false);
   drawBoard(rc, { entities: entities || [] },
             { selectedEntityId: null, showLabels: false, ghost: true,
               placements: placements || [] });
@@ -2338,6 +2392,19 @@ window.__viewerTests = {
   }),
   entitiesAt: (i) => gameData ? gameData.ticks[i].entities : [],
   gotoTick: (i) => { currentTick = i; renderTick(); updateUI(); },
+  // For video export: the arena between ticks (tickBetween), the panels at the
+  // tick below. Leaves tickFraction at 0, so the viewer never sees it.
+  gotoTickFrac: (t) => {
+    currentTick = Math.max(0, Math.min(Math.floor(t), gameData.ticks.length - 1));
+    tickFraction = t - currentTick;
+    renderTick();
+    updateUI();
+    tickFraction = 0;
+  },
+  select: (id) => { selectedEntityId = id; renderTick(); updateUI(); },
+  renderScale: () => RENDER_SCALE,
+  cellSize: () => CELL_SIZE,
+  padding: () => PADDING,
   cardMeta: () => CARD_META,
 };
 </script>

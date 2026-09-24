@@ -10,6 +10,19 @@ are not comparable.
 The reasoning behind each change, with its measurements, is in
 [`DECISIONS.md`](DECISIONS.md).
 
+## Unreleased
+
+*Gameplay-affecting.*
+
+- A troop knocked off a bridge onto the riverbank no longer vibrates at the bridge
+  mouth. It used to overshoot the mouth by a partial step, turn back, and repeat
+  indefinitely: 18% of teacher-vs-teacher matches had one, up to 52 s long.
+  `Troop::moveTowards` now caps each step at the remaining distance. See
+  `perception/UPSTREAM_REQUESTS.md` item 31.
+
+**Compatibility:** Checkpoints load. Troop trajectories change, so win rates are not
+comparable across this change.
+
 ## v3.1.0 — Deck-derived spell terms, and a public release
 
 *2026-09-23*

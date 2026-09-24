@@ -35,9 +35,14 @@ protected:
             // frozenThisTick, not freezeTicks: update() has already decremented
             // the counter by now.
             float currentSpeed = frozenThisTick ? speed * freezeSlow : speed;
+            // Land on the waypoint, never past it: an overshoot along a bank
+            // line keeps the unit "below" the river, so it is handed the same
+            // bridge mouth back and orbits it forever (UPSTREAM_REQUESTS.md
+            // item 31; tests/core/test_board.cpp, [orbit]).
+            float step = std::min(currentSpeed, distToWaypoint);
             Vector2D newPos;
-            newPos.x = position.x + (dx / distToWaypoint) * currentSpeed;
-            newPos.y = position.y + (dy / distToWaypoint) * currentSpeed;
+            newPos.x = position.x + (dx / distToWaypoint) * step;
+            newPos.y = position.y + (dy / distToWaypoint) * step;
 
             // Flying troops pass over building footprints.
             position = isFlying ? newPos : board.resolvePositionAgainstBuildings(newPos, id);

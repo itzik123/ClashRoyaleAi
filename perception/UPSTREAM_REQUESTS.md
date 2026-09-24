@@ -821,3 +821,130 @@ PROBE, both worth knowing:
 The three helpers above are unaffected: their evidence is the source (no
 `.withTargetsAir()`) and the per-entity observation flag, not a with/without
 difference.
+
+---
+
+## Item 31 — a unit on a bank line vibrates at the bridge mouth forever
+
+**Status: IMPLEMENTED 2026-09-24**, on the maintainer's sign-off, exactly as
+proposed below. `test_board.cpp` `[orbit]` stuck on 1,276 of 3,208 crossings
+before the change and on 0 after. The C++ suite ran 715 cases, 1 expected
+failure, exit 0. The rebuilt `.pyd` sticks on 0 of 21 bank-line starts (was
+14 of 21). **Class:** movement / pathing. **GAMEPLAY-AFFECTING**, which voids
+`model_weights.pth`'s win-rate history: every troop's last step onto a
+waypoint changes. Found while rendering
+promo footage (`tools/promo/mosaic.py`), where a Giant visibly shook in place
+at a bridge for 22 seconds.
+
+### The gap
+
+`Troop::moveTowards` always moves a full `speed` step toward its waypoint and
+never shortens the last one. The step lands past the waypoint unless it happens
+to finish inside `WAYPOINT_ARRIVAL_EPS` (0.01).
+
+That is harmless almost everywhere, because an overshoot normally carries the
+unit into a new region and `getNextWaypoint` hands it the next point. It is
+fatal on a **bank line**:
+
+1. Something pushes a ground unit off a bridge deck while it is in the river
+   band: knockback (Fireball, The Log) or a collision.
+2. `Board::clampToBoard` snaps it to the nearer bank, so y is exactly
+   `riverY_start` (15.5) or `riverY_end` (17.5).
+3. The bank tests are inclusive, so the unit is still "below", and
+   `getNextWaypoint` returns the bridge mouth `{bridgeX, riverY_start}`. The
+   unit walks to it **sideways, along y = 15.5**.
+4. It overshoots in x. y is still 15.5, so the region is unchanged and it gets
+   the same waypoint back. It overshoots the other way, and repeats. This is a
+   **period-2 orbit**: the unit alternates between d and (step - d) either
+   side of the mouth, and neither is within 0.01.
+
+The two earlier bridge-mouth fixes (2026-08-09, 2026-08-20) removed **fixed
+points**, where the waypoint handed back was the point the unit already stood
+on. This one is an orbit, so an "is the waypoint where I stand" guard cannot
+see it. The escape is luck: the final step must land within 0.01 of the mouth,
+which happens with probability about `2 * EPS / step`, roughly 20% for a
+Giant.
+
+### Evidence
+
+**The reported case**, `match_060` from the promo cache (teacher vs teacher,
+rung 10, giant_double_dragon vs rg_fisherman_cycle):
+
+| tick | Giant (team 0) | |
+|---|---|---|
+| 280 | (14.56, 15.76) | on the right bridge deck, in the river band |
+| 281 | (15.55, 15.50), hp 3968 -> 3279 | red Fireball at (13, 16): 689 damage plus knockback off the deck (deck is x in [13.5, 15.5]); clamp snaps y to 15.5 |
+| 282-292 | x 15.45 -> 14.46 along y = 15.50 | walks sideways to the mouth (14.5, 15.5) |
+| 293-516 | x flips 14.46 <-> 14.55 every tick | **224 ticks (22.4 s) stuck**, with nothing near it for the first 100 |
+| 517 | (14.57, 15.50) -> (14.60, 15.66) | three friendly Skeletons walk into it and the collision nudge frees it |
+
+**Prevalence**: across 128 teacher-vs-teacher matches (16 meta decks,
+rung 10, 897,708 unit-ticks), there were **24 oscillation runs of 8+ ticks, in
+23 matches (18%)**. The longest was a Lumberjack stuck for **524 ticks (52 s)**;
+the next longest ran 224, 143, 123, 103 and 87 ticks. **Every one** was on a
+bank line (14 at y = 15.5, 10 at y = 17.5), at both bridges and for both
+teams. The detector counts consecutive ticks where
+`pos(t) == pos(t-2) != pos(t-1)`. Runs of 1-2 are ordinary collision reversals
+(241 of them); every run of 6+ ticks (26 of 26) was on a bank line, so the
+split is clean.
+
+**Empty-board reproduction** (fresh env, `inject(card, x, y, team, -1, 0)`,
+both sides holding, no other units):
+
+| start | result after 60-80 ticks |
+|---|---|
+| Giant (2), team 0, (15.55, 15.5) | stuck: x flips 14.46 <-> 14.56 at y = 15.5 |
+| Giant, team 0, x0 = 15.50 .. 16.50 step 0.05 on y = 15.5 | **14 of 21 stuck** |
+| Giant, team 1, (15.55, 17.5) | stuck at (14.56, 17.5): the mirror bank |
+| Hog Rider (15), team 0, (15.55, 15.5) | escapes: its last step happens to land within 0.01 |
+
+### Proposed change (exact)
+
+`include/entities/Troop.h`, `Troop::moveTowards`: cap the step at the remaining
+distance, so the unit lands **on** the waypoint (distance 0 <= EPS) and
+`getNextWaypoint` hands it the far bank on the next tick:
+
+```cpp
+float currentSpeed = frozenThisTick ? speed * freezeSlow : speed;
+// Land on the waypoint, never past it: an overshoot along a bank line keeps
+// the unit "below" the river and hands it the same mouth back (item 31).
+float step = std::min(currentSpeed, distToWaypoint);
+Vector2D newPos;
+newPos.x = position.x + (dx / distToWaypoint) * step;
+newPos.y = position.y + (dy / distToWaypoint) * step;
+```
+
+This is the only troop mover. `CombatEntity::moveTowards` is the stationary
+no-op, and flying units go through the same function with
+`riverIgnores = true`.
+
+**Options considered and not recommended:**
+
+- Treat "on the bank line and within one step of the mouth" as arrived in
+  `getNextWaypoint`. That puts the mover's step size into the planner: a third
+  copy of "close enough", the pattern that caused the first absorbing state.
+- Snap a knocked-off unit back onto the deck instead of onto the bank. That
+  changes what knockback does, which is a gameplay rule, to avoid a pathing
+  defect.
+
+### Blast radius
+
+- The cap binds only when the waypoint is closer than one step (<= 0.27 tiles
+  even for the fastest tier): at bridge mouths, at `LanePath`'s lane waypoint,
+  and when a chased target is within one step (rare, since attack range stops
+  movement first).
+- Each binding forfeits the rest of that tick's step, so arriving at a waypoint
+  costs at most one tick (0.1 s). Deterministic trajectories change, so replays
+  and win rates are not comparable across this change.
+- Removes up to 52 s stalls from about 18% of matches: a stuck win condition,
+  or a tank frozen in front of its own support.
+
+### Tests (to add with the change)
+
+In `tests/core/test_board.cpp` (the file that pins the earlier bridge-mouth
+states; it is in the build glob): a ground troop placed on each bank line
+(y = `getRiverStart()` and `getRiverEnd()`), swept in x at finer than one
+step (0.01) across 2 tiles either side of each mouth (`ArenaLayout` bridge x,
+never literals), for both teams and at least two speed tiers (Giant SLOW, Hog
+VERY_FAST). Each must cross into the far half within `2 tiles / step + 10`
+ticks. On the current code the Giant sweep fails (14 of 21 at 0.05 spacing).
