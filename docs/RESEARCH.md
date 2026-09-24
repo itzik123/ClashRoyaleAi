@@ -427,7 +427,8 @@ win rate measured before it is historical.
 
 A deterministic engine has a failure mode a stochastic one hides: an
 **absorbing state**, a position a unit can enter and never leave. Two were
-found in the same function.
+found in the same function, and a third, a loop rather than a fixed point, in
+the mover beside it.
 
 - **The entry trap (Aug 9).** The waypoint planner classified a unit standing
   exactly on the near bank as still "below", and handed it the point it already
@@ -443,11 +444,23 @@ found in the same function.
   which is exactly the "send the Hog to the bridge" case. After the fix, an
   analytic sweep of **8,661,439 board positions** against 8 destinations finds
   zero absorbing states.
+- **The orbit (Sep 24).** Knockback pushes a unit off the bridge deck while it
+  is in the river. The board clamp drops it on the bank line, where it still
+  counts as "below", so the planner sends it sideways to the bridge mouth. The
+  mover took a full step past the mouth, got the same mouth back, and stepped
+  past it the other way, forever. The sweep above could not see it: the planner
+  never handed a unit its own position, it was the mover that could not land.
+  It turned up as a Giant vibrating for 22 s in footage shot for a promo video;
+  **18%** of teacher matches had one, the longest lasting 52 s. A step is now
+  capped at the distance left, and a regression test runs **3,208** real Giant
+  and Hog crossings, **1,276** of which stuck before the fix.
 
-These two traps give two general rules. **Two independent copies of "close
-enough" are a deadlock waiting for the right step size.** And when a fix of
-this shape lands, sweep every branch of the function, not just the one the
-reproduction happened to take.
+These traps give three general rules. **Two independent copies of "close
+enough" are a deadlock waiting for the right step size.** When a fix of this
+shape lands, sweep every branch of the function, not just the one the
+reproduction happened to take. And **an arrival test needs a mover that can
+arrive**: a step longer than twice the arrival radius can circle a waypoint
+forever.
 
 Four more defects of the same kind (silent, plausible-looking, and caught only
 by instruments) are worth one line each:
