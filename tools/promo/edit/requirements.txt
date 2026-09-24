@@ -1,0 +1,6 @@
+# The editor's own venv (not the training venv, which must not change):
+#   py -3.11 -m venv tools/promo/edit/.venv
+#   tools/promo/edit/.venv/Scripts/python.exe -m pip install -r tools/promo/edit/requirements.txt
+pillow>=10.1
+numpy>=1.24
+faster-whisper>=1.0

@@ -3054,6 +3054,10 @@ tools/promo/         Promo-video footage: mosaic.py (64 matches in a grid),
                      search's candidate futures). PIL + ffmpeg; output in
                      tools/promo/out/ (ignored). Not imported by training.
                      recordings/ holds pre-fix footage no engine can remake.
+                     edit/edit_short.py cuts it all into the finished Short
+                     from edit/short.json, timed to a voiceover by
+                     faster-whisper. It has its OWN venv (edit/.venv): never
+                     pip install into the training venv for it.
 .claude/CLAUDE.md    This file: the knowledge base. Lives in .claude/ (Claude
                      Code loads it from there too) so the public root stays
                      clean -- moved 2026-09-23 along with the three below.

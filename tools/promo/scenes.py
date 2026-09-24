@@ -296,7 +296,7 @@ def fireball_one(ids, out_kw):
     if fb is None:
         raise SystemExit("fireball_one: the Fireball never appeared")
     return (dict(replay=path, start=max(0, fb - 15), end=min(len(data["ticks"]) - 1, fb + 40),
-                 speed=1.0, label="Illustration"),
+                 speed=1.0, label="Illustration", beats={"fireball": fb}),
             "one Fireball, one troop in its radius")
 
 
@@ -311,6 +311,12 @@ def main():
     ap.add_argument("--size", default="vertical")
     ap.add_argument("--still", type=float, default=None,
                     help="one PNG per scene at this many seconds, no video")
+    ap.add_argument("--no-label", action="store_true",
+                    help="leave the recorded/recreated label off the video; "
+                         "edit/edit_short.py draws it on top, where zooms cannot crop it")
+    ap.add_argument("--no-select", action="store_true",
+                    help="no yellow selection ring on the scene's key unit; "
+                         "edit/edit_short.py marks it with its own graphics")
     ap.add_argument("--ffmpeg", default=None)
     ap.add_argument("--browser", default=None)
     args = ap.parse_args()
@@ -329,11 +335,21 @@ def main():
         kw, fact = SCENES[name](ids, {})
         replay = kw.pop("replay")
         beats = kw.pop("beats", None)
+        label = kw.pop("label", None)
+        if args.no_select:
+            kw.pop("select", None)
         out = str(SCENE_DIR / f"{name}.mp4")
         print(f"[{name}] {fact}")
         path = export(replay, out, size=args.size, still=args.still, fps=FPS,
+                      label=None if args.no_label else label,
                       ffmpeg=args.ffmpeg, browser=args.browser, quiet=True, **kw)
         print(f"[{name}] wrote {path} in {time.time() - t0:.0f}s")
+        if args.still is None:
+            # The label travels with the clip, burned in or not, so the editor
+            # can never show recreated footage unlabelled by accident.
+            with open(SCENE_DIR / f"{name}.clip.json", "w", encoding="utf-8") as fh:
+                json.dump({"label": label, "burned": bool(label) and not args.no_label},
+                          fh, indent=2)
         if beats:
             _write_beats(name, beats, kw)
 

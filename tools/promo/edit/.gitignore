@@ -1,0 +1,5 @@
+.venv/
+cache/
+# Your voiceover, music, font and sound effects stay on your machine.
+assets/*
+!assets/README.md

@@ -1,0 +1,102 @@
+{
+ "_about": "A staged board for ghost_trails.py --board. bodies are [card, x, y, team] where each troop stands --lead seconds BEFORE the decision (the engine plays the lead); team 0 is ours, at the bottom. towers are [King, left Princess, right Princess] HP fractions per team. elixir is [ours, theirs] at the decision. plays are [card, x, y], or [card, \"aim\"] for a spell to go where it does the most damage, or [card, \"net\"] for the cell the network prefers for that card; the network's own pick is always added at its own cell.",
+ "_found": "Found by a random search over staged triple-elixir boards (sudden death). Kept because, played out to the end from the frozen board (the network sampling for us, 16 games per move), the lookahead's pick really wins: Fireball 25/32, Hog Rider (the network's pick) 3/32, Cannon 5/32, Ice Spirit 0/32, doing nothing 3/32.",
+ "title": "Triple elixir",
+ "tick": 2000,
+ "seed": 1,
+ "horizon": 4,
+ "enemy_deck": [
+  "Giant",
+  "Barbarians",
+  "Minion Horde",
+  "Goblin Gang",
+  "Electro Wizard",
+  "Skeletons",
+  "Zap",
+  "Arrows"
+ ],
+ "towers": {
+  "0": [
+   0.94,
+   0.73,
+   0.83
+  ],
+  "1": [
+   0.93,
+   0.2,
+   0.99
+  ]
+ },
+ "hand": [
+  "Hog Rider",
+  "Fireball",
+  "Cannon",
+  "Ice Spirit"
+ ],
+ "elixir": [
+  9.5,
+  2.9
+ ],
+ "bodies": [
+  [
+   "Skeletons",
+   2.6,
+   19.8,
+   1
+  ],
+  [
+   "Minion Horde",
+   9.3,
+   27.7,
+   1
+  ],
+  [
+   "Goblin Gang",
+   14.1,
+   20.6,
+   1
+  ],
+  [
+   "Giant",
+   2.8,
+   23.0,
+   1
+  ],
+  [
+   "Ice Golem",
+   3.1,
+   8.3,
+   0
+  ],
+  [
+   "Skeletons",
+   8.6,
+   9.3,
+   0
+  ],
+  [
+   "Musketeer",
+   2.1,
+   12.2,
+   0
+  ]
+ ],
+ "plays": [
+  [
+   "Hog Rider",
+   "net"
+  ],
+  [
+   "Fireball",
+   "aim"
+  ],
+  [
+   "Cannon",
+   "net"
+  ],
+  [
+   "Ice Spirit",
+   "net"
+  ]
+ ]
+}
