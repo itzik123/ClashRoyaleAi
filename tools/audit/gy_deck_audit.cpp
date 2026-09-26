@@ -496,9 +496,17 @@ void sectionGraveyard() {
         int before = tw->hp;
         s.spawn(110, 3.0f, 27.0f, 0);
         s.step(150);
-        int skHits = 0, skDmg = 0;
-        for (auto& d : s.rec->dmg) if (d.attackerTeam == 0 && d.targetIsTower) { skHits++; skDmg += d.amount; }
-        std::printf("  cast on an active Princess Tower: %d skeleton hits, tower lost %d over 15 s\n", skHits, before - tw->hp);
+        // Split by target: skeletons that miss this tower can walk on to another.
+        // The Graveyard spell itself deals 0, and each of its pulses still
+        // emits a 0-amount event on every enemy in its disc: not hits.
+        int onHits = 0, onDmg = 0, offHits = 0, offDmg = 0, emptyPulses = 0;
+        for (auto& d : s.rec->dmg) {
+            if (d.attackerTeam != 0 || !d.targetIsTower) continue;
+            if (d.amount == 0) { emptyPulses++; continue; }
+            if (d.targetId == tw->id) { onHits++; onDmg += d.amount; } else { offHits++; offDmg += d.amount; }
+        }
+        std::printf("  cast on an active Princess Tower, 15 s: %d skeleton hits for %d on it (hp lost %d), %d for %d on other towers"
+            " [+%d zero-damage spell pulses]\n", onHits, onDmg, before - tw->hp, offHits, offDmg, emptyPulses);
     }
 }
 

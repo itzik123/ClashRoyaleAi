@@ -1189,7 +1189,13 @@ wiki says 5. Item 29's other spells and item 30's Goblin Gang / Rascals are
 still open. **Found in passing and not fixed:** the Cannon Cart grounds itself
 with a stun (`transformBecomesStationary` -> `applyFreeze(ticks, 0.0f)`),
 which also holds its cooldown, so it stops firing for its last 15 s. That was
-true before this item too. It is filed as a separate task.
+true before this item too. It is filed as a separate task. And a 0-damage
+spell (Graveyard, Freeze) still calls `takeDamage(0)` and emits a 0-amount
+`DamageDealtEvent` on every enemy in its disc, every pulse
+(`AreaSpell::update`). A centred Graveyard "hits" the tower 12 times that way.
+So an event count is not a hit count. The instrument counts amount > 0 since
+2026-09-26. Nothing in gameplay changes; whether any statistics collector
+counts events rather than summing amounts was not checked.
 
 ### 32a — Hero Barbarian Barrel's ability is unreachable
 
