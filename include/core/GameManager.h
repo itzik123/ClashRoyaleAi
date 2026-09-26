@@ -416,9 +416,11 @@ public:
     int getCurrentTick() const { return currentTick; }
 
     // `isRollingSpell` narrows the spell exemption for The Log and Barbarian
-    // Barrel (see the end of this function).
+    // Barrel, and `ownSideOnly` narrows it further, to a troop's own side, for
+    // Barbarian Barrel (see the end of this function).
     bool isValidPlacement(int team, float x, float y, bool isSpell, float placedRadius,
-                          bool deployAnywhere = false, bool isRollingSpell = false) const {
+                          bool deployAnywhere = false, bool isRollingSpell = false,
+                          bool ownSideOnly = false) const {
         float maxX = static_cast<float>(board.getWidth() - 1);
         float maxY = static_cast<float>(board.getHeight() - 1);
         if (x < 0.0f || x > maxX || y < 0.0f || y > maxY) return false;
@@ -466,6 +468,12 @@ public:
             if (team == 0 && y > board.getRiverEnd()) return false;
             if (team == 1 && y < board.getRiverStart()) return false;
         }
+        // Barbarian Barrel is cast on its own side only, the troop rule above,
+        // with no river allowance (UPSTREAM_REQUESTS.md item 32n).
+        if (isSpell && ownSideOnly) {
+            if (team == 0 && y > board.getRiverStart() - OWN_HALF_RIVER_BUFFER) return false;
+            if (team == 1 && y < board.getRiverEnd() + OWN_HALF_RIVER_BUFFER) return false;
+        }
         return true;
     }
 
@@ -509,7 +517,8 @@ public:
         }
 
         if (!isValidPlacement(team, x, y, effectiveDef->isSpell, effectiveDef->placementRadius,
-                              effectiveDef->deployAnywhere, effectiveDef->rollRange > 0.0f)) return false;
+                              effectiveDef->deployAnywhere, effectiveDef->rollRange > 0.0f,
+                              effectiveDef->castOwnSideOnly)) return false;
 
         PlayerState::PlayCardResult result = player.playCard(handIndex, costOverride);
         if (result.cardId != -1) {
@@ -538,26 +547,45 @@ public:
             // becomes lastPlayedCardId.
             if (!isMirror) player.lastPlayedCardId = result.cardId;
 
-            // Champion and Hero slot tracking (PlayerState::ChampionSlotState),
-            // resolved off the spawned entity's own cardId rather than
-            // result.cardId, so a Mirror copy is tracked like an original and
-            // the ability belongs to the newest instance.
-            const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
-            for (int slot : { 1, 2 }) {
-                for (size_t i = pendingBefore; i < board.pendingEntityCount(); ++i) {
-                    auto ce = std::dynamic_pointer_cast<CombatEntity>(board.getPendingEntity(i));
-                    if (ce && (ce->isChampion || ce->isHero) && ce->cardId == deckConfig[slot]) {
-                        PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
-                        ce->abilityCooldownRemaining = slotState.persistedCooldownRemaining;
-                        slotState.trackedEntityId = ce->id;
-                        break;
-                    }
-                }
-            }
+            // Champion and Hero slot tracking for bodies that spawn with the
+            // play; bodies a spell spawns later are adopted by step().
+            trackSlotEntities(team, pendingBefore);
 
             return true;
         }
         return false;
+    }
+
+    // Champion and Hero slot tracking (PlayerState::ChampionSlotState): adopts
+    // a pending Champion/Hero body of `team`, from pending index `fromPending`
+    // on, as the tracked entity of the slot whose deck card it belongs to.
+    // Matched off the body's own abilitySlotCardId, else its cardId, rather
+    // than off what left the hand, so a Mirror copy is tracked like an original
+    // and the ability belongs to the newest instance.
+    //
+    // playCard adopts the bodies spawned with the play. step() calls it with
+    // `lateSpawnsOnly`, before each commit, for bodies a spell spawns later and
+    // that say so (abilitySlotCardId): Hero Barbarian Barrel's Barbarian lands
+    // ~17 ticks after the play, as a -47 helper, and was never tracked -- its
+    // ability could not be activated (UPSTREAM_REQUESTS.md item 32a). Only
+    // declared bodies, so a Clone copy (which carries isChampion but never a
+    // slot: CombatEntity::becomeCloneCopy) is still never adopted.
+    void trackSlotEntities(int team, size_t fromPending, bool lateSpawnsOnly = false) {
+        PlayerState& player = (team == 0) ? playerAI : playerOpponent;
+        const std::vector<int>& deckConfig = (team == 0) ? aiDeckConfig : oppDeckConfig;
+        for (int slot : { 1, 2 }) {
+            for (size_t i = fromPending; i < board.pendingEntityCount(); ++i) {
+                auto ce = std::dynamic_pointer_cast<CombatEntity>(board.getPendingEntity(i));
+                if (!ce || ce->team != team || !(ce->isChampion || ce->isHero)) continue;
+                if (lateSpawnsOnly && ce->abilitySlotCardId == 0) continue;
+                const int slotCard = (ce->abilitySlotCardId != 0) ? ce->abilitySlotCardId : ce->cardId;
+                if (slotCard != deckConfig[slot]) continue;
+                PlayerState::ChampionSlotState& slotState = player.championSlots[slot];
+                ce->abilityCooldownRemaining = slotState.persistedCooldownRemaining;
+                slotState.trackedEntityId = ce->id;
+                break;
+            }
+        }
     }
 
     // Whether `team`'s Champion in `slot` (1 = Heroic, 2 = Wild Card) could
@@ -663,6 +691,10 @@ public:
         playerAI.tick();
         playerOpponent.tick();
 
+        // Before each commit: a Champion/Hero body spawned outside playCard
+        // (by a spell, or by last tick's death effects) is adopted by its slot.
+        trackSlotEntities(0, 0, /*lateSpawnsOnly=*/true);
+        trackSlotEntities(1, 0, /*lateSpawnsOnly=*/true);
         board.commitPendingEntities(currentTick);
 
         for (auto& entity : board.getEntities()) {
@@ -676,6 +708,8 @@ public:
         board.pendingElixirGrant[0] = 0.0f;
         board.pendingElixirGrant[1] = 0.0f;
 
+        trackSlotEntities(0, 0, /*lateSpawnsOnly=*/true);
+        trackSlotEntities(1, 0, /*lateSpawnsOnly=*/true);
         board.commitPendingEntities(currentTick);
         board.resolveCollisions();
 

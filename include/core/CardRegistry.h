@@ -10,6 +10,8 @@
 #include "FreezeOnHit.h"
 #include "SpawnOnDeath.h"
 #include "AreaDamageOnDeath.h"
+#include "DelayedAreaDamageOnDeath.h"
+#include "MoveSlowOnHit.h"
 #include "CompositeDeathEffect.h"
 #include "PeriodicSpawnEffect.h"
 #include "CurseOnHit.h"
@@ -62,6 +64,9 @@ struct CardDefinition {
     float rollRange;
     // Miner, Goblin Drill: placeable anywhere (GameManager::isValidPlacement).
     bool deployAnywhere;
+    // Barbarian Barrel: a spell cast on its own side only, as a troop is
+    // (GameManager::isValidPlacement). False for every other card.
+    bool castOwnSideOnly = false;
     // Surfaced at registry level so deck contents can be inspected before
     // anything is placed.
     bool isChampion;
@@ -160,7 +165,7 @@ private:
     // tier, never a literal; pinned by "every spawned unit moves at the speed
     // of its own playable card" in tests/core/test_card_registry.cpp.
     static CardStats battleRamBarbarianStats() {
-        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+        return troop(-10, "Barbarians", 0.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} });
     }
     static CardStats skeletonBarrelSkeletonStats() {
@@ -187,16 +192,26 @@ private:
             .withOffsets({ {-0.4f, 0.0f}, {0.4f, 0.0f} })
             .withFlying().withTargetsAir();
     }
+    // The Furnace's spirit is the playable Fire Spirit (card 73): one kamikaze
+    // hit of area damage, then gone. Without withDieAfterFirstHit it was a
+    // permanent 207-per-second turret (UPSTREAM_REQUESTS.md item 32b).
     static CardStats furnaceFireSpiritStats() {
-        return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 207, 10, '<')
-            .withTargetsAir();
+        return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 215, 10, '<')
+            .withTargetsAir()
+            .withSplash(2.3f)
+            .withDieAfterFirstHit();
     }
     static CardStats barbarianHutBarbarianStats() {
-        return troop(-16, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+        return troop(-16, "Barbarians", 0.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f} });
     }
+    // The playable Spear Goblins (card 23), air included (UPSTREAM_REQUESTS.md
+    // item 30), deploying in 0.5 s rather than 1 (official August 2025 notes:
+    // "Spear Goblin Deploy Delay: 1sec -> 0.5sec").
     static CardStats goblinHutSpearGoblinStats() {
-        return troop(-17, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S');
+        return troop(-17, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 16, 'S')
+            .withTargetsAir()
+            .withDeployTime(5);
     }
     static CardStats goblinDrillGoblinStats() {
         return troop(-18, "Goblins", 0.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g');
@@ -221,14 +236,18 @@ private:
             .withShield(240); // Royal Recruits' shield
     }
     static CardStats barbarianBarrelBarbarianStats() {
-        return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
+        return troop(-23, "Barbarians", 0.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
     }
     // Hero Barbarian Barrel makes the spawned Barbarian the Hero (the barrel
     // spell has no persistent entity): barbarianBarrelBarbarianStats plus
-    // "Rowdy Reroll".
+    // "Rowdy Reroll" -- a 3-tile reroll (May 2026) down the barrel's own 2.6
+    // corridor, 232 like the barrel, healing half the damage it deals.
+    // withAbilitySlotCard(174): this body spawns ~17 ticks after the play, as
+    // a -47 helper, so the slot must be told whose ability it carries.
     static CardStats heroBarbarianBarrelBarbarianStats() {
-        return troop(-47, "Hero Barbarian Barrel", 0.0f, Archetype::MeleeSquad, 691, 0.5f, 0.7f, 192, 14, 'B')
-            .withHeroAbility(1.0f, 0, std::make_shared<HeroBarbarianBarrelRerollEffect>(3.0f, 0.7f, 233), 1);
+        return troop(-47, "Hero Barbarian Barrel", 0.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+            .withHeroAbility(1.0f, 0, std::make_shared<HeroBarbarianBarrelRerollEffect>(3.0f, 1.3f, 232, 716), 1)
+            .withAbilitySlotCard(174);
     }
     // Compound-card secondary units (Goblin Machine's turret, Ram Rider's
     // crossbow, Goblin Giant's Spear Goblins, the ranged halves of Goblin Gang
@@ -250,7 +269,7 @@ private:
             .withIgnoresRiver();
     }
     static CardStats goblinGiantSpearGoblinsStats() {
-        return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
+        return troop(-26, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 16, 'S')
             .withOffsets({ {-0.4f, 0.3f}, {0.4f, 0.3f} }).withTargetsAir();
     }
 
@@ -293,7 +312,7 @@ private:
     // The single Barbarian released when the Hut dies; the periodic spawn's
     // stats.
     static CardStats barbarianHutDeathBarbarianStats() {
-        return troop(-35, "Barbarians", 0.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
+        return troop(-35, "Barbarians", 0.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B');
     }
     // Goblin Drill's death spawn: two Goblins (three before a 2021 balance
     // patch).
@@ -387,6 +406,7 @@ private:
         def.rollWidth = stats.spellRollWidth;
         def.rollRange = stats.spellRollRange;
         def.deployAnywhere = stats.deployAnywhere;
+        def.castOwnSideOnly = stats.spellOwnSideOnly;
         def.isChampion = stats.isChampion;
         def.isHero = stats.isHero;
         def.abilityElixirCost = stats.abilityElixirCost;
@@ -419,6 +439,7 @@ private:
         def.rollWidth = baseStats.spellRollWidth;
         def.rollRange = baseStats.spellRollRange;
         def.deployAnywhere = baseStats.deployAnywhere;
+        def.castOwnSideOnly = baseStats.spellOwnSideOnly;
         def.isChampion = baseStats.isChampion;
         def.isHero = baseStats.isHero;
         def.abilityElixirCost = baseStats.abilityElixirCost;
@@ -451,7 +472,7 @@ private:
 
         add(troop(5, "Mini PEKKA", 4.0f, Archetype::MeleeSquad, 1390, SPEED_FAST, 0.8f, 755, 16, 'M'));
 
-        add(troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+        add(troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
             .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }));
 
         add(troop(10, "Valkyrie", 4.0f, Archetype::MeleeSquad, 1907, SPEED_MEDIUM, 1.2f, 266, 15, 'V')
@@ -478,9 +499,15 @@ private:
         add(troop(24, "Skeletons", 1.0f, Archetype::MeleeSquad, 81, SPEED_FAST, 0.5f, 81, 11, 'k')
             .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f} }));
 
-        // The death bomb's radius and damage are not sourced.
-        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3361, SPEED_MEDIUM, 0.8f, 276, 13, 'J')
-            .withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 300)).withSightRange(5.0f));
+        // Giant Skeleton, after the 2026-05-04 rework: hp -7% (3361 x 0.93),
+        // and a death bomb that lands where he dies and explodes 3.0 s later
+        // (fuse 29: see DelayedAreaDamageOnDeath) in a 3-tile radius, for
+        // 688 x 1.29 ~= 886, the same against a Crown Tower since the rework
+        // removed its 2x. The bomb's knockback (1.0, Fireball's) is not sourced.
+        // UPSTREAM_REQUESTS.md item 32c.
+        add(troop(39, "Giant Skeleton", 6.0f, Archetype::MeleeSquad, 3126, SPEED_MEDIUM, 0.8f, 276, 13, 'J')
+            .withDeathEffect(std::make_shared<DelayedAreaDamageOnDeath>(3.0f, 886, 29, 1.0f, 39, "Giant Skeleton Bomb"))
+            .withSightRange(5.0f));
 
         // Electro Wizard: the zap has no travel time, so the archetype is
         // MeleeSquad (archetypes describe how damage lands here, not range).
@@ -527,7 +554,7 @@ private:
         add(troop(22, "Bowler", 5.0f, Archetype::RangedSquad, 2081, SPEED_SLOW, 4.0f, 289, 25, 'w')
             .withSplash(1.8f).withLineSplash(11.5f).withSightRange(4.0f));
 
-        add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
+        add(troop(23, "Spear Goblins", 2.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 16, 'S')
             .withTargetsAir()
             .withOffsets({ {0.0f, 0.0f}, {0.7f, 0.0f}, {-0.7f, 0.0f} }));
 
@@ -602,8 +629,13 @@ private:
             .withKnockback(1.0f));
         add(spell(31, "Lightning", 6.0f, 3.5f, 1057, 5, 'j'));
         // Poison: 92 damage every second for 8 s; whoever stands in it takes
-        // each pulse.
-        add(spell(32, "Poison", 4.0f, 3.5f, 92, 0, 'n').withRepeats(8, 10));
+        // each pulse. A Crown Tower takes 21 per pulse (168 in all: official
+        // June 2026 notes, fixed in game on 26 Aug), and enemy troops inside
+        // move 15% slower -- movement only, refreshed by each pulse.
+        // UPSTREAM_REQUESTS.md items 29 and 32k.
+        add(spell(32, "Poison", 4.0f, 3.5f, 92, 0, 'n').withRepeats(8, 10)
+            .withCrownTowerDamage(21)
+            .withSpellOnHit(std::make_shared<MoveSlowOnHit>(10, 0.85f)));
         // The Log: ground-only, a rolling sweep of published width 3.9 and
         // range 10.1. The radius argument is unused for rollers and kept at 3.9
         // to match. From the bridge the 10.1 reaches an enemy Princess Tower's
@@ -658,10 +690,10 @@ private:
             .withChargeInvulnerability() // invulnerable while charging
             .withSightRange(6.0f)
             .withIgnoresRiver());
-        // The base card has no self-heal (that is an optional modifier), so
-        // enrageHealPerHit is 0; the attack-speed ramp stays.
-        add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, 0.7f, 1.0f, 102, 6, 'v')
-            .withEnrage(0));
+        // Berserker: a flat 0.6 s hit speed, Fast, Melee: Short (0.8). There is
+        // no rage: the self-heal and hit-speed bonuses the wiki lists are event
+        // Modifiers, not the card (UPSTREAM_REQUESTS.md item 32d).
+        add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, SPEED_FAST, 0.8f, 102, 6, 'v'));
         add(troop(52, "Miner", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.0f, 194, 13, '0')
             .withDeployAnywhere());
         add(troop(53, "Fisherman", 3.0f, Archetype::MeleeSquad, 870, SPEED_MEDIUM, 1.0f, 194, 13, '1')
@@ -743,8 +775,10 @@ private:
             // The sourced sight is 6.0 mobile and 5.5 once grounded; one entity
             // models both, and the mobile value is what matters for chasing.
             .withSightRange(6.0f));
-        add(troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
-            .withTargetsAir() // a mobile troop since the 2026 rework
+        // Furnace: a walking troop since the August 2025 rework, Medium since
+        // 2025-10-06, one Fire Spirit every 7 s.
+        add(troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, SPEED_MEDIUM, 5.5f, 179, 17, '/')
+            .withTargetsAir()
             .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())));
         add(troop(71, "Witch", 5.0f, Archetype::RangedSquad, 839, SPEED_MEDIUM, 5.5f, 135, 11, ':')
             .withTargetsAir()
@@ -757,20 +791,25 @@ private:
         // 0.0f) (Electro Spirit, Zappies, Freeze), and 0.5-0.7 is the slow band
         // (Ice Wizard, Ice Golem's explosion). Pinned in
         // tests/core/test_default_deck_qa.cpp.
-        add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
+        //
+        // Every Spirit is 215 hp since the official 4 Aug 2026 notes (230 ->
+        // 215); Fire Spirit hits for 215 since 16 Sep 2026 (207 -> 215), in a
+        // 2.3-tile area (UPSTREAM_REQUESTS.md item 32b).
+        add(troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
             .withTargetsAir()
             .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
             .withDieAfterFirstHit());
-        add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 207, 10, '<')
+        add(troop(73, "Fire Spirit", 1.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 215, 10, '<')
             .withTargetsAir()
-            .withDieAfterFirstHit()); // splash not modelled
+            .withSplash(2.3f)
+            .withDieAfterFirstHit());
         // The real heal is 4 pulses of 100.25 (401), applied here as one heal
         // on its single hit.
-        add(troop(74, "Heal Spirit", 1.0f, Archetype::RangedSquad, 230, 0.85f, 2.5f, 110, 10, '=')
+        add(troop(74, "Heal Spirit", 1.0f, Archetype::RangedSquad, 215, 0.85f, 2.5f, 110, 10, '=')
             .withTargetsAir()
             .withHealAura(2.5f, 401)
             .withDieAfterFirstHit());
-        add(troop(75, "Electro Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 99, 10, '>')
+        add(troop(75, "Electro Spirit", 1.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 99, 10, '>')
             .withTargetsAir()
             .withSplitTargets(2)
             .withOnHit(std::make_shared<FreezeOnHit>(8, 0.0f))
@@ -867,7 +906,8 @@ private:
         // Goblin Hut spawns only while an enemy is within 6 tiles, every 2.2 s
         // (ProximityGatedPeriodicSpawnEffect), and releases one Spear Goblin on
         // death.
-        add(building(95, "Goblin Hut", 4.0f, 1228, '3', 0.0f, 0, 100)
+        // 1180 hp since the 2025-10-06 -4% (was 1228).
+        add(building(95, "Goblin Hut", 4.0f, 1180, '3', 0.0f, 0, 100)
             .withPeriodicEffect(22, std::make_shared<ProximityGatedPeriodicSpawnEffect>(goblinHutSpearGoblinStats(), 6.0f))
             .withDeathEffect(std::make_shared<SpawnOnDeath>(goblinHutSpearGoblinStats())));
         // Tombstone: 2 Skeletons per pulse, 4 on its death.
@@ -897,9 +937,11 @@ private:
             .withKnockback(1.0f));
         // Barbarian Barrel: rolls 4.5 tiles at width 2.6 (published), and its
         // Barbarian spawns where the barrel stops. No knockback: the real
-        // barrel does not throw what it rolls over.
-        add(spell(101, "Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
+        // barrel does not throw what it rolls over. Cast on its own side only,
+        // unlike The Log's river allowance (UPSTREAM_REQUESTS.md item 32n).
+        add(spell(101, "Barbarian Barrel", 2.0f, 2.5f, 232, 8, '#')
             .withGroundOnly()
+            .withOwnSideOnly()
             .withRollingSweep(4.5f, 2.6f, 0.5f, 0.0f)
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(barbarianBarrelBarbarianStats())));
         // Goblin Curse: only the damage over time is modelled, not the
@@ -930,11 +972,19 @@ private:
         // Goblin Barrel: drops 3 Goblins; the barrel itself deals no damage.
         add(spell(109, "Goblin Barrel", 3.0f, 0.5f, 0, 8, '[')
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(goblinBarrelGoblinStats())));
-        // Graveyard: one Skeleton every 0.5 s, 12 in total (the 2026-01-06
-        // balance change). Arrivals outrun a Princess Tower's fire rate 2:1,
-        // which is why they connect.
-        add(spell(110, "Graveyard", 5.0f, 4.0f, 0, 8, ']')
+        // Graveyard: 12 Skeletons (official June 2026), the first 2.2 s after
+        // the cast (delay 21: an AreaSpell applies on the update after its
+        // delay reaches 0), then one every 0.5 s, cycling seven fixed points --
+        // the cast point and six on a 3.3-tile ring (AreaSpell::
+        // spawnRingRadius) -- rather than all rising on the cast point, where
+        // one small splash caught them all. Arrivals outrun a Princess
+        // Tower's 0.8 s fire rate 1.6:1. How many connect now depends on the
+        // placement, as in the real game: 81 to 810 tower damage over 15 s
+        // against a defended Princess Tower, most on its outer side.
+        // UPSTREAM_REQUESTS.md items 32i and 32j.
+        add(spell(110, "Graveyard", 5.0f, 4.0f, 0, 21, ']')
             .withRepeats(12, 5)
+            .withSpellSpawnRing(3.3f)
             .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(graveyardSkeletonStats())));
         // Royal Delivery: a shielded Royal Recruit plus its own landing damage.
         add(spell(111, "Royal Delivery", 3.0f, 2.0f, 438, 8, '^')
@@ -946,7 +996,7 @@ private:
         add(troop(112, "Goblin Gang", 3.0f, Archetype::MeleeSquad, 202, SPEED_VERY_FAST, 0.5f, 120, 11, 'g')
             .withOffsets({ {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f} })
             .withSecondaryUnit(
-                troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 17, 'S')
+                troop(-27, "Spear Goblins", 0.0f, Archetype::RangedSquad, 133, SPEED_VERY_FAST, 5.0f, 81, 16, 'S')
                     .withOffsets({ {-0.5f, 0.5f}, {0.5f, 0.5f}, {0.0f, -0.5f} })));
         // Rascals: only the Boy's stats are sourced; the two Girls reuse Spear
         // Goblins' ranged stats.
@@ -1070,16 +1120,17 @@ private:
                 .withOnHitSpawn(std::make_shared<CappedSpawnOnHitEffect>(evolvedSkeletonChildStats(), 8)),
             2, 1);
 
-        // Bats: +50% hp (121), healing on every hit up to twice that (242). The
-        // heal per hit is not sourced.
+        // Bats: 122 hp (+50%); every attack heals two pulses of 38, 0.5 s
+        // apart, overhealing up to 244 (wiki, level 11; UPSTREAM_REQUESTS.md
+        // item 32g).
         addEvolution(126,
             troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 81, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
                 .withFlying().withTargetsAir(),
-            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 121, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
+            troop(78, "Bats", 2.0f, Archetype::MeleeSquad, 122, SPEED_VERY_FAST, 1.0f, 81, 12, 't')
                 .withOffsets({ {0.0f, 0.0f}, {0.6f, 0.0f}, {-0.6f, 0.0f}, {0.3f, 0.5f}, {-0.3f, 0.5f} })
                 .withFlying().withTargetsAir()
-                .withHealOnHit(24, 242),
+                .withHealOnHit(38, 244, 5),
             2, 1);
 
         // Bomber: +25% hp (380). "Bouncy Bomb" bounces twice at full damage,
@@ -1200,16 +1251,19 @@ private:
                 .withAllyBuffAura(4.0f, 1, 1.3f, 20, 1000000),
             2, 1);
 
-        // Furnace ("Hot Spawning"): Fire Spirits every 2.4 s. No damage change
-        // is sourced. Alternating spawn sides are not modelled.
+        // Furnace ("Hot Spawning"): while attacking, Fire Spirits every 2.4 s
+        // instead of 7, spawned to the side, left then right; otherwise the
+        // base card. No damage change is sourced. The 1-tile side offset is not
+        // sourced. UPSTREAM_REQUESTS.md item 32f.
         addEvolution(138,
-            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
+            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, SPEED_MEDIUM, 5.5f, 179, 17, '/')
                 .withTargetsAir()
                 .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats())),
-            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, 0.5f, 5.5f, 179, 17, '/')
+            troop(70, "Furnace", 4.0f, Archetype::RangedSquad, 727, SPEED_MEDIUM, 5.5f, 179, 17, '/')
                 .withTargetsAir()
-                .withPeriodicEffect(24, std::make_shared<PeriodicSpawnEffect>(
-                    furnaceFireSpiritStats().withOffsets({ {0.0f, 0.0f} }))),
+                .withPeriodicEffect(70, std::make_shared<PeriodicSpawnEffect>(furnaceFireSpiritStats()))
+                .withHotPeriodicInterval(24)
+                .withAlternatingSpawnSide(1.0f),
             2, 1);
 
         // Goblin Cage: the real pull-and-hold is a hook plus a damage-over-time
@@ -1267,11 +1321,11 @@ private:
         // evolved form (the base card has no splash here). Both forms carry the
         // base 10-tick stun; the real delayed second pulse is not modelled.
         addEvolution(144,
-            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
                 .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
                 .withDieAfterFirstHit(),
-            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 230, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
+            troop(72, "Ice Spirit", 1.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 110, 10, ';')
                 .withTargetsAir()
                 .withSplash(1.7f)
                 .withOnHit(std::make_shared<FreezeOnHit>(10, 0.0f))
@@ -1393,13 +1447,15 @@ private:
                 .withSpawnEffect(6.0f, 100, std::make_shared<FreezeOnHit>(5, 0.0f)),
             2, 1);
 
-        // Barbarians: +10% hp (760). "Blade Rage": +35% attack speed for 3 s,
-        // refreshed on each attack (0.74 ~= 1/1.35). The movement-speed boost
-        // is not modelled.
+        // Barbarians: the base 716 hp, the Evolution's hp bonus cut to 0% by
+        // the official 4 Aug 2026 notes (was +10%, 760). "Blade Rage": +35%
+        // attack speed for 3 s, refreshed on each attack (0.74 ~= 1/1.35); the
+        // same notes lengthened it to 5 s, which is not applied here. The
+        // movement-speed boost is not modelled.
         addEvolution(155,
-            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 691, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
                 .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} }),
-            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 760, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
+            troop(8, "Barbarians", 5.0f, Archetype::MeleeSquad, 716, SPEED_MEDIUM, 0.7f, 192, 14, 'B')
                 .withOffsets({ {0.0f, 0.0f}, {-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f} })
                 .withSelfHasteOnHit(30, 0.74f),
             2, 1);
@@ -1600,8 +1656,9 @@ private:
         // on the spell. "Rowdy Reroll" (1 elixir, one use): see
         // HeroBarbarianBarrelRerollEffect.
         {
-            CardStats heroBarbarianBarrelSpellStats = spell(174, "Hero Barbarian Barrel", 2.0f, 2.5f, 233, 8, '#')
+            CardStats heroBarbarianBarrelSpellStats = spell(174, "Hero Barbarian Barrel", 2.0f, 2.5f, 232, 8, '#')
                 .withGroundOnly()
+                .withOwnSideOnly()
                 .withRollingSweep(4.5f, 2.6f, 0.5f, 0.0f)
                 .withSpellSpawn(std::make_shared<PeriodicSpawnEffect>(heroBarbarianBarrelBarbarianStats()));
             heroBarbarianBarrelSpellStats.isHero = true;

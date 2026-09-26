@@ -29,6 +29,25 @@ Rules that apply to every item below:
 
 ---
 
+## 000. Python follow-ups to UPSTREAM item 32 (2026-09-25) — blocks a run on any Graveyard deck
+
+The engine half of item 32 is implemented (`perception/UPSTREAM_REQUESTS.md`
+item 32, "What shipped"). On the rebuilt `.pyd`, 8 `python_ai` tests pin the
+old behaviour. They were left red because `python_ai/` is read-only without
+an explicit ask. The exact fixes are in item 32's "Python suites" note:
+
+1. **`teacher.wincon_damage_per_elixir` must try more than the tower centre
+   for a body-spawning spell.** A Graveyard centred on the tower is now its
+   worst placement: 81 in the 30 s probe, under the 250 floor, where the
+   outer side reads 810. So `graveyard_control` resolves **no win condition**,
+   and the teacher and `W_WIN_CONDITION_DAMAGE` go silent for it. (4 tests.)
+2. **`card_probes.roller_damage` casts from `BRIDGE_Y`,** in the river, where
+   Barbarian Barrel is now refused, so it reads 0. (1 test.)
+3. **`tactics.FIREBALL_RADIUS = 2.5` restates a radius the engine no longer
+   has.** `card_probes.spell_effect` measures 2.75 now that disc spells hit on
+   hitbox overlap. Derive it, and update the "aimed exactly as before" pins.
+   (3 tests.)
+
 ## 00. Pre-launch audit follow-ups (2026-09-15) — open, none blocks the run
 
 The audit and its fixes are in `.claude/CLAUDE.md` ("2026-09-15: the pre-launch audit");

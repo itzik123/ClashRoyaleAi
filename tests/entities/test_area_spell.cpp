@@ -54,25 +54,30 @@ TEST_CASE("AreaSpell self-destructs on detonation even if nothing was in range",
 TEST_CASE("AreaSpell damages only alive, targetable, opposing-team entities within its radius", "[area_spell][radius]") {
     Board board;
 
-    auto enemyAtBoundary = std::make_shared<DummyEntity>(1, 10.0f, 14.0f, 1000, 1); // dist == 4.0
-    auto enemyJustOutside = std::make_shared<DummyEntity>(2, 10.0f, 14.1f, 1000, 1); // dist == 4.1
+    // In the disc if the target's hitbox overlaps it: centre distance up to the
+    // radius plus the target's radius (0.4 for a bare Entity; item 32l).
+    auto enemyAtBoundary = std::make_shared<DummyEntity>(1, 10.0f, 14.0f, 1000, 1); // centre dist == 4.0
+    auto enemyJustOutside = std::make_shared<DummyEntity>(2, 14.5f, 10.0f, 1000, 1); // 4.5: hitbox 0.1 clear
     auto ally = std::make_shared<DummyEntity>(3, 10.0f, 11.0f, 1000, 0); // same team as caster
     auto nonTargetableEnemy = std::make_shared<DummyEntity>(4, 10.0f, 11.0f, 1000, 1);
     nonTargetableEnemy->targetable = false;
     auto deadEnemy = std::make_shared<DummyEntity>(5, 10.0f, 11.0f, 100, 1);
     deadEnemy->takeDamage(100); // already dead before the spell resolves
+    auto enemyOverlapping = std::make_shared<DummyEntity>(7, 10.0f, 5.65f, 1000, 1); // 4.35: centre out, hitbox in
 
     spawn(board, enemyAtBoundary);
     spawn(board, enemyJustOutside);
     spawn(board, ally);
     spawn(board, nonTargetableEnemy);
     spawn(board, deadEnemy);
+    spawn(board, enemyOverlapping);
 
     AreaSpell spell(6, 10.0f, 10.0f, 0, 4.0f, 500, 0);
     spell.update(board);
 
-    REQUIRE(enemyAtBoundary->hp == 500);   // exactly at the radius boundary: included
-    REQUIRE(enemyJustOutside->hp == 1000); // just beyond: excluded
+    REQUIRE(enemyAtBoundary->hp == 500);   // centre on the boundary: included
+    REQUIRE(enemyOverlapping->hp == 500);  // centre outside, hitbox overlapping: included
+    REQUIRE(enemyJustOutside->hp == 1000); // hitbox clear of the disc: excluded
     REQUIRE(ally->hp == 1000);             // same team: excluded
     REQUIRE(nonTargetableEnemy->hp == 1000); // not targetable: excluded
     REQUIRE(deadEnemy->hp == 0);            // already dead: left untouched, not further reduced
@@ -132,27 +137,28 @@ TEST_CASE("AreaSpell with groundOnly skips flying targets but still hits grounde
 
 // ---------------- multi-tick spells (Poison, Arrows) ----------------
 
-TEST_CASE("AreaSpell with remainingHits > 1 applies damage repeatedly, waiting tickInterval between hits", "[area_spell][repeat]") {
+TEST_CASE("AreaSpell with remainingHits > 1 applies damage exactly tickInterval ticks apart", "[area_spell][repeat]") {
+    // Applications are tickInterval updates apart, not tickInterval + 1: the
+    // off-by-one ran every multi-hit spell a tick slow (Poison 1.1 s,
+    // Graveyard 0.6 s; UPSTREAM_REQUESTS.md item 32i).
     Board board;
     auto enemy = std::make_shared<DummyEntity>(1, 10.0f, 10.0f, 1000, 1);
     spawn(board, enemy);
 
-    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0, '*', nullptr, false, 3, 2); // 3 hits, 2-tick gap
+    AreaSpell spell(2, 10.0f, 10.0f, 0, 3.0f, 100, 0, '*', nullptr, false, 3, 2); // 3 hits, 2 ticks apart
 
     spell.update(board); // 1st application lands immediately (delayTicks starts at 0)
     REQUIRE(enemy->hp == 900);
     REQUIRE(spell.isAlive()); // 2 more hits left
 
-    spell.update(board); // gap tick (delayTicks 2 -> 1)
-    spell.update(board); // gap tick (1 -> 0)
+    spell.update(board); // the one tick in between
     REQUIRE(enemy->hp == 900); // still no 2nd hit
 
-    spell.update(board); // 2nd application
+    spell.update(board); // 2nd application, 2 ticks after the 1st
     REQUIRE(enemy->hp == 800);
     REQUIRE(spell.isAlive());
 
-    spell.update(board); // gap
-    spell.update(board); // gap
+    spell.update(board); // in between
     spell.update(board); // 3rd (final) application
     REQUIRE(enemy->hp == 700);
     REQUIRE_FALSE(spell.isAlive()); // remainingHits exhausted

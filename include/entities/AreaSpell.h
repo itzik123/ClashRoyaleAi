@@ -59,7 +59,27 @@ private:
     // sets it (0.05); 1.0 elsewhere.
     float spellTowerDamageMultiplier;
 
+    // Applications in total, for the spawn-ring index (remainingHits counts
+    // down).
+    int totalHits;
+
 public:
+    // Damage one application deals to a Crown Tower, when the card publishes
+    // one (CardStats::spellCrownTowerDamage; Poison: 21). -1 keeps
+    // spellTowerDamageMultiplier. Set after construction by
+    // CardFactories::spawnSpell, like configureRoll.
+    int crownTowerDamage = -1;
+
+    // With a ring (Graveyard: 3.3 tiles), application k spawns at the k-th of
+    // seven fixed points, cycled: the cast point, then six on the ring 60
+    // degrees apart, starting on the caster's forward axis. The real layout is
+    // seven fixed points, cycled, oriented by side (RoyaleAPI on the 12 Jan
+    // 2026 rework) and near the edge; their exact positions are unpublished,
+    // so these are an approximation. The centre point is the skeleton that
+    // "rises right on the Crown Tower" when the spell is centred on one (June
+    // 2026 notes): with every point on the ring, a Graveyard centred on a
+    // defended tower never connected. 0 spawns every body at the cast point.
+    float spawnRingRadius = 0.0f;
     AreaSpell(int id, float x, float y, int team, float radius, int damage, int delayTicks, char symbol = '*',
         std::shared_ptr<IOnHitEffect> onHit = nullptr, bool groundOnly = false,
         int remainingHits = 1, int tickInterval = 0,
@@ -74,7 +94,7 @@ public:
         knockback(knockback), spawnOnDetonate(std::move(spawnOnDetonate)), clonesAllies(clonesAllies),
         targetTopHpCount(targetTopHpCount), tieredDamage(tieredDamage), tierSingleDamage(tierSingleDamage),
         tierFewDamage(tierFewDamage), tierManyDamage(tierManyDamage),
-        spellTowerDamageMultiplier(spellTowerDamageMultiplier) {}
+        spellTowerDamageMultiplier(spellTowerDamageMultiplier), totalHits(remainingHits) {}
 
     bool isTargetable() const override { return false; }
 
@@ -129,11 +149,17 @@ public:
 
         // Collected up front because Vines (top-HP only) and Void (damage
         // depends on the catch) need the full set.
+        //
+        // In the disc if the target's HITBOX overlaps it: centre distance up to
+        // radius plus the target's radius, the surface convention the rolling
+        // sweep below and effectiveRangeTo already use (UPSTREAM_REQUESTS.md
+        // item 32l). A centre test missed a troop 3.2 tiles inside a Poison.
         std::vector<std::shared_ptr<Entity>> candidates;
         for (const auto& entity : board.getEntities()) {
             bool teamMatches = alliesOnly ? (entity->team == this->team) : (entity->team != this->team);
             if (entity->isAlive() && entity->isTargetable() && teamMatches && entity->id != this->id
-                && (!groundOnly || !entity->isFlying) && position.distanceTo(entity->position) <= radius) {
+                && (!groundOnly || !entity->isFlying)
+                && position.distanceTo(entity->position) <= radius + CombatEntity::effectiveRadiusOf(*entity)) {
                 candidates.push_back(entity);
             }
         }
@@ -163,10 +189,9 @@ public:
                 toClone.push_back(entity);
                 continue;
             }
-            // Tower damage scaled by spellTowerDamageMultiplier.
-            int dealt = entity->isTower()
-                ? static_cast<int>(effectiveDamage * spellTowerDamageMultiplier)
-                : effectiveDamage;
+            // Tower damage: the card's own Crown Tower value where it has one,
+            // else scaled by spellTowerDamageMultiplier.
+            int dealt = entity->isTower() ? towerDamage(effectiveDamage) : effectiveDamage;
             entity->takeDamage(dealt);
             if (knockback != 0.0f) {
                 if (knockback > 0.0f) {
@@ -191,17 +216,45 @@ public:
             if (copy) board.addEntity(copy);
         }
 
-        if (spawnOnDetonate) spawnOnDetonate->apply(board, position, team);
+        if (spawnOnDetonate) spawnOnDetonate->apply(board, spawnPoint(board), team);
 
         remainingHits--;
         if (remainingHits > 0) {
-            delayTicks = tickInterval; // wait out the gap, then apply again
+            // tickInterval ticks from this application to the next. The
+            // countdown returns on each tick it decrements and applies on the
+            // tick it finds 0, so it starts one short: seeding it with
+            // tickInterval ran every multi-hit spell a tick slow (Poison 1.1 s,
+            // Graveyard 0.6 s; UPSTREAM_REQUESTS.md item 32i).
+            delayTicks = (tickInterval > 0) ? tickInterval - 1 : 0;
         } else {
             hp = 0;
         }
     }
 
 private:
+    int towerDamage(int troopDamage) const {
+        return (crownTowerDamage >= 0) ? crownTowerDamage
+                                       : static_cast<int>(troopDamage * spellTowerDamageMultiplier);
+    }
+
+    // Where this application's spawn rises (see spawnRingRadius), kept on the
+    // board.
+    Vector2D spawnPoint(const Board& board) const {
+        if (spawnRingRadius <= 0.0f) return position;
+        constexpr int POINTS = 7;
+        const int slot = (totalHits - remainingHits) % POINTS;
+        if (slot == 0) return position;
+        constexpr float PI = 3.14159265f;
+        const float forward = (team == 0) ? PI / 2.0f : -PI / 2.0f; // toward the enemy side
+        const float angle = forward + static_cast<float>(slot - 1) * (PI / 3.0f);
+        Vector2D p{ position.x + spawnRingRadius * std::cos(angle),
+                    position.y + spawnRingRadius * std::sin(angle) };
+        const float maxX = static_cast<float>(board.getWidth() - 1);
+        const float maxY = static_cast<float>(board.getHeight() - 1);
+        p.x = std::max(0.0f, std::min(p.x, maxX));
+        p.y = std::max(0.0f, std::min(p.y, maxY));
+        return p;
+    }
     bool alreadySwept(int entityId) const {
         return std::find(sweptIds.begin(), sweptIds.end(), entityId) != sweptIds.end();
     }
@@ -241,9 +294,7 @@ private:
 
             sweptIds.push_back(entity->id);
 
-            const int dealt = entity->isTower()
-                ? static_cast<int>(damage * spellTowerDamageMultiplier)
-                : damage;
+            const int dealt = entity->isTower() ? towerDamage(damage) : damage;
             entity->takeDamage(dealt);
             board.statsEvents.notifyDamageDealt(
                 { id, team, cardId, entity->id, entity->cardId, entity->team, dealt, board.currentTick, entity->isTower() });
