@@ -29,24 +29,31 @@ Rules that apply to every item below:
 
 ---
 
-## 000. Python follow-ups to UPSTREAM item 32 (2026-09-25) — blocks a run on any Graveyard deck
+## 000. ~~Python follow-ups to UPSTREAM item 32~~ DONE 2026-09-27
 
-The engine half of item 32 is implemented (`perception/UPSTREAM_REQUESTS.md`
-item 32, "What shipped"). On the rebuilt `.pyd`, 8 `python_ai` tests pin the
-old behaviour. They were left red because `python_ai/` is read-only without
-an explicit ask. The exact fixes are in item 32's "Python suites" note:
+The engine half of item 32 left 8 `python_ai` tests pinning the old
+behaviour. All three fixes are in, on the maintainer's go-ahead; details and
+numbers in item 32's "Python suites" note:
 
-1. **`teacher.wincon_damage_per_elixir` must try more than the tower centre
-   for a body-spawning spell.** A Graveyard centred on the tower is now its
-   worst placement: 81 in the 30 s probe, under the 250 floor, where the
-   outer side reads 810. So `graveyard_control` resolves **no win condition**,
-   and the teacher and `W_WIN_CONDITION_DAMAGE` go silent for it. (4 tests.)
-2. **`card_probes.roller_damage` casts from `BRIDGE_Y`,** in the river, where
-   Barbarian Barrel is now refused, so it reads 0. (1 test.)
-3. **`tactics.FIREBALL_RADIUS = 2.5` restates a radius the engine no longer
-   has.** `card_probes.spell_effect` measures 2.75 now that disc spells hit on
-   hitbox overlap. Derive it, and update the "aimed exactly as before" pins.
-   (3 tests.)
+1. ~~**The win-condition probe cast a body-spawning spell on the tower
+   centre**~~, the Graveyard's worst cell (81 in 30 s, under the 250 floor), so
+   `graveyard_control` resolved no win condition. `teacher.spell_attack_offset`
+   now measures 25 cells around the tower and keeps the best. The resolver
+   probes there, and the teacher casts there too. Graveyard 194 per elixir
+   (WEAK, above the floor), Goblin Barrel 440 (was 240). (4 tests.)
+2. ~~**`card_probes.roller_damage` cast from `BRIDGE_Y`**~~, where the Barbarian
+   Barrel is now refused. It steps back to the furthest castable row: 232.
+   (1 test.)
+3. ~~**`tactics.FIREBALL_RADIUS = 2.5` restated a radius the engine no longer
+   has**~~. It is measured at import (`card_probes.spell_radius`): 2.75. (3 tests.)
+
+**Open, found while fixing it:** the teacher's combo families
+(`_combo_supported_push`, `_combo_counter_push`, `_combo_spell_then_push`,
+`_combo_push_then_spell`) place the win condition on `tactics.best_hog_cell`,
+the bridge, whatever the card is. That suits a walker. For a Graveyard, a
+Goblin Barrel or a siege building the cell is wrong. The rollouts score those
+candidates against the single-card one at the tower; whether the teacher ever
+picks one was not measured.
 
 ## 00. Pre-launch audit follow-ups (2026-09-15) — open, none blocks the run
 

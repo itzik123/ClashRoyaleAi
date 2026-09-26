@@ -273,12 +273,20 @@ deviations and the before/after table are in `UPSTREAM_REQUESTS.md` item 32.
   - Spear Goblins: 1.6 s hit speed.
   - Barbarian Barrel: 232 damage, cast on its own side only.
 
-**Before training on this engine, read item 32's "Python suites" note.**
-Eight `python_ai` tests pin the old behaviour and were left red, since
-`python_ai/` is read-only without an ask. The one that matters:
-`teacher.wincon_damage_per_elixir` probes a Graveyard dead-centre on the
-tower, now its worst placement. So `graveyard_control` resolves no win
-condition until the probe tries more cells.
+**The Python side followed on 2026-09-27** (item 32's "Python suites" note).
+Three fixes cover the eight tests that pinned the old engine:
+- **A body-spawning spell is probed and cast at its measured best cell.**
+  `teacher.spell_attack_offset` tries 25 whole-cell offsets around the enemy
+  Princess Tower. Both the win-condition resolver and the teacher's own cast
+  use it. The tower's own cell is the Graveyard's worst (81 in 30 s), which
+  had left `graveyard_control` with no win condition.
+- **`card_probes.roller_damage` casts from the furthest castable row.**
+- **`tactics.FIREBALL_RADIUS` is measured**, 2.75, via `card_probes.spell_radius`.
+
+**When one probe cell is fixed, check where the PLAYER casts.** The resolver's
+probe and the teacher's `_cells_for` held two copies of "on the tower", and
+fixing only the probe would have named the Graveyard the win condition and
+then cast it at its worst cell.
 
 ## Environment — the things that waste an hour
 

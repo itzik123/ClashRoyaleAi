@@ -566,7 +566,10 @@ in all, the current value from the addendum below. Every other spell in the
 tables still deals 100% to towers and awaits sign-off. Item 32l (disc spells
 now hit what their hitbox overlaps) makes that gap wider: a Fireball centred
 up to 2.5 + 1.5 = 4.0 tiles from a Princess Tower now hits it. So the rest of
-this item matters more now, not less. **Class:** gameplay fidelity.
+this item matters more now, not less. The half-state is already visible in
+training: `pekka_bridge_spam`'s spell reward terms, ranked by measured tower
+damage, now follow its Zap (192 to a tower; real 48) instead of its Poison
+(168, real). **Class:** gameplay fidelity.
 **GAMEPLAY-AFFECTING.** The next run starts from scratch, so checkpoint
 invalidation is free *now* and never again at this price.
 
@@ -1159,28 +1162,61 @@ spacing). New: `tests/core/test_deck_audit_item32.cpp`, 19 cases tagged
 size 13977). `perception/`: 384 passed. Its one failure and two collection
 errors come from a separate, older problem: `mvp_loop` still looks for
 `DEFAULT_DECK` in `gym_wrapper.py`, from before the 2026-09-15 move to
-`deck.py`. `python_ai/`: **998 passed, 8 failed, 2 skipped**, and all 8 are
-Python pinning the behaviour this item changed. They are **not fixed here**,
-because `python_ai/` is read-only without an explicit ask:
+`deck.py`. `python_ai/`: **998 passed, 8 failed, 2 skipped**, and all 8 were
+Python pinning the behaviour this item changed. They were left red at first,
+because `python_ai/` is read-only without an explicit ask.
+
+**FIXED 2026-09-27**, on the maintainer's go-ahead. `python_ai/` now reads
+**1007 passed, 0 failed, 2 skipped**; one rewritten test is now two cases.
+`perception/` is unchanged at 384 passed, with the same three `DEFAULT_DECK`
+failures. The three fixes:
 
 * **4 x Graveyard win condition** (`test_teacher_wincon_resolver`,
   `test_teacher_deck_generalisation`). `teacher.wincon_damage_per_elixir`
-  casts a body-spawning spell dead-centre on the enemy Princess Tower, which
-  is now the worst placement (81 in 30 s, where the floor is 250), so
-  `graveyard_control` resolves **no win condition** and the teacher cannot
-  attack with it. This one matters for training. Fix: probe a few cells
-  round the tower, as `_attack_cell` already does for deploy-anywhere
-  troops, and keep the best. The outer side reads 810.
-* **`roller_damage(Barbarian Barrel)` reads 0** (`test_log_damage_is_derived`).
-  The probe casts from `BRIDGE_Y`, in the river, where the Barrel is now
-  refused. Fix: cast from the furthest legal row at or before the bridge.
+  cast a body-spawning spell dead-centre on the enemy Princess Tower. That is
+  now the Graveyard's worst cell (81 in 30 s, where the floor is 250), so
+  `graveyard_control` resolved **no win condition**. The teacher's own cast
+  (`_cells_for` -> `_tower_cells`) aimed at the same cell.
+  **Fix:** `teacher.spell_attack_offset` tries 25 whole-cell offsets around
+  the tower and keeps the best. The resolver probes there, and the teacher
+  casts there (`_spell_tower_cells`, mirrored between the towers).
+  * Graveyard: best 2 cells outward and 1 beyond, 972 in 30 s, 194 per
+    elixir (WEAK, above the floor).
+  * Goblin Barrel: its best is 2 cells in front of the tower, 1320 against
+    720 on it, which is the 2026-09-06 all-cell sweep's best. It now reads
+    440 per elixir, up from 240.
+* **`roller_damage(Barbarian Barrel)` read 0** (`test_log_damage_is_derived`).
+  It cast from `BRIDGE_Y`, where the Barrel is now refused. **Fix:** it steps
+  back to the furthest castable row. It reads 232; The Log still reads 269.
 * **3 x spell geometry** (`test_teacher_spell_geometry` x2,
-  `test_advisor_target`). `card_probes.spell_effect` *measures* Fireball's
-  catch radius, which is now 2.75 (2.5 plus the hitbox, on its 0.25 grid).
-  `tactics.FIREBALL_RADIUS = 2.5` and the roller fallback still restate the
-  old one, so the two disagree. Fix: derive the tactics radius from the
-  probe, per `CLAUDE.md`'s no-second-copies rule, and update the "aimed
-  exactly as before" pins to the measured value.
+  `test_advisor_target`). `card_probes.spell_effect` measures Fireball's
+  catch radius as 2.75 (2.5 plus the hitbox, on its 0.25 grid), while
+  `tactics.FIREBALL_RADIUS = 2.5` restated the old one. So the advisor target
+  and the teacher aimed with 2.75, and the hybrid policy, the distillation
+  and the live loop with 2.5. **Fix:** `tactics.FIREBALL_RADIUS` is measured
+  at import through `card_probes.spell_radius`, the radius half of
+  `spell_effect`. It was split out so it imports nothing else, and costs 5 ms.
+
+One pin was rewritten, not just re-run. `test_the_proposed_barrel_cell_lands_on_an_enemy_princess_tower`
+required the tower's own cell. Now
+`test_a_spawning_spell_lands_beside_an_enemy_tower_where_it_measures_best`
+requires the teacher's cell, for a Goblin Barrel and for a Graveyard, to be
+the best of the 25 around that tower, measured independently. The old code
+fails it for both.
+
+**Measured end to end** with the passive-opponent probe: the teacher pilots
+the deck as team 1 and team 0 does nothing, 4 seeds at rungs 0 and 10, same
+engine, only the Python differs.
+
+| deck | before | after |
+|---|---|---|
+| `graveyard_control` | no win condition, 0 Graveyards cast; **0 of 8** three-crowns (4 ran the clock out, 4 took one tower) | **8 of 8** three-crowns, in 385-1085 ticks |
+| the audited deck | no win condition; 5 of 8 | Graveyard; **8 of 8**, in 415-1203 ticks |
+| `dart_bait_cycle` | 8 of 8, Goblin Barrel on the tower | 8 of 8, 2 cells in front; rung 10 mean 385 -> 259 ticks |
+
+**Still open:** the teacher's combo families place the win condition on
+`tactics.best_hog_cell`, the bridge, whatever the card is. That is wrong for
+a Graveyard or a Goblin Barrel (`TODO.md` item 000).
 
 **Not done, and why.** No first-hit wind-up anywhere (engine-wide, needs a
 sourced value for every card). Troop collision radii are unchanged (all 0.4).
@@ -1593,8 +1629,8 @@ too), which is outside this deck.
   was written: `card_probes` measures spell damage, tower damage and air
   targeting by injection, and with 32a fixed `rl/abilities.py` unmasks the
   reroll on its own. Both still hold. But three probes cast on a fixed cell or
-  restate a measured constant, and the shipped engine broke them: eight
-  `python_ai` tests are red. See "The Python suites" above.
+  restated a measured constant, and the shipped engine broke them: eight
+  `python_ai` tests went red. Fixed 2026-09-27; see "The Python suites" above.
 * **Tests that will move:** `test_hero_abilities.cpp` (the Barbarian's 691 hp
   and the reroll's 0.7 half-width) and any test pinning Poison, Graveyard or
   Arrows pulse ticks. `test_default_deck_qa.cpp` is also affected if 32m

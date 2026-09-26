@@ -8,9 +8,10 @@ live-path override.
 
 It reads the observation, not the engine, so it behaves identically in
 simulation and on a real screen (the live encoder is pinned bit-equal to
-`getObservationForTeam(0)`). Constants are read from the bindings; the few that
-are not exposed are typed once with their header named, and
-`tests/test_tactics.py` pins them against those headers.
+`getObservationForTeam(0)`). Constants are read from the bindings or measured
+through the engine (the Fireball radius); the few that are neither are typed
+once with their header named, and `tests/test_tactics.py` pins them against
+those headers.
 """
 from functools import lru_cache
 
@@ -19,6 +20,7 @@ import numpy as np
 import clash_royale_env as E
 
 from python_ai import engine_constants as EC
+from python_ai.advisors import card_probes
 from python_ai.rewards import weights as W
 
 CE = E.ClashRoyaleEnv
@@ -53,10 +55,11 @@ OWN_PRINCESS = ((EC.LEFT_LANE_X, EC.princess_y(0)),
                 (EC.RIGHT_LANE_X, EC.princess_y(0)))
 OWN_KING = (EC.BOARD_CENTER_X, EC.king_y(0))
 
-# Fireball. Id and damage come from `rewards.weights`; the radius is typed here
-# with its header.
+# Fireball. Id and damage come from `rewards.weights`. The radius is measured,
+# because a disc spell hits what it overlaps: the registry's 2.5 catches a troop
+# centred 2.75 away. The same probe aims the teacher and the advisor target.
 FIREBALL_ID = W.FIREBALL_CARD_ID
-FIREBALL_RADIUS = 2.5         # CardRegistry.h: spell(7, ..., 2.5f, 689, 10, 'O')
+FIREBALL_RADIUS = card_probes.spell_radius(FIREBALL_ID)
 FIREBALL_DAMAGE = W.FIREBALL_DAMAGE
 FIREBALL_DELAY_TICKS = 10
 CANNON_ID = 25

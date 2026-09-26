@@ -93,6 +93,18 @@ WEAK is `validate_deck`'s own flag (below 200); a Graveyard reads low because it
 probe window saturates, not because the card is broken (`teacher.py`,
 `WINCON_MIN_DAMAGE_PER_ELIXIR`).
 
+**Changed since this table (2026-09-27, UPSTREAM item 32 and its Python
+follow-up).** The 16 pool decks were re-resolved on the new engine. Three rows
+moved:
+- The Graveyard decks read **194** (still WEAK).
+- The Goblin Barrel decks read **440**, up from 240. Both spells are now probed
+  at their best cell around the tower, not its centre.
+- `pekka_bridge_spam`'s spell terms follow **Zap**, not Poison: Poison now
+  deals its real 168 to a tower while Zap still deals its full 192 (item 29).
+
+Every other pool row is unchanged. The 12 decks beyond the pool were not
+re-run.
+
 ---
 
 ## 2. Pre-flight
