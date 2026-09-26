@@ -273,19 +273,60 @@ def _roll_idle(env, ticks):
                            False, False, False, False)
 
 
+#: Where a body-spawning spell is tried around the enemy Princess Tower, as
+#: whole-cell (outward, beyond) offsets: outward is away from the arena's centre
+#: line, beyond is past the tower toward the King. Whole cells, because the
+#: teacher and the agent place on cells. The tower's own cell comes first, so a
+#: card that does best there keeps it.
+SPELL_ATTACK_OFFSETS = tuple((outward, beyond) for beyond in (0, 1, -1, 2, -2)
+                             for outward in (0, 1, -1, 2, -2))
+
+
+@functools.lru_cache(maxsize=256)
+def spell_attack_offset(card_id):
+    """The (outward, beyond) offset from the enemy Princess Tower at which this
+    spell takes the most tower HP alone in WINCON_PROBE_TICKS, or None when no
+    offset is castable (a roller).
+
+    Measured per card, because the best cell is the card's own: a Graveyard
+    cast on the tower loses its Skeletons to it before they deploy, and one
+    cast beside it does over ten times the damage. The win-condition probe and
+    the teacher's own cast both use this answer.
+    """
+    lane_x = float(int(EC.LEFT_LANE_X))
+    tower_y = float(EC.princess_y(1))
+    best = None
+    for outward, beyond in SPELL_ATTACK_OFFSETS:
+        x, y = lane_x - outward, tower_y + beyond    # the left tower: outward is -x
+        env = _probe_env()
+        if not env.is_valid_placement(card_id, x, y, 0):
+            continue
+        before = _enemy_tower_hp(env)
+        env.inject(card_id, x, y, 0, -1.0, -1)
+        _roll_idle(env, WINCON_PROBE_TICKS)
+        lost = before - _enemy_tower_hp(env)
+        if best is None or lost > best[1]:
+            best = ((float(outward), float(beyond)), lost)
+    return None if best is None else best[0]
+
+
 def _attack_cell(card_id, env):
     """Where the card is played to attack, or None.
 
     A walker starts on our side of the left bridge, a deploy-anywhere troop
-    goes beside the enemy tower, a body-spawning spell lands on it.
+    goes beside the enemy tower, a body-spawning spell lands at its measured
+    best cell around it (`spell_attack_offset`).
     """
     info = E.get_card_info(card_id)
     lane_x = float(int(EC.LEFT_LANE_X))
     tower_y = float(EC.princess_y(1))
     if info["is_spell"]:
         # Only a cell the card can actually be cast on: inject bypasses
-        # legality, and a rolling spell is confined to our half and the river.
-        return (lane_x, tower_y) if env.is_valid_placement(card_id, lane_x, tower_y, 0) else None
+        # legality, and a rolling spell cannot reach the enemy tower.
+        offset = spell_attack_offset(card_id)
+        if offset is None:
+            return None
+        return lane_x - offset[0], tower_y + offset[1]
     if info.get("deploy_anywhere", False):
         for dy in (3.0, 4.0, 2.0, 5.0):
             for dx in (0.0, 1.0, -1.0, 2.0):
@@ -1108,7 +1149,7 @@ class UtilityTeacher:
             if info["is_building"] and not info.get("deploy_anywhere", False):
                 return self._siege_cells(obs)[:k]
             if info["is_spell"]:
-                return self._tower_cells(obs)[:k]
+                return self._spell_tower_cells(card_id, obs)[:k]
             if info.get("deploy_anywhere", False):
                 # A Miner's value is that it skips the bridge.
                 return self._beside_tower_cells(card_id, obs)[:k]
@@ -1191,13 +1232,30 @@ class UtilityTeacher:
         return _probe_env_cached().is_valid_placement(card_id, float(x), float(y), 0)
 
     def _tower_cells(self, obs):
-        """Where a body-spawning spell lands: on an enemy Princess Tower, weaker
-        first (finish one tower rather than chip two).
+        """The enemy Princess Towers' own cells, weaker first (finish one tower
+        rather than chip two).
         """
         y = float(EC.princess_y(1))
         lanes = [(float(int(EC.LEFT_LANE_X)), y, 1), (float(int(EC.RIGHT_LANE_X)), y, 2)]
         lanes.sort(key=lambda c: self._enemy_tower_fraction(obs, c[2]))
         return [(x, yy) for x, yy, _slot in lanes]
+
+    def _spell_tower_cells(self, card_id, obs):
+        """Where a body-spawning spell lands: at its measured offset from each
+        enemy Princess Tower (`spell_attack_offset`), weaker tower first.
+
+        Outward mirrors between the two towers, since it points away from the
+        centre line.
+        """
+        offset = spell_attack_offset(card_id)
+        if offset is None:
+            return self._tower_cells(obs)
+        outward, beyond = offset
+        cells = []
+        for x, y in self._tower_cells(obs):
+            side = -1.0 if x < float(EC.BOARD_CENTER_X) else 1.0
+            cells.append((x + side * outward, y + beyond))
+        return cells
 
     def _enemy_tower_fraction(self, obs, slot):
         """Enemy Princess Tower HP (normalised) from the observation's extra

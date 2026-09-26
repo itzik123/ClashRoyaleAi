@@ -22,10 +22,10 @@ inline void applyOnHit(const std::shared_ptr<CombatEntity>& entity, const CardSt
 inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const CardStats& stats) {
     entity->name = stats.name;
     entity->cardId = stats.id;
-    // Deploy time (CardStats.h, DEPLOY_TIME_TICKS). Set here because every
-    // troop and building passes through; spells and deploy effects do not,
-    // since a spell has its own delay.
-    entity->deployTicksRemaining = DEPLOY_TIME_TICKS;
+    // Deploy time (CardStats.h: DEPLOY_TIME_TICKS unless the card publishes
+    // its own). Set here because every troop and building passes through;
+    // spells and deploy effects do not, since a spell has its own delay.
+    entity->deployTicksRemaining = stats.deployTicks;
     entity->isFlying = stats.isFlying;
     entity->targetsAir = stats.targetsAir;
     entity->deathEffect = stats.deathEffect;
@@ -43,8 +43,6 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->chargeThreshold = stats.chargeThreshold;
     entity->chargeMultiplier = stats.chargeMultiplier;
     entity->chargeIsSticky = stats.chargeIsSticky;
-    entity->enrageMaxHp = stats.enrageMaxHp;
-    entity->enrageHealPerHit = stats.enrageHealPerHit;
     entity->parryIntervalTicks = stats.parryIntervalTicks;
     entity->hookRange = stats.hookRange;
     entity->startsInvisible = stats.startsInvisible;
@@ -52,6 +50,8 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->periodicEffect = stats.periodicEffect;
     entity->periodicIntervalTicks = stats.periodicIntervalTicks;
     entity->periodicTicksUntilNext = stats.periodicIntervalTicks; // first fire after one full interval
+    entity->periodicHotIntervalTicks = stats.periodicHotIntervalTicks;
+    entity->periodicSideOffset = stats.periodicSideOffset;
     entity->auraRadius = stats.auraRadius;
     entity->auraMaxTargets = stats.auraMaxTargets;
     entity->auraEveryNAttacks = stats.auraEveryNAttacks;
@@ -87,6 +87,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->abilityCooldownTicks = stats.abilityCooldownTicks;
     entity->abilityEffect = stats.abilityEffect;
     entity->abilityUsesRemaining = stats.abilityUsesLimit;
+    entity->abilitySlotCardId = stats.abilitySlotCardId;
     // A post-spawn ability lockout (Hero Mega Minion) seeds the cooldown
     // directly.
     if (stats.initialAbilityCooldownTicks > 0) entity->abilityCooldownRemaining = stats.initialAbilityCooldownTicks;
@@ -101,6 +102,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->onDamageTakenEffect = stats.onDamageTaken;
     entity->healOnHitAmount = stats.healOnHitAmount;
     entity->healOnHitMaxHp = stats.healOnHitMaxHp;
+    entity->healOnHitSecondPulseDelayTicks = stats.healOnHitSecondPulseDelayTicks;
     entity->onHitSpawnEffect = stats.onHitSpawnEffect;
     entity->onHitPullRadius = stats.onHitPullRadius;
     entity->onHitPullDistance = stats.onHitPullDistance;
@@ -209,6 +211,10 @@ inline void spawnSpell(const CardStats& stats, float x, float y, int team, Board
         stats.spellTieredDamage, stats.spellTierSingleDamage, stats.spellTierFewDamage, stats.spellTierManyDamage);
     spell->name = stats.name;
     spell->cardId = stats.id;
+    // Set after construction for the reason configureRoll gives below: the
+    // constructor is shared with call sites that have no card behind them.
+    spell->crownTowerDamage = stats.spellCrownTowerDamage;
+    spell->spawnRingRadius = stats.spellSpawnRingRadius;
     // Rolling spells (The Log, Barbarian Barrel) are configured after
     // construction: configureRoll latches the roll origin from the spawn
     // position, so it must run before the first update.

@@ -559,7 +559,17 @@ the event says tower. Suite: 714 cases, 713 passed, 1 failed as expected, exit 0
 
 ## Item 29 — spells hit a Crown Tower for 100% of their damage; the real game charges 15-30%
 
-**Status: PROPOSED 2026-09-23 — NOT applied.** **Class:** gameplay fidelity.
+**Status: PARTIALLY IMPLEMENTED 2026-09-25.** Option A's mechanism landed with
+item 32 (`CardStats::spellCrownTowerDamage` -> `AreaSpell::crownTowerDamage`,
+used by both tower branches), and **only Poison** sets it: 21 per pulse, 168
+in all, the current value from the addendum below. Every other spell in the
+tables still deals 100% to towers and awaits sign-off. Item 32l (disc spells
+now hit what their hitbox overlaps) makes that gap wider: a Fireball centred
+up to 2.5 + 1.5 = 4.0 tiles from a Princess Tower now hits it. So the rest of
+this item matters more now, not less. The half-state is already visible in
+training: `pekka_bridge_spam`'s spell reward terms, ranked by measured tower
+damage, now follow its Zap (192 to a tower; real 48) instead of its Poison
+(168, real). **Class:** gameplay fidelity.
 **GAMEPLAY-AFFECTING.** The next run starts from scratch, so checkpoint
 invalidation is free *now* and never again at this price.
 
@@ -735,11 +745,44 @@ spell-strong variant. Defensible only if sim-to-real transfer is not a goal.
   distinguish King from Princess here).
 * A spell with no value set is bit-identical to today (default -1).
 
+### Addendum 2026-09-25: the source table above is stale for 8 of its 9 spells
+
+DeckShop's chart lagged the **official June 1, 2026 balance notes**, which cut
+Crown Tower damage for almost every spell ("Crown Tower Damage Reduction for
+Spells", [June notes](https://supercell.com/en/games/clashroyale/blog/release-notes/june-balance-changes-2026/)).
+Fireball was then cut again on September 8
+([September notes](https://supercell.com/en/games/clashroyale/blog/release-notes/september-balance-changes-2027/)),
+and that is the ONE value DeckShop had current. That is how a partly-updated
+chart passed for a current one. Use these values, level 11:
+
+| spell | table above | **current** | source |
+|---|---|---|---|
+| Fireball | 159 | **159** | Sep 8 (was 207 -> 172 in June) |
+| Rocket | 371 | **342** | June |
+| The Log | 41 | **35** | June |
+| Zap | 58 | **48** | June |
+| Lightning | 286 | **265** per strike | June |
+| Giant Snowball | 54 | **45** | June |
+| Arrows | 93 | **75** total (25 per wave) | June |
+| Poison | 184 | **168** total (**21** per pulse) | June; plus the Aug 26 fix "Poison now deals the correct tower damage" |
+| Earthquake | 159 | **147** total (49 per pulse) | June |
+| Freeze / Rage / Vines | -- | 37 / 45 / 70 | June |
+
+Re-measured through `tools/audit/gy_deck_audit.cpp` (item 32): Poison cast on a
+Princess Tower still deals **92 per pulse, 736 in total**, 4.4x the real 168.
+That was before item 32 shipped; the same instrument now reads **21 a pulse,
+168 in all**.
+
 ---
 
 ## Item 30 — three spawned/secondary Spear-Goblin-type units cannot hit air
 
-**Status: PROPOSED 2026-09-23 — NOT applied.** **Class:** registry data.
+**Status: PARTIALLY IMPLEMENTED 2026-09-25**, with item 32. Goblin Hut's helper
+(-17) now has `.withTargetsAir()`, its 1.6 s hit speed and a 0.5 s deploy.
+Tested: its goblins dealt 648 to a flying enemy that took 0 before. Every
+Spear Goblin copy (23, -17, -26, -27) has the 1.6 s hit speed. **Still open:**
+Goblin Gang's Spear Goblins (-27) and the Rascal Girls (-28) still cannot hit
+air. Those were not in the sign-off for item 32. **Class:** registry data.
 **GAMEPLAY-AFFECTING** for decks holding Goblin Gang, Rascals or Goblin Hut —
 two pool decks (`dart_bait_cycle`, `classic_log_bait_inferno`) field Goblin Gang.
 
@@ -821,6 +864,17 @@ PROBE, both worth knowing:
 The three helpers above are unaffected: their evidence is the source (no
 `.withTargetsAir()`) and the per-entity observation flag, not a with/without
 difference.
+
+### Re-confirmed 2026-09-25, by a different instrument
+
+`tools/audit/gy_deck_audit.cpp` (item 32), section 11: a stationary FLYING
+enemy 4 tiles from a Goblin Hut for 10 s. The Hut spawned 4 Spear Goblins and
+they dealt **0** to it, with all towers asleep so nothing else could act. This
+item's fix is still the whole answer. Fold in two data changes to the same
+helpers while they are open: Spear Goblins' hit speed is **1.6 s** since the
+official August 4, 2026 notes (`attackCooldown` 17 -> 16, all four copies:
+23, -17, -26, -27), and the Hut itself is at **1180** hp, not 1228 (item 32n).
+Both shipped with item 32, together with the Hut's air fix.
 
 ---
 
@@ -948,3 +1002,636 @@ step (0.01) across 2 tiles either side of each mouth (`ArenaLayout` bridge x,
 never literals), for both teams and at least two speed tiers (Giant SLOW, Hog
 VERY_FAST). Each must cross into the far half within `2 tiles / step + 10`
 ticks. On the current code the Giant sweep fails (14 of 21 at 0.05 spacing).
+
+---
+
+## Item 32 — one real deck audited card by card: Evo Furnace, Hero Barbarian Barrel, Evo Bats, Poison, Giant Skeleton, Graveyard, Berserker, Goblin Hut
+
+**Status: IMPLEMENTED 2026-09-25**, on the maintainer's sign-off covering every
+finding, with three baselines fixed by the maintainer: the Furnace spawns every
+**7 s**, the Giant Skeleton has **3126** hp (3361 x 0.93) and the Fire Spirit
+hits for **215**. Seven parts differ from the proposal below; see "What
+shipped". The C++ suite ran 730 cases with exactly 1 expected failure, exit 0.
+**Class:** one outright bug (32a), gameplay fidelity (the rest).
+**GAMEPLAY-AFFECTING.** The observation and action space are unchanged
+(`observation_size()` 13977), so checkpoints load. Their win-rate history
+does not carry over.
+
+A user's ladder deck (screenshot, level 16), audited against the real game as
+of 2026-09-25. Engine ids in slot order: `[138, 174, 126, 32, 39, 110, 51, 95]`,
+which `validateDeckSlots` accepts as-is: slot 0 is the Evolution slot, slot 1
+the Hero slot, slot 2 the Wild slot. Berserker shows a Hero marker in the
+screenshot but sits in a normal slot, so it plays as the base card.
+
+**Instrument:** `tools/audit/gy_deck_audit.cpp`. Build it with
+`powershell -File tools/audit/build.ps1 gy_deck_audit` and run
+`tools/audit/bin/gy_deck_audit.exe`. It is deterministic: two builds, one by
+hand and one by the script, printed identical output. It spawns each unit on a
+real `GameManager` board with the towers asleep. It records every
+`DamageDealtEvent`, spawn and position, and prints each measurement next to the
+real value. 32a was also reproduced through the `.pyd` (`ClashRoyaleEnv`,
+`step_self_play`), the path training uses.
+
+**Sources.** Supercell's official balance posts for
+[March](https://supercell.com/en/games/clashroyale/blog/release-notes/march-balance-changes-2026/),
+[May](https://supercell.com/en/games/clashroyale/blog/release-notes/may-balance-changes-2026/),
+[June](https://supercell.com/en/games/clashroyale/blog/release-notes/june-balance-changes-2026/),
+[August](https://supercell.com/en/games/clashroyale/blog/news/final-august-balance-changes-826/)
+and [September](https://supercell.com/en/games/clashroyale/blog/release-notes/september-balance-changes-2027/)
+2026 (the URL says 2027; the post is dated 23 Sept 2026), plus
+[August 2025](https://supercell.com/en/games/clashroyale/blog/release-notes/august-balance-changes-2/).
+Mechanics come from the Fandom wiki page of each card and its Evolution and
+Hero subpages. Stats come from [DeckShop](https://www.deckshop.pro/card/hitpoints)
+at friendly level 11, the level the registry carries. **Where two sources
+disagree, the official post wins.** The wiki's stat tables often lag its own
+change history (Giant Skeleton, Goblin Hut and Barbarian Barrel all do), and
+DeckShop is partly stale too; see item 29's addendum.
+
+### Findings
+
+| | card | engine (measured) | real | severity |
+|---|---|---|---|---|
+| **32a** | Hero Barbarian Barrel | Rowdy Reroll can **never** be activated in a match | 1 elixir, single use, once the Barbarian lands | **bug** |
+| **32b** | Furnace | its Fire Spirits **never die and never splash**: 7 hits in 8 s, 2 of a 3-clump damaged | one kamikaze hit, 215 area damage, radius 2.3 | high |
+| **32c** | Giant Skeleton | bomb is **instant**, 300 damage, radius 2.0 centre-to-centre, no knockback; dying at a tower it deals **0** to it | 3.0 s fuse, radius 3, ~886, knockback; full damage to the tower | high |
+| **32d** | Berserker | "enrage": hit speed 0.6 -> 0.5 -> 0.4 s as hp falls; speed 1.40; range 1.0 | flat 0.6 s; **Fast** (1.988); range 0.8 | high |
+| **32e** | Furnace, Hero Barbarian | speed **1.000** (a raw `0.5f`) | **Medium**, 1.325 | medium |
+| **32f** | Evo Furnace | hot spawn every 2.4 s **always** | 2.4 s **only while attacking**, alternating sides | medium |
+| **32g** | Evo Bats | +24 hp per hit, cap 242, spawns at 121 | +76 per attack (2 x 38, 0.5 s apart), cap 244, spawns at 122 | medium |
+| **32h** | Hero Barbarian Barrel | reroll corridor 1.4 wide, **hits air**, **heals 0** | width 2.6, ground only, heals 50% of damage dealt | medium |
+| **32i** | Poison, Graveyard (all multi-hit spells) | repeats every **interval + 1** ticks: Poison 1.1 s, Graveyard 0.6 s | 1.0 s and 0.5 s | medium |
+| **32j** | Graveyard | every Skeleton spawns **at the cast point**, first at 0.9 s | fixed ring about 3.3 tiles out, first at 2.2 s | medium |
+| **32k** | Poison | **no slow** (Knight 1.325 inside and out) | enemy troops 15% slower | medium, blocked by 32m |
+| **32l** | Poison (all disc spells) | centre-to-centre test: a unit overlapping the edge is missed | hitbox overlap (the engine's rolling spells already use it) | medium, confidence moderate |
+| **32m** | engine-wide | a slow after any earlier stun **is a full stun**; a stunned idle unit **still attacks once** | neither | high |
+| **32n** | several | data drift, see the table below | | low |
+
+Item 29 (spell Crown Tower damage) and item 30 (Goblin Hut's Spear Goblins
+cannot hit air) are re-confirmed by this audit; see their addenda.
+
+### What shipped (2026-09-25), measured
+
+The same instrument, `tools/audit/gy_deck_audit.cpp`, before and after:
+
+| | before | after | real |
+|---|---|---|---|
+| Hero Barbarian Barrel ability via `playCard` | never ready | ready; costs 1.0; single use | 1 elixir, single use |
+| reroll: a unit 1.0 off the line / a flyer / heal | 0 / 233 / +0 | 232 / 0 / +half the damage | hit / ground only / 50% |
+| Furnace spirit vs a 3-clump | 7 hits, 2 hit, spirit lives | 1 shot, all 3 take 215, spirit dies | same |
+| Evo Furnace spawns, idle / attacking | every 2.4 s / 2.4 s | 7 s / 2.4 s, alternating -1, +1 tiles | 7 s / 2.4 s, alternating |
+| Furnace, Hero Barbarian speed | 1.000 | 1.325 | Medium |
+| Berserker hit interval at 100 / 50 / 10% hp | 6 / 5 / 4 ticks | 6 / 6 / 6 | 0.6 s |
+| Berserker speed / range | 1.400 / 1.0 | 1.988 / 0.8 | Fast / 0.8 |
+| Giant Skeleton bomb | instant, 300, radius 2.0 | 3.0 s fuse, 886, radius 3 + hitbox | 3 s, ~886, 3 |
+| ... dying at a Princess Tower | 0 to the tower | 886 | the full bomb |
+| Evo Bats heal per attack / cap / spawn hp | +24 / 242 / 121 | +38 now, +38 at 0.5 s / 244 / 122 | 2 x 38 / 244 / 122 |
+| Poison pulse spacing | 11 ticks | 10 | 1 s |
+| Poison to a Princess Tower | 92 a pulse | 21 a pulse | 21 |
+| Poison: troop centred 3.6 out | 0 | 736 | hit (hitbox overlaps) |
+| enemy Knight inside Poison | 1.325 tiles/s | 1.127 (x0.85) | 15% slower |
+| Graveyard first spawn / spacing / points | 0.9 s / 0.6 s / all at the cast point | 2.2 s / 0.5 s / 7 fixed points | 2.2 s / 0.5 s / 7 fixed points |
+| Goblin Hut vs a flyer (10 s) | 0 | 648 | shoots air |
+| Barbarian Barrel cast in the river (y 15.4-17.4) | allowed | refused | own side only |
+| a stunned idle Knight, target walks in | 1 hit | 0 | 0 |
+| 0.65 slow, 3 s after a 0.5 s stun | 0.000 tiles/s | 0.862 | 0.862 |
+
+**Where it differs from the proposal:**
+
+* **32a:** `step()` adopts only bodies that *declare* a late slot
+  (`abilitySlotCardId != 0`). Clone copies drop that claim
+  (`CombatEntity::becomeCloneCopy`, now shared by the four leaf `clone()`s).
+  The first cut adopted any Hero/Champion body and so made a Clone copy
+  activatable. `test_game_manager.cpp`'s "A cloned Champion can never
+  activate the ability" caught it. A new case pins the same for a cloned
+  Hero Barbarian.
+* **32g:** two real pulses, 38 on the hit and 38 five ticks later
+  (`CardStats::healOnHitSecondPulseDelayTicks`), rather than one heal of 76.
+* **32j:** *not* the golden-angle ring proposed above. With every point on
+  the 3.3 ring, a Graveyard centred on a defended Princess Tower landed 0 hits
+  in 15 s. Every Skeleton needs its 1 s deploy plus ~0.9 tiles of walking,
+  and the tower shoots it before that ends. Both Princess Towers reach part of
+  the ring. The real layout is seven fixed points, cycled, oriented by side,
+  near the edge (RoyaleAPI on the 12 Jan 2026 rework), with one Skeleton
+  rising "right on the Crown Tower" (June notes). It now uses the cast point
+  plus six ring points 60 degrees apart, starting on the caster's forward
+  axis. The coordinates are unpublished, so this is an approximation. Tower
+  damage in 15 s against a defended Princess Tower now depends on placement,
+  as it should:
+
+  | cast | tower damage | Skeleton hits |
+  |---|---|---|
+  | centred on the tower | 81 | 1 |
+  | 1.5 or 2.5 behind it | 243 | 3 |
+  | 2.0 in front of it | 405 | 5 |
+  | 1.5 to its outer side | 810 | 10 |
+
+  Before the fix, every Skeleton rose on the cast point: 729 centred, all
+  stacked where one splash spell catches them. The deploy time of a Skeleton
+  after it rises is the engine's 1 s default. That value is not sourced and
+  is the other lever on these numbers.
+* **32k:** a **movement-only** slow on troops (`MoveSlowOnHit`,
+  `CombatEntity::applyMoveSlow`), refreshed for 10 ticks by each pulse. It is
+  not the proposed `FreezeOnHit(11, 0.85)`, which would also have stretched
+  attack cooldowns. The real Poison does not affect attack speed.
+* **32m:** freezes are held in three concurrent slots, each on its own clock;
+  the strongest active one applies. The proposal only reset the factor on
+  expiry. That fixes a slow after an *ended* stun, but it would still have
+  turned a 0.5 s Zap during an Ice Wizard's refreshing slow into a stun for as
+  long as the slow kept refreshing. Now it is the stun for 0.5 s, then the
+  slow. `freezeTicks`/`freezeSlow` are kept as the view (longest remaining,
+  strongest factor), so every existing reader and test still works. The stun
+  gate is as proposed.
+* **32n:** the Goblin Hut's Spear Goblins also **deploy in 0.5 s**
+  (`CardStats::deployTicks`, default `DEPLOY_TIME_TICKS`). This correction was
+  missed at first: the audit above marked the Hut's spawn timing correct, but
+  the official August 2025 notes read "Spear Goblin Deploy Delay: 1sec ->
+  0.5sec". Also every Spirit is now 215 hp (the same official line), and the
+  Evolved Barbarians' hp bonus is 0% (official 4 Aug 2026: both forms 716).
+  That note's Blade Rage 3 s -> 5 s is **not** applied: it was not a finding
+  here.
+* **32d:** the enrage machinery had no other caller, so it was removed with
+  its four generic tests rather than left as a mechanic no card has.
+
+**Also changed:** `test_hero_abilities.cpp` (Barbarian 716; the reroll's
+new constructor), `test_card_registry.cpp` (the bomb is fused; Battle Ram's
+Barbarians 716), `test_area_spell.cpp` (hitbox overlap; exact repeat
+spacing). New: `tests/core/test_deck_audit_item32.cpp`, 19 cases tagged
+`[item32]`, each written to fail on the pre-fix engine.
+
+**The Python suites, on the rebuilt `.pyd`** (`verify_pyd.py` OK, observation
+size 13977). `perception/`: 384 passed. Its one failure and two collection
+errors come from a separate, older problem: `mvp_loop` still looks for
+`DEFAULT_DECK` in `gym_wrapper.py`, from before the 2026-09-15 move to
+`deck.py`. `python_ai/`: **998 passed, 8 failed, 2 skipped**, and all 8 were
+Python pinning the behaviour this item changed. They were left red at first,
+because `python_ai/` is read-only without an explicit ask.
+
+**FIXED 2026-09-27**, on the maintainer's go-ahead. `python_ai/` now reads
+**1007 passed, 0 failed, 2 skipped**; one rewritten test is now two cases.
+`perception/` is unchanged at 384 passed, with the same three `DEFAULT_DECK`
+failures. The three fixes:
+
+* **4 x Graveyard win condition** (`test_teacher_wincon_resolver`,
+  `test_teacher_deck_generalisation`). `teacher.wincon_damage_per_elixir`
+  cast a body-spawning spell dead-centre on the enemy Princess Tower. That is
+  now the Graveyard's worst cell (81 in 30 s, where the floor is 250), so
+  `graveyard_control` resolved **no win condition**. The teacher's own cast
+  (`_cells_for` -> `_tower_cells`) aimed at the same cell.
+  **Fix:** `teacher.spell_attack_offset` tries 25 whole-cell offsets around
+  the tower and keeps the best. The resolver probes there, and the teacher
+  casts there (`_spell_tower_cells`, mirrored between the towers).
+  * Graveyard: best 2 cells outward and 1 beyond, 972 in 30 s, 194 per
+    elixir (WEAK, above the floor).
+  * Goblin Barrel: its best is 2 cells in front of the tower, 1320 against
+    720 on it, which is the 2026-09-06 all-cell sweep's best. It now reads
+    440 per elixir, up from 240.
+* **`roller_damage(Barbarian Barrel)` read 0** (`test_log_damage_is_derived`).
+  It cast from `BRIDGE_Y`, where the Barrel is now refused. **Fix:** it steps
+  back to the furthest castable row. It reads 232; The Log still reads 269.
+* **3 x spell geometry** (`test_teacher_spell_geometry` x2,
+  `test_advisor_target`). `card_probes.spell_effect` measures Fireball's
+  catch radius as 2.75 (2.5 plus the hitbox, on its 0.25 grid), while
+  `tactics.FIREBALL_RADIUS = 2.5` restated the old one. So the advisor target
+  and the teacher aimed with 2.75, and the hybrid policy, the distillation
+  and the live loop with 2.5. **Fix:** `tactics.FIREBALL_RADIUS` is measured
+  at import through `card_probes.spell_radius`, the radius half of
+  `spell_effect`. It was split out so it imports nothing else, and costs 5 ms.
+
+One pin was rewritten, not just re-run. `test_the_proposed_barrel_cell_lands_on_an_enemy_princess_tower`
+required the tower's own cell. Now
+`test_a_spawning_spell_lands_beside_an_enemy_tower_where_it_measures_best`
+requires the teacher's cell, for a Goblin Barrel and for a Graveyard, to be
+the best of the 25 around that tower, measured independently. The old code
+fails it for both.
+
+**Measured end to end** with the passive-opponent probe: the teacher pilots
+the deck as team 1 and team 0 does nothing, 4 seeds at rungs 0 and 10, same
+engine, only the Python differs.
+
+| deck | before | after |
+|---|---|---|
+| `graveyard_control` | no win condition, 0 Graveyards cast; **0 of 8** three-crowns (4 ran the clock out, 4 took one tower) | **8 of 8** three-crowns, in 385-1085 ticks |
+| the audited deck | no win condition; 5 of 8 | Graveyard; **8 of 8**, in 415-1203 ticks |
+| `dart_bait_cycle` | 8 of 8, Goblin Barrel on the tower | 8 of 8, 2 cells in front; rung 10 mean 385 -> 259 ticks |
+
+**Still open:** the teacher's combo families place the win condition on
+`tactics.best_hog_cell`, the bridge, whatever the card is. That is wrong for
+a Graveyard or a Goblin Barrel (`TODO.md` item 000).
+
+**Not done, and why.** No first-hit wind-up anywhere (engine-wide, needs a
+sourced value for every card). Troop collision radii are unchanged (all 0.4).
+The Furnace spawn interval stays 7 s by the maintainer's call, although the
+wiki says 5. Item 29's other spells and item 30's Goblin Gang / Rascals are
+still open. **Found in passing and not fixed:** the Cannon Cart grounds itself
+with a stun (`transformBecomesStationary` -> `applyFreeze(ticks, 0.0f)`),
+which also holds its cooldown, so it stops firing for its last 15 s. That was
+true before this item too. It is filed as a separate task. And a 0-damage
+spell (Graveyard, Freeze) still calls `takeDamage(0)` and emits a 0-amount
+`DamageDealtEvent` on every enemy in its disc, every pulse
+(`AreaSpell::update`). A centred Graveyard "hits" the tower 12 times that way.
+So an event count is not a hit count. The instrument counts amount > 0 since
+2026-09-26. Nothing in gameplay changes; whether any statistics collector
+counts events rather than summing amounts was not checked.
+
+### 32a — Hero Barbarian Barrel's ability is unreachable
+
+**Evidence.** The Hero is played through `GameManager::playCard` with 10
+elixir, and the Barbarian (id -47, `isHero`, `abilityUsesRemaining = 1`) is on
+the board after 17 ticks. Then:
+
+```
+isChampionAbilityReady(0, 1) = false      (checked at +10, +20, +30, +40 ticks)
+activateChampionAbility(0, 1) = false      elixir unchanged
+```
+
+The same result comes through the `.pyd`: `step_self_play(...,
+activate_ability0_slot1=True)` spends nothing and does nothing. Calling
+`CombatEntity::activateAbility` directly does fire the effect, so the defect is
+in how the Hero is found, not in the effect.
+
+**Cause.** A slot's ability belongs to the entity recorded in
+`ChampionSlotState::trackedEntityId`. That is set in exactly one place: the
+loop at the end of `playCard`. The loop scans the entities pending at play
+time for `(isChampion || isHero) && cardId == deckConfig[slot]`. At play time
+the only pending entity is the rolling spell, which is not a `CombatEntity`.
+The Barbarian spawns about 17 ticks later, when the barrel stops, and carries
+cardId -47, not 174. So nothing ever matches, and `findChampionInSlot` returns
+nullptr for the whole match. The existing tests could not see this: one checks
+the registry flags, the other calls the effect on a hand-built entity. Neither
+goes through `playCard`.
+
+**It is SILENT, the class the pre-launch audit hunted.** Nothing raises.
+`rl/abilities.py` masks the activate arm by readiness, so a Hero Barbarian
+Barrel deck trains an ability head that is masked on every step.
+
+**Proposed change (exact).**
+
+1. `CardStats.h`, beside `isHero`:
+   ```cpp
+   // The deck card whose Heroic/Wild slot this body belongs to, when that is
+   // not its own cardId: Hero Barbarian Barrel's Barbarian (-47) is spawned by
+   // the rolling spell (174) ~17 ticks after the play. 0 = my own cardId.
+   int abilitySlotCardId = 0;
+   CardStats& withAbilitySlotCard(int cardId) { abilitySlotCardId = cardId; return *this; }
+   ```
+   Add the same field to `CombatEntity`, and copy it in
+   `CardFactories::applyCardMetadata`.
+2. `CardRegistry.h`, `heroBarbarianBarrelBarbarianStats()`: append `.withAbilitySlotCard(174)`.
+3. `GameManager.h`: move the tracking loop out of `playCard` into
+   `void trackSlotEntities(int team, size_t fromPending)`. Match on
+   `(ce->abilitySlotCardId != 0 ? ce->abilitySlotCardId : ce->cardId) == deckConfig[slot]`,
+   and add `ce->team == team`. `playCard` keeps its call with `pendingBefore`.
+   `step()` gains `trackSlotEntities(0, 0); trackSlotEntities(1, 0);` right
+   before each of its two `board.commitPendingEntities(currentTick)` calls.
+   That catches bodies spawned during entity updates and during the previous
+   tick's death effects.
+
+Not recommended: giving the Barbarian the card's id 174. That id is registered
+as a spell (`isSpell`), and consumers key on `cardId`, including
+`get_card_info`, the replay's `cardMeta` and the card probes.
+
+**Test.** Add to `test_hero_abilities.cpp`, going **through `playCard`**:
+deck `{138, 174, 126, 32, 39, 110, 51, 95}`, `setHand` including 174, 10
+elixir. Play the card and step 20 ticks. `isChampionAbilityReady(0, 1)` must
+be true. `activateChampionAbility(0, 1)` must be true and cost exactly 1.0. A
+second activation must be false (single use). Today this fails at the first
+assertion.
+
+### 32b — the Furnace's Fire Spirits are immortal single-target shooters
+
+`furnaceFireSpiritStats()` (-15) is `troop(... 230, SPEED_VERY_FAST, 2.5f, 207,
+10 ...)` with only `.withTargetsAir()`. There is no `.withDieAfterFirstHit()`
+(the playable Fire Spirit, id 73, has it) and no splash (73 says "splash not
+modelled"). **Measured:** one Furnace spirit against a tight clump of three
+ground units hit **7 times in 8 s, killed one and was still alive**. The real
+spirit launches itself once for area damage on all three and dies. Spawned
+every 7 s, each one is a permanent 207-damage-per-second turret with range 2.5
+walking beside the Furnace. That makes the engine's Furnace far stronger than
+the real card, and it has nothing in common with a Fire Spirit's actual job,
+which is one burst of splash.
+
+**Proposed change (exact).** In `CardRegistry.h`:
+
+```cpp
+static CardStats furnaceFireSpiritStats() {
+    return troop(-15, "Fire Spirit", 0.0f, Archetype::RangedSquad, 215, SPEED_VERY_FAST, 2.5f, 215, 10, '<')
+        .withTargetsAir()
+        .withSplash(2.3f)          // Fire Spirit area radius (wiki, since 2021-09-06)
+        .withDieAfterFirstHit();
+}
+```
+
+Make the same change to card 73: hp 215 and damage 215 (official 4 Aug and
+16 Sep 2026), and `.withSplash(2.3f)` in place of the "not modelled" comment.
+The splash path already exists: `RangedTroop` hands `splashRadius` to its
+`Projectile`, which splashes around the target on arrival.
+
+### 32c — Giant Skeleton's bomb
+
+`.withDeathEffect(std::make_shared<AreaDamageOnDeath>(2.0f, 300))`, whose
+registry comment says "not sourced". **Measured:** the bomb fires on the tick
+of death. It deals 300 within 2.0 tiles, centre to centre (1.9 hit, 2.4
+missed), with no knockback. A Giant Skeleton that died while hitting a
+Princess Tower was **2.62 tiles** from its centre (0.4 + 0.8 + 1.5 at maximum
+reach), and the bomb dealt the tower **0**. The chip play the card is known
+for does not exist in the engine. `AreaDamageOnDeath` also emits no
+`DamageDealtEvent`, so the event-based statistics (damage by card, kill
+attribution) never credit the bomb. The reward's tower term reads tower HP, so
+it would see bomb damage if any landed.
+
+**Real, since 4 May 2026.** The bomb drops on death and explodes **3.0 s**
+later. Radius **3** (wiki). Damage **+29%** on the wiki's 688, so about 886.
+Knockback. The same damage to a Crown Tower, where it was 2x before May.
+Hitpoints **-7%**, so 3361 becomes about 3125. Collision radius 0.75 (the
+engine gives every troop 0.4; out of scope here). The official post quotes
+absolute values (hp 1413 -> 1313, bomb 209 -> 269) that fit no level-11 table,
+including DeckShop's, which still shows 3361. Only its percentages are used.
+
+**Proposed change (exact).** Add a new death effect, `include/core/DelayedAreaDamageOnDeath.h`.
+It drops an `AreaSpell` with a fuse. That reuses `AreaSpell`'s timing,
+knockback, tower rule, snapshot and `DamageDealtEvent` attribution, and an
+`AreaSpell` is untargetable, as the real bomb is.
+
+```cpp
+class DelayedAreaDamageOnDeath : public IDeathEffect {
+    float radius; int damage; int fuseTicks; float knockback; int sourceCardId;
+public:
+    DelayedAreaDamageOnDeath(float r, int d, int fuse, float kb, int card)
+        : radius(r), damage(d), fuseTicks(fuse), knockback(kb), sourceCardId(card) {}
+    void apply(Board& board, const Vector2D& p, int team) const override {
+        auto bomb = std::make_shared<AreaSpell>(board.allocateId(), p.x, p.y, team, radius, damage,
+            fuseTicks, 'J', nullptr, false, 1, 0, false, 1.0f, 0, knockback);
+        bomb->name = "Giant Skeleton Bomb";
+        bomb->cardId = sourceCardId;
+        board.addEntity(bomb);
+    }
+};
+```
+
+Registry: `troop(39, ..., 3125, ...)` and
+`.withDeathEffect(std::make_shared<DelayedAreaDamageOnDeath>(3.0f, 886, 29, 1.0f, 39))`.
+The fuse is 29, not 30, because `AreaSpell` applies on the update after
+`delayTicks` reaches 0, so 29 lands at 3.0 s. The knockback of 1.0 is
+Fireball's engine value and is not sourced.
+
+### 32d — Berserker
+
+`troop(51, ..., 896, 0.7f, 1.0f, 102, 6, 'v').withEnrage(0)`. **Measured:** hit
+intervals of 6 / 5 / 4 ticks at 100% / 50% / 10% hp, speed 1.400 tiles/s,
+range 1.0. The real card hits at a flat 0.6 s. None of its balance history
+mentions a rage. The self-heal that the registry comment calls an "optional
+modifier" is one of the wiki's **event Modifiers**, not part of the card. It moves Fast: the wiki and DeckShop's speed list agree, and it is 1.988
+in engine units. Its range is Melee: Short, 0.8.
+
+**Proposed change (exact):**
+`add(troop(51, "Berserker", 2.0f, Archetype::MeleeSquad, 896, SPEED_FAST, 0.8f, 102, 6, 'v'));`.
+This is the only `withEnrage` caller, so the enrage machinery in `CardStats`
+and `CombatEntity` becomes dead code. Removing it is optional.
+
+### 32e — raw speed literals on this deck
+
+| unit | registry | measured | real |
+|---|---|---|---|
+| Furnace (70, and both forms of 138) | `0.5f` | 1.000 | Medium since 2025-10-06 (wiki, DeckShop) |
+| Hero Barbarian (-47) | `0.5f` | 1.000 | Medium (the Barbarian) |
+
+Replace both with `SPEED_MEDIUM`. **Why the existing guards missed them.**
+`0.5f` resolves to within 0.6% of `SPEED_SLOW`, so a "near some tier" test
+passes it; that is the trap `CLAUDE.md` records. The generic "every spawned
+unit moves at the speed of its own playable card" test matches on name, and
+this helper is named "Hero Barbarian Barrel", not "Barbarians". Extend that
+test with Hero bodies against their base card.
+
+### 32f — Evolved Furnace's hot spawn ignores whether it is attacking
+
+**Measured.** Held in place with nothing in sight, the evolved Furnace still
+spawned at 3.4, 5.8, 8.2 s and onward, every 2.4 s. Every spirit spawns on the
+Furnace's own point. The card text and wiki say the 2.4 s rate applies "when
+it's hot and attacking", and that the spirits spawn alternately to the left
+and right.
+
+**Proposed change.** Add `int periodicHotIntervalTicks` to `CardStats` and
+`CombatEntity`, set to 24 on the evolved form, leaving the base 70. In
+`CombatEntity::update`'s periodic block, treat "hot" as having landed an
+attack within one cooldown (`ticksSinceLastHit <= attackCooldown`):
+
+```cpp
+const bool hot = periodicHotIntervalTicks > 0 && ticksSinceLastHit <= attackCooldown;
+if (hot && periodicTicksUntilNext > periodicHotIntervalTicks) periodicTicksUntilNext = periodicHotIntervalTicks;
+// ...existing countdown; on fire:
+periodicTicksUntilNext = hot ? periodicHotIntervalTicks : periodicIntervalTicks;
+```
+
+The alternating spawn sides have no sourced offset, so leave them unmodelled.
+
+### 32g — Evolved Bats heal a third of what they should
+
+**Measured.** Each hit adds +24, up to 242. Real: 122 hp at spawn, and each
+attack heals two 38-hp pulses 0.5 s apart (76 in total), overhealing up to 244
+(wiki table, level 11). **Change:** `troop(78, "Bats", ..., 122, ...)` and
+`.withHealOnHit(76, 244)` in the evolved form. The two pulses land as one
+here, 0.5 s early, which is a documented approximation.
+
+### 32h — the Rowdy Reroll effect itself (behind 32a)
+
+`HeroBarbarianBarrelRerollEffect(3.0f, 0.7f, 233)` is correct on the 3-tile
+roll (official, May 2026), on single use, and on half damage to towers (116,
+matching the wiki's Crown Tower column). **Measured**, calling it directly:
+
+* A ground unit 1.0 tile off the line took **0**. The 0.7 argument is a
+  half-width, so the corridor is 1.4 wide. The real width is 2.6, and the
+  main roll already uses 2.6 with a surface test.
+* A **flying** unit on the line took **233**. The real reroll targets Ground
+  only.
+* The Barbarian healed **0** (300 hp before and after). The real reroll heals
+  it for 50% of the damage dealt.
+
+**Change:** construct it as `(3.0f, 1.3f, 232, 716)`. In the loop, skip
+`entity->isFlying`, and test `dist > halfWidth + CombatEntity::effectiveRadiusOf(*entity)`,
+the main roll's surface convention. Sum `dealt`, then
+`self.hp = std::min(self.hp + totalDealt / 2, maxHp)` with the new `maxHp`
+argument.
+
+### 32i — every multi-hit spell repeats one tick late
+
+`AreaSpell::update` sets `delayTicks = tickInterval` after each application.
+The countdown then consumes `tickInterval` updates and applies on the next
+one, so the period is **interval + 1**. Measured: Poison pulses at ticks
+1, 12, 23, … 78, which is 1.1 s instead of the registry comment's "every
+second". Graveyard spawns every 6 ticks instead of "every 0.5 s". The same code
+path gives Arrows (volleys 3 ticks apart, not 2), Evolved Zap, Earthquake,
+Goblin Curse, Void and Vines. Total damage is unchanged; only the cadence
+stretches. **Change:**
+`delayTicks = (tickInterval > 0) ? tickInterval - 1 : 0;`. Tests pinning pulse
+ticks will move.
+
+Also, the Graveyard comment "arrivals outrun a Princess Tower's fire rate 2:1"
+is out of date. The tower fires every 8 ticks, so the ratio is 1.6:1 at the
+intended 0.5 s and 1.33:1 at the measured 0.6 s.
+
+### 32j — Graveyard's spawn point and first spawn
+
+**Measured.** 12 Skeletons, first at tick 9, and every one spawns at the cast
+point (the distances of 0.0-0.3 are collision nudges). Real: 12 Skeletons
+since June 2026 ("removing one of the Skeletons that rises right on the
+Crown Tower"), the first at **2.2 s** (wiki, since 2020-12-09), then every
+0.5 s. Since 12 Jan 2026 they rise in a **defined pattern**, not a random one,
+near the edge, with a spawn radius of **3.3** since 2 Feb 2026. A centre
+spawn stacks every Skeleton on one point, so a single small splash (The Log,
+Arrows, Zap) catches all of them as they rise. The real ring spreads them out.
+
+**Change.** Raise `spellDelayTicks` from 8 to 21, so the first spawn lands at
+2.2 s. Add a spawn ring to `AreaSpell` (new `CardStats::spellSpawnRingRadius`,
+set to 3.3 for Graveyard). Application `k` spawns at
+`clampToBoard(position + 3.3 * (cos(k * 2.39996), sin(k * 2.39996)))`, where
+k comes from the spell's own hit counter. The effect object must stay
+stateless, per the snapshot invariant in `CLAUDE.md`. The real pattern is
+fixed but unpublished, so the golden-angle sequence is a documented
+approximation. Whether each real Skeleton then has its own deploy delay after
+rising is not sourced; today every one gets the standard 1 s.
+
+### 32k — Poison's 15% slow is missing (apply only after 32m)
+
+**Measured.** An enemy Knight walked 1.325 tiles/s outside the Poison and
+1.325 inside it. **Change:**
+`.withSpellOnHit(std::make_shared<FreezeOnHit>(11, 0.85f))`, so each pulse
+refreshes an 11-tick 15% slow. **Do not apply it before 32m(i)**: today any
+unit stunned earlier in the match would take the whole Poison as an 8-second
+hard stun. Two caveats. The engine's slow also stretches attack cooldowns;
+that is the game's generic slow, but the wiki names only movement. And
+`FreezeOnHit` would also reach buildings, where the real slow is "enemy
+troops" only.
+
+### 32l — disc spells test the centre, not the hitbox (confidence: moderate)
+
+`AreaSpell`'s disc branch uses `distanceTo(entity->position) <= radius`.
+**Measured:** a troop centred 3.6 tiles from a Poison of radius 3.5 took 0,
+although 3.2 tiles of it lie inside the cloud. The engine's own rolling spells
+test against the target's surface (`effectiveRadiusOf`), as does the "reaches
+the tower from the bridge" rule `CLAUDE.md` pins for The Log. That is the real
+game's convention as far as this audit can tell. **Change:**
+`<= radius + CombatEntity::effectiveRadiusOf(*entity)`. The blast radius is
+every disc spell, towers included: Poison or Fireball dropped beside a Princess
+Tower would start hitting it. Verify against footage before applying.
+
+### 32m — two stun defects, engine-wide
+
+1. **`freezeSlow` never resets.** `applyFreeze` does
+   `freezeSlow = std::min(freezeSlow, slowFactor)`, and nothing restores it
+   to 1.0 when the freeze ends. **Measured:** a Knight under a 0.65 slow moved
+   0.862 tiles/s, but **0.000** if it had taken a 0.5 s stun three seconds
+   earlier. After the first Zap, Electro Spirit or Ice Spirit of a match,
+   every later slow on that unit is a full stun: Ice Wizard, Ice Golem's
+   death slow, Giant Snowball, Earthquake, and 32k.
+2. **A stunned unit whose cooldown is already 0 still attacks once.** The
+   targeting path re-acquires with `findTarget` whether or not the unit is
+   frozen, and the attack is gated only on `currentCooldown == 0`. A stun
+   holds the cooldown still but does not block the swing. **Measured:** an
+   idle Knight stunned for 5 s hit a unit that walked into reach, for 202.
+   The same applies to an idle tower under Freeze: it fires its first shot.
+   This audit's first harness run froze the towers with `applyFreeze` and got
+   stray 90-damage tower shots anyway.
+
+**Change**, in `CombatEntity::update`:
+
+```cpp
+const float slowThisTick = freezeSlow;           // beside frozenThisTick
+freezeSlowThisTick = slowThisTick;               // new member, read by Troop::moveTowards
+const bool stunned = wasFrozen && slowThisTick <= 0.0f;
+...
+if (freezeTicks > 0) {
+    freezeTicks--;
+    if (currentCooldown > 0.0f) currentCooldown -= slowThisTick;
+    if (freezeTicks == 0) freezeSlow = 1.0f;     // a slow ends with its freeze
+}
+...
+// the attack, jump and hook branches each gain `!stunned &&`
+```
+
+In `Troop::moveTowards`, change `speed * freezeSlow` to
+`speed * freezeSlowThisTick`, so the last tick of a slow still moves slowly.
+Gate the branches on `stunned`, not `wasFrozen`: a slowed unit is "frozen" in
+this engine and must keep attacking.
+
+### 32n — data drift (level 11)
+
+| unit | registry | current | source |
+|---|---|---|---|
+| Giant Skeleton hp | 3361 | ~3125 | official May 2026 (-7%) |
+| Barbarian hp: BB's (-23), Hero's (-47), and every other copy (8, -10, -16, -35) | 691 | **716** | official Aug 4, 2026 |
+| Goblin Hut hp | 1228 | **1180** | wiki history (-4%, 2025-10-06); DeckShop 1180 |
+| Fire Spirit hp / damage (-15 and 73) | 230 / 207 | **215 / 215** | official Aug 4 / Sep 16, 2026 |
+| Spear Goblins hit speed (23, -17, -26, -27) | 1.7 s | **1.6 s** | official Aug 4, 2026 |
+| Barbarian Barrel damage (101, 174) | 233 | 232 | DeckShop; wiki Hero table |
+| Evolved Bats spawn hp | 121 | 122 | wiki (+50%) |
+| Barbarian Barrel placement | own half **and the river** (y <= 17.5, measured) | **own side only** | wiki. The engine's roller rule was written for The Log; Barbarian Barrel has its own, stricter rule |
+
+The Spirit hitpoint cut applies to all four Spirits (Ice, Heal and Electro
+too), which is outside this deck.
+
+**Unresolved, not proposed.**
+* **Furnace spawn interval.** 7 s per the official August 2025 notes, which
+  is the engine's value. The wiki and one third-party site say 5 s since
+  4 August 2026, but Supercell's posted notes for that date never mention
+  Furnace. The engine keeps 7 s until someone confirms in-game.
+* **Furnace damage and hp.** 179 / 727 per the wiki and the official 2025
+  nerf (the engine's values). DeckShop says 135 / 896, where 896 is the
+  pre-nerf hp.
+
+**Engine-wide, noted and not proposed.**
+* No unit has a first-hit (wind-up) time. Every unit strikes one tick after
+  reaching range, against real wind-ups of 0.2 s (Berserker), 0.3 s (Giant
+  Skeleton), 0.4 s (Barbarian), 0.5 s (Skeleton, Spear Goblin) and 0.6 s
+  (Bats).
+* Every troop's collision radius is 0.4.
+
+### Verified correct
+
+* **Bats:** 5 bodies, 81 hp, 81 damage, 1.2 s (the March 2026 buff), Very Fast,
+  flying, hits air and ground. They die to one Poison pulse; Evolved Bats
+  survive one. The registry's Evolution cycle count is 2 for both Evolved
+  Bats and Evolved Furnace, as on the wiki. The probe does not exercise it.
+* **Poison:** 8 x 92 = 736, radius 3.5 (measured centre to centre), and no damage to your
+  own units (your Skeletons inside your own Poison took 0).
+* **Giant Skeleton:** 276 damage, 1.3 s (the January 2026 buff), Medium,
+  range 0.8, sight 5.0, ground-only. Enemy Bats are untouchable by it (0
+  damage in 6 s).
+* **Graveyard:** 12 Skeletons (the June 2026 value), radius 4; each Skeleton
+  has 81 hp, 81 damage, 1.1 s, Fast, range 0.5.
+* **Barbarian Barrel:** 233 per unit hit. The corridor is 2.6 wide against the
+  target's surface (1.6 tiles off-axis hit, 1.9 missed), 4.5 long against the
+  surface (4.8 hit, 5.2 missed), ground only, no knockback. The Barbarian
+  spawns where the barrel stops (17 ticks), with 192 damage, 1.4 s and
+  Medium speed.
+* **Goblin Hut:** nothing spawns while idle. Spawns are gated on an enemy
+  within 6 tiles, 2.2 s apart (the April 2026 value). It expires at exactly
+  30 s and releases one Spear Goblin on death.
+* **Furnace:** 727 hp, 179 damage every 1.7 s (January 2026), range 5.5 (June
+  2026), hits air. One spirit every 7 s, the first at 8 s (deploy plus one
+  interval).
+* **Hero Barbarian Barrel:** 1 elixir, single use (August 2026: every Hero
+  ability is single-use).
+* **Deck-slot legality** for this deck.
+
+### Blast radius
+
+* **Pool decks carrying an affected card.** Furnace: `royal_hogs_furnace`.
+  Graveyard: `graveyard_control`. Poison: `graveyard_control`,
+  `miner_poison_control`, `pekka_bridge_spam`. Bats: `wall_breakers_cycle`,
+  `mega_knight_ram`. Barbarian Barrel: six decks.
+* **32m reaches every deck with a stun or a slow**, including `SHIPPED_DECK`
+  (Ice Spirit's stun, Ice Golem's death slow).
+* **32i and 32l change every multi-hit or disc spell.** 32l also changes
+  Fireball in `SHIPPED_DECK`.
+* **No observation or action-space change.** Checkpoints load; win-rate
+  history stops being comparable.
+* **Python needs a change after all.** This bullet said "no change" when it
+  was written: `card_probes` measures spell damage, tower damage and air
+  targeting by injection, and with 32a fixed `rl/abilities.py` unmasks the
+  reroll on its own. Both still hold. But three probes cast on a fixed cell or
+  restated a measured constant, and the shipped engine broke them: eight
+  `python_ai` tests went red. Fixed 2026-09-27; see "The Python suites" above.
+* **Tests that will move:** `test_hero_abilities.cpp` (the Barbarian's 691 hp
+  and the reroll's 0.7 half-width) and any test pinning Poison, Graveyard or
+  Arrows pulse ticks. `test_default_deck_qa.cpp` is also affected if 32m
+  changes an Ice Spirit timing it pins.

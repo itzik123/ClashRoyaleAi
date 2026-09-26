@@ -146,22 +146,51 @@ def test_the_proposed_siege_cell_actually_reaches_the_enemy_tower(
                    f"enemy tower")
 
 
-def test_the_proposed_barrel_cell_lands_on_an_enemy_princess_tower(pool, by_name):
-    """A spawning spell is worth far more on the tower, and the spell rule aims at
-    enemy troop clusters, which do not exist on a quiet board.
+@pytest.mark.parametrize("deck_name,card", [("dart_bait_cycle", "Goblin Barrel"),
+                                            ("graveyard_control", "Graveyard")])
+def test_a_spawning_spell_lands_beside_an_enemy_tower_where_it_measures_best(
+        pool, by_name, deck_name, card):
+    """A spawning spell is worth far more at the tower, and the spell rule aims at
+    enemy troop clusters, which do not exist on a quiet board. It lands where
+    the win-condition probe measured it best around the tower, which is not
+    always the tower's own cell: a Graveyard there loses its Skeletons to the
+    tower before they deploy. Pinned by what the engine says the cell is worth.
     """
-    deck = _deck(pool, "dart_bait_cycle")
-    cid = by_name["Goblin Barrel"]
+    deck = _deck(pool, deck_name)
+    cid = by_name[card]
     t = T.UtilityTeacher(deck, team=0, horizon_ticks=0, k_cells=3)
     t.reset()
     env = _empty_env(deck)
     obs = np.asarray(env.get_observation_for_team(0), np.float32)
     cells = t._cells_for(t.roles[cid], cid, obs)
-    towers = {(float(EC.LEFT_LANE_X), float(EC.princess_y(1))),
-              (float(EC.RIGHT_LANE_X), float(EC.princess_y(1)))}
-    assert towers & {(float(x), float(y)) for (x, y) in cells}, (
-        f"Goblin Barrel proposed {cells}, none an enemy Princess Tower at "
-        f"y={EC.princess_y(1)}")
+    y = float(EC.princess_y(1))
+    towers = [(float(EC.LEFT_LANE_X), y), (float(EC.RIGHT_LANE_X), y)]
+
+    def nearest_tower(x, cy):
+        return min(towers, key=lambda tw: np.hypot(x - tw[0], cy - tw[1]))
+
+    def gap(x, cy):
+        tx, ty = nearest_tower(x, cy)
+        return np.hypot(x - tx, cy - ty)
+
+    beside = [(x, cy) for x, cy in cells if gap(x, cy) <= 3.0]
+    assert beside, f"{card} proposed {cells}, none beside an enemy Princess Tower"
+
+    def tower_hp_lost(x, cy):
+        e = T._probe_env()
+        before = T._enemy_tower_hp(e)
+        e.inject(cid, float(x), float(cy), 0, -1.0, -1)
+        T._roll_idle(e, T.WINCON_PROBE_TICKS)
+        return before - T._enemy_tower_hp(e)
+
+    x, cy = beside[0]
+    tx, ty = nearest_tower(x, cy)
+    side = -1.0 if tx < float(EC.BOARD_CENTER_X) else 1.0
+    around = {(tx + side * o, ty + b): tower_hp_lost(tx + side * o, ty + b)
+              for o, b in T.SPELL_ATTACK_OFFSETS}
+    assert tower_hp_lost(x, cy) == max(around.values()), (
+        f"{card} at {(x, cy)} takes {tower_hp_lost(x, cy)}; the best cell "
+        f"around that tower takes {max(around.values())}: {around}")
 
 
 # --- the frame ---

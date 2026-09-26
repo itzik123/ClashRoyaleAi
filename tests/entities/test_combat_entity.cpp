@@ -899,69 +899,6 @@ TEST_CASE("A card without charge configured (chargeThreshold 0, the default) nev
     REQUIRE(target->hp == 10000 - 100); // never charged, regardless of distance moved
 }
 
-// ---------------- enrage ----------------
-
-TEST_CASE("Enrage heals a small amount with every landed hit", "[combat_entity][enrage]") {
-    Board board;
-    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
-    spawn(board, target);
-
-    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 1000, 0, 10.0f, 50, 10);
-    attacker->hp = 500; // already damaged, well under enrageMaxHp
-    attacker->enrageMaxHp = 1000;
-    attacker->enrageHealPerHit = 20;
-
-    attacker->update(board); // lands a hit
-    REQUIRE(attacker->hp == 520); // 500 + 20
-}
-
-TEST_CASE("Enrage's self-heal is capped at enrageMaxHp, never overhealing", "[combat_entity][enrage]") {
-    Board board;
-    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
-    spawn(board, target);
-
-    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 1000, 0, 10.0f, 50, 10);
-    attacker->hp = 995; // close to the cap
-    attacker->enrageMaxHp = 1000;
-    attacker->enrageHealPerHit = 20;
-
-    attacker->update(board); // fresh attacker: cooldown starts at 0, attacks immediately
-
-    REQUIRE(attacker->hp == 1000); // capped at enrageMaxHp, not 1015
-}
-
-TEST_CASE("Enrage shortens attack cooldown the more damaged this attacker already is", "[combat_entity][enrage]") {
-    Board board;
-    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
-    spawn(board, target);
-
-    auto halfHp = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 1000, 0, 10.0f, 50, 10);
-    halfHp->hp = 500; // 50% hp
-    halfHp->enrageMaxHp = 1000; // no heal configured -- isolates the cooldown effect
-
-    auto fullHp = std::make_shared<StationaryCombatant>(3, 5.0f, 0.0f, 1000, 0, 10.0f, 50, 10);
-    fullHp->enrageMaxHp = 1000; // 100% hp: enrage formula reduces to no-op
-
-    for (int i = 0; i < 20; ++i) {
-        halfHp->update(board);
-        fullHp->update(board);
-    }
-
-    REQUIRE(halfHp->attackCount > fullHp->attackCount); // more damaged -> attacks more often in the same window
-}
-
-TEST_CASE("A card without enrage configured (enrageMaxHp 0, the default) neither heals nor speeds up", "[combat_entity][enrage]") {
-    Board board;
-    auto target = std::make_shared<DummyEntity>(1, 0.0f, 1.0f, 100000, 1);
-    spawn(board, target);
-
-    auto attacker = std::make_shared<StationaryCombatant>(2, 0.0f, 0.0f, 1000, 0, 10.0f, 50, 10);
-    attacker->hp = 500; // enrageMaxHp left at its default (0): mechanic stays off regardless
-
-    attacker->update(board);
-    REQUIRE(attacker->hp == 500); // no self-heal
-}
-
 // ---------------- parry ----------------
 
 TEST_CASE("Parry fully negates the first incoming hit", "[combat_entity][parry]") {

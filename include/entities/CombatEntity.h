@@ -52,17 +52,46 @@ protected:
     // so getCurrentDamage() can divide by it.
     int currentHitCount = 1;
 
+    // Ticks since this unit last started an attack; "never" at spawn. Read by
+    // the hot periodic interval (Evolved Furnace spawns faster only while
+    // attacking). Not ticksSinceLastHit, which also resets on losing a target.
+    static constexpr int TICKS_SINCE_ATTACK_NEVER = 1 << 20;
+    int ticksSinceAttack = TICKS_SINCE_ATTACK_NEVER;
+
+    // The freezes in force, each running its own duration (see applyFreeze).
+    struct FreezeSlot { int ticks = 0; float factor = 1.0f; };
+    static constexpr int FREEZE_SLOT_COUNT = 3;
+    FreezeSlot freezeSlots[FREEZE_SLOT_COUNT];
+
 public:
     // Freeze lives here, not on Entity: only things that attack or move can be
-    // frozen.
+    // frozen. A stun is factor 0; a slow is 0 < factor < 1 and scales both
+    // movement and the attack cooldown.
+    //
+    // Concurrent freezes are held separately (freezeSlots) and each expires on
+    // its own clock; the strongest active one applies. So a slow that lands
+    // after an earlier stun has ended is a slow, and a 0.5 s stun during a 3 s
+    // slow is 0.5 s of stun and then the rest of the slow (UPSTREAM_REQUESTS.md
+    // item 32m: the old single slot kept the strongest factor for the longest
+    // duration, and never reset it). freezeTicks and freezeSlow are the view:
+    // the longest remaining freeze and the factor in force, recomputed by
+    // applyFreeze() and update(). Read them; write through applyFreeze.
     int freezeTicks = 0;
     float freezeSlow = 1.0f;
 
-    // Whether this unit was frozen when the tick began: set at the top of
-    // update(), before freezeTicks is decremented, and read by
+    // Whether this unit was frozen when the tick began, and at what factor: set
+    // at the top of update(), before the freezes tick down, and read by
     // Troop::moveTowards later in the same call, so attacks and movement see
     // the same freeze. Recomputed every update().
     bool frozenThisTick = false;
+    float freezeSlowThisTick = 1.0f;
+
+    // Movement-only slow (Poison: enemy troops 15% slower inside it, attack
+    // speed untouched). Separate from the freezes, which also slow attacks;
+    // Troop::moveTowards applies the stronger of the two.
+    int moveSlowTicks = 0;
+    float moveSlowFactor = 1.0f;
+    float moveSlowThisTick = 1.0f;
 
     // Ticks left of deploy time (CardStats.h, DEPLOY_TIME_TICKS): on the board,
     // targetable and damageable, but not moving, targeting or attacking.
@@ -148,12 +177,6 @@ public:
     bool chargeIsSticky = false;
     bool chargeHasStuck = false;
 
-    // Enrage (Berserker): the attack cooldown shortens (up to 2x speed at 0 hp)
-    // and each hit heals, scaling with hp lost. enrageMaxHp == 0 disables it
-    // (see CardStats::withEnrage).
-    int enrageMaxHp = 0;
-    int enrageHealPerHit = 0;
-
     // Parry (Ronin): every parryIntervalTicks, the next incoming hit is
     // negated. The real card also reflects damage and parries only ground
     // melee; neither is modelled (takeDamage has no attacker, and there is no
@@ -178,6 +201,11 @@ public:
     std::shared_ptr<IPeriodicEffect> periodicEffect;
     int periodicIntervalTicks = 0;
     int periodicTicksUntilNext = 0;
+    // Evolved Furnace: the faster interval used only while attacking (0 = none),
+    // and the alternating sideways spawn offset (0 = on the entity).
+    int periodicHotIntervalTicks = 0;
+    float periodicSideOffset = 0.0f;
+    int periodicSpawnCount = 0;
 
     // Temporary damage buff (Rage, Rune Giant's enchant). Real Rage also speeds
     // movement and attacks; only damage is modelled, since speed lives on
@@ -218,9 +246,12 @@ public:
     std::shared_ptr<IOnDamageTakenEffect> onDamageTakenEffect;
 
     // Self-heal on landing a hit (Evolved Bats); healOnHitMaxHp is an absolute
-    // cap.
+    // cap. With a second-pulse delay, the same amount heals again that many
+    // ticks later (pendingHealPulseTicks counts it down).
     int healOnHitAmount = 0;
     int healOnHitMaxHp = 0;
+    int healOnHitSecondPulseDelayTicks = 0;
+    int pendingHealPulseTicks = 0;
 
     // Self-spawn on landing a hit (Evolved Skeletons); the cap lives in
     // CappedSpawnOnHitEffect.
@@ -328,6 +359,10 @@ public:
     std::shared_ptr<IAbilityEffect> abilityEffect;
     // -1 is unlimited; otherwise a hard cap on activations (Boss Bandit: 2).
     int abilityUsesRemaining = -1;
+    // The deck card whose slot owns this ability when it is not cardId (Hero
+    // Barbarian Barrel's Barbarian: 174). 0 = cardId. See
+    // CardStats::abilitySlotCardId and GameManager::trackSlotEntities.
+    int abilitySlotCardId = 0;
 
     // Soul collection (Skeleton King): counts deaths within radius, ally or
     // enemy, via onNearbyDeath, up to maxSouls.
@@ -407,6 +442,15 @@ public:
         return true;
     }
 
+    // What every Clone copy shares (the leaf classes' clone()): a fresh id, 1
+    // hp, and no claim on a Champion/Hero slot, so a cloned Champion or Hero
+    // never gets its ability (GameManager::trackSlotEntities).
+    void becomeCloneCopy(int newId) {
+        id = newId;
+        hp = 1;
+        abilitySlotCardId = 0;
+    }
+
     // Deploy delay before the first shot (X-Bow's slow lock-on). Called once
     // after spawn by CardFactories; the one seam onto the protected cooldown.
     void seedCooldown(int ticks) {
@@ -446,14 +490,67 @@ public:
         dotTicksUntilNextDamage = tickInterval;
     }
 
+    // A new freeze never leaves the target better off, and never outlives
+    // itself. One of the same strength extends that slot; a different strength
+    // takes a slot of its own and runs its own duration. With every slot taken,
+    // it displaces the weakest held freeze if it is stronger, else it is
+    // dropped (three concurrent strengths are enough for every card).
     void applyFreeze(int ticks, float slowFactor) {
-        // Duration and strength are judged independently, so a new freeze never
-        // leaves the target better off: a shorter but stronger slow is not
-        // dropped for a longer, weaker one.
-        freezeTicks = std::max(freezeTicks, ticks);
-        freezeSlow = std::min(freezeSlow, slowFactor);
-        if (resetCooldownOnFreeze && ticks > 0) {
+        if (ticks <= 0) return;
+        FreezeSlot* slot = nullptr;
+        for (auto& s : freezeSlots) {
+            if (s.ticks > 0 && s.factor == slowFactor) { slot = &s; break; }
+        }
+        if (!slot) {
+            for (auto& s : freezeSlots) {
+                if (s.ticks <= 0) { slot = &s; break; }
+            }
+        }
+        if (!slot) {
+            FreezeSlot* weakest = &freezeSlots[0];
+            for (auto& s : freezeSlots) {
+                if (s.factor > weakest->factor || (s.factor == weakest->factor && s.ticks < weakest->ticks)) weakest = &s;
+            }
+            if (slowFactor < weakest->factor) {
+                slot = weakest;
+                slot->ticks = 0;
+            }
+        }
+        if (slot) {
+            if (slot->ticks > 0) {
+                slot->ticks = std::max(slot->ticks, ticks);
+            } else {
+                slot->ticks = ticks;
+                slot->factor = slowFactor;
+            }
+            refreshFreezeView();
+        }
+        if (resetCooldownOnFreeze) {
             currentCooldown = static_cast<float>(attackCooldown);
+        }
+    }
+
+    // Movement only; the stronger of two overlapping move-slows applies, and it
+    // ends with its own duration.
+    void applyMoveSlow(int ticks, float factor) {
+        if (ticks <= 0) return;
+        if (moveSlowTicks <= 0 || factor < moveSlowFactor) {
+            moveSlowFactor = factor;
+            moveSlowTicks = ticks;
+        } else if (factor == moveSlowFactor) {
+            moveSlowTicks = std::max(moveSlowTicks, ticks);
+        }
+    }
+
+    // freezeTicks / freezeSlow from the slots: the longest remaining freeze and
+    // the strongest factor in force (1.0 when nothing is).
+    void refreshFreezeView() {
+        freezeTicks = 0;
+        freezeSlow = 1.0f;
+        for (const auto& s : freezeSlots) {
+            if (s.ticks <= 0) continue;
+            freezeTicks = std::max(freezeTicks, s.ticks);
+            freezeSlow = std::min(freezeSlow, s.factor);
         }
     }
 
@@ -470,11 +567,21 @@ public:
         if (deploying) deployTicksRemaining--;
 
         // Captured before the decrement, so the last tick of a freeze still
-        // counts as frozen for the ramp reset.
+        // counts as frozen, at its own strength, for the ramp reset, the
+        // cooldown and movement alike.
         bool wasFrozen = freezeTicks > 0;
+        const float slowThisTick = freezeSlow;
+        // A true stun (factor 0) acts on nothing this tick: no attack, jump or
+        // hook, even with the cooldown already at 0. A slow is also "frozen"
+        // here and keeps attacking, only slower.
+        const bool stunned = wasFrozen && slowThisTick <= 0.0f;
         // Published for Troop::moveTowards, which runs after the decrement.
         frozenThisTick = wasFrozen;
+        freezeSlowThisTick = slowThisTick;
+        moveSlowThisTick = (moveSlowTicks > 0) ? moveSlowFactor : 1.0f;
+        if (moveSlowTicks > 0 && --moveSlowTicks == 0) moveSlowFactor = 1.0f;
         ticksSinceLastHit++; // zeroed below when a hit lands
+        if (ticksSinceAttack < TICKS_SINCE_ATTACK_NEVER) ticksSinceAttack++; // zeroed when an attack starts
 
         if (transformAtHpFraction > 0.0f && !hasTransformed && transformCheckMaxHp > 0
             && static_cast<float>(hp) / static_cast<float>(transformCheckMaxHp) <= transformAtHpFraction) {
@@ -495,15 +602,23 @@ public:
             if (transformTicksRemaining <= 0) hp = 0;
         }
 
-        if (freezeTicks > 0) {
-            freezeTicks--;
+        if (wasFrozen) {
+            for (auto& s : freezeSlots) {
+                if (s.ticks > 0) s.ticks--;
+            }
+            refreshFreezeView();
             if (currentCooldown > 0.0f) {
-                currentCooldown -= freezeSlow;
+                currentCooldown -= slowThisTick;
             }
         } else {
             if (currentCooldown > 0.0f) {
                 currentCooldown -= 1.0f;
             }
+        }
+
+        // Evolved Bats' second heal pulse, half a second after the hit.
+        if (pendingHealPulseTicks > 0 && --pendingHealPulseTicks == 0 && hp > 0 && hp < healOnHitMaxHp) {
+            hp = std::min(hp + healOnHitAmount, healOnHitMaxHp);
         }
 
         if (currentCooldown < 0.0f) currentCooldown = 0.0f;
@@ -546,10 +661,18 @@ public:
         if (deploying) return;
 
         if (periodicIntervalTicks > 0) {
+            // Evolved Furnace's Hot Spawning: the fast interval runs only while
+            // attacking (an attack started within one attack cycle), and going
+            // into combat pulls a long pending timer in to it.
+            const bool hot = periodicHotIntervalTicks > 0 && ticksSinceAttack <= attackCooldown;
+            if (hot && periodicTicksUntilNext > periodicHotIntervalTicks) {
+                periodicTicksUntilNext = periodicHotIntervalTicks;
+            }
             periodicTicksUntilNext--;
             if (periodicTicksUntilNext <= 0) {
-                if (periodicEffect) periodicEffect->apply(board, position, team);
-                periodicTicksUntilNext = periodicIntervalTicks;
+                if (periodicEffect) periodicEffect->apply(board, periodicSpawnPoint(board), team);
+                periodicSpawnCount++;
+                periodicTicksUntilNext = hot ? periodicHotIntervalTicks : periodicIntervalTicks;
             }
         }
 
@@ -594,11 +717,14 @@ public:
             float effectiveAttackRange = effectiveRangeTo(target);
 
             if (dist <= effectiveAttackRange) {
-                if (currentCooldown == 0.0f) {
+                // Not while stunned: a stun holds the cooldown still, and a
+                // unit that was already ready must not swing through it.
+                if (!stunned && currentCooldown == 0.0f) {
                     // Effects are applied by performAttack, since when they
                     // fire depends on when the damage lands (at once for a
                     // direct hit, on arrival for a projectile).
                     lastAttackDistance = dist;
+                    ticksSinceAttack = 0;
                     // Reset here, not on projectile arrival: the only
                     // grace-period card (Inferno Dragon Evolution) attacks
                     // instantly.
@@ -626,13 +752,6 @@ public:
                         if (!chargeHasStuck) chargeProgress = 0.0f;
                     }
                     if (startsInvisible) visibleTicksRemaining = revealTicksAfterAttack;
-                    if (enrageMaxHp > 0) {
-                        float hpFraction = static_cast<float>(hp) / static_cast<float>(enrageMaxHp);
-                        currentCooldown *= (0.5f + 0.5f * hpFraction); // up to 2x attack speed at 0 hp
-                        if (enrageHealPerHit > 0 && hp < enrageMaxHp) {
-                            hp = (hp + enrageHealPerHit < enrageMaxHp) ? hp + enrageHealPerHit : enrageMaxHp;
-                        }
-                    }
                     // Little Prince's hit-speed ramp; ticksOnTarget already
                     // includes this hit.
                     if (hitSpeedRampFullTick > 0) {
@@ -663,9 +782,12 @@ public:
                     }
                     if (recoilDistance > 0.0f) pushAway(*this, target->position, recoilDistance);
                     // Evolved Bats: heals past starting hp, up to the absolute
-                    // healOnHitMaxHp.
+                    // healOnHitMaxHp; the second pulse follows in update().
                     if (healOnHitAmount > 0 && hp < healOnHitMaxHp) {
                         hp = std::min(hp + healOnHitAmount, healOnHitMaxHp);
+                    }
+                    if (healOnHitAmount > 0 && healOnHitSecondPulseDelayTicks > 0) {
+                        pendingHealPulseTicks = healOnHitSecondPulseDelayTicks;
                     }
                     // Evolved Skeletons: spawn on hit; the cap is inside
                     // CappedSpawnOnHitEffect.
@@ -688,9 +810,10 @@ public:
                     }
                     if (dieAfterFirstHit) hp = 0;
                 }
-            } else if (jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {
+            } else if (!stunned && jumpMaxRange > 0.0f && dist >= jumpMinRange && dist <= jumpMaxRange && currentCooldown == 0.0f) {
                 // Jump (Mega Knight): close to just inside attack range and
                 // land a boosted, splashing hit at once.
+                ticksSinceAttack = 0;
                 pullToward(*this, target->position, dist - effectiveAttackRange + 0.1f);
                 int jumpDamage = static_cast<int>(getCurrentDamage() * jumpDamageMultiplier);
                 target->takeDamage(jumpDamage);
@@ -698,7 +821,7 @@ public:
                     { id, team, cardId, target->id, target->cardId, target->team, jumpDamage, board.currentTick, target->isTower() });
                 applySplashDamage(board, target->position, jumpSplashRadius, target->id, id, team, cardId, jumpDamage);
                 currentCooldown = static_cast<float>(attackCooldown);
-            } else if (hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
+            } else if (!stunned && hookRange > 0.0f && dist <= hookRange && currentCooldown == 0.0f) {
                 // Hook: pull the target to just inside melee range; the damage
                 // lands on a later hit. A no-op on a building.
                 pullToward(*target, position, dist - effectiveAttackRange + 0.1f);
@@ -746,6 +869,20 @@ protected:
     }
 
     float ownEffectiveRadius() const { return effectiveRadiusOf(*this); }
+
+    // Where the next periodic spawn lands: on this entity, or periodicSideOffset
+    // to one side, alternating left then right (Evolved Furnace). Left is -x for
+    // team 0, which faces +y, and +x for team 1. Kept on the board.
+    Vector2D periodicSpawnPoint(const Board& board) const {
+        if (periodicSideOffset <= 0.0f) return position;
+        const float facing = (team == 0) ? 1.0f : -1.0f;
+        const float side = (periodicSpawnCount % 2 == 0) ? -1.0f : 1.0f; // left first
+        Vector2D p = position;
+        p.x += side * facing * periodicSideOffset;
+        const float maxX = static_cast<float>(board.getWidth() - 1);
+        p.x = std::max(0.0f, std::min(p.x, maxX));
+        return p;
+    }
 
     float effectiveRangeTo(const std::shared_ptr<Entity>& target) const {
         return attackRange + ownEffectiveRadius() + effectiveRadiusOf(*target);

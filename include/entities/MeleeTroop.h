@@ -10,8 +10,7 @@ public:
 
     std::shared_ptr<Entity> clone(int newId) const override {
         auto copy = std::make_shared<MeleeTroop>(*this);
-        copy->id = newId;
-        copy->hp = 1; // Clone: full damage, 1 hp
+        copy->becomeCloneCopy(newId); // Clone: full damage, 1 hp, no ability slot
         return copy;
     }
 

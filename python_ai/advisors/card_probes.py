@@ -7,10 +7,11 @@ card id.
 
 A spell's radius is the largest centre distance at which a stationary target
 takes damage (a target left free to walk during the cast delay reads too
-small). Its damage is its whole effect, read until the damage stops, so
-damage-over-time spells are counted in full. The probes reproduce the registry:
-Fireball 2.5 / 689, Arrows 3.5 / 369, Zap 2.5 / 192, Poison 3.5 / 736, Rocket
-2.0 / 1485.
+small). The target is a troop, and a disc spell hits what it overlaps, so the
+radius includes the troop's own body: the registry's value plus 0.25 on this
+grid. Its damage is its whole effect, read until the damage stops, so
+damage-over-time spells are counted in full. Measured: Fireball 2.75 / 689,
+Arrows 3.75 / 369, Zap 2.75 / 192, Poison 3.75 / 736, Rocket 2.25 / 1485.
 """
 import functools
 
@@ -36,6 +37,8 @@ _HOLD_TICKS = 300
 _TANK_ID = 13
 _RADIUS_STEP = 0.25
 _RADIUS_MAX = 6.0
+#: How far `roller_damage` steps back from the bridge to a castable row.
+_ROW_STEP = 0.5
 
 
 def _env():
@@ -83,6 +86,25 @@ def _damage_to_enemy_target(card_id, target_id, dx):
 
 
 @functools.lru_cache(maxsize=512)
+def spell_radius(card_id):
+    """How far from its centre `card_id` still damages a troop: the largest
+    centre distance, on a `_RADIUS_STEP` grid, at which a stationary enemy
+    Knight takes damage, or 0.0.
+
+    It includes the Knight's own body, because a disc spell hits what it
+    overlaps. Needs no other module, so `tactics` derives its Fireball radius
+    from it at import.
+    """
+    radius, d = 0.0, 0.0
+    while d <= _RADIUS_MAX + 1e-9:
+        if _damage_to_enemy_target(card_id, _TARGET_ID, d) <= 0:
+            break
+        radius = d
+        d += _RADIUS_STEP
+    return float(radius)
+
+
+@functools.lru_cache(maxsize=512)
 def spell_effect(card_id):
     """(radius, damage) for a damaging area spell, or None.
 
@@ -102,17 +124,10 @@ def spell_effect(card_id):
     damage = _damage_to_enemy_target(card_id, _TANK_ID, 0.0)
     if damage <= 0:
         return None
-    radius = 0.0
-    d = 0.0
-    while d <= _RADIUS_MAX + 1e-9:
-        if _damage_to_enemy_target(card_id, _TARGET_ID, d) > 0:
-            radius = d
-        else:
-            break
-        d += _RADIUS_STEP
+    radius = spell_radius(card_id)
     if radius <= 0.0:
         return None
-    return float(radius), float(damage)
+    return radius, float(damage)
 
 
 @functools.lru_cache(maxsize=512)
@@ -142,16 +157,20 @@ def roller_damage(card_id):
     """Damage a rolling spell (The Log, Barbarian Barrel) deals one body it
     sweeps, or 0.0 for anything else.
 
-    Cast from the bridge row at an enemy P.E.K.K.A. three tiles down the
-    corridor, read at first contact (a roller hits each target once, and a
-    Barbarian Barrel's Barbarian would add damage later).
+    Cast from the furthest row the card may be cast on, at or behind the
+    bridge (The Log reaches the river, a Barbarian Barrel only its own side),
+    at an enemy P.E.K.K.A. three tiles down the corridor. Read at first contact:
+    a roller hits each target once, and a Barbarian Barrel's Barbarian would add
+    damage later.
     """
     info = E.get_card_info(card_id)
     if not info["is_spell"] or spell_effect(card_id) is not None:
         return 0.0
     e = _env()
     x, y = _CX, float(EC.BRIDGE_Y)
-    if not e.is_valid_placement(card_id, x, y, 0):
+    while y > 0.0 and not e.is_valid_placement(card_id, x, y, 0):
+        y -= _ROW_STEP
+    if y <= 0.0:
         return 0.0
     e.inject(_TANK_ID, x, y + 3.0, 1, -1.0, _HOLD_TICKS)
     e.step_self_play(HAND, 0.0, 0.0, HAND, 0.0, 0.0, 1)

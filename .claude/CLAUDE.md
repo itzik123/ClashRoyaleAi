@@ -221,6 +221,73 @@ And the teacher kept a third copy of the geometry the audit had removed from the
 advisor. **When one copy is fixed, grep for the call with its DEFAULTS**
 (`spell_catch_map(obs)` with no radius), not just for the constant's name.
 
+## 2026-09-25: one real deck, card by card (UPSTREAM item 32)
+
+A ladder deck was audited against the live game and fixed on the maintainer's
+sign-off: Evo Furnace, Hero Barbarian Barrel, Evo Bats, Poison, Giant
+Skeleton, Graveyard, Berserker, Goblin Hut. Sources: the official 2026
+balance posts first, then the wiki and DeckShop. **GAMEPLAY-AFFECTING**
+throughout. The observation and action space are unchanged (13977), so
+checkpoints load; their win-rate history does not carry over. Evidence,
+deviations and the before/after table are in `UPSTREAM_REQUESTS.md` item 32.
+`tools/audit/gy_deck_audit.cpp` re-measures all of it. What is true now:
+
+- **A Hero body a spell spawns later is tracked.** This uses
+  `CardStats::abilitySlotCardId` and `GameManager::trackSlotEntities`.
+  Before, Hero Barbarian Barrel's Rowdy Reroll could never be activated, and
+  nothing raised: the silent class the pre-launch audit hunted. A Clone copy
+  drops the slot claim (`CombatEntity::becomeCloneCopy`), so a cloned
+  Champion or Hero still never gets the ability.
+- **Freezes run in slots**, each on its own clock (`CombatEntity::freezeSlots`):
+  - A slow that lands after an ended stun is a slow. It used to be a full
+    stun: `freezeSlow` was only ever `min()`'d.
+  - A 0.5 s stun during a slow is the stun, then the rest of the slow.
+  - A true stun blocks an attack that was already ready. A stunned idle
+    unit used to swing once, and a Freeze on an idle tower let it fire.
+  - `freezeTicks`/`freezeSlow` are now a VIEW. Write through `applyFreeze`.
+  - Poison's slow is a separate movement-only channel (`applyMoveSlow`,
+    `MoveSlowOnHit`).
+- **Multi-hit spells repeat exactly `tickInterval` ticks apart.** They ran one
+  tick late: Poison 1.1 s, Graveyard 0.6 s.
+- **Disc spells hit what their hitbox overlaps** (radius plus target radius),
+  as the rolling spells always did. So `card_probes.spell_effect` now reads
+  Fireball's catch radius as 2.75, where it read 2.5.
+- **A spell can carry its own Crown Tower damage** (item 29's mechanism).
+  Only Poison sets it (21 a pulse). Every other spell still deals 100% to
+  towers, and the wider disc reach makes that gap bigger.
+- **Cards:**
+  - Giant Skeleton: 3126 hp; a fused bomb (3.0 s, radius 3, 886, knockback,
+    `DelayedAreaDamageOnDeath`) that now reaches the tower he dies at.
+  - Furnace: Medium speed. Its Fire Spirits hit once and die, with 2.3
+    splash; they were immortal 207-a-second turrets.
+  - Evo Furnace: the 2.4 s hot spawn runs only while attacking, spawning to
+    alternating sides.
+  - Berserker: Fast, range 0.8, no invented enrage (the mechanism is gone).
+  - Evo Bats: heal 2 x 38 per attack, up to 244.
+  - Graveyard: 12 Skeletons from 2.2 s, cycling seven fixed points (the cast
+    point plus six on a 3.3 ring). Its tower damage now depends on
+    placement: 81 to 810 in 15 s against a defended Princess Tower.
+  - Goblin Hut: 1180 hp; its Spear Goblins hit air and deploy in 0.5 s.
+  - Every Spirit: 215 hp. Fire Spirit: 215 damage.
+  - Barbarians: 716 hp.
+  - Spear Goblins: 1.6 s hit speed.
+  - Barbarian Barrel: 232 damage, cast on its own side only.
+
+**The Python side followed on 2026-09-27** (item 32's "Python suites" note).
+Three fixes cover the eight tests that pinned the old engine:
+- **A body-spawning spell is probed and cast at its measured best cell.**
+  `teacher.spell_attack_offset` tries 25 whole-cell offsets around the enemy
+  Princess Tower. Both the win-condition resolver and the teacher's own cast
+  use it. The tower's own cell is the Graveyard's worst (81 in 30 s), which
+  had left `graveyard_control` with no win condition.
+- **`card_probes.roller_damage` casts from the furthest castable row.**
+- **`tactics.FIREBALL_RADIUS` is measured**, 2.75, via `card_probes.spell_radius`.
+
+**When one probe cell is fixed, check where the PLAYER casts.** The resolver's
+probe and the teacher's `_cells_for` held two copies of "on the tower", and
+fixing only the probe would have named the Graveyard the win condition and
+then cast it at its worst cell.
+
 ## Environment — the things that waste an hour
 
 **`clash_royale_env.pyd` is built for Python 3.11 only.** The default `python`
@@ -267,9 +334,9 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-09-24 after the bridge-mouth orbit fix: **715 test cases, 8,171
-assertions**, 714 pass and **exactly one fails "as expected"** -- (714 / 8,169 on
-2026-09-15, 673 / 6,511 on 2026-08-26)
+Measured 2026-09-25 after UPSTREAM item 32: **730 test cases, 8,343
+assertions**, 729 pass and **exactly one fails "as expected"** -- (715 / 8,171 on
+2026-09-24, 714 / 8,169 on 2026-09-15, 673 / 6,511 on 2026-08-26)
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a
 second failure is a real regression. (It read 650 cases / 6,423 assertions on

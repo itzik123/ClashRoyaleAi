@@ -398,7 +398,7 @@ public:
         if (!def) return false;
         return game.isValidPlacement(team, x, y, def->isSpell,
                                      def->placementRadius, def->deployAnywhere,
-                                     def->rollRange > 0.0f);
+                                     def->rollRange > 0.0f, def->castOwnSideOnly);
     }
 
     std::vector<float> reset() {

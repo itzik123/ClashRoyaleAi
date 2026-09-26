@@ -384,7 +384,8 @@ TEST_CASE("Golem also deals death-explosion damage alongside spawning Golemites 
 }
 
 TEST_CASE("Giant Skeleton, Ice Golem and Balloon deal death-explosion damage", "[card_registry][death]") {
-    SECTION("Giant Skeleton") {
+    SECTION("Giant Skeleton: a bomb dropped where he dies, 886 after a 3.0 s fuse") {
+        // UPSTREAM_REQUESTS.md item 32c; it was an instant, unsourced 300.
         Board board;
         auto enemy = std::make_shared<DummyEntity>(1, 5.0f, 6.0f, 100000, 1);
         spawn(board, enemy);
@@ -393,7 +394,18 @@ TEST_CASE("Giant Skeleton, Ice Golem and Balloon deal death-explosion damage", "
         auto entity = board.getEntities().back();
         entity->takeDamage(entity->hp);
         board.cleanDeadEntities();
-        REQUIRE(enemy->hp == 100000 - 300);
+        board.commitPendingEntities();
+        REQUIRE(enemy->hp == 100000); // nothing on the tick of death
+
+        std::shared_ptr<Entity> bomb;
+        for (const auto& e : board.getEntities())
+            if (e->name == "Giant Skeleton Bomb") bomb = e;
+        REQUIRE(bomb != nullptr);
+        REQUIRE_FALSE(bomb->isTargetable()); // the real bomb cannot be destroyed
+        for (int i = 0; i < 29; ++i) bomb->update(board);
+        REQUIRE(enemy->hp == 100000);
+        bomb->update(board); // its 30th tick: 3.0 s after the death
+        REQUIRE(enemy->hp == 100000 - 886);
     }
 
     SECTION("Ice Golem") {
@@ -865,7 +877,7 @@ TEST_CASE("Battle Ram releases 2 Barbarians on death, reusing the Barbarians car
         auto barbarian = std::dynamic_pointer_cast<MeleeTroop>(e);
         REQUIRE(barbarian != nullptr);
         REQUIRE(barbarian->name == "Barbarians");
-        REQUIRE(barbarian->hp == 691); // matches the standalone Barbarians card's own hp
+        REQUIRE(barbarian->hp == 716); // matches the standalone Barbarians card's own hp (official 4 Aug 2026)
         REQUIRE(barbarian->team == 0);
     }
 }

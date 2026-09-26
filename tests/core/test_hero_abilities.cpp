@@ -577,7 +577,7 @@ TEST_CASE("Hero Barbarian Barrel (174) is registered as isHero, and spawns a Her
     }
     REQUIRE(barbarian != nullptr);
     REQUIRE(barbarian->isHero);
-    REQUIRE(barbarian->hp == 691); // base Barbarian hp (barbarianBarrelBarbarianStats)
+    REQUIRE(barbarian->hp == 716); // base Barbarian hp (barbarianBarrelBarbarianStats; official 4 Aug 2026)
     REQUIRE(barbarian->abilityElixirCost == Catch::Approx(1.0f));
     REQUIRE(barbarian->abilityUsesRemaining == 1);
 }
@@ -784,19 +784,19 @@ TEST_CASE("Hero Goblins' Banner Brigade cannot chain a second reactivation off t
 TEST_CASE("HeroBarbarianBarrelRerollEffect rolls forward, damages enemies in the line, and halves damage against Towers",
         "[hero_barbarian_barrel]") {
     Board board;
-    auto barbarian = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 691, 0, 0.7f, 192, 14); // team 0
+    auto barbarian = std::make_shared<StationaryCombatant>(1, 5.0f, 5.0f, 716, 0, 0.7f, 192, 14); // team 0
     auto enemyTroop = std::make_shared<StationaryCombatant>(2, 5.0f, 7.0f, 1000, 1, 1.0f, 100, 10); // in the roll's path
     auto enemyTower = std::make_shared<Tower>(3, 5.0f, 8.0f, 5000, 1, 7.0f, 90, 10, 'R'); // also in the roll's path
     spawn(board, barbarian);
     spawn(board, enemyTroop);
     spawn(board, enemyTower);
 
-    HeroBarbarianBarrelRerollEffect effect(3.0f, 0.7f, 233);
+    HeroBarbarianBarrelRerollEffect effect(3.0f, 1.3f, 232, 716);
     effect.apply(board, *barbarian);
 
     REQUIRE(barbarian->position.y == Catch::Approx(8.0f)); // 5 + 3, forward toward the enemy half
-    REQUIRE(enemyTroop->hp == 1000 - 233); // full roll damage
-    REQUIRE(enemyTower->hp == 5000 - 116); // 233 / 2 = 116: halved against towers
+    REQUIRE(enemyTroop->hp == 1000 - 232); // full roll damage
+    REQUIRE(enemyTower->hp == 5000 - 116); // 232 / 2 = 116: halved against towers
 }
 
 

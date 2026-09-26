@@ -32,9 +32,12 @@ protected:
         // different epsilons produce an absorbing state at the bridge mouths
         // (tests/core/test_board.cpp).
         if (distToWaypoint > Board::WAYPOINT_ARRIVAL_EPS) {
-            // frozenThisTick, not freezeTicks: update() has already decremented
-            // the counter by now.
-            float currentSpeed = frozenThisTick ? speed * freezeSlow : speed;
+            // The tick-start freeze (frozenThisTick / freezeSlowThisTick), not
+            // freezeTicks: update() has already counted the freezes down by
+            // now. A movement-only slow (Poison) competes with it; the
+            // stronger applies, never both.
+            const float freezeFactor = frozenThisTick ? freezeSlowThisTick : 1.0f;
+            float currentSpeed = speed * std::min(freezeFactor, moveSlowThisTick);
             // Land on the waypoint, never past it: an overshoot along a bank
             // line keeps the unit "below" the river, so it is handed the same
             // bridge mouth back and orbits it forever (UPSTREAM_REQUESTS.md

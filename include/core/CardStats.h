@@ -73,6 +73,11 @@ struct CardStats {
     // Spawn offsets for each unit; a single-unit card is one {0, 0}.
     std::vector<Vector2D> spawnOffsets{ Vector2D{ 0.0f, 0.0f } };
 
+    // Deploy time of each body, DEPLOY_TIME_TICKS unless the card publishes
+    // its own (Goblin Hut's Spear Goblins: 0.5 s since the official August
+    // 2025 notes).
+    int deployTicks = DEPLOY_TIME_TICKS;
+
     // Applied on every landed attack by every unit of the card (e.g. Ice
     // Wizard's slow, Ice Spirit's stun). Not Ice Golem: its slow is on the
     // death explosion (card 40).
@@ -98,6 +103,20 @@ struct CardStats {
     // Positive pushes away, negative pulls toward the centre (Fireball, Rocket,
     // Giant Snowball; Tornado).
     float spellKnockback = 0.0f;
+
+    // Damage ONE application of this spell deals to a Crown Tower (King or
+    // Princess). -1, the default, keeps the troop damage. The real game
+    // publishes this per spell (perception/UPSTREAM_REQUESTS.md item 29); only
+    // Poison sets it so far (item 32).
+    int spellCrownTowerDamage = -1;
+
+    // Castable on the caster's own side only, as a troop is (Barbarian Barrel).
+    // The Log's river allowance is the rolling-spell default; this narrows it.
+    bool spellOwnSideOnly = false;
+
+    // Spell-spawned bodies rise on a ring of this radius around the cast point,
+    // one application per point (Graveyard). 0 spawns at the cast point.
+    float spellSpawnRingRadius = 0.0f;
 
     // --- rolling sweep (The Log, Barbarian Barrel) ---
     // See AreaSpell's rolling-sweep block. spellRollWidth is a FULL width (the
@@ -170,10 +189,6 @@ struct CardStats {
     // Sticky charge (Evolved Battle Ram only).
     bool chargeIsSticky = false;
 
-    // Enrage (Berserker). Set via withEnrage, which reads back `hp`.
-    int enrageMaxHp = 0;
-    int enrageHealPerHit = 0;
-
     // Parry (Ronin).
     int parryIntervalTicks = 0;
 
@@ -196,6 +211,12 @@ struct CardStats {
     // interval.
     std::shared_ptr<IPeriodicEffect> periodicEffect;
     int periodicIntervalTicks = 0;
+    // A faster interval used only while attacking (Evolved Furnace's "Hot
+    // Spawning"). 0 disables it.
+    int periodicHotIntervalTicks = 0;
+    // Each periodic spawn lands this far to one side, alternating left then
+    // right (Evolved Furnace). 0 spawns on the entity itself.
+    float periodicSideOffset = 0.0f;
 
     // Ally auras on landed attacks: Rune Giant's every-Nth-attack buff, Battle
     // Healer's heal. Independent opt-ins.
@@ -270,6 +291,11 @@ struct CardStats {
     std::shared_ptr<IAbilityEffect> abilityEffect;
     // -1 is unlimited.
     int abilityUsesLimit = -1;
+    // The deck card whose Heroic/Wild slot owns this body's ability, when that
+    // is not its own id: Hero Barbarian Barrel's Barbarian (-47) is spawned by
+    // the rolling spell (174) ~17 ticks after the play. 0 means its own id.
+    // GameManager::trackSlotEntities matches on it.
+    int abilitySlotCardId = 0;
     // Lockout before the FIRST use only (Hero Mega Minion: 1.5 s), distinct
     // from the between-uses cooldown.
     int initialAbilityCooldownTicks = 0;
@@ -298,9 +324,12 @@ struct CardStats {
     // An effect on taking damage (some Evolutions, e.g. Barbarians).
     std::shared_ptr<IOnDamageTakenEffect> onDamageTaken;
 
-    // Self-heal on landing a hit (Evolved Bats).
+    // Self-heal on landing a hit (Evolved Bats), up to the absolute
+    // healOnHitMaxHp. A non-zero second-pulse delay heals healOnHitAmount again
+    // that many ticks later (the real heal is two pulses 0.5 s apart).
     int healOnHitAmount = 0;
     int healOnHitMaxHp = 0;
+    int healOnHitSecondPulseDelayTicks = 0;
 
     // Self-spawn on landing a hit (Evolved Skeletons).
     std::shared_ptr<IPeriodicEffect> onHitSpawnEffect;
@@ -317,6 +346,10 @@ struct CardStats {
     // Fluent setters, so a registry entry fits on a line or two.
     CardStats& withOffsets(std::vector<Vector2D> offsets) {
         spawnOffsets = std::move(offsets);
+        return *this;
+    }
+    CardStats& withDeployTime(int ticks) {
+        deployTicks = ticks;
         return *this;
     }
     CardStats& withIgnoresRiver(bool value = true) {
@@ -401,12 +434,6 @@ struct CardStats {
     }
     CardStats& withStickyCharge() {
         chargeIsSticky = true;
-        return *this;
-    }
-    // Reads back `hp`, so chain it after troop(...).
-    CardStats& withEnrage(int healPerHit) {
-        enrageMaxHp = hp;
-        enrageHealPerHit = healPerHit;
         return *this;
     }
     CardStats& withParry(int intervalTicks) {
@@ -505,7 +532,6 @@ struct CardStats {
         initialCooldownTicks = ticks;
         return *this;
     }
-    // Reads back `hp`, like withEnrage.
     CardStats& withHpTransform(float atFraction, int lifetimeTicks, bool becomesStationary) {
         transformAtHpFraction = atFraction;
         transformLifetimeTicks = lifetimeTicks;
@@ -607,9 +633,34 @@ struct CardStats {
         onDamageTaken = std::move(effect);
         return *this;
     }
-    CardStats& withHealOnHit(int amount, int maxHp) {
+    CardStats& withHealOnHit(int amount, int maxHp, int secondPulseDelayTicks = 0) {
         healOnHitAmount = amount;
         healOnHitMaxHp = maxHp;
+        healOnHitSecondPulseDelayTicks = secondPulseDelayTicks;
+        return *this;
+    }
+    CardStats& withAbilitySlotCard(int cardId) {
+        abilitySlotCardId = cardId;
+        return *this;
+    }
+    CardStats& withHotPeriodicInterval(int intervalTicks) {
+        periodicHotIntervalTicks = intervalTicks;
+        return *this;
+    }
+    CardStats& withAlternatingSpawnSide(float offset) {
+        periodicSideOffset = offset;
+        return *this;
+    }
+    CardStats& withCrownTowerDamage(int perApplication) {
+        spellCrownTowerDamage = perApplication;
+        return *this;
+    }
+    CardStats& withOwnSideOnly(bool value = true) {
+        spellOwnSideOnly = value;
+        return *this;
+    }
+    CardStats& withSpellSpawnRing(float radius) {
+        spellSpawnRingRadius = radius;
         return *this;
     }
     CardStats& withOnHitSpawn(std::shared_ptr<IPeriodicEffect> effect) {
