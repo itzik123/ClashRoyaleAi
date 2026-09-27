@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from collections import Counter
 
 import numpy as np
@@ -210,6 +211,18 @@ def validate_scenarios(n=4000):
 
 
 # --- 3. advisor targeting ---
+def value_readout_cards(deck, legal):
+    """The card ids of prove_placement's value oracles this deck can feed.
+
+    The oracles are built around their cards (the id, the Cannon's 300-tick
+    lifetime, the Fireball's 16-tick settle), so a deck without one gets no
+    readout rather than a probe of a card it cannot play. `legal` holds only
+    the cards a target source covers, so a card missing there is skipped too.
+    """
+    return {cid for cid in (tactics.CANNON_ID, tactics.FIREBALL_ID)
+            if cid in deck and cid in legal}
+
+
 def validate_advisor(episodes=40):
     """The advisor target at scale, on states the policy actually visits.
 
@@ -221,6 +234,7 @@ def validate_advisor(episodes=40):
     banner("3. Advisor targeting (engine-scored)")
     net = MicroRoyaleNet(num_ability_slots=0)
     legal = AT.build_legal_table(net)
+    scored = value_readout_cards(DECK, legal)
 
     n_states = spoke = illegal = checked = 0
     quiet_states = quiet_spoke = 0
@@ -259,13 +273,12 @@ def validate_advisor(episodes=40):
                         illegal += 1
 
             # Engine-scored on a subsample: injection is free, so both arms see
-            # one state.
-            if _t % 40 == 0:
-                lc = np.flatnonzero(legal[tactics.CANNON_ID])
-                lf = np.flatnonzero(legal[tactics.FIREBALL_ID])
+            # one state. Cannon before Fireball, so the rng draws for the
+            # shipped deck are unchanged.
+            if _t % 40 == 0 and tactics.CANNON_ID in scored:
                 tc = AT.target_logits_for(obs, tactics.CANNON_ID, legal[tactics.CANNON_ID])
-                tf = AT.target_logits_for(obs, tactics.FIREBALL_ID, legal[tactics.FIREBALL_ID])
                 if tc is not None:
+                    lc = np.flatnonzero(legal[tactics.CANNON_ID])
                     base = prove_placement.cannon_baseline(env)
                     cell = int(np.argmax(tc))
                     adv_c.append(prove_placement.cannon_value(
@@ -273,7 +286,10 @@ def validate_advisor(episodes=40):
                     rc = int(rng.choice(lc))
                     rnd_c.append(prove_placement.cannon_value(
                         env, rc % BOARD_W, rc // BOARD_W, base))
+            if _t % 40 == 0 and tactics.FIREBALL_ID in scored:
+                tf = AT.target_logits_for(obs, tactics.FIREBALL_ID, legal[tactics.FIREBALL_ID])
                 if tf is not None:
+                    lf = np.flatnonzero(legal[tactics.FIREBALL_ID])
                     cell = int(np.argmax(tf))
                     adv_f.append(prove_placement.fireball_value(
                         env, cell % BOARD_W, cell // BOARD_W))
@@ -292,7 +308,7 @@ def validate_advisor(episodes=40):
           f"{checked} targets checked against the engine")
     check("the gate declines on an empty board", quiet_spoke == 0,
           f"{quiet_spoke}/{quiet_states} quiet states produced a target")
-    # Denominator is state x card: three cards are queried per state.
+    # Denominator is state x card: every advisor card is queried per state.
     opportunities = max(1, n_states * len(AT.ADVISOR_CARDS))
     check("the advisor speaks often enough to train on",
           spoke / opportunities > 0.15,
@@ -303,8 +319,14 @@ def validate_advisor(episodes=40):
     # rollout where nobody defends, not the distribution the advisor is used
     # on, and the sample is small. prove_placement.py establishes the
     # advisor-vs-random claim properly.
-    for label, adv, rnd, unit in (("Cannon", adv_c, rnd_c, "HP"),
-                                  ("Fireball", adv_f, rnd_f, "elixir")):
+    for label, cid, adv, rnd, unit in (
+            ("Cannon", tactics.CANNON_ID, adv_c, rnd_c, "HP"),
+            ("Fireball", tactics.FIREBALL_ID, adv_f, rnd_f, "elixir")):
+        if cid not in scored:
+            print(f"  [info ] {label} value readout skipped: not in this deck "
+                  f"(prove_placement's oracles score Cannon and Fireball only)",
+                  flush=True)
+            continue
         if not adv:
             continue
         a, r = np.array(adv), np.array(rnd)
@@ -578,27 +600,42 @@ def validate_cpp():
           f"{where}/ | {time.time() - t0:.0f}s | " + " | ".join(tail))
 
 
-def main():
+def _run_isolated(title, fn, *args):
+    """Run one validator; a crash is recorded as a FAIL and the rest still run.
+
+    On 2026-09-27 a KeyError in check 3 aborted the pre-flight, so the side
+    null, which nothing else replaces, never ran.
+    """
+    try:
+        fn(*args)
+    except Exception as exc:  # recorded as a FAIL below, never swallowed
+        traceback.print_exc()
+        check(f"{title} ran to completion", False, f"{type(exc).__name__}: {exc}")
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--net", default="model_weights_selfplay.pth")
     ap.add_argument("--advisor-episodes", type=int, default=40)
     ap.add_argument("--null-episodes", type=int, default=300)
     ap.add_argument("--quick", action="store_true",
                     help="skip the two slow checks (advisor at scale, side null)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     here = python_ai.PACKAGE_DIR
     torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
     t0 = time.time()
 
-    validate_pfsp()
-    validate_scenarios()
-    validate_spell_anneal()
-    validate_search()
-    validate_cpp()
+    _run_isolated("1. PFSP", validate_pfsp)
+    _run_isolated("2. scenario injection", validate_scenarios)
+    _run_isolated("5. spell-value anneal", validate_spell_anneal)
+    _run_isolated("4. search mechanics", validate_search)
+    _run_isolated("7. C++ suite", validate_cpp)
     if not args.quick:
-        validate_advisor(args.advisor_episodes)
-        validate_side_null(os.path.join(here, args.net), args.null_episodes)
+        _run_isolated("3. advisor targeting", validate_advisor,
+                      args.advisor_episodes)
+        _run_isolated("6. side null", validate_side_null,
+                      os.path.join(here, args.net), args.null_episodes)
 
     banner("SUMMARY")
     failed = [n for n, ok, _ in RESULTS if not ok]
