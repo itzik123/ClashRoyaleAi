@@ -469,3 +469,6 @@ python_ai/archive_*/
 
 # Reflex Lab native build output
 tools/lab/out/
+# Reflex Lab WASM build output (web/lab/engine/build.ps1)
+web/lab/engine/engine.js
+web/lab/engine/engine.wasm

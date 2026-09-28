@@ -288,6 +288,39 @@ probe and the teacher's `_cells_for` held two copies of "on the tower", and
 fixing only the probe would have named the Graveyard the win condition and
 then cast it at its worst cell.
 
+## 2026-09-28: the Reflex Lab, a browser demo for Show HN
+
+`web/lab/` (README there): one attacker, one defender, and a plain-JS
+REINFORCE policy learning where and when to drop the defender, scored by the
+engine. Visitors can play the same five attacks first. Spec and plan:
+`docs/design/specs|plans/2026-09-28-reflex-lab*`. **Not yet run on
+WebAssembly** (Emscripten not installed; `docs/TODO.md` item 0000); tested
+end to end against the native engine through `tools/lab/dev_server.mjs`.
+`include/`, `src/`, `python_ai/` untouched.
+
+- **One engine surface**, `web/lab/engine/lab_engine.h`, over the unchanged
+  headers, compiled natively (`tools/lab/lab_cli.cpp`) and to WASM
+  (`lab_wasm.cpp`). It reproduces `tools/lab/pyd_reference.py`'s 11 `.pyd`
+  cases exactly (`lab_cli ref`). Both bodies keep the real 1 s deploy time;
+  a first probe that dropped the attacker with `deploy_ticks=0` looked like a
+  10-tick engine disagreement and was not.
+- **`getTowerHp` reads -1 for a destroyed tower.** Sum it raw and a destroyed
+  Princess Tower reads as 2,535 lost instead of 2,534. Clamp to 0.
+- **`inject` bypasses placement legality**; `playCard` and the lab do not.
+  (14,8) is inside the Princess Tower's clearance and illegal for a Cannon.
+- **The roster is measured**, never hand-picked: `tools/lab/curate.mjs`
+  builds an exhaustive outcome table per pair (every spawn x cell x delay,
+  up to ~300k rollouts), runs the soak's stall criterion, and gates the
+  learner against the brute-force best. That check found UPSTREAM item 33
+  (a Tombstone on the river corner traps its own Skeletons).
+- **The learner finds real local optima.** Giant vs Cannon: the lane Cannon
+  (50%) versus the centre pull into both towers' range (up to 90%). The page
+  shows the brute-force best as a line, so a plateau reads honestly.
+- **WASM parity should be exact, not approximate**: the gameplay path uses
+  no libm transcendental (only the Graveyard ring, Skeleton King and the
+  observation encoder call sin/cos/exp) and iterates no hash container.
+  `tools/lab/parity.mjs` checks it once the build exists.
+
 ## Environment — the things that waste an hour
 
 **`clash_royale_env.pyd` is built for Python 3.11 only.** The default `python`

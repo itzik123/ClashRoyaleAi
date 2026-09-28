@@ -125,6 +125,7 @@
     $('factNote').textContent = m.entry.pointless
       ? `A ${S.defender.name} can barely touch a ${S.attacker.name}: even the best drop saves almost nothing. An honest result, not a bug.`
       : 'Tower HP lost with no defence, and the share saved by a random drop and by the best drop, found by trying every cell and every delay on the five attacks.';
+    $('matchupSummaryText').textContent = `${S.attacker.name} vs your ${S.defender.name}`;
     $('traySymbol').textContent = S.defender.symbol;
     $('traySymbol').classList.toggle('bldg', S.defender.isBuilding);
     $('trayName').textContent = S.defender.name;
@@ -182,6 +183,18 @@
     startRound(done);
   });
   $('btnSkip').addEventListener('click', goTrain);
+  $('matchupSummary').addEventListener('click', () => {
+    const open = !$('matchupPanel').classList.contains('open');
+    $('matchupPanel').classList.toggle('open', open);
+    $('matchupSummary').setAttribute('aria-expanded', String(open));
+  });
+
+  // On a phone the board is below the controls: bring it into view.
+  function showBoard() {
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      $('boardWrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
 
   function startRound(round) {
     stopPlayback();
@@ -191,6 +204,7 @@
     $('btnSkip').hidden = true;
     setTray('idle');
     banner(null);
+    showBoard();
     countdown(() => {
       S.roundLive = true;
       renderRounds();
@@ -325,7 +339,7 @@
   $('btnTrain').addEventListener('click', () => {
     S.training = !S.training;
     $('btnTrain').textContent = S.training ? 'Pause' : 'Train';
-    if (S.training) { stopPlayback(); banner(null); }
+    if (S.training) { stopPlayback(); banner(null); showBoard(); }
     worker.postMessage({ type: 'train', on: S.training });
   });
   $('btnReset').addEventListener('click', () => {
@@ -338,7 +352,7 @@
     document.querySelectorAll('.seg-btn').forEach(x => x.classList.toggle('active', x === b));
     worker.postMessage({ type: 'speed', speed: b.dataset.speed });
   }));
-  $('btnShow').addEventListener('click', () => worker.postMessage({ type: 'showme' }));
+  $('btnShow').addEventListener('click', () => { showBoard(); worker.postMessage({ type: 'showme' }); });
   $('btnResults').addEventListener('click', () => {
     if (S.training) $('btnTrain').click();
     worker.postMessage({ type: 'compare', attempts: S.attempts });

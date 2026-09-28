@@ -1,0 +1,62 @@
+# Builds the Reflex Lab's WebAssembly engine and publishes web/ (the lab and
+# the replay viewer) to GitHub Pages. Manual only: publishing is a decision,
+# so nothing here runs on push. Enable Pages (Settings -> Pages -> Source:
+# GitHub Actions) before the first run.
+name: Reflex Lab (GitHub Pages)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+
+      - name: Build the WASM engine
+        run: bash web/lab/engine/build.sh
+
+      - name: Build the native engine for the parity check
+        run: |
+          mkdir -p tools/lab/out
+          g++ -std=c++20 -O2 -Iinclude/core -Iinclude/entities -Iinclude/rendering -Iweb/lab/engine \
+            tools/lab/lab_cli.cpp -o tools/lab/out/lab_cli
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: WASM and native must agree exactly
+        run: node tools/lab/parity.mjs --cli tools/lab/out/lab_cli
+
+      - name: Assemble the site (the lab, the viewer; not the 12 MB of dev fixtures)
+        run: |
+          mkdir -p _site
+          cp -r web/lab web/viewer.html web/index.html _site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}lab/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,637 @@
+{
+ "generatedBy": "tools/lab/curate.mjs",
+ "engineCommit": "e6a199d",
+ "budget": 30000,
+ "attackers": [
+  {
+   "id": 15,
+   "name": "Hog Rider",
+   "cost": 4,
+   "hp": 1697,
+   "symbol": "H",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 18,
+   "name": "Royal Giant",
+   "cost": 6,
+   "hp": 3164,
+   "symbol": "Y",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  }
+ ],
+ "defenders": [
+  {
+   "id": 25,
+   "name": "Cannon",
+   "cost": 3,
+   "hp": 824,
+   "symbol": "C",
+   "isFlying": false,
+   "isBuilding": true,
+   "isSpell": false,
+   "placementRadius": 1
+  },
+  {
+   "id": 26,
+   "name": "Tesla",
+   "cost": 4,
+   "hp": 1182,
+   "symbol": "T",
+   "isFlying": false,
+   "isBuilding": true,
+   "isSpell": false,
+   "placementRadius": 1
+  },
+  {
+   "id": 28,
+   "name": "Inferno Tower",
+   "cost": 5,
+   "hp": 1748,
+   "symbol": "I",
+   "isFlying": false,
+   "isBuilding": true,
+   "isSpell": false,
+   "placementRadius": 1
+  },
+  {
+   "id": 27,
+   "name": "Bomb Tower",
+   "cost": 4,
+   "hp": 1356,
+   "symbol": "D",
+   "isFlying": false,
+   "isBuilding": true,
+   "isSpell": false,
+   "placementRadius": 1
+  },
+  {
+   "id": 5,
+   "name": "Mini PEKKA",
+   "cost": 4,
+   "hp": 1390,
+   "symbol": "M",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 0,
+   "name": "Knight",
+   "cost": 3,
+   "hp": 1766,
+   "symbol": "K",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 10,
+   "name": "Valkyrie",
+   "cost": 4,
+   "hp": 1907,
+   "symbol": "V",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 6,
+   "name": "Musketeer",
+   "cost": 4,
+   "hp": 721,
+   "symbol": "U",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 12,
+   "name": "Skeleton Army",
+   "cost": 3,
+   "hp": 81,
+   "symbol": "s",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  }
+ ],
+ "defaultMatchup": "15_25",
+ "matchups": {
+  "15_25": {
+   "attacker": 15,
+   "defender": 25,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4137,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    0.992
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4057,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_26": {
+   "attacker": 15,
+   "defender": 26,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4625,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4532,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_28": {
+   "attacker": 15,
+   "defender": 28,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5164,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.5121,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_27": {
+   "attacker": 15,
+   "defender": 27,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4249,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4232,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_5": {
+   "attacker": 15,
+   "defender": 5,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.38,
+   "triesTo90": [
+    14336,
+    10240,
+    20480
+   ],
+   "finalRatio": [
+    0.906,
+    0.906,
+    0.906
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.3771,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_0": {
+   "attacker": 15,
+   "defender": 0,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.7498,
+   "random": 0.2508,
+   "triesTo90": [
+    8192,
+    12288,
+    10240
+   ],
+   "finalRatio": [
+    0.917,
+    0.927,
+    0.927
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0.7498,
+   "challengeRandom": 0.2508,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_10": {
+   "attacker": 15,
+   "defender": 10,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.7498,
+   "random": 0.2586,
+   "triesTo90": [
+    6144,
+    8192,
+    8192
+   ],
+   "finalRatio": [
+    0.906,
+    0.906,
+    0.906
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0.7498,
+   "challengeRandom": 0.2582,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_6": {
+   "attacker": 15,
+   "defender": 6,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.8827,
+   "random": 0.3548,
+   "triesTo90": [
+    2048,
+    4096,
+    2048
+   ],
+   "finalRatio": [
+    0.92,
+    0.938,
+    0.903
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0.8749,
+   "challengeRandom": 0.3524,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "15_12": {
+   "attacker": 15,
+   "defender": 12,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4274,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.961,
+    0.977,
+    0.953
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4269,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_25": {
+   "attacker": 18,
+   "defender": 25,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.5377,
+   "random": 0.0589,
+   "triesTo90": [
+    2048,
+    4096,
+    2048
+   ],
+   "finalRatio": [
+    0.989,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 0.5532,
+   "challengeRandom": 0.0735,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  }
+ },
+ "dropped": [
+  "defender Tombstone (failed 2 of 3 pairs)",
+  "attacker Giant (failed 3 of 9 pairs)"
+ ]
+}

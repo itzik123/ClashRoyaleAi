@@ -294,15 +294,30 @@ h1 { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; margin: 0; line
   .matchup-panel .panel-title { grid-column: 1 / -1; }
   .facts, .fine#factNote { grid-column: 1 / -1; }
 }
+.matchup-summary { display: none; }
 @media (max-width: 760px) {
   body { font-size: 12px; }
   .top { padding: 12px 16px; }
   .tag { display: none; }
-  .lab { grid-template-columns: 1fr; padding: 12px 16px; gap: 14px; }
-  .matchup-panel { display: block; order: 2; }
+  .lab { grid-template-columns: 1fr; padding: 12px 16px; gap: 12px; }
+  /* Phone order: what to do now, the matchup (one line until tapped), the
+     board, then the curve. The control panel dissolves so its parts can be
+     placed around the board. */
+  .control-panel { display: contents; }
+  .stepper { order: 1; }
+  .stage { order: 2; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; }
+  .matchup-panel { display: block; order: 3; padding: 12px 14px; }
+  .board-col { order: 4; }
+  .chart-box { order: 5; }
+  .matchup-summary {
+    display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px;
+    background: none; border: 0; color: var(--text-primary); font-size: 12px; font-weight: 700; padding: 0; cursor: pointer;
+  }
+  .matchup-summary .chev { color: var(--blue-team); font-size: 11px; font-weight: 600; }
+  .matchup-panel:not(.open) > :not(.matchup-summary) { display: none; }
+  .matchup-panel.open .matchup-summary { margin-bottom: 12px; }
+  .matchup-panel .panel-title { display: none; }
   .matchup-panel .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .board-col { order: 1; }
-  .control-panel { order: 3; }
   .board-wrap { height: auto; aspect-ratio: 20 / 36; min-height: 0; max-height: none; }
   .tray { position: sticky; bottom: 10px; z-index: 5; }
   .intro-card { padding: 22px; }

@@ -29,6 +29,30 @@ Rules that apply to every item below:
 
 ---
 
+## 0000. Reflex Lab (Show HN demo): build the WASM engine and publish
+
+Built 2026-09-28 on `feat/reflex-lab` (`web/lab/`, `tools/lab/`, spec and
+plan in `docs/design/`). Everything runs and is tested against the NATIVE
+engine through `tools/lab/dev_server.mjs`. Two steps are left, both the
+maintainer's:
+
+1. **Install Emscripten and build**: `web/lab/engine/build.ps1`, then
+   `node tools/lab/parity.mjs` must print every try identical (it compares
+   the WASM build against `lab_cli` on every roster matchup). Then
+   `python tools/lab/check_lab_ui.py --url <a static server on web/>/lab/`
+   against the WASM build. Nothing here has run on WebAssembly yet: the
+   download needed a yes that was asked for and not given.
+2. **Publish**: enable Pages (Source: GitHub Actions) and run
+   `.github/workflows/lab-pages.yml` by hand. The README already links
+   `https://itzik123.github.io/ClashRoyaleAi/lab/`, which is dead until then.
+
+Open, not blocking: the learner settles in a local optimum on some seeds
+(Giant vs Cannon: the lane Cannon at 50% instead of the centre pull at up to
+90%); UPSTREAM item 33 (Tombstone trap) keeps the Tombstone out of the
+roster until it is fixed.
+
+---
+
 ## 000. ~~Python follow-ups to UPSTREAM item 32~~ DONE 2026-09-27
 
 The engine half of item 32 left 8 `python_ai` tests pinning the old

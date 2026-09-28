@@ -24,6 +24,22 @@ https://github.com/user-attachments/assets/9508d054-0a50-489f-ba2a-3595480b8a20
 
 ---
 
+## Try it in your browser: Reflex Lab
+
+**[Reflex Lab](https://itzik123.github.io/ClashRoyaleAi/lab/)** is a two-minute
+demo of what this project does, with nothing to install. The C++ engine is
+compiled to WebAssembly and runs in your tab. An enemy troop charges your
+tower and you get one defending card: drop it yourself (where and when both
+count), then watch a small neural network learn the same problem from
+scratch, scored by the engine every try, against your score and the best
+score that was possible, found by trying every cell and every timing.
+
+It is a miniature (one attacker, one defender, no elixir), and it says so.
+The code, the learner (plain JavaScript, no ML library) and how the card
+list was chosen are in [`web/lab/`](web/lab/README.md).
+
+---
+
 ## Why
 
 You can't speed up the real game, and it has no API. Reinforcement learning
