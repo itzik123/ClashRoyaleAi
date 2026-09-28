@@ -838,10 +838,13 @@ private:
             .withTargetsAir().withSightRange(6.0f));
 
         // === Building targeters (expansion) ===
-        // Battle Ram releases 2 Barbarians on death.
+        // Battle Ram: breaks on its first hit on a building and releases its
+        // 2 Barbarians, as the real card does (withDieAfterFirstHit; the hit
+        // is doubled if it charged). It used to keep swinging until killed.
+        // UPSTREAM_REQUESTS.md item 34.
         add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
             .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
-            .withCharge(3.0f, 2.0f));
+            .withCharge(3.0f, 2.0f).withDieAfterFirstHit());
         // Royal Hogs jump the river.
         add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, SPEED_VERY_FAST, 1.0f, 74, 12, '_')
             .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
@@ -1522,10 +1525,13 @@ private:
         // keyed to deck cycling). "Head-First Ram": once the charge connects,
         // every later hit keeps double damage (withStickyCharge). The contact
         // damage and knockback to troops along the way are not modelled.
+        // Until it evolves it is the ordinary Battle Ram and breaks on its
+        // first hit like card 81; the evolved Ram does NOT break, it keeps
+        // swinging until destroyed (UPSTREAM_REQUESTS.md item 34).
         addEvolution(161,
             troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
-                .withCharge(3.0f, 2.0f),
+                .withCharge(3.0f, 2.0f).withDieAfterFirstHit(),
             troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamEvolvedBarbarianStats()))
                 .withCharge(3.0f, 2.0f).withStickyCharge(),

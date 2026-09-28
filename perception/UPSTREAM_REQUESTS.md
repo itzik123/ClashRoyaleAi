@@ -1717,9 +1717,9 @@ not comparable across it.
 
 ## Item 34 — the Battle Ram keeps swinging at a building; the real one breaks on its first hit
 
-**Status: PROPOSED 2026-09-28, NOT changed.** **Class:** card behaviour.
-**GAMEPLAY-AFFECTING** if fixed. Found while adding the Battle Ram to the
-Reflex Lab (`web/lab/`), which ships it as the engine has it.
+**Status: APPLIED 2026-09-28** on the maintainer's go-ahead (see "Applied"
+at the end). **Class:** card behaviour. **GAMEPLAY-AFFECTING.** Found while
+adding the Battle Ram to the Reflex Lab (`web/lab/`).
 
 ### The gap
 
@@ -1766,7 +1766,8 @@ hit and the Barbarians the tick after.
 Not in scope, and deliberately left alone:
 
 - **The Evolution (161)**: its "Head-First Ram" keeps double damage on every
-  later hit, which implies it does not break; not verified.
+  later hit, which implies it does not break (confirmed by the maintainer:
+  the evolved Ram keeps landing hits until it is destroyed).
 - **Stats.** The engine's 691 hp and 192 damage look like Barbarian-scale
   numbers, and the sources above suggest a level-11 Ram closer to ~920 hp and
   ~575 charge damage (the Wiki's level-1 row, 430 / 135 / 270, scaled by the
@@ -1781,3 +1782,39 @@ Ram lifetime earlier, and a building that pulls the Ram takes one hit instead
 of several. Win rates for decks with the Ram are not comparable across it.
 The lab's Battle Ram tables would need rebuilding (`tools/lab/curate.mjs`
 rebuilds whatever is missing: delete `tools/lab/out/tables/81_*`).
+
+### Applied (2026-09-28)
+
+The maintainer asked first whether the Evolution was being confused with the
+base card. It is not, in two ways: the engine registers them as **separate
+cards** (81, the Battle Ram; 161, its Evolution, `addEvolution` in
+`CardRegistry.h`), and card 161 itself plays its **un-evolved form for 2 plays
+and its evolved form for 1**, repeating (`evolutionCycleThreshold = 2`,
+`evolvedUsesGranted = 1`, counted in `PlayerState::playCard`). The lab
+injects card 81, the base Ram (its trace shows the base Barbarians' 716 hp,
+not the evolved 830).
+
+So `withDieAfterFirstHit()` went on card 81 and on card 161's **un-evolved**
+form, which is the ordinary Ram until it evolves. The evolved form is
+unchanged: no break, sticky double damage, swinging until destroyed.
+
+- `lab_cli trace 81 14 20` after the change: the Ram is gone on the tick of
+  its charged hit (t=97, -384) and the Barbarians appear at t=98, nine ticks
+  earlier than before.
+- `tests/core/test_card_registry.cpp`: "Battle Ram breaks on its first hit on
+  a building and releases its 2 Barbarians" (cards 81 and 161's un-evolved
+  form; fails on the old registry, which left the Ram alive) and "Evolved
+  Battle Ram does not break" (the guard that the fix did not reach the
+  Evolution). Suite: **732 cases, 731 pass, 1 expected failure, exit 0**.
+- Python suite against a `.pyd` built from these headers into a scratch
+  directory (post-build copy disabled, so `python_ai/` was not touched):
+  **1010 passed, 2 skipped**. The Battle Ram is still the win condition the
+  resolver names for `three_musketeers_bridge`, `pekka_bridge_spam` and
+  `mega_knight_ram` (`test_teacher_deck_generalisation.py`).
+- The lab's 8 Battle Ram outcome tables were rebuilt; all 8 pairings pass
+  curation.
+- **The `.pyd` was NOT rebuilt into `python_ai/`**: the final run is paused
+  with an 8-deck pool that includes `mega_knight_ram`, which plays a Battle
+  Ram, so rebuilding changes that run's opponent on resume. That is the
+  maintainer's call; until then `python_ai/clash_royale_env.pyd` is behind
+  the headers by exactly this change.

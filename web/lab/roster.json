@@ -1,6 +1,6 @@
 {
  "generatedBy": "tools/lab/curate.mjs",
- "engineCommit": "929640f",
+ "engineCommit": "9617564",
  "budget": 30000,
  "attackers": [
   {
@@ -1067,20 +1067,20 @@
     104
    ],
    "best": 1,
-   "random": 0.4322,
+   "random": 0.4397,
    "triesTo90": [
     2048,
     2048,
     2048
    ],
    "finalRatio": [
-    1,
-    1,
+    0.995,
+    0.981,
     1
    ],
    "gapClosed": [
-    1,
-    1,
+    0.992,
+    0.966,
     1
    ],
    "challenge": [
@@ -1092,7 +1092,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4284,
+   "challengeRandom": 0.4368,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1122,7 +1122,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4447,
+   "random": 0.4551,
    "triesTo90": [
     2048,
     2048,
@@ -1147,7 +1147,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4416,
+   "challengeRandom": 0.4523,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1177,7 +1177,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4697,
+   "random": 0.4761,
    "triesTo90": [
     2048,
     2048,
@@ -1202,7 +1202,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.468,
+   "challengeRandom": 0.4745,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1232,7 +1232,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4095,
+   "random": 0.4236,
    "triesTo90": [
     2048,
     2048,
@@ -1240,12 +1240,12 @@
    ],
    "finalRatio": [
     0.986,
-    0.976,
+    1,
     0.991
    ],
    "gapClosed": [
-    0.976,
-    0.96,
+    0.975,
+    1,
     0.984
    ],
    "challenge": [
@@ -1257,7 +1257,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4052,
+   "challengeRandom": 0.4218,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1287,7 +1287,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4931,
+   "random": 0.4938,
    "triesTo90": [
     2048,
     2048,
@@ -1312,7 +1312,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4876,
+   "challengeRandom": 0.489,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1342,7 +1342,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4556,
+   "random": 0.4569,
    "triesTo90": [
     2048,
     2048,
@@ -1367,7 +1367,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.446,
+   "challengeRandom": 0.4478,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1452,7 +1452,7 @@
     104
    ],
    "best": 1,
-   "random": 0.5456,
+   "random": 0.5455,
    "triesTo90": [
     2048,
     2048,
@@ -1477,7 +1477,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.5415,
+   "challengeRandom": 0.5412,
    "pointless": false,
    "ok": true,
    "reasons": []

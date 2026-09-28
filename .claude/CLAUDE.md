@@ -323,9 +323,13 @@ end to end against the native engine through `tools/lab/dev_server.mjs`.
   still have a unit" must count its in-flight spells, or a barrel rollout
   ends on tick 1 with zero damage and every spawn is dropped. Spell attackers
   are admitted by measurement (cast on an empty board, look for bodies).
-- **UPSTREAM item 34: the engine's Battle Ram never breaks.** It keeps
-  swinging at a building; the real one breaks on its first hit and releases
-  the Barbarians. The fix is one `withDieAfterFirstHit()`; proposed, not made.
+- **UPSTREAM item 34, APPLIED: the Battle Ram breaks on its first hit** on a
+  building and releases its Barbarians (`withDieAfterFirstHit()`), as the
+  real card does; it used to keep swinging. Card 81 and the Evolution's
+  UN-evolved form only: the Evolution is a separate card (161) that plays
+  un-evolved twice, then evolved once, and the evolved Ram really does keep
+  swinging. GAMEPLAY-AFFECTING. **The `.pyd` in `python_ai/` was not
+  rebuilt** (the paused final run's pool includes `mega_knight_ram`).
   `lab_cli trace <card> <x> <y>` prints any attacker's life tick by tick.
 - **WASM parity should be exact, not approximate**: the gameplay path uses
   no libm transcendental (only the Graveyard ring, Skeleton King and the
@@ -378,8 +382,9 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-09-25 after UPSTREAM item 32: **730 test cases, 8,343
-assertions**, 729 pass and **exactly one fails "as expected"** -- (715 / 8,171 on
+Measured 2026-09-28 after UPSTREAM item 34: **732 test cases, 8,355
+assertions**, 731 pass and **exactly one fails "as expected"** -- (730 / 8,343
+on 2026-09-25, 715 / 8,171 on
 2026-09-24, 714 / 8,169 on 2026-09-15, 673 / 6,511 on 2026-08-26)
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open
 collision-wedge defect. The runner exits 0 in that state; a non-zero exit or a

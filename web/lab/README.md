@@ -67,12 +67,12 @@ averaged over its landing spots, and he 80%. Her splash catches the Goblins
 wherever the barrel lands except dead centre on the tower, which pushes them
 too far apart.
 
-**The Battle Ram is the engine's, not quite the real card's.** The real Ram
-breaks on its first hit on a building and releases its Barbarians; the
-engine's keeps swinging until something kills it. Against a tower the two
-nearly coincide (the tower kills it 0.9 s after its charge hit); against a
-defending building they do not. Proposed as
-[`UPSTREAM_REQUESTS.md` item 34](../../perception/UPSTREAM_REQUESTS.md).
+**The Battle Ram breaks on its first hit on a building**, as the real card
+does, and releases its two Barbarians there. Until 2026-09-28 the engine's
+kept swinging until something killed it: found while adding the card here,
+fixed as [`UPSTREAM_REQUESTS.md` item 34](../../perception/UPSTREAM_REQUESTS.md).
+The lab uses the base card; the Evolution, which really does keep swinging,
+is a separate card (161) and is not offered.
 
 ## Run it locally
 

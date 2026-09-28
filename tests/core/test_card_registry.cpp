@@ -882,6 +882,64 @@ TEST_CASE("Battle Ram releases 2 Barbarians on death, reusing the Barbarians car
     }
 }
 
+// The real Battle Ram breaks on its first hit on a building and releases its
+// Barbarians; it used to keep swinging until something killed it. The
+// Evolution's un-evolved form is the same Ram; the EVOLVED Ram does not break.
+// UPSTREAM_REQUESTS.md item 34.
+namespace {
+int countBarbarians(const Board& board) {
+    int n = 0;
+    for (const auto& e : board.getEntities())
+        if (e->isAlive() && e->name == "Barbarians" && e->team == 0) ++n;
+    return n;
+}
+}
+
+TEST_CASE("Battle Ram breaks on its first hit on a building and releases its 2 Barbarians",
+          "[card_registry][kamikaze][death]") {
+    for (int id : { 81, 161 }) {   // the card, and the Evolution's un-evolved form
+        DYNAMIC_SECTION("card " << id) {
+            Board board;
+            CardRegistry::getInstance().getCard(id)->spawnEntity(5.0f, 5.0f, 0, board);
+            board.commitPendingEntities();
+            auto ram = board.getEntities().back();
+            REQUIRE(ram->name == "Battle Ram");
+            auto building = std::make_shared<Building>(999, 5.0f, 5.4f, 5000, 1, 'C', 5.0f, 10, 10);
+            spawn(board, building);
+            advancePastDeploy(ram, board);
+            ram->update(board);
+
+            REQUIRE(building->hp == 5000 - 192);   // one uncharged hit: it never travelled
+            REQUIRE_FALSE(ram->isAlive());
+            board.cleanDeadEntities();
+            board.commitPendingEntities();
+            REQUIRE(countBarbarians(board) == 2);
+        }
+    }
+}
+
+TEST_CASE("Evolved Battle Ram does not break: it keeps swinging at the building",
+          "[card_registry][kamikaze][evolution]") {
+    Board board;
+    const CardDefinition* evo = CardRegistry::getInstance().getCard(161);
+    REQUIRE(evo->isEvolution);
+    evo->spawnEvolvedEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto ram = board.getEntities().back();
+    auto building = std::make_shared<Building>(999, 5.0f, 5.4f, 5000, 1, 'C', 5.0f, 10, 10);
+    spawn(board, building);
+    advancePastDeploy(ram, board);
+
+    int hits = 0, last = building->hp;
+    for (int t = 0; t < 40 && ram->isAlive(); ++t) {
+        ram->update(board);
+        if (building->hp < last) { ++hits; last = building->hp; }
+    }
+    REQUIRE(ram->isAlive());
+    REQUIRE(hits >= 2);
+    REQUIRE(countBarbarians(board) == 0);
+}
+
 TEST_CASE("Inferno Dragon's beam damage ramps up like Inferno Tower's, while flying and air-targeting", "[card_registry][ramp][flying]") {
     Board board;
     auto enemy = std::make_shared<StationaryCombatant>(1, 5.0f, 6.0f, 1000000, 1, 5.0f, 10, 10); // dist 1.0 from (5,5)

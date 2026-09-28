@@ -164,8 +164,9 @@ The maintainer's review of the first build, and what changed:
   troops (measured, not listed: cast it on an empty board and look for
   bodies), aimed at the cells within 2 of either of our Princess Towers. A
   rollout also keeps running while the barrel is in the air. The Battle Ram
-  deviates from the real card (UPSTREAM item 34) and ships as the engine has
-  it, with the deviation documented.
+  deviated from the real card (it never broke on a building); fixed in the
+  engine on the maintainer's go-ahead as UPSTREAM item 34, base card only
+  (the Evolution, a separate card, really does keep swinging).
 - **Defenders: the Knight is cut** (a weaker Valkyrie against every
   attacker; against the barrel 80% vs 99% best), and the Tombstone stays out
   (item 33).

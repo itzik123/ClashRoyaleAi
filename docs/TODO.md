@@ -49,9 +49,11 @@ maintainer's:
 Open, not blocking: the learner settles in a local optimum on some seeds
 (Royal Giant vs Bomb Tower: 75% of the best on two of three seeds; the
 annealed entropy bonus fixed Giant vs Cannon); UPSTREAM item 33 (Tombstone
-trap) keeps the Tombstone out of the roster until it is fixed; UPSTREAM
-item 34 (the Battle Ram never breaks on a building) ships in the lab as the
-engine has it, documented in `web/lab/README.md`.
+trap) keeps the Tombstone out of the roster until it is fixed. UPSTREAM
+item 34 (the Battle Ram now breaks on its first hit on a building) is applied
+in the headers, but `python_ai/clash_royale_env.pyd` was NOT rebuilt: the
+paused final run's pool includes `mega_knight_ram`, so rebuilding changes
+that run's opponent on resume. Rebuild when that is decided.
 
 ---
 
