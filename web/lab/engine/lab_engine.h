@@ -293,6 +293,13 @@ public:
         return true;
     }
 
+    std::string liveStateJson() const {
+        std::ostringstream o;
+        o << "{\"tick\":" << liveTick_ << ",\"done\":" << (liveDone_ ? "true" : "false")
+          << ",\"damage\":" << liveDamage() << ",\"placedTick\":" << livePlacedTick_ << "}";
+        return o.str();
+    }
+
     bool liveDone() const { return liveDone_; }
     int liveTick() const { return liveTick_; }
     int livePlacedTick() const { return livePlacedTick_; }

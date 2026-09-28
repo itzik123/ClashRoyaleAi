@@ -269,9 +269,7 @@ static int serve() {
                 in >> c;
                 std::cout << (e.livePlace(c) ? "true" : "false") << "\n";
             } else if (cmd == "live_state") {
-                std::cout << "{\"tick\":" << e.liveTick() << ",\"done\":" << (e.liveDone() ? "true" : "false")
-                          << ",\"damage\":" << e.liveDamage() << ",\"placedTick\":" << e.livePlacedTick()
-                          << "}\n";
+                std::cout << e.liveStateJson() << "\n";
             } else {
                 std::cout << "error unknown command " << cmd << "\n";
             }

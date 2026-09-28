@@ -77,7 +77,10 @@
     basisStep: 2,      // placement basis: one bump every 2 cells...
     basisSigma: 1.1,   // ...this wide, in cells
     lr: 0.01,          // Adam step size
-    entropy: 0.01,     // entropy bonus, as a fraction of each head's maximum
+    entropy: 0.01,     // entropy bonus, as a fraction of each head's maximum...
+    entropyEnd: null,  // ...annealed linearly to this (null: held constant)...
+    entropyTries: 0,   // ...over this many tries
+    normalize: false,  // scale advantages by their running RMS
     seed: 1,
     float64: false,
   };
@@ -232,7 +235,8 @@
       const P = this.params, H = this.H, K = this.K, C = this.C, D = this.D, I = this.I, U = H + K;
       const g = {};
       for (const k in P) g[k] = new this.F(P[k].length);
-      const betaC = this.opts.entropy / Math.log(C), betaD = this.opts.entropy / Math.log(D);
+      const ent = this.entropyNow();
+      const betaC = ent / Math.log(C), betaD = ent / Math.log(D);
       let loss = 0, entC = 0, entD = 0;
       const n = batch.length;
 
@@ -288,6 +292,14 @@
       return { loss, grads: g, entropyCell: entC, entropyDelay: entD };
     }
 
+    // The entropy bonus now: explore hard at first, commit later.
+    entropyNow() {
+      const o = this.opts;
+      if (o.entropyEnd == null || !o.entropyTries) return o.entropy;
+      const t = Math.min(1, this.tries / o.entropyTries);
+      return o.entropy + (o.entropyEnd - o.entropy) * t;
+    }
+
     // One learning step from tries and the rewards the engine gave them.
     update(batch, rewards) {
       const adv = new this.F(batch.length);
@@ -300,6 +312,15 @@
         this.baseline[s] += alpha * (rewards[b] - this.baseline[s]);
         this.seen[s]++;
         mean += rewards[b] / batch.length;
+      }
+      if (this.opts.normalize) {
+        // Divide by the advantages' running RMS, so the step size does not
+        // depend on how much reward a matchup has to give.
+        let sq = 0;
+        for (let b = 0; b < adv.length; b++) sq += adv[b] * adv[b];
+        this.advMs = this.advMs == null ? sq / adv.length : 0.95 * this.advMs + 0.05 * sq / adv.length;
+        const rms = Math.max(Math.sqrt(this.advMs), 0.02);
+        for (let b = 0; b < adv.length; b++) adv[b] /= rms;
       }
       const { loss, grads, entropyCell, entropyDelay } = this.lossAndGrad(batch, adv);
       this.applyAdam(grads);
