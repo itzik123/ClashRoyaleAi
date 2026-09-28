@@ -256,7 +256,7 @@ const SightRow SIGHT_CATALOG[] = {
         {  78, "Bats", 5.5f },
         {  79, "Zappies", 5.0f },
         {  80, "Three Musketeers", 6.0f },
-        {  81, "Battle Ram", 5.5f },
+        {  81, "Battle Ram", 6.5f },   // official September 2026 notes: 5.5 -> 6.5
         {  82, "Royal Hogs", 9.5f },
         {  83, "Wall Breakers", 7.0f },
         {  84, "Electro Giant", 5.5f },
@@ -320,7 +320,7 @@ const SightRow SIGHT_CATALOG[] = {
         { 157, "Executioner", 5.5f },
         { 159, "Goblin Giant", 7.5f },
         { 160, "Mega Knight", 5.5f },
-        { 161, "Battle Ram", 5.5f },
+        { 161, "Battle Ram", 6.5f },
         { 162, "Royal Hogs", 9.5f },
         { 163, "Inferno Dragon", 5.5f },
         { 165, "Spirit Empress", 5.5f },

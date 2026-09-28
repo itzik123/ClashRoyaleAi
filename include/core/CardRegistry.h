@@ -483,10 +483,11 @@ private:
 
         add(troop(13, "P.E.K.K.A.", 7.0f, Archetype::MeleeSquad, 3760, SPEED_SLOW, 1.2f, 842, 18, 'E').withSightRange(5.0f));
 
-        // Prince jumps the river (withIgnoresRiver). The charge constants are
-        // not sourced.
+        // Prince jumps the river (withIgnoresRiver). The charge distance and
+        // damage are not sourced; the charge speed is (2x, the game files'
+        // charge_speed_multiplier 200; UPSTREAM_REQUESTS.md item 35).
         add(troop(14, "Prince", 5.0f, Archetype::MeleeSquad, 1920, SPEED_MEDIUM, 1.6f, 391, 14, 'p')
-            .withCharge(3.0f, 2.0f)
+            .withCharge(3.0f, 2.0f).withChargeSpeed(2.0f)
             .withIgnoresRiver());
 
         add(troop(17, "Elite Barbarians", 6.0f, Archetype::MeleeSquad, 1341, SPEED_FAST, 1.2f, 384, 14, 'e')
@@ -611,7 +612,17 @@ private:
         // withSightRange(6.0f) is not redundant with the 5.5 default: with
         // attackRange 6.0, the default would let it attack what it cannot see.
         // Pinned by test_sight_range.cpp.
-        add(building(27, "Bomb Tower", 4.0f, 1356, 'D', 6.0f, 222, 18).withSightRange(6.0f));
+        // Its bombs splash (1.5 tiles: the game files' BombTowerProjectile
+        // radius 1500), and when it is destroyed it drops a bomb that explodes
+        // 3.0 s later (fuse 29: see DelayedAreaDamageOnDeath) in 3 tiles for
+        // its own damage (BombTowerBomb: death_damage 105 at level 1, radius
+        // 3000, deploy 3000 ms). It had neither: a single-target tower. Both
+        // stay on the ground, as the tower does: the splash follows its
+        // targetsAir, the bomb is groundOnly. UPSTREAM_REQUESTS.md item 35.
+        add(building(27, "Bomb Tower", 4.0f, 1356, 'D', 6.0f, 222, 18).withSightRange(6.0f)
+            .withSplash(1.5f)
+            .withDeathEffect(std::make_shared<DelayedAreaDamageOnDeath>(3.0f, 222, 29, 0.0f, 27, "Bomb Tower Bomb",
+                                                                        /*groundOnly=*/true)));
         // Inferno Tower: 5% of max damage for the first 2 s, 18.75% for the
         // next 2 s, then full, reset by a target switch or a stun. `damage` is
         // the fully ramped max; getCurrentDamage() scales it.
@@ -660,6 +671,7 @@ private:
         add(troop(46, "Dark Prince", 4.0f, Archetype::MeleeSquad, 1200, SPEED_MEDIUM, 1.2f, 266, 14, 'N')
             .withShield(240) // sourced
             .withCharge(3.0f, 2.0f) // +100% on a charging hit
+            .withChargeSpeed(2.0f)  // and runs at 2x (item 35)
             .withIgnoresRiver());
         // Royal Ghost jumps the river.
         add(troop(47, "Royal Ghost", 3.0f, Archetype::MeleeSquad, 1210, SPEED_FAST, 1.2f, 261, 18, 'Q')
@@ -841,10 +853,15 @@ private:
         // Battle Ram: breaks on its first hit on a building and releases its
         // 2 Barbarians, as the real card does (withDieAfterFirstHit; the hit
         // is doubled if it charged). It used to keep swinging until killed.
-        // UPSTREAM_REQUESTS.md item 34.
-        add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
+        // UPSTREAM_REQUESTS.md item 34. Level 11: 967 hp, 286 damage (572 on
+        // a charge; the game's is 573 since a March 2025 rounding change),
+        // 0.5-tile reach, a 2x-speed charge, 6.5 sight (official September
+        // 2026 notes: 5.5 -> 6.5). It had 691 / 192 / 1.0 reach / no charge
+        // speed / 5.5 sight. Item 35. The Barbarians keep their 1 s deploy:
+        // the game files' death_spawn_deploy_time is 1000 ms.
+        add(troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 967, SPEED_MEDIUM, 0.5f, 286, 14, '^')
             .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
-            .withCharge(3.0f, 2.0f).withDieAfterFirstHit());
+            .withCharge(3.0f, 2.0f).withChargeSpeed(2.0f).withDieAfterFirstHit().withSightRange(6.5f));
         // Royal Hogs jump the river.
         add(troop(82, "Royal Hogs", 5.0f, Archetype::MeleeBuildingTargeter, 837, SPEED_VERY_FAST, 1.0f, 74, 12, '_')
             .withOffsets({ {-1.0f, -0.3f}, {-0.3f, 0.3f}, {0.3f, -0.3f}, {1.0f, 0.3f} })
@@ -864,7 +881,7 @@ private:
             .withAllyBuffAura(3.0f, 3, 1.5f, 50, 2));
         // Ram Rider jumps the river.
         add(troop(87, "Ram Rider", 5.0f, Archetype::MeleeBuildingTargeter, 1766, SPEED_MEDIUM, 1.0f, 250, 17, '"')
-            .withCharge(3.0f, 2.0f)
+            .withCharge(3.0f, 2.0f).withChargeSpeed(2.0f) // the ram charges at 2x (item 35)
             .withSecondaryUnit(ramRiderCrossbowStats()) // the rider's independently targeting crossbow (default 5.5 sight)
             .withSightRange(7.5f) // the ram itself
             .withIgnoresRiver());
@@ -1528,13 +1545,14 @@ private:
         // Until it evolves it is the ordinary Battle Ram and breaks on its
         // first hit like card 81; the evolved Ram does NOT break, it keeps
         // swinging until destroyed (UPSTREAM_REQUESTS.md item 34).
+        // Both forms carry the base card's stats (item 35).
         addEvolution(161,
-            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 967, SPEED_MEDIUM, 0.5f, 286, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamBarbarianStats()))
-                .withCharge(3.0f, 2.0f).withDieAfterFirstHit(),
-            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 691, SPEED_MEDIUM, 1.0f, 192, 14, '^')
+                .withCharge(3.0f, 2.0f).withChargeSpeed(2.0f).withDieAfterFirstHit().withSightRange(6.5f),
+            troop(81, "Battle Ram", 4.0f, Archetype::MeleeBuildingTargeter, 967, SPEED_MEDIUM, 0.5f, 286, 14, '^')
                 .withDeathEffect(std::make_shared<SpawnOnDeath>(battleRamEvolvedBarbarianStats()))
-                .withCharge(3.0f, 2.0f).withStickyCharge(),
+                .withCharge(3.0f, 2.0f).withChargeSpeed(2.0f).withStickyCharge().withSightRange(6.5f),
             2, 1);
 
         // Royal Hogs: identical stats. "Hog Flight" (spawn flying, then fall

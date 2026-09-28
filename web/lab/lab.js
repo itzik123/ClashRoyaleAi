@@ -128,10 +128,12 @@
     document.querySelectorAll('.tile').forEach(t => {
       const isAtk = t.classList.contains('atk'), id = Number(t.dataset.id);
       t.setAttribute('aria-checked', String(id === (isAtk ? a : d)));
-      // Only pairings the curation suite measured are offered.
+      // Only pairings the curation suite passed are offered; a withheld one
+      // says why (roster.withheld).
       const ok = isAtk ? true : hasPair(a, id);
       t.setAttribute('aria-disabled', String(!ok));
-      t.title = ok ? '' : `Not measured against the ${S.attacker.name}`;
+      const why = (S.roster.withheld || {})[`${a}_${id}`];
+      t.title = ok ? '' : (why || `Not measured against the ${S.attacker.name}`);
     });
     worker.postMessage({ type: 'matchup', key: `${a}_${d}` });
   }

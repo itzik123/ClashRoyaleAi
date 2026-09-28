@@ -38,6 +38,8 @@ protected:
             // stronger applies, never both.
             const float freezeFactor = frozenThisTick ? freezeSlowThisTick : 1.0f;
             float currentSpeed = speed * std::min(freezeFactor, moveSlowThisTick);
+            // A charge runs faster (Prince, Battle Ram...: 2x in the game).
+            if (isCharging()) currentSpeed *= chargeSpeedMultiplier;
             // Land on the waypoint, never past it: an overshoot along a bank
             // line keeps the unit "below" the river, so it is handed the same
             // bridge mouth back and orbits it forever (UPSTREAM_REQUESTS.md

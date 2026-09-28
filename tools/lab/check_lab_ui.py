@@ -168,10 +168,21 @@ def matchup_checks(b, url):
     open_lab(b, url)
     js(b, "document.getElementById('btnStart').click(); __lab.stopDemo(); return true;")
     roster = js(b, "const r = __lab.state.roster; return {a: r.attackers.map(c => c.id), d: r.defenders.map(c => c.id),"
-                   " keys: Object.keys(r.matchups)};")
-    ok, bad = 0, []
+                   " keys: Object.keys(r.matchups), withheld: Object.keys(r.withheld || {})};")
+    ok, bad, withheld = 0, [], 0
     for a in roster["a"]:
         for d in roster["d"]:
+            if f"{a}_{d}" in roster["withheld"]:
+                # A withheld pair must be greyed out, with its reason.
+                js(b, f"document.querySelector('.tile.atk[data-id=\"{a}\"]').click(); return true;")
+                wait(b, f"__lab.state.matchup && __lab.state.matchup.attacker === {a}", timeout=20,
+                     what=f"attacker {a} to load")
+                tile = js(b, f"const t = document.querySelector('.tile.def[data-id=\"{d}\"]');"
+                             "return {dis: t.getAttribute('aria-disabled'), title: t.title};")
+                if tile["dis"] != "true" or "not offered" not in tile["title"]:
+                    bad.append(f"{a}_{d} is withheld but its tile is not greyed out with a reason ({tile})")
+                withheld += 1
+                continue
             if f"{a}_{d}" not in roster["keys"]:
                 bad.append(f"{a}_{d} missing from the roster")
                 continue
@@ -184,7 +195,7 @@ def matchup_checks(b, url):
             ok += 1
     errs = js(b, "return window.__labErrors || [];")
     extra = ("; " + "; ".join(bad[:5]) if bad else "") + ("; errors " + str(errs[:3]) if errs else "")
-    check(not bad and not errs, f"all {ok} offered matchups load "
+    check(not bad and not errs, f"all {ok} offered matchups load, {withheld} withheld and greyed out "
                                 f"({len(roster['a'])} attackers x {len(roster['d'])} defenders){extra}")
 
 

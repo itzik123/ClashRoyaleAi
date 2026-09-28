@@ -1,6 +1,6 @@
 {
  "generatedBy": "tools/lab/curate.mjs",
- "engineCommit": "9617564",
+ "engineCommit": "0186365",
  "budget": 30000,
  "attackers": [
   {
@@ -29,7 +29,7 @@
    "id": 81,
    "name": "Battle Ram",
    "cost": 4,
-   "hp": 691,
+   "hp": 967,
    "symbol": "^",
    "isFlying": false,
    "isBuilding": false,
@@ -352,20 +352,20 @@
     104
    ],
    "best": 1,
-   "random": 0.4249,
+   "random": 0.4256,
    "triesTo90": [
     2048,
     2048,
     2048
    ],
    "finalRatio": [
-    0.984,
-    0.992,
+    1,
+    1,
     1
    ],
    "gapClosed": [
-    0.973,
-    0.986,
+    1,
+    1,
     1
    ],
    "challenge": [
@@ -377,7 +377,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4232,
+   "challengeRandom": 0.4235,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -792,7 +792,7 @@
     104
    ],
    "best": 0.4069,
-   "random": 0.0648,
+   "random": 0.0651,
    "triesTo90": [
     null,
     null,
@@ -817,7 +817,7 @@
    ],
    "challengeD0": 2779.6,
    "challengeBest": 0.4657,
-   "challengeRandom": 0.0824,
+   "challengeRandom": 0.0836,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1066,22 +1066,22 @@
     97,
     104
    ],
-   "best": 1,
-   "random": 0.4397,
+   "best": 0.9479,
+   "random": 0.2699,
    "triesTo90": [
     2048,
-    2048,
-    2048
+    4096,
+    4096
    ],
    "finalRatio": [
-    0.995,
-    0.981,
-    1
+    0.91,
+    0.925,
+    0.915
    ],
    "gapClosed": [
-    0.992,
-    0.966,
-    1
+    0.874,
+    0.895,
+    0.881
    ],
    "challenge": [
     3,
@@ -1091,8 +1091,8 @@
     14
    ],
    "challengeD0": 2534,
-   "challengeBest": 1,
-   "challengeRandom": 0.4368,
+   "challengeBest": 0.9242,
+   "challengeRandom": 0.2663,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1122,21 +1122,21 @@
     104
    ],
    "best": 1,
-   "random": 0.4551,
+   "random": 0.3064,
    "triesTo90": [
     2048,
-    2048,
-    2048
+    4096,
+    4096
    ],
    "finalRatio": [
-    1,
-    1,
-    1
+    0.938,
+    0.953,
+    0.943
    ],
    "gapClosed": [
-    1,
-    1,
-    1
+    0.911,
+    0.932,
+    0.918
    ],
    "challenge": [
     3,
@@ -1147,7 +1147,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4523,
+   "challengeRandom": 0.3047,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1177,7 +1177,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4761,
+   "random": 0.3937,
    "triesTo90": [
     2048,
     2048,
@@ -1202,7 +1202,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4745,
+   "challengeRandom": 0.3885,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1232,21 +1232,21 @@
     104
    ],
    "best": 1,
-   "random": 0.4236,
+   "random": 0.3844,
    "triesTo90": [
     2048,
     2048,
     2048
    ],
    "finalRatio": [
-    0.986,
-    1,
-    0.991
+    0.938,
+    0.962,
+    0.943
    ],
    "gapClosed": [
-    0.975,
-    1,
-    0.984
+    0.9,
+    0.938,
+    0.908
    ],
    "challenge": [
     3,
@@ -1257,7 +1257,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4218,
+   "challengeRandom": 0.3827,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1287,7 +1287,7 @@
     104
    ],
    "best": 1,
-   "random": 0.4938,
+   "random": 0.4363,
    "triesTo90": [
     2048,
     2048,
@@ -1312,62 +1312,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.489,
-   "pointless": false,
-   "ok": true,
-   "reasons": []
-  },
-  "81_10": {
-   "attacker": 81,
-   "defender": 10,
-   "spawns": 108,
-   "cells": 242,
-   "d0Mean": 2534,
-   "evalSpawns": [
-    3,
-    10,
-    16,
-    23,
-    30,
-    37,
-    43,
-    50,
-    57,
-    64,
-    70,
-    77,
-    84,
-    91,
-    97,
-    104
-   ],
-   "best": 1,
-   "random": 0.4569,
-   "triesTo90": [
-    2048,
-    2048,
-    2048
-   ],
-   "finalRatio": [
-    1,
-    1,
-    1
-   ],
-   "gapClosed": [
-    1,
-    1,
-    1
-   ],
-   "challenge": [
-    3,
-    104,
-    44,
-    93,
-    14
-   ],
-   "challengeD0": 2534,
-   "challengeBest": 1,
-   "challengeRandom": 0.4478,
+   "challengeRandom": 0.4305,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1397,21 +1342,21 @@
     104
    ],
    "best": 1,
-   "random": 0.4506,
+   "random": 0.2245,
    "triesTo90": [
     2048,
-    2048,
-    2048
+    4096,
+    4096
    ],
    "finalRatio": [
-    1,
-    0.995,
-    1
+    0.901,
+    0.924,
+    0.934
    ],
    "gapClosed": [
-    1,
-    0.991,
-    1
+    0.872,
+    0.902,
+    0.915
    ],
    "challenge": [
     3,
@@ -1422,7 +1367,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.4442,
+   "challengeRandom": 0.2301,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1452,7 +1397,7 @@
     104
    ],
    "best": 1,
-   "random": 0.5455,
+   "random": 0.4394,
    "triesTo90": [
     2048,
     2048,
@@ -1477,7 +1422,7 @@
    ],
    "challengeD0": 2534,
    "challengeBest": 1,
-   "challengeRandom": 0.5412,
+   "challengeRandom": 0.4352,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -1671,22 +1616,22 @@
     45,
     48
    ],
-   "best": 0.7495,
-   "random": 0.1387,
+   "best": 1,
+   "random": 0.2043,
    "triesTo90": [
     2048,
     2048,
     2048
    ],
    "finalRatio": [
-    0.958,
-    0.933,
-    0.918
+    0.987,
+    0.987,
+    0.987
    ],
    "gapClosed": [
-    0.949,
-    0.918,
-    0.9
+    0.984,
+    0.984,
+    0.984
    ],
    "challenge": [
     2,
@@ -1696,8 +1641,8 @@
     7
    ],
    "challengeD0": 1128,
-   "challengeBest": 0.7673,
-   "challengeRandom": 0.1656,
+   "challengeBest": 1,
+   "challengeRandom": 0.2222,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -2111,22 +2056,22 @@
     97,
     104
    ],
-   "best": 0.5235,
-   "random": 0.1115,
+   "best": 0.5422,
+   "random": 0.1234,
    "triesTo90": [
-    2048,
     4096,
-    4096
+    6144,
+    6144
    ],
    "finalRatio": [
-    0.903,
-    0.964,
-    0.927
+    0.919,
+    0.942,
+    0.919
    ],
    "gapClosed": [
-    0.877,
-    0.955,
-    0.907
+    0.896,
+    0.925,
+    0.896
    ],
    "challenge": [
     3,
@@ -2137,7 +2082,7 @@
    ],
    "challengeD0": 2531.6,
    "challengeBest": 0.5803,
-   "challengeRandom": 0.1118,
+   "challengeRandom": 0.1197,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -2803,8 +2748,12 @@
    "reasons": []
   }
  },
+ "withheld": {
+  "81_10": "The network settles for 55% of the best answer in this pairing, so it is not offered."
+ },
  "dropped": [
   "attacker Prince (passed; over the limit of 6)",
-  "attacker Ram Rider (passed; over the limit of 6)"
+  "attacker Ram Rider (passed; over the limit of 6)",
+  "pair Battle Ram vs Valkyrie (learner: final 55%/55%/55% of best, 42%/42%/42% of the gap closed)"
  ]
 }

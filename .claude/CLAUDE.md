@@ -328,9 +328,18 @@ end to end against the native engine through `tools/lab/dev_server.mjs`.
   real card does; it used to keep swinging. Card 81 and the Evolution's
   UN-evolved form only: the Evolution is a separate card (161) that plays
   un-evolved twice, then evolved once, and the evolved Ram really does keep
-  swinging. GAMEPLAY-AFFECTING. **The `.pyd` in `python_ai/` was not
-  rebuilt** (the paused final run's pool includes `mega_knight_ram`).
+  swinging. GAMEPLAY-AFFECTING.
   `lab_cli trace <card> <x> <y>` prints any attacker's life tick by tick.
+- **UPSTREAM item 35, APPLIED: the lab's cards against the game files.**
+  A charge now also doubles speed (`withChargeSpeed`, Prince / Dark Prince /
+  Battle Ram / Ram Rider, from `charge_speed_multiplier` 200); Battle Ram
+  967 hp, 286 damage, 0.5 reach, 6.5 sight; Bomb Tower splash (1.5) and its
+  3 s death bomb (222 in 3 tiles). The Ram's Barbarians KEEP their 1 s deploy
+  (`death_spawn_deploy_time` 1000). The `.pyd` was rebuilt with items 34 and
+  35 on the maintainer's go-ahead, so the paused final run's
+  `mega_knight_ram` opponent plays the corrected Ram on resume. The source
+  for card data: RoyaleAPI's `cr-api-data` (game-file extracts, 2023; its
+  `*_per_level` tables hold exact level-11 values) plus later balance notes.
 - **WASM parity should be exact, not approximate**: the gameplay path uses
   no libm transcendental (only the Graveyard ring, Skeleton King and the
   observation encoder call sin/cos/exp) and iterates no hash container.
@@ -382,8 +391,8 @@ The C++ test suite builds from the same generated solution and runs directly:
 ./build_python/Release/ClashRoyaleTests.exe
 ```
 
-Measured 2026-09-28 after UPSTREAM item 34: **732 test cases, 8,355
-assertions**, 731 pass and **exactly one fails "as expected"** -- (730 / 8,343
+Measured 2026-09-28 after UPSTREAM items 34-35: **734 test cases, 8,369
+assertions**, 733 pass and **exactly one fails "as expected"** -- (730 / 8,343
 on 2026-09-25, 715 / 8,171 on
 2026-09-24, 714 / 8,169 on 2026-09-15, 673 / 6,511 on 2026-08-26)
 `test_navigation_wedge.cpp`'s `[!shouldfail]` case, which pins the open

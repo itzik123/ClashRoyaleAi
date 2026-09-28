@@ -186,6 +186,11 @@ struct CardStats {
     // sourced data.
     float chargeThreshold = 0.0f;
     float chargeMultiplier = 1.0f;
+    // Movement speed while charging, as a multiple of the base speed. The
+    // game files give 2x (charge_speed_multiplier 200: Medium runs at Very
+    // Fast) to the Prince, Dark Prince, Battle Ram and Ram Rider's ram; 1 is
+    // no change. UPSTREAM_REQUESTS.md item 35.
+    float chargeSpeedMultiplier = 1.0f;
     // Sticky charge (Evolved Battle Ram only).
     bool chargeIsSticky = false;
 
@@ -430,6 +435,10 @@ struct CardStats {
     CardStats& withCharge(float threshold, float multiplier) {
         chargeThreshold = threshold;
         chargeMultiplier = multiplier;
+        return *this;
+    }
+    CardStats& withChargeSpeed(float multiplier) {
+        chargeSpeedMultiplier = multiplier;
         return *this;
     }
     CardStats& withStickyCharge() {

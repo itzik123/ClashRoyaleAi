@@ -66,6 +66,7 @@ protected:
         board.statsEvents.notifyDamageDealt(
             { id, team, cardId, target->id, target->cardId, target->team, dealt, board.currentTick, target->isTower() });
         applyOnHitEffects(target);
-        applySplashDamage(board, target->position, splashRadius, target->id, id, team, cardId, dealt);
+        // A ground-only building's splash stays on the ground (Bomb Tower).
+        applySplashDamage(board, target->position, splashRadius, target->id, id, team, cardId, dealt, targetsAir);
     }
 };

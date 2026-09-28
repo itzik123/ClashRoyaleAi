@@ -42,6 +42,7 @@ inline void applyCardMetadata(const std::shared_ptr<CombatEntity>& entity, const
     entity->shieldHp = stats.shieldHp;
     entity->chargeThreshold = stats.chargeThreshold;
     entity->chargeMultiplier = stats.chargeMultiplier;
+    entity->chargeSpeedMultiplier = stats.chargeSpeedMultiplier;
     entity->chargeIsSticky = stats.chargeIsSticky;
     entity->parryIntervalTicks = stats.parryIntervalTicks;
     entity->hookRange = stats.hookRange;

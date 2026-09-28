@@ -909,12 +909,96 @@ TEST_CASE("Battle Ram breaks on its first hit on a building and releases its 2 B
             advancePastDeploy(ram, board);
             ram->update(board);
 
-            REQUIRE(building->hp == 5000 - 192);   // one uncharged hit: it never travelled
+            REQUIRE(building->hp == 5000 - 286);   // one uncharged hit: it never travelled
             REQUIRE_FALSE(ram->isAlive());
             board.cleanDeadEntities();
             board.commitPendingEntities();
             REQUIRE(countBarbarians(board) == 2);
         }
+    }
+}
+
+// A charge doubles the damage AND the speed: the game files give the Prince,
+// Dark Prince, Battle Ram and Ram Rider's ram charge_speed_multiplier 200.
+// UPSTREAM_REQUESTS.md item 35.
+TEST_CASE("A charging Battle Ram runs at twice its speed and hits for double",
+          "[card_registry][charge]") {
+    Board board;
+    CardRegistry::getInstance().getCard(81)->spawnEntity(5.0f, 5.0f, 0, board);
+    board.commitPendingEntities();
+    auto ram = std::dynamic_pointer_cast<Troop>(board.getEntities().back());
+    REQUIRE(ram != nullptr);
+    // 6 tiles away, inside the Ram's 6.5 sight: 3 tiles walking, then a charge.
+    auto building = std::make_shared<Building>(999, 5.0f, 11.0f, 5000, 1, 'C', 0.1f, 1, 1000, 100000);
+    spawn(board, building);
+    advancePastDeploy(ram, board);
+
+    float walkStep = 0.0f, chargeStep = 0.0f;
+    for (int t = 0; t < 200 && ram->isAlive(); ++t) {
+        const Vector2D before = ram->position;
+        const bool charging = ram->isCharging();
+        ram->update(board);
+        const float step = before.distanceTo(ram->position);
+        if (step <= 0.0f) continue;
+        if (charging) chargeStep = std::max(chargeStep, step);
+        else walkStep = std::max(walkStep, step);
+    }
+    REQUIRE(walkStep > 0.0f);
+    REQUIRE(chargeStep == Catch::Approx(2.0f * walkStep).epsilon(0.01));
+    REQUIRE(building->hp == 5000 - 572);   // the charged hit, then it breaks
+    REQUIRE_FALSE(ram->isAlive());
+}
+
+// The Bomb Tower's bombs splash, and it drops a fused bomb when destroyed (the
+// game files: BombTowerProjectile radius 1.5, BombTowerBomb 3 tiles after
+// 3 s). It was a single-target tower with no death bomb. Item 35.
+TEST_CASE("Bomb Tower splashes, and drops a 3-second bomb when destroyed", "[card_registry][splash][death]") {
+    SECTION("its bomb catches a troop next to the target, not one farther off") {
+        Board board;
+        CardRegistry::getInstance().getCard(27)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto tower = board.getEntities().back();
+        auto target = std::make_shared<DummyEntity>(101, 5.0f, 8.0f, 100000, 1);   // nearest: 3.0
+        auto beside = std::make_shared<DummyEntity>(102, 6.0f, 8.8f, 100000, 1);   // 1.28 from the target
+        auto away = std::make_shared<DummyEntity>(103, 5.0f, 10.5f, 100000, 1);    // 2.5 from the target
+        auto flier = std::make_shared<DummyEntity>(104, 4.2f, 8.4f, 100000, 1);    // in the blast, but flying
+        flier->isFlying = true;
+        spawn(board, target);
+        spawn(board, beside);
+        spawn(board, away);
+        spawn(board, flier);
+        advancePastDeploy(tower, board);
+        tower->update(board);
+        REQUIRE(target->hp == 100000 - 222);
+        REQUIRE(beside->hp == 100000 - 222);
+        REQUIRE(away->hp == 100000);
+        REQUIRE(flier->hp == 100000);   // a ground-only tower's splash stays on the ground
+    }
+    SECTION("the death bomb explodes 3 s later for 222 inside 3 tiles") {
+        Board board;
+        CardRegistry::getInstance().getCard(27)->spawnEntity(5.0f, 5.0f, 0, board);
+        board.commitPendingEntities();
+        auto tower = board.getEntities().back();
+        auto near = std::make_shared<DummyEntity>(201, 5.0f, 7.0f, 100000, 1);   // 2.0 away
+        auto far = std::make_shared<DummyEntity>(202, 5.0f, 10.0f, 100000, 1);   // 5.0 away
+        auto flier = std::make_shared<DummyEntity>(203, 6.0f, 6.0f, 100000, 1);  // 1.4 away, flying
+        flier->isFlying = true;
+        spawn(board, near);
+        spawn(board, far);
+        spawn(board, flier);
+        tower->takeDamage(tower->hp);
+        board.cleanDeadEntities();
+        board.commitPendingEntities();
+        std::shared_ptr<Entity> bomb;
+        for (const auto& e : board.getEntities())
+            if (e->name == "Bomb Tower Bomb") bomb = e;
+        REQUIRE(bomb != nullptr);
+        int ticks = 0;
+        while (bomb->isAlive() && near->hp == 100000 && ticks < 100) { bomb->update(board); ++ticks; }
+        REQUIRE(ticks == 30);   // fuse 29: detonates 30 ticks after the death (3.0 s)
+        REQUIRE(near->hp == 100000 - 222);
+        REQUIRE(far->hp == 100000);
+        REQUIRE(flier->hp == 100000);   // the bomb lands on the ground
     }
 }
 

@@ -59,7 +59,15 @@ most six attackers, the first to pass in its order of preference):
   a Tombstone on the river corner traps its own Skeletons, so the Tombstone
   does not ship;
 - the learner reaches 90% of the brute-force best within the page's try
-  budget, on three seeds.
+  budget, or closes two thirds of the gap from a random drop to it, on three
+  seeds.
+
+A card failing more than a quarter of its pairings is dropped; a single
+failing pairing is withheld on its own, and its tile greys out with the
+reason. Battle Ram vs Valkyrie is withheld that way: the best answer
+intercepts the Ram in its lane (a handful of exact cells and moments), and
+every learner setting tried settles for the safe corner beside the tower at
+55% of the best.
 
 The defenders were also chosen by measurement. The Knight was cut as a
 near-copy of the Valkyrie: against a Goblin Barrel she saves 99% at best,
@@ -73,6 +81,13 @@ kept swinging until something killed it: found while adding the card here,
 fixed as [`UPSTREAM_REQUESTS.md` item 34](../../perception/UPSTREAM_REQUESTS.md).
 The lab uses the base card; the Evolution, which really does keep swinging,
 is a separate card (161) and is not offered.
+
+**Every card was then checked against the game's own data**
+([item 35](../../perception/UPSTREAM_REQUESTS.md)): the Battle Ram got its
+real stats (967 hp, a 572 charged hit) and its double-speed charge, the
+Prince, Dark Prince and Ram Rider their charge speed, and the Bomb Tower its
+splash and the bomb it drops when destroyed. The Ram's Barbarians wait their
+1 s deploy, as in the game, but are drawn solid while they do.
 
 ## Run it locally
 

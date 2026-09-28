@@ -1813,8 +1813,98 @@ unchanged: no break, sticky double damage, swinging until destroyed.
   `mega_knight_ram` (`test_teacher_deck_generalisation.py`).
 - The lab's 8 Battle Ram outcome tables were rebuilt; all 8 pairings pass
   curation.
-- **The `.pyd` was NOT rebuilt into `python_ai/`**: the final run is paused
-  with an 8-deck pool that includes `mega_knight_ram`, which plays a Battle
-  Ram, so rebuilding changes that run's opponent on resume. That is the
-  maintainer's call; until then `python_ai/clash_royale_env.pyd` is behind
-  the headers by exactly this change.
+- **The `.pyd` was NOT rebuilt into `python_ai/` at first** (the paused
+  final run's 8-deck pool includes `mega_knight_ram`, which plays a Battle
+  Ram). The maintainer then approved it; it was rebuilt with item 35.
+
+## Item 35 — the Reflex Lab's cards against the game files: Battle Ram, charge speed, Bomb Tower
+
+**Status: APPLIED 2026-09-28** on the maintainer's go-ahead ("a quick pass over
+the cards ... you have the go-ahead to make all the changes"). **Class:** card
+data and one mechanic. **GAMEPLAY-AFFECTING.**
+
+### Sources
+
+- **Game data** extracted from the client by RoyaleAPI
+  (`github.com/RoyaleAPI/cr-api-data`, `docs/json/cards_stats_*.json`, last
+  updated 2023-12-18): per-level hitpoints and damage tables, speeds, hit
+  speeds, ranges, charge fields, death spawns. Reliable for mechanics; stale
+  for anything a later balance change moved. Level 11 is index 10 (Common),
+  8 (Rare) or 5 (Epic) of the `*_per_level` tables; the engine's Bomb Tower
+  (1356 hp), Cannon (824), Hog Rider (1696, engine 1697) sit exactly there.
+- **Official balance notes** since: September 2026 (Battle Ram sight range
+  5.5 -> 6.5; Evolved Battle Ram knockback 2.5 -> 2, not modelled); March 2025
+  (Battle Ram hitpoints +0.1%, charge damage +0.17%, rounding); and the
+  Cannon's hit speed 0.9 -> 1.0 s, which is why a 2023 figure that disagrees
+  with the registry is not by itself a defect.
+
+### What changed
+
+| card | field | was | now | evidence |
+|---|---|---|---|---|
+| Battle Ram (81, and both forms of 161) | hitpoints | 691 | **967** | `hitpoints_per_level[8]` 966, +0.1% March 2025 |
+| | damage / charge hit | 192 / 384 | **286 / 572** | `damage_per_level[8]` 286; game 573 after the +0.17% |
+| | reach | 1.0 | **0.5** | `range` 500 |
+| | charge speed | none | **2x** | `charge_speed_multiplier` 200 |
+| | sight range | 5.5 | **6.5** | official September 2026 notes |
+| Prince (14), Dark Prince (46), Ram Rider (87) | charge speed | none | **2x** | `charge_speed_multiplier` 200 (Ram Rider's `Ram`) |
+| Bomb Tower (27) | splash | none (single target) | **1.5 tiles** | `BombTowerProjectile.radius` 1500 |
+| | death bomb | none | **222 in 3 tiles, 3.0 s fuse** | `BombTowerBomb`: 105 at level 1, radius 3000, 3000 ms |
+
+**The mechanic:** `CardStats::chargeSpeedMultiplier` (`withChargeSpeed`).
+While a unit is charging (`chargeProgress >= chargeThreshold`, the state that
+already doubled the next hit), `Troop::moveTowards` multiplies its speed by
+it. 1.0 everywhere else, so every other card is bit-identical. Only the four
+cards the game files give `charge_speed_multiplier` get it; the Bandit's dash,
+Royal Hogs and the Royal Recruits Evolution keep their damage-only charge.
+
+**Ground only, as the tower is.** The first build of the Bomb Tower change
+failed `python_ai`'s `test_teacher_air_defence` ("Bomb Tower does not hit
+air"): a Balloon destroyed the tower and the death bomb, an AreaSpell, hit
+the Balloon; the splash would have hit a flier beside a ground target the
+same way, because `applySplashDamage` never asked whether the attacker can hit
+air. Now `applySplashDamage` takes `hitsAir` (default true, so every troop's
+splash is unchanged) and `Building::performAttack` passes the building's
+`targetsAir`; `DelayedAreaDamageOnDeath` takes `groundOnly` (default false, so
+the Giant Skeleton's bomb is unchanged) and the Bomb Tower's bomb sets it.
+Pinned by the same test file's two new fliers.
+
+Measured with `lab_cli trace 81 14 20`: the Battle Ram reaches the tower at
+t=68 (was 97), hits for 572, breaks, and its Barbarians appear at t=69.
+
+### Checked and deliberately NOT changed
+
+- **The Battle Ram's Barbarians keep their 1 s deploy.** The maintainer
+  expected none; the game files say `death_spawn_deploy_time: 1000`, the
+  Wiki's version history has it raised from 0.8 s to 1 s in November 2017,
+  and no later change was found. The lab now draws a spawned body solid
+  during its deploy second (only placed cards show the faded deploy look),
+  which is how the game shows it. One line if it should go anyway:
+  `.withDeployTime(0)` on `battleRamBarbarianStats()`.
+- **Valkyrie's splash geometry.** The engine centres a melee splash on the
+  TARGET with radius 1.5; the game's Valkyrie spins around HERSELF,
+  `area_damage_radius` 2000 (2.0 tiles). A new splash-origin mechanic, not a
+  stat, and it moves every Valkyrie fight in training. She already beats the
+  Goblin Barrel as the real card does. Proposed, not made.
+- **Balloon death bomb**: engine 240 at once in 1.5 tiles; the game files'
+  `BalloonBomb` is 150 at level 1 (241 at 11) in 3000 radius with a 3000 ms
+  deploy. The damage matches; the radius and the timing are unclear from the
+  data alone (the in-game bomb does not visibly wait 3 s). Not changed.
+- **Hit speeds that differ from the 2023 data by 0.1-0.2 s** (Royal Giant
+  1.8 vs 1.7, Bomb Tower 1.8 vs 1.6, Skeletons 1.1 vs 1.0, Barbarians 1.4 vs
+  1.3): the Cannon's confirmed 0.9 -> 1.0 s change shows the registry tracks
+  later notes, so these are presumed current. Not changed without a source.
+- **Goblin Barrel**: 3 Goblins, 202 hp, 120 damage, 1.1 s: match. Its Goblins
+  deploy in 1.0 s here, 1.1 s in the 2023 data; not changed.
+- **Ground-only splash for troops** (a Valkyrie's spin catching a Minion
+  overhead) and the **Giant Skeleton's bomb hitting air**: the same leak the
+  Bomb Tower had, left at their old behaviour so this change moves only the
+  Bomb Tower. Candidates for a follow-up.
+- Everything else on the lab's 14 cards (speed tiers, ranges, hit speeds,
+  level-11 hitpoints and damage within later balance changes) matches.
+
+### Verified
+
+C++ suite, Python suite, the rebuilt `.pyd` (`tools/audit/verify_pyd.py`), and
+the lab's curation over the rebuilt Battle Ram, Prince, Ram Rider and Bomb
+Tower tables: see the commit message for the numbers.

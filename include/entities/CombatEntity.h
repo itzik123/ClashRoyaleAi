@@ -21,8 +21,10 @@ inline std::vector<std::shared_ptr<CombatEntity>> applyAreaBuff(Board& board, co
 inline void applyAreaHeal(Board& board, const Vector2D& origin, float radius, int excludeId,
     int team, int amount);
 // Declared early for the same reason (Mega Knight's jump in update()).
+// hitsAir false: a ground-only attacker's splash skips flying units (the Bomb
+// Tower's bombs; Building::performAttack passes its own targetsAir).
 inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
-    int attackerId, int attackerTeam, int attackerCardId, int dealt);
+    int attackerId, int attackerTeam, int attackerCardId, int dealt, bool hitsAir = true);
 // Declared early for Evolved Valkyrie's on-hit pull in update().
 inline void applyPullNearby(Board& board, const Vector2D& origin, float radius, float distance,
     int excludeId, int attackerTeam);
@@ -170,6 +172,11 @@ public:
     float chargeThreshold = 0.0f;
     float chargeMultiplier = 1.0f;
     float chargeProgress = 0.0f;
+    // While charging (chargeProgress has reached chargeThreshold), a troop
+    // moves at chargeSpeedMultiplier x its speed (Troop::moveTowards).
+    float chargeSpeedMultiplier = 1.0f;
+
+    bool isCharging() const { return chargeThreshold > 0.0f && chargeProgress >= chargeThreshold; }
 
     // Sticky charge (Evolved Battle Ram): once reached, the charge bonus
     // applies to every hit for the rest of its life. chargeHasStuck is
@@ -1057,11 +1064,12 @@ protected:
 // with its own DamageDealtEvent. A free function because Projectile, not a
 // CombatEntity, needs it too. No-op for radius <= 0.
 inline void applySplashDamage(Board& board, const Vector2D& origin, float radius, int excludeId,
-        int attackerId, int attackerTeam, int attackerCardId, int dealt) {
+        int attackerId, int attackerTeam, int attackerCardId, int dealt, bool hitsAir) {
     if (radius <= 0.0f) return;
     for (const auto& entity : board.getEntities()) {
         if (entity->id == excludeId) continue; // already hit as the primary target
         if (entity->team == attackerTeam || !entity->isAlive() || !entity->isTargetable()) continue;
+        if (!hitsAir && entity->isFlying) continue;
         if (origin.distanceTo(entity->position) > radius) continue;
         entity->takeDamage(dealt);
         board.statsEvents.notifyDamageDealt(

@@ -360,7 +360,11 @@
       }
       const building = !!(flags & F.BUILDING);
       const hp = e[5], maxHp = e[6] || hp, symbol = e[9];
-      const deploying = !!(flags & F.DEPLOYING);
+      // Only a placed card shows its deploy second (faded, with a ring). A
+      // body another unit spawns (a Battle Ram's Barbarians, a Goblin Barrel's
+      // Goblins: negative card ids) waits its deploy time too, but appears
+      // solid, as in the game.
+      const deploying = !!(flags & F.DEPLOYING) && e[1] > 0;
       if (building) {
         const half = Math.max(0.8, e[8] || 1) * this.cs;
         this.drawBuilding(p, half, team, symbol, flags & F.TOWER);

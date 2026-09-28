@@ -8,10 +8,11 @@
 //   3. the learner, 3 seeds on the page's try budget, must on every seed
 //      either reach 90% of the exhaustive best on the evaluation spawns or
 //      close at least MIN_GAP_CLOSED of the gap from a random drop to it
-// The page lets a visitor combine ANY attacker with ANY defender, so every
-// pair among the shipped cards must pass. Cards are dropped greedily -- the
-// one in the most failing pairs first -- until none fail. Writes
-// web/lab/roster.json, which the page reads; nobody hand-edits it.
+// A card failing more than MAX_PAIR_FAILURE_SHARE of its pairs is dropped
+// (greedily, the worst first); a failing pair between cards that otherwise
+// pass is withheld on its own, and the page greys that tile out with the
+// reason. Writes web/lab/roster.json, which the page reads; nobody
+// hand-edits it.
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -48,6 +49,12 @@ const NOTHING_TO_LEARN = 0.05;     // best < 5% prevented: a pointless pairing
 // learner visibly fails, and a learner that closes two thirds of the gap from
 // random to best has not.
 const MIN_GAP_CLOSED = 2 / 3;
+// Battle Ram vs Valkyrie is why a pair can be withheld on its own: the best
+// answer intercepts the Ram in its lane, a handful of exact cells and moments,
+// and every learner setting tried settles for the safe corner beside the
+// tower at 55% of the best. Dropping the whole Ram for it cost a card the
+// maintainer asked for.
+const MAX_PAIR_FAILURE_SHARE = 0.25;
 const gapClosed = f => (f.best - f.random > 1e-9 ? (f.greedy - f.random) / (f.best - f.random) : 1);
 
 const argJobs = process.argv.indexOf('--jobs');
@@ -162,12 +169,13 @@ async function main() {
     console.log(`  ${name(r.a).padEnd(14)} vs ${name(r.d).padEnd(14)} best ${(100 * best).toFixed(0).padStart(3)}%  ` +
                 `random ${(100 * random).toFixed(0).padStart(3)}%  90% at ${seeds.map(s => s.triesTo90 ?? '-').join('/')}  ` +
                 `gap ${seeds.map(s => (100 * gapClosed(s.final)).toFixed(0)).join('/')}%  ${tag}`);
-    if (reasons.length) failing.push([r.a, r.d]);
+    if (reasons.length) failing.push([r.a, r.d, reasons.join('; '), seeds.map(s => s.final.ratio)]);
   }
 
-  // Drop cards until no failing pair remains: first the card that fails in
-  // the largest SHARE of its pairs (a Tombstone failing 1 of 1 goes before a
-  // Hog Rider failing 1 of 9), then the one in more failing pairs.
+  // Drop cards while one fails more than MAX_PAIR_FAILURE_SHARE of its pairs:
+  // first the card that fails in the largest SHARE of its pairs (a Tombstone
+  // failing 1 of 1 goes before a Hog Rider failing 1 of 9), then the one in
+  // more failing pairs.
   let atk = ATTACKERS.filter(a => pairAtk.includes(a)), def = DEFENDERS.filter(d => pairDef.includes(d));
   const dropped = [];
   for (;;) {
@@ -179,6 +187,7 @@ async function main() {
       fails.set(`d${d}`, (fails.get(`d${d}`) || 0) + 1);
     }
     const share = k => fails.get(k) / (k[0] === 'a' ? def.length : atk.length);
+    if (![...fails.keys()].some(k => share(k) > MAX_PAIR_FAILURE_SHARE)) break;
     // The default matchup's two cards are never the ones dropped.
     const [da, dd] = DEFAULT_MATCHUP.split('_');
     const keep = k => k === `a${da}` || k === `d${dd}`;
@@ -192,6 +201,17 @@ async function main() {
   }
   for (const id of atk.slice(MAX_ATTACKERS)) dropped.push(`attacker ${name(id)} (passed; over the limit of ${MAX_ATTACKERS})`);
   atk = atk.slice(0, MAX_ATTACKERS);
+  // Failing pairs between cards that stay: withheld one by one, with the
+  // reason the page shows on the greyed-out tile.
+  const withheld = {};
+  for (const [a, d, why, ratios] of failing) {
+    if (!atk.includes(a) || !def.includes(d)) continue;
+    const best = Math.round(100 * Math.max(...ratios));
+    withheld[`${a}_${d}`] = why.includes('stall')
+      ? 'A unit gets stuck in the engine in this pairing, so it is not offered.'
+      : `The network settles for ${best}% of the best answer in this pairing, so it is not offered.`;
+    dropped.push(`pair ${name(a)} vs ${name(d)} (${why})`);
+  }
 
   const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO }).toString().trim();
   const roster = {
@@ -199,7 +219,9 @@ async function main() {
     attackers: atk.map(id => cards.find(c => c.id === id)),
     defenders: def.map(id => cards.find(c => c.id === id)),
     defaultMatchup: DEFAULT_MATCHUP,
-    matchups: Object.fromEntries(Object.entries(matchups).filter(([, m]) => atk.includes(m.attacker) && def.includes(m.defender))),
+    matchups: Object.fromEntries(Object.entries(matchups)
+      .filter(([k, m]) => atk.includes(m.attacker) && def.includes(m.defender) && !withheld[k])),
+    withheld,
     dropped,
   };
   fs.writeFileSync(ROSTER, JSON.stringify(roster, null, 1) + '\n');
