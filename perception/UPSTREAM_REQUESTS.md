@@ -1635,3 +1635,82 @@ too), which is outside this deck.
   and the reroll's 0.7 half-width) and any test pinning Poison, Graveyard or
   Arrows pulse ticks. `test_default_deck_qa.cpp` is also affected if 32m
   changes an Ice Spirit timing it pins.
+
+---
+
+## Item 33 — a Tombstone on the river corner traps its own Skeletons forever
+
+**Status: PROPOSED 2026-09-28, NOT changed.** Needs the maintainer's choice of
+fix (options below). **Class:** movement / pathing. **GAMEPLAY-AFFECTING** if
+fixed. Found by the Reflex Lab's curation suite (`tools/lab/curate.mjs`, the
+`check` step), which drops any card whose rollouts contain a stalled unit;
+the Tombstone was dropped from the lab's roster for this.
+
+### The gap
+
+A ground troop whose straight-line path to its waypoint runs through a
+building is pushed back out **radially** by `Board::resolvePositionAgainstBuildings`
+-> `pushAwayFrom`, with only a fixed 0.05 tangential nudge. Against open
+ground that slides it around the building. Wedged between the building, the
+board edge and the river bank, the radial push points into the edge and the
+bank, and `clampToBoard` returns it to **exactly** where it started: a fixed
+point, the same class as the three bridge-mouth absorbing states (items 31 and
+the 2026-08-09/08-20 fixes).
+
+The worked case, team 0 Tombstone at (1,15), Skeleton at (0.00, 15.50), waypoint
+the left bridge mouth (2.5, 15.5):
+
+1. `moveTowards` steps 0.2 toward +x: (0.20, 15.50).
+2. That is 0.94 from the Tombstone's centre, inside its 1.0 + 0.4 clearance;
+   `pushAwayFrom` moves it 0.46 along (-0.85, 0.53), plus the nudge:
+   about (-0.16, 15.78).
+3. `clampToBoard`: x -> 0 (board edge); y = 15.78 is in the river band off
+   the bridge, -> 15.5 (bank). Back to (0.00, 15.50). Every tick.
+
+### Evidence
+
+`tools/audit/building_trap_audit.cpp` places a spawner at EVERY legal cell on
+an empty board, per team, and flags a spawn stationary 30+ ticks with nothing
+in its own reach (the soak's criterion):
+
+| card | team 0 | team 1 |
+|---|---|---|
+| Tombstone (96) | **2 of 170** cells: (1,15), (2,15); Skeleton stuck at (0.00, 15.50) | 2 of 170: (16,18), (15,18); stuck at (17.00, 17.50) |
+| Goblin Hut (95) | 0 of 170 | 0 of 170 |
+| Bomb Tower (27) | 0 of 170 | 0 of 170 |
+
+Team 1's cells are the exact 180-degree rotations of team 0's, so the rule is
+**not** team-biased; the nudge's fixed handedness makes the trap one-sided per
+team (the left corner for team 0 only), which is the rotation symmetry the
+arena has anyway. The run deck's Goblin Hut is **not** affected.
+
+Per-tick trace (`lab_cli frames`, Hog Rider dropped at (14,18), Tombstone at
+(1,15) at tick 10): each spawn wave puts one Skeleton at (2.40, 14.95), which
+crosses normally, and one clamped to x = 0, which reaches (0.00, 15.50) at
+tick ~65 and is still there at tick 164. Three waves, three stuck Skeletons.
+
+### Options (not decided)
+
+- **A. Slide in the mover.** In `Troop::moveTowards`, when the resolved and
+  clamped position is within a small fraction of the step of where the unit
+  started while its waypoint is farther, retry the step along the building's
+  tangent (the side that does not immediately re-clamp), resolving and
+  clamping again. Local to the one troop mover, binds only when stuck. A
+  memoryless tangent choice can dither on a concave pocket, so it needs the
+  same sweep test as item 31's.
+- **B. Choose the nudge's handedness from the travel direction** in
+  `pushAwayFrom` (needs the direction passed in). Smallest edit; fixes this
+  pocket; leaves any pocket where both tangents clamp.
+- **C. Keep spawns off the far side.** Spawn the Tombstone's bodies on the
+  side facing its lane. Fixes the spawner case only; a player-placed troop
+  behind a corner building is untested.
+
+Recommendation: A, measured with `building_trap_audit` (must read 0 for every
+spawner, both teams) plus the soak. Not prototyped.
+
+### Blast radius
+
+Two cells per team for the Tombstone, in the lab's measurement; any building
+flush with an edge and the river bank is a candidate pocket. A fix changes
+trajectories wherever a troop brushes a building, so replays and win rates are
+not comparable across it.
