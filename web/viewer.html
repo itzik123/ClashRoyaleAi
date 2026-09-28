@@ -942,13 +942,16 @@ const RENDER_SCALE = Math.max(1, window.devicePixelRatio || 1);
 
 // Size `cv` for w x h logical pixels at RENDER_SCALE and return its context,
 // already transformed. `pinCss` fixes the CSS size, which a canvas otherwise
-// takes from its (now larger) backing store.
+// takes from its (now larger) backing store. Only the width is pinned: the
+// height follows from aspect-ratio, because a pinned height makes the arena's
+// `max-height: 100%` inert and a window shorter than the board clips it
+// (tools/viewer_fixtures/check_fit.py).
 function sizeCanvas(cv, w, h, pinCss) {
   cv.width = Math.round(w * RENDER_SCALE);
   cv.height = Math.round(h * RENDER_SCALE);
   if (pinCss) {
     cv.style.width = w + 'px';
-    cv.style.height = h + 'px';
+    cv.style.aspectRatio = w + ' / ' + h;
   }
   const c = cv.getContext('2d');
   c.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
