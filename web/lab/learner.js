@@ -77,9 +77,16 @@
     basisStep: 2,      // placement basis: one bump every 2 cells...
     basisSigma: 1.1,   // ...this wide, in cells
     lr: 0.01,          // Adam step size
-    entropy: 0.01,     // entropy bonus, as a fraction of each head's maximum...
-    entropyEnd: null,  // ...annealed linearly to this (null: held constant)...
-    entropyTries: 0,   // ...over this many tries
+    // Entropy bonus, as a fraction of each head's maximum, annealed linearly
+    // from `entropy` to `entropyEnd` over `entropyTries` tries (entropyEnd
+    // null: held constant). Starting high keeps it from settling on the first
+    // decent answer. Giant vs Cannon, 3 seeds at batches of 16 and 64 (the
+    // tools/lab outcome tables): held at 0.01 it missed 90% of the best on 5
+    // of the 6 runs, mostly stuck on the lane Cannon at 75%; annealed 0.1 ->
+    // 0.005 over 10,000 tries, on 1 of 6, and on none at the page's 16.
+    entropy: 0.1,
+    entropyEnd: 0.005,
+    entropyTries: 10000,
     normalize: false,  // scale advantages by their running RMS
     seed: 1,
     float64: false,

@@ -13,7 +13,7 @@ const TICK_MS = 100;              // the engine's 10 ticks per second, in real t
 let engine = null, roster = null, arena = null;
 let matchup = null, entry = null, learner = null, preview = 0;
 let training = false, looping = false, speed = 'watch';
-let curve = [], elapsedMs = 0, seedCounter = 1;
+let curve = [], heatHist = [], elapsedMs = 0, seedCounter = 1;
 let live = null;
 
 const post = (type, data = {}, transfer) => self.postMessage(Object.assign({ type }, data), transfer || []);
@@ -43,7 +43,30 @@ async function init() {
   engine = await EngineClient.connect(BASE);
   roster = await (await fetch(BASE + 'roster.json', { cache: 'no-store' })).json();
   arena = await engine.arena();
-  post('ready', { arena, roster, backend: engine.kind });
+  const demo = await recordDemo();
+  post('ready', { arena, roster, backend: engine.kind, demo });
+}
+
+// The how-to-play demo is always a Hog Rider against a Cannon, so it gives
+// away no matchup: the Cannon dropped 2 s after the Hog, in the middle, where
+// it pulls the Hog off the tower. Recorded from the engine, like every other
+// frame on the page.
+const DEMO = { attacker: 15, defender: 25, spawn: [14, 20], cell: [11, 9], dropTick: 20, tail: 32 };
+async function recordDemo() {
+  try {
+    const m = await engine.matchup(DEMO.attacker, DEMO.defender);
+    const at = (list, [x, y]) => list.findIndex(p => p[0] === x && p[1] === y);
+    const s = at(m.spawns, DEMO.spawn), c = at(m.cells, DEMO.cell);
+    if (s < 0 || c < 0) return null;
+    const data = await engine.frames(s, c, DEMO.dropTick);
+    return {
+      attacker: DEMO.attacker, defender: DEMO.defender, spawn: DEMO.spawn,
+      drop: { x: DEMO.cell[0], y: DEMO.cell[1], tick: DEMO.dropTick },
+      frames: data.frames.slice(0, DEMO.dropTick + DEMO.tail), cells: m.cells,
+    };
+  } catch (err) {
+    return null;   // the page simply skips the demo
+  }
 }
 
 async function setMatchup(key) {
@@ -65,6 +88,7 @@ function newLearner() {
     width: arena.width, seed: (Date.now() ^ (seedCounter++ * 2654435761)) >>> 0,
   });
   curve = [];
+  heatHist = [];
   elapsedMs = 0;
 }
 
@@ -110,6 +134,9 @@ async function loop() {
     while (training) {
       if (learner.tries >= nextEval) {
         curve.push({ tries: learner.tries, v: await evalChallenge() });
+        // Where it would drop the card on each challenge attack, for the
+        // results page to replay the heatmap converging.
+        heatHist.push({ tries: learner.tries, p: entry.challenge.map(s => learner.cellProbs(s)) });
         nextEval = learner.tries + evalEvery(learner.tries);
       }
       const batch = learner.sampleBatch(speed === 'watch' ? 16 : 64);
@@ -225,7 +252,20 @@ async function compare(attempts) {
       const f = await engine.frames(spawn, a.cell, a.cell >= 0 ? a.tick : 0);
       you = { frames: f.frames, damage: f.damage, drop: a.cell >= 0 ? { cell: a.cell, tick: a.tick } : null };
     }
-    rounds.push({ spawn, d0, ai: { frames: ai.frames, damage: ai.damage, drop: { cell: g.cell, tick: aiTick } }, you });
+    const heat = heatSteps(i, spawn);
+    rounds.push({ spawn, d0, heat, ai: { frames: ai.frames, damage: ai.damage, drop: { cell: g.cell, tick: aiTick } }, you });
   }
   post('compare', { rounds, tries: learner.tries, elapsed: elapsedMs });
+}
+
+// Up to HEAT_STEPS snapshots of challenge attack i's heatmap, from the first
+// try to now, evenly spaced through the recorded history.
+const HEAT_STEPS = 36;
+function heatSteps(i, spawn) {
+  const all = heatHist.map(h => ({ tries: h.tries, p: h.p[i] }));
+  if (!all.length || all[all.length - 1].tries !== learner.tries) all.push({ tries: learner.tries, p: learner.cellProbs(spawn) });
+  if (all.length <= HEAT_STEPS) return all;
+  const out = [];
+  for (let k = 0; k < HEAT_STEPS; k++) out.push(all[Math.round(k * (all.length - 1) / (HEAT_STEPS - 1))]);
+  return out;
 }

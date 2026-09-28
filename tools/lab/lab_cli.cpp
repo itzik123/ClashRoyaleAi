@@ -6,6 +6,7 @@
 //   lab_cli table att def out_prefix   every spawn x cell x delay -> .bin + .json
 //   lab_cli check att def              stalls and tower reach over sampled rollouts
 //   lab_cli serve                      line protocol on stdin/stdout (dev backend)
+//   lab_cli trace att x y              an attacker alone, tick by tick
 //
 // Built by tools/lab/build_cli.ps1 (cl.exe against the header-only engine,
 // like tools/audit -- deliberately not a CMake target).
@@ -221,6 +222,43 @@ static int check(int att, int def) {
     return 0;
 }
 
+// What an attacker does on its own, tick by tick: when its bodies appear and
+// die, when the tower is first hit, and the damage of each hit. For checking a
+// card against the real one before it ships.
+static int trace(int att, int sx, int sy) {
+    LabEngine e(1);
+    e.setMatchup(att, 25);
+    const int s = spawnIndex(e, sx, sy);
+    if (s < 0) { std::fprintf(stderr, "(%d,%d) is not a spawn for card %d\n", sx, sy, att); return 2; }
+    std::unordered_map<int, std::string> seen;
+    int lastHp = -1;
+    const float dmg = e.simulateWith(s, lab::NO_DEFENCE, 0, [&](ClashEnv& env, int t) {
+        std::unordered_map<int, bool> alive;
+        for (const auto& en : env.debugGame().getBoard().getEntities()) {
+            if (!en->isAlive() || en->team != 1 || en->isTower()) continue;
+            alive[en->id] = true;
+            if (!seen.count(en->id)) {
+                seen[en->id] = en->name;
+                std::printf("t=%3d  %s #%d appears at (%.2f, %.2f) hp %d\n", t, en->name.c_str(), en->id,
+                            en->position.x, en->position.y, en->hp);
+            }
+        }
+        for (auto it = seen.begin(); it != seen.end();) {
+            if (!alive.count(it->first)) {
+                std::printf("t=%3d  %s #%d gone\n", t, it->second.c_str(), it->first);
+                it = seen.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        const int hp = lab::towerHpSum(env, 0);
+        if (lastHp >= 0 && hp < lastHp) std::printf("t=%3d  tower hit: -%d\n", t, lastHp - hp);
+        lastHp = hp;
+    });
+    std::printf("total tower damage %.0f\n", dmg);
+    return 0;
+}
+
 // One request per line, one response per line. Errors: "error <message>".
 static int serve() {
     std::ios::sync_with_stdio(false);
@@ -290,6 +328,7 @@ int main(int argc, char** argv) {
         if (cmd == "table" && argc > 4) return table(std::atoi(argv[2]), std::atoi(argv[3]), argv[4]);
         if (cmd == "check" && argc > 3) return check(std::atoi(argv[2]), std::atoi(argv[3]));
         if (cmd == "serve") return serve();
+        if (cmd == "trace" && argc > 4) return trace(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]));
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "error: %s\n", ex.what());
         return 2;

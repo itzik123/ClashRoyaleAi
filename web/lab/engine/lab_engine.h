@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ArenaLayout.h"
 #include "ClashEnv.h"
 #include "Projectile.h"
 #include "AreaSpell.h"
@@ -27,12 +28,15 @@
 namespace lab {
 
 // A rollout lasts at most 30 s, the defender may drop 0-5 s after the
-// attacker in 0.5 s steps, and the attacker is dropped in the first rows past
-// the river on the enemy side.
+// attacker in 0.5 s steps, and a troop attacker is dropped in the first rows
+// past the river on the enemy side. A spell attacker that drops troops (the
+// Goblin Barrel) is aimed instead at the cells within SPELL_AIM_REACH of one
+// of our Princess Towers, where the real card is thrown.
 constexpr int WINDOW_TICKS = 300;
 constexpr int DELAY_STEPS = 11;
 constexpr int DELAY_TICK_STEP = 5;
 constexpr int SPAWN_ROWS = 6;
+constexpr int SPELL_AIM_REACH = 2;
 constexpr int NO_DEFENCE = -1;
 
 // Any legal deck does: both bodies are placed with ClashEnv::inject, so hands
@@ -53,15 +57,17 @@ inline int towerHpSum(const ClashEnv& env, int team) {
     return sum;
 }
 
-// Can team 1 still damage anything? Only its troops and buildings can: a
-// tower shot in flight at one of our troops cannot hurt our towers. Pending
-// bodies (death spawns, a just-injected attacker) count as remaining.
+// Can team 1 still damage anything? Only its troops and buildings can, and a
+// spell of its own still in the air (a Goblin Barrel before it lands): a tower
+// shot in flight at one of our troops cannot hurt our towers. Pending bodies
+// (death spawns, a just-injected attacker) count as remaining.
 inline bool enemyUnitsRemain(ClashEnv& env) {
     Board& board = env.debugGame().getBoard();
     if (board.pendingEntityCount() > 0) return true;
     for (const auto& e : board.getEntities()) {
         if (!e->isAlive() || e->team != 1 || e->isTower()) continue;
         if (dynamic_cast<const CombatEntity*>(e.get())) return true;
+        if (dynamic_cast<const AreaSpell*>(e.get())) return true;
     }
     return false;
 }
@@ -151,7 +157,9 @@ public:
         const CardDefinition* a = CardRegistry::getInstance().getCard(attackerId);
         const CardDefinition* d = CardRegistry::getInstance().getCard(defenderId);
         if (!a || !d) throw std::invalid_argument("unknown card id");
-        if (a->isSpell || a->isBuilding) throw std::invalid_argument("attacker must be a troop");
+        if (a->isBuilding) throw std::invalid_argument("attacker must not be a building");
+        if (a->isSpell && !dropsTroops(attackerId))
+            throw std::invalid_argument("a spell attacker must drop troops");
         if (d->isSpell) throw std::invalid_argument("defender must not be a spell");
         attacker_ = attackerId;
         defender_ = defenderId;
@@ -159,19 +167,33 @@ public:
         Board& b = base_->debugGame().getBoard();
         const int w = b.getWidth(), h = b.getHeight();
 
-        // The first SPAWN_ROWS rows past the river where team 1 may drop the
-        // attacker, by the engine's own predicate.
         spawns_.clear();
-        int rows = 0;
-        for (int y = static_cast<int>(std::ceil(b.getRiverEnd())); y < h && rows < SPAWN_ROWS; ++y) {
-            bool any = false;
-            for (int x = 0; x < w; ++x) {
-                if (base_->isValidPlacementForCard(attackerId, float(x), float(y), 1)) {
-                    spawns_.push_back({x, y});
-                    any = true;
+        if (a->isSpell) {
+            // Around each of our Princess Towers (ArenaLayout), where team 1
+            // may cast it by the engine's own predicate.
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const bool nearTower =
+                        std::abs(y - ArenaLayout::princessY(0)) <= SPELL_AIM_REACH &&
+                        (std::abs(x - ArenaLayout::LEFT_LANE_X) <= SPELL_AIM_REACH ||
+                         std::abs(x - ArenaLayout::RIGHT_LANE_X) <= SPELL_AIM_REACH);
+                    if (nearTower && base_->isValidPlacementForCard(attackerId, float(x), float(y), 1))
+                        spawns_.push_back({x, y});
                 }
+        } else {
+            // The first SPAWN_ROWS rows past the river where team 1 may drop
+            // the attacker, by the engine's own predicate.
+            int rows = 0;
+            for (int y = static_cast<int>(std::ceil(b.getRiverEnd())); y < h && rows < SPAWN_ROWS; ++y) {
+                bool any = false;
+                for (int x = 0; x < w; ++x) {
+                    if (base_->isValidPlacementForCard(attackerId, float(x), float(y), 1)) {
+                        spawns_.push_back({x, y});
+                        any = true;
+                    }
+                }
+                if (any) ++rows;
             }
-            if (any) ++rows;
         }
 
         cells_.clear();
@@ -315,6 +337,21 @@ private:
     int liveStartHp_ = 0, liveTick_ = 0, livePlacedTick_ = -1;
     bool liveDone_ = false;
     std::unordered_map<int, int> liveMaxHp_;
+
+    // Does this spell put team-1 troops on the board? Measured, not read off a
+    // card list: cast it on an empty board and look for bodies.
+    bool dropsTroops(int cardId) const {
+        ClashEnv env = base_->snapshot();
+        env.inject(cardId, ArenaLayout::LEFT_LANE_X, ArenaLayout::princessY(0), 1);
+        for (int t = 0; t < 60; ++t) {
+            env.stepSelfPlayFast(4, 0.0f, 0.0f, 4, 0.0f, 0.0f, 1);
+            for (const auto& e : env.debugGame().getBoard().getEntities())
+                if (e->isAlive() && e->team == 1 && !e->isTower() &&
+                    dynamic_cast<const CombatEntity*>(e.get()))
+                    return true;
+        }
+        return false;
+    }
 
     void checkSpawn(int spawn) const {
         if (attacker_ < 0) throw std::logic_error("setMatchup first");

@@ -29,7 +29,7 @@ Rules that apply to every item below:
 
 ---
 
-## 0000. Reflex Lab (Show HN demo): build the WASM engine and publish
+## 0000. Reflex Lab (browser demo): build the WASM engine and publish
 
 Built 2026-09-28 on `feat/reflex-lab` (`web/lab/`, `tools/lab/`, spec and
 plan in `docs/design/`). Everything runs and is tested against the NATIVE
@@ -47,9 +47,11 @@ maintainer's:
    `https://itzik123.github.io/ClashRoyaleAi/lab/`, which is dead until then.
 
 Open, not blocking: the learner settles in a local optimum on some seeds
-(Giant vs Cannon: the lane Cannon at 50% instead of the centre pull at up to
-90%); UPSTREAM item 33 (Tombstone trap) keeps the Tombstone out of the
-roster until it is fixed.
+(Royal Giant vs Bomb Tower: 75% of the best on two of three seeds; the
+annealed entropy bonus fixed Giant vs Cannon); UPSTREAM item 33 (Tombstone
+trap) keeps the Tombstone out of the roster until it is fixed; UPSTREAM
+item 34 (the Battle Ram never breaks on a building) ships in the lab as the
+engine has it, documented in `web/lab/README.md`.
 
 ---
 

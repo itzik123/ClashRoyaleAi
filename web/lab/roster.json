@@ -1,6 +1,6 @@
 {
  "generatedBy": "tools/lab/curate.mjs",
- "engineCommit": "e6a199d",
+ "engineCommit": "929640f",
  "budget": 30000,
  "attackers": [
   {
@@ -21,6 +21,50 @@
    "hp": 3164,
    "symbol": "Y",
    "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 81,
+   "name": "Battle Ram",
+   "cost": 4,
+   "hp": 691,
+   "symbol": "^",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 109,
+   "name": "Goblin Barrel",
+   "cost": 3,
+   "hp": 0,
+   "symbol": "[",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": true,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 2,
+   "name": "Giant",
+   "cost": 5,
+   "hp": 3968,
+   "symbol": "G",
+   "isFlying": false,
+   "isBuilding": false,
+   "isSpell": false,
+   "placementRadius": 0.4
+  },
+  {
+   "id": 45,
+   "name": "Balloon",
+   "cost": 5,
+   "hp": 1676,
+   "symbol": "a",
+   "isFlying": true,
    "isBuilding": false,
    "isSpell": false,
    "placementRadius": 0.4
@@ -77,17 +121,6 @@
    "cost": 4,
    "hp": 1390,
    "symbol": "M",
-   "isFlying": false,
-   "isBuilding": false,
-   "isSpell": false,
-   "placementRadius": 0.4
-  },
-  {
-   "id": 0,
-   "name": "Knight",
-   "cost": 3,
-   "hp": 1766,
-   "symbol": "K",
    "isFlying": false,
    "isBuilding": false,
    "isSpell": false,
@@ -161,9 +194,14 @@
     2048
    ],
    "finalRatio": [
+    0.992,
     1,
+    1
+   ],
+   "gapClosed": [
+    0.987,
     1,
-    0.992
+    1
    ],
    "challenge": [
     3,
@@ -211,6 +249,11 @@
     2048
    ],
    "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
     1,
     1,
     1
@@ -265,6 +308,11 @@
     1,
     1
    ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
    "challenge": [
     3,
     104,
@@ -311,8 +359,13 @@
     2048
    ],
    "finalRatio": [
-    1,
-    1,
+    0.984,
+    0.992,
+    1
+   ],
+   "gapClosed": [
+    0.973,
+    0.986,
     1
    ],
    "challenge": [
@@ -356,14 +409,19 @@
    "best": 1,
    "random": 0.38,
    "triesTo90": [
-    14336,
+    16384,
     10240,
-    20480
+    12288
    ],
    "finalRatio": [
-    0.906,
-    0.906,
-    0.906
+    0.922,
+    0.922,
+    0.914
+   ],
+   "gapClosed": [
+    0.874,
+    0.874,
+    0.861
    ],
    "challenge": [
     3,
@@ -375,56 +433,6 @@
    "challengeD0": 2534,
    "challengeBest": 1,
    "challengeRandom": 0.3771,
-   "pointless": false,
-   "ok": true,
-   "reasons": []
-  },
-  "15_0": {
-   "attacker": 15,
-   "defender": 0,
-   "spawns": 108,
-   "cells": 242,
-   "d0Mean": 2534,
-   "evalSpawns": [
-    3,
-    10,
-    16,
-    23,
-    30,
-    37,
-    43,
-    50,
-    57,
-    64,
-    70,
-    77,
-    84,
-    91,
-    97,
-    104
-   ],
-   "best": 0.7498,
-   "random": 0.2508,
-   "triesTo90": [
-    8192,
-    12288,
-    10240
-   ],
-   "finalRatio": [
-    0.917,
-    0.927,
-    0.927
-   ],
-   "challenge": [
-    3,
-    104,
-    44,
-    93,
-    14
-   ],
-   "challengeD0": 2534,
-   "challengeBest": 0.7498,
-   "challengeRandom": 0.2508,
    "pointless": false,
    "ok": true,
    "reasons": []
@@ -456,14 +464,19 @@
    "best": 0.7498,
    "random": 0.2586,
    "triesTo90": [
-    6144,
-    8192,
+    4096,
+    4096,
     8192
    ],
    "finalRatio": [
     0.906,
-    0.906,
-    0.906
+    0.937,
+    0.948
+   ],
+   "gapClosed": [
+    0.857,
+    0.904,
+    0.92
    ],
    "challenge": [
     3,
@@ -507,13 +520,18 @@
    "random": 0.3548,
    "triesTo90": [
     2048,
-    4096,
+    2048,
     2048
    ],
    "finalRatio": [
-    0.92,
-    0.938,
-    0.903
+    0.956,
+    0.965,
+    0.947
+   ],
+   "gapClosed": [
+    0.926,
+    0.941,
+    0.911
    ],
    "challenge": [
     3,
@@ -561,9 +579,14 @@
     2048
    ],
    "finalRatio": [
-    0.961,
-    0.977,
-    0.953
+    1,
+    0.992,
+    1
+   ],
+   "gapClosed": [
+    1,
+    0.986,
+    1
    ],
    "challenge": [
     3,
@@ -607,11 +630,16 @@
    "random": 0.0589,
    "triesTo90": [
     2048,
-    4096,
+    2048,
     2048
    ],
    "finalRatio": [
-    0.989,
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
     1,
     1
    ],
@@ -628,10 +656,2155 @@
    "pointless": false,
    "ok": true,
    "reasons": []
+  },
+  "18_26": {
+   "attacker": 18,
+   "defender": 26,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.4576,
+   "random": 0.0731,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.922,
+    0.922,
+    0.922
+   ],
+   "gapClosed": [
+    0.908,
+    0.908,
+    0.908
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 0.529,
+   "challengeRandom": 0.0947,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_28": {
+   "attacker": 18,
+   "defender": 28,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4002,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.4079,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_27": {
+   "attacker": 18,
+   "defender": 27,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.4069,
+   "random": 0.0648,
+   "triesTo90": [
+    null,
+    null,
+    null
+   ],
+   "finalRatio": [
+    0.753,
+    0.753,
+    0.877
+   ],
+   "gapClosed": [
+    0.706,
+    0.706,
+    0.854
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 0.4657,
+   "challengeRandom": 0.0824,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_5": {
+   "attacker": 18,
+   "defender": 5,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4323,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    0.986
+   ],
+   "gapClosed": [
+    1,
+    1,
+    0.976
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.4288,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_10": {
+   "attacker": 18,
+   "defender": 10,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.6684,
+   "random": 0.2261,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.947,
+    0.914,
+    0.947
+   ],
+   "gapClosed": [
+    0.92,
+    0.87,
+    0.92
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 0.6649,
+   "challengeRandom": 0.2313,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_6": {
+   "attacker": 18,
+   "defender": 6,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.8673,
+   "random": 0.295,
+   "triesTo90": [
+    2048,
+    4096,
+    4096
+   ],
+   "finalRatio": [
+    0.942,
+    0.924,
+    0.95
+   ],
+   "gapClosed": [
+    0.911,
+    0.885,
+    0.925
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 0.8782,
+   "challengeRandom": 0.299,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "18_12": {
+   "attacker": 18,
+   "defender": 12,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2636,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5239,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2779.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.5168,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_25": {
+   "attacker": 81,
+   "defender": 25,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4322,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4284,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_26": {
+   "attacker": 81,
+   "defender": 26,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4447,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4416,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_28": {
+   "attacker": 81,
+   "defender": 28,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4697,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.468,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_27": {
+   "attacker": 81,
+   "defender": 27,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4095,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.986,
+    0.976,
+    0.991
+   ],
+   "gapClosed": [
+    0.976,
+    0.96,
+    0.984
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4052,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_5": {
+   "attacker": 81,
+   "defender": 5,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4931,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4876,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_10": {
+   "attacker": 81,
+   "defender": 10,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4556,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.446,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_6": {
+   "attacker": 81,
+   "defender": 6,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4506,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    0.995,
+    1
+   ],
+   "gapClosed": [
+    1,
+    0.991,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4442,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "81_12": {
+   "attacker": 81,
+   "defender": 12,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5456,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.5415,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_25": {
+   "attacker": 109,
+   "defender": 25,
+   "spawns": 50,
+   "cells": 170,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.8399,
+   "random": 0.1407,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.953,
+    0.956,
+    0.957
+   ],
+   "gapClosed": [
+    0.943,
+    0.947,
+    0.948
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.8473,
+   "challengeRandom": 0.1626,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_26": {
+   "attacker": 109,
+   "defender": 26,
+   "spawns": 50,
+   "cells": 170,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.8232,
+   "random": 0.1346,
+   "triesTo90": [
+    6144,
+    8192,
+    4096
+   ],
+   "finalRatio": [
+    0.901,
+    0.908,
+    0.901
+   ],
+   "gapClosed": [
+    0.882,
+    0.89,
+    0.882
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.8073,
+   "challengeRandom": 0.1567,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_28": {
+   "attacker": 109,
+   "defender": 28,
+   "spawns": 50,
+   "cells": 170,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.6477,
+   "random": 0.1054,
+   "triesTo90": [
+    4096,
+    2048,
+    4096
+   ],
+   "finalRatio": [
+    0.922,
+    0.916,
+    0.914
+   ],
+   "gapClosed": [
+    0.907,
+    0.9,
+    0.897
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.6145,
+   "challengeRandom": 0.1245,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_27": {
+   "attacker": 109,
+   "defender": 27,
+   "spawns": 50,
+   "cells": 170,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.7495,
+   "random": 0.1387,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.958,
+    0.933,
+    0.918
+   ],
+   "gapClosed": [
+    0.949,
+    0.918,
+    0.9
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.7673,
+   "challengeRandom": 0.1656,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_5": {
+   "attacker": 109,
+   "defender": 5,
+   "spawns": 50,
+   "cells": 242,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.737,
+   "random": 0.0632,
+   "triesTo90": [
+    4096,
+    4096,
+    4096
+   ],
+   "finalRatio": [
+    0.975,
+    0.951,
+    0.96
+   ],
+   "gapClosed": [
+    0.973,
+    0.946,
+    0.956
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.7673,
+   "challengeRandom": 0.0801,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_10": {
+   "attacker": 109,
+   "defender": 10,
+   "spawns": 50,
+   "cells": 242,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 1,
+   "random": 0.0738,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    0.941
+   ],
+   "gapClosed": [
+    1,
+    1,
+    0.936
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 1,
+   "challengeRandom": 0.0876,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_6": {
+   "attacker": 109,
+   "defender": 6,
+   "spawns": 50,
+   "cells": 242,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 0.7877,
+   "random": 0.1253,
+   "triesTo90": [
+    2048,
+    2048,
+    4096
+   ],
+   "finalRatio": [
+    0.911,
+    0.905,
+    0.904
+   ],
+   "gapClosed": [
+    0.894,
+    0.887,
+    0.886
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 0.8073,
+   "challengeRandom": 0.1494,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "109_12": {
+   "attacker": 109,
+   "defender": 12,
+   "spawns": 50,
+   "cells": 242,
+   "d0Mean": 1010,
+   "evalSpawns": [
+    1,
+    4,
+    7,
+    10,
+    14,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    39,
+    42,
+    45,
+    48
+   ],
+   "best": 1,
+   "random": 0.1002,
+   "triesTo90": [
+    2048,
+    2048,
+    4096
+   ],
+   "finalRatio": [
+    0.951,
+    0.916,
+    0.976
+   ],
+   "gapClosed": [
+    0.946,
+    0.906,
+    0.973
+   ],
+   "challenge": [
+    2,
+    47,
+    24,
+    42,
+    7
+   ],
+   "challengeD0": 1128,
+   "challengeBest": 1,
+   "challengeRandom": 0.1215,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_25": {
+   "attacker": 2,
+   "defender": 25,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.6671,
+   "random": 0.1325,
+   "triesTo90": [
+    8192,
+    6144,
+    8192
+   ],
+   "finalRatio": [
+    0.915,
+    0.925,
+    0.963
+   ],
+   "gapClosed": [
+    0.894,
+    0.907,
+    0.953
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 0.6603,
+   "challengeRandom": 0.1304,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_26": {
+   "attacker": 2,
+   "defender": 26,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.8308,
+   "random": 0.1758,
+   "triesTo90": [
+    6144,
+    4096,
+    6144
+   ],
+   "finalRatio": [
+    0.924,
+    0.901,
+    0.947
+   ],
+   "gapClosed": [
+    0.904,
+    0.875,
+    0.932
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 0.8401,
+   "challengeRandom": 0.17,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_28": {
+   "attacker": 2,
+   "defender": 28,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5079,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.5078,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_27": {
+   "attacker": 2,
+   "defender": 27,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.5235,
+   "random": 0.1115,
+   "triesTo90": [
+    2048,
+    4096,
+    4096
+   ],
+   "finalRatio": [
+    0.903,
+    0.964,
+    0.927
+   ],
+   "gapClosed": [
+    0.877,
+    0.955,
+    0.907
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 0.5803,
+   "challengeRandom": 0.1118,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_5": {
+   "attacker": 2,
+   "defender": 5,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4667,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.4598,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_10": {
+   "attacker": 2,
+   "defender": 10,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.7427,
+   "random": 0.2331,
+   "triesTo90": [
+    2048,
+    8192,
+    4096
+   ],
+   "finalRatio": [
+    0.907,
+    0.908,
+    0.908
+   ],
+   "gapClosed": [
+    0.864,
+    0.865,
+    0.865
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 0.7002,
+   "challengeRandom": 0.2295,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_6": {
+   "attacker": 2,
+   "defender": 6,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.9189,
+   "random": 0.3273,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    0.918,
+    0.918,
+    0.932
+   ],
+   "gapClosed": [
+    0.873,
+    0.873,
+    0.894
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 0.9002,
+   "challengeRandom": 0.322,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "2_12": {
+   "attacker": 2,
+   "defender": 12,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2519,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5346,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2531.6,
+   "challengeBest": 1,
+   "challengeRandom": 0.5299,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_25": {
+   "attacker": 45,
+   "defender": 25,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.9053,
+   "random": 0.0363,
+   "triesTo90": [
+    null,
+    10240,
+    8192
+   ],
+   "finalRatio": [
+    0.895,
+    0.913,
+    0.948
+   ],
+   "gapClosed": [
+    0.891,
+    0.909,
+    0.946
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.0382,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_26": {
+   "attacker": 45,
+   "defender": 26,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.5091,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4984,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_28": {
+   "attacker": 45,
+   "defender": 28,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.579,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.5809,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_27": {
+   "attacker": 45,
+   "defender": 27,
+   "spawns": 108,
+   "cells": 170,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0.9211,
+   "random": 0.0489,
+   "triesTo90": [
+    4096,
+    6144,
+    12288
+   ],
+   "finalRatio": [
+    0.914,
+    0.914,
+    0.914
+   ],
+   "gapClosed": [
+    0.91,
+    0.91,
+    0.91
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.052,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_5": {
+   "attacker": 45,
+   "defender": 5,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0,
+   "random": 0,
+   "triesTo90": [
+    0,
+    0,
+    0
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0,
+   "challengeRandom": 0,
+   "pointless": true,
+   "ok": true,
+   "reasons": []
+  },
+  "45_10": {
+   "attacker": 45,
+   "defender": 10,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0,
+   "random": 0,
+   "triesTo90": [
+    0,
+    0,
+    0
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0,
+   "challengeRandom": 0,
+   "pointless": true,
+   "ok": true,
+   "reasons": []
+  },
+  "45_6": {
+   "attacker": 45,
+   "defender": 6,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 1,
+   "random": 0.4848,
+   "triesTo90": [
+    2048,
+    2048,
+    2048
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 1,
+   "challengeRandom": 0.4827,
+   "pointless": false,
+   "ok": true,
+   "reasons": []
+  },
+  "45_12": {
+   "attacker": 45,
+   "defender": 12,
+   "spawns": 108,
+   "cells": 242,
+   "d0Mean": 2534,
+   "evalSpawns": [
+    3,
+    10,
+    16,
+    23,
+    30,
+    37,
+    43,
+    50,
+    57,
+    64,
+    70,
+    77,
+    84,
+    91,
+    97,
+    104
+   ],
+   "best": 0,
+   "random": 0,
+   "triesTo90": [
+    0,
+    0,
+    0
+   ],
+   "finalRatio": [
+    1,
+    1,
+    1
+   ],
+   "gapClosed": [
+    1,
+    1,
+    1
+   ],
+   "challenge": [
+    3,
+    104,
+    44,
+    93,
+    14
+   ],
+   "challengeD0": 2534,
+   "challengeBest": 0,
+   "challengeRandom": 0,
+   "pointless": true,
+   "ok": true,
+   "reasons": []
   }
  },
  "dropped": [
-  "defender Tombstone (failed 2 of 3 pairs)",
-  "attacker Giant (failed 3 of 9 pairs)"
+  "attacker Prince (passed; over the limit of 6)",
+  "attacker Ram Rider (passed; over the limit of 6)"
  ]
 }

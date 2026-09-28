@@ -1714,3 +1714,70 @@ Two cells per team for the Tombstone, in the lab's measurement; any building
 flush with an edge and the river bank is a candidate pocket. A fix changes
 trajectories wherever a troop brushes a building, so replays and win rates are
 not comparable across it.
+
+## Item 34 — the Battle Ram keeps swinging at a building; the real one breaks on its first hit
+
+**Status: PROPOSED 2026-09-28, NOT changed.** **Class:** card behaviour.
+**GAMEPLAY-AFFECTING** if fixed. Found while adding the Battle Ram to the
+Reflex Lab (`web/lab/`), which ships it as the engine has it.
+
+### The gap
+
+The real Battle Ram hits the first building it reaches once (double damage
+if it is charging), then **breaks**, releasing its two Barbarians. Two
+independent sources, fetched 2026-09-28: the Clash Royale Wiki's card page
+("Once it reaches a building or it is destroyed, it will break and reveal the
+two Barbarians underneath", via search; the page itself answers automated
+fetches with HTTP 402) and RoyaleRep's card text ("Two Barbarians charge
+behind a ram, then leap out swinging after it breaks").
+
+The engine's Battle Ram (`CardRegistry.h`, id 81) is an ordinary
+building-targeter with a charge: it keeps attacking, 192 a hit every 1.4 s
+after the 384 charge hit, until something kills it, and only then releases the
+Barbarians (`SpawnOnDeath`).
+
+### Evidence
+
+`tools/lab/out/lab_cli.exe trace 81 14 20` (Ram dropped for team 1 at the
+right bridge, no defender, tick by tick):
+
+```
+t= 97  tower hit: -384          the charge hit
+t=106  Battle Ram gone          killed by the tower 0.9 s later, not broken
+t=107  Barbarians x2 appear
+```
+
+Against a Princess Tower the two nearly coincide, because the tower kills the
+Ram's 691 hp almost at once. Against a defending **building** they do not: a
+Cannon pulled Ram keeps swinging at the Cannon until the Cannon or the tower
+kills it, instead of hitting once and turning into two Barbarians on the spot.
+That changes exactly the interaction the lab lets a visitor explore (pulling
+the Ram with a building).
+
+### The fix (proposed)
+
+One builder call: `.withDieAfterFirstHit()` on the base Battle Ram, the
+mechanism Wall Breakers and the Spirits already use
+(`CombatEntity::dieAfterFirstHit` sets `hp = 0` on the hit, so the ordinary
+death path fires `SpawnOnDeath`). To confirm after the change,
+`lab_cli trace 81 14 20` should show the Ram gone on the tick of its first
+hit and the Barbarians the tick after.
+
+Not in scope, and deliberately left alone:
+
+- **The Evolution (161)**: its "Head-First Ram" keeps double damage on every
+  later hit, which implies it does not break; not verified.
+- **Stats.** The engine's 691 hp and 192 damage look like Barbarian-scale
+  numbers, and the sources above suggest a level-11 Ram closer to ~920 hp and
+  ~575 charge damage (the Wiki's level-1 row, 430 / 135 / 270, scaled by the
+  usual 10% a level; RoyaleRep lists a 573 charge). Neither source was
+  readable in full, so no number is proposed here; the maintainer can read
+  the in-game card at level 11.
+
+### Blast radius
+
+Every Battle Ram push: the Barbarians arrive at the first building about one
+Ram lifetime earlier, and a building that pulls the Ram takes one hit instead
+of several. Win rates for decks with the Ram are not comparable across it.
+The lab's Battle Ram tables would need rebuilding (`tools/lab/curate.mjs`
+rebuilds whatever is missing: delete `tools/lab/out/tables/81_*`).

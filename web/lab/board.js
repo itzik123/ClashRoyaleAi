@@ -182,8 +182,26 @@
 
       const frame = state.frameA || (this.arena && this.arena.towers);
       if (frame) this.drawEntities(frame, state.frameB, state.frac || 0);
-      if (state.spawns && state.preview != null && !state.frameA) this.drawPreviewAttacker(state.spawns[state.preview], state.previewSymbol);
+      if (state.spawns && state.preview != null && !state.frameA)
+        this.drawPreviewAttacker(state.spawns[state.preview], state.previewSymbol, state.previewLabel);
       if (state.ghost) this.drawGhost(state.ghost);
+      if (state.caption) this.drawCaption(state.caption);
+    }
+
+    // A small label chip across the top of the arena.
+    drawCaption(text) {
+      const c = this.ctx, fs = Math.max(8, Math.min(12, this.cs * 0.42));
+      c.font = `600 ${fs}px ${FONT}`;
+      const maxW = this.arena.width * this.cs - 8;
+      let t = text;
+      while (c.measureText(t).width + 18 > maxW && t.length > 4) t = t.slice(0, -2).trimEnd() + '…';
+      const tw = c.measureText(t).width + 18, th = fs + 12;
+      const x = this.w / 2 - tw / 2, y = this.oy + this.pad + Math.max(4, this.cs * 0.3);
+      c.fillStyle = 'rgba(11,11,12,.82)';
+      roundRect(c, x, y, tw, th, th / 2); c.fill();
+      c.fillStyle = '#fff';
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(t, this.w / 2, y + th / 2 + 0.5);
     }
 
     drawHeat(heat, cells, greedy) {
@@ -191,6 +209,10 @@
       let max = 0;
       for (let i = 0; i < heat.length; i++) if (heat[i] > max) max = heat[i];
       if (max <= 0) return;
+      // Scaled to the peak, but never below six times uniform: an untrained
+      // network's near-even spread reads as a faint wash, not a board on fire,
+      // and it brightens as the probability gathers on a few cells.
+      max = Math.max(max, 6 / heat.length);
       const inset = Math.max(0.5, this.cs * 0.06), rr = Math.max(1, this.cs * 0.18);
       for (let i = 0; i < cells.length; i++) {
         const v = heat[i] / max;
@@ -230,7 +252,7 @@
       }
     }
 
-    drawPreviewAttacker(spawn, symbol) {
+    drawPreviewAttacker(spawn, symbol, label = 'drag me') {
       if (!spawn) return;
       const c = this.ctx, p = this.toCanvas(spawn[0], spawn[1]);
       const r = this.cs * 0.62, t = performance.now() / 1000;
@@ -241,7 +263,7 @@
       c.font = `600 ${Math.max(8, this.cs * 0.36)}px ${FONT}`;
       c.textAlign = 'center'; c.textBaseline = 'top';
       c.fillStyle = 'rgba(255,255,255,.9)';
-      c.fillText('drag me', p.x, p.y + r + 6);
+      if (label) c.fillText(label, p.x, p.y + r + 6);
     }
 
     // The engine's forbidden region, tinted the way the real game tints it.
@@ -324,8 +346,16 @@
         return;
       }
       if (flags & F.SPELL) {
-        c.beginPath(); c.arc(p.x, p.y, this.cs * 2.5, 0, Math.PI * 2);
-        c.fillStyle = team === 0 ? 'rgba(74,158,255,.1)' : 'rgba(255,82,82,.1)'; c.fill();
+        // A spell in the air (the Goblin Barrel): where it will land, pulsing,
+        // and the card itself over it.
+        const t = performance.now() / 1000, r = this.cs * 0.9;
+        c.save();
+        c.setLineDash([4, 3]);
+        c.strokeStyle = team === 0 ? BLUE : RED;
+        c.lineWidth = 2;
+        c.beginPath(); c.arc(p.x, p.y, r + 2 * Math.sin(t * 10), 0, Math.PI * 2); c.stroke();
+        c.restore();
+        this.drawUnitBody(p, this.cs * 0.45, team, e[9], 0.95, false, 1, 1);
         return;
       }
       const building = !!(flags & F.BUILDING);

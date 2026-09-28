@@ -24,13 +24,25 @@
       const c = this.ctx;
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
       c.clearRect(0, 0, w, h);
-      const L = 34, R = 68, T = 8, B = 20;
+      // The line labels at the right edge, gathered first so the margins can
+      // be measured from them: Unbounded is wide, and a fixed margin clipped
+      // "random 41%" and "100%".
+      const labels = [];
+      for (const [key, label] of [['random', 'random'], ['best', 'best'], ['you', 'you']]) {
+        const v = this.refs[key];
+        if (v != null) labels.push({ key, v, text: `${label} ${Math.round(v * 100)}%`, color: COLORS[key], dash: true });
+      }
+      const lp = this.points.length ? this.points[this.points.length - 1] : null;
+      if (lp) labels.push({ key: 'ai', v: lp.v, text: `AI ${Math.round(lp.v * 100)}%`, color: COLORS.ai });
+      c.font = `600 9px ${FONT}`;
+      const labelW = Math.max(c.measureText('random 100%').width, ...labels.map(l => c.measureText(l.text).width));
+      c.font = `500 9px ${FONT}`;
+      const L = Math.ceil(c.measureText('100%').width) + 10, R = Math.ceil(labelW) + 12, T = 9, B = 20;
       const pw = w - L - R, ph = h - T - B;
-      const last = this.points.length ? this.points[this.points.length - 1].tries : 0;
+      const last = lp ? lp.tries : 0;
       const xMax = niceMax(Math.max(2000, last * 1.08));
       const X = t => L + (t / xMax) * pw, Y = v => T + (1 - Math.max(-0.05, Math.min(1, v))) * ph;
 
-      c.font = `500 9px ${FONT}`;
       c.fillStyle = '#6E6E73';
       c.strokeStyle = 'rgba(255,255,255,.06)';
       c.lineWidth = 1;
@@ -45,20 +57,16 @@
         c.fillText(t >= 1000 ? `${+(t / 1000).toFixed(1)}k` : `${t}`, X(t), T + ph + 6);
       }
       c.textAlign = 'right';
-      c.fillText('tries', L + pw + R - 4, T + ph + 6);
+      c.fillText('tries', w - 2, T + ph + 6);
 
-      // Reference lines, labelled at the right edge.
-      const refs = [['random', 'random'], ['best', 'best'], ['you', 'you']];
-      const labels = [];
-      for (const [key, label] of refs) {
-        const v = this.refs[key];
-        if (v == null) continue;
+      // Reference lines, dashed.
+      for (const l of labels) {
+        if (!l.dash) continue;
         c.save();
         c.setLineDash([5, 4]);
-        c.strokeStyle = COLORS[key]; c.lineWidth = 1.5;
-        c.beginPath(); c.moveTo(L, Y(v)); c.lineTo(L + pw, Y(v)); c.stroke();
+        c.strokeStyle = l.color; c.lineWidth = 1.5;
+        c.beginPath(); c.moveTo(L, Y(l.v)); c.lineTo(L + pw, Y(l.v)); c.stroke();
         c.restore();
-        labels.push({ y: Y(v), text: `${label} ${Math.round(v * 100)}%`, color: COLORS[key] });
       }
 
       // The learner: an area under its line, then the line.
@@ -72,16 +80,25 @@
         c.beginPath();
         this.points.forEach((p, i) => (i ? c.lineTo(X(p.tries), Y(p.v)) : c.moveTo(X(p.tries), Y(p.v))));
         c.strokeStyle = COLORS.ai; c.lineWidth = 2.2; c.lineJoin = 'round'; c.stroke();
-        const lp = this.points[this.points.length - 1];
         c.beginPath(); c.arc(X(lp.tries), Y(lp.v), 3.5, 0, Math.PI * 2); c.fillStyle = COLORS.ai; c.fill();
-        labels.push({ y: Y(lp.v), text: `AI ${Math.round(lp.v * 100)}%`, color: COLORS.ai });
       }
 
-      // Right-edge labels, nudged apart so they never overlap.
+      // Right-edge labels, 11 px apart so they never overlap: pushed down
+      // from the top, then back up from the bottom so none leaves the plot.
+      const GAP = 11, top = T + 4, bottom = T + ph - 3;
+      labels.forEach(l => { l.y = Y(l.v); });
       labels.sort((a, b) => a.y - b.y);
-      for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 11) labels[i].y = labels[i - 1].y + 11;
+      for (let i = 0; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, i ? labels[i - 1].y + GAP : top);
+      for (let i = labels.length - 1; i >= 0; i--)
+        labels[i].y = Math.min(labels[i].y, i < labels.length - 1 ? labels[i + 1].y - GAP : bottom);
       c.textAlign = 'left'; c.textBaseline = 'middle'; c.font = `600 9px ${FONT}`;
-      for (const l of labels) { c.fillStyle = l.color; c.fillText(l.text, L + pw + 5, Math.min(T + ph, l.y)); }
+      this.labelBoxes = [];
+      for (const l of labels) {
+        c.fillStyle = l.color;
+        c.fillText(l.text, L + pw + 6, l.y);
+        this.labelBoxes.push({ text: l.text, x: L + pw + 6, right: L + pw + 6 + c.measureText(l.text).width, y: l.y });
+      }
+      this.width = w;
     }
   }
 

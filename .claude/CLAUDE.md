@@ -315,7 +315,18 @@ end to end against the native engine through `tools/lab/dev_server.mjs`.
   (a Tombstone on the river corner traps its own Skeletons).
 - **The learner finds real local optima.** Giant vs Cannon: the lane Cannon
   (50%) versus the centre pull into both towers' range (up to 90%). The page
-  shows the brute-force best as a line, so a plateau reads honestly.
+  shows the brute-force best as a line, so a plateau reads honestly. With a
+  constant entropy bonus of 0.01 it missed 90% of the best on 5 of 6 runs
+  (3 seeds x batch 16 and 64); annealed 0.1 -> 0.005 over 10,000 tries (the
+  default since the review), on 1 of 6 and none at the page's batch of 16.
+- **A Goblin Barrel is an AreaSpell, not a CombatEntity**, so "does team 1
+  still have a unit" must count its in-flight spells, or a barrel rollout
+  ends on tick 1 with zero damage and every spawn is dropped. Spell attackers
+  are admitted by measurement (cast on an empty board, look for bodies).
+- **UPSTREAM item 34: the engine's Battle Ram never breaks.** It keeps
+  swinging at a building; the real one breaks on its first hit and releases
+  the Barbarians. The fix is one `withDieAfterFirstHit()`; proposed, not made.
+  `lab_cli trace <card> <x> <y>` prints any attacker's life tick by tick.
 - **WASM parity should be exact, not approximate**: the gameplay path uses
   no libm transcendental (only the Graveyard ring, Skeleton King and the
   observation encoder call sin/cos/exp) and iterates no hash container.

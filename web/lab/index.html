@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="lab.css">
 </head>
 <body>
+<canvas id="bgfx" aria-hidden="true"></canvas>
 
 <header class="top">
   <div class="brand">
@@ -56,6 +57,18 @@
       <canvas id="board" aria-label="The arena"></canvas>
       <div class="board-banner" id="banner" hidden></div>
       <div class="countdown" id="countdown" hidden></div>
+      <div class="board-cta" id="boardCta" hidden>
+        <div class="cta-kicker" id="ctaKicker"></div>
+        <div class="cta-title" id="ctaTitle"></div>
+        <p class="cta-sub" id="ctaSub"></p>
+        <button class="btn primary big" id="ctaBtn" type="button"></button>
+        <button class="btn ghost" id="ctaAlt" type="button" hidden></button>
+      </div>
+    </div>
+    <div class="board-bar" id="boardBar" hidden>
+      <button class="btn primary" id="barTrain" type="button">Train</button>
+      <button class="btn" id="barShow" type="button">Show me</button>
+      <button class="btn" id="barResults" type="button" disabled>See results</button>
     </div>
     <div class="tray" id="tray" hidden>
       <div class="tray-card" id="trayCard" role="button" tabindex="0" aria-label="Drag your defender onto the board">
@@ -65,6 +78,7 @@
           <span class="tray-hint" id="trayHint">Drag onto the board</span>
         </span>
       </div>
+      <button class="demo-skip" id="demoSkip" type="button" hidden>Skip demo</button>
     </div>
   </section>
 
@@ -141,10 +155,10 @@
 <!-- Intro -->
 <div class="overlay" id="intro" role="dialog" aria-modal="true" aria-labelledby="introTitle">
   <div class="intro-card">
-    <p class="eyebrow">Show HN demo</p>
+    <p class="eyebrow">An interactive demo</p>
     <h2 id="introTitle">Can you out-think a neural network that has never seen the game?</h2>
     <ol class="intro-steps">
-      <li><span class="n">1</span><div><b>Pick a matchup.</b> An enemy troop charges your tower. You get one defending card.</div></li>
+      <li><span class="n">1</span><div><b>Pick a matchup.</b> An enemy attack heads for your tower. You get one defending card.</div></li>
       <li><span class="n">2</span><div><b>Defend it yourself.</b> Drag the card onto the board. Where you drop it and when both count. Optional.</div></li>
       <li><span class="n">3</span><div><b>Watch a network learn it.</b> It starts from zero. A real Clash Royale simulator, written in C++ and compiled to WebAssembly, scores every try right here in your browser.</div></li>
     </ol>
@@ -160,7 +174,7 @@
   <div class="intro-card about">
     <h2 id="aboutTitle">How it works</h2>
     <p><b>The engine.</b> The arena, the troops, the towers and every hit are simulated by the project's C++ engine, the same code the full agent trains against, compiled to WebAssembly. It is deterministic: the same drop always gives the same result.</p>
-    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side. The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented.</p>
+    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side (a Goblin Barrel is thrown at a random spot around one of your towers). The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented.</p>
     <p><b>The network.</b> <span id="aboutParams">A few thousand</span> weights in plain JavaScript, no ML library: the attacker's position goes in, a map of cell preferences and a delay choice come out. It learns with REINFORCE, the simplest policy-gradient method: tries that beat the usual result for that spawn become more likely.</p>
     <p><b>The honest part.</b> This is a miniature. The real agent picks from a hand of four cards with an elixir economy, every second of a three-minute match, and needs days of training.</p>
     <div class="row"><button class="btn primary" id="btnAboutClose" type="button">Close</button></div>
@@ -168,8 +182,12 @@
 </div>
 
 <div class="drag-avatar" id="dragAvatar" hidden aria-hidden="true"></div>
+<div class="demo-hand" id="demoHand" hidden aria-hidden="true">
+  <svg viewBox="0 0 32 32" width="34" height="34"><path d="M11 3.5c1.4 0 2.5 1.1 2.5 2.5v8.2l1-.1V11c0-1.4 1.1-2.5 2.5-2.5s2.5 1.1 2.5 2.5v3.3l1-.1v-1.5c0-1.4 1.1-2.5 2.5-2.5s2.5 1.1 2.5 2.5v9.3c0 4.6-3.7 8.5-8.3 8.5h-1.6c-2.4 0-4.7-1.1-6.2-3l-5.2-6.5c-.9-1.1-.7-2.7.4-3.6 1-.8 2.5-.7 3.4.2l1.5 1.6V6c0-1.4 1.1-2.5 2.5-2.5z" fill="#fff" stroke="#0B0B0C" stroke-width="1.6" stroke-linejoin="round"/></svg>
+</div>
 <div class="toast" id="toast" hidden role="status"></div>
 
+<script src="bg.js"></script>
 <script src="board.js"></script>
 <script src="chart.js"></script>
 <script src="lab.js"></script>

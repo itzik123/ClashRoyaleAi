@@ -3,6 +3,11 @@
 Drives REAL input events through the DevTools protocol, so the page's pointer
 handling is what is tested, not a JavaScript shortcut:
 
+  demo           Start plays the how-to-play demo (the hand appears), then
+                 the board offers "Start round 1"; the board's own buttons
+                 take real clicks (round 1, next round, Train)
+  matchups       every attacker x defender the page offers loads, with no
+                 page error (the Royal Giant pairings once did not)
   mouse drag     tray card -> a chosen legal cell: placed on exactly that cell
   touch drag     the same with touch events; the aim point floats 60 px above
                  the finger, so the finger is released 60 px below the cell
@@ -11,7 +16,8 @@ handling is what is tested, not a JavaScript shortcut:
   layout         no horizontal scroll, board and tray on screen, at phone and
                  desktop sizes
   training       tries advance, the curve fills, dragging the attacker moves
-                 the preview; results render a verdict
+                 the preview, the chart's labels stay inside it; results
+                 play the heatmap converging, then render a verdict
 
 Starts its own dev server (tools/lab/dev_server.mjs, the native engine) unless
 --url is given, e.g. a WASM build served elsewhere.
@@ -93,6 +99,24 @@ def touch_drag(b, start, end, steps=12):
     b.call("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
 
 
+def click(b, x, y):
+    mouse(b, "mouseMoved", x, y, buttons=0)
+    mouse(b, "mousePressed", x, y)
+    mouse(b, "mouseReleased", x, y)
+
+
+def click_el(b, el_id):
+    """A real mouse click at the element's centre; returns the id of what was
+    actually under the pointer, so a covered button is caught."""
+    js(b, f"document.getElementById('{el_id}').scrollIntoView({{block: 'center'}}); return true;")
+    time.sleep(0.1)
+    x, y = js(b, f"const r = document.getElementById('{el_id}').getBoundingClientRect();"
+                 "return [r.left + r.width / 2, r.top + r.height / 2];")
+    top = js(b, f"const e = document.elementFromPoint({x}, {y}); return e && e.id;")
+    click(b, x, y)
+    return top
+
+
 def open_lab(b, url):
     b.open(url, "!!window.__lab && !!window.__lab.state.matchup")
     b.eval("document.fonts.ready.then(() => true)")
@@ -118,6 +142,50 @@ def start_round(b):
 def finish_round(b):
     wait(b, "!__lab.state.roundLive && document.getElementById('btnRound').disabled === false",
          timeout=40, what="the round to finish")
+
+
+def demo_checks(b, url):
+    open_lab(b, url)
+    click_el(b, "btnStart")
+    check(js(b, "return !!__lab.state.demoPlay;"), "Start plays the how-to-play demo")
+    wait(b, "!document.getElementById('demoHand').hidden", timeout=6, what="the demo's hand to appear")
+    wait(b, "!document.getElementById('boardCta').hidden", timeout=15, what="the board's Start card after the demo")
+    txt = js(b, "return document.getElementById('ctaBtn').textContent;")
+    check(txt == "Start round 1", f"after the demo the board offers {txt!r}")
+    top = click_el(b, "ctaBtn")
+    check(top == "ctaBtn", f"the board's Start button is not covered (hit {top!r})")
+    wait(b, "__lab.state.roundLive === true", what="round 1 to start from the board's button")
+    finish_round(b)
+    wait(b, "!document.getElementById('boardCta').hidden", timeout=5, what="the board's next-round card")
+    txt = js(b, "return document.getElementById('ctaBtn').textContent;")
+    check(txt == "Next round", f"after round 1 the board offers {txt!r}")
+    click_el(b, "ctaBtn")
+    wait(b, "__lab.state.roundLive === true && __lab.state.round === 1", what="round 2 to start from the board's button")
+    finish_round(b)
+
+
+def matchup_checks(b, url):
+    open_lab(b, url)
+    js(b, "document.getElementById('btnStart').click(); __lab.stopDemo(); return true;")
+    roster = js(b, "const r = __lab.state.roster; return {a: r.attackers.map(c => c.id), d: r.defenders.map(c => c.id),"
+                   " keys: Object.keys(r.matchups)};")
+    ok, bad = 0, []
+    for a in roster["a"]:
+        for d in roster["d"]:
+            if f"{a}_{d}" not in roster["keys"]:
+                bad.append(f"{a}_{d} missing from the roster")
+                continue
+            js(b, f"document.querySelector('.tile.atk[data-id=\"{a}\"]').click();"
+                  f"document.querySelector('.tile.def[data-id=\"{d}\"]').click(); return true;")
+            if not wait(b, f"__lab.state.key === '{a}_{d}' && __lab.state.matchup.attacker === {a}", timeout=20,
+                        what=f"matchup {a}_{d} to load"):
+                bad.append(f"{a}_{d} did not load")
+                continue
+            ok += 1
+    errs = js(b, "return window.__labErrors || [];")
+    extra = ("; " + "; ".join(bad[:5]) if bad else "") + ("; errors " + str(errs[:3]) if errs else "")
+    check(not bad and not errs, f"all {ok} offered matchups load "
+                                f"({len(roster['a'])} attackers x {len(roster['d'])} defenders){extra}")
 
 
 def placement_checks(b, url, touch):
@@ -188,13 +256,20 @@ def layout_checks(b, url, w, h, dpr, mobile):
 def training_checks(b, url):
     open_lab(b, url)
     js(b, "document.getElementById('btnStart').click(); document.getElementById('btnSkip').click();"
-          "document.querySelector('[data-speed=full]').click(); document.getElementById('btnTrain').click(); return true;")
+          "document.querySelector('[data-speed=full]').click(); return true;")
+    txt = js(b, "return !document.getElementById('boardCta').hidden && document.getElementById('ctaBtn').textContent;")
+    check(txt == "Train", f"the board offers Train ({txt!r})")
+    click_el(b, "ctaBtn")
     time.sleep(4)
     st = js(b, "const s = __lab.state; return {tries: s.tries, curve: s.curve.length, heat: s.heat && s.heat.length,"
                " cells: s.matchup.cells.length, preview: s.preview};")
     check(st["tries"] > 500, f"training advances ({st['tries']} tries in 4 s at full speed)")
     check(st["curve"] > 2, f"the learning curve fills ({st['curve']} points)")
     check(st["heat"] == st["cells"], f"heatmap covers every legal cell ({st['heat']} of {st['cells']})")
+    boxes = js(b, "return {w: __lab.chart.width, b: __lab.chart.labelBoxes};")
+    widest = max((x["right"] for x in boxes["b"]), default=0)
+    check(bool(boxes["b"]) and widest <= boxes["w"],
+          f"the chart's labels fit inside it ({[x['text'] for x in boxes['b']]}, widest ends at {widest:.0f} of {boxes['w']})")
     # Drag the attacker from one lane to the other.
     a = js(b, "const s = __lab.state.matchup.spawns[__lab.state.preview]; const p = __lab.cellCenterClient(s[0], s[1]); return [p.x, p.y, s[0]];")
     other_x = 14 if a[2] < 9 else 3
@@ -203,8 +278,12 @@ def training_checks(b, url):
     time.sleep(0.5)
     moved = js(b, "return __lab.state.matchup.spawns[__lab.state.preview][0];")
     check(abs(moved - other_x) <= 1, f"dragging the attacker moves the preview to the other lane (x {a[2]} -> {moved})")
-    js(b, "document.getElementById('btnResults').click(); return true;")
+    click_el(b, "barResults")
     wait(b, "__lab.state.stage === 'results'", what="the results stage")
+    time.sleep(1.0)
+    early = js(b, "return document.getElementById('verdict').classList.contains('shown');")
+    check(early is False, "the verdict waits for the heatmap to converge")
+    wait(b, "document.getElementById('verdict').classList.contains('shown')", timeout=10, what="the verdict")
     v = js(b, "return document.getElementById('verdict').textContent;")
     check("learner saved" in v, f"results verdict renders: {v!r}")
     errs = js(b, "return window.__labErrors || [];")
@@ -226,6 +305,10 @@ def main():
     try:
         with Browser(1440, 900, 1.0, os.environ.get("CLASH_BROWSER")) as b:
             b.call("Runtime.enable")
+            print("demo and the board's buttons, 1440x900")
+            demo_checks(b, url)
+            print("every offered matchup")
+            matchup_checks(b, url)
             print("desktop mouse, 1440x900")
             placement_checks(b, url, touch=False)
             print("phone touch, 390x844")

@@ -148,3 +148,43 @@ needs the maintainer's explicit yes, which was asked and not yet given. So
 the WASM compile is the one step left for the maintainer: everything else is
 built and tested against the native engine, and the build script is a single
 command.
+
+## Revision after the first hands-on review (2026-09-28)
+
+The maintainer's review of the first build, and what changed:
+
+- **General-purpose copy.** "Show HN" is gone from the intro; the page is a
+  demo in its own right.
+- **Royal Giant pairings failed to load.** The committed roster was a
+  provisional one with a single Royal Giant pairing, while the page offered
+  nine. The full curation run replaces it, the page no longer offers a pairing
+  the roster lacks, and `check_lab_ui.py` now loads every offered pairing.
+- **Attackers: five or six**, with Battle Ram and Goblin Barrel. The Goblin
+  Barrel is a spell, so the engine surface gained spell attackers that drop
+  troops (measured, not listed: cast it on an empty board and look for
+  bodies), aimed at the cells within 2 of either of our Princess Towers. A
+  rollout also keeps running while the barrel is in the air. The Battle Ram
+  deviates from the real card (UPSTREAM item 34) and ships as the engine has
+  it, with the deviation documented.
+- **Defenders: the Knight is cut** (a weaker Valkyrie against every
+  attacker; against the barrel 80% vs 99% best), and the Tombstone stays out
+  (item 33).
+- **Onboarding.** A ten-second demo after the intro, always Hog Rider vs
+  Cannon: countdown, the Hog drops, a hand drags the Cannon from the tray and
+  lets go on the engine's drop tick, the Hog turns onto the Cannon. Recorded
+  from the engine at load; "How to play" replays it.
+- **Buttons on the board.** A card in the middle of the board carries the
+  next action (start round, next round with the last score, watch the AI,
+  Train), and a bar under the board carries Train/Pause, Show me and See
+  results. The side panel keeps its buttons.
+- **Chart labels clipped** ("100%", "random 41%"): the margins are now
+  measured from the label text, and the labels are kept inside the plot.
+- **Results show the process.** Each attack's heatmap is snapshotted during
+  training and replayed converging, paced by how much it changes, before the
+  answer, the replays (at 0.67x) and the verdict appear.
+- **Background.** A looping field of small squares in the two team colours,
+  in waves; one still frame under reduced motion.
+- **Learner.** The entropy bonus now anneals 0.1 -> 0.005 over 10,000 tries
+  (it was a constant 0.01). On Giant vs Cannon, 3 seeds at batches of 16 and
+  64, that cut the runs missing 90% of the best from 5 of 6 to 1 of 6 (none
+  at 16). The curation gate trains at the page's batch of 16.
