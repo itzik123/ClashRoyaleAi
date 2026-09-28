@@ -466,3 +466,6 @@ _replay_cache/
 # Local checkpoint archives. Each holds its own README describing what it
 # holds; they document weights that are not in the repository, so they stay local.
 python_ai/archive_*/
+
+# Reflex Lab native build output
+tools/lab/out/
