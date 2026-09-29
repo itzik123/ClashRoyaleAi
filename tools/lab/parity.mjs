@@ -5,7 +5,7 @@
 // Loads web/lab/engine/engine.js (built by web/lab/engine/build.ps1) and the
 // native lab_cli (tools/lab/build_cli.ps1), sets up every roster matchup in
 // both, and compares the matchup JSON, the arena JSON, and 200 seeded tries
-// of tower damage per matchup. The engine is deterministic and its gameplay
+// of tower damage and defender survival per matchup. The engine is deterministic and its gameplay
 // path uses no libm transcendental and iterates no hash container, so the
 // comparison is EQUALITY, not a tolerance. Exits non-zero on any difference.
 import { execFileSync } from 'node:child_process';
@@ -48,11 +48,14 @@ for (const [key, m] of Object.entries(roster.matchups)) {
   for (let i = 0; i < TRIES; i++) {
     triples.push(rand(parsed.spawns.length), rand(parsed.cells.length), rand(parsed.delaySteps));
   }
+  // Damage and survival, interleaved, in both.
   const dw = Array.from(wasm.rolloutBatch(Int32Array.from(triples)));
   const [mn, bn] = native([`matchup ${m.attacker} ${m.defender}`, `batch ${TRIES} ${triples.join(' ')}`]);
   const dn = bn.split(' ').map(Number);
   let diff = mw === mn ? 0 : 1;
-  for (let i = 0; i < TRIES; i++) if (dw[i] !== dn[i]) diff++;
+  if (dw.length !== 2 * TRIES || dn.length !== 2 * TRIES) diff++;
+  // Native prints 9 significant digits, which round-trip a float32 exactly.
+  for (let i = 0; i < 2 * TRIES; i++) if (dw[i] !== Math.fround(dn[i])) diff++;
   compared += TRIES;
   if (diff) { fails++; console.log(`  FAIL  ${key}: ${diff} differences${mw === mn ? '' : ' (matchup JSON differs)'}`); }
   else console.log(`  ok    ${key}: matchup JSON and ${TRIES}/${TRIES} tries identical`);

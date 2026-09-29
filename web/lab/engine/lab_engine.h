@@ -1,6 +1,6 @@
 #pragma once
-// The Reflex Lab's view of the engine: one attacker, one defender, and the
-// tower damage the defender prevents. Everything the page knows about the
+// The Reflex Lab's view of the engine: one attacker, one defender, the
+// tower damage the defender prevents, and how much of the defender survives. Everything the page knows about the
 // board comes from here -- legality, geometry, card facts -- so the page keeps
 // no second copy of an engine constant.
 //
@@ -87,6 +87,51 @@ inline std::string jsonEscape(const std::string& s) {
     }
     return out;
 }
+
+// How much of the defender is still standing: every team-0 body that is not
+// a tower, its HP now over the most it ever had. A building's decay counts,
+// as its HP bar shows it; a body that died counts as 0. Observed after every
+// step once the defender is down, so a body spawned later (a death spawn)
+// joins the total when it first appears.
+class SurvivalTracker {
+public:
+    void observe(ClashEnv& env) {
+        for (const auto& e : env.debugGame().getBoard().getEntities()) {
+            if (!isDefenderBody(*e) || !e->isAlive()) continue;
+            int m = e->hp;
+            if (auto* b = dynamic_cast<const Building*>(e.get())) m = b->getMaxHp();
+            auto it = maxHp_.find(e->id);
+            if (it == maxHp_.end()) maxHp_.emplace(e->id, m);
+            else it->second = std::max(it->second, m);
+        }
+    }
+
+    // 0 when nothing was ever placed.
+    float survival(ClashEnv& env) const {
+        long total = 0, left = 0;
+        for (const auto& kv : maxHp_) total += kv.second;
+        if (total <= 0) return 0.0f;
+        for (const auto& e : env.debugGame().getBoard().getEntities())
+            if (isDefenderBody(*e) && e->isAlive() && maxHp_.count(e->id))
+                left += std::max(0, std::min(e->hp, maxHp_.at(e->id)));
+        return float(left) / float(total);
+    }
+
+    void clear() { maxHp_.clear(); }
+
+private:
+    std::unordered_map<int, int> maxHp_;
+
+    static bool isDefenderBody(const Entity& e) {
+        return e.team == 0 && !e.isTower() && dynamic_cast<const CombatEntity*>(&e) != nullptr;
+    }
+};
+
+// What a rollout reports.
+struct Outcome {
+    float damage;     // our tower HP lost
+    float survival;   // SurvivalTracker::survival when the rollout ends
+};
 
 // Entity flags in a frame.
 constexpr int F_FLYING = 1, F_BUILDING = 2, F_TOWER = 4, F_DEPLOYING = 8,
@@ -207,7 +252,7 @@ public:
         d0_.clear();
         std::vector<XY> kept;
         for (size_t i = 0; i < spawns_.size(); ++i) {
-            const float dmg = simulate(spawns_[i], NO_DEFENCE, 0, nullptr);
+            const float dmg = simulate(spawns_[i], NO_DEFENCE, 0, nullptr).damage;
             if (dmg > 0.0f) {
                 kept.push_back(spawns_[i]);
                 d0_.push_back(dmg);
@@ -246,13 +291,26 @@ public:
     }
 
     float rolloutAtTick(int spawn, int cell, int dropTick) const {
+        return outcomeAtTick(spawn, cell, dropTick).damage;
+    }
+
+    // The same rollout, with how much of the defender survived it.
+    Outcome outcome(int spawn, int cell, int delay) const {
+        return outcomeAtTick(spawn, cell, delay * DELAY_TICK_STEP);
+    }
+
+    Outcome outcomeAtTick(int spawn, int cell, int dropTick) const {
         checkSpawn(spawn);
         return simulate(spawns_[spawn], cell, dropTick, nullptr);
     }
 
-    // `sca` holds n (spawn, cell, delay) triples.
-    void rolloutBatch(const int* sca, int n, float* out) const {
-        for (int i = 0; i < n; ++i) out[i] = rollout(sca[3 * i], sca[3 * i + 1], sca[3 * i + 2]);
+    // `sca` holds n (spawn, cell, delay) triples; `survival` may be null.
+    void rolloutBatch(const int* sca, int n, float* damage, float* survival = nullptr) const {
+        for (int i = 0; i < n; ++i) {
+            const Outcome o = outcome(sca[3 * i], sca[3 * i + 1], sca[3 * i + 2]);
+            damage[i] = o.damage;
+            if (survival) survival[i] = o.survival;
+        }
     }
 
     // Every tick of one rollout, for animation. `dropTick` is in ticks so a
@@ -260,9 +318,9 @@ public:
     std::string framesJson(int spawn, int cell, int dropTick) const {
         checkSpawn(spawn);
         std::vector<std::string> frames;
-        const float dmg = simulate(spawns_[spawn], cell, dropTick, &frames);
+        const Outcome out = simulate(spawns_[spawn], cell, dropTick, &frames);
         std::ostringstream o;
-        o << "{\"damage\":" << dmg << ",\"frames\":[";
+        o << "{\"damage\":" << out.damage << ",\"survival\":" << out.survival << ",\"frames\":[";
         for (size_t i = 0; i < frames.size(); ++i) o << (i ? "," : "") << frames[i];
         o << "]}";
         return o.str();
@@ -273,7 +331,7 @@ public:
     float simulateWith(int spawn, int cell, int dropTick,
                        const std::function<void(ClashEnv&, int)>& onTick) const {
         checkSpawn(spawn);
-        return simulate(spawns_[spawn], cell, dropTick, nullptr, &onTick);
+        return simulate(spawns_[spawn], cell, dropTick, nullptr, &onTick).damage;
     }
 
     // ---- the live challenge ------------------------------------------------
@@ -288,6 +346,7 @@ public:
         livePlacedTick_ = -1;
         liveDone_ = false;
         liveMaxHp_.clear();
+        liveSurvival_.clear();
     }
 
     // Advance up to `ticks` ticks; the frames for each, as a JSON array.
@@ -298,6 +357,7 @@ public:
         for (int i = 0; i < ticks && !liveDone_; ++i) {
             live_->stepSelfPlayFast(4, 0.0f, 0.0f, 4, 0.0f, 0.0f, 1);
             ++liveTick_;
+            if (livePlacedTick_ >= 0) liveSurvival_.observe(*live_);
             if (i) o << ",";
             o << frameJson(*live_, liveTick_, liveMaxHp_);
             if (liveTick_ >= WINDOW_TICKS || !enemyUnitsRemain(*live_)) liveDone_ = true;
@@ -318,7 +378,8 @@ public:
     std::string liveStateJson() const {
         std::ostringstream o;
         o << "{\"tick\":" << liveTick_ << ",\"done\":" << (liveDone_ ? "true" : "false")
-          << ",\"damage\":" << liveDamage() << ",\"placedTick\":" << livePlacedTick_ << "}";
+          << ",\"damage\":" << liveDamage() << ",\"survival\":" << liveSurvival()
+          << ",\"placedTick\":" << livePlacedTick_ << "}";
         return o.str();
     }
 
@@ -326,6 +387,7 @@ public:
     int liveTick() const { return liveTick_; }
     int livePlacedTick() const { return livePlacedTick_; }
     float liveDamage() const { return live_ ? float(liveStartHp_ - towerHpSum(*live_, 0)) : 0.0f; }
+    float liveSurvival() const { return live_ ? liveSurvival_.survival(*live_) : 0.0f; }
 
 private:
     std::unique_ptr<ClashEnv> base_;
@@ -337,6 +399,7 @@ private:
     int liveStartHp_ = 0, liveTick_ = 0, livePlacedTick_ = -1;
     bool liveDone_ = false;
     std::unordered_map<int, int> liveMaxHp_;
+    SurvivalTracker liveSurvival_;
 
     // Does this spell put team-1 troops on the board? Measured, not read off a
     // card list: cast it on an empty board and look for bodies.
@@ -365,21 +428,24 @@ private:
 
     // The one rollout loop: rollout, frames and simulateWith all run it, and
     // the live stepper takes the same steps one call at a time.
-    float simulate(XY s, int cell, int dropTick, std::vector<std::string>* frames,
-                   const std::function<void(ClashEnv&, int)>* onTick = nullptr) const {
+    Outcome simulate(XY s, int cell, int dropTick, std::vector<std::string>* frames,
+                     const std::function<void(ClashEnv&, int)>* onTick = nullptr) const {
         ClashEnv env = base_->snapshot();
         env.inject(attacker_, float(s.x), float(s.y), 1);
         const int start = towerHpSum(env, 0);
         std::unordered_map<int, int> maxHp;
+        SurvivalTracker survival;
+        bool placed = false;
         if (frames) frames->push_back(frameJson(env, 0, maxHp));
         for (int t = 0; t < WINDOW_TICKS; ++t) {
-            if (cell != NO_DEFENCE && t == dropTick) placeDefender(env, cell);
+            if (cell != NO_DEFENCE && t == dropTick) { placeDefender(env, cell); placed = true; }
             env.stepSelfPlayFast(4, 0.0f, 0.0f, 4, 0.0f, 0.0f, 1);
+            if (placed) survival.observe(env);
             if (frames) frames->push_back(frameJson(env, t + 1, maxHp));
             if (onTick && *onTick) (*onTick)(env, t + 1);
             if (!enemyUnitsRemain(env)) break;
         }
-        return float(start - towerHpSum(env, 0));
+        return {float(start - towerHpSum(env, 0)), survival.survival(env)};
     }
 
     static void writeXY(std::ostringstream& o, const std::vector<XY>& v) {

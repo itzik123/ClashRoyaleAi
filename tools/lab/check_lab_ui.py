@@ -3,21 +3,24 @@
 Drives REAL input events through the DevTools protocol, so the page's pointer
 handling is what is tested, not a JavaScript shortcut:
 
-  demo           Start plays the how-to-play demo (the hand appears), then
-                 the board offers "Start round 1"; the board's own buttons
-                 take real clicks (round 1, next round, Train)
+  demo           Start plays nothing: the board offers the how-to-play demo
+                 (or a skip); the demo plays (the hand appears), then the
+                 board offers "Start round 1"; the board's own buttons take
+                 real clicks (round 1, next round, Train)
   matchups       every attacker x defender the page offers loads, with no
                  page error (the Royal Giant pairings once did not)
   mouse drag     tray card -> a chosen legal cell: placed on exactly that cell
-  touch drag     the same with touch events; the aim point floats 60 px above
-                 the finger, so the finger is released 60 px below the cell
+  touch drag     the same with touch events; the card lands under the finger,
+                 as in the game
   cancel         released off the board: nothing placed, the card returns
   illegal        released over the enemy half: refused, nothing placed
-  layout         no horizontal scroll, board and tray on screen, at phone and
-                 desktop sizes
+  layout         no horizontal scroll, board and tray on screen, the header's
+                 GitHub button bright and on screen, at phone and desktop sizes
   training       tries advance, the curve fills, dragging the attacker moves
                  the preview, the chart's labels stay inside it; results
-                 play the heatmap converging, then render a verdict
+                 play the heatmap converging, then render a verdict; the
+                 game-over screen opens after the first replay, links to
+                 GitHub, and closes
 
 Starts its own dev server (tools/lab/dev_server.mjs, the native engine) unless
 --url is given, e.g. a WASM build served elsewhere.
@@ -38,7 +41,6 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools" / "promo"))
 from cdp import Browser  # noqa: E402
 
-TOUCH_AIM_OFFSET = 60     # web/lab/lab.js TOUCH_AIM_OFFSET
 failures = []
 
 
@@ -145,9 +147,22 @@ def finish_round(b):
 
 
 def demo_checks(b, url):
+    # Skipping: Start, then the board's skip, goes straight to round 1.
     open_lab(b, url)
     click_el(b, "btnStart")
-    check(js(b, "return !!__lab.state.demoPlay;"), "Start plays the how-to-play demo")
+    check(js(b, "return !__lab.state.demoPlay;"), "Start does not play the demo by itself")
+    txt = js(b, "return !document.getElementById('boardCta').hidden && document.getElementById('ctaBtn').textContent;")
+    check(txt == "Watch how to play", f"the board offers the how-to-play demo first ({txt!r})")
+    click_el(b, "ctaAlt")
+    txt = js(b, "return !document.getElementById('boardCta').hidden && document.getElementById('ctaBtn').textContent;")
+    check(txt == "Start round 1" and js(b, "return !__lab.state.demoPlay;"),
+          f"skipping the demo offers round 1 at once ({txt!r})")
+
+    # Watching it.
+    open_lab(b, url)
+    click_el(b, "btnStart")
+    top = click_el(b, "ctaBtn")
+    check(top == "ctaBtn" and js(b, "return !!__lab.state.demoPlay;"), f"the board's button plays the demo (hit {top!r})")
     wait(b, "!document.getElementById('demoHand').hidden", timeout=6, what="the demo's hand to appear")
     wait(b, "!document.getElementById('boardCta').hidden", timeout=15, what="the board's Start card after the demo")
     txt = js(b, "return document.getElementById('ctaBtn').textContent;")
@@ -212,8 +227,6 @@ def placement_checks(b, url, touch):
     # 1. a drop on a legal cell lands on exactly that cell
     start_round(b)
     end = cell_center(b, *target)
-    if touch:
-        end = [end[0], end[1] + TOUCH_AIM_OFFSET]
     drag = touch_drag if touch else mouse_drag
     drag(b, tray_center(b), end)
     wait(b, "__lab.state.attempts[0] && __lab.state.attempts[0].cell != null", timeout=5,
@@ -223,6 +236,8 @@ def placement_checks(b, url, touch):
     finish_round(b)
     score = js(b, "return __lab.state.attempts[0].score;")
     check(isinstance(score, (int, float)), f"{label} round 1 scored ({score})")
+    surv = js(b, "return __lab.state.attempts[0].survival;")
+    check(isinstance(surv, (int, float)) and 0 <= surv <= 1, f"{label} round 1 reports the defender's survival ({surv})")
 
     # 2. released off the board: cancelled, nothing placed, avatar hidden
     start_round(b)
@@ -236,8 +251,6 @@ def placement_checks(b, url, touch):
 
     # 3. released over the enemy half: refused
     enemy = cell_center(b, 9, 26)
-    if touch:
-        enemy = [enemy[0], enemy[1] + TOUCH_AIM_OFFSET]
     drag(b, tray_center(b), enemy)
     time.sleep(0.4)
     placed = js(b, "return __lab.state.placed;")
@@ -259,6 +272,11 @@ def layout_checks(b, url, w, h, dpr, mobile):
     check(m["sw"] <= m["iw"], f"{tag}: no horizontal scroll (scrollWidth {m['sw']} <= {m['iw']})")
     check(m["bl"] >= 0 and m["br"] <= m["iw"] and m["bw"] > 200, f"{tag}: board within the width ({m['bw']:.0f}x{m['bh']:.0f})")
     check(m["il"] >= 0 and m["ir"] <= m["iw"] and m["it"] >= 0 and m["ib"] <= m["ih"], f"{tag}: intro card fits the screen")
+    gh = js(b, "const e = document.getElementById('ghTop'), r = e.getBoundingClientRect();"
+               "const c = getComputedStyle(e).backgroundColor.match(/[\\d.]+/g).map(Number);"
+               "return {l: r.left, r: r.right, t: r.top, lum: (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255};")
+    check(gh["l"] >= 0 and gh["r"] <= m["iw"] and gh["t"] >= 0 and gh["lum"] > 0.8,
+          f"{tag}: the header's GitHub button is on screen and bright (luminance {gh['lum']:.2f})")
     js(b, "document.getElementById('btnStart').click(); return true;")
     t = js(b, "const r = document.getElementById('trayCard').getBoundingClientRect(); return [r.top, r.bottom, innerHeight];")
     check(t[1] <= t[2] + 1, f"{tag}: the card tray is on screen at the start of the challenge ({t[0]:.0f}-{t[1]:.0f} of {t[2]})")
@@ -297,6 +315,18 @@ def training_checks(b, url):
     wait(b, "document.getElementById('verdict').classList.contains('shown')", timeout=10, what="the verdict")
     v = js(b, "return document.getElementById('verdict').textContent;")
     check("learner saved" in v, f"results verdict renders: {v!r}")
+    kept = js(b, "return document.getElementById('cmpAiScore').textContent;")
+    check("kept" in kept or "destroyed" in kept, f"results say how the learner's defender came out ({kept!r})")
+    # Game over: opens by itself once the first attack has replayed.
+    wait(b, "!document.getElementById('finale').hidden", timeout=40, what="the game-over screen")
+    f = js(b, "const a = document.getElementById('finaleGithub');"
+              "return {title: document.getElementById('finaleTitle').textContent, href: a.href,"
+              " scores: document.getElementById('finaleScores').textContent};")
+    check("github.com/itzik123/ClashRoyaleAi" in f["href"] and "%" in f["scores"],
+          f"the game-over screen scores and links to GitHub ({f['title']!r}, {f['href']})")
+    top = click_el(b, "finaleClose")
+    check(top == "finaleClose" and js(b, "return document.getElementById('finale').hidden;"),
+          "the game-over screen closes")
     errs = js(b, "return window.__labErrors || [];")
     check(not errs, f"no page errors ({errs})")
 

@@ -3,7 +3,7 @@
 //   lab_cli probe                      the pinned numbers; exit 1 on a mismatch
 //   lab_cli ref < reference_lines      reproduce tools/lab/pyd_reference.py exactly
 //   lab_cli bench [att def]            rollouts per second
-//   lab_cli table att def out_prefix   every spawn x cell x delay -> .bin + .json
+//   lab_cli table att def out_prefix   every spawn x cell x delay -> .bin, .surv.bin, .json
 //   lab_cli check att def              stalls and tower reach over sampled rollouts
 //   lab_cli serve                      line protocol on stdin/stdout (dev backend)
 //   lab_cli trace att x y              an attacker alone, tick by tick
@@ -81,15 +81,36 @@ static int probe() {
     e2.setMatchup(15, 25);
     expect(e2.rollout(s, c, 4) == first, "a second engine instance agrees");
 
+    // Survival: how much of the defender stands when the rollout ends.
+    expect(e.outcomeAtTick(s, lab::NO_DEFENCE, 0).survival == 0.0f, "no defence: survival 0");
+    // (11,9) 2.0 s late saves the whole tower and the Hog destroys the Cannon
+    // doing it; 3.3 s late the tower takes hits and the Cannon lives. Measured
+    // 2026-09-29.
+    const lab::Outcome o20 = e.outcomeAtTick(s, c, 20), o33 = e.outcomeAtTick(s, c, 33);
+    expect(o20.damage == at20 && o33.damage == at33, "outcome's damage is the rollout's");
+    expect(o20.survival == 0.0f, "Cannon (11,9) 2.0 s late is destroyed: survival 0, got " +
+                                     std::to_string(o20.survival));
+    expect(o33.survival > 0.5f && o33.survival < 1.0f,
+           "Cannon (11,9) 3.3 s late survives, hit and decaying: " + std::to_string(o33.survival));
+    // A Cannon the Hog walks past is never hit, but it decays for as long as
+    // the Hog lives: well above 0, below 1.
+    const int corner = cellIndex(e, 1, 1);
+    expect(corner >= 0, "cell (1,1) is legal for the Cannon");
+    if (corner >= 0) {
+        const lab::Outcome oc = e.outcomeAtTick(s, corner, 20);
+        expect(oc.survival > 0.2f && oc.survival < 1.0f,
+               "a Cannon out of the Hog's way only decays: " + std::to_string(oc.survival));
+    }
     // The live stepper is the same rollout, one tick at a time.
     for (int dropTick : {0, 7, 20, 33}) {
         e.liveStart(s);
         e.liveStepJson(dropTick);
         e.livePlace(c);
         while (!e.liveDone()) e.liveStepJson(10);
-        expect(e.liveDamage() == e.rolloutAtTick(s, c, dropTick),
+        const lab::Outcome want = e.outcomeAtTick(s, c, dropTick);
+        expect(e.liveDamage() == want.damage && e.liveSurvival() == want.survival,
                "live placement at tick " + std::to_string(dropTick) + " equals the rollout (" +
-                   std::to_string(e.liveDamage()) + ")");
+                   std::to_string(e.liveDamage()) + ", survival " + std::to_string(e.liveSurvival()) + ")");
     }
     std::printf(fails ? "\n%d failure(s)\n" : "\nall probe checks passed\n", fails);
     return fails ? 1 : 0;
@@ -139,23 +160,29 @@ static int bench(int att, int def) {
     return 0;
 }
 
-// The reward the learner sees, (d0 - d) / d0 clipped to [-1, 1], for every
-// spawn x cell x delay, row-major in that order.
+// For every spawn x cell x delay, row-major in that order: the share of the
+// no-defence damage prevented, (d0 - d) / d0 clipped to [-1, 1] (.bin), and
+// how much of the defender survived (.surv.bin). The learner's reward is made
+// from the two by web/lab/learner.js's Learner.reward, as on the page.
 static int table(int att, int def, const std::string& prefix) {
     LabEngine e(1);
     const std::string matchup = e.setMatchup(att, def);
     const int S = e.spawnCount(), C = e.cellCount(), D = lab::DELAY_STEPS;
-    std::vector<float> r(size_t(S) * C * D);
+    std::vector<float> r(size_t(S) * C * D), sv(r.size());
     auto t0 = std::chrono::steady_clock::now();
     for (int s = 0; s < S; ++s)
         for (int c = 0; c < C; ++c)
             for (int d = 0; d < D; ++d) {
-                const float dmg = e.rollout(s, c, d);
-                r[(size_t(s) * C + c) * D + d] = std::max(-1.0f, std::min(1.0f, (e.d0(s) - dmg) / e.d0(s)));
+                const lab::Outcome o = e.outcome(s, c, d);
+                const size_t k = (size_t(s) * C + c) * D + d;
+                r[k] = std::max(-1.0f, std::min(1.0f, (e.d0(s) - o.damage) / e.d0(s)));
+                sv[k] = o.survival;
             }
     const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::ofstream bin(prefix + ".bin", std::ios::binary);
     bin.write(reinterpret_cast<const char*>(r.data()), std::streamsize(r.size() * sizeof(float)));
+    std::ofstream surv(prefix + ".surv.bin", std::ios::binary);
+    surv.write(reinterpret_cast<const char*>(sv.data()), std::streamsize(sv.size() * sizeof(float)));
     std::ofstream js(prefix + ".json");
     js << "{\"matchup\":" << matchup << ",\"shape\":[" << S << "," << C << "," << D
        << "],\"seconds\":" << dt << "}";
@@ -285,10 +312,14 @@ static int serve() {
                 in >> n;
                 std::vector<int> sca(size_t(n) * 3);
                 for (auto& v : sca) in >> v;
-                std::vector<float> out(n);
-                e.rolloutBatch(sca.data(), n, out.data());
-                for (int i = 0; i < n; ++i) std::cout << (i ? " " : "") << out[i];
+                // damage survival, damage survival, ...: the WASM build's layout
+                std::vector<float> dmg(n), surv(n);
+                e.rolloutBatch(sca.data(), n, dmg.data(), surv.data());
+                // 9 significant digits round-trip a float exactly (parity.mjs).
+                const auto prec = std::cout.precision(9);
+                for (int i = 0; i < n; ++i) std::cout << (i ? " " : "") << dmg[i] << " " << surv[i];
                 std::cout << "\n";
+                std::cout.precision(prec);
             } else if (cmd == "frames") {
                 int s, c, t;
                 in >> s >> c >> t;

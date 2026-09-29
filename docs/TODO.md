@@ -32,19 +32,23 @@ Rules that apply to every item below:
 ## 0000. Reflex Lab (browser demo): build the WASM engine and publish
 
 Built 2026-09-28 on `feat/reflex-lab` (`web/lab/`, `tools/lab/`, spec and
-plan in `docs/design/`). Everything runs and is tested against the NATIVE
-engine through `tools/lab/dev_server.mjs`. Two steps are left, both the
-maintainer's:
+plan in `docs/design/`).
 
-1. **Install Emscripten and build**: `web/lab/engine/build.ps1`, then
-   `node tools/lab/parity.mjs` must print every try identical (it compares
-   the WASM build against `lab_cli` on every roster matchup). Then
-   `python tools/lab/check_lab_ui.py --url <a static server on web/>/lab/`
-   against the WASM build. Nothing here has run on WebAssembly yet: the
-   download needed a yes that was asked for and not given.
+1. ~~**Install Emscripten and build**~~ **DONE 2026-09-29**, in a Linux cloud
+   session with emsdk 3.1.74 (the version CI pins), in the session's scratch
+   space: `web/lab/engine/build.sh`, then `node tools/lab/parity.mjs --cli
+   tools/lab/out/lab_cli` printed **all 9,200 tries identical** (46 matchups x
+   200, tower damage and defender survival), and `tools/lab/check_lab_ui.py`
+   passed every check with the page on the WASM engine. The build now uses
+   `-fwasm-exceptions`: 2,000 rollouts a second in Node against 799 with
+   `-fexceptions` (native 3,900). Nothing was installed on the maintainer's
+   machine.
 2. **Publish**: enable Pages (Source: GitHub Actions) and run
    `.github/workflows/lab-pages.yml` by hand. The README already links
    `https://itzik123.github.io/ClashRoyaleAi/lab/`, which is dead until then.
+3. **Visitor counting** (optional): sign up at goatcounter.com and put the
+   site's endpoint in `web/lab/index.html`'s `<meta name="goatcounter">`
+   (`web/lab/README.md`, "Counting visitors"). Off until then.
 
 Open, not blocking: the learner settles in a local optimum on some seeds
 (Royal Giant vs Bomb Tower: 75% of the best on two of three seeds; the

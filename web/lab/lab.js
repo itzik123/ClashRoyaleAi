@@ -12,7 +12,6 @@
 
   const $ = id => document.getElementById(id);
   const TICK_MS = 100;
-  const TOUCH_AIM_OFFSET = 60;      // px the aim point floats above a finger
   const SNAP = 0.75;                // cells: how far a drop may be from a legal cell
   const PREVIEW_REACH = 3;          // cells: how near a spawn a preview drag must start
 
@@ -20,6 +19,7 @@
   const DEMO_TICK_MS = 125;
   const DEMO_COUNT_MS = 520;        // per countdown number
   const DEMO_HAND_TICKS = 13;       // the hand starts this many ticks before the drop
+  const DEMO_HOLD_TICKS = 16;       // the last frame holds this long, under its caption
 
   // Results: the heatmap converging, a beat on its answer, then the replay.
   const CMP_HEAT_MS = 3600;
@@ -42,7 +42,7 @@
     drag: null, ghost: null,
     heat: null, greedy: null, preview: 0, tries: 0, curve: [], training: false,
     playback: null, beatToastShown: false,
-    compare: null, cmpIdx: 0, cmpPlay: null, verdictShown: false,
+    compare: null, cmpIdx: 0, cmpPlay: null, verdictShown: false, finaleShown: false,
     demo: null, demoPlay: null, demoSeen: false,
     chartDirty: true,
   };
@@ -206,7 +206,13 @@
     const n = S.attempts.length, done = roundsDone();
     let c = null;
     if (S.stage === 'challenge' && !S.roundLive && !S.counting && !S.demoPlay && S.matchup) {
-      if (done === 0) {
+      if (done === 0 && S.demo && !S.demoSeen) {
+        // First time here: say what the demo is before it plays.
+        c = { kicker: 'Before you play · 10 seconds', title: 'How to play',
+              sub: 'Watch one round first. An enemy Hog Rider charges your tower, and a hand drags a Cannon out of the tray to stop it.',
+              btn: 'Watch how to play', onBtn: () => { track('demo-watch'); startDemo(); },
+              alt: "Skip, I'll figure it out", onAlt: () => { S.demoSeen = true; track('demo-skip'); updateCta(); } };
+      } else if (done === 0) {
         c = { kicker: `Your turn · round 1 of ${n}`, title: `Stop the ${S.attacker.name}`,
               sub: `Drag your ${S.defender.name} from the tray below onto your half of the board. Where and when you drop it both count.`,
               btn: 'Start round 1', onBtn: () => startRound(0),
@@ -214,7 +220,8 @@
       } else if (done < n) {
         const a = S.attempts[done - 1];
         c = { kicker: `Round ${done} of ${n}`, title: a && a.cell >= 0 ? `Saved ${pct(a.score)}` : 'No drop',
-              sub: a ? lostText(a) : '', btn: `Next round`, onBtn: () => startRound(done),
+              sub: a ? lostText(a) + (a.cell >= 0 ? `. ${cap(keptText(a.survival))}.` : '') : '',
+              btn: `Next round`, onBtn: () => startRound(done),
               alt: 'Skip to the AI', onAlt: goTrain };
       } else {
         c = { kicker: `All ${n} rounds played`, title: `You saved ${pct(S.youScore)}`,
@@ -242,6 +249,12 @@
 
   function lostText(a) {
     return a.damage > 0 ? `${fmtHp(a.damage)} of ${fmtHp(a.d0)} tower HP lost` : 'Tower untouched';
+  }
+
+  // How much of the defender was still standing when the attack was over.
+  function keptText(survival, whose = 'your') {
+    const name = `${whose} ${S.defender.name}`;
+    return survival > 0 ? `${name} kept ${Math.max(1, Math.round(survival * 100))}% of its HP` : `${name} was destroyed`;
   }
 
   // ---- the how-to-play demo --------------------------------------------------
@@ -332,12 +345,16 @@
       tray.classList.remove('dragging', 'pressed');
       hand.classList.remove('down');
       hand.hidden = pos > D.drop.tick + 6;
+      const end = D.frames.length - 1;   // the rollout ends when the attack does
       if (pos < D.drop.tick + 12) phase('drop', 'Let go to drop it. The timing counts too');
-      else phase('pull', `The ${P.defender.name} pulls the ${P.attacker.name} away from your tower`);
+      else if (pos < end) phase('pull', `The ${P.defender.name} pulls the ${P.attacker.name} away from your tower`);
+      else phase('end', D.damage === 0
+        ? (D.survival > 0 ? `Tower untouched, and your ${P.defender.name} still stands` : 'Tower untouched')
+        : `Your tower lost ${fmtHp(D.damage)} HP`);
       setTray('used');
       $('trayHint').textContent = 'Dropped';
     }
-    if (pos >= D.frames.length - 1 + 12) { stopDemo(); return null; }
+    if (pos >= D.frames.length - 1 + DEMO_HOLD_TICKS) { stopDemo(); return null; }
     return st;
   }
 
@@ -451,11 +468,13 @@
     avatar.hidden = true;
     tray.classList.remove('dragging');
     const score = Math.max(-1, Math.min(1, (m.d0 - m.damage) / m.d0));
-    S.attempts[m.round] = { cell: m.placedTick >= 0 ? m.cell : -1, tick: Math.max(0, m.placedTick), damage: m.damage, d0: m.d0, score };
+    S.attempts[m.round] = { cell: m.placedTick >= 0 ? m.cell : -1, tick: Math.max(0, m.placedTick), damage: m.damage,
+                            survival: m.survival, d0: m.d0, score };
     renderRounds();
     const a = S.attempts[m.round];
     banner(m.placedTick < 0 ? `No drop: ${lostText(a)}` : `Saved ${pct(score)} · ${lostText(a)}`);
     if (roundsDone() >= S.attempts.length) {
+      track('challenge-done');
       S.youScore = S.attempts.reduce((s, x) => s + x.score, 0) / S.attempts.length;
       updateChartRefs();
       $('challengeText').innerHTML = `Your average: <b>${pct(S.youScore)}</b> of the damage prevented. Now let a network that has never seen the game try the same five attacks.`;
@@ -478,7 +497,7 @@
     if (!S.roundLive || S.placed || e.button > 0) return;
     e.preventDefault();
     tray.setPointerCapture(e.pointerId);
-    S.drag = { id: e.pointerId, touch: e.pointerType !== 'mouse' };
+    S.drag = { id: e.pointerId };
     tray.classList.add('dragging');
     avatar.textContent = S.defender.symbol;
     avatar.classList.toggle('bldg', S.defender.isBuilding);
@@ -491,10 +510,10 @@
   tray.addEventListener('pointercancel', e => { if (S.drag && e.pointerId === S.drag.id) endDrag(e, true); });
   tray.addEventListener('lostpointercapture', e => { if (S.drag && e.pointerId === S.drag.id) endDrag(e, true); });
 
+  // The card lands where the pointer is, a finger included, as in the game.
   function moveDrag(e) {
-    const aimY = e.clientY - (S.drag.touch ? TOUCH_AIM_OFFSET : 0);
-    avatar.style.transform = `translate(${e.clientX}px, ${aimY}px)`;
-    const g = board.toGame(e.clientX, aimY);
+    avatar.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+    const g = board.toGame(e.clientX, e.clientY);
     if (!g.inside || !S.roundLive) {
       S.ghost = null;
       avatar.classList.remove('over-board');
@@ -540,6 +559,7 @@
   // ---- training --------------------------------------------------------------
 
   function goTrain() {
+    track('train-stage');
     stopDemo();
     cancelCountdown();
     worker.postMessage({ type: 'liveStop' });
@@ -551,6 +571,7 @@
   function setTraining(on) {
     if (on === S.training) return;
     S.training = on;
+    if (on) track('train');
     if (on) { stopPlayback(); banner(null); showBoard(); }
     worker.postMessage({ type: 'train', on });
     syncTrainControls();
@@ -587,6 +608,7 @@
   $('btnShow').addEventListener('click', showMe);
   $('barShow').addEventListener('click', showMe);
   const seeResults = () => {
+    track('results');
     setTraining(false);
     worker.postMessage({ type: 'compare', attempts: S.attempts });
   };
@@ -650,7 +672,7 @@
     const c = S.matchup.cells[m.drop.cell];
     startPlayback(m.data.frames, { x: c[0], y: c[1], tick: m.drop.tick, building: S.defender.isBuilding }, () => {
       const saved = (S.matchup.d0[m.spawn] - m.data.damage) / S.matchup.d0[m.spawn];
-      banner(`Its answer saved ${pct(saved)} of the damage`);
+      banner(`Its answer saved ${pct(saved)} of the damage, and ${keptText(m.data.survival, 'its')}`);
     });
     banner('Its current best answer, played by the engine');
   }
@@ -769,8 +791,14 @@
       if (!p.scored) {
         p.scored = true;
         showVerdict();
-        $('cmpYouScore').textContent = r.you ? `saved ${pct((r.d0 - r.you.damage) / r.d0)}` : 'not played';
-        $('cmpAiScore').textContent = `saved ${pct((r.d0 - r.ai.damage) / r.d0)}`;
+        const score = side => {
+          const kept = !side.drop ? 'no drop'
+            : side.survival > 0 ? `${S.defender.name} kept ${Math.max(1, Math.round(side.survival * 100))}%`
+            : `${S.defender.name} destroyed`;
+          return `saved ${pct((r.d0 - side.damage) / r.d0)}<span class="cmp-kept">${esc(kept)}</span>`;
+        };
+        $('cmpYouScore').innerHTML = r.you ? score(r.you) : 'not played';
+        $('cmpAiScore').innerHTML = score(r.ai);
       }
       const fa = replayFrame(p.ai, cs.pos);
       const main = Object.assign({ drop: p.dropAi, caption: `${round} · its answer, played by the engine` }, fa);
@@ -779,7 +807,11 @@
       if (p.you) miniYou.render(Object.assign({ drop: p.dropYou }, replayFrame(p.you, cs.pos)));
       else miniYou.render({});
       const len = Math.max(p.ai.length, p.you ? p.you.length : 0);
-      if (cs.pos > len + CMP_HOLD_MS / CMP_TICK_MS) playCompare((S.cmpIdx + 1) % S.compare.rounds.length);
+      if (cs.pos > len + CMP_HOLD_MS / CMP_TICK_MS) {
+        // The first attack played through: the game is over, once per visit.
+        if (!S.finaleShown) openFinale();
+        playCompare((S.cmpIdx + 1) % S.compare.rounds.length);
+      }
       return;
     }
     const answer = cs.phase === 'answer';
@@ -796,11 +828,48 @@
   }
 
   $('btnBackTrain').addEventListener('click', () => setStage('train'));
-  $('btnAgain').addEventListener('click', () => {
+  function tryAgain() {
     if (S.compare && !S.compare.rounds.every(r => r.you)) { playAgain(); return; }
-    document.querySelector('.matchup-panel').scrollIntoView({ behavior: 'smooth' });
-    toast('Pick a new attacker or defender on the left.');
-  });
+    const panel = $('matchupPanel');
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      panel.classList.add('open');
+      $('matchupSummary').setAttribute('aria-expanded', 'true');
+    }
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    toast(window.matchMedia('(max-width: 760px)').matches
+      ? 'Pick a new attacker or defender.' : 'Pick a new attacker or defender on the left.');
+  }
+  $('btnAgain').addEventListener('click', tryAgain);
+  $('btnFinish').addEventListener('click', openFinale);
+
+  // ---- game over ------------------------------------------------------------------
+
+  // The scores, then what the project is and where it lives.
+  function openFinale() {
+    if (!S.compare) return;
+    S.finaleShown = true;
+    const m = S.compare;
+    const ai = m.rounds.reduce((sum, r) => sum + (r.d0 - r.ai.damage) / r.d0, 0) / m.rounds.length;
+    const played = m.rounds.every(r => r.you) && S.youScore != null;
+    const secs = Math.max(1, Math.round(m.elapsed / 1000));
+    const diff = played ? Math.round(S.youScore * 100) - Math.round(ai * 100) : 0;
+    $('finaleTitle').textContent = !played ? 'Can you beat it?'
+      : diff > 0 ? 'You beat the network' : diff < 0 ? 'The network beat you' : 'A draw';
+    $('finaleAgain').textContent = played ? 'Try another matchup' : 'Take the challenge';
+    const tile = (cls, label, v, sub) =>
+      `<div class="score ${cls}"><span class="lbl">${label}</span><span class="num">${pct(v)}</span>` +
+      `<span class="sub">${sub}</span></div>`;
+    $('finaleScores').innerHTML =
+      (played ? tile('you', 'You', S.youScore, 'of the damage prevented') : '') +
+      tile('ai', 'The network', ai, `after ${m.tries.toLocaleString()} tries, ${secs} s`);
+    $('finaleScores').classList.toggle('solo', !played);
+    $('finale').hidden = false;
+    track('finale');
+  }
+  function closeFinale() { $('finale').hidden = true; }
+  $('finaleClose').addEventListener('click', closeFinale);
+  $('finaleAgain').addEventListener('click', () => { closeFinale(); tryAgain(); });
+  $('finale').addEventListener('click', e => { if (e.target === $('finale')) closeFinale(); });
 
   // ---- chart ------------------------------------------------------------------
 
@@ -874,6 +943,7 @@
   // ---- small helpers --------------------------------------------------------------
 
   function pct(v) { return v == null || Number.isNaN(v) ? '-' : `${Math.round(v * 100)}%`; }
+  function cap(t) { return t.charAt(0).toUpperCase() + t.slice(1); }
   function fmtHp(v) { return Math.round(v).toLocaleString(); }
   function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -894,22 +964,54 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, ms);
   }
 
+  // ---- visitor counting ---------------------------------------------------------------
+
+  // GoatCounter, when index.html's <meta name="goatcounter"> names a site:
+  // one page view per visit, plus a few named events (started, trained, saw
+  // the results, opened GitHub) for how far people get. It skips localhost
+  // on its own. Nothing is sent while the meta is empty.
+  const counter = (document.querySelector('meta[name="goatcounter"]') || {}).content;
+  if (counter) {
+    const sc = document.createElement('script');
+    sc.async = true;
+    sc.src = 'https://gc.zgo.at/count.js';
+    sc.dataset.goatcounter = counter;
+    document.head.appendChild(sc);
+  }
+  const tracked = new Set();
+  // Each event once per visit: a count of people, not of clicks.
+  function track(name) {
+    if (tracked.has(name)) return;
+    tracked.add(name);
+    try {
+      if (window.goatcounter && window.goatcounter.count)
+        window.goatcounter.count({ path: name, title: name, event: true });
+    } catch (e) { /* counting never breaks the page */ }
+  }
+  [['ghTop', 'github-header'], ['finaleGithub', 'github-finale']].forEach(([id, name]) =>
+    $(id).addEventListener('click', () => track(name)));
+  document.querySelectorAll('[data-track]').forEach(el => el.addEventListener('click', () => track(el.dataset.track)));
+
   // ---- intro and about ----------------------------------------------------------------
 
+  // The board then offers the how-to-play demo; nothing plays until asked.
   $('btnStart').addEventListener('click', () => {
     $('intro').hidden = true;
+    track('start');
     setStage('challenge');
-    if (!S.demoSeen) startDemo();
+    showBoard();
   });
-  $('btnAbout').addEventListener('click', () => { $('about').hidden = false; });
+  $('btnAbout').addEventListener('click', () => { $('about').hidden = false; track('about'); });
   $('btnAboutClose').addEventListener('click', () => { $('about').hidden = true; });
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !$('about').hidden) $('about').hidden = true;
+    if (e.key !== 'Escape') return;
+    if (!$('about').hidden) $('about').hidden = true;
+    if (!$('finale').hidden) closeFinale();
   });
   window.addEventListener('resize', () => { S.chartDirty = true; });
 
   // Test hooks for tools/lab/check_lab_ui.py.
-  window.__lab = { state: S, board, chart, stopDemo, cellCenterClient(x, y) {
+  window.__lab = { state: S, board, chart, stopDemo, openFinale, cellCenterClient(x, y) {
     const p = board.toCanvas(x, y), r = $('board').getBoundingClientRect();
     return { x: r.left + p.x, y: r.top + p.y };
   } };

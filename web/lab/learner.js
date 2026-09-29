@@ -8,7 +8,8 @@
 //   state   where the attacker was dropped (x, y)
 //   action  a legal cell for the defender, then a drop delay given that cell
 //           (autoregressive, like the real agent: card, then placement)
-//   reward  the fraction of no-defence tower damage prevented
+//   reward  the fraction of no-defence tower damage prevented, plus a bonus
+//           for how much of the defender is still standing (Learner.reward)
 //
 // Trained with REINFORCE: raise the log-probability of what was tried in
 // proportion to how much better it did than usual for that spawn (a running
@@ -350,7 +351,24 @@
     }
   }
 
+  // The reward for one try, the same on the page (worker.js) and in the
+  // curation suite (tools/lab/table_env.mjs): the share of the no-defence
+  // tower damage prevented, in [-1, 1], plus up to SURVIVAL_BONUS of that
+  // share again for how much of the defender is still standing when the
+  // attack is over (the engine's survival, in [0, 1]).
+  //
+  // Scaled by the share prevented, so a defender kept alive by staying out of
+  // the fight earns nothing for it. Between two drops that both save the
+  // tower, it prefers the one whose Cannon is still up: a defence that holds,
+  // not one that trades the card away on the bridge.
+  const SURVIVAL_BONUS = 0.2;
+  function reward(prevented, survival, bonus = SURVIVAL_BONUS) {
+    return prevented + bonus * Math.max(0, prevented) * Math.max(0, Math.min(1, survival || 0));
+  }
+
   Learner.rng = rng;
   Learner.DEFAULTS = DEFAULTS;
+  Learner.SURVIVAL_BONUS = SURVIVAL_BONUS;
+  Learner.reward = reward;
   return Learner;
 });

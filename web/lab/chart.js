@@ -3,7 +3,7 @@
 // visitor's own score.
 (function (root) {
   'use strict';
-  const FONT = "'Unbounded', system-ui, sans-serif";
+  const FONT = "'Inter', system-ui, sans-serif";
   const COLORS = { ai: '#4a9eff', best: '#4ade80', random: '#6E6E73', you: '#facc15' };
 
   class LabChart {

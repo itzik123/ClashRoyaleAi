@@ -134,8 +134,11 @@ class Browser:
     def __init__(self, width, height, scale=1.0, browser=None):
         exe = find_browser(browser)
         self.profile = tempfile.mkdtemp(prefix="promo-browser-")
+        # Chrome refuses to start as root with its sandbox on (a Linux
+        # container, a CI runner); nothing else needs the flag.
+        root = ["--no-sandbox"] if getattr(os, "geteuid", lambda: 1)() == 0 else []
         self.proc = subprocess.Popen(
-            [exe, "--headless=new", "--remote-debugging-port=0",
+            [exe, *root, "--headless=new", "--remote-debugging-port=0",
              f"--user-data-dir={self.profile}", "--no-first-run",
              "--no-default-browser-check", "--disable-extensions", "--mute-audio",
              "--hide-scrollbars", f"--window-size={width},{height}", "about:blank"],

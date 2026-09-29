@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, '..', '..', 'web');
-const CLI = path.join(HERE, 'out', 'lab_cli.exe');
+const CLI = path.join(HERE, 'out', process.platform === 'win32' ? 'lab_cli.exe' : 'lab_cli');
 const PORT = Number(process.argv[2] || 8766);
 
 const TYPES = {

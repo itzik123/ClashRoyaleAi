@@ -11,6 +11,13 @@
 (function (root) {
   'use strict';
 
+  // Both backends answer a batch as damage, survival pairs, interleaved.
+  function split(pairs) {
+    const n = pairs.length / 2, damage = new Float32Array(n), survival = new Float32Array(n);
+    for (let i = 0; i < n; i++) { damage[i] = pairs[2 * i]; survival[i] = pairs[2 * i + 1]; }
+    return { damage, survival };
+  }
+
   class WasmEngine {
     constructor(module) {
       this.kind = 'wasm';
@@ -19,7 +26,8 @@
     async cards(ids) { return JSON.parse(this.e.cardsJson(ids)); }
     async arena() { return JSON.parse(this.e.arenaJson()); }
     async matchup(a, d) { return JSON.parse(this.e.setMatchup(a, d)); }
-    async batch(triples) { return this.e.rolloutBatch(triples); }
+    // -> { damage, survival }, one entry per (spawn, cell, delay) triple.
+    async batch(triples) { return split(this.e.rolloutBatch(triples)); }
     async frames(spawn, cell, dropTick) { return JSON.parse(this.e.framesJson(spawn, cell, dropTick)); }
     async liveStart(spawn) { this.e.liveStart(spawn); }
     async liveStep(n) { return JSON.parse(this.e.liveStepJson(n)); }
@@ -41,7 +49,7 @@
     async batch(triples) {
       const n = triples.length / 3;
       const text = await this.ask(`batch ${n} ${Array.prototype.join.call(triples, ' ')}`);
-      return Float32Array.from(text.trim().split(/\s+/), Number);
+      return split(Float32Array.from(text.trim().split(/\s+/), Number));
     }
     async frames(spawn, cell, dropTick) { return JSON.parse(await this.ask(`frames ${spawn} ${cell} ${dropTick}`)); }
     async liveStart(spawn) { await this.ask(`live_start ${spawn}`); }

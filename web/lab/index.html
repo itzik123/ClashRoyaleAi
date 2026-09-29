@@ -6,9 +6,14 @@
 <title>Reflex Lab</title>
 <meta name="description" content="Watch a small neural network learn to defend a tower in seconds, scored by a real Clash Royale simulator compiled to WebAssembly and running in your browser.">
 <meta name="theme-color" content="#0B0B0C">
+<!-- Visitor count: GoatCounter (goatcounter.com), which sets no cookies and
+     keeps no personal data, so it needs no consent banner. Off while empty:
+     put your site's endpoint here, e.g. https://reflexlab.goatcounter.com/count
+     (lab.js loads the counter only then, and never on localhost). -->
+<meta name="goatcounter" content="">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Unbounded:wght@500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="lab.css">
 </head>
 <body>
@@ -23,8 +28,8 @@
     </div>
   </div>
   <nav class="top-links">
-    <button class="link-btn" id="btnAbout" type="button">How it works</button>
-    <a class="link-btn" href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener">GitHub</a>
+    <button class="top-btn" id="btnAbout" type="button"><span class="q" aria-hidden="true">?</span><span class="long">How it works</span><span class="short">About</span></button>
+    <a class="top-btn gh" id="ghTop" href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener"><svg class="gh-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
   </nav>
 </header>
 
@@ -133,7 +138,8 @@
       <div class="rounds pick" id="cmpRounds"></div>
       <div class="row">
         <button class="btn" id="btnBackTrain" type="button">Keep training</button>
-        <button class="btn primary" id="btnAgain" type="button">Try another matchup</button>
+        <button class="btn" id="btnAgain" type="button">Try another matchup</button>
+        <button class="btn primary wide" id="btnFinish" type="button">Finish</button>
       </div>
     </div>
 
@@ -148,7 +154,7 @@
 </main>
 
 <footer class="foot">
-  <p>A miniature of the real problem: one attacker, one defender, no elixir. The project's real agent plays full matches and trains for days on a laptop CPU; this lab shows the same kind of learning, small enough to watch. <a href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener">The code is on GitHub.</a></p>
+  <p>A miniature of the real problem: one attacker, one defender, no elixir. The project's real agent plays full matches and trains for days on a laptop CPU; this lab shows the same kind of learning, small enough to watch. <a href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener" data-track="github-footer">The code is on GitHub.</a></p>
   <p class="credits">Card roster built largely by Ambash. Built with the help of AI tools. Unofficial fan project, not affiliated with, endorsed by or sponsored by Supercell.</p>
 </footer>
 
@@ -165,7 +171,7 @@
     <div class="row">
       <button class="btn primary big" id="btnStart" type="button">Start</button>
     </div>
-    <p class="fine">Takes about two minutes. Works with a mouse or a finger.</p>
+    <p class="fine">Takes about two minutes, with a ten-second how-to-play demo first if you want one. Works with a mouse or a finger.</p>
   </div>
 </div>
 
@@ -174,10 +180,31 @@
   <div class="intro-card about">
     <h2 id="aboutTitle">How it works</h2>
     <p><b>The engine.</b> The arena, the troops, the towers and every hit are simulated by the project's C++ engine, the same code the full agent trains against, compiled to WebAssembly. It is deterministic: the same drop always gives the same result.</p>
-    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side (a Goblin Barrel is thrown at a random spot around one of your towers). The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented.</p>
+    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side (a Goblin Barrel is thrown at a random spot around one of your towers). The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented, plus a small bonus when your defender is still standing at the end: of two drops that both save the tower, it learns to prefer the one that keeps its card alive. The score on the page is the damage prevented alone, for you and for it.</p>
     <p><b>The network.</b> <span id="aboutParams">A few thousand</span> weights in plain JavaScript, no ML library: the attacker's position goes in, a map of cell preferences and a delay choice come out. It learns with REINFORCE, the simplest policy-gradient method: tries that beat the usual result for that spawn become more likely.</p>
     <p><b>The honest part.</b> This is a miniature. The real agent picks from a hand of four cards with an elixir economy, every second of a three-minute match, and needs days of training.</p>
     <div class="row"><button class="btn primary" id="btnAboutClose" type="button">Close</button></div>
+  </div>
+</div>
+
+<!-- Game over: the scores, and what the project behind the lab is -->
+<div class="overlay" id="finale" role="dialog" aria-modal="true" aria-labelledby="finaleTitle" hidden>
+  <div class="intro-card finale">
+    <button class="card-close" id="finaleClose" type="button" aria-label="Close and keep watching">&times;</button>
+    <p class="eyebrow">Game over</p>
+    <h2 id="finaleTitle">Game over</h2>
+    <div class="scoreboard" id="finaleScores"></div>
+    <p class="finale-lead">What you just played is a small corner of <b>ClashRoyaleAi</b>, an open-source project to teach a neural network to play Clash Royale.</p>
+    <ul class="finale-facts">
+      <li><b>The engine.</b> A Clash Royale battle simulator written in C++, with more than a hundred cards, played out tick by tick. The same code scored every try on this page, compiled to WebAssembly.</li>
+      <li><b>The agent.</b> A network with a convolutional eye and a recurrent memory, trained with PPO, that plays whole three-minute matches: a hand of four cards, an elixir bar, every second a decision. It learns against scripted teachers first, then against past versions of itself.</li>
+      <li><b>The hardware.</b> One laptop CPU, no GPU. A training run takes days.</li>
+    </ul>
+    <div class="row finale-actions">
+      <a class="btn gh big" id="finaleGithub" href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener"><svg class="gh-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>See the project on GitHub</span></a>
+      <button class="btn big" id="finaleAgain" type="button">Try another matchup</button>
+    </div>
+    <p class="fine">If you enjoyed it, a star on GitHub helps other people find it.</p>
   </div>
 </div>
 

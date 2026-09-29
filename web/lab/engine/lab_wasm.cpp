@@ -16,14 +16,16 @@ std::string cardsJson(const lab::LabEngine& e, val ids) {
     return e.cardsJson(emscripten::vecFromJSArray<int>(ids));
 }
 
-// Int32Array of (spawn, cell, delay) triples -> Float32Array of tower HP lost.
+// Int32Array of (spawn, cell, delay) triples -> Float32Array of 2n: tower HP
+// lost and defender survival, interleaved (lab_cli serve's batch layout).
 val rolloutBatch(const lab::LabEngine& e, val triples) {
     const std::vector<int> sca = emscripten::convertJSArrayToNumberVector<int>(triples);
     const int n = static_cast<int>(sca.size() / 3);
-    std::vector<float> out(n);
-    e.rolloutBatch(sca.data(), n, out.data());
+    std::vector<float> dmg(n), surv(n), out(2 * size_t(n));
+    e.rolloutBatch(sca.data(), n, dmg.data(), surv.data());
+    for (int i = 0; i < n; ++i) { out[2 * i] = dmg[i]; out[2 * i + 1] = surv[i]; }
     // Copied into a fresh JS array: a view onto `out` would dangle.
-    val result = val::global("Float32Array").new_(n);
+    val result = val::global("Float32Array").new_(out.size());
     result.call<void>("set", val(emscripten::typed_memory_view(out.size(), out.data())));
     return result;
 }

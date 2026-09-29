@@ -4,7 +4,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
-emcc -std=c++20 -O3 -fexceptions --bind \
+# -fwasm-exceptions: 2.5x faster than -fexceptions (see build.ps1).
+emcc -std=c++20 -O3 -fwasm-exceptions --bind \
   -I "$repo/include/core" -I "$repo/include/entities" -I "$repo/include/rendering" -I "$here" \
   "$here/lab_wasm.cpp" -o "$here/engine.js" \
   -sMODULARIZE=1 -sEXPORT_NAME=createLabEngine -sENVIRONMENT=web,worker,node \

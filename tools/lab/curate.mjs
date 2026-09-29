@@ -23,7 +23,7 @@ import { evalSpawns, loadTable, runLearner } from './table_env.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
-const CLI = path.join(HERE, 'out', 'lab_cli.exe');
+const CLI = path.join(HERE, 'out', process.platform === 'win32' ? 'lab_cli.exe' : 'lab_cli');
 const TABLES = path.join(HERE, 'out', 'tables');
 const ROSTER = path.join(REPO, 'web', 'lab', 'roster.json');
 
@@ -108,7 +108,7 @@ async function main() {
   // --cached-only: just the pairs whose tables already exist (a provisional
   // roster while a full run is still building).
   if (process.argv.includes('--cached-only')) {
-    pairs = pairs.filter(([a, d]) => fs.existsSync(path.join(TABLES, `${a}_${d}.bin`)));
+    pairs = pairs.filter(([a, d]) => fs.existsSync(path.join(TABLES, `${a}_${d}.surv.bin`)));
   }
   const pairAtk = [...new Set(pairs.map(p => p[0]))], pairDef = [...new Set(pairs.map(p => p[1]))];
   const cards = JSON.parse(execFileSync(CLI, ['serve'], {
@@ -121,7 +121,8 @@ async function main() {
   let done = 0;
   const reports = await pool(pairs, async ([a, d]) => {
     const prefix = path.join(TABLES, `${a}_${d}`);
-    if (!fs.existsSync(prefix + '.bin')) await run(['table', String(a), String(d), prefix]);
+    // A table from before survival was measured has no .surv.bin: rebuilt.
+    if (!fs.existsSync(prefix + '.surv.bin')) await run(['table', String(a), String(d), prefix]);
     const check = JSON.parse((await run(['check', String(a), String(d)])).trim());
     done++;
     if (done % 10 === 0) console.log(`  engine: ${done}/${pairs.length} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);

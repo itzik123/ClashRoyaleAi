@@ -7,6 +7,8 @@
 # then, from the repo root:
 #   powershell -NoProfile -File web/lab/engine/build.ps1
 #   node tools/lab/parity.mjs          # must print 200/200 identical
+# Needs a browser with WebAssembly exception handling (Chrome 95, Firefox
+# 100, Safari 15.2 and later).
 #
 # Run it from PowerShell, not Git Bash (MSYS rewrites the -s flags' paths).
 $ErrorActionPreference = "Stop"
@@ -18,8 +20,13 @@ if (-not $emcc -or -not (Test-Path $emcc)) {
     throw "emcc not found. Install emsdk and run emsdk_env first (see the header of this file)."
 }
 
+# -fwasm-exceptions, not -fexceptions: WebAssembly's own exception handling
+# (every browser since 2022) instead of routing calls through JavaScript
+# trampolines. Measured 2026-09-29, Hog Rider vs Cannon in Node 22: 799
+# rollouts a second with -fexceptions, 2,000 with -fwasm-exceptions (native
+# lab_cli: 3,900). -flto added about 5%, inside the noise, so it is not used.
 $flags = @(
-    "-std=c++20", "-O3", "-fexceptions", "--bind",
+    "-std=c++20", "-O3", "-fwasm-exceptions", "--bind",
     "-I", (Join-Path $repo "include\core"), "-I", (Join-Path $repo "include\entities"),
     "-I", (Join-Path $repo "include\rendering"), "-I", $PSScriptRoot,
     (Join-Path $PSScriptRoot "lab_wasm.cpp"),

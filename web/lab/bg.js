@@ -21,7 +21,7 @@
   const FPS = 24;
   const LEVELS = 16;        // alpha steps per colour
   const MIN_ALPHA = 0.035;  // every square shows, faintly: the grid itself
-  const MAX_ALPHA = 0.38;
+  const MAX_ALPHA = 0.3;
   const BLUE = [74, 158, 255], RED = [255, 82, 82];
 
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');

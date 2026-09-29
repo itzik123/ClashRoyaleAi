@@ -48,10 +48,13 @@ async function init() {
 }
 
 // The how-to-play demo is always a Hog Rider against a Cannon, so it gives
-// away no matchup: the Cannon dropped 2 s after the Hog, in the middle, where
-// it pulls the Hog off the tower. Recorded from the engine, like every other
-// frame on the page.
-const DEMO = { attacker: 15, defender: 25, spawn: [14, 20], cell: [11, 9], dropTick: 20, tail: 32 };
+// away no matchup: the Cannon dropped 2 s after the Hog, left of the lane,
+// where it pulls the Hog off the tower and the towers finish it. The whole
+// rollout plays, to the Hog's last hit point: the tower is untouched and the
+// Cannon is still standing (a drop a cell to the right, (11,9), saves the
+// tower too and loses the Cannon). Recorded from the engine, like every
+// other frame on the page.
+const DEMO = { attacker: 15, defender: 25, spawn: [14, 20], cell: [9, 10], dropTick: 20 };
 async function recordDemo() {
   try {
     const m = await engine.matchup(DEMO.attacker, DEMO.defender);
@@ -62,7 +65,7 @@ async function recordDemo() {
     return {
       attacker: DEMO.attacker, defender: DEMO.defender, spawn: DEMO.spawn,
       drop: { x: DEMO.cell[0], y: DEMO.cell[1], tick: DEMO.dropTick },
-      frames: data.frames.slice(0, DEMO.dropTick + DEMO.tail), cells: m.cells,
+      frames: data.frames, damage: data.damage, survival: data.survival, cells: m.cells,
     };
   } catch (err) {
     return null;   // the page simply skips the demo
@@ -98,24 +101,33 @@ function paramCount() {
   return n;
 }
 
-// Share of the no-defence damage prevented, the reward the learner sees.
-function reward(spawn, damage) {
+// Share of the no-defence damage prevented: the score on the page, for the
+// visitor and the learner alike.
+function prevented(spawn, damage) {
   const d0 = matchup.d0[spawn];
   return Math.max(-1, Math.min(1, (d0 - damage) / d0));
 }
 
+// What the learner trains on: that share, plus a bonus for how much of the
+// defender is still standing (Learner.reward, shared with tools/lab).
+function reward(spawn, damage, survival) {
+  return Learner.reward(prevented(spawn, damage), survival);
+}
+
+// -> { damage, survival } per action.
 async function rollouts(actions) {
   const triples = new Int32Array(actions.length * 3);
   actions.forEach((a, i) => { triples[3 * i] = a.spawn; triples[3 * i + 1] = a.cell; triples[3 * i + 2] = a.delay; });
   return engine.batch(triples);
 }
 
-// The learner's current best answer on the five challenge attacks.
+// The learner's current best answer on the five challenge attacks, scored as
+// the visitor is: damage prevented.
 async function evalChallenge() {
   const acts = entry.challenge.map(s => learner.greedy(s));
-  const dmg = await rollouts(acts);
+  const { damage } = await rollouts(acts);
   let sum = 0;
-  acts.forEach((a, i) => { sum += reward(a.spawn, dmg[i]); });
+  acts.forEach((a, i) => { sum += prevented(a.spawn, damage[i]); });
   return sum / acts.length;
 }
 
@@ -140,8 +152,8 @@ async function loop() {
         nextEval = learner.tries + evalEvery(learner.tries);
       }
       const batch = learner.sampleBatch(speed === 'watch' ? 16 : 64);
-      const dmg = await rollouts(batch);
-      learner.update(batch, batch.map((a, i) => reward(a.spawn, dmg[i])));
+      const out = await rollouts(batch);
+      learner.update(batch, batch.map((a, i) => reward(a.spawn, out.damage[i], out.survival[i])));
 
       const now = performance.now();
       rateWin.push([now, learner.tries]);
@@ -213,7 +225,7 @@ async function liveStart(round) {
     const state = await engine.liveState();
     if (state.done) {
       session.stopped = true;
-      post('liveDone', { round, spawn, damage: state.damage, placedTick: state.placedTick,
+      post('liveDone', { round, spawn, damage: state.damage, survival: state.survival, placedTick: state.placedTick,
                          cell: session.cell ?? -1, d0: matchup.d0[spawn] });
       return;
     }
@@ -250,10 +262,10 @@ async function compare(attempts) {
     let you = null;
     if (a) {
       const f = await engine.frames(spawn, a.cell, a.cell >= 0 ? a.tick : 0);
-      you = { frames: f.frames, damage: f.damage, drop: a.cell >= 0 ? { cell: a.cell, tick: a.tick } : null };
+      you = { frames: f.frames, damage: f.damage, survival: f.survival, drop: a.cell >= 0 ? { cell: a.cell, tick: a.tick } : null };
     }
     const heat = heatSteps(i, spawn);
-    rounds.push({ spawn, d0, heat, ai: { frames: ai.frames, damage: ai.damage, drop: { cell: g.cell, tick: aiTick } }, you });
+    rounds.push({ spawn, d0, heat, ai: { frames: ai.frames, damage: ai.damage, survival: ai.survival, drop: { cell: g.cell, tick: aiTick } }, you });
   }
   post('compare', { rounds, tries: learner.tries, elapsed: elapsedMs });
 }

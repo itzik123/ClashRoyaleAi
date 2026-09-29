@@ -10,13 +10,25 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 export const Learner = require('../../web/lab/learner.js');
 
-export function loadTable(prefix) {
+// `r` is the share of the damage prevented (what the page scores and the
+// reference lines measure), `sv` how much of the defender survived, and
+// `reward` the two combined by Learner.reward, which is what the learner
+// trains on -- on the page and here alike.
+export function loadTable(prefix, { bonus = Learner.SURVIVAL_BONUS } = {}) {
   const meta = JSON.parse(fs.readFileSync(prefix + '.json', 'utf8'));
-  const buf = fs.readFileSync(prefix + '.bin');
-  const data = new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4);
+  const read = file => {
+    const buf = fs.readFileSync(file);
+    return new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4);
+  };
+  const data = read(prefix + '.bin');
   const [S, C, D] = meta.shape;
   if (data.length !== S * C * D) throw new Error(`${prefix}: ${data.length} values, want ${S * C * D}`);
+  if (!fs.existsSync(prefix + '.surv.bin')) throw new Error(`${prefix}: no .surv.bin (rebuild with lab_cli table)`);
+  const surv = read(prefix + '.surv.bin');
+  if (surv.length !== data.length) throw new Error(`${prefix}.surv.bin: ${surv.length} values, want ${data.length}`);
   const r = (s, c, d) => data[(s * C + c) * D + d];
+  const sv = (s, c, d) => surv[(s * C + c) * D + d];
+  const reward = (s, c, d) => Learner.reward(r(s, c, d), sv(s, c, d), bonus);
   const best = new Float32Array(S), randomMean = new Float32Array(S), bestAction = [];
   for (let s = 0; s < S; s++) {
     let b = -Infinity, ba = null, sum = 0;
@@ -30,7 +42,7 @@ export function loadTable(prefix) {
     randomMean[s] = sum / (C * D);
     bestAction.push(ba);
   }
-  return { meta, matchup: meta.matchup, S, C, D, r, best, randomMean, bestAction };
+  return { meta, matchup: meta.matchup, S, C, D, r, sv, reward, bonus, best, randomMean, bestAction };
 }
 
 // Evaluation spawns: evenly spaced through the spawn list, which runs row by
@@ -48,16 +60,19 @@ export function makeLearner(table, opts = {}) {
   }, opts));
 }
 
+// The greedy policy's share of the damage prevented against the best and a
+// random drop, and how much of the defender its answers leave standing.
 export function scoreGreedy(table, learner, spawns) {
-  let got = 0, best = 0, rand = 0;
+  let got = 0, best = 0, rand = 0, surv = 0;
   for (const s of spawns) {
     const a = learner.greedy(s);
     got += table.r(s, a.cell, a.delay);
+    surv += table.sv(s, a.cell, a.delay);
     best += table.best[s];
     rand += table.randomMean[s];
   }
   const n = spawns.length;
-  return { greedy: got / n, best: best / n, random: rand / n, ratio: best > 0 ? got / best : 1 };
+  return { greedy: got / n, best: best / n, random: rand / n, ratio: best > 0 ? got / best : 1, survival: surv / n };
 }
 
 // Train on a try budget; the curve samples the greedy score as it goes.
@@ -75,7 +90,7 @@ export function runLearner(table, opts = {}, { budget = 30000, batch = 64, evalE
       if (stopAt90 && curve[curve.length - 1].ratio >= 0.9) break;
     }
     const tries = learner.sampleBatch(batch);
-    learner.update(tries, tries.map(t => table.r(t.spawn, t.cell, t.delay)));
+    learner.update(tries, tries.map(t => table.reward(t.spawn, t.cell, t.delay)));
   }
   const final = Object.assign({ tries: learner.tries }, scoreGreedy(table, learner, spawns));
   curve.push(final);

@@ -293,9 +293,9 @@ then cast it at its worst cell.
 `web/lab/` (README there): one attacker, one defender, and a plain-JS
 REINFORCE policy learning where and when to drop the defender, scored by the
 engine. Visitors can play the same five attacks first. Spec and plan:
-`docs/design/specs|plans/2026-09-28-reflex-lab*`. **Not yet run on
-WebAssembly** (Emscripten not installed; `docs/TODO.md` item 0000); tested
-end to end against the native engine through `tools/lab/dev_server.mjs`.
+`docs/design/specs|plans/2026-09-28-reflex-lab*`. **Built and verified on
+WebAssembly since 2026-09-29** (next section); tested end to end against both
+the WASM and the native engine through `tools/lab/dev_server.mjs`.
 `include/`, `src/`, `python_ai/` untouched.
 
 - **One engine surface**, `web/lab/engine/lab_engine.h`, over the unchanged
@@ -344,6 +344,48 @@ end to end against the native engine through `tools/lab/dev_server.mjs`.
   no libm transcendental (only the Graveyard ring, Skeleton King and the
   observation encoder call sin/cos/exp) and iterates no hash container.
   `tools/lab/parity.mjs` checks it once the build exists.
+
+## 2026-09-29: the Reflex Lab before launch
+
+A review round on the maintainer's list. `include/`, `src/`, `python_ai/`
+untouched; everything is in `web/lab/`, `tools/lab/` and `tools/promo/cdp.py`.
+
+- **The WASM build exists and matches native exactly.** Built in a Linux
+  cloud session (emsdk 3.1.74, as CI pins): `parity.mjs` printed all 9,200
+  tries identical (46 matchups x 200, damage AND survival), and
+  `check_lab_ui.py` passes with the page on WASM (the dev server serves the
+  WASM build whenever `engine.wasm` exists). **`-fwasm-exceptions`, not
+  `-fexceptions`**: 799 -> 2,000 rollouts/s in Node (native 3,900), because
+  `-fexceptions` routes calls through JS `invoke_*` trampolines. A future
+  "just add -fexceptions to fix a throw" is a 2.5x slowdown.
+- **Every rollout reports defender survival** (`lab::Outcome`,
+  `SurvivalTracker`): team-0 non-tower bodies' HP left over their most, 0 if
+  never placed. A building's decay counts (it is what its HP bar shows).
+  The batch format is now `damage survival` pairs, interleaved, in both
+  backends; `lab_cli table` writes `.surv.bin` beside `.bin`, and curation
+  rebuilds any cached table without one.
+- **The learner's reward adds a survival bonus**, the page's score does not:
+  `Learner.reward = prevented + 0.2 * survival * max(0, prevented)`, ONE
+  definition used by `worker.js` and `table_env.mjs`. Swept 0/0.1/0.2/0.3 over
+  the 44 then-offered matchups with something to learn, 3 seeds, page budget:
+  survival 55.8% -> 67.1%, damage prevented 86.6% -> 86.1%. 0.2 is the
+  largest value at which the exhaustive optimum trades tower HP in only one
+  pair (Battle Ram vs Musketeer: 91% saved with the Musketeer at 93%, not
+  100% with her dead; 0.3 trades in three). Giant vs Cannon's learner loses 6
+  points to its old local optimum. Table in `web/lab/README.md`. Re-curated
+  under it: the same 6 x 8 cards pass, every engine-derived roster number is
+  unchanged, and **Royal Giant vs Bomb Tower is now withheld** (third seed
+  66.6% of the gap against the 2/3 gate, 85% before), so 46 pairings ship.
+- **The demo's Cannon moved (11,9) -> (9,10)**: both save the whole tower
+  from the Hog at (14,20) 2 s late, but (11,9) loses the Cannon (survival 0,
+  pinned in `lab_cli probe`), and the demo now plays to the Hog's death.
+- **Touch drops land under the finger** (the 60 px aim offset is gone), as in
+  the game. The demo waits behind a "Watch how to play" card. A game-over
+  card opens once after the first results replay. Visitor counting is
+  GoatCounter, off until `index.html`'s `<meta name="goatcounter">` is set.
+- **Type**: Unbounded is a display face and read cramped as body copy; body
+  text, labels and card names are Inter now, Unbounded keeps titles, numbers
+  and buttons.
 
 ## Environment — the things that waste an hour
 
