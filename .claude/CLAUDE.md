@@ -351,8 +351,8 @@ A review round on the maintainer's list. `include/`, `src/`, `python_ai/`
 untouched; everything is in `web/lab/`, `tools/lab/` and `tools/promo/cdp.py`.
 
 - **The WASM build exists and matches native exactly.** Built in a Linux
-  cloud session (emsdk 3.1.74, as CI pins): `parity.mjs` printed all 9,200
-  tries identical (46 matchups x 200, damage AND survival), and
+  cloud session (emsdk 3.1.74, as CI pins): `parity.mjs` printed all 9,400
+  tries identical (47 matchups x 200, damage AND survival), and
   `check_lab_ui.py` passes with the page on WASM (the dev server serves the
   WASM build whenever `engine.wasm` exists). **`-fwasm-exceptions`, not
   `-fexceptions`**: 799 -> 2,000 rollouts/s in Node (native 3,900), because
@@ -364,18 +364,25 @@ untouched; everything is in `web/lab/`, `tools/lab/` and `tools/promo/cdp.py`.
   The batch format is now `damage survival` pairs, interleaved, in both
   backends; `lab_cli table` writes `.surv.bin` beside `.bin`, and curation
   rebuilds any cached table without one.
-- **The learner's reward adds a survival bonus**, the page's score does not:
-  `Learner.reward = prevented + 0.2 * survival * max(0, prevented)`, ONE
-  definition used by `worker.js` and `table_env.mjs`. Swept 0/0.1/0.2/0.3 over
-  the 44 then-offered matchups with something to learn, 3 seeds, page budget:
-  survival 55.8% -> 67.1%, damage prevented 86.6% -> 86.1%. 0.2 is the
-  largest value at which the exhaustive optimum trades tower HP in only one
-  pair (Battle Ram vs Musketeer: 91% saved with the Musketeer at 93%, not
-  100% with her dead; 0.3 trades in three). Giant vs Cannon's learner loses 6
-  points to its old local optimum. Table in `web/lab/README.md`. Re-curated
-  under it: the same 6 x 8 cards pass, every engine-derived roster number is
-  unchanged, and **Royal Giant vs Bomb Tower is now withheld** (third seed
-  66.6% of the gap against the 2/3 gate, 85% before), so 46 pairings ship.
+- **The learner's reward puts the TOWER STRICTLY FIRST** (maintainer's rule,
+  2026-09-29: never trade a tower hit point for defender HP); survival only
+  breaks ties. `Learner.rewards` (ONE definition, used by `worker.js` and
+  `table_env.mjs`) pays `prevented + 0.05 * survival` to a try that
+  prevented as much as the best try yet seen for its spawn, `prevented`
+  otherwise. Measured over 44 matchups x 3 seeds at the page budget:
+  none 86.6% prevented / 55.8% survival; **gate 0.05 86.6% / 63.2%, worst
+  matchup -1.1 pts**; half-a-hit-point epsilon 86.5% / 56.8% (-1.9 pts, which
+  is the seed-drift floor: it cannot change any answer's tower damage).
+  **A lexicographic OBJECTIVE is not a lexicographic POLICY**: the gate at
+  0.2 is just as strict on paper and cost Giant vs Cannon 14.5 points on all
+  three seeds, because the network generalises across spawns and the bonus
+  where the lane Cannon is the true best leaked into spawns where it is not.
+  Judge a tie-break by the learner's damage prevented against a no-bonus
+  control, never by its reward. A flat `+0.2 * survival * prevented` shipped
+  for one commit and traded by design (Battle Ram vs Musketeer 91% saved to
+  keep her alive); it is gone. Re-curated: the original roster exactly (47
+  pairings, Battle Ram vs Valkyrie withheld), engine-derived numbers
+  unchanged. Table in `web/lab/README.md`.
 - **The demo's Cannon moved (11,9) -> (9,10)**: both save the whole tower
   from the Hog at (14,20) 2 s late, but (11,9) loses the Cannon (survival 0,
   pinned in `lab_cli probe`), and the demo now plays to the Hog's death.
@@ -386,6 +393,18 @@ untouched; everything is in `web/lab/`, `tools/lab/` and `tools/promo/cdp.py`.
 - **Type**: Unbounded is a display face and read cramped as body copy; body
   text, labels and card names are Inter now, Unbounded keeps titles, numbers
   and buttons.
+- **Symmetry is asserted, not eyeballed** (`check_lab_ui.py` layout, at
+  1440/1280/390/360). Measured before the fix: the matchup facts' values
+  15.5 px apart (a label that wraps pushed its value down), tile heights 4.8
+  px apart (per grid, whichever names wrapped), and the board 30 px left of
+  the page centre (side columns 320 vs 380 px). Now: facts labels reserve two
+  lines with the value at the card's bottom, tiles reserve two lines, side
+  columns are equal (`minmax(280px, 360px)` both), and all read 0. The
+  1024-px tablet layout is two columns by design and is exempt from the
+  centre-line check.
+- **Build stamp**: `lab-pages.yml` writes the commit into
+  `<meta name="lab-build">`, and the footer shows "Build abc1234." -- the way
+  to confirm a deploy replaced the old page.
 
 ## Environment — the things that waste an hour
 

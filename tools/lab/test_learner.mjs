@@ -6,7 +6,9 @@
 //    differences, in float64.
 // 2. Synthetic problem whose best cell AND delay move with the spawn: the
 //    greedy policy must find them (a policy that ignores the state cannot).
-// 3. For each outcome table given (lab_cli table), 3 seeds on the default
+// 3. The reward puts the tower strictly first: defender survival only breaks
+//    ties between tries that prevented exactly as much.
+// 4. For each outcome table given (lab_cli table), 3 seeds on the default
 //    budget: tries until the greedy policy reached 90% of the exhaustive best.
 // Exits non-zero on any failure.
 import { Learner, loadTable, runLearner } from './table_env.mjs';
@@ -83,6 +85,28 @@ function syntheticConvergence() {
   check(got / best >= 0.9, `greedy reaches ${(100 * got / best).toFixed(1)}% of the best (>= 90%)`);
 }
 
+function towerFirst() {
+  console.log('reward: tower first, survival only breaks ties');
+  const p = synthetic();
+  const L = new Learner({ spawns: p.spawns, cells: p.cells, delaySteps: p.D, width: 18 });
+  const at = s => ({ spawn: s, cell: 0, delay: 0 });
+  // Battle Ram vs Musketeer, from the maintainer's brief: the whole tower
+  // saved with a dead defender beats 91% saved with her at 93% HP.
+  let r = L.rewards([at(0), at(0)], [1.0, 0.91], [0, 0.93]);
+  check(r[0] > r[1], `100% saved, defender dead (${r[0].toFixed(3)}) beats 91% saved at 93% HP (${r[1].toFixed(3)})`);
+  // Even one hit point of 2,534 outweighs a defender at full HP.
+  const hp = 1 / 2534;
+  r = L.rewards([at(1), at(1)], [0.5 + hp, 0.5], [0, 1]);
+  check(r[0] > r[1], `one tower hit point more (${r[0].toFixed(6)}) beats a defender at 100% HP (${r[1].toFixed(6)})`);
+  // A tie on the tower: the defender still standing wins.
+  r = L.rewards([at(2), at(2)], [0.8, 0.8], [0.6, 0.1]);
+  check(r[0] > r[1], `equal tower saved: the defender at 60% (${r[0].toFixed(3)}) beats 10% (${r[1].toFixed(3)})`);
+  // A later, better try takes the bonus away from the old best.
+  L.rewards([at(3)], [0.7], [1]);
+  r = L.rewards([at(3), at(3)], [0.75, 0.7], [0, 1]);
+  check(r[0] === 0.75 && r[1] === 0.7, `once 75% has been seen, 70% at full HP earns no bonus (${r[1]})`);
+}
+
 function tables(prefixes) {
   for (const prefix of prefixes) {
     const table = loadTable(prefix);
@@ -103,6 +127,7 @@ function tables(prefixes) {
 
 gradientCheck();
 syntheticConvergence();
+towerFirst();
 tables(process.argv.slice(2));
 console.log(failures ? `\n${failures} failure(s)` : '\nall learner checks passed');
 process.exit(failures ? 1 : 0);

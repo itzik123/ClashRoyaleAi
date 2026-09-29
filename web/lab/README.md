@@ -49,44 +49,51 @@ yourself first and see who does better.
 against damage with the defender, over a 30-second window. The visitor, the
 curve and the best-possible line are all measured in it.
 
-**The reward** the learner trains on adds a bonus for the defender that is
-still standing when the attack is over: `score + 0.2 * survival * score`
-(`Learner.reward` in `learner.js`, shared with the curation suite), where
-`survival` is the defender's HP left over its full HP, summed over its bodies,
-0 if it was destroyed. A building's decay counts, as its HP bar shows it.
-Without it, among drops that save the whole tower the learner picked at
-random, and often traded its Cannon away on the bridge: in Hog Rider vs
-Cannon, 110 of the 149 cell-and-moment pairs that save the whole tower from
-the demo's spawn leave the Cannon destroyed. Scaled by the score, so a
-defender kept alive by staying out of the fight earns nothing.
+**The reward** the learner trains on puts the tower strictly first. It is
+the score, and the defender's health only breaks ties: a try earns
+`score + 0.05 * survival` if it prevented as much damage as the best try yet
+seen for its spawn, and just `score` otherwise (`Learner.rewards` in
+`learner.js`, shared with the curation suite). `survival` is the defender's
+HP left over its full HP, summed over its bodies, 0 if it was destroyed; a
+building's decay counts, as its HP bar shows it. A drop that saves even one
+tower hit point less never gets the bonus, so no amount of defender HP buys
+back tower HP: 100% saved with the Musketeer dead beats 91% saved with her at
+93% (`tools/lab/test_learner.mjs` pins both that and the one-hit-point case).
+Without any tie-break, among drops that save the whole tower the learner
+picked at random, and often traded its Cannon away on the bridge: in Hog
+Rider vs Cannon, 110 of the 149 cell-and-moment pairs that save the whole
+tower from the demo's spawn leave the Cannon destroyed.
 
 Measured 2026-09-29 on the outcome tables (`tools/lab/table_env.mjs`): the 44
-matchups offered until then that have something to learn, 3 seeds each on the page's budget
-(30,000 tries in batches of 16), the learner's answers on 16 spawns each:
+offered matchups that have something to learn, 3 seeds each on the page's
+budget (30,000 tries in batches of 16), the learner's answers on 16 spawns
+each:
 
-| bonus | damage prevented | of the best | defender survival |
-|---|---|---|---|
-| 0 (before) | 86.6% | 97.5% | 55.8% |
-| 0.1 | 86.3% | 97.2% | 65.8% |
-| **0.2 (shipped)** | **86.1%** | **96.9%** | **67.1%** |
-| 0.3 | 86.0% | 96.7% | 68.1% |
+| tie-break | damage prevented | of the best | defender survival | worst matchup vs none |
+|---|---|---|---|---|
+| none | 86.6% | 97.5% | 55.8% | |
+| survival worth half a tower HP | 86.5% | 97.4% | 56.8% | -1.9 pts |
+| **best-seen gate, 0.05 (shipped)** | **86.6%** | **97.6%** | **63.2%** | **-1.1 pts** |
+| best-seen gate, 0.2 | 86.2% | | 65.5% | -14.5 pts |
+| a flat bonus, `score + 0.2 * survival * score` | 86.1% | 96.9% | 67.1% | -10.8 pts |
+| exhaustive optimum, tower then survival | 88.4% | | 64.8% | |
 
-Mostly it breaks ties: Balloon vs Tesla keeps its 100% and the Tesla goes
-from 3% to 81% HP left; Battle Ram vs Mini P.E.K.K.A, Giant vs Skeleton Army
-and Royal Giant vs Skeleton Army from 63-72% to 100%. Two pairs pay for it:
+Read the last column against the second row: a half-hit-point bonus cannot
+change a single answer's tower damage, and its 1.9 points are what three
+seeds of a perturbed learner drift by. The shipped gate stays inside that in
+every matchup. Its survival gain is real: Balloon vs Tesla keeps its 100% and
+the Tesla goes from 3% to 66% HP left; Royal Giant vs Skeleton Army,
+Balloon vs Inferno Tower, Giant vs Skeleton Army and Battle Ram vs Mini
+P.E.K.K.A gain 29-36 points. A bigger gate does not stay strict in practice:
+at 0.2 Giant vs Cannon fell from 64% to 50% on all three seeds, because the
+network shares what it learns across spawns, and the bonus where the lane
+Cannon is the best answer pulled it into the spawns where it is not. The
+flat bonus (shipped for a day) traded tower HP by design: 91% saved in
+Battle Ram vs Musketeer to keep her alive.
 
-- **Battle Ram vs Musketeer, by design.** The true best under the bonus
-  lets 9% of the damage through to keep the Musketeer at 93% HP, rather than
-  save everything and lose her (at 0.1: 97% saved, Musketeer 47%). This is
-  the one pair where 0.2 changes the answer, not just the tie-break.
-- **Giant vs Cannon, a local optimum.** The true best still loses the
-  Cannon, but the bonus makes the safe lane Cannon more tempting, and the
-  learner saves 58% there instead of 64%.
-
-Hog Rider vs Cannon barely moves (Cannon survival 1.6% to 4.6%): in this
-engine a Hog all but destroys a lone Cannon: the drops that save the whole
-tower leave it 7.5% at best, on average over those spawns. 0.3 starts
-trading tower HP in three pairs.
+Hog Rider vs Cannon barely moves (Cannon survival 1.6% to 2.4%): in this
+engine a Hog all but destroys a lone Cannon, and the drops that save the
+whole tower leave it 7.5% at best, on average over those spawns.
 
 **The best-possible line** on the chart comes from brute force: the curation
 suite rolls out every cell and every delay for every spawn (up to about
@@ -114,10 +121,11 @@ failing pairing is withheld on its own, and its tile greys out with the
 reason. Battle Ram vs Valkyrie is withheld that way: the best answer
 intercepts the Ram in its lane (a handful of exact cells and moments), and
 every learner setting tried settles for the safe corner beside the tower at
-55% of the best. Royal Giant vs Bomb Tower has been withheld too since the
-survival bonus (2026-09-29): it was already a local optimum (75% of the best
-on two seeds), and the third seed now joins them, closing 66.6% of the gap
-against the two thirds required (85% before).
+55% of the best. Royal Giant vs Bomb Tower passes by less: a local optimum
+at 75% of the best on two seeds, it clears the gate on the gap closed (71%
+and more against two thirds). The flat survival bonus briefly pushed its
+third seed under the gate (66.6%); under the strict tie-break the three
+seeds close 71%, 83% and 71%.
 
 The defenders were also chosen by measurement. The Knight was cut as a
 near-copy of the Valkyrie: against a Goblin Barrel she saves 99% at best,
@@ -170,6 +178,25 @@ node tools/lab/dev_server.mjs
 
 and open http://127.0.0.1:8766/lab/. The dev server serves the WebAssembly
 build instead whenever `web/lab/engine/engine.wasm` exists.
+
+## Publishing
+
+`.github/workflows/lab-pages.yml` builds the WebAssembly engine from `main`,
+checks it against the native engine try for try, and publishes `web/lab`,
+`web/viewer.html` and `web/index.html` to GitHub Pages. It runs only when
+started by hand.
+
+1. Once: Settings -> Pages -> Build and deployment -> Source: **GitHub
+   Actions**.
+2. Actions -> **Reflex Lab (GitHub Pages)** -> Run workflow -> branch `main`.
+3. Wait for both jobs, `build` then `deploy`, to go green (a few minutes,
+   most of it installing Emscripten). A parity failure stops it before
+   anything is published, so the live page keeps the previous build.
+4. Open https://itzik123.github.io/ClashRoyaleAi/lab/ and read the footer:
+   "Build abc1234." must be the first seven characters of `main`'s commit
+   (`git rev-parse --short HEAD`). Pages caches files for up to 10 minutes,
+   so hard-refresh (Ctrl+Shift+R) or use a private window if it still shows
+   the old one.
 
 ## Counting visitors
 

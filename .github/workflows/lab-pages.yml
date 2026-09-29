@@ -46,6 +46,10 @@ jobs:
         run: |
           mkdir -p _site
           cp -r web/lab web/viewer.html web/index.html _site/
+          # Stamp the commit into the page (its footer shows it), so the live
+          # site can be checked against main after a deploy.
+          sed -i "s|<meta name=\"lab-build\" content=\"dev\">|<meta name=\"lab-build\" content=\"${GITHUB_SHA::7}\">|" _site/lab/index.html
+          grep -q "content=\"${GITHUB_SHA::7}\"" _site/lab/index.html
 
       - uses: actions/upload-pages-artifact@v3
         with:

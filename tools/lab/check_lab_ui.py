@@ -15,7 +15,11 @@ handling is what is tested, not a JavaScript shortcut:
   cancel         released off the board: nothing placed, the card returns
   illegal        released over the enemy half: refused, nothing placed
   layout         no horizontal scroll, board and tray on screen, the header's
-                 GitHub button bright and on screen, at phone and desktop sizes
+                 GitHub button bright and on screen, at phone and desktop sizes;
+                 symmetry: the three matchup facts share a baseline, every
+                 matchup tile is one height, the board sits on the page's
+                 centre line (three-column layout), the tray card under the
+                 board's centre, the bar under the board three equal buttons
   training       tries advance, the curve fills, dragging the attacker moves
                  the preview, the chart's labels stay inside it; results
                  play the heatmap converging, then render a verdict; the
@@ -164,6 +168,10 @@ def demo_checks(b, url):
     top = click_el(b, "ctaBtn")
     check(top == "ctaBtn" and js(b, "return !!__lab.state.demoPlay;"), f"the board's button plays the demo (hit {top!r})")
     wait(b, "!document.getElementById('demoHand').hidden", timeout=6, what="the demo's hand to appear")
+    off = js(b, "const t = document.getElementById('trayCard').getBoundingClientRect(),"
+                " c = document.getElementById('board').getBoundingClientRect();"
+                "return (t.left + t.width / 2) - (c.left + c.width / 2);")
+    check(abs(off) <= 2, f"the demo's Skip button does not push the tray card off centre ({off:.1f} px)")
     wait(b, "!document.getElementById('boardCta').hidden", timeout=15, what="the board's Start card after the demo")
     txt = js(b, "return document.getElementById('ctaBtn').textContent;")
     check(txt == "Start round 1", f"after the demo the board offers {txt!r}")
@@ -280,6 +288,33 @@ def layout_checks(b, url, w, h, dpr, mobile):
     js(b, "document.getElementById('btnStart').click(); return true;")
     t = js(b, "const r = document.getElementById('trayCard').getBoundingClientRect(); return [r.top, r.bottom, innerHeight];")
     check(t[1] <= t[2] + 1, f"{tag}: the card tray is on screen at the start of the challenge ({t[0]:.0f}-{t[1]:.0f} of {t[2]})")
+    symmetry_checks(b, tag, w)
+
+
+def symmetry_checks(b, tag, w):
+    # The board's drawn geometry exists from its first frame on.
+    wait(b, "__lab.board.w > 0", what="the board's first frame")
+    if w <= 760:  # the matchup panel is folded on a phone
+        js(b, "document.getElementById('matchupSummary').click(); return true;")
+        time.sleep(0.3)
+    g = js(b, "const r = e => e.getBoundingClientRect(), q = s => [...document.querySelectorAll(s)];"
+              "const spread = a => Math.max(...a) - Math.min(...a);"
+              "const board = r(document.getElementById('board')), tray = r(document.getElementById('trayCard'));"
+              "const drawn = board.left + __lab.board.ox + (__lab.board.w - 2 * __lab.board.ox) / 2;"
+              "return {facts: spread(q('.facts dd').map(e => r(e).top)), tiles: spread(q('.tile').map(e => r(e).height)),"
+              " board: drawn - innerWidth / 2, tray: (tray.left + tray.width / 2) - (board.left + board.width / 2),"
+              " threeCol: getComputedStyle(document.getElementById('lab')).gridTemplateColumns.split(' ').length === 3};")
+    check(g["facts"] <= 1, f"{tag}: the three matchup facts share a baseline (tops differ by {g['facts']:.1f} px)")
+    check(g["tiles"] <= 1, f"{tag}: every matchup tile is one height (spread {g['tiles']:.1f} px)")
+    if g["threeCol"]:
+        check(abs(g["board"]) <= 2, f"{tag}: the board sits on the page's centre line (off by {g['board']:.1f} px)")
+    check(abs(g["tray"]) <= 2, f"{tag}: the tray card sits under the board's centre (off by {g['tray']:.1f} px)")
+    if w <= 760:
+        js(b, "document.getElementById('matchupSummary').click(); return true;")
+    js(b, "document.getElementById('btnSkip').click(); return true;")
+    time.sleep(0.3)
+    bar = js(b, "return [...document.querySelectorAll('#boardBar .btn')].map(e => e.getBoundingClientRect().width);")
+    check(len(bar) == 3 and max(bar) - min(bar) <= 1, f"{tag}: the bar under the board is three equal buttons ({[round(x) for x in bar]})")
 
 
 def training_checks(b, url):
@@ -361,6 +396,7 @@ def main():
             layout_checks(b, url, 1440, 900, 1.0, False)
             layout_checks(b, url, 1280, 720, 1.25, False)
             layout_checks(b, url, 390, 844, 3.0, True)
+            layout_checks(b, url, 360, 740, 2.0, True)
             b.call("Emulation.setTouchEmulationEnabled", enabled=False)
             print("training and results, 1440x900")
             b.set_viewport(1440, 900, 1.0)

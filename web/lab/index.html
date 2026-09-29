@@ -11,6 +11,9 @@
      put your site's endpoint here, e.g. https://reflexlab.goatcounter.com/count
      (lab.js loads the counter only then, and never on localhost). -->
 <meta name="goatcounter" content="">
+<!-- The commit this page was published from: .github/workflows/lab-pages.yml
+     writes it at deploy time, and the footer shows it. "dev" locally. -->
+<meta name="lab-build" content="dev">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Unbounded:wght@500;600;700;800&display=swap" rel="stylesheet">
@@ -155,7 +158,7 @@
 
 <footer class="foot">
   <p>A miniature of the real problem: one attacker, one defender, no elixir. The project's real agent plays full matches and trains for days on a laptop CPU; this lab shows the same kind of learning, small enough to watch. <a href="https://github.com/itzik123/ClashRoyaleAi" target="_blank" rel="noopener" data-track="github-footer">The code is on GitHub.</a></p>
-  <p class="credits">Card roster built largely by Ambash. Built with the help of AI tools. Unofficial fan project, not affiliated with, endorsed by or sponsored by Supercell.</p>
+  <p class="credits">Card roster built largely by Ambash. Built with the help of AI tools. Unofficial fan project, not affiliated with, endorsed by or sponsored by Supercell.<span id="buildTag"></span></p>
 </footer>
 
 <!-- Intro -->
@@ -180,7 +183,7 @@
   <div class="intro-card about">
     <h2 id="aboutTitle">How it works</h2>
     <p><b>The engine.</b> The arena, the troops, the towers and every hit are simulated by the project's C++ engine, the same code the full agent trains against, compiled to WebAssembly. It is deterministic: the same drop always gives the same result.</p>
-    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side (a Goblin Barrel is thrown at a random spot around one of your towers). The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented, plus a small bonus when your defender is still standing at the end: of two drops that both save the tower, it learns to prefer the one that keeps its card alive. The score on the page is the damage prevented alone, for you and for it.</p>
+    <p><b>The problem.</b> The attacker is dropped at a random spot on the enemy side (a Goblin Barrel is thrown at a random spot around one of your towers). The network chooses a legal cell for your defender, then a delay from 0 to 5 seconds. The reward is the share of the no-defence tower damage it prevented. Your defender's health counts only as a tie-breaker: of two drops that save exactly as much of the tower, it prefers the one that keeps its card alive, and it never gives up a single tower hit point to do so. The score on the page is the damage prevented alone, for you and for it.</p>
     <p><b>The network.</b> <span id="aboutParams">A few thousand</span> weights in plain JavaScript, no ML library: the attacker's position goes in, a map of cell preferences and a delay choice come out. It learns with REINFORCE, the simplest policy-gradient method: tries that beat the usual result for that spawn become more likely.</p>
     <p><b>The honest part.</b> This is a miniature. The real agent picks from a hand of four cards with an elixir economy, every second of a three-minute match, and needs days of training.</p>
     <div class="row"><button class="btn primary" id="btnAboutClose" type="button">Close</button></div>

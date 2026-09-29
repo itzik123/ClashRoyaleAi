@@ -37,7 +37,7 @@ plan in `docs/design/`).
 1. ~~**Install Emscripten and build**~~ **DONE 2026-09-29**, in a Linux cloud
    session with emsdk 3.1.74 (the version CI pins), in the session's scratch
    space: `web/lab/engine/build.sh`, then `node tools/lab/parity.mjs --cli
-   tools/lab/out/lab_cli` printed **all 9,200 tries identical** (46 matchups x
+   tools/lab/out/lab_cli` printed **all 9,400 tries identical** (47 matchups x
    200, tower damage and defender survival), and `tools/lab/check_lab_ui.py`
    passed every check with the page on the WASM engine. The build now uses
    `-fwasm-exceptions`: 2,000 rollouts a second in Node against 799 with

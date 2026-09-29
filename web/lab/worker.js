@@ -108,12 +108,6 @@ function prevented(spawn, damage) {
   return Math.max(-1, Math.min(1, (d0 - damage) / d0));
 }
 
-// What the learner trains on: that share, plus a bonus for how much of the
-// defender is still standing (Learner.reward, shared with tools/lab).
-function reward(spawn, damage, survival) {
-  return Learner.reward(prevented(spawn, damage), survival);
-}
-
 // -> { damage, survival } per action.
 async function rollouts(actions) {
   const triples = new Int32Array(actions.length * 3);
@@ -153,7 +147,8 @@ async function loop() {
       }
       const batch = learner.sampleBatch(speed === 'watch' ? 16 : 64);
       const out = await rollouts(batch);
-      learner.update(batch, batch.map((a, i) => reward(a.spawn, out.damage[i], out.survival[i])));
+      // Tower first, defender second: Learner.rewards, shared with tools/lab.
+      learner.update(batch, learner.rewards(batch, batch.map((a, i) => prevented(a.spawn, out.damage[i])), out.survival));
 
       const now = performance.now();
       rateWin.push([now, learner.tries]);

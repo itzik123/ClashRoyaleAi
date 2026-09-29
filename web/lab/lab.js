@@ -992,6 +992,10 @@
     $(id).addEventListener('click', () => track(name)));
   document.querySelectorAll('[data-track]').forEach(el => el.addEventListener('click', () => track(el.dataset.track)));
 
+  // The published commit, so a deploy can be checked against main.
+  const build = (document.querySelector('meta[name="lab-build"]') || {}).content;
+  if (build && build !== 'dev') $('buildTag').textContent = ` Build ${build}.`;
+
   // ---- intro and about ----------------------------------------------------------------
 
   // The board then offers the how-to-play demo; nothing plays until asked.
