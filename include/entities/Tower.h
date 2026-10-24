@@ -1,6 +1,7 @@
 #pragma once
 #include "Building.h"
 #include "Projectile.h"
+#include <algorithm>
 
 class Tower : public Building {
 public:
@@ -34,6 +35,22 @@ public:
     std::shared_ptr<Entity> snapshot() const override {
         return std::make_shared<Tower>(*this);
     }
+
+    // --- level ---
+    // Re-level a tower: max hp, damage per shot and cooldown (ticks). The hp
+    // keeps its fraction of the max, so a full tower stays full (and a
+    // sleeping King stays asleep: it wakes on hp < maxHp).
+    void setStats(int newMaxHp, int newDamage, int newCooldown) {
+        if (newMaxHp <= 0 || newDamage < 0 || newCooldown <= 0) return;
+        const bool full = hp >= maxHp;
+        const double frac = maxHp > 0 ? static_cast<double>(hp) / maxHp : 1.0;
+        maxHp = newMaxHp;
+        hp = full ? newMaxHp : std::max(1, static_cast<int>(frac * newMaxHp + 0.5));
+        damage = newDamage;
+        attackCooldown = newCooldown;
+    }
+    int getDamage() const { return damage; }
+    int getAttackCooldown() const { return attackCooldown; }
 
     // --- activation ---
     // The King Tower starts dormant: it cannot acquire or fire until woken,
