@@ -66,6 +66,10 @@ protected:
     FreezeSlot freezeSlots[FREEZE_SLOT_COUNT];
 
 public:
+    // The entity this one is locked onto (-1 for none). Read-only view for
+    // ClashEnv::getUnits.
+    int getCurrentTargetId() const { return currentTargetId; }
+
     // Freeze lives here, not on Entity: only things that attack or move can be
     // frozen. A stun is factor 0; a slow is 0 < factor < 1 and scales both
     // movement and the attack cooldown.

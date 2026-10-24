@@ -32,6 +32,28 @@ struct SelfPlayStepResult {
     bool done;
 };
 
+// One live entity on the board, for callers that read the board directly
+// instead of through save_log. Read-only; positions in board coordinates.
+// cardId, symbol and name match the logger's EntitySnapshot: cardId is
+// negative for towers (GameManager::TOWER_KING_ID / TOWER_PRINCESS_ID) and for
+// death-spawn children, which carry their own name.
+struct UnitView {
+    int id;
+    int cardId;
+    std::string name;
+    char symbol;
+    int team;
+    float x;
+    float y;
+    int hp;
+    bool flying;
+    bool building;
+    bool tower;
+    bool targetable;   // false for spells in flight and projectiles
+    int deployTicks;   // ticks of deploy time left (0 for non-combat entities)
+    int targetId;      // the entity it is locked onto, -1 for none
+};
+
 // The same advance for a caller that discards both observations. Rollouts step
 // a snapshot many times and read one observation at the end, and building each
 // unused observation costs far more than the physics tick
@@ -648,6 +670,22 @@ public:
 
     // The matching read.
     int getCurrentTick() const { return currentTick; }
+
+    // Every live entity, in board order (see UnitView). Read-only.
+    std::vector<UnitView> getUnits() const {
+        std::vector<UnitView> out;
+        for (const auto& e : game.getBoard().getEntities()) {
+            if (!e->isAlive()) continue;
+            UnitView u{e->id, e->cardId, e->name, e->symbol, e->team, e->position.x, e->position.y, e->hp,
+                       e->isFlying, e->isBuilding(), e->isTower(), e->isTargetable(), 0, -1};
+            if (const auto* c = dynamic_cast<const CombatEntity*>(e.get())) {
+                u.deployTicks = c->deployTicksRemaining;
+                u.targetId = c->getCurrentTargetId();
+            }
+            out.push_back(std::move(u));
+        }
+        return out;
+    }
 
     // The elixir phase in force (1.0 / 2.0 / 3.0), so readers need not know the
     // boundary ticks.

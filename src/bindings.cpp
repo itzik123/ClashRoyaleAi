@@ -59,6 +59,22 @@ PYBIND11_MODULE(clash_royale_env, m) {
         .value("DAGGER_DUCHESS", TowerTroopType::DaggerDuchess)
         .value("ROYAL_CHEF", TowerTroopType::RoyalChef);
 
+    py::class_<UnitView>(m, "UnitView")
+        .def_readonly("id", &UnitView::id)
+        .def_readonly("card_id", &UnitView::cardId)
+        .def_readonly("name", &UnitView::name)
+        .def_readonly("symbol", &UnitView::symbol)
+        .def_readonly("team", &UnitView::team)
+        .def_readonly("x", &UnitView::x)
+        .def_readonly("y", &UnitView::y)
+        .def_readonly("hp", &UnitView::hp)
+        .def_readonly("flying", &UnitView::flying)
+        .def_readonly("building", &UnitView::building)
+        .def_readonly("tower", &UnitView::tower)
+        .def_readonly("targetable", &UnitView::targetable)
+        .def_readonly("deploy_ticks", &UnitView::deployTicks)
+        .def_readonly("target_id", &UnitView::targetId);
+
     py::class_<ClashEnv>(m, "ClashRoyaleEnv")
         .def(py::init<const std::vector<int>&, const std::vector<int>&, int, TowerTroopType, TowerTroopType>(),
             py::arg("ai_deck"), py::arg("opp_deck"), py::arg("max_ticks") = 1800,
@@ -140,6 +156,9 @@ PYBIND11_MODULE(clash_royale_env, m) {
         // Clamped to [0, max_ticks]; sets both engine clocks.
         .def("set_current_tick", &ClashEnv::setCurrentTick, py::arg("tick"))
         .def("get_current_tick", &ClashEnv::getCurrentTick)
+        // Every live entity (towers, troops, buildings, spells in flight), read
+        // straight off the board: no save_log round-trip. Read-only.
+        .def("get_units", &ClashEnv::getUnits)
         // The elixir phase (1.0 / 2.0 / 3.0) now.
         .def("get_elixir_multiplier", &ClashEnv::getElixirMultiplier)
         // Card-cycle tracking (item 24). `inject` bypasses playCard, where the
