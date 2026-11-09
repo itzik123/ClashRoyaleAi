@@ -148,3 +148,28 @@ def test_the_adapter_uses_the_numeral_where_the_bar_failed(frame_2030):
     assert gs.opp_princess_left.hp_measured and gs.opp_princess_right.hp_measured
     control, _ = build_game_state(st, frame_2030, small)
     assert not control.opp_princess_left.hp_measured
+
+
+def test_a_repeated_misread_below_any_real_tower_is_not_a_maximum():
+    """A --frames run read our right Princess as "64" on every frame, so
+    repetition confirmed it as that tower's maximum. No real Princess Tower
+    starts below ~1400."""
+    from live.tower_hp import MIN_PLAUSIBLE_MAX
+    t = tracker({"own_princess_right": [64] * 4 + [1890] * 2 + [1500]})
+    for _ in range(4):
+        assert t.read(FRAME, fallback())["own_princess_right"] is BAR
+    assert t.maxima()["own_princess_right"] is None
+    t.read(FRAME, fallback())
+    t.read(FRAME, fallback())
+    out = t.read(FRAME, fallback())
+    assert t.maxima()["own_princess_right"] == 1890 >= MIN_PLAUSIBLE_MAX
+    assert out["own_princess_right"].hp_fraction == pytest.approx(1500 / 1890)
+
+
+def test_a_damaged_tower_still_reads_below_the_floor():
+    """The floor bounds the ceiling, not the reading: 64 HP left is real."""
+    t = tracker({"opp_princess_left": [1750, 1750, 64]})
+    t.read(FRAME, fallback())
+    t.read(FRAME, fallback())
+    out = t.read(FRAME, fallback())
+    assert out["opp_princess_left"].hp_fraction == pytest.approx(64 / 1750)

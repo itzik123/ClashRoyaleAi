@@ -43,6 +43,15 @@ TEMPLATE_FRAME_SIZE = (549, 976)            # (width, height) the templates fit
 #: Times a value must be read before it can be a tower's maximum.
 CONFIRMATIONS = 2
 
+#: The smallest value that can be a Princess Tower's MAXIMUM. Towers start full,
+#: and the weakest real one starts at ~1400 (tower level 1; the recordings'
+#: levels 4-5 are 1750/1890, the engine's level 9 is 2534), so a confirmed
+#: "maximum" below this is a misread, not a tower. Found by a --frames run of
+#: mvp_loop on the reference frame: our right Princess's numeral read "64" on
+#: every frame, so repetition alone confirmed it. Any VALUE is still a fine
+#: reading of a damaged tower; only the ceiling is floored.
+MIN_PLAUSIBLE_MAX = 1000
+
 
 def princess_bar_boxes() -> dict[str, tuple[int, int, int, int]]:
     """GameState field -> CRBAB's bar bbox in its detector frame, from CRBAB's
@@ -78,7 +87,8 @@ class _TowerMax:
 
     @property
     def value(self) -> int | None:
-        confirmed = [v for v, n in self.counts.items() if n >= CONFIRMATIONS]
+        confirmed = [v for v, n in self.counts.items()
+                     if n >= CONFIRMATIONS and v >= MIN_PLAUSIBLE_MAX]
         return max(confirmed) if confirmed else None
 
 

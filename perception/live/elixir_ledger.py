@@ -75,6 +75,16 @@ MAX_CARDS_PER_STEP = 3
 # pretending to resolve 3 from 4.
 COST_TOLERANCE = 1.0
 
+# A drop must exceed this sample's own modelled regeneration by this much to be
+# a play. The bar is an integer, so between ticks it sits still while elixir
+# accrues, and every such reading "drops" by exactly the regeneration it hid;
+# at the cap it drops by 0. The cost floor alone (min cost - tolerance) is 0
+# for a deck holding a 1-elixir card -- the shipped 2.6 Hog Cycle holds two --
+# and every one of those readings matched a 1-elixir play within tolerance.
+# Measured in a --frames run of mvp_loop on a static frame: 8 plays booked in
+# 10 readings of a bar that never moved.
+MIN_PLAY_DROP_OVER_REGEN = 0.5
+
 
 def decompositions(costs=DEFAULT_COSTS, max_cards=MAX_CARDS_PER_STEP):
     """Every drop total a legal set of 1..max_cards cards can produce. Anything
@@ -139,6 +149,26 @@ class ElixirLedger:
     def __post_init__(self):
         self._table = decompositions(self.costs)
         self._min_cost = min(self.costs)
+
+    def new_match(self) -> None:
+        """Start a new match: per-match spend and the reading history go.
+
+        Without this a run spanning two matches carries the first match's
+        `spent` into the second's observation (it feeds GameState's
+        `my_elixir_spent`), and the new match's first reading is diffed against
+        the old match's last bar, which can explain a "drop" as a play nobody
+        made. Pending plays are discarded rather than written off: the match
+        they were issued in is over, so the bar can no longer confirm or refute
+        them. `plays` and the tag lists are append-only spines other components
+        index into (HandTracker reads `plays[n:]`), so they are kept.
+        """
+        with self._lock:
+            self._pending = []
+        self._recent = []
+        self._last = self._last_t = self._first = None
+        self.spent = 0.0
+        self.cards = 0
+        self.gained = 0.0
 
     # --- ground truth from our own play stream ---
 
@@ -240,9 +270,15 @@ class ElixirLedger:
             self._expire(stamp)
             pending = list(self._pending)
 
-        if drop < self._min_cost - self.tolerance:
-            # Ordinary regeneration or noise below the cheapest card; counting
-            # it as unexplained would fire nearly every frame.
+        # Ordinary regeneration, integer quantisation, or noise below the
+        # cheapest card; counting it as unexplained would fire nearly every
+        # frame. Both floors apply: the cost floor for decks of expensive
+        # cards, the regeneration floor for decks with 1-elixir cards, where
+        # the cost floor is 0. One floor for the pending path too: a pending
+        # play is confirmed by the drop it causes, never by quantisation.
+        floor = max(self._min_cost - self.tolerance,
+                    regen + MIN_PLAY_DROP_OVER_REGEN)
+        if drop < floor:
             return
 
         if pending:

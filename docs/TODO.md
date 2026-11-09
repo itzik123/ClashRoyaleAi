@@ -29,6 +29,86 @@ Rules that apply to every item below:
 
 ---
 
+## 00000. Code review of the live path, 2026-11-09 — fixed, one proposal open
+
+A review of `perception/live/` (pipeline, decision loop, actuator, ledger, hand
+tracker, confirmer, mirror, tower HP) and of the engine-facing modules. Most of
+it was found by RUNNING `mvp_loop.main()` end to end with `--frames` on a static
+frame, which nothing had done since the live loop gained the teacher policy.
+Each fix has a regression test with a control that must differ
+(`perception/tests/test_live_review_fixes.py`, `test_live_tower_hp.py`).
+
+Fixed:
+
+1. **The elixir ledger booked a phantom 1-elixir play on almost every reading
+   with the SHIPPED deck.** The drop floor was `min_cost - tolerance`, which is
+   0 when the deck holds a 1-elixir card, and 2.6 Hog Cycle holds two (Skeletons,
+   Ice Spirit). The bar is an integer, so it sits still between ticks: each
+   flat reading "drops" by the regeneration it hid (0 at the cap), and that
+   matched a 1-elixir card within the +/-1 tolerance. Measured: 8 plays booked
+   in 10 readings of a bar that never moved. It inflated `my_elixir_spent` (an
+   observation scalar) and advanced the hand tracker's FIFO on plays nobody
+   made. The existing tests used the (3, 4, 5) default costs, whose floor of 2
+   hid it. A drop must now exceed this sample's own regeneration by 0.5
+   (`MIN_PLAY_DROP_OVER_REGEN`); real 1-, 2- and 4-elixir plays still count.
+2. **A second match inherited the first one's ledger.** Only the hand tracker
+   was reset at match start, so `spent` leaked into the new match's
+   observation. `ElixirLedger.new_match()` now runs on `MatchState`'s start
+   transition, and the tower-HP tracker's reset moved onto the same hook.
+3. **A dropped placement was booked as played.** With an earlier placement still
+   in flight the actuator drops the new one, but the loop still marked the board
+   acted on, opened a confirmation that could only fail, and debited the card's
+   cost from the ledger. `AdbActuator.last_queued` says whether it was queued.
+   The loop refuses a dropped one as `actuator_busy`.
+4. **The actuator's 20 s adb timeout could not fire.** The deadline was checked
+   between `readline()` calls, and `readline()` blocks until a line arrives, so
+   a silent, wedged shell hung the actuator thread forever. Every later
+   placement was dropped and `close()` never returned. A reader thread now
+   drains stdout into a queue, and the deadline is a queue timeout. Tested
+   against a real child process that never writes.
+5. **`Snapshot.published_at` defaulted to 0.0** to mean "sat forever", but
+   `perf_counter()` starts near boot, so on a machine up for under ~17 minutes
+   an unset value read as just published. This was the long-standing
+   `test_an_unset_published_at_reads_as_sitting_forever` failure, a real bug
+   rather than a flaky test. It defaults to -inf now.
+6. **`--frames` replay gave policies the wall clock.** Replay frames are one
+   GAME second apart however long inline detection takes (0.6-2.4 s), so
+   `TeacherPolicy` would have read every decision as a stall and
+   `ScriptedPolicy`'s cooldown ran on the wrong clock. In replay the policy
+   gets the frame's own time.
+7. **The decision loop busy-spun** on `worker.latest()` until the first board
+   arrived, contending for the GIL with the adapter it was waiting for.
+8. **The hand tracker could seed a hand holding one card twice** (an icon
+   reader that confuses two cards consistently produces exactly that). The FIFO
+   kept the duplicate all match, and `set_hand_for_team` refuses it, so the
+   teacher held every decision. A hand must be four distinct deck cards.
+9. **The tower-HP tracker confirmed "64" as our right Princess's maximum** (an
+   ally numeral misread on every frame; ally numerals were never validated). A
+   maximum below 1,000 is rejected: no Princess Tower starts below ~1,400.
+   Readings below it are still fine.
+10. **The mirror would re-cast a spell** if a detected unit ever mapped to a
+    spell id. None does today; the table is generated, so it is enforced.
+11. **A 55 ms one-off stall on the first damaged unit**: the mirror built the
+    encoder's card table lazily, mid-match. It is warmed at startup now (worst
+    decision 17.5 -> 9.3 ms in the dry run).
+12. `hand_names[decision.slot]` could IndexError on a short CRBAB card list.
+
+Open: **UPSTREAM item 36**. `getAllCardIds()` and `sample_random_deck(seed)`
+iterate an `unordered_map`, so a seeded deck is reproducible on one build only
+(MSVC vs libstdc++ vs WASM). C++, proposed with options. Every Python caller was
+audited and is order-independent: names are unique, and `net.py`'s card index
+is `range()`-based. `net.py`'s `_ALL_IDS` is dead code (python_ai, left alone).
+
+Also measured and NOT changed:
+- The ledger's 1-elixir plays are now hidden when one sample's regeneration
+  is large (a 3 s stall in triple elixir puts the floor at ~1.6). An integer
+  bar cannot separate those from quantisation, and under-counting is the
+  safer direction.
+- `mvp_loop.main()` still has no test of its own. The `--frames` smoke run
+  above is the procedure, and it needs the vendored ONNX models.
+
+---
+
 ## 0000. Reflex Lab (browser demo): build the WASM engine and publish
 
 Built 2026-09-28 on `feat/reflex-lab` (`web/lab/`, `tools/lab/`, spec and

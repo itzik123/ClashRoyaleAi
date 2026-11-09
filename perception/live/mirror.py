@@ -162,12 +162,25 @@ class MirrorBuilder:
         # A separate env for body counts: bodies_per_card resets the env it
         # measures on, and must never touch the mirror mid-build.
         self._forecaster = SimForecaster(self.deck, engine=self.engine)
+        # Warm the two lazily-measured tables now, not on the first frame that
+        # needs them: the encoder's card table costs ~55 ms once, and our own
+        # cards' body counts ~0.7 ms each. Paid at startup, not mid-match.
+        from python_ai.models import perception_encoder as enc  # noqa: PLC0415
+        enc.card_table()
+        for card_id in self.deck:
+            self._forecaster.bodies_per_card(card_id)
 
     @property
     def env(self):
         return self._env
 
     # -- per-card facts, measured once -----------------------------------
+    def _is_spell(self, card_id: int) -> bool:
+        try:
+            return bool(self.engine.get_card_info(int(card_id))["is_spell"])
+        except Exception:                                   # noqa: BLE001
+            return False
+
     def _unit_hp(self, card_id: int) -> _UnitHp | None:
         """One body's full engine HP, read off the observation by the encoder's
         own card table. The observation clips at MAX_*_HP, so a card at the
@@ -190,6 +203,12 @@ class MirrorBuilder:
 
         # 1. Body counts before anything touches the mirror.
         groups, gaps.unmappable_units = group_units(gs.units)
+        # A spell id among perceived UNITS would be re-cast on every rebuild:
+        # an explosion seen for one frame would hit the mirror's board again
+        # each second. No detector class maps to a spell today; the mapping
+        # table is generated, so this is enforced here rather than assumed.
+        for key in [k for k in groups if self._is_spell(k[0])]:
+            gaps.unmappable_units += len(groups.pop(key))
         bodies = {cid: self._forecaster.bodies_per_card(cid)
                   for cid, _team in groups}
 

@@ -39,6 +39,17 @@ CONSENSUS_WINDOW = 25
 DESYNC_PATIENCE = 3
 
 
+def _is_a_hand(cards, deck) -> bool:
+    """Four DISTINCT cards of the deck. A hand can never hold one card twice,
+    and an icon reader that confuses two cards consistently produces exactly
+    that (two Hog Riders): seeding from it left a duplicate in the hand and
+    five cards in the queue for the rest of the match, and the teacher mirror's
+    set_hand_for_team refuses a duplicate, so it would hold on every decision.
+    """
+    return (len(cards) == 4 and len(set(cards)) == 4
+            and all(c in deck for c in cards))
+
+
 @dataclass
 class HandTracker:
     """Our four cards, maintained from plays and corrected rarely."""
@@ -86,7 +97,7 @@ class HandTracker:
 
         if not self.seeded:
             seed = self.consensus()
-            if seed is not None and all(c in self.deck for c in seed):
+            if seed is not None and _is_a_hand(seed, self.deck):
                 self.hand = list(seed)
                 self.queue = deque(
                     [c for c in self.deck if c not in set(seed)], maxlen=QUEUE_SIZE)
@@ -145,7 +156,7 @@ class HandTracker:
             return
         self.desyncs += 1
         self._disagree_run = 0
-        if all(c in self.deck for c in seen):
+        if _is_a_hand(seen, self.deck):
             self.hand = list(seen)
             self.queue = deque(
                 [c for c in self.deck if c not in set(seen)], maxlen=QUEUE_SIZE)

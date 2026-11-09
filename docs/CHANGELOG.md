@@ -30,6 +30,16 @@ comparable across this change.
   `perception/live/teacher_policy.py` lets the UtilityTeacher rank candidates on that
   mirror. Run it with `mvp_loop.py --policy teacher` (dry run unless `--act`). See
   `docs/TODO.md` item 0.
+- **Live-loop review** (`docs/TODO.md` item 00000). The live loop no longer:
+  - books a phantom 1-elixir play on almost every elixir reading with a deck
+    holding 1-elixir cards, which includes the shipped 2.6 Hog Cycle;
+  - carries one match's elixir spend into the next;
+  - books a placement the actuator dropped as played;
+  - hangs forever on a silent adb shell;
+  - treats an unset publication time as fresh on a recently booted machine;
+  - feeds wall time to policies during `--frames` replay;
+  - seeds a hand holding one card twice;
+  - accepts an impossible tower maximum.
 - The teacher's combo timing follows the wall clock: after a stalled decision its
   planned follow-up comes due on time instead of seconds late.
 - `perception/tools/teacher_dry_run.py` runs `--policy teacher` over a recorded match

@@ -2401,6 +2401,22 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 
 ---
 
+## 2026-11-09: the live-path review — run it, then read it
+
+`TODO.md` item 00000 has the twelve fixes. Three lessons carry beyond them:
+
+- **Run the entry point.** Most findings came from one `mvp_loop.py --frames`
+  run on a static frame, not from reading. Copy any 549x976 screenshot into a
+  directory a few times and pass `--frames-fps 1`; the summary lines (ledger,
+  tower HP, teacher, mirror gaps) are the instrument. A static frame is the
+  control: anything that "happens" on it is a bug.
+- **A floor derived from the deck can be zero.** The ledger's noise floor was
+  `min_cost - tolerance`: 2 on the default (3, 4, 5) test costs, 0 on the
+  shipped deck. Same shape as the pre-launch audit's deck-keyed mechanisms, and
+  hidden the same way: the tests used a different deck from the run.
+- **`perf_counter()` has no epoch.** Never use 0.0 as "long ago" on it, since it
+  is roughly machine boot. Use -inf or None.
+
 ## Stage 2 (the teacher plays as us): BUILT 2026-11-09, see `TODO.md` item 0
 
 `perception/live/mirror.py` rebuilds the engine from each perceived frame and

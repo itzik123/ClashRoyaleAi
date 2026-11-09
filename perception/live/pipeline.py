@@ -122,7 +122,7 @@ class Snapshot:
     index: int
     detect_ms: float
 
-    published_at: float = 0.0
+    published_at: float = float("-inf")
     """perf_counter when this became the newest board -- AFTER detection.
 
     `captured_at` says how old the board is; this says how long it has been
@@ -130,9 +130,14 @@ class Snapshot:
     decision loop held a finished board without acting on it, which is pure
     waste and the only part of the latency that costs nothing to remove.
 
-    Defaults to 0 so an unset value reads as "sitting forever", which makes
-    `sat_ms` large and the freshness wait decline to trigger. Degrading to the
-    old always-act-now behaviour is the safe direction for a missing field.
+    Defaults to -inf so an unset value reads as "sitting forever", which makes
+    `sat_ms` infinite and the freshness wait decline to trigger. Degrading to
+    the old always-act-now behaviour is the safe direction for a missing field.
+
+    NOT 0.0, which it was: `perf_counter()`'s reference point is unspecified
+    (boot time on Linux and Windows), so on a machine up for under ~17 minutes
+    an unset value read as published moments ago, and the wait engaged on a
+    board whose publication time was never known.
     """
 
     def age_ms(self, now: float | None = None) -> float:

@@ -735,6 +735,8 @@ def main() -> int:
     # A new battle deals a fresh opening hand; the previous match's FIFO no
     # longer applies.
     match.on_change(lambda in_match: tracker.reset() if in_match else None)
+    # The ledger's spend feeds the observation; per match, like the hand.
+    match.on_change(lambda in_match: ledger.new_match() if in_match else None)
 
     # Princess Tower HP from the printed numeral (live/tower_hp.py), when its
     # templates exist; the bar reading stands otherwise and per tower.
@@ -746,7 +748,9 @@ def main() -> int:
             print("tower HP: printed numeral, bar as fallback")
         except Exception as exc:                            # noqa: BLE001
             print(f"tower HP: bar only (numeral reader unavailable: {exc})")
-    match_seen = [False]
+    if tower_hp is not None:
+        # A new match forgets every tower's maximum.
+        match.on_change(lambda in_match: tower_hp.reset() if in_match else None)
 
     def perceive(frame):
         """capture-frame -> (State, GameState). Runs on the thread that owns
@@ -768,9 +772,6 @@ def main() -> int:
             # of an elixir.
             ledger.update(state.numbers.elixir.number,
                           now=frame.wall_time_ms / 1000.0)
-        if tower_hp is not None and in_match and not match_seen[0]:
-            tower_hp.reset()                  # a new match: forget the maxima
-        match_seen[0] = in_match
         gs, _report = build_game_state(
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
@@ -830,6 +831,7 @@ def main() -> int:
                     continue
 
             step = time.perf_counter()
+            policy_now = now
             age_ms = 0.0
             board_index = n
             if pipelined:
@@ -838,6 +840,10 @@ def main() -> int:
                     if not worker.alive:
                         print(f"  perception thread DIED: {worker.last_error!r}")
                         break
+                    # The first board takes a whole detection (0.6-2.4 s).
+                    # Without a sleep this spins a core on `latest()` and
+                    # contends for the GIL with the adapter it is waiting for.
+                    time.sleep(0.01)
                     continue
                 snap, waited_ms = wait_for_fresher(worker, snap)
                 if waited_ms:
@@ -858,6 +864,14 @@ def main() -> int:
                 if state is None:
                     continue
                 board_index = frame.index
+                if replay is not None:
+                    # A recording's frames are exactly one sample interval of
+                    # GAME time apart, however long perceive() took on each.
+                    # Policies keep time with `now` (ScriptedPolicy's cooldown,
+                    # TeacherPolicy's plan clock), so it must be the frame's
+                    # own clock here: wall time would read every inline
+                    # detection (0.6-2.4 s) as a stall.
+                    policy_now = frame.wall_time_ms / 1000.0
 
             # Phase-locked: the next tick is measured from the decision that
             # happened, so a wait shifts the cadence instead of being repaid by
@@ -882,15 +896,24 @@ def main() -> int:
             # The policy steps every tick regardless of the gate: it was
             # trained stepping once per second, and skipping steps would change
             # the LSTM's cadence. Only the tap is gated.
-            decision = (policy.decide(gs, state.ready, now) if in_game
+            decision = (policy.decide(gs, state.ready, policy_now) if in_game
                         else Decision(None, DEFAULT_TILE, "not in game"))
             if decision.slot is not None:
                 verdict = gate.check(board_index, age_ms)
                 if verdict:
                     _card_tap, tile_tap = actuator.play(decision.slot,
                                                         *decision.tile)
-                    # Recorded only after the tap returns, so an adb failure
-                    # leaves the board available to retry.
+                if verdict and not actuator.last_queued:
+                    # Dropped: an earlier placement is still being tapped, so
+                    # this one will never be sent. Booking it would mark the
+                    # board acted on, open a confirmation that can only fail,
+                    # and debit elixir from the ledger for a card never played.
+                    gate.refuse("actuator_busy")
+                    decision = Decision(None, decision.tile,
+                                        f"[actuator busy] {decision.why}")
+                elif verdict:
+                    # Recorded once the placement is queued; an adb failure
+                    # after that is counted by the actuator.
                     gate.record(board_index)
                     # The name comes from the hand the policy read
                     # (`gs.my_hand`), not CRBAB's stock icon read of
@@ -900,6 +923,7 @@ def main() -> int:
                     # hunting for a unit never played. The stock crop is used
                     # only where the tracked slot is unreadable.
                     hand_names = [c.name for c in state.cards[1:5]]
+                    hand_names += [""] * (4 - len(hand_names))
                     tracked_name = _sim_id_to_detector_name(
                         gs.my_hand[decision.slot]
                         if decision.slot < len(gs.my_hand) else -1)
@@ -993,7 +1017,8 @@ def main() -> int:
         print(f"actuator: {actuator.dropped} dropped (still tapping), "
               f"{actuator.errors} errors"
               + (f" - last {actuator.last_error!r}" if actuator.last_error else ""))
-    print(f"our elixir spent: {ledger.spent:.0f} over {ledger.cards} cards, "
+    print(f"our elixir spent{' (last match)' if match.matches_seen > 1 else ''}: "
+          f"{ledger.spent:.0f} over {ledger.cards} cards, "
           f"residual {ledger.residual:+.0f}, "
           f"{ledger.rejected} issued plays never confirmed")
 

@@ -78,6 +78,20 @@ TOUCH_HOLD_S = 0.06
 # Marks the end of a command down the persistent shell.
 _SENTINEL = "__ACT_DONE__"
 
+# How long one placement may take on the persistent shell before it is
+# abandoned and the shell reopened.
+SHELL_TIMEOUT_S = 20.0
+
+
+def _drain(stream, lines: queue.Queue) -> None:
+    """Copy a pipe into a queue, one line at a time; None at EOF."""
+    try:
+        for line in iter(stream.readline, ""):
+            lines.put(line)
+    except Exception:                                       # noqa: BLE001
+        pass
+    lines.put(None)
+
 
 def _input_event(ev_type: int, code: int, value: int) -> bytes:
     """One `struct input_event`, 64-bit layout: two 8-byte timeval fields,
@@ -222,6 +236,13 @@ class AdbActuator:
         self.last_error: BaseException | None = None
         self.raw: RawTouch | None = None
         self._proc: subprocess.Popen | None = None
+        # The shell's stdout, drained by a reader thread into this queue, so a
+        # wait on it can time out; see `_shell_persistent`.
+        self._lines: queue.Queue | None = None
+        #: Whether the most recent play()/play_pixel() reached the queue. False
+        #: means it was DROPPED (an earlier placement still in flight), and the
+        #: caller must not book it as played: no tap will ever be sent.
+        self.last_queued = False
         if not dry_run and not self.adb.exists():
             raise ActuationError(f"adb not found at {self.adb}")
         if raw_touch and not dry_run:
@@ -255,12 +276,20 @@ class AdbActuator:
         # Recorded at intent, so `taps` is deterministic regardless of when the
         # worker runs.
         self.taps.extend((card, target))
-        if not self.dry_run:
-            try:
-                self._q.put_nowait((card, target))
-            except queue.Full:
-                self.dropped += 1
+        self.last_queued = self._enqueue(card, target)
         return card, target
+
+    def _enqueue(self, card: Tap, target: Tap) -> bool:
+        """Queue one placement; False if it was dropped. A dry run "queues"
+        everything: nothing is ever sent, and nothing is dropped."""
+        if self.dry_run:
+            return True
+        try:
+            self._q.put_nowait((card, target))
+            return True
+        except queue.Full:
+            self.dropped += 1
+            return False
 
     def play_pixel(self, slot: int, px: int, py: int) -> tuple[Tap, Tap]:
         """Select a hand slot, then tap a raw screen pixel.
@@ -271,11 +300,7 @@ class AdbActuator:
         card = card_centre(slot)
         target = Tap(int(px), int(py))
         self.taps.extend((card, target))
-        if not self.dry_run:
-            try:
-                self._q.put_nowait((card, target))
-            except queue.Full:
-                self.dropped += 1
+        self.last_queued = self._enqueue(card, target)
         return card, target
 
     def flush(self) -> None:
@@ -355,21 +380,34 @@ class AdbActuator:
     def _shell_persistent(self, script: str) -> None:
         if self._proc is None or self._proc.poll() is not None:
             self._proc = self._open_shell()
+            self._lines = queue.Queue()
+            threading.Thread(target=_drain, args=(self._proc.stdout, self._lines),
+                             name="adb-stdout", daemon=True).start()
         # A sentinel, not a fixed line count: the script's output is
         # unpredictable, and a fixed read would desynchronise the stream.
         self._proc.stdin.write(f"{script}; echo {_SENTINEL}\n")
         self._proc.stdin.flush()
-        deadline = time.monotonic() + 20.0
-        while time.monotonic() < deadline:
-            line = self._proc.stdout.readline()
-            if not line:
+        # The deadline is enforced on a QUEUE, not on readline(). readline()
+        # blocks until a line arrives, so a wedged shell that printed nothing
+        # used to hang the actuator thread forever: every later placement was
+        # dropped and close() never returned.
+        deadline = time.monotonic() + SHELL_TIMEOUT_S
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ActuationError("adb shell timed out")
+            try:
+                line = self._lines.get(timeout=left)
+            except queue.Empty:
+                raise ActuationError("adb shell timed out") from None
+            if line is None:
                 raise ActuationError("adb shell closed")
             if _SENTINEL in line:
                 return
-        raise ActuationError("adb shell timed out")
 
     def _close_shell(self) -> None:
         proc, self._proc = self._proc, None
+        self._lines = None
         if proc is None:
             return
         try:

@@ -1908,3 +1908,59 @@ t=68 (was 97), hits for 572, breaks, and its Barbarians appear at t=69.
 C++ suite, Python suite, the rebuilt `.pyd` (`tools/audit/verify_pyd.py`), and
 the lab's curation over the rebuilt Battle Ram, Prince, Ram Rider and Bomb
 Tower tables: see the commit message for the numbers.
+
+## Item 36 — card-id iteration order is the compiler's, so a seeded random deck is not portable
+
+**Status: PROPOSED 2026-11-09, NOT changed.** C++ (`include/core/ClashEnv.h`),
+so it waits for a yes. **Class:** reproducibility. **NOT gameplay-affecting**:
+no match plays differently, only WHICH deck a given seed names.
+
+### The gap
+
+`CardRegistry::cards` is a `std::unordered_map<int, CardDefinition>`, whose
+iteration order is unspecified and differs between standard libraries.
+Two functions iterate it and expose the order:
+
+- `getAllCardIds()` (bound as `get_all_card_ids`) returns ids in that order.
+- `sampleRandomDeck(rng)` builds its plain / Evolution / Champion pools in that
+  order and then draws `uniform_int_distribution` INDICES into them, so the
+  same `mt19937` seed yields a different deck under MSVC, libstdc++ and
+  Emscripten's libc++.
+
+### Evidence
+
+Measured on a libstdc++ build (g++ 13, 2026-11-09):
+
+    get_all_card_ids()[:10]      = [174, 175, 171, 173, 169, 167, 166, 172, 168, 170]
+    sample_random_deck(seed=7)   = [154, 10, 112, 83, 11, 111, 43, 62]
+
+The first line is why `teacher._probe_env` (which took `[:8]`) built a deck the
+engine refused on Linux while MSVC happened to yield a legal one (fixed in
+Python the same day by probing with `SHIPPED_DECK`). That the MSVC order
+differs is inferred from exactly that: the same `[:8]` was legal there. The
+seeded-deck difference follows from the same order. It was not run on MSVC
+here.
+
+Audited every Python caller of `get_all_card_ids()`: apart from the teacher's
+probe, all use it as a SET or build `{name: id}` tables. Those are
+order-independent because the 132 playable names are unique (measured: 0
+duplicates). `models/net.py`'s card index comes from `range(NUM_CARD_IDS)`, not
+from this order. Its `_ALL_IDS` is unused.
+
+### Blast radius
+
+`sample_random_deck(seed=...)` promises "a reproducible deck". It is reproducible
+on one build only. Phase 1's `random_opponent` decks and any experiment that
+names a deck by seed differ between the Windows trainer, a Linux cloud session
+and the WASM lab. No checkpoint, observation or action space is touched.
+
+### Options
+
+1. **Sort** in `getAllCardIds()` and in `sampleRandomDeck`'s pool construction
+   (`std::sort` after the loop). Two lines. Every seed then names the same deck
+   everywhere. **It also changes which deck each seed names on MSVC**, so any
+   seed recorded in a log or a runbook describes a different deck afterwards.
+2. Change `CardRegistry::cards` to `std::map`. Ordered by construction, so no
+   future iteration can reintroduce this. It touches every lookup (O(log n) on
+   ~173 entries, negligible) and has the same seed-renaming consequence as 1.
+3. Leave it, and document that a deck seed is per-build.
