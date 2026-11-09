@@ -32,6 +32,7 @@ import numpy as np
 import clash_royale_env as E
 from python_ai import engine_constants as EC
 from python_ai.advisors import card_probes, tactics
+from python_ai.deck import SHIPPED_DECK
 
 CE = E.ClashRoyaleEnv
 
@@ -112,7 +113,11 @@ def card_roles(deck):
 
 # Long enough for a siege building to deploy, acquire and out-range the tower.
 TOWER_THREAT_PROBE_TICKS = 1200
-#: Probe deck; the card under test is injected, so the contents are irrelevant.
+#: Probe deck; the card under test is injected and both sides hold, so the
+#: contents are irrelevant -- but the engine still validates the deck. It was
+#: `get_all_card_ids()[:8]`, which is CardRegistry's unordered_map order: MSVC
+#: happened to yield a legal deck, libstdc++ put a Hero in slot 0, the engine
+#: refused it, and no UtilityTeacher could be built on Linux.
 _PROBE_DECK = None
 
 
@@ -120,7 +125,7 @@ def _probe_env():
     """An empty board, both sides holding some legal deck."""
     global _PROBE_DECK
     if _PROBE_DECK is None:
-        _PROBE_DECK = list(E.get_all_card_ids())[:HAND_SIZE * 2]
+        _PROBE_DECK = list(SHIPPED_DECK)
     env = CE(_PROBE_DECK, _PROBE_DECK, 3600)
     env.reset()
     return env
