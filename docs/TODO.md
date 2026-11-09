@@ -577,67 +577,75 @@ a checkpoint.
 
 ---
 
-## 0. NEXT UP — Stage 2: the live teacher-as-agent loop
+## 0. Stage 2: the live teacher-as-agent loop — BUILT 2026-11-09, live dry run pending
 
-**The engine half landed 2026-08-24** (`UPSTREAM_REQUESTS.md` item 22,
-APPLIED). **Only Python remains, and all of it is in `perception/`, which is
-freely editable.**
+**Both modules exist, are wired as `--policy teacher`, and are tested against
+the real engine** (23 cases in `perception/tests/test_live_teacher_policy.py`,
+run on a Linux build of the bindings: g++ 13, Python 3.11). Design:
+`docs/design/specs/2026-08-24-live-teacher-play-design.md`.
 
-Design: `docs/design/specs/2026-08-24-live-teacher-play-design.md`.
-The measured deploy-time result behind it: `DECISIONS.md`, "2026-08-24: the
-live-mirror state setters". Stage 1 (a passive gap-logger) was **deliberately
-skipped** by the human once item 22 was approved.
+- `perception/live/mirror.py` — `MirrorBuilder.build(gs) -> (env, MirrorGaps)`.
+  Body counts on a SEPARATE env first (so `bodies_per_card`'s reset cannot hit
+  the mirror), then `seed()` (a deterministic reset: two builds of one frame
+  are bit-identical), towers (`fraction * get_tower_max_hp`, `destroy_tower`),
+  `set_current_tick`, units (`inject(..., hp=fraction * card max,
+  deploy_ticks=0)`), elixir, and the hand LAST, its bool checked and read back.
+  The grouping/injection rule is now ONE copy, shared with `forecast.py`
+  (`group_units`, `injection_points`, `tile_centre`; forecast's 16 tests
+  unchanged).
+- `perception/live/teacher_policy.py` — `TeacherPolicy.decide(gs, ready, now)`,
+  one persistent `UtilityTeacher(deck, team=0)` at the top rung by default
+  (`--teacher-stage`), env rebuilt per decision. Holds (never plays) when the
+  hand was refused, the teacher raised, the slot is not ready on screen, or
+  the row is not tappable. Measured **~11 ms per decision** (build 0.1 ms,
+  teacher 11 ms at rung 10) against the 1000 ms period. `--act` stays opt-in.
 
-**Goal:** `UtilityTeacher` plays as US (team 0) in a real match. Perception
-reads the screen → mirror env → teacher proposes AND ranks by 5-10 s rollouts
-→ the best placement is tapped.
+**Found while building it, and fixed or pinned:**
 
-**Two new modules, neither of which exists yet:**
+- **`mvp_loop.py` could not be imported at all.** `_training_deck_ids` parsed a
+  `DEFAULT_DECK` list literal out of `gym_wrapper.py`, which since the
+  2026-09-15 audit only re-exports it from `python_ai/deck.py`, so every
+  `--policy` mode raised `no DEFAULT_DECK assignment found` at import (and
+  `test_deck_hand.py` failed on `main`). It reads `python_ai.deck.DEFAULT_DECK`
+  now, a leaf that imports only the engine, so it also follows `CLASH_DECK`.
+- **The mirror would have switched the teacher's reactive rollout OFF 8 s into
+  every match.** `UtilityTeacher._observe_opponent_spend` counts decisions in
+  which `env.get_elixir_spent(1)` did not rise, and a rebuilt mirror's spend is
+  always 0, so after `COUNTER_PASSIVE_DECISIONS` it would read any opponent as
+  passive. The policy feeds it perception's own signal instead: a new opponent
+  card on the board resets the count. Pinned both ways (a quiet board does
+  reach the threshold; a new card resets it) plus a test that the teacher
+  attribute it writes still exists.
+- **`UtilityTeacher` cannot be constructed on libstdc++ (Linux)** -- see the
+  open item below. Worked around in `TeacherPolicy`; not fixed in `python_ai/`.
 
-1. `perception/live/mirror.py` — `MirrorBuilder.build(snapshot) -> (env, MirrorGaps)`.
-   `reset()` → `inject(..., hp=frac*full, deploy_ticks=0)` per unit →
-   `set_elixir_for_team` both sides → `set_hand_for_team(0, hand)` **and CHECK
-   ITS BOOL** → `set_tower_hp` / `destroy_tower` per tower → `set_current_tick`.
-2. `perception/live/teacher_policy.py` — `TeacherPolicy.decide(gs, ready, now)
-   -> Decision`, holding ONE persistent `UtilityTeacher(deck, team=0)` (it
-   carries `self.pending` across decisions) while the ENV is rebuilt per
-   decision. Wired as `--policy teacher` beside `ScriptedPolicy`/`NeuralPolicy`.
-   **`--act` stays opt-in; dry run is the default.**
+**What remains:**
 
-**Do not add threads.** The pipeline is already three (producer in
-`live/pipeline.py`, decision loop at `DECISION_HZ = 1.0`, actuator with a
-depth-1 drop queue). `src/bindings.cpp` releases the GIL **nowhere**, so a
-rollout thread would BLOCK perception rather than run beside it, and a
-concurrent writer would score candidates against different worlds. Budget is
-not the issue: teacher **14.1 ms** + rebuild ~1 ms against a **1000 ms**
-period. "Streaming" = rebuild the mirror from the latest Snapshot at each
-decision — which also deletes `forecast.py`'s entity-removal gap for free.
+1. **A live dry run** against an emulator (`mvp_loop.py --policy teacher`,
+   no `--act`), reading the `mirror, last build fabricated:` line and the
+   teacher summary. This is the part no fixture can do (design section 7).
+2. **Still fabricated, by construction**: opponent elixir (assumed 5.0 -- no
+   opponent bar exists), opponent hand and deck (unobservable; our deck by
+   default), opponent cycle (`note_played_card` not replayed; the teacher does
+   not read it), unit HP where no bar was drawn (recall 0.34-0.56), towers
+   whose bar was unreadable. Every one is a `MirrorGaps` field.
+3. **Plan-clock drift is MEASURED, not corrected.** `tick_plan` assumes one
+   decision a second; a stalled decision stretches a planned escort gap.
+   `TeacherPolicy.drift_s` and the `[drift]` tag report it. If it proves
+   material in the dry run, the fix is a proposal against `teacher.py`
+   (read-only), e.g. a `tick_plan(elapsed_ticks)` argument.
+4. **`teacher._PROBE_DECK` depends on hash order** (python_ai, read-only):
+   `_probe_env` takes `get_all_card_ids()[:8]`, and `getAllCardIds` iterates
+   CardRegistry's `unordered_map`. MSVC happens to yield a legal deck; libstdc++
+   puts Hero Barbarian Barrel (174) in slot 0, the engine refuses the deck, and
+   ANY `UtilityTeacher(...)` raises -- so the teacher, and everything that
+   builds one, cannot run on a Linux build. Measured 2026-11-09:
+   `get_all_card_ids()[:10]` = `[174, 175, 171, 173, 169, 167, 166, 172, 168,
+   170]`. Proposed fix (one line, needs a yes): probe with `SHIPPED_DECK`, or
+   sort the ids. `TeacherPolicy` pins `_PROBE_DECK` to its own deck when unset;
+   the probe's contents are documented as irrelevant.
 
-**The three joints where this goes silently wrong:**
-
-- **Ordering.** REUSE `forecast.py`'s `bodies_per_card` and its
-  group-by-`(card_sim_id, team)`. It **resets the env itself**, so every body
-  count must be resolved BEFORE the build's `reset()`. Getting it wrong gives
-  3x the Skeletons — which reads as "the teacher panics", not as a bug.
-- **Hand-slot alignment.** The teacher's `slot` indexes the mirror's hand; the
-  actuator taps the real one. Same number ONLY if `set_hand_for_team` returned
-  True. On refusal **drop the decision** — a placement against a misaligned
-  hand plays a card nobody chose.
-- **Cadence.** `pending_ticks -= COMBO_FOLLOWUP_DELAY_TICKS` (10) runs **once
-  per `act()` call**, so the teacher assumes exactly 1 decision/second. A
-  DROPPED decision advances the plan 1 s in teacher-time while 2 s of wall time
-  passed, skewing every combo gap. Log decision-interval drift. Any fix belongs
-  in a proposal — `python_ai/` is read-only.
-
-Bias throughout: **no-op over a wrong action.** A mistimed card is worse than a
-skipped decision.
-
-**Known limits, already measured — do not rediscover.** Unit-HP **recall
-0.34-0.56** at precision 0.98, so ~half of damaged units still arrive at full
-health. The opponent's hand is unobservable, so team 1's stays fabricated. The
-engine models **no double elixir** (`ELIXIR_REGEN_RATE` is constant), so late
-rollouts stay mispriced even with a correct clock — filed as its own item, NOT
-folded into 22.
+Bias throughout: **no-op over a wrong action.**
 
 ---
 

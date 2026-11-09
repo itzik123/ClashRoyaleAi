@@ -28,6 +28,7 @@ the C++ core are read-only from here.
 | 6 — `State` → `GameState` adapter | **built, running live** (2026-07-31) | `live/adapter.py`. Closes the loop against the live emulator at **917 ms/iteration** inside a 1000 ms budget. Still missing: the match clock and cumulative elixir spend. |
 | 6 — live frame source | **built and measured** (2026-07-31) | `capture/window.py`, Windows.Graphics.Capture. ~100 ms/frame, works while the window is covered. See *Live capture*. |
 | 6 — per-unit HP | **fitted against 60 hand labels** | "is this unit damaged", population-weighted over 226 detections: precision **0.79 → 0.98**, recall **0.34 → 0.56**. See *Findings* 7. |
+| 7 — the teacher plays as us | **built and tested, live dry run pending** (2026-11-09) | `live/mirror.py` rebuilds the engine from each `GameState` (towers, clock, unit HP, deploy time, elixir, hand -- every fabricated field reported in `MirrorGaps`); `live/teacher_policy.py` lets the UtilityTeacher rank candidates on it. `mvp_loop.py --policy teacher`. ~11 ms per decision of a 1000 ms period. 23 engine-backed tests. See `docs/TODO.md` item 0. |
 
 The live sensor's output contract is `GameState` in `contracts.py` — **shared,
 neither side changes it alone**. Perception emits it and stops; encoding the
@@ -591,6 +592,8 @@ detect/placements.py opponent detection — blocked on recorded data
 track/              cycle.py | opp_deck.py | opp_elixir.py
 clock/match_clock.py free-running clock + resync; phase carried, not inferred
 bridge/sim_driver.py drives ClashEnv as an estimator
+live/mirror.py      GameState -> a mirror ClashEnv + MirrorGaps, per decision
+live/teacher_policy.py  --policy teacher: UtilityTeacher on that mirror
 mapping/            card_map.json + the unmapped-card contract
 tools/              gen_card_map.py | divergence_report.py
 ```

@@ -2401,21 +2401,38 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 
 ---
 
-## NEXT UP: Stage 2 — see `TODO.md` item 0
+## Stage 2 (the teacher plays as us): BUILT 2026-11-09, see `TODO.md` item 0
 
-The full brief — goal, the two modules to write, the three invariants that can
-go silently wrong, and the limits already measured — is **`docs/TODO.md` item 0**,
-because pending work belongs in the pending-work list and this file had a second
-copy of it. Design: `docs/design/specs/2026-08-24-live-teacher-play-design.md`.
-The measurements behind it: `DECISIONS.md`, "2026-08-24: the live-mirror state
-setters".
+`perception/live/mirror.py` rebuilds the engine from each perceived frame and
+`perception/live/teacher_policy.py` lets the UtilityTeacher search it, wired as
+`mvp_loop.py --policy teacher`. ~11 ms per decision. What remains is a live dry
+run against an emulator. Design:
+`docs/design/specs/2026-08-24-live-teacher-play-design.md`.
 
-One line of it belongs here rather than there, because it is an engine fact and
+Two things it found that are worth knowing before touching the live path:
+
+- **A rebuilt mirror's opponent spend is always 0**, so the teacher's passivity
+  rule (`COUNTER_PASSIVE_DECISIONS`) would switch its reactive rollout off 8 s
+  into every match. `TeacherPolicy` feeds it perception's own signal (a new
+  opponent card on the board). Anything else that reads cumulative ENGINE STATS
+  from a per-decision mirror has the same hole: the mirror has no history.
+- **`UtilityTeacher` cannot be built on libstdc++** (a Linux build of the
+  bindings): its probe deck is the first 8 ids of an `unordered_map`, which
+  there starts with a Hero the engine refuses. MSVC's order happens to work.
+  Proposal in `TODO.md` item 0; `python_ai/` is read-only.
+
+**A Linux build of the bindings works for perception's suite**, which no
+machine in the toolchain box above records: `g++ -O2 -std=c++20 -shared -fPIC
+-Iinclude/core -Iinclude/entities -Iinclude/rendering $(python3.11 -m pybind11
+--includes) src/bindings.cpp -o <dir>/clash_royale_env$(python3.11-config
+--extension-suffix)`, then `PYTHONPATH=<dir>`. Build it OUTSIDE `python_ai/`.
+
+One line belongs here rather than there, because it is an engine fact and
 not a task: **do not add threads.** `src/bindings.cpp` releases the GIL
 **nowhere**, so a rollout thread BLOCKS perception rather than running beside
 it, and a concurrent writer would score candidates against different worlds.
-The budget does not require one — teacher 14.1 ms + rebuild ~1 ms against a
-1000 ms period.
+The budget does not require one: measured 11 ms of teacher plus 0.1 ms of
+rebuild against a 1000 ms period.
 
 ---
 

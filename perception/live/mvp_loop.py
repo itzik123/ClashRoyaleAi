@@ -1,7 +1,10 @@
 """Minimal end-to-end loop: screen -> GameState -> decision -> tap.
 
-Two policies. `--policy neural` runs the trained network: `perception_encoder`
+Three policies. `--policy neural` runs the trained network: `perception_encoder`
 turns a GameState into the observation and `NeuralPolicy` steps the net.
+`--policy teacher` rebuilds the engine from each frame (live/mirror.py) and lets
+the UtilityTeacher rank candidates by rolling them forward
+(live/teacher_policy.py).
 `--policy scripted` (the default) is a hand-written rule that isolates the
 integration from the policy: capture, detector, adapter, tile->screen
 conversion and tap are real in both modes, so a fault that reproduces under
@@ -20,7 +23,7 @@ import argparse
 import functools
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +53,7 @@ from clashroyalebuildabot.namespaces.cards import Cards  # noqa: E402
 from live.action_gate import MAX_STALENESS_MS, ActionGate  # noqa: E402
 from live.actuator import AdbActuator  # noqa: E402
 from live.adapter import build_game_state  # noqa: E402
+from live.decision import DEFAULT_TILE, Decision  # noqa: E402
 from live.elixir_ledger import ElixirLedger  # noqa: E402
 from live.hand_tracker import HandTracker  # noqa: E402
 from live.match_state import MatchState  # noqa: E402
@@ -57,31 +61,21 @@ from live.pipeline import PerceptionWorker, Stages  # noqa: E402
 from live.placement_confirm import PlacementConfirmer  # noqa: E402
 
 def _training_deck_ids() -> list[int]:
-    """`gym_wrapper.DEFAULT_DECK`, parsed from source rather than imported.
+    """The trainee deck, `python_ai.deck.DEFAULT_DECK` (CLASH_DECK when set).
 
-    Importing it would pull in gymnasium and torch, which perception's venv
-    does not carry. Parsing keeps one source of truth without the dependency.
-    Strict: a DEFAULT_DECK that is missing or not a plain list of int literals
-    raises, since a guessed deck means playing cards the policy has never seen.
+    `python_ai/deck.py` is a leaf that imports only the engine, so this needs
+    neither gymnasium nor torch. It used to be parsed out of
+    `envs/gym_wrapper.py`'s source as a list literal; the 2026-09-15 audit moved
+    the deck to `deck.py` and left a re-export there, so the parse found no
+    assignment and this module raised at import -- every `--policy` mode was
+    dead. Strict: a guessed deck means playing cards the policy never saw.
     """
-    import ast  # noqa: PLC0415
+    from python_ai.deck import DEFAULT_DECK  # noqa: PLC0415
 
-    source_path = (Path(__file__).resolve().parent.parent.parent
-                   / "python_ai" / "envs" / "gym_wrapper.py")
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "DEFAULT_DECK"
-                   for t in node.targets):
-            continue
-        value = ast.literal_eval(node.value)
-        if not isinstance(value, list) or not all(isinstance(v, int) for v in value):
-            raise RuntimeError(
-                f"DEFAULT_DECK in {source_path} is not a list of int literals; "
-                "it can no longer be read without importing gym_wrapper.")
-        return value
-    raise RuntimeError(f"no DEFAULT_DECK assignment found in {source_path}")
+    deck = [int(c) for c in DEFAULT_DECK]
+    if not deck:
+        raise RuntimeError("python_ai.deck.DEFAULT_DECK is empty")
+    return deck
 
 
 def _deck_from_training() -> list:
@@ -125,9 +119,9 @@ def _deck_from_training() -> list:
 
 DECK = _deck_from_training()
 
-# A fixed defensive tile in our own half, in engine coordinates: the point is
-# to exercise placement, not to play well.
-DEFAULT_TILE = (9, 8)
+# DEFAULT_TILE (a fixed defensive tile in our own half, engine coordinates)
+# and Decision live in live/decision.py, so a policy can import them without
+# the capture stack; imported above.
 
 # Below this the loop is acting on a board that has already changed.
 DECISION_HZ = 1.0
@@ -260,13 +254,6 @@ def hand_cost(gs, slot: int) -> float | None:
         return float(engine.get_card_info(card_id)["cost"])
     except Exception:                                   # noqa: BLE001
         return None
-
-
-@dataclass
-class Decision:
-    slot: int | None
-    tile: tuple[int, int]
-    why: str
 
 
 class ScriptedPolicy:
@@ -568,9 +555,13 @@ def main() -> int:
                          "Idempotency still holds -- this only relaxes the age "
                          "check, which is the one that stops the agent playing "
                          "into a board the match has already moved past.")
-    ap.add_argument("--policy", choices=("scripted", "neural"),
+    ap.add_argument("--policy", choices=("scripted", "neural", "teacher"),
                     default="scripted",
-                    help="scripted exercises the joints; neural is the agent")
+                    help="scripted exercises the joints; neural is the agent; "
+                         "teacher searches a mirror of the perceived board")
+    ap.add_argument("--teacher-stage", type=int, default=None,
+                    help="teacher rung (opponents/teacher.TEACHER_STAGES); "
+                         "default the top rung")
     ap.add_argument("--checkpoint", type=Path,
                     default=Path(__file__).resolve().parents[2] / "python_ai"
                     / "model_weights_live.pth",
@@ -690,6 +681,14 @@ def main() -> int:
         print(f"policy: TRAINED NET from {args.checkpoint.name} "
               f"(episode {policy.episodes})"
               f"{'' if args.no_tactical else ' + tactical officer'}")
+    elif args.policy == "teacher":
+        from live.teacher_policy import TeacherPolicy  # noqa: PLC0415
+        from live.unit_to_card import hand_card_id_for  # noqa: PLC0415
+        policy = TeacherPolicy([hand_card_id_for(c.name) for c in DECK],
+                               stage=args.teacher_stage)
+        print(f"policy: UTILITY TEACHER on a per-decision mirror, rung "
+              f"{args.teacher_stage if args.teacher_stage is not None else 'top'}"
+              f", horizon {policy.teacher.horizon_ticks} ticks")
     else:
         policy = ScriptedPolicy()
         print("policy: scripted placeholder")
@@ -957,6 +956,11 @@ def main() -> int:
         print(worker.stages.report())
     print("\nperceive, by stage (median):")
     print(stages.report(total_key=None))
+    if hasattr(policy, "stats") and hasattr(policy.stats, "summary"):
+        print(f"\nteacher: {policy.stats.summary()}")
+        if getattr(policy, "last_gaps", None) is not None:
+            print(f"mirror, last build fabricated: "
+                  f"{', '.join(policy.last_gaps.fabricated()) or 'nothing'}")
     print(f"\n{gate.summary()}")
     print(f"taps issued: {len(actuator.taps)}"
           f"{'' if args.act else ' (dry run - none sent)'}")

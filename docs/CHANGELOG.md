@@ -23,6 +23,17 @@ The reasoning behind each change, with its measurements, is in
 **Compatibility:** Checkpoints load. Troop trajectories change, so win rates are not
 comparable across this change.
 
+*Not gameplay-affecting* (perception only; `include/`, `src/`, `python_ai/` untouched):
+
+- **The teacher can play as us in a real match.** `perception/live/mirror.py` rebuilds
+  the engine from each perceived frame and reports every field it had to make up;
+  `perception/live/teacher_policy.py` lets the UtilityTeacher rank candidates on that
+  mirror. Run it with `mvp_loop.py --policy teacher` (dry run unless `--act`). See
+  `docs/TODO.md` item 0.
+- `perception/live/mvp_loop.py` imports again. It had been reading the deck from a
+  list literal in `gym_wrapper.py` that moved to `python_ai/deck.py`, so every
+  `--policy` mode failed at startup.
+
 ## v3.1.0 — Deck-derived spell terms, and a public release
 
 *2026-09-23*
