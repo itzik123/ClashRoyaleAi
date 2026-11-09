@@ -240,26 +240,59 @@ def test_the_teachers_hold_is_a_hold(builder):
     assert policy.decide(board(), None, 0.0).slot is None
 
 
-def test_decision_interval_drift_is_measured(builder):
-    policy = _policy(builder, teacher=SpyTeacher())
+def test_a_stalled_decision_catches_the_plan_clock_up(builder):
+    spy = SpyTeacher()
+    spy.ticks = 0
+    spy.tick_plan = lambda: setattr(spy, "ticks", spy.ticks + 1)
+    policy = _policy(builder, teacher=spy)
     policy.decide(board(), None, 0.0)
     assert "drift" not in policy.decide(board(), None, 1.0).why
-    assert "drift" in policy.decide(board(), None, 3.0).why
+    assert spy.ticks == 0                          # a normal interval: act() ticks
+    why = policy.decide(board(), None, 4.0).why    # two decisions skipped
+    assert "drift" in why and "plan +2" in why
+    assert spy.ticks == 2
     assert policy.stats.drift_events == 1
-    assert policy.drift_s == pytest.approx(1.0)
+    assert policy.stats.plan_catchup_decisions == 2
+    assert policy.drift_s == pytest.approx(0.0)
     policy.on_screen_change(False)
-    policy.on_screen_change(True)                 # a new match
+    policy.on_screen_change(True)                  # a new match
     assert policy.drift_s == 0.0
+
+
+def test_jitter_inside_the_tolerance_is_not_a_stall(builder):
+    from live.teacher_policy import DRIFT_TOLERANCE_S
+    spy = SpyTeacher()
+    spy.ticks = 0
+    spy.tick_plan = lambda: setattr(spy, "ticks", spy.ticks + 1)
+    policy = _policy(builder, teacher=spy)
+    policy.decide(board(), None, 0.0)
+    policy.decide(board(), None, 1.0 + DRIFT_TOLERANCE_S * 0.9)
+    assert spy.ticks == 0 and policy.stats.drift_events == 0
+
+
+@pytest.mark.parametrize("stall_s, due", [(1.0, False), (3.0, True)])
+def test_a_planned_follow_up_comes_due_in_wall_time(builder, stall_s, due):
+    """A follow-up planned 3 s out is still waiting 1 s later, and due after a
+    3 s stall. Without the catch-up the stall would leave it waiting another
+    two seconds, and the escort would land 5 s after the tank, not 3."""
+    from live.teacher_policy import TeacherPolicy
+    import python_ai.opponents.teacher as T
+    policy = TeacherPolicy(DECK, builder=builder, stage=4,
+                           tappable=lambda y: True)
+    teacher = policy.teacher
+    policy.decide(board(elixir=0.0), None, 0.0)
+    teacher.pending = T.PlacementStep(0, HOG, 3.0, 15.0, delay_ticks=30)
+    teacher.pending_ticks = 30
+    policy.decide(board(elixir=0.0), None, stall_s)
+    # A due plan is offered once and dropped (no elixir to play it here); a
+    # waiting one is kept.
+    assert (teacher.pending is None) == due
 
 
 def test_the_real_teacher_still_has_the_passivity_counter_this_feeds(engine):
     """The policy writes `_opp_spent_seen`; a rename in teacher.py would turn
     that write into a no-op, so it is pinned here."""
-    from live.teacher_policy import TeacherPolicy  # noqa: F401  (pins the probe deck)
     from python_ai.opponents.teacher import UtilityTeacher
-    import python_ai.opponents.teacher as T
-    if T._PROBE_DECK is None:
-        T._PROBE_DECK = list(DECK)
     t = UtilityTeacher(DECK, team=0)
     t.reset()
     assert hasattr(t, "_opp_spent_seen") and hasattr(t, "_opp_idle_decisions")
@@ -292,3 +325,23 @@ def test_the_teacher_persists_across_decisions_and_resets_per_match(builder):
     assert policy.teacher is spy and spy._opp_idle_decisions == 5
     policy.on_screen_change(True)
     assert spy._opp_idle_decisions == 0
+
+
+# --- the whole decision path over a recorded match ----------------------------
+
+def test_a_recorded_match_dry_runs_with_no_illegal_play(engine, replay_path):
+    """tools/teacher_dry_run.py over the frozen replay, with stalls and missed
+    units: every play legal and tappable, no teacher error, every decision
+    inside the period, and the plan clock caught up after every stall."""
+    import sys
+    from conftest import PERCEPTION_ROOT
+    sys.path.insert(0, str(PERCEPTION_ROOT / "tools"))
+    from teacher_dry_run import dry_run
+    r = dry_run(replay_path, engine, stage=4, stall_prob=0.2, drop=0.1, seed=3)
+    assert r["decisions"] > 50
+    assert r["illegal"] == [] and r["untappable_plays"] == 0
+    assert r["stats"].teacher_errors == 0 and r["stats"].hand_refused == 0
+    assert r["decide_ms"][2] < 1000.0
+    assert r["stats"].drift_events > 0
+    assert r["stats"].plan_catchup_decisions >= r["stats"].drift_events
+    assert abs(r["drift_s"]) < 0.5

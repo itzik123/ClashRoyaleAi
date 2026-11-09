@@ -23,13 +23,22 @@ The reasoning behind each change, with its measurements, is in
 **Compatibility:** Checkpoints load. Troop trajectories change, so win rates are not
 comparable across this change.
 
-*Not gameplay-affecting* (perception only; `include/`, `src/`, `python_ai/` untouched):
+*Not gameplay-affecting* (perception, plus one probe-deck line in `python_ai/opponents/teacher.py` that changes no result; `include/` and `src/` untouched):
 
 - **The teacher can play as us in a real match.** `perception/live/mirror.py` rebuilds
   the engine from each perceived frame and reports every field it had to make up;
   `perception/live/teacher_policy.py` lets the UtilityTeacher rank candidates on that
   mirror. Run it with `mvp_loop.py --policy teacher` (dry run unless `--act`). See
   `docs/TODO.md` item 0.
+- The teacher's combo timing follows the wall clock: after a stalled decision its
+  planned follow-up comes due on time instead of seconds late.
+- `perception/tools/teacher_dry_run.py` runs `--policy teacher` over a recorded match
+  with a modelled sensor, for when no emulator is available.
+- Princess Tower HP is read from the number printed above each tower (the bar reader
+  failed on full towers), with each tower's maximum learned during the match.
+  `--tower-bar-only` restores the old reading.
+- `UtilityTeacher` can be built on Linux. Its internal probe deck depended on the
+  compiler's hash-map order; it uses the shipped deck now. Results are unchanged.
 - `perception/live/mvp_loop.py` imports again. It had been reading the deck from a
   list literal in `gym_wrapper.py` that moved to `python_ai/deck.py`, so every
   `--policy` mode failed at startup.

@@ -91,6 +91,7 @@ def build_game_state(
     wall_time_ms: float = 0.0,
     my_elixir_spent: float = 0.0,
     opp_elixir_spent: float | None = None,
+    tower_hp=None,
 ) -> tuple[GameState, AdapterReport]:
     """One CRBAB `State` plus its two frames -> one `GameState`.
 
@@ -102,6 +103,10 @@ def build_game_state(
                         whose ROI constants are in that space.
 
     The caller already paid for the resize to run the detector.
+
+    `tower_hp`, a live/tower_hp.TowerHpTracker, reads the Princess Towers from
+    their printed numeral instead of the bar wherever it can; it holds per-match
+    state, so the caller owns it and resets it at match start.
     """
     arr = np.asarray(frame)[..., :3]
     height, width = arr.shape[:2]
@@ -179,6 +184,8 @@ def build_game_state(
         flags.append("unmapped_unit")
 
     towers = _read_towers(state, detector_frame)
+    if tower_hp is not None:
+        towers.update(tower_hp.read(arr, {k: towers[k] for k in tower_hp.boxes}))
     game_state = GameState(
         units=tuple(units),
         my_elixir=max(0.0, float(state.numbers.elixir.number)),

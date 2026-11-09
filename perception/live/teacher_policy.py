@@ -20,8 +20,13 @@ Three couplings to the read-only teacher, each pinned by a test:
 
   * Plan clock. `tick_plan` subtracts COMBO_FOLLOWUP_DELAY_TICKS (1 s) per
     `act()`, so the teacher assumes exactly one decision a second. A stalled
-    decision makes a planned escort gap longer in wall time than it was scored
-    at. Measured here, not corrected: `drift_s` and the `[drift]` tag.
+    decision would make a planned escort gap longer in wall time than it was
+    scored at. So when an interval spans more than one period, the policy calls
+    `tick_plan()` once per MISSED decision before `act()` (`_catch_up_plan`):
+    the plan clock follows wall time, and a follow-up that came due during the
+    stall is offered (and re-scored) now, late rather than lost. `drift_s` is
+    the residual after that, under half a period; jitter inside
+    DRIFT_TOLERANCE_S is left alone.
   * Opponent spend. The teacher switches its reactive rollout off after
     COUNTER_PASSIVE_DECISIONS decisions in which `env.get_elixir_spent(1)`
     did not rise. A rebuilt mirror's spend is always 0, so unattended that rule
@@ -55,6 +60,7 @@ class TeacherStats:
     not_ready: int = 0
     untappable: int = 0
     drift_events: int = 0
+    plan_catchup_decisions: int = 0
     build_ms: list = field(default_factory=list)
     teacher_ms: list = field(default_factory=list)
 
@@ -64,7 +70,8 @@ class TeacherStats:
         return (f"decisions {self.decisions}, plays {self.plays}, holds "
                 f"{self.holds}, hand refused {self.hand_refused}, teacher "
                 f"errors {self.teacher_errors}, not ready {self.not_ready}, "
-                f"untappable {self.untappable}, drift {self.drift_events}; "
+                f"untappable {self.untappable}, drift {self.drift_events} "
+                f"(plan caught up {self.plan_catchup_decisions} s); "
                 f"build p50 {p50(self.build_ms)} ms, teacher p50 "
                 f"{p50(self.teacher_ms)} ms")
 
@@ -79,14 +86,6 @@ class TeacherPolicy:
 
         self._T = T
         self.deck = [int(c) for c in deck]
-        # The teacher's probe board defaults to the first eight registered ids,
-        # which is unordered_map iteration order. MSVC happens to put a legal
-        # deck first; libstdc++ puts a Hero in slot 0, the engine refuses it,
-        # and no UtilityTeacher can be built. The probe's cards are documented
-        # as irrelevant (the card under test is injected), so a deck the engine
-        # accepts is pinned here, before the first probe. TODO.md item 0.
-        if getattr(T, "_PROBE_DECK", None) is None:
-            T._PROBE_DECK = list(self.deck)
         self.builder = builder if builder is not None else MirrorBuilder(self.deck)
         if teacher is None:
             teacher = T.UtilityTeacher(self.deck, team=0, profile=profile,
@@ -103,8 +102,8 @@ class TeacherPolicy:
         self.stats = TeacherStats()
         self.last_gaps = None
         self.drift_s = 0.0
-        """Wall time minus teacher time since the match began: how far the
-        teacher's one-second-per-decision plan clock has fallen behind."""
+        """Wall time minus teacher time since the match began, after the
+        catch-up: what the plan clock still lags by. Under half a period."""
         self._match_start = None
         self._last_now = None
         self._prev_opp_bodies: dict[int, int] = {}
@@ -178,7 +177,8 @@ class TeacherPolicy:
 
     # -- couplings to the teacher ----------------------------------------
     def _track_cadence(self, now: float) -> str:
-        """Measure how far the teacher's plan clock lags the wall clock."""
+        """Advance the teacher's plan clock by every decision a stall skipped,
+        and measure what remains."""
         tag = ""
         if self._match_start is None:
             self._match_start = now
@@ -187,12 +187,25 @@ class TeacherPolicy:
             interval = now - self._last_now
             if interval > self.period_s + DRIFT_TOLERANCE_S:
                 self.stats.drift_events += 1
-                tag = f" [drift {interval:.2f}s]"
+                missed = self._catch_up_plan(interval)
+                tag = f" [drift {interval:.2f}s, plan +{missed}]"
         self._teacher_decisions += 1
         self._last_now = now
         self.drift_s = ((now - self._match_start)
                         - (self._teacher_decisions - 1) * self.period_s)
         return tag
+
+    def _catch_up_plan(self, interval: float) -> int:
+        """Tick the plan once per decision the stall skipped. `act()` will tick
+        it once more for this decision, as it always does."""
+        missed = max(0, int(round(interval / self.period_s)) - 1)
+        tick_plan = getattr(self.teacher, "tick_plan", None)
+        for _ in range(missed):
+            if tick_plan is not None:
+                tick_plan()
+        self._teacher_decisions += missed
+        self.stats.plan_catchup_decisions += missed
+        return missed
 
     def _note_opponent_activity(self, opp_bodies: dict[int, int]) -> None:
         """Stand in for the opponent elixir spend the mirror cannot carry.

@@ -559,6 +559,9 @@ def main() -> int:
                     default="scripted",
                     help="scripted exercises the joints; neural is the agent; "
                          "teacher searches a mirror of the perceived board")
+    ap.add_argument("--tower-bar-only", action="store_true",
+                    help="read Princess Tower HP from CRBAB's bar alone, not "
+                         "the printed numeral: the A/B control arm")
     ap.add_argument("--teacher-stage", type=int, default=None,
                     help="teacher rung (opponents/teacher.TEACHER_STAGES); "
                          "default the top rung")
@@ -733,6 +736,18 @@ def main() -> int:
     # longer applies.
     match.on_change(lambda in_match: tracker.reset() if in_match else None)
 
+    # Princess Tower HP from the printed numeral (live/tower_hp.py), when its
+    # templates exist; the bar reading stands otherwise and per tower.
+    tower_hp = None
+    if not args.tower_bar_only:
+        try:
+            from live.tower_hp import TowerHpTracker  # noqa: PLC0415
+            tower_hp = TowerHpTracker()
+            print("tower HP: printed numeral, bar as fallback")
+        except Exception as exc:                            # noqa: BLE001
+            print(f"tower HP: bar only (numeral reader unavailable: {exc})")
+    match_seen = [False]
+
     def perceive(frame):
         """capture-frame -> (State, GameState). Runs on the thread that owns
         perception: the worker when pipelined, the loop when --serial.
@@ -753,10 +768,13 @@ def main() -> int:
             # of an elixir.
             ledger.update(state.numbers.elixir.number,
                           now=frame.wall_time_ms / 1000.0)
+        if tower_hp is not None and in_match and not match_seen[0]:
+            tower_hp.reset()                  # a new match: forget the maxima
+        match_seen[0] = in_match
         gs, _report = build_game_state(
             state, np.array(native), np.array(small),
             frame_index=frame.index, wall_time_ms=frame.wall_time_ms,
-            my_elixir_spent=ledger.spent)
+            my_elixir_spent=ledger.spent, tower_hp=tower_hp)
 
         # The hand is replaced by the tracker's, not merged. The screen reading
         # still feeds the tracker as seed, tie-breaker between equal-cost cards
@@ -956,6 +974,10 @@ def main() -> int:
         print(worker.stages.report())
     print("\nperceive, by stage (median):")
     print(stages.report(total_key=None))
+    if tower_hp is not None:
+        print(f"\ntower HP: {tower_hp.numeral_reads} numeral readings, "
+              f"{tower_hp.fallbacks} fell back to the bar; maxima "
+              f"{tower_hp.maxima()}")
     if hasattr(policy, "stats") and hasattr(policy.stats, "summary"):
         print(f"\nteacher: {policy.stats.summary()}")
         if getattr(policy, "last_gaps", None) is not None:

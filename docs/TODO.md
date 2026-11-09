@@ -577,7 +577,7 @@ a checkpoint.
 
 ---
 
-## 0. Stage 2: the live teacher-as-agent loop — BUILT 2026-11-09, live dry run pending
+## 0. Stage 2: the live teacher-as-agent loop — BUILT and dry-run 2026-11-09, live run pending
 
 **Both modules exist, are wired as `--policy teacher`, and are tested against
 the real engine** (23 cases in `perception/tests/test_live_teacher_policy.py`,
@@ -616,34 +616,52 @@ run on a Linux build of the bindings: g++ 13, Python 3.11). Design:
   card on the board resets the count. Pinned both ways (a quiet board does
   reach the threshold; a new card resets it) plus a test that the teacher
   attribute it writes still exists.
-- **`UtilityTeacher` cannot be constructed on libstdc++ (Linux)** -- see the
-  open item below. Worked around in `TeacherPolicy`; not fixed in `python_ai/`.
+- **`UtilityTeacher` could not be constructed on libstdc++ (Linux).** FIXED
+  2026-11-09 on the maintainer's go-ahead: `teacher._probe_env` took
+  `get_all_card_ids()[:8]`, which is CardRegistry's `unordered_map` order; MSVC
+  happened to yield a legal deck, libstdc++ put Hero Barbarian Barrel (174) in
+  slot 0 and the engine refused it, so the teacher module could not even be
+  imported. It probes with `SHIPPED_DECK` now. Every probe injects the card
+  under test and steps with both sides holding (`step_self_play`, no play), so
+  the deck cannot change any result. Verified on a Linux build: 166 teacher
+  tests pass (0 could run before), python_ai suite 1,007 pass. The two that
+  fail there are environmental (`test_rl_ppo_compaction`'s round-off bound
+  under torch 2.15 vs the pinned 2.13; `test_checkpoint_paths` under a
+  `CLASH_WEIGHTS` override) and never import the teacher.
+- **Plan-clock drift is CORRECTED, not just measured.** `tick_plan` advances
+  the teacher's combo plan one second per `act()`, so a stalled decision used
+  to stretch a planned escort gap (3 s planned, 5 s played after a 3 s stall).
+  When an interval spans more than one period, `TeacherPolicy` calls
+  `tick_plan()` once per missed decision before `act()`: the plan follows wall
+  time, and a follow-up that came due during the stall is offered and
+  re-scored then -- late, never lost. Jitter inside `DRIFT_TOLERANCE_S` (0.5 s)
+  is left alone. No change to `teacher.py` was needed.
 
 **What remains:**
 
 1. **A live dry run** against an emulator (`mvp_loop.py --policy teacher`,
-   no `--act`), reading the `mirror, last build fabricated:` line and the
-   teacher summary. This is the part no fixture can do (design section 7).
+   no `--act`), reading the `mirror, last build fabricated:` and `tower HP:`
+   lines and the teacher summary. Real detector error, the actuator and the
+   game accepting the tap are what only a live run can test (design section 7).
+   **The cloud session that built this has no emulator, adb or recordings**, so
+   it ran the stand-in below instead.
+   `perception/tools/teacher_dry_run.py` drives the same `TeacherPolicy` from a
+   replay JSON. Each second becomes the GameState perception would report,
+   with the sensor's blind spots modelled: a damaged unit's bar is read with
+   probability 0.5, spawned bodies arrive unmapped, and units are optionally
+   dropped and decisions stalled. On the frozen `replay_ep1026.json`, rung 10:
+   99 decisions, 0 illegal plays, 0 untappable plays, 0 teacher errors,
+   `decide()` p50 1.1 ms / p95 4.4 ms / max 17.5 ms. Per build, 0.74 units
+   assumed full HP and 0.49 unmappable. With 20% of decisions stalled and 10%
+   of units dropped: 16 stalls, plan caught up 21 s, residual drift +0.00 s.
+   Pinned as a test.
 2. **Still fabricated, by construction**: opponent elixir (assumed 5.0 -- no
    opponent bar exists), opponent hand and deck (unobservable; our deck by
    default), opponent cycle (`note_played_card` not replayed; the teacher does
-   not read it), unit HP where no bar was drawn (recall 0.34-0.56), towers
-   whose bar was unreadable. Every one is a `MirrorGaps` field.
-3. **Plan-clock drift is MEASURED, not corrected.** `tick_plan` assumes one
-   decision a second; a stalled decision stretches a planned escort gap.
-   `TeacherPolicy.drift_s` and the `[drift]` tag report it. If it proves
-   material in the dry run, the fix is a proposal against `teacher.py`
-   (read-only), e.g. a `tick_plan(elapsed_ticks)` argument.
-4. **`teacher._PROBE_DECK` depends on hash order** (python_ai, read-only):
-   `_probe_env` takes `get_all_card_ids()[:8]`, and `getAllCardIds` iterates
-   CardRegistry's `unordered_map`. MSVC happens to yield a legal deck; libstdc++
-   puts Hero Barbarian Barrel (174) in slot 0, the engine refuses the deck, and
-   ANY `UtilityTeacher(...)` raises -- so the teacher, and everything that
-   builds one, cannot run on a Linux build. Measured 2026-11-09:
-   `get_all_card_ids()[:10]` = `[174, 175, 171, 173, 169, 167, 166, 172, 168,
-   170]`. Proposed fix (one line, needs a yes): probe with `SHIPPED_DECK`, or
-   sort the ids. `TeacherPolicy` pins `_PROBE_DECK` to its own deck when unset;
-   the probe's contents are documented as irrelevant.
+   not read it), unit HP where no bar was drawn (recall 0.34-0.56). Every one
+   is a `MirrorGaps` field. Princess Tower HP is now read from the printed
+   numeral (`live/tower_hp.py`, below), so `towers_assumed_full` should mostly
+   read empty live -- the dry run is where to confirm it.
 
 Bias throughout: **no-op over a wrong action.**
 
@@ -918,10 +936,19 @@ specific failure that audit note existed to stop.
   checkpoints still LOAD, but observation SEMANTICS shift, so it is
   **deliberately queued for a clean restart / the next intentional observation
   change** (decision reaffirmed 2026-08-24). Also CLAUDE.md open problem 3.
-- **`live/adapter.py` still reads tower HP from the BAR** (was BOT item 7).
-  `readers/tower_numerals.py` is built, tested and template-backed — acceptance
-  2030 on both enemy Princesses, 542-step read-back at 97.8% — but the live
-  adapter is not wired to it. Perception-side work, freely editable.
+- ~~**`live/adapter.py` still reads tower HP from the BAR**~~ (was BOT item 7).
+  **WIRED 2026-11-09**: `live/tower_hp.py` reads each Princess numeral with
+  `readers/tower_numerals.py` and converts it to the fraction GameState wants
+  by learning each tower's maximum through the match. That is the highest
+  value read at least twice, so one misread glyph cannot set the ceiling.
+  `build_game_state(..., tower_hp=tracker)`; `mvp_loop` resets it at match
+  start, and `--tower-bar-only` is the control arm. The bar reading stands
+  wherever the numeral fails, and on any frame that is not 549x976, the
+  templates' size. Tested on the reference frame: a 0.0 bar on both enemy
+  Princesses, the case the bar reader failed live, becomes measured at 2030 of
+  2030. Still open: the Kings stay on `king_hp.py`'s bar; ALLY numerals are
+  unvalidated (the templates were accepted on enemy towers only); a loop started
+  mid-match reads fractions high until a reset.
 - **Perception-shaped observation noise stays DEFERRED** (was BOT item 1),
   behind the sensor's own error: ~15% of detected units are misnamed (`knight`
   worst; one `minipekka` was the enemy Princess tower) and card identity agrees

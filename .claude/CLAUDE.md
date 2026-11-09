@@ -2405,8 +2405,8 @@ following live in `DECISIONS.md`, and are the ones most often cited:
 
 `perception/live/mirror.py` rebuilds the engine from each perceived frame and
 `perception/live/teacher_policy.py` lets the UtilityTeacher search it, wired as
-`mvp_loop.py --policy teacher`. ~11 ms per decision. What remains is a live dry
-run against an emulator. Design:
+`mvp_loop.py --policy teacher`. ~11 ms per decision. Dry-run over a recorded
+match with a modelled sensor; what remains is a run against a live emulator. Design:
 `docs/design/specs/2026-08-24-live-teacher-play-design.md`.
 
 Two things it found that are worth knowing before touching the live path:
@@ -2416,10 +2416,18 @@ Two things it found that are worth knowing before touching the live path:
   into every match. `TeacherPolicy` feeds it perception's own signal (a new
   opponent card on the board). Anything else that reads cumulative ENGINE STATS
   from a per-decision mirror has the same hole: the mirror has no history.
-- **`UtilityTeacher` cannot be built on libstdc++** (a Linux build of the
-  bindings): its probe deck is the first 8 ids of an `unordered_map`, which
-  there starts with a Hero the engine refuses. MSVC's order happens to work.
-  Proposal in `TODO.md` item 0; `python_ai/` is read-only.
+- **`UtilityTeacher` could not be built on libstdc++** (a Linux build of the
+  bindings): its probe deck was the first 8 ids of an `unordered_map`, which
+  there starts with a Hero the engine refuses. MSVC's order happened to work.
+  FIXED 2026-11-09 (`SHIPPED_DECK`, on the maintainer's go-ahead). **Anything
+  that takes "the first N registered ids" is compiler-dependent**: iteration
+  order of `getAllCardIds` is unspecified.
+- **A stalled decision catches the plan clock up**: `TeacherPolicy` calls the
+  teacher's own `tick_plan()` once per skipped second, so a combo's escort gap
+  is wall time. `perception/tools/teacher_dry_run.py` drives the whole path from
+  a replay JSON when no emulator exists.
+- **Princess Tower HP comes from the printed numeral** (`live/tower_hp.py`),
+  with each tower's maximum learned in-match; the bar is the fallback.
 
 **A Linux build of the bindings works for perception's suite**, which no
 machine in the toolchain box above records: `g++ -O2 -std=c++20 -shared -fPIC
