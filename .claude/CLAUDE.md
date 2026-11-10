@@ -2423,6 +2423,15 @@ following live in `DECISIONS.md`, and are the ones most often cited:
   result across machines; `tools/audit/seed_portability_probe.cpp` diffs two
   builds layer by layer.
 
+## 2026-11-10: a physical phone (TODO P0, `docs/runbooks/PHONE_SETUP.md`)
+
+Branch `claude/p0-real-phone-integration`. **Capture and taps share ONE
+geometry, `DeviceProfile.game_rect`** (`perception/live/device.py`): never
+add a second mapping from CRBAB's 720x1280 to phone pixels. A phone frame is
+resized to 549x976 so every reader sees the size it was measured at.
+`--act` refuses an uncalibrated profile; `phone_check.py --overlay` is the
+calibration. Not yet run on a real phone.
+
 ## Stage 2 (the teacher plays as us): BUILT 2026-11-09, see `TODO.md` item 0
 
 `perception/live/mirror.py` rebuilds the engine from each perceived frame and

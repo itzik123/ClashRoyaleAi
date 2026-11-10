@@ -64,8 +64,20 @@ def main() -> int:
                     help="target sampling rate (capture runs at ~13)")
     ap.add_argument("--seconds", type=float, default=420.0,
                     help="hard stop; a 3-minute match plus overtime and lobby")
-    ap.add_argument("--window", default="BlueStacks App Player")
+    ap.add_argument("--window", default=None,
+                    help="default 'BlueStacks App Player', or with --device "
+                         "the scrcpy window 'ClashPhone'")
+    ap.add_argument("--device", default=None,
+                    help="a phone profile (config/devices/<name>.json): frames "
+                         "are cropped to its game rect and resized to 549x976, "
+                         "exactly as mvp_loop --device sees them")
     args = ap.parse_args()
+    device = None
+    if args.device:
+        from live.device import DeviceProfile  # noqa: PLC0415
+        device = DeviceProfile.load(args.device)
+    if args.window is None:
+        args.window = "ClashPhone" if device else "BlueStacks App Player"
 
     expect = int(args.fps * args.seconds)
     need = expect * BYTES_PER_FRAME_ESTIMATE + DISK_MARGIN_BYTES
@@ -82,7 +94,7 @@ def main() -> int:
           f"(~{expect} frames, ~{expect * BYTES_PER_FRAME_ESTIMATE / 2**30:.1f} GiB)")
     print(f"stop early: create {stop_file}")
 
-    source = WindowSource(args.window)
+    source = WindowSource(args.window, device=device)
     print(f"game frame: {source.size[0]} x {source.size[1]}   "
           f"capture {source.fps:.1f} fps")
 

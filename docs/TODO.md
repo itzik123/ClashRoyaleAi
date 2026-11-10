@@ -29,13 +29,81 @@ Rules that apply to every item below:
 
 ---
 
-## P0. Real phone / live app integration — HIGH PRIORITY, not started (added 2026-11-10)
+## P0. Real phone / live app integration — HIGH PRIORITY, groundwork built 2026-11-10 (branch `claude/p0-real-phone-integration`), not yet run on a phone
 
 **Goal:** the bot plays Clash Royale running on a PHYSICAL Android phone. It
 captures the live screen, feeds the perception and decision loop, and taps
 its decisions back, fast enough to play a real-time match.
 
-**Where things stand.** Every live piece exists, but is built and measured
+**Built 2026-11-10** (setup steps: `docs/runbooks/PHONE_SETUP.md`):
+
+- **`perception/live/device.py`: `DeviceProfile`, ONE geometry for capture and
+  taps.** `game_rect` (fractions of the phone screen) is the region CRBAB's
+  720x1280 frame covers. Capture crops to it, taps map through it
+  (`to_device`), so they cannot disagree. Pinned end to end: a mark painted at
+  the exact device pixel a tile tap hits, mirrored into a scrcpy-like window
+  and cropped by the real capture code, must land where that tile sits in the
+  detector frame. Both mutations (capture ignoring the rect, taps ignoring
+  it) fail it. The default rect is a GUESS (full width, 9:16, centred) and the
+  profile says so (`calibrated: false`).
+- **Capture:** `WindowSource(..., device=profile)` captures the scrcpy window,
+  finds the phone screen at the phone's own aspect (`find_game_rect(aspect=)`;
+  the emulator rule would have cut the top off a 20:9 screen, pinned), crops
+  it to `game_rect`, and resizes to 549x976, the size every reader was
+  measured at. The screen-rect scan is cached per surface, as on the emulator.
+- **Taps:** `AdbActuator(device=profile)` resolves platform-tools adb
+  (`find_adb`: `--adb`, `CLASH_ADB`, PATH, `ANDROID_HOME`, then BlueStacks'),
+  takes the serial from the profile, maps every tap to device pixels, and
+  uses `input tap`. Raw evdev needs root and is not attempted. The `taps` log
+  stays in CRBAB space.
+- **`mvp_loop --device NAME [--adb-serial S] [--adb PATH]`.** `--act` is
+  REFUSED through an uncalibrated profile, and `--ensure-match` is refused
+  (its menu taps are not mapped yet). Adding the flag found that `--serial`
+  was already taken (it runs perception inline): reusing it crashed argparse
+  for every run, caught by the new tests.
+- **`perception/tools/phone_check.py`:** preflight (adb, device authorization,
+  `wm size`, adb round-trip timing), `--save-profile`, `--overlay` (draws the
+  game rect, tile grid and hand-slot taps on a real screenshot through the
+  actuator's own mapping: the calibration check), and an opt-in `--tap-at`
+  latency probe.
+- **`tools/record_match.py --device`**, so a phone session records exactly
+  what the loop sees, which is what building a hand pool needs.
+- 26 tests in `perception/tests/test_device.py`; perception suite 462 pass,
+  3 skip, 0 fail. The emulator path's `--frames` smoke run is unchanged.
+
+**Can it recognise every card on a live phone? No, and here is exactly how
+far it gets** (measured against the engine's 132 playable cards):
+
+| reader | covers | missing |
+|---|---|---|
+| board unit detector (ONNX, 97 classes, all mapped) | 86 of 110 non-spell cards | 24: every Hero, Spirit Empress, Goblinstein, Boss Bandit, Rune Giant, Goblin Giant/Machine/Demolisher, Berserker, Ronin, Suspicious Bush, plus multi-body cards seen as their bodies (Skeleton Army as Skeletons, Goblin Gang as goblins, Minion Horde as Minions, Three Musketeers as Musketeers) |
+| stock hand icon templates (CRBAB) | 110 of 132 | 22: the Heroes, newer cards, Goblin Curse, Void, Vines |
+| deck-restricted hand reader (`live/deck_hand.py`) | the 8 cards of a deck it has a pool for | needs a pool cut from footage of THAT deck on THAT screen |
+
+Spells have no board identity at all; they are read from the hand (ours) or
+not at all (the opponent's). Measured accuracy so far is on the emulator only:
+the deck pool read 100% of 120 held-out slot crops on the 2.6 recording,
+against 96.7% for the stock reader; ~15% of detected units are misnamed.
+Unmapped units are counted, never guessed (`MirrorGaps.unmappable_units`). To
+close the gap:
+1. Build a hand pool from a phone recording (runbook step 8). This is cheap
+   and covers OUR hand exactly.
+2. Measure the detector on phone frames: hand-label a few hundred detections
+   from a recorded phone session and compare.
+3. Opponent cards outside the 97 classes need the detector extended (new
+   labelled data and retraining), which is a project of its own.
+
+**Next steps on the branch:**
+1. A live run on a real phone: steps 5-7 of the runbook, including
+   calibrating `game_rect` and measuring how Clash Royale actually lays out a
+   tall screen.
+2. Faster taps: scrcpy's control channel injects touch without root over the
+   connection capture already uses. `input tap` is ~0.4 s per tap, measured on
+   the emulator.
+3. Map `match_nav`'s menu taps through the profile, so `--ensure-match` works
+   on a phone.
+
+**Where things stood before the groundwork.** Every live piece exists, but is built and measured
 against the BlueStacks EMULATOR on the Windows box. Nothing has run against a
 phone, and nothing has run live at all since the teacher policy landed (item 0:
 "live dry run pending"). **Do item 0's emulator dry run first.** It separates

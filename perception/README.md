@@ -29,6 +29,7 @@ the C++ core are read-only from here.
 | 6 — live frame source | **built and measured** (2026-07-31) | `capture/window.py`, Windows.Graphics.Capture. ~100 ms/frame, works while the window is covered. See *Live capture*. |
 | 6 — per-unit HP | **fitted against 60 hand labels** | "is this unit damaged", population-weighted over 226 detections: precision **0.79 → 0.98**, recall **0.34 → 0.56**. See *Findings* 7. |
 | 7 — the teacher plays as us | **built, tested and dry-run on a replay; live run pending** (2026-11-09) | `live/mirror.py` rebuilds the engine from each `GameState` (towers, clock, unit HP, deploy time, elixir, hand -- every fabricated field reported in `MirrorGaps`); `live/teacher_policy.py` lets the UtilityTeacher rank candidates on it. `mvp_loop.py --policy teacher`. ~11 ms per decision of a 1000 ms period. 23 engine-backed tests. See `docs/TODO.md` item 0. |
+| 8 — a physical phone | **built and unit-tested, not yet run on a phone** (2026-11-10) | `live/device.py` (`DeviceProfile`: one geometry for capture and taps), `capture/window.py` phone crop, `AdbActuator(device=)`, `mvp_loop.py --device`, `tools/phone_check.py`. Setup: `docs/runbooks/PHONE_SETUP.md`. |
 
 The live sensor's output contract is `GameState` in `contracts.py` — **shared,
 neither side changes it alone**. Perception emits it and stops; encoding the
@@ -595,6 +596,8 @@ bridge/sim_driver.py drives ClashEnv as an estimator
 live/mirror.py      GameState -> a mirror ClashEnv + MirrorGaps, per decision
 live/teacher_policy.py  --policy teacher: UtilityTeacher on that mirror
 live/tower_hp.py    Princess HP from the printed numeral, max learned in-match
+live/device.py      a physical phone: adb, DeviceProfile (capture + tap geometry)
+tools/phone_check.py  phone preflight, profile, calibration overlay
 tools/teacher_dry_run.py  --policy teacher over a replay JSON, no emulator
 mapping/            card_map.json + the unmapped-card contract
 tools/              gen_card_map.py | divergence_report.py

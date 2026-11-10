@@ -225,11 +225,27 @@ class AdbActuator:
     intent: acting on a real match must be asked for.
     """
 
-    def __init__(self, dry_run: bool = True, adb: Path = ADB,
-                 serial: str | None = None, raw_touch: bool = True):
+    def __init__(self, dry_run: bool = True, adb: Path | None = None,
+                 serial: str | None = None, raw_touch: bool = True,
+                 device=None):
+        """`device`, a `live.device.DeviceProfile`, targets a physical phone:
+        adb is resolved by `live.device.find_adb` (platform-tools, not
+        BlueStacks'), the serial comes from the profile, every tap is mapped
+        through `device.to_device` into the phone's own pixels, and taps go
+        through `input tap`. Raw evdev writes need root on a stock phone, and
+        their axis ranges are device-specific, so they are not attempted.
+        `taps` stays in CRBAB's 720x1280 space either way, which is what the
+        confirmer and the logs compare against."""
+        self.device = device
+        if adb is None:
+            if device is not None:
+                from live.device import find_adb  # noqa: PLC0415
+                adb = find_adb() if not dry_run else ADB
+            else:
+                adb = ADB
         self.dry_run = dry_run
         self.adb = Path(adb)
-        self.serial = serial
+        self.serial = serial if serial is not None else getattr(device, "serial", None)
         self.taps: list[Tap] = []
         self.dropped = 0
         self.errors = 0
@@ -245,7 +261,7 @@ class AdbActuator:
         self.last_queued = False
         if not dry_run and not self.adb.exists():
             raise ActuationError(f"adb not found at {self.adb}")
-        if raw_touch and not dry_run:
+        if raw_touch and not dry_run and device is None:
             # Probed, not assumed: device path, axis ranges and rotation are
             # properties of this emulator, and being wrong taps the wrong place
             # rather than failing.
@@ -347,7 +363,18 @@ class AdbActuator:
 
     @property
     def backend(self) -> str:
+        if self.device is not None:
+            return f"input-tap on {self.device.name} {self.device.display[0]}x{self.device.display[1]}"
         return "raw-evdev" if self.raw is not None else "input-tap"
+
+    def device_point(self, tap: Tap) -> Tap:
+        """Where a CRBAB-space tap lands on the target: the phone's own pixels
+        with a device profile, unchanged on the emulator (whose display IS
+        720x1280)."""
+        if self.device is None:
+            return tap
+        x, y = self.device.to_device(tap.x, tap.y)
+        return Tap(x, y)
 
     def _adb(self, *args: str) -> list[str]:
         cmd = [str(self.adb)]
@@ -428,9 +455,10 @@ class AdbActuator:
                 if self.raw is not None:
                     self._shell(self.raw.placement_script(card, target))
                 else:
-                    self._shell(f"input tap {card.x} {card.y}; "
+                    c, t = self.device_point(card), self.device_point(target)
+                    self._shell(f"input tap {c.x} {c.y}; "
                                 f"sleep {TAP_GAP_S}; "
-                                f"input tap {target.x} {target.y}")
+                                f"input tap {t.x} {t.y}")
             except Exception as exc:                        # noqa: BLE001
                 # A failed tap must not kill the worker, or the loop would look
                 # like it was acting while nothing reached the game.

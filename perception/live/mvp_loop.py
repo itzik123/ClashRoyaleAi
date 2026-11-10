@@ -126,6 +126,10 @@ DECK = _deck_from_training()
 # Below this the loop is acting on a board that has already changed.
 DECISION_HZ = 1.0
 
+# The scrcpy window title the phone setup uses (`scrcpy --window-title`), so
+# `--device` finds the mirror without a --window.
+PHONE_WINDOW_TITLE = "ClashPhone"
+
 # Imported from action_gate so the threshold that reports staleness and the one
 # that refuses to act on it cannot drift apart.
 
@@ -544,7 +548,21 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--act", action="store_true",
                     help="actually tap. Without it the loop only watches.")
-    ap.add_argument("--window", default="BlueStacks App Player")
+    ap.add_argument("--window", default=None,
+                    help="window to capture. Default: 'BlueStacks App Player', "
+                         "or with --device the scrcpy window title "
+                         f"'{PHONE_WINDOW_TITLE}'")
+    ap.add_argument("--device", default=None,
+                    help="a PHYSICAL PHONE mirrored by scrcpy: a profile name in "
+                         "perception/config/devices/ or a path to one "
+                         "(tools/phone_check.py --save-profile creates it). "
+                         "Capture is cropped and taps are mapped through it.")
+    ap.add_argument("--adb-serial", default=None,
+                    help="adb serial of the phone; overrides the profile's. "
+                         "(--serial is taken: it runs perception inline.)")
+    ap.add_argument("--adb", type=Path, default=None,
+                    help="adb executable for --device; default: CLASH_ADB, "
+                         "PATH, ANDROID_HOME, in that order")
     ap.add_argument("--serial", action="store_true",
                     help="run perception inline instead of on its own thread. "
                          "The original design, kept for comparison: it pins "
@@ -607,6 +625,30 @@ def main() -> int:
                     / "config" / "templates" / "deck_pool_hog26")
     args = ap.parse_args()
 
+    device = None
+    if args.device:
+        from live.device import DeviceProfile  # noqa: PLC0415
+        device = DeviceProfile.load(args.device)
+        if args.adb_serial:
+            device.serial = args.adb_serial
+        if args.act and not device.calibrated:
+            raise SystemExit(
+                f"--act refused: device profile {device.name!r} is not "
+                "calibrated, so taps would land wherever the GUESSED game rect "
+                "puts them. Check it with `tools/phone_check.py --overlay`, "
+                "adjust game_rect, set \"calibrated\": true, then act.")
+        if args.ensure_match:
+            raise SystemExit(
+                "--ensure-match is emulator-only for now: its menu taps are in "
+                "CRBAB's 720x1280 space and are not mapped through a device "
+                "profile. Open Training Camp on the phone by hand.")
+        print(f"device: {device.name} {device.display[0]}x{device.display[1]}, "
+              f"serial {device.serial or '(only attached)'}, game_rect "
+              f"{tuple(round(v, 4) for v in device.game_rect)}"
+              f"{'' if device.calibrated else '  ** UNCALIBRATED: watch only **'}")
+    if args.window is None:
+        args.window = PHONE_WINDOW_TITLE if device else "BlueStacks App Player"
+
     if args.frames and args.act:
         raise SystemExit("--act makes no sense while replaying a recording")
 
@@ -629,7 +671,7 @@ def main() -> int:
             source = RecordingSource(args.frames)
             print(f"replaying {source.frame_count} frames from {args.frames}")
     else:
-        source = WindowSource(args.window)
+        source = WindowSource(args.window, device=device)
     detector = Detector(DECK)
 
     # Swap in the deck-restricted hand classifier at the composition root.
@@ -670,7 +712,7 @@ def main() -> int:
         from match_nav import ensure_in_match  # noqa: PLC0415
         ensure_in_match(detector)
 
-    actuator = AdbActuator(dry_run=not args.act)
+    actuator = AdbActuator(dry_run=not args.act, adb=args.adb, device=device)
     if args.act:
         print(f"actuator backend: {actuator.backend}")
     if args.policy == "neural":

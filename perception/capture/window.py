@@ -58,13 +58,17 @@ class GameRectError(RuntimeError):
     """The game area could not be located inside the captured surface."""
 
 
-def find_game_rect(buffer: np.ndarray) -> tuple[int, int, int, int]:
-    """(x, y, w, h) of the pillarboxed game inside a full window capture.
+def find_game_rect(buffer: np.ndarray,
+                   aspect: tuple[int, int] = (NATIVE_WIDTH, NATIVE_HEIGHT),
+                   ) -> tuple[int, int, int, int]:
+    """(x, y, w, h) of the pillarboxed screen inside a full window capture.
 
     The width is the widest run of non-black columns in a band across the
     middle of the surface, where the title bar and toolbar do not join every
-    run into one. The height follows from the Android aspect, anchored to the
-    bottom, since the chrome is on top.
+    run into one. The height follows from the screen's `aspect` (width,
+    height), anchored to the bottom, since the chrome is on top. The default is
+    the emulator's 720x1280; a phone mirrored by scrcpy passes its own display
+    size, or a 20:9 screen would lose its top to a 9:16 crop.
     """
     if buffer.ndim != 3 or buffer.shape[2] < 3:
         raise GameRectError(f"expected an HxWx3 image, got {buffer.shape}")
@@ -82,12 +86,49 @@ def find_game_rect(buffer: np.ndarray) -> tuple[int, int, int, int]:
     x0, x1 = max(runs, key=lambda r: r[1] - r[0])
     game_w = x1 - x0
 
-    game_h = int(round(game_w * NATIVE_HEIGHT / NATIVE_WIDTH))
+    game_h = int(round(game_w * aspect[1] / aspect[0]))
     rows_lit = np.flatnonzero(
         buffer[:, x0:x1, :3].max(axis=(1, 2)) > LETTERBOX_MAX)
     bottom = int(rows_lit.max()) + 1 if rows_lit.size else height
     y0 = max(0, bottom - game_h)
     return x0, y0, game_w, min(game_h, bottom - y0)
+
+
+#: The frame size every reader downstream was measured at: the emulator's
+#: captured game area. A phone frame is resized to it, so the tower-digit
+#: templates (`config/templates/tower_549x976`), the HP readers and the
+#: calibration profile see the size they were built on.
+PHONE_OUTPUT_SIZE = (549, 976)
+
+
+def crop_phone_frame(buffer: np.ndarray, device,
+                     output_size: tuple[int, int] | None = PHONE_OUTPUT_SIZE,
+                     screen_rect: tuple[int, int, int, int] | None = None,
+                     ) -> np.ndarray:
+    """A scrcpy window capture -> the game area the detector expects.
+
+    Three steps, each from one definition:
+    1. find the phone screen in the window (`find_game_rect` at the phone's
+       own aspect);
+    2. crop it to `device.game_rect`, the same region `DeviceProfile.to_device`
+       maps taps through, so the detector's frame and the taps cannot
+       disagree;
+    3. resize to `output_size` (None keeps the native crop).
+
+    `screen_rect` skips step 1's scan for a caller that caches it (it costs
+    tens of ms on a full window; `WindowSource` caches it per surface shape).
+    """
+    x, y, w, h = (screen_rect if screen_rect is not None
+                  else find_game_rect(buffer, aspect=device.display))
+    screen = buffer[y:y + h, x:x + w]
+    cx, cy, cw, ch = device.crop_box(screen.shape[1], screen.shape[0])
+    game = np.ascontiguousarray(screen[cy:cy + ch, cx:cx + cw, :3])
+    if output_size is None or (game.shape[1], game.shape[0]) == tuple(output_size):
+        return game
+    import cv2  # noqa: PLC0415
+    interp = (cv2.INTER_AREA if game.shape[1] > output_size[0]
+              else cv2.INTER_LINEAR)
+    return cv2.resize(game, tuple(output_size), interpolation=interp)
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -104,7 +145,12 @@ class WindowSource(FrameSource):
     """
 
     def __init__(self, window_name: str = "BlueStacks App Player", *,
-                 min_fps: float = DEFAULT_MIN_FPS, warmup_s: float = 3.0):
+                 min_fps: float = DEFAULT_MIN_FPS, warmup_s: float = 3.0,
+                 device=None):
+        """`device`, a `live.device.DeviceProfile`, switches to a phone
+        mirrored by scrcpy: frames are cropped by `crop_phone_frame` instead of
+        the emulator's 9:16 rule."""
+        self._device = device
         try:
             from windows_capture import WindowsCapture  # noqa: PLC0415
         except ImportError as exc:                       # pragma: no cover
@@ -247,6 +293,9 @@ class WindowSource(FrameSource):
             if self._latest is None:
                 raise RuntimeError("no frame captured yet")
             stamp, buffer = self._latest
+        if self._device is not None:
+            return stamp, crop_phone_frame(buffer, self._device,
+                                           screen_rect=self._game_rect(buffer))
         x, y, w, h = self._game_rect(buffer)
         return stamp, np.ascontiguousarray(buffer[y:y + h, x:x + w])
 
@@ -259,7 +308,9 @@ class WindowSource(FrameSource):
         if (self._rect is None
                 or self._rect_shape != buffer.shape
                 or now - self._rect_at > RECT_REVALIDATE_S):
-            self._rect = find_game_rect(buffer)
+            aspect = (self._device.display if self._device is not None
+                      else (NATIVE_WIDTH, NATIVE_HEIGHT))
+            self._rect = find_game_rect(buffer, aspect=aspect)
             self._rect_shape = buffer.shape
             self._rect_at = now
         return self._rect

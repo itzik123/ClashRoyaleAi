@@ -30,6 +30,11 @@ comparable across this change.
   `perception/live/teacher_policy.py` lets the UtilityTeacher rank candidates on that
   mirror. Run it with `mvp_loop.py --policy teacher` (dry run unless `--act`). See
   `docs/TODO.md` item 0.
+- **Physical-phone groundwork** (branch `claude/p0-real-phone-integration`,
+  `docs/runbooks/PHONE_SETUP.md`): `mvp_loop.py --device`, with scrcpy for capture
+  and adb `input tap` for taps. Both go through one `DeviceProfile` geometry, and
+  `perception/tools/phone_check.py` preflights and calibrates. Not yet run on a
+  real phone; `--act` is refused until the profile is calibrated.
 - `tools/audit/seed_portability_probe.cpp` shows, layer by layer, whether a seed
   names the same deck and opening hand on two builds. Measured: it does not,
   across libstdc++ and libc++ (UPSTREAM item 36, revised).
