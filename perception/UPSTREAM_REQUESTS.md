@@ -1982,7 +1982,7 @@ space or training statistic moves.
 
 ### Options
 
-1. **Portable primitives (recommended).** One header, ~40 lines, using only raw
+1. **Portable primitives (recommended; VERIFIED 2026-11-10, see `docs/TODO.md` S36 and `tools/audit/portable_random_check.cpp`).** One header, ~40 lines, using only raw
    `mt19937` output, which the standard does pin:
    - `uniformIndex(rng, n)`, by rejection sampling on the 32-bit draw;
    - a hand-written Fisher-Yates shuffle over it;

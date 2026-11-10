@@ -111,6 +111,145 @@ item 0's remaining live dry run.
 
 ---
 
+## S36. Seed portability: a seed means a different game on every build — C++ fix proposed and verified, needs a yes
+
+UPSTREAM item 36 has the full evidence. This is the working summary and the
+exact edit, so it can be applied without re-deriving anything. **C++, so
+nothing is changed until the maintainer says yes.** NOT gameplay-affecting:
+every draw stays uniform.
+
+### The problem, measured 2026-11-10
+
+`std::mt19937` is pinned by the C++ standard, so the same seed gives the same
+raw 32-bit numbers everywhere. **The functions the engine draws through are
+not.** `std::uniform_int_distribution`, `std::uniform_real_distribution` and
+`std::shuffle` are each standard library's own algorithm.
+
+Compiling one probe (`tools/audit/seed_portability_probe.cpp`) against
+libstdc++ (g++ 13) and libc++ (clang 18):
+
+| layer | libstdc++ | libc++ |
+|---|---|---|
+| raw `mt19937(7)` | 327741615 976413892 3349725721 | same |
+| `uniform_int_distribution(0, 99)`, seed 7 | 7 22 77 31 43 97 | **47 68 25 67 83 23** |
+| `std::shuffle` of 0..7, seed 7 | 2 7 6 4 1 5 3 0 | **7 5 3 6 0 1 4 2** |
+| `sample_random_deck(seed=7)` | 154 10 112 83 11 111 43 62 | **159 31 90 8 41 55 102 88** |
+| `getAllCardIds()[:10]` | 174 175 171 ... | same |
+
+**What this means in practice.** `env.seed(s)` is the engine's documented
+reproducibility tool, and it deals a DIFFERENT OPENING HAND for the same `s`
+on Windows (MSVC), in a Linux session (libstdc++) and in the browser lab
+(Emscripten = libc++). A seeded result can be reproduced on the machine that
+produced it and nowhere else.
+
+The four sites that draw:
+
+| site | draws through |
+|---|---|
+| `PlayerState::initializeDeck` (the opening hand; `env.seed` re-deals here) | `std::shuffle` |
+| `HeuristicOpponent::reset` (its lane) | `uniform_int_distribution<int>(0, 1)` |
+| `sampleRandomDeck` (`ClashEnv.h`) | both distributions, over pools built in `unordered_map` order |
+| `getAllCardIds()` (`ClashEnv.h`) | `unordered_map` iteration order |
+
+**Blast radius today is small.** No training path passes a seed: every
+`sample_random_deck()` call in `gym_wrapper`, `selfplay_env` and `train.py` is
+unseeded, and every env is constructed from `random_device`. What breaks is
+CROSS-MACHINE reproduction: paired experiments, a seeded test fixture recorded
+on one box, and the mirror and dry-run tools (both call `env.seed`).
+
+### The fix, verified before proposing it
+
+A header built only on raw `mt19937` output. Measured 2026-11-10:
+- **identical** draws, shuffles and floats under libstdc++ and libc++;
+- 600,000 draws over 6 bins land within 0.5% of 100,000 each, so it is
+  uniform.
+
+`tools/audit/portable_random_check.cpp` carries this exact code inline, so it
+can be checked on MSVC before `include/` is touched. That is the one build not
+yet run.
+
+Proposed `include/core/PortableRandom.h`:
+
+```cpp
+// Proposed include/core/PortableRandom.h (UPSTREAM item 36, option 1).
+// Built ONLY on raw std::mt19937 output, which the standard pins exactly.
+// uniform_int_distribution, uniform_real_distribution and std::shuffle are
+// each standard library's own algorithm, so the same seed draws differently
+// under MSVC, libstdc++ and libc++ (Emscripten).
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <random>
+#include <utility>
+#include <vector>
+
+namespace portable {
+
+// Uniform in [0, n), n >= 1. Rejection sampling: draws below 2^32 mod n are
+// discarded, so the accepted range is an exact multiple of n and x % n is
+// unbiased.
+inline std::uint32_t uniformIndex(std::mt19937& rng, std::uint32_t n) {
+    const std::uint32_t reject_below = (0u - n) % n;   // == 2^32 mod n
+    std::uint32_t x;
+    do {
+        x = static_cast<std::uint32_t>(rng());
+    } while (x < reject_below);
+    return x % n;
+}
+
+// Uniform in [0, 1): the top 24 bits, exactly representable in a float.
+inline float uniform01(std::mt19937& rng) {
+    return static_cast<float>(static_cast<std::uint32_t>(rng()) >> 8)
+           * (1.0f / 16777216.0f);
+}
+
+// Fisher-Yates over uniformIndex.
+template <class T>
+void shuffle(std::vector<T>& v, std::mt19937& rng) {
+    for (std::size_t i = v.size(); i > 1; --i) {
+        const std::size_t j = uniformIndex(rng, static_cast<std::uint32_t>(i));
+        std::swap(v[i - 1], v[j]);
+    }
+}
+
+}  // namespace portable
+```
+
+The call-site edits:
+
+1. `PlayerState::initializeDeck`:
+   `std::shuffle(order.begin(), order.end(), rng)` becomes
+   `portable::shuffle(order, rng)`.
+2. `HeuristicOpponent::reset`: `lane = laneDist(rng)` becomes
+   `lane = static_cast<int>(portable::uniformIndex(rng, 2))`, and the
+   distribution goes.
+3. `sampleRandomDeck`:
+   - Build the three pools, then `std::sort` each.
+   - `chance01(rng)` becomes `portable::uniform01(rng)`.
+   - `eligible[dist(rng)]` becomes
+     `eligible[portable::uniformIndex(rng, eligible.size())]`.
+4. `getAllCardIds()`: `std::sort(ids.begin(), ids.end())` before returning.
+   This makes "the first N ids" mean the same thing everywhere.
+5. **Golden-value test** in `tests/core/` (the glob is `tests/core/*.cpp`, and
+   a new file needs the build run twice): pin `sampleRandomDeck` and the dealt
+   opening hand for seeds 0, 7 and 4242. CI runs the suite on MSVC, so the pin
+   is checked there on every push, and a Linux or WASM build that disagrees
+   fails loudly instead of silently renaming seeds.
+
+**Cost, stated plainly:**
+- Every recorded seed names a different deck or hand afterwards, once, on
+  every build including MSVC.
+- Any test or note that pins a seeded outcome must be re-measured after the
+  change. `python_ai/tests/test_engine_seeding.py` only checks same-build
+  repeatability, so it is unaffected.
+- Checkpoints, the observation, the action space and training statistics do
+  not change.
+
+**Alternatives** (UPSTREAM item 36): sorting alone (measured insufficient), or
+documenting a seed as per-build (cheap, and the trap stays).
+
+---
+
 ## 00000. Code review of the live path, 2026-11-09 — fixed, one proposal open
 
 A review of `perception/live/` (pipeline, decision loop, actuator, ledger, hand
@@ -176,7 +315,7 @@ Fixed:
 12. `hand_names[decision.slot]` could IndexError on a short CRBAB card list.
 
 Open: **UPSTREAM item 36, revised 2026-11-10 after measuring libstdc++
-against libc++** (`tools/audit/seed_portability_probe.cpp`). **Seeded
+against libc++; the full write-up and the verified fix are item S36 above** (`tools/audit/seed_portability_probe.cpp`). **Seeded
 randomness is build-specific**, and the cause is the standard library's
 algorithms, not only the registry order: `uniform_int_distribution` and
 `std::shuffle` differ while raw `mt19937` matches. So `env.seed(s)` deals a
