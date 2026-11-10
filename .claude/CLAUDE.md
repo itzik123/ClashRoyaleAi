@@ -2416,6 +2416,12 @@ following live in `DECISIONS.md`, and are the ones most often cited:
   hidden the same way: the tests used a different deck from the run.
 - **`perf_counter()` has no epoch.** Never use 0.0 as "long ago" on it, since it
   is roughly machine boot. Use -inf or None.
+- **A seed is per-build** (UPSTREAM item 36, measured 2026-11-10). `mt19937` is
+  standard, but `uniform_int_distribution` and `std::shuffle` are each standard
+  library's own. The same `env.seed(s)` deals different opening hands under
+  libstdc++, libc++ (the WASM lab) and presumably MSVC. Never compare a seeded
+  result across machines; `tools/audit/seed_portability_probe.cpp` diffs two
+  builds layer by layer.
 
 ## Stage 2 (the teacher plays as us): BUILT 2026-11-09, see `TODO.md` item 0
 

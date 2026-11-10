@@ -1909,58 +1909,91 @@ C++ suite, Python suite, the rebuilt `.pyd` (`tools/audit/verify_pyd.py`), and
 the lab's curation over the rebuilt Battle Ram, Prince, Ram Rider and Bomb
 Tower tables: see the commit message for the numbers.
 
-## Item 36 — card-id iteration order is the compiler's, so a seeded random deck is not portable
+## Item 36 — seeded randomness is build-specific: the standard library picks the algorithm
 
-**Status: PROPOSED 2026-11-09, NOT changed.** C++ (`include/core/ClashEnv.h`),
-so it waits for a yes. **Class:** reproducibility. **NOT gameplay-affecting**:
-no match plays differently, only WHICH deck a given seed names.
+**Status: PROPOSED 2026-11-09, REVISED 2026-11-10 after measuring two standard
+libraries; NOT changed.** C++ (`include/core/ClashEnv.h`, `PlayerState.h`,
+`HeuristicOpponent.h`), so it waits for a yes. **Class:** reproducibility.
+**NOT gameplay-affecting**: every draw stays uniform, so no match is played
+differently in distribution. Only WHICH deck or hand a given seed names
+changes, once.
 
 ### The gap
 
-`CardRegistry::cards` is a `std::unordered_map<int, CardDefinition>`, whose
-iteration order is unspecified and differs between standard libraries.
-Two functions iterate it and expose the order:
+`std::mt19937` is fully specified by the standard: the same seed gives the same
+raw numbers everywhere. The things built on it are NOT. Their ALGORITHMS are
+left to each standard library (MSVC's STL, libstdc++, libc++, which is
+Emscripten's):
 
-- `getAllCardIds()` (bound as `get_all_card_ids`) returns ids in that order.
-- `sampleRandomDeck(rng)` builds its plain / Evolution / Champion pools in that
-  order and then draws `uniform_int_distribution` INDICES into them, so the
-  same `mt19937` seed yields a different deck under MSVC, libstdc++ and
-  Emscripten's libc++.
+| engine site | uses | portable? |
+|---|---|---|
+| `sampleRandomDeck` (bound as `sample_random_deck`) | `uniform_int_distribution`, `uniform_real_distribution` | **no** |
+| `PlayerState::initializeDeck` (the opening hand; `env.seed(s)` re-deals through it) | `std::shuffle` | **no** |
+| `HeuristicOpponent::reset` (its lane) | `uniform_int_distribution<int>(0, 1)` | **no** |
+| `getAllCardIds()` / the pools above | `unordered_map` iteration order | **no** |
 
 ### Evidence
 
-Measured on a libstdc++ build (g++ 13, 2026-11-09):
+Measured 2026-11-10 in one Linux session with `tools/audit/seed_portability_probe.cpp`:
+the same source and the same engine headers, compiled against both standard
+libraries (g++ 13 / libstdc++; clang 18 / libc++ 18). Its header gives the
+build line for each; diff two builds' output, and a differing line is a layer
+that is not portable. Run it under MSVC to close the one inference left below.
 
-    get_all_card_ids()[:10]      = [174, 175, 171, 173, 169, 167, 166, 172, 168, 170]
-    sample_random_deck(seed=7)   = [154, 10, 112, 83, 11, 111, 43, 62]
+| | libstdc++ | libc++ |
+|---|---|---|
+| `mt19937(7)`, first three raw outputs | 327741615 976413892 3349725721 | **the same** |
+| `uniform_int_distribution(0, 99)` on `mt19937(7)` | 7 22 77 31 43 97 | **47 68 25 67 83 23** |
+| `std::shuffle` of 0..7, seed 7 | 2 7 6 4 1 5 3 0 | **7 5 3 6 0 1 4 2** |
+| `sampleRandomDeck`, seed 7 | 154 10 112 83 11 111 43 62 | **159 31 90 8 41 55 102 88** |
+| `getAllCardIds()[:10]` | 174 175 171 173 169 167 166 172 168 170 | **the same** |
 
-The first line is why `teacher._probe_env` (which took `[:8]`) built a deck the
-engine refused on Linux while MSVC happened to yield a legal one (fixed in
-Python the same day by probing with `SHIPPED_DECK`). That the MSVC order
-differs is inferred from exactly that: the same `[:8]` was legal there. The
-seeded-deck difference follows from the same order. It was not run on MSVC
-here.
+Two corrections to the first version of this item:
 
-Audited every Python caller of `get_all_card_ids()`: apart from the teacher's
-probe, all use it as a SET or build `{name: id}` tables. Those are
-order-independent because the 132 playable names are unique (measured: 0
-duplicates). `models/net.py`'s card index comes from `range(NUM_CARD_IDS)`, not
-from this order. Its `_ALL_IDS` is unused.
+- **The registry order is the SAME under libstdc++ and libc++.** It must differ
+  under MSVC (`teacher._probe_env` took `[:8]` and got a legal deck there, an
+  illegal one here), but that is still inferred, not measured on MSVC.
+- **An artifact to avoid when re-measuring.** A first probe printed draws as
+  several arguments of one `printf`. C++ leaves argument evaluation order
+  unspecified, so identical values printed in opposite orders under the two
+  compilers. The instrument prints one value per statement. (No engine call
+  passes two RNG draws as arguments; checked.)
+- **Sorting the pools, this item's original option 1, would NOT make seeds
+  portable.** Even with identical pools the decks differ, because the
+  distribution draws differ. The fix has to replace the distributions.
+
+Who passes a seed today:
+- **No training path.** Every `sample_random_deck()` call in `gym_wrapper`,
+  `selfplay_env` and `train.py` is unseeded (`random_device`).
+- `python_ai/tests/test_engine_seeding.py` only checks same-build
+  repeatability, which holds on every build.
+- **`env.seed(s)`** is the one that matters. It is what paired experiments, the
+  perception suite, `perception/live/mirror.py` and
+  `perception/tools/teacher_dry_run.py` use, so a seeded opening hand recorded
+  on the Windows box is a different hand in a Linux session and in the WASM
+  lab.
 
 ### Blast radius
 
-`sample_random_deck(seed=...)` promises "a reproducible deck". It is reproducible
-on one build only. Phase 1's `random_opponent` decks and any experiment that
-names a deck by seed differ between the Windows trainer, a Linux cloud session
-and the WASM lab. No checkpoint, observation or action space is touched.
+Reproducibility ACROSS machines only. On one build everything is repeatable, and
+the Reflex Lab's WASM-vs-native parity (9,400 tries identical) is unaffected: it
+injects its bodies and never deals a hand. No checkpoint, observation, action
+space or training statistic moves.
 
 ### Options
 
-1. **Sort** in `getAllCardIds()` and in `sampleRandomDeck`'s pool construction
-   (`std::sort` after the loop). Two lines. Every seed then names the same deck
-   everywhere. **It also changes which deck each seed names on MSVC**, so any
-   seed recorded in a log or a runbook describes a different deck afterwards.
-2. Change `CardRegistry::cards` to `std::map`. Ordered by construction, so no
-   future iteration can reintroduce this. It touches every lookup (O(log n) on
-   ~173 entries, negligible) and has the same seed-renaming consequence as 1.
-3. Leave it, and document that a deck seed is per-build.
+1. **Portable primitives (recommended).** One header, ~40 lines, using only raw
+   `mt19937` output, which the standard does pin:
+   - `uniformIndex(rng, n)`, by rejection sampling on the 32-bit draw;
+   - a hand-written Fisher-Yates shuffle over it;
+   - `uniform01(rng)` from the top 24 bits.
+
+   Use them at the three sites above, and sort `getAllCardIds()` and the deck
+   pools. A C++ test then pins GOLDEN values (deck and opening hand for seeds 0,
+   7 and 4242). CI runs it on MSVC, and Linux/WASM builds run it too, so a
+   portability regression fails loudly instead of silently renaming seeds.
+   **Cost:** every recorded seed names a different deck or hand afterwards, once,
+   on every build including MSVC.
+2. **Sort only.** Measured insufficient (above). Not recommended.
+3. **Leave it** and document that a seed is per-build. Cheapest; it keeps the
+   trap.

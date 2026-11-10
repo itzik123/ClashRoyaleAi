@@ -29,6 +29,88 @@ Rules that apply to every item below:
 
 ---
 
+## P0. Real phone / live app integration — HIGH PRIORITY, not started (added 2026-11-10)
+
+**Goal:** the bot plays Clash Royale running on a PHYSICAL Android phone. It
+captures the live screen, feeds the perception and decision loop, and taps
+its decisions back, fast enough to play a real-time match.
+
+**Where things stand.** Every live piece exists, but is built and measured
+against the BlueStacks EMULATOR on the Windows box. Nothing has run against a
+phone, and nothing has run live at all since the teacher policy landed (item 0:
+"live dry run pending"). **Do item 0's emulator dry run first.** It separates
+"the loop is wrong" from "the phone path is wrong", and both are new.
+
+**What assumes the emulator today** (each needs a phone path, not a patch):
+
+| assumption | where | on a phone |
+|---|---|---|
+| capture reads a DESKTOP WINDOW (Windows.Graphics.Capture) and crops the 9:16 game rect out of it | `capture/window.py` (`NATIVE_WIDTH/HEIGHT` 720x1280) | the phone's screen must reach the host first; most phones are 20:9, not 9:16 |
+| `adb exec-out screencap` was rejected at **1.4-4.9 s/frame** | `capture/window.py` docstring | still too slow; do not revive it |
+| adb is BlueStacks' own `HD-Adb.exe` | `live/actuator.py` `ADB` | platform-tools `adb`, USB or Wi-Fi debugging, a device serial |
+| taps are raw evdev writes to `/dev/input/event4`, "BlueStacks Virtual Touch", **~50 ms** per write | `live/actuator.py` `RawTouch`, `TOUCH_DEVICE` | writing `/dev/input` needs ROOT on a stock phone; the `input tap` fallback costs **~400 ms per tap**, two taps per placement |
+| every tap and UI coordinate is in a 720x1280 display | CRBAB `DISPLAY_WIDTH/HEIGHT`, `actuator.card_centre` / `tile_centre`, `TILE_*` | rescale per device, AND re-measure the layout: a 20:9 screen moves the HUD and hand tray relative to the arena |
+| readers are calibrated at 549x976 or 720 wide | tower numeral templates `config/templates/tower_549x976`, `unit_hp.CALIBRATION_WIDTH`, hand pools `config/templates/deck_pool_*`, `config/profile_gpg_1920x1080.json` | new templates and a new profile per device resolution |
+
+**The four parts, with the measurement each must pass:**
+
+1. **Capture the phone's screen.** The cheapest route reuses everything:
+   mirror the phone to the desktop with scrcpy (open source, adb-based, no
+   root) and point `WindowSource` at the scrcpy window. WGC capture is
+   unchanged (~100 ms/frame on the emulator); what changes is the game-rect
+   derivation for the phone's aspect. The alternative is decoding scrcpy's
+   H.264 stream directly, which drops the desktop window but means writing a
+   decoder path. **Pass:** a constant-rate capture (`capture/video.py`'s CFR
+   check) at >= `DEFAULT_MIN_FPS` (2.0), and per-frame capture latency
+   measured end to end. scrcpy's own figures are not a substitute: put a
+   visible on-screen clock on the phone and diff it against the capture
+   timestamp.
+2. **Feed the loop.** Calibrate the new resolution: a profile through
+   `calib/homography.py`, then validate it against the arena's own rendered
+   tile seams (`tools/validate_grid.py`, the Stage-0 acceptance: 0.105-0.224
+   tiles on the recordings). Re-template the tower numerals and the hand
+   (`config/templates/`). **Pass:** the `--frames` smoke procedure from the
+   2026-11-09 review on a recorded phone session. The ledger must book nothing
+   on a static frame, the tower maxima must be plausible, and the hand must be
+   read. Then a live dry run (`mvp_loop.py --policy teacher`, no `--act`).
+3. **Tap back.** Three options, in order of preference:
+   (a) scrcpy's control channel, which injects touch without root and over the
+   same connection the capture uses;
+   (b) `adb shell input tap`, no root, ~0.8 s per placement measured on the
+   emulator; measure it on the phone;
+   (c) raw evdev, only on a rooted phone. Discover the touch node with
+   `getevent -p`. `_probe_raw_touch` only checks that the hard-coded
+   emulator node `/dev/input/event4` exists, which on a phone is some other
+   device or nothing.
+   **Pass:** `live/placement_confirm.py`'s cross-tab over a full Training Camp
+   match. Every issued placement must land on its intended tile (the confirmer
+   sees the unit; the ledger sees the elixir), and nothing may be tapped
+   outside the arena (`engine_row_is_tappable`). On the emulator 0 of 28
+   placements were refused by the game, which is the bar to match.
+4. **Make it fast enough, and prove it.** The budget is the existing one:
+   decisions at `DECISION_HZ` = 1.0, a board older than `MAX_STALENESS_MS`
+   (2,000 ms) is refused, and the emulator measured 917 ms per serial
+   iteration, with the detector at ~70% of it and decide-to-land at ~1.6 s.
+   **Pass:** over a full match, decision rate >= 0.95 Hz; board age p95 under
+   2,000 ms (`mvp_loop` prints both); the actuator never drops a placement it
+   was handed (`actuator: N dropped` in the summary, and since 2026-11-09 a
+   drop is refused as `actuator_busy` rather than booked); and decide-to-land
+   measured, not assumed. If the budget does not fit, the detector is the
+   lever: ONNX runtime threads, a GPU or DirectML provider (`.venv-dml`, see
+   `perception/README.md`), or a smaller input. Do not add threads around the
+   engine (see `.claude/CLAUDE.md`, "do not add threads").
+
+**Play only where automation is allowed.** Supercell's terms of service forbid
+bots in online play, and a ladder account can be banned. Test in Training Camp
+(`ensure_in_match` in `perception/tools/match_nav.py` already navigates there) or friendly battles
+on an account you can lose. `--act` stays opt-in throughout.
+
+**Also blocked by**: the live sensor's known limits (card identity agrees with
+the ledger 33.8%, unit-HP recall 0.34-0.56; "Perception-side open work"), and
+item 0's remaining live dry run.
+
+---
+
 ## 00000. Code review of the live path, 2026-11-09 — fixed, one proposal open
 
 A review of `perception/live/` (pipeline, decision loop, actuator, ledger, hand
@@ -93,11 +175,19 @@ Fixed:
     decision 17.5 -> 9.3 ms in the dry run).
 12. `hand_names[decision.slot]` could IndexError on a short CRBAB card list.
 
-Open: **UPSTREAM item 36**. `getAllCardIds()` and `sample_random_deck(seed)`
-iterate an `unordered_map`, so a seeded deck is reproducible on one build only
-(MSVC vs libstdc++ vs WASM). C++, proposed with options. Every Python caller was
-audited and is order-independent: names are unique, and `net.py`'s card index
-is `range()`-based. `net.py`'s `_ALL_IDS` is dead code (python_ai, left alone).
+Open: **UPSTREAM item 36, revised 2026-11-10 after measuring libstdc++
+against libc++** (`tools/audit/seed_portability_probe.cpp`). **Seeded
+randomness is build-specific**, and the cause is the standard library's
+algorithms, not only the registry order: `uniform_int_distribution` and
+`std::shuffle` differ while raw `mt19937` matches. So `env.seed(s)` deals a
+different opening hand per build (libstdc++ vs libc++, the WASM lab's), and so
+does `sample_random_deck(seed)`. The first version's "sort the ids" fix is
+measured insufficient. The proposal now is portable primitives over raw
+`mt19937`, plus golden-value tests CI checks on MSVC. No training path passes
+a seed (all are `random_device`), so nothing in a run moves today. Every Python
+caller of `get_all_card_ids()` was audited and is order-independent: names are
+unique, and `net.py`'s card index is `range()`-based. `net.py`'s `_ALL_IDS` is
+dead code (python_ai, left alone).
 
 Also measured and NOT changed:
 - The ledger's 1-elixir plays are now hidden when one sample's regeneration

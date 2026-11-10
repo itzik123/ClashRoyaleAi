@@ -30,6 +30,9 @@ comparable across this change.
   `perception/live/teacher_policy.py` lets the UtilityTeacher rank candidates on that
   mirror. Run it with `mvp_loop.py --policy teacher` (dry run unless `--act`). See
   `docs/TODO.md` item 0.
+- `tools/audit/seed_portability_probe.cpp` shows, layer by layer, whether a seed
+  names the same deck and opening hand on two builds. Measured: it does not,
+  across libstdc++ and libc++ (UPSTREAM item 36, revised).
 - **Live-loop review** (`docs/TODO.md` item 00000). The live loop no longer:
   - books a phantom 1-elixir play on almost every elixir reading with a deck
     holding 1-elixir cards, which includes the shipped 2.6 Hog Cycle;
