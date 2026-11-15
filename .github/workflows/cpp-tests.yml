@@ -1,6 +1,6 @@
 name: C++ tests
 
-# Builds the Catch2 suite with MSVC and runs it. Only engine-side changes
+# Builds the Catch2 suite with MSVC and with GCC, and runs it. Only engine-side changes
 # trigger it: the suite covers include/, src/ and tests/, and a Windows runner
 # is billed at twice the Linux rate while the repository is private.
 on:
@@ -56,3 +56,29 @@ jobs:
       # passing, so the runner exits 0; any other failure exits non-zero.
       - name: Run the tests
         run: .\build\Release\ClashRoyaleTests.exe
+
+  test-linux:
+    name: Build and run (Ubuntu, GCC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same as the Windows job: configuring the pybind11 module needs Python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure
+        run: |
+          py="$(command -v python)"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE="$py" -DPYTHON_EXECUTABLE="$py"
+
+      # A bare --parallel runs every compile at once under make, and the
+      # runner runs out of memory; 4 is the runner's core count.
+      - name: Build the test suite
+        run: cmake --build build --target ClashRoyaleTests --parallel 4
+
+      # One expected failure, as on Windows (test_navigation_wedge.cpp's [!shouldfail] case).
+      - name: Run the tests
+        run: ./build/ClashRoyaleTests
