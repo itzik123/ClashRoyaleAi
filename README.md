@@ -143,10 +143,11 @@ pip install .                              # builds and installs clash_royale_en
 pip install -r python_ai/requirements.txt  # the training stack
 python -c "import python_ai, clash_royale_env"
 
-# C++ test suite (one expected failure, test_navigation_wedge.cpp's [!shouldfail] case)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE="$(command -v python)"
-cmake --build build --target ClashRoyaleTests --parallel 4   # unbounded can run out of memory
-./build/ClashRoyaleTests
+# C++ test suite. test_navigation_wedge.cpp's [!shouldfail] case is reported
+# as "failed as expected"; the run still passes.
+cmake -S . -B build_test -DCMAKE_BUILD_TYPE=Release
+cmake --build build_test --target ClashRoyaleTests --parallel 4   # unbounded can run out of memory
+./build_test/ClashRoyaleTests
 ```
 
 ### Use the engine directly
@@ -252,7 +253,8 @@ checkpoints, is listed in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ### Roadmap
 
-- [ ] Cross-platform wheels (`pip install`) for Linux and macOS
+- [x] Build from source on Linux and macOS (`pip install .`)
+- [ ] Prebuilt wheels on PyPI
 - [ ] Card data in a data file, so balance updates don't require C++ changes
 - [ ] Crown Tower damage reduction for spells
 - [ ] Opponent placement detection in `perception/`

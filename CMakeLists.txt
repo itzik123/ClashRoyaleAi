@@ -30,8 +30,9 @@ pybind11_add_module(clash_royale_env src/bindings.cpp)
 target_include_directories(clash_royale_env PRIVATE include/core include/entities include/rendering)
 
 if (SKBUILD)
-    # Built as a Python package (pyproject.toml, scikit-build-core): the module
-    # goes into the wheel, and the C++ tests and demo are not needed.
+    # Built as a Python package (pyproject.toml, scikit-build-core): install the
+    # module into the wheel. pyproject.toml builds only this target and turns
+    # the C++ tests off (build.targets, BUILD_TESTING_CLASHROYALE).
     install(TARGETS clash_royale_env LIBRARY DESTINATION .)
 elseif (WIN32)
     # Automatically copy and rename the generated .pyd file to the python_ai directory after compiling
