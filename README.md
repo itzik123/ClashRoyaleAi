@@ -112,9 +112,8 @@ a live match off the screen and replays it inside the engine.
 - **Python 3.11**. The compiled extension is built for the 3.11 ABI.
 - Git and an internet connection. CMake fetches pybind11 and Catch2.
 
-> The engine is standard C++, and its test suite has also been built with
-> g++ under WSL. Linux and macOS builds of the Python extension are
-> [on the roadmap](#roadmap).
+> The engine is standard C++. On Linux and macOS, see
+> [Build on Linux or macOS](#build-on-linux-or-macos).
 
 ### Build
 
@@ -131,6 +130,25 @@ powershell -ExecutionPolicy Bypass -File tools\setup_dev_env.ps1
 This produces `python_ai/clash_royale_env.pyd` and
 `build_python/Release/ClashRoyaleTests.exe`.
 The script's header documents flags for skipping steps, such as `-SkipTests`.
+
+### Build on Linux or macOS
+
+You need a C++17 compiler (GCC, Clang or Apple clang), CMake and Python 3.11.
+`pyproject.toml` builds the extension as a Python package, so it installs
+into your environment instead of being copied into `python_ai/`:
+
+```bash
+python3.11 -m venv venv && . venv/bin/activate
+pip install .                              # builds and installs clash_royale_env
+pip install -r python_ai/requirements.txt  # the training stack
+python -c "import python_ai, clash_royale_env"
+
+# C++ test suite. test_navigation_wedge.cpp's [!shouldfail] case is reported
+# as "failed as expected"; the run still passes.
+cmake -S . -B build_test -DCMAKE_BUILD_TYPE=Release
+cmake --build build_test --target ClashRoyaleTests --parallel 4   # unbounded can run out of memory
+./build_test/ClashRoyaleTests
+```
 
 ### Use the engine directly
 
@@ -235,7 +253,8 @@ checkpoints, is listed in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ### Roadmap
 
-- [ ] Cross-platform wheels (`pip install`) for Linux and macOS
+- [x] Build from source on Linux and macOS (`pip install .`)
+- [ ] Prebuilt wheels on PyPI
 - [ ] Card data in a data file, so balance updates don't require C++ changes
 - [ ] Crown Tower damage reduction for spells
 - [ ] Opponent placement detection in `perception/`

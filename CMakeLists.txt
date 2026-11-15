@@ -29,11 +29,18 @@ FetchContent_MakeAvailable(pybind11)
 pybind11_add_module(clash_royale_env src/bindings.cpp)
 target_include_directories(clash_royale_env PRIVATE include/core include/entities include/rendering)
 
-# Automatically copy and rename the generated .pyd file to the python_ai directory after compiling
-add_custom_command(TARGET clash_royale_env POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:clash_royale_env> ${CMAKE_SOURCE_DIR}/python_ai/clash_royale_env.pyd
-    COMMENT "Copying compiled bindings to python_ai/clash_royale_env.pyd..."
-)
+if (SKBUILD)
+    # Built as a Python package (pyproject.toml, scikit-build-core): install the
+    # module into the wheel. pyproject.toml builds only this target and turns
+    # the C++ tests off (build.targets, BUILD_TESTING_CLASHROYALE).
+    install(TARGETS clash_royale_env LIBRARY DESTINATION .)
+elseif (WIN32)
+    # Automatically copy and rename the generated .pyd file to the python_ai directory after compiling
+    add_custom_command(TARGET clash_royale_env POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:clash_royale_env> ${CMAKE_SOURCE_DIR}/python_ai/clash_royale_env.pyd
+        COMMENT "Copying compiled bindings to python_ai/clash_royale_env.pyd..."
+    )
+endif()
 
 # Unit tests (Catch2), same FetchContent pattern as pybind11 above.
 option(BUILD_TESTING_CLASHROYALE "Build the ClashRoyaleEnv unit test suite" ON)

@@ -1,0 +1,23 @@
+# Builds the engine's pybind11 module (`import clash_royale_env`) as a Python
+# package on any platform, with scikit-build-core driving the CMakeLists.txt
+# next to it. Only the module goes in the wheel: python_ai/ keeps its own
+# setup (python_ai/requirements.txt).
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "clash-royale-env"
+version = "0.1.0"
+description = "ClashRoyaleEnv battle engine (C++17, pybind11)"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+
+[tool.scikit-build]
+# CMake and Ninja are fetched only if the machine lacks a suitable version.
+cmake.version = ">=3.16"
+build.targets = ["clash_royale_env"]
+build-dir = "build/{wheel_tag}"
+wheel.packages = []
+cmake.define.BUILD_TESTING_CLASHROYALE = "OFF"
+
