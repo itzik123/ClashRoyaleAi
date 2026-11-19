@@ -383,6 +383,17 @@ public:
         return true;
     }
 
+    // Re-level one tower (see Tower::setStats), for matching the towers to the
+    // card levels the registry's stats are taken at. Same contract as
+    // setTowerHp: false and no change on a missing or destroyed tower, or on a
+    // value the engine cannot hold.
+    bool setTowerStats(int team, int slot, int maxHp, int damage, int cooldownTicks) {
+        Tower* t = findTower(team, slot);
+        if (t == nullptr || !t->isAlive() || maxHp <= 0 || damage < 0 || cooldownTicks <= 0) return false;
+        t->setStats(maxHp, damage, cooldownTicks);
+        return true;
+    }
+
     // The only way to express a fallen tower, since setTowerHp refuses hp <= 0.
     bool destroyTower(int team, int slot) {
         Tower* t = findTower(team, slot);

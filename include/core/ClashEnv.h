@@ -656,6 +656,9 @@ public:
     // --- tower HP and the match clock (item 22) ---
     // Thin wrappers; the contracts live on GameManager.
     bool setTowerHp(int team, int slot, float hp) { return game.setTowerHp(team, slot, hp); }
+    bool setTowerStats(int team, int slot, int maxHp, int damage, int cooldownTicks) {
+        return game.setTowerStats(team, slot, maxHp, damage, cooldownTicks);
+    }
     bool destroyTower(int team, int slot) { return game.destroyTower(team, slot); }
     int getTowerHp(int team, int slot) const { return game.getTowerHp(team, slot); }
     int getTowerMaxHp(int team, int slot) const { return game.getTowerMaxHp(team, slot); }
