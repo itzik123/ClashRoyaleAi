@@ -139,6 +139,9 @@ PYBIND11_MODULE(clash_royale_env, m) {
              py::arg("team"), py::arg("slot"))
         // Re-level a tower (slot 0 King, 1 left, 2 right): max hp, damage per
         // shot, cooldown in ticks. Keeps the hp fraction. Defaults unchanged.
+        // The observation still divides tower hp by MAX_BUILDING_HP (4008), so
+        // a max above that reads > 1.0 in the tower scalars the reward's tower
+        // term is built on: meant for replay comparison, not training as is.
         .def("set_tower_stats", &ClashEnv::setTowerStats, py::arg("team"), py::arg("slot"),
              py::arg("max_hp"), py::arg("damage"), py::arg("cooldown_ticks"))
         // Clamped to [0, max_ticks]; sets both engine clocks.
